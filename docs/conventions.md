@@ -45,12 +45,16 @@ Inherited AgentsView packages keep their upstream paths and stay where upstream 
   personal session content, no secrets, no absolute host paths in committed evidence.
 - **Comments and docs state what the code does, not what it was meant to do.** A comment or test name
   claiming a rule the code no longer implements is a correctness defect.
-- **A test pins the rule it names, on every platform.** An assertion under `scripts/tests/` must fail
-  when the behaviour it names is broken, and must not depend on the host: no hard-coded path
-  separators, no POSIX-only tool behaviour, no assumption that a tool is installed. Where a rule
-  cannot be exercised host-independently through a subprocess, the case drives the shipped module
-  directly — `PATH` pinned to a stub bin, one probe patched, or a `PureWindowsPath` root — instead of
-  leaving the rule untested here and hoping a Windows job notices.
+- **A test pins the rule it names, on every platform and every Python 3 these docs name.** An
+  assertion under `scripts/tests/` must fail when the behaviour it names is broken, and must not
+  depend on the host *or on a language minor version*: no hard-coded path separators, no POSIX-only
+  tool behaviour, no assumption that a tool is installed, and no `pathlib` behaviour that moved
+  between 3.11 and 3.12 (`PurePath` parses its arguments in `__new__` before 3.12 and in `__init__`
+  from 3.12 on, which is why the suite's Windows-flavoured root is a plain object holding
+  `PureWindowsPath` children rather than a `PureWindowsPath` subclass). Where a rule cannot be
+  exercised host-independently through a subprocess, the case drives the shipped module directly —
+  `PATH` pinned to a stub bin, one probe patched, or a root whose children carry the Windows path
+  flavour — instead of leaving the rule untested here and hoping a Windows job notices.
 
 ## Commits and branches
 

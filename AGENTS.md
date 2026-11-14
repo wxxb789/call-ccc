@@ -30,8 +30,9 @@ Read in this order; do not skip: this file → [`docs/core-design/README.md`](do
   or skip a step to get green — a step that cannot run is disclosed, not silenced. The gate also runs
   its own regression tests from `scripts/tests/` (the `selftest` step, stdlib only).
 - The harness's own tests are part of that contract: an assertion under `scripts/tests/` must fail
-  when the rule it names is broken, and must hold on every platform — no hard-coded separators, no
-  POSIX-only tool behaviour, no assumption that a tool is installed
+  when the rule it names is broken, and must hold on every platform and every Python 3 the docs name
+  — no hard-coded separators, no POSIX-only tool behaviour, no assumption that a tool is installed,
+  no reliance on a `pathlib` behaviour that differs between Python minors
   ([`docs/conventions.md`](docs/conventions.md)).
 - Stage order for an increment: implement → verify (gate) → simplify (report only) → apply (accepted
   findings only) → review (report only) → fix → gate → PR. Report stages must not edit the tree.

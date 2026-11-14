@@ -27,6 +27,13 @@ prints and what the walk normalises to with `as_posix()`. The list handed to `go
 that pins it — therefore does not depend on the host's separator, and a regression to `str(relative)`
 is what the suite's Windows-flavoured case exists to catch.
 
+`selftest` runs the suite with the interpreter that is running the gate (`sys.executable`), so the
+suite must hold on every Python 3 the docs allow and not only on CI's pinned 3.13: it is stdlib-only
+Python 3, and no case may depend on a `pathlib` behaviour that moved between minor versions —
+`PurePath` parses its constructor arguments in `__new__` before 3.12 and in `__init__` from 3.12 on,
+which is why the suite's Windows-flavoured root is a plain object holding `PureWindowsPath` children
+instead of a `PureWindowsPath` subclass.
+
 `secrets` scans wider than the repository: `--no-git` means "current files only" and leaves no
 gitignore switch, so the scan reads the whole working tree, untracked and gitignored files included. A
 local `.env` therefore fails the gate locally where a clean CI checkout passes; the step is a
