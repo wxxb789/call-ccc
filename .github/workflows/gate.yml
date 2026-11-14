@@ -37,5 +37,8 @@ jobs:
       - name: Install gitleaks
         run: go install -ldflags "-X=github.com/zricethezav/gitleaks/v8/version.Version=v8.30.1" github.com/zricethezav/gitleaks/v8@v8.30.1
 
+      # `python`, not `python3`: setup-python puts `python` on PATH on all
+      # three runners, while the Windows runner has no `python3` name. The
+      # file itself is `#!`-tagged python3 and runs either way.
       - name: Gate
         run: python scripts/gate.py

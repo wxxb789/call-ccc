@@ -3,8 +3,10 @@
 
 Steps, in order: gofmt, build, vet, test, selftest, parity, secrets.
 Exit 0 only when every step that RAN passed. A step that could not run prints
-SKIP/BOUNDARY with its reason and is never counted as a pass; the verdict line
-then says ``GATE: PASS (partial: ...)``. A step named in
+SKIP/BOUNDARY with its reason, a step whose hook is not in the tree prints N/A,
+and none of the three is counted as a pass: the verdict line names every one of
+them, so a run that never checked something cannot read as a full ``GATE: PASS``
+-- it says ``GATE: PASS (partial: ...)``. A step named in
 scripts/gate-required.txt must be PASS: any other status -- FAIL, SKIP, BOUNDARY
 or N/A -- is rewritten to FAIL before the verdict, so it exits 1.
 
@@ -18,9 +20,8 @@ Knobs (in-repo, auditable):
   CALLCCC_GATE_ROOT           run against another tree (used by
                               scripts/tests/test_gate.py); defaults to this repo
 
-Platform boundary: on Linux/macOS a missing Go toolchain or C compiler is a
-FAILURE; on Windows a missing C compiler is a disclosed BOUNDARY (the project's
-platforms are "subject to native harness availability"). See docs/harness.md.
+The platform boundary and the reason behind each status are stated in
+docs/harness.md; this file implements them.
 """
 
 from __future__ import annotations
@@ -66,13 +67,21 @@ def tail(text: str, limit: int = 2500) -> str:
 
 
 def tracked_go_files() -> list[str]:
+    """The ``*.go`` files gofmt looks at: the tracked ones, minus a top-level ``vendor/``.
+
+    A tree without git (a ``CALLCCC_GATE_ROOT`` copy, a throw-away test tree) has
+    no notion of "tracked", so the walk below answers with everything it can see
+    while dropping the same two things the git branch drops: ``.git/`` and a
+    top-level ``vendor/``. docs/harness.md states both halves of the contract.
+    """
     proc = run(["git", "ls-files", "*.go"])
     if proc.returncode != 0:
-        return sorted(
-            str(p.relative_to(ROOT))
-            for p in ROOT.rglob("*.go")
-            if ".git" not in p.parts and "vendor" not in p.parts
-        )
+        files = []
+        for path in ROOT.rglob("*.go"):
+            relative = path.relative_to(ROOT)
+            if ".git" not in relative.parts and relative.parts[0] != "vendor":
+                files.append(str(relative))
+        return sorted(files)
     return [line for line in proc.stdout.splitlines() if line and not line.startswith("vendor/")]
 
 
@@ -149,6 +158,12 @@ def step_parity() -> tuple[str, str]:
 
 
 def step_secrets() -> tuple[str, str]:
+    """Scan the whole working tree -- untracked and gitignored files included.
+
+    ``--no-git`` (no git history, current files only) has no gitignore switch, so
+    a local ``.env`` is read here even though CI's clean checkout never has one;
+    the PASS message below states the scope instead of implying a tracked-tree one.
+    """
     if not shutil.which("gitleaks"):
         return SKIP, "gitleaks not installed on this host (CI installs it)"
     proc = run(
@@ -156,7 +171,7 @@ def step_secrets() -> tuple[str, str]:
         timeout=600,
     )
     if proc.returncode == 0:
-        return PASS, "no leaks found in the tracked tree"
+        return PASS, "no leaks found in the working tree (untracked and gitignored files included)"
     if proc.returncode == 7:
         return FAIL, "gitleaks reported leaks (redacted):\n" + tail(proc.stdout, 1200)
     return SKIP, f"gitleaks did not complete (rc={proc.returncode}): " + tail(proc.stderr, 400)
@@ -208,7 +223,7 @@ def main() -> int:
     if failed:
         print("GATE: FAIL — " + ", ".join(failed))
         return 1
-    partial = [s[0] for s in steps if s[1] in (SKIP, BOUNDARY)]
+    partial = [s[0] for s in steps if s[1] in (SKIP, BOUNDARY, NA)]
     if partial:
         print("GATE: PASS (partial: " + ", ".join(partial) + " did not run — see reasons above)")
     else:
