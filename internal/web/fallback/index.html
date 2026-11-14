@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <script>// Copied from kenn-io/actions first-paint/hold-first-paint.js. The server CSP
+// allows it by hash; update holdFirstPaintScriptHash when this file changes.
+// Keeps the page hidden until its stylesheets and fonts are ready, so text
+// never paints in a fallback face. Chromium decodes even a font embedded in
+// the stylesheet only after its first paint, so embedding alone is not enough.
+// Inline this script in <head> before any stylesheet.
+(() => {
+  const root = document.documentElement;
+  // Opacity hides every descendant. A descendant can override visibility.
+  // The important priority keeps a stylesheet's opacity rule from showing the
+  // page early.
+  const opacity = root.style.getPropertyValue("opacity");
+  const priority = root.style.getPropertyPriority("opacity");
+  root.style.setProperty("opacity", "0", "important");
+  let shown = false;
+  const show = () => {
+    if (shown) return;
+    shown = true;
+    root.style.setProperty("opacity", opacity, priority);
+  };
+  // Never hide the page longer than a browser blocks text on a slow font.
+  setTimeout(show, 3000);
+  const ready = async () => {
+    const pending = [...document.querySelectorAll("link")]
+      .filter((link) => {
+        const rel = link.rel.toLowerCase().split(/\s+/);
+        return rel.includes("stylesheet") && !rel.includes("alternate");
+      })
+      // A disabled or print stylesheet does not style the screen.
+      .filter((link) => !link.disabled && matchMedia(link.media || "all").matches && !link.sheet)
+      .map((link) => new Promise((done) => {
+        link.addEventListener("load", done);
+        link.addEventListener("error", done);
+      }));
+    await Promise.all(pending);
+    // Load every declared face, including ones only text rendered later by
+    // JavaScript uses. A failed face falls back the way it would anyway.
+    await Promise.all([...document.fonts].map((face) => face.load().catch(() => {})));
+    show();
+  };
+  // Wait for deferred and module scripts too: a bundler's development server
+  // adds styles, and with them the font faces, only when a module runs.
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", ready, { once: true });
+  } else {
+    ready();
+  }
+})();
+</script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AgentsView</title>
+    <style>
+      :root { color-scheme: light; font-family: ui-sans-serif, system-ui, sans-serif; background: #f7f5ef; color: #1f1f1f; }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: radial-gradient(circle at top, #fff7d6, transparent 35%), linear-gradient(180deg, #f7f5ef, #efe7d5); }
+      main { max-width: 36rem; margin: 2rem; padding: 2rem; border: 1px solid #d6ccb7; border-radius: 1rem; background: rgba(255, 252, 245, 0.9); box-shadow: 0 20px 40px rgba(73, 55, 27, 0.08); }
+      h1 { margin-top: 0; font-size: 1.8rem; }
+      p { line-height: 1.5; }
+      code { padding: 0.15rem 0.35rem; border-radius: 0.35rem; background: #f1eadb; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>AgentsView frontend assets are not built.</h1>
+      <p>This embedded placeholder keeps backend-only builds healthy. Build the frontend bundle to replace this page with the full UI.</p>
+      <p>Expected build output lives under <code>internal/web/dist/</code>.</p>
+    </main>
+  </body>
+</html>

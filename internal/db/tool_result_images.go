@@ -1,0 +1,786 @@
+package db
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"mime"
+	"os"
+	"strings"
+
+	"go.kenn.io/agentsview/internal/assets"
+	"go.kenn.io/agentsview/internal/config"
+)
+
+// ToolImageStats describes inline image payloads found by the projection.
+type ToolImageStats struct {
+	Payloads     int64
+	StoredBytes  int64
+	DecodedBytes int64
+}
+
+type toolImageBlock struct {
+	Type     string         `json:"type"`
+	ImageURL jsontext.Value `json:"image_url"`
+}
+
+// StripToolResultImages replaces supported inline image blocks in one stored
+// result. Untouched JSON blocks retain their original bytes.
+func StripToolResultImages(content string) (string, ToolImageStats) {
+	projected, stats := stripToolResultImageArrayWithInline(content, true)
+	if stats.Payloads > 0 {
+		return projected, stats
+	}
+	return stripToolResultSummaryImagesWithInline(content, true)
+}
+
+// DowngradeOffloadedToolResultImages removes asset references while retaining
+// inline image blocks for artifact imports that cannot transport asset files.
+func DowngradeOffloadedToolResultImages(content string) (string, ToolImageStats) {
+	projected, stats := stripToolResultImageArrayWithInline(content, false)
+	if stats.Payloads > 0 {
+		return projected, stats
+	}
+	return stripToolResultSummaryImagesWithInline(content, false)
+}
+
+func stripToolResultImageArrayWithInline(
+	content string, stripInline bool,
+) (string, ToolImageStats) {
+	var blocks []jsontext.Value
+	if err := json.Unmarshal([]byte(content), &blocks); err != nil || blocks == nil {
+		return content, ToolImageStats{}
+	}
+
+	projected := make([]jsontext.Value, len(blocks))
+	copy(projected, blocks)
+	var stats ToolImageStats
+	changed := false
+	for i, raw := range blocks {
+		var block toolImageBlock
+		if err := json.Unmarshal(raw, &block, json.MatchCaseInsensitiveNames(true)); err != nil {
+			continue
+		}
+		if block.Type == "agentsview_image" {
+			placeholder, ok := stripOffloadedImagePlaceholder(raw)
+			if !ok {
+				continue
+			}
+			projected[i] = placeholder
+			changed = true
+			stats.Payloads++
+			continue
+		}
+		if !stripInline || block.Type != "input_image" {
+			continue
+		}
+		var fields map[string]jsontext.Value
+		if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+			continue
+		}
+		mediaType, decodedBytes, storedBytes, ok := decodeInlineImageURL(block.ImageURL)
+		if !ok {
+			continue
+		}
+		placeholderFields := make(map[string]jsontext.Value, len(fields)+6)
+		for key, value := range fields {
+			// Match the case and delimiter folding used by the JSON decoder.
+			name := strings.ReplaceAll(strings.ReplaceAll(key, "_", ""), "-", "")
+			if !strings.EqualFold(name, "type") &&
+				!strings.EqualFold(name, "imageurl") {
+				placeholderFields[key] = value
+			}
+		}
+		placeholderFields["type"] = jsontext.Value(`"agentsview_image"`)
+		placeholderFields["version"] = jsontext.Value(`1`)
+		textValue, _ := json.Marshal(
+			fmt.Sprintf("[Image: %s, %d bytes]", mediaType, decodedBytes),
+		)
+		placeholderFields["text"] = textValue
+		mediaValue, _ := json.Marshal(mediaType)
+		placeholderFields["media_type"] = mediaValue
+		byteSizeValue, _ := json.Marshal(decodedBytes)
+		placeholderFields["byte_size"] = byteSizeValue
+		sha256Value := jsontext.Value(`""`)
+		if rawSHA, ok := fields["sha256"]; ok {
+			var sha256 string
+			if err := json.Unmarshal(rawSHA, &sha256); err == nil && sha256 != "" {
+				sha256Value = rawSHA
+			}
+		}
+		placeholderFields["sha256"] = sha256Value
+		placeholder, err := json.Marshal(placeholderFields, json.Deterministic(true))
+		if err != nil {
+			continue
+		}
+		projected[i] = placeholder
+		changed = true
+		stats.Payloads++
+		stats.StoredBytes += storedBytes
+		stats.DecodedBytes += decodedBytes
+	}
+	if !changed {
+		return content, ToolImageStats{}
+	}
+	var result bytes.Buffer
+	result.WriteByte('[')
+	for i, block := range projected {
+		if i > 0 {
+			result.WriteByte(',')
+		}
+		result.Write(block)
+	}
+	result.WriteByte(']')
+	return result.String(), stats
+}
+
+type offloadedImagePlaceholder struct {
+	Version   *int   `json:"version"`
+	Type      string `json:"type"`
+	ImageRef  string `json:"image_ref"`
+	MediaType string `json:"media_type"`
+	ByteSize  int64  `json:"byte_size"`
+}
+
+func parseOffloadedImagePlaceholder(raw jsontext.Value) (offloadedImagePlaceholder, bool) {
+	var placeholder offloadedImagePlaceholder
+	if err := json.Unmarshal(raw, &placeholder, json.MatchCaseInsensitiveNames(true)); err != nil ||
+		placeholder.Type != "agentsview_image" ||
+		!strings.HasPrefix(placeholder.ImageRef, "asset://") ||
+		placeholder.MediaType == "" || placeholder.ByteSize < 0 {
+		return placeholder, false
+	}
+	return placeholder, true
+}
+
+func stripOffloadedImagePlaceholder(raw jsontext.Value) (jsontext.Value, bool) {
+	placeholder, ok := parseOffloadedImagePlaceholder(raw)
+	if !ok {
+		return nil, false
+	}
+	var fields map[string]jsontext.Value
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return nil, false
+	}
+	for key := range fields {
+		name := strings.ReplaceAll(strings.ReplaceAll(key, "_", ""), "-", "")
+		if strings.EqualFold(name, "imageref") ||
+			strings.EqualFold(name, "text") {
+			delete(fields, key)
+		}
+	}
+	textValue, err := json.Marshal(fmt.Sprintf(
+		"[Image: %s, %d bytes]", placeholder.MediaType, placeholder.ByteSize,
+	))
+	if err != nil {
+		return nil, false
+	}
+	fields["text"] = textValue
+	projected, err := json.Marshal(fields, json.Deterministic(true))
+	if err != nil {
+		return nil, false
+	}
+	return projected, true
+}
+
+// scanSummarySections walks a labeled or anonymous tool-result summary and
+// calls fn once per section that holds a JSON array, passing the offsets the
+// array occupies in content and its raw bytes. Preview, strip and migrate all
+// scan through here so they cannot disagree about which sections exist.
+func scanSummarySections(
+	content string, fn func(arrayStart, end int, raw jsontext.Value),
+) {
+	for start := 0; start < len(content); {
+		section := strings.TrimLeft(content[start:], " \t\r\n")
+		arrayStart := len(content) - len(section)
+		if !strings.HasPrefix(section, "[") {
+			if newline := strings.IndexByte(section, '\n'); newline > 0 &&
+				strings.HasSuffix(strings.TrimSpace(section[:newline]), ":") {
+				arrayStart += newline + 1
+			}
+		}
+
+		// Decode the complete value before looking for the next separator:
+		// provider JSON can itself contain blank lines. Anonymous sections have
+		// no agent label, including the trailing section of a mixed summary.
+		decoder := jsontext.NewDecoder(strings.NewReader(content[arrayStart:]))
+		scanEnd := start
+		if raw, err := decoder.ReadValue(); err == nil {
+			end := arrayStart + int(decoder.InputOffset())
+			scanEnd = end
+			tail, _, _ := strings.Cut(content[end:], "\n\n")
+			if len(raw) > 0 && raw[0] == '[' && strings.TrimSpace(tail) == "" {
+				fn(arrayStart, end, raw)
+			}
+		}
+		separator := strings.Index(content[scanEnd:], "\n\n")
+		if separator < 0 {
+			break
+		}
+		start = scanEnd + separator + 2
+	}
+}
+
+func stripToolResultSummaryImagesWithInline(
+	content string, stripInline bool,
+) (string, ToolImageStats) {
+	var result strings.Builder
+	var stats ToolImageStats
+	copied := 0
+	scanSummarySections(content, func(arrayStart, end int, raw jsontext.Value) {
+		projected, found := stripToolResultImageArrayWithInline(
+			string(raw), stripInline,
+		)
+		if found.Payloads == 0 {
+			return
+		}
+		result.WriteString(content[copied:arrayStart])
+		result.WriteString(projected)
+		copied = end
+		stats.Payloads += found.Payloads
+		stats.StoredBytes += found.StoredBytes
+		stats.DecodedBytes += found.DecodedBytes
+	})
+	if stats.Payloads == 0 {
+		return content, stats
+	}
+	result.WriteString(content[copied:])
+	return result.String(), stats
+}
+
+// parseInlineImageHeader parses a data URI header and returns the parsed
+// media type and base64 payload. It accepts only base64-encoded image/* URIs.
+func parseInlineImageHeader(uri string) (mediaType, payload string, ok bool) {
+	mediaType, payload, ok = parseInlineDataHeader(uri, true)
+	return mediaType, payload, ok && strings.HasPrefix(strings.ToLower(mediaType), "image/")
+}
+
+func parseInlineDataHeader(uri string, strict bool) (mediaType, payload string, ok bool) {
+	if !strings.HasPrefix(strings.ToLower(uri), "data:") {
+		return "", "", false
+	}
+	header, payload, found := strings.Cut(uri, ",")
+	if !found || (strict && payload == "") {
+		return "", "", false
+	}
+	marker := strings.LastIndexByte(header, ';')
+	if marker < 0 || !strings.EqualFold(header[marker+1:], "base64") || (strict && strings.IndexByte(header, ';') != marker) {
+		return "", "", false
+	}
+	parsedType, _, err := mime.ParseMediaType(header[len("data:"):marker])
+	if err != nil {
+		return "", "", false
+	}
+	return parsedType, payload, true
+}
+
+func decodeInlineImageURL(raw jsontext.Value) (string, int64, int64, bool) {
+	var count countingWriter
+	return streamInlineData(raw, &count, true)
+}
+
+// decodeInlineImage shares strict streaming acceptance with hashing and offload.
+func decodeInlineImage(raw jsontext.Value) (mediaType string, decoded []byte, ok bool) {
+	var buf bytes.Buffer
+	mediaType, _, _, ok = streamInlineData(raw, &buf, true)
+	return mediaType, buf.Bytes(), ok
+}
+
+func streamInlineData(raw jsontext.Value, dst io.Writer, imageOnly bool) (string, int64, int64, bool) {
+	var uri string
+	if json.Unmarshal(raw, &uri) != nil {
+		return "", 0, 0, false
+	}
+	mediaType, payload, ok := parseInlineDataHeader(uri, imageOnly)
+	if !ok || (imageOnly && !strings.HasPrefix(strings.ToLower(mediaType), "image/")) {
+		return "", 0, 0, false
+	}
+	size, err := io.Copy(dst, base64.NewDecoder(base64.StdEncoding.Strict(), strings.NewReader(payload)))
+	return mediaType, size, int64(len(uri)), err == nil
+}
+
+// imagePutFunc writes decoded image bytes and returns their asset reference.
+type imagePutFunc func(mediaType string, body []byte) (ref string, created bool, err error)
+
+// isMigratableToolImageBlock reports whether one stored block holds an inline
+// image payload this migration can move. The block must be an input_image
+// with a base64 data URI whose media type is one the asset store accepts.
+func isMigratableToolImageBlock(raw jsontext.Value) bool {
+	var block toolImageBlock
+	if err := json.Unmarshal(raw, &block, json.MatchCaseInsensitiveNames(true)); err != nil || block.Type != "input_image" {
+		return false
+	}
+	var uri string
+	if err := json.Unmarshal(block.ImageURL, &uri); err != nil {
+		return false
+	}
+	mediaType, _, ok := parseInlineImageHeader(uri)
+	if !ok {
+		return false
+	}
+	_, allowed := assets.ExtForMediaType(mediaType)
+	return allowed
+}
+
+// migrateToolResultImages rewrites every migratable inline image block in one
+// stored result string with a durable asset:// reference. Unsupported shapes
+// keep their original JSON bytes. A put error returns the original content and
+// the error.
+func migrateToolResultImages(content string, put imagePutFunc) (string, error) {
+	projected, err := migrateToolResultImageArray(content, put)
+	if err != nil {
+		return content, err
+	}
+	if projected != content {
+		return projected, nil
+	}
+	return migrateToolResultSummaryImages(content, put)
+}
+
+func migrateToolResultImageArray(content string, put imagePutFunc) (string, error) {
+	var blocks []jsontext.Value
+	if err := json.Unmarshal([]byte(content), &blocks); err != nil || blocks == nil {
+		return content, nil //nolint:nilerr // Non-JSON tool output must retain its original content.
+	}
+
+	projected := make([]jsontext.Value, len(blocks))
+	copy(projected, blocks)
+	changed := false
+
+	for i, raw := range blocks {
+		// The preview path counts through this same predicate, so apply cannot
+		// call put for a payload the preview never counted.
+		if !isMigratableToolImageBlock(raw) {
+			continue
+		}
+		var block toolImageBlock
+		if err := json.Unmarshal(raw, &block, json.MatchCaseInsensitiveNames(true)); err != nil {
+			continue
+		}
+		var fields map[string]jsontext.Value
+		if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+			continue
+		}
+		mediaType, decoded, ok := decodeInlineImage(block.ImageURL)
+		if !ok {
+			continue
+		}
+		ref, _, err := put(mediaType, decoded)
+		if err != nil {
+			return content, err
+		}
+		// Hash the payload we handed to put rather than reading the digest back
+		// out of the reference: put is caller-supplied and may name files freely.
+		sum := sha256.Sum256(decoded)
+		sha256hex := hex.EncodeToString(sum[:])
+		decodedBytes := int64(len(decoded))
+
+		placeholderFields := make(map[string]jsontext.Value, len(fields)+7)
+		for key, value := range fields {
+			// Match the case and delimiter folding used by the JSON decoder.
+			name := strings.ReplaceAll(strings.ReplaceAll(key, "_", ""), "-", "")
+			if !strings.EqualFold(name, "type") &&
+				!strings.EqualFold(name, "imageurl") {
+				placeholderFields[key] = value
+			}
+		}
+		placeholderFields["type"] = jsontext.Value(`"agentsview_image"`)
+		placeholderFields["version"] = jsontext.Value(`1`)
+		textValue, _ := json.Marshal(
+			fmt.Sprintf("![Image: %s, %d bytes](%s)", mediaType, decodedBytes, ref),
+		)
+		placeholderFields["text"] = textValue
+		mediaValue, _ := json.Marshal(mediaType)
+		placeholderFields["media_type"] = mediaValue
+		byteSizeValue, _ := json.Marshal(decodedBytes)
+		placeholderFields["byte_size"] = byteSizeValue
+		sha256Value, _ := json.Marshal(sha256hex)
+		placeholderFields["sha256"] = sha256Value
+		imageRefValue, _ := json.Marshal(ref)
+		placeholderFields["image_ref"] = imageRefValue
+
+		placeholder, err := json.Marshal(placeholderFields, json.Deterministic(true))
+		if err != nil {
+			continue
+		}
+		projected[i] = placeholder
+		changed = true
+	}
+	if !changed {
+		return content, nil
+	}
+	var result bytes.Buffer
+	result.WriteByte('[')
+	for i, block := range projected {
+		if i > 0 {
+			result.WriteByte(',')
+		}
+		result.Write(block)
+	}
+	result.WriteByte(']')
+	return result.String(), nil
+}
+
+func migrateToolResultSummaryImages(content string, put imagePutFunc) (string, error) {
+	var result strings.Builder
+	var putErr error
+	copied := 0
+	scanSummarySections(content, func(arrayStart, end int, raw jsontext.Value) {
+		// The first put failure abandons the rewrite; later sections are still
+		// walked but do no work, so no further payload leaves the row.
+		if putErr != nil {
+			return
+		}
+		projected, err := migrateToolResultImageArray(string(raw), put)
+		if err != nil {
+			putErr = err
+			return
+		}
+		if projected == string(raw) {
+			return
+		}
+		result.WriteString(content[copied:arrayStart])
+		result.WriteString(projected)
+		copied = end
+	})
+	if putErr != nil {
+		return content, putErr
+	}
+	if copied == 0 {
+		return content, nil
+	}
+	result.WriteString(content[copied:])
+	return result.String(), nil
+}
+
+type countingWriter struct{ n int64 }
+
+func (w *countingWriter) Write(p []byte) (int, error) {
+	w.n += int64(len(p))
+	return len(p), nil
+}
+
+type limitedImageWriter struct {
+	buf   *bytes.Buffer
+	limit int64
+}
+
+func (w *limitedImageWriter) Write(p []byte) (int, error) {
+	n := min(int64(len(p)), max(0, w.limit-int64(w.buf.Len())))
+	_, _ = w.buf.Write(p[:n])
+	return len(p), nil
+}
+
+func projectToolResultImages(
+	messages []Message, policy config.ToolResultImages, assetsDir string,
+) ([]Message, ToolImageStats) {
+	return projectToolResultImagesWithPut(
+		messages, policy, assetsDir,
+		func(mediaType string, body []byte) (string, bool, error) {
+			return assets.Put(assetsDir, mediaType, body)
+		},
+	)
+}
+
+// ProjectToolResultImagesWithoutWriting applies an image policy without publishing assets.
+func ProjectToolResultImagesWithoutWriting(
+	messages []Message, policy config.ToolResultImages, assetsDir string,
+) ([]Message, ToolImageStats) {
+	return projectToolResultImagesWithPut(
+		messages, policy, assetsDir,
+		func(mediaType string, body []byte) (string, bool, error) {
+			ref, err := assets.Reference(mediaType, body)
+			return ref, false, err
+		},
+	)
+}
+
+func projectToolResultImagesWithPut(
+	messages []Message, policy config.ToolResultImages, assetsDir string,
+	put imagePutFunc,
+) ([]Message, ToolImageStats) {
+	if (policy != config.ToolResultImagesDrop && policy != config.ToolResultImagesOffload) || len(messages) == 0 {
+		if messages == nil {
+			return []Message{}, ToolImageStats{}
+		}
+		return messages, ToolImageStats{}
+	}
+	project := func(content string, length int, stats ToolImageStats) (string, ToolImageStats) {
+		if policy == config.ToolResultImagesDrop {
+			return projectToolResultText(content, length, stats)
+		}
+		return projectToolResultImageContentWithPut(content, policy, assetsDir, put), stats
+	}
+	projected := make([]Message, len(messages))
+	copy(projected, messages)
+	var stats ToolImageStats
+	for i := range projected {
+		projected[i].ToolCalls = append([]ToolCall(nil), messages[i].ToolCalls...)
+		for j := range projected[i].ToolCalls {
+			call := &projected[i].ToolCalls[j]
+			call.ResultEvents = append([]ToolResultEvent(nil), call.ResultEvents...)
+			call.ResultContent, stats = project(call.ResultContent, call.ResultContentLength, stats)
+			call.ResultContentLength = ResolveResultContentLength(
+				call.ResultContent, call.ResultContentLength,
+			)
+			for k := range call.ResultEvents {
+				event := &call.ResultEvents[k]
+				event.Content, stats = project(
+					event.Content, event.ContentLength, stats,
+				)
+				event.ContentLength = ResolveResultContentLength(
+					event.Content, event.ContentLength,
+				)
+			}
+			// A deduplicated summary's retained length follows its projected payload.
+			sole, ok := SoleToolResultContent(call.ResultEvents)
+			if call.ResultContent == "" && call.ResultContentLength > 0 && ok {
+				call.ResultContentLength = sole.ContentLength
+			}
+		}
+	}
+	return projected, stats
+}
+
+func projectToolResultText(
+	content string, _ int, stats ToolImageStats,
+) (string, ToolImageStats) {
+	projected, found := StripToolResultImages(content)
+	stats.Payloads += found.Payloads
+	stats.StoredBytes += found.StoredBytes
+	stats.DecodedBytes += found.DecodedBytes
+	return projected, stats
+}
+
+// ProjectToolResultImageContent publishes supported assets before returning reference text.
+func ProjectToolResultImageContent(content string, policy config.ToolResultImages, assetsDir string) string {
+	return projectToolResultImageContentWithPut(
+		content, policy, assetsDir,
+		func(mediaType string, body []byte) (string, bool, error) {
+			return assets.Put(assetsDir, mediaType, body)
+		},
+	)
+}
+
+func projectToolResultImageContentWithPut(
+	content string,
+	policy config.ToolResultImages,
+	assetsDir string,
+	put imagePutFunc,
+) string {
+	switch policy {
+	case config.ToolResultImagesDrop:
+		projected, _ := StripToolResultImages(content)
+		return projected
+	case config.ToolResultImagesOffload:
+		if assetsDir == "" {
+			return content
+		}
+		projected, err := migrateToolResultImages(content, put)
+		if err != nil {
+			log.Printf("offloading tool-result images: %v", err)
+			return content
+		}
+		return projected
+	default:
+		return content
+	}
+}
+
+// SetAssetsDir sets the local asset destination, including on read-only handles.
+func (db *DB) SetAssetsDir(dir string) { db.assetsDir = dir }
+
+// AssetsDir returns the local asset destination.
+func (db *DB) AssetsDir() string { return db.assetsDir }
+
+// SetToolResultImages stores the policy on a writable database handle.
+func (db *DB) SetToolResultImages(policy config.ToolResultImages) {
+	if db.readOnly {
+		return
+	}
+	if policy != config.ToolResultImagesDrop && policy != config.ToolResultImagesOffload {
+		policy = config.ToolResultImagesKeep
+	}
+	db.toolResultImages = policy
+}
+
+// ToolResultImages returns the policy carried by this database handle.
+func (db *DB) ToolResultImages() config.ToolResultImages {
+	if db.toolResultImages == config.ToolResultImagesDrop || db.toolResultImages == config.ToolResultImagesOffload {
+		return db.toolResultImages
+	}
+	return config.ToolResultImagesKeep
+}
+
+// ProjectToolResultImages applies the handle's configured policy.
+func (db *DB) ProjectToolResultImages(messages []Message) ([]Message, ToolImageStats) {
+	return db.ProjectToolResultImagesWithPolicy(messages, db.ToolResultImages())
+}
+
+// ProjectToolResultImagesWithPolicy applies a run policy only to retained tool content.
+func (db *DB) ProjectToolResultImagesWithPolicy(messages []Message, policy config.ToolResultImages) ([]Message, ToolImageStats) {
+	if db.ArchiveContent().OmitsToolContent() {
+		if messages == nil {
+			return []Message{}, ToolImageStats{}
+		}
+		return messages, ToolImageStats{}
+	}
+	return projectToolResultImages(messages, policy, db.AssetsDir())
+}
+
+// ProjectToolResultImagesForComparison applies the policy without publishing
+// assets. Content-addressed references still match stored offload rows, so
+// report-only parse-diff runs can compare normalized content without writes.
+func (db *DB) ProjectToolResultImagesForComparison(
+	messages []Message, policy config.ToolResultImages,
+) ([]Message, ToolImageStats) {
+	if db.ArchiveContent().OmitsToolContent() {
+		if messages == nil {
+			return []Message{}, ToolImageStats{}
+		}
+		return messages, ToolImageStats{}
+	}
+	return ProjectToolResultImagesWithoutWriting(messages, policy, db.AssetsDir())
+}
+
+// RetainedImage identifies exact bytes still available in the archive or asset store.
+type RetainedImage struct {
+	Index     int    `json:"image_index"`
+	MediaType string `json:"media_type"`
+	Size      *int64 `json:"size"`
+	SHA256    string `json:"sha256"`
+}
+
+// RetainedToolResultImages walks the same sections used by image retention.
+func RetainedToolResultImages(content string) []RetainedImage {
+	var images []RetainedImage
+	scanSummarySections(content, func(_, _ int, raw jsontext.Value) {
+		var blocks []jsontext.Value
+		if json.Unmarshal(raw, &blocks) != nil {
+			return
+		}
+		for _, raw := range blocks {
+			if image, ok := retainedImageBlock(raw, len(images), nil); ok {
+				images = append(images, image)
+			}
+		}
+	})
+	return images
+}
+
+// retainedImageBlock reads one tool-result block as retained image evidence. A
+// placeholder left by the drop policy has no image_ref, so it has no digest.
+func retainedImageBlock(raw jsontext.Value, index int, body io.Writer) (RetainedImage, bool) {
+	if p, ok := parseOffloadedImagePlaceholder(raw); ok {
+		digest, _, ok := assetImageDigest(p.ImageRef)
+		return RetainedImage{Index: index, MediaType: p.MediaType, Size: new(p.ByteSize), SHA256: digest}, ok && (p.Version == nil || *p.Version == 1)
+	}
+	var p offloadedImagePlaceholder
+	if json.Unmarshal(raw, &p, json.MatchCaseInsensitiveNames(true)) == nil && p.Type == "agentsview_image" && p.ImageRef == "" {
+		return RetainedImage{Index: index, MediaType: p.MediaType, Size: new(p.ByteSize)}, p.MediaType != "" && p.ByteSize >= 0 && (p.Version == nil || *p.Version == 1)
+	}
+	return retainedInlineFile(raw, index, body)
+}
+
+func retainedInlineFile(raw jsontext.Value, index int, body io.Writer) (RetainedImage, bool) {
+	var block struct {
+		Type     string         `json:"type"`
+		ImageURL jsontext.Value `json:"image_url"`
+		URI      jsontext.Value `json:"uri"`
+	}
+	if json.Unmarshal(raw, &block, json.MatchCaseInsensitiveNames(true)) != nil {
+		return RetainedImage{}, false
+	}
+	uri := block.ImageURL
+	if block.Type == "file" {
+		uri = block.URI
+	} else if block.Type != "input_image" {
+		return RetainedImage{}, false
+	}
+	hash := sha256.New()
+	out := body
+	if out == nil {
+		out = hash
+	}
+	mediaType, size, _, ok := streamInlineData(uri, out, block.Type == "input_image")
+	image := RetainedImage{Index: index, MediaType: mediaType, Size: new(size)}
+	if body == nil {
+		image.SHA256 = hex.EncodeToString(hash.Sum(nil))
+	}
+	return image, ok
+}
+
+// ErrImageTooLarge identifies an image whose retained size exceeds the limit.
+var ErrImageTooLarge = errors.New("image exceeds size limit")
+
+// ReadRetainedImage reads the indexed retained image with a bounded byte limit.
+func ReadRetainedImage(content string, index int, assetsDir string, limit int64) ([]byte, error) {
+	var found jsontext.Value
+	var buf bytes.Buffer
+	count := 0
+	scanSummarySections(content, func(_, _ int, raw jsontext.Value) {
+		if found != nil {
+			return
+		}
+		var blocks []jsontext.Value
+		if json.Unmarshal(raw, &blocks) != nil {
+			return
+		}
+		for _, block := range blocks {
+			if found != nil {
+				break
+			}
+			body := io.Discard
+			if count == index {
+				buf.Reset()
+				body = &limitedImageWriter{buf: &buf, limit: limit + 1}
+			}
+			_, recognized := retainedImageBlock(block, count, body)
+			if recognized {
+				if count == index {
+					found = block
+				}
+				count++
+			}
+		}
+	})
+	if found == nil {
+		return nil, fmt.Errorf("retained image %d missing", index)
+	}
+	body := buf.Bytes()
+	if p, ok := parseOffloadedImagePlaceholder(found); ok {
+		if p.ByteSize > limit {
+			return nil, fmt.Errorf("retained image %d exceeds %d bytes: %w", index, limit, ErrImageTooLarge)
+		}
+		hash, ext, ok := assetImageDigest(p.ImageRef)
+		if !ok {
+			return nil, errors.New("invalid image reference")
+		}
+		root, err := os.OpenRoot(assetsDir)
+		if err != nil {
+			return nil, err
+		}
+		defer root.Close()
+		file, err := root.Open(hash + ext)
+		if err != nil {
+			return nil, err
+		}
+		defer file.Close()
+		if body, err = io.ReadAll(io.LimitReader(file, limit+1)); err != nil {
+			return nil, err
+		}
+	} else if int64(len(body)) > limit {
+		return nil, fmt.Errorf("retained image %d exceeds %d bytes: %w", index, limit, ErrImageTooLarge)
+	}
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("retained image %d exceeds %d bytes", index, limit)
+	}
+	return body, nil
+}

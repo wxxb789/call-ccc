@@ -1,0 +1,1324 @@
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { mount, tick, unmount } from "svelte";
+import { router } from "../../stores/router.svelte.js";
+import { sessions } from "../../stores/sessions.svelte.js";
+import { usage } from "../../stores/usage.svelte.js";
+import { settings } from "../../stores/settings.svelte.js";
+import { sync } from "../../stores/sync.svelte.js";
+import { events } from "../../stores/events.svelte.js";
+import { yokedDates } from "../../stores/yokedDates.svelte.js";
+import { testMoney } from "../../test/money.js";
+import type { UsageSummaryResponse } from "../../api/generated/index";
+import { MetadataService, UsageService } from "../../api/generated/index";
+import UsagePage from "./UsagePage.svelte";
+
+async function flushEffects() {
+  await tick();
+  await Promise.resolve();
+  await tick();
+}
+
+let component: ReturnType<typeof mount> | undefined;
+
+function usageSummaryWithUnsupported(kind?: string): UsageSummaryResponse {
+  return {
+    from: "2024-06-01",
+    to: "2024-06-01",
+    projects: {},
+    totals: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      totalCost: testMoney(0),
+      cacheSavings: testMoney(0),
+    },
+    daily: [],
+    projectTotals: [],
+    modelTotals: [],
+    agentTotals: [],
+    sessionCounts: {
+      total: 0,
+      byProject: {},
+      byAgent: {},
+    },
+    cacheStats: {
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      uncachedInputTokens: 0,
+      outputTokens: 0,
+      hitRate: 0,
+      savingsVsUncached: testMoney(0),
+    },
+    ...(kind ? { unsupportedUsage: { kind } } : {}),
+  };
+}
+
+function tenModelUsageSummary(): UsageSummaryResponse {
+  const models = [
+    "model-alpha",
+    "model-bravo",
+    "model-charlie",
+    "model-delta",
+    "model-echo",
+    "model-foxtrot",
+    "model-golf",
+    "model-hotel",
+    "model-india",
+    "model-zulu",
+  ];
+  return {
+    ...usageSummaryWithUnsupported(),
+    totals: {
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      totalCost: testMoney(55),
+      cacheSavings: testMoney(0),
+    },
+    daily: [
+      {
+        date: "2026-07-01",
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        totalCost: testMoney(55),
+        modelsUsed: models,
+        modelBreakdowns: models.map((modelName, index) => ({
+          modelName,
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+          cost: testMoney(index + 1),
+        })),
+        projectBreakdowns: [],
+        agentBreakdowns: [],
+        machineBreakdowns: [],
+      },
+    ],
+    from: "2026-07-01",
+    to: "2026-07-01",
+    modelTotals: models.map((model, index) => ({
+      model,
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      cost: testMoney(index + 1),
+    })),
+    sessionCounts: { total: 10, byProject: {}, byAgent: {} },
+  };
+}
+
+afterEach(() => {
+  if (component) {
+    unmount(component);
+    component = undefined;
+  }
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+  document.body.innerHTML = "";
+  router.route = "sessions";
+  router.params = {};
+  router.sessionId = null;
+  window.history.replaceState(null, "", "/");
+  usage.backToProjects();
+  usage.selectedProjectKey = "";
+  usage.selectedModel = "";
+  usage.attributionSummary = null;
+  usage.summary = null;
+  usage.referenceSummary = null;
+  usage.lastUpdatedAt = null;
+  usage.hasNewData = false;
+  usage.topSessions = null;
+  usage.errors.summary = null;
+  usage.errors.topSessions = null;
+  usage.mode = "cost";
+  usage.setSelectedTokenTypes(["input", "cache_write", "cache_read", "output"]);
+  usage.isPinned = false;
+  usage.windowDays = 30;
+  usage.from = "";
+  usage.to = "";
+  usage.toggles.timeSeries.groupBy = "project";
+  usage.toggles.attribution.groupBy = "project";
+  usage.toggles.attribution.view = "treemap";
+  usage.excludedProjects = "";
+  usage.excludedProjectKeys = "";
+  usage.excludedModels = "";
+  usage.knownProjects = [];
+  usage.knownAgents = [];
+  usage.excludedAgents = "";
+  sessions.agents = [];
+  sessions.filters.agent = "";
+  sync.stats = null;
+  settings.chartPalette = "agentsview";
+  sessions.projects = [];
+  yokedDates.setEnabled(false);
+  localStorage.clear();
+});
+
+describe("UsagePage refresh behavior", () => {
+  function visibility() {
+    let hidden = false;
+    vi.spyOn(document, "hidden", "get").mockImplementation(() => hidden);
+    return async (value: boolean) => {
+      hidden = value;
+      document.dispatchEvent(new Event("visibilitychange"));
+      await flushEffects();
+    };
+  }
+
+  function usageReads() {
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    const side = {
+      totalCost: testMoney(0),
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      totalTokens: 0,
+      sessionCount: 0,
+    };
+    vi.spyOn(UsageService, "getApiV1UsagePairwiseComparison").mockResolvedValue({
+      left: side,
+      right: side,
+      deltas: {
+        totalCostDelta: testMoney(0),
+        totalCostDeltaRatio: null,
+        inputTokensDelta: 0,
+        inputTokensDeltaRatio: null,
+        outputTokensDelta: 0,
+        outputTokensDeltaRatio: null,
+        cacheCreationDelta: 0,
+        cacheCreationDeltaRatio: null,
+        cacheReadDelta: 0,
+        cacheReadDeltaRatio: null,
+        totalTokensDelta: 0,
+        totalTokensDeltaRatio: null,
+        sessionCountDelta: 0,
+        sessionCountDeltaRatio: null,
+        costPerSessionDelta: null,
+        costPerSessionRatio: null,
+        tokensPerSessionDelta: null,
+        tokensPerSessionRatio: null,
+      },
+    });
+    vi.spyOn(UsageService, "getApiV1UsageTopSessions").mockResolvedValue([]);
+    vi.spyOn(UsageService, "getApiV1UsageComparison").mockResolvedValue({
+      priorFrom: "2024-05-01",
+      priorTo: "2024-05-31",
+      priorTotalCost: testMoney(0),
+      deltaPct: 0,
+    });
+    router.route = "usage";
+    return vi.spyOn(UsageService, "getApiV1UsageSummary");
+  }
+
+  async function mountLiveUsage() {
+    vi.useFakeTimers();
+    visibility();
+    const subscription = vi.spyOn(events, "subscribe");
+    const requests = usageReads().mockResolvedValue(usageSummaryWithUnsupported());
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+    await vi.advanceTimersByTimeAsync(0);
+    return { requests, emit: subscription.mock.calls.at(-1)![0] };
+  }
+
+  it("keeps fixed event deadlines and queues polling during long reads", async () => {
+    const { requests, emit } = await mountLiveUsage();
+    const firstUpdatedAt = usage.lastUpdatedAt;
+    const firstQuerySteps = usage.lastQuerySteps;
+    const next = Promise.withResolvers<UsageSummaryResponse>();
+    requests.mockReturnValueOnce(next.promise);
+    for (let i = 0; i < 6; i++) {
+      emit({ scope: "sync" });
+      await flushEffects();
+      await vi.advanceTimersByTimeAsync(10_000);
+    }
+    expect(requests).toHaveBeenCalledTimes(2);
+    const signal = requests.mock.calls[1]![1]!.signal;
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(requests).toHaveBeenCalledTimes(2);
+    expect(signal?.aborted).toBe(false);
+    const following = Promise.withResolvers<UsageSummaryResponse>();
+    requests.mockReturnValueOnce(following.promise);
+    next.resolve(tenModelUsageSummary());
+    await vi.advanceTimersByTimeAsync(0);
+    await flushEffects();
+    expect(usage.summary?.totals.inputTokens).toBe(100);
+    expect(usage.lastUpdatedAt).toBeGreaterThan(firstUpdatedAt!);
+    expect(usage.lastQuerySteps).not.toEqual(firstQuerySteps);
+    expect(requests).toHaveBeenCalledTimes(3);
+    following.resolve(tenModelUsageSummary());
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(requests).toHaveBeenCalledTimes(3);
+  });
+
+  it("starts a refresh immediately when the button is clicked", async () => {
+    const { requests } = await mountLiveUsage();
+    await vi.advanceTimersByTimeAsync(30_000);
+    document.querySelector<HTMLButtonElement>('button[aria-label="Refresh usage data"]')!.click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(requests).toHaveBeenCalledTimes(2);
+  });
+
+  it("cancels queued live refreshes on teardown", async () => {
+    const { requests, emit } = await mountLiveUsage();
+    emit({ scope: "sync" });
+    await flushEffects();
+    await unmount(component!);
+    component = undefined;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(requests).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts hidden reads and resumes once on return", async () => {
+    const setHidden = visibility();
+    const interrupted = Promise.withResolvers<UsageSummaryResponse>();
+    const requests = usageReads()
+      .mockReturnValueOnce(interrupted.promise)
+      .mockResolvedValue(usageSummaryWithUnsupported());
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+    const signal = requests.mock.calls[0]?.[1]?.signal;
+    expect(signal?.aborted).toBe(false);
+    await setHidden(true);
+    expect(signal?.aborted).toBe(true);
+    expect(requests).toHaveBeenCalledTimes(1);
+    await setHidden(false);
+    await flushEffects();
+    expect(requests).toHaveBeenCalledTimes(2);
+    expect(requests.mock.calls[1]?.[0]).toEqual(requests.mock.calls[0]?.[0]);
+    interrupted.resolve(usageSummaryWithUnsupported());
+    await flushEffects();
+  });
+
+  it("refreshes when returning to a visible tab", async () => {
+    vi.useFakeTimers();
+    const setHidden = visibility();
+    const subscription = vi.spyOn(events, "subscribe");
+    const requests = usageReads().mockResolvedValue(usageSummaryWithUnsupported());
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+    await flushEffects();
+    expect(usage.isQuerying).toBe(false);
+    await vi.advanceTimersByTimeAsync(120_000);
+    await setHidden(true);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await setHidden(false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(requests).toHaveBeenCalledTimes(2);
+    const emit = subscription.mock.calls.at(-1)![0];
+    emit({ scope: "sync" });
+    await flushEffects();
+    await setHidden(true);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(requests).toHaveBeenCalledTimes(2);
+    await setHidden(false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(requests).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(["visible", "hidden", "returning"])("hydrates machines while %s", async (state) => {
+    const setHidden = visibility();
+    if (state !== "visible") await setHidden(true);
+    const requests = vi
+      .spyOn(UsageService, "getApiV1UsageSummary")
+      .mockResolvedValue(usageSummaryWithUnsupported());
+    vi.spyOn(UsageService, "getApiV1UsageTopSessions").mockResolvedValue([]);
+    vi.spyOn(UsageService, "getApiV1UsageComparison").mockResolvedValue({
+      priorFrom: "2026-02-01",
+      priorTo: "2026-02-28",
+      priorTotalCost: testMoney(0),
+      deltaPct: 0,
+    });
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    const metadata =
+      Promise.withResolvers<Awaited<ReturnType<typeof MetadataService.getApiV1Machines>>>();
+    vi.spyOn(MetadataService, "getApiV1Machines").mockReturnValue(metadata.promise);
+    router.route = "usage";
+    router.params = { machine: "Workstation", from: "2026-03-01", to: "2026-03-31" };
+    const savedFilters = sessions.filters;
+    sessions.initFromParams(router.params);
+
+    try {
+      component = mount(UsagePage, { target: document.body });
+      await flushEffects();
+
+      if (state === "returning") await setHidden(false);
+      if (state !== "hidden") {
+        document
+          .querySelector<HTMLButtonElement>('button[aria-label="Refresh usage data"]')!
+          .click();
+        await flushEffects();
+      }
+      expect(requests).toHaveBeenCalledTimes(0);
+      metadata.resolve({
+        machines: ["id-a"],
+        resolved_machines: ["id-a"],
+        machine_labels: { "id-a": "Workstation" },
+        machine_aliases: {},
+      });
+      await sessions.loadMachines();
+      await flushEffects();
+      if (state === "hidden") {
+        expect(requests).toHaveBeenCalledTimes(0);
+        await setHidden(false);
+      }
+      await vi.waitFor(() => expect(usage.isQuerying).toBe(false));
+
+      expect(requests.mock.calls.map(([params]) => params?.machine)).toEqual(["id-a"]);
+    } finally {
+      if (component) await unmount(component);
+      component = undefined;
+      usage.cancelInFlightReads();
+      sessions.filters = savedFilters;
+    }
+  });
+
+  it("keeps session-list label and pull request filters when the URL sets a shared filter", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    const saved = sessions.filters;
+    sessions.filters = { ...saved, labels: ["ticket=example"], pr: "acme/widgets" };
+    router.route = "usage";
+    router.params = { project: "proj-a" };
+    usage.summary = usageSummaryWithUnsupported();
+    try {
+      component = mount(UsagePage, { target: document.body });
+      await flushEffects();
+
+      expect(sessions.filters.project).toBe("proj-a");
+      expect(sessions.filters.labels).toEqual(["ticket=example"]);
+      expect(sessions.filters.pr).toBe("acme/widgets");
+    } finally {
+      sessions.filters = saved;
+    }
+  });
+
+  it("ignores a legacy model URL and shows all models", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    const summary = tenModelUsageSummary();
+    const requests = vi.spyOn(UsageService, "getApiV1UsageSummary").mockResolvedValue(summary);
+    vi.spyOn(UsageService, "getApiV1UsageTopSessions").mockResolvedValue([]);
+    vi.spyOn(UsageService, "getApiV1UsageComparison").mockResolvedValue({
+      priorFrom: "2026-06-01",
+      priorTo: "2026-06-30",
+      priorTotalCost: testMoney(0),
+      deltaPct: 0,
+    });
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    router.route = "usage";
+    router.params = { model: "model-alpha", exclude_agent: "hidden-agent" };
+    usage.toggles.attribution.groupBy = "model";
+    component = mount(UsagePage, { target: document.body });
+    await vi.waitFor(() => expect(requests).toHaveBeenCalled());
+    await flushEffects();
+    for (const [params] of requests.mock.calls) expect(params?.model).toBeUndefined();
+    expect(usage.selectedModel).toBe("");
+    expect(document.querySelector('button[aria-label="Model: All"]')).not.toBeNull();
+    usage.cancelInFlightReads();
+  });
+
+  it("keeps a saved variant's group available after re-including an empty period", async () => {
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    router.route = "usage";
+    router.params = { exclude_model: "claude-opus-4-20250514" };
+    usage.summary = {
+      ...usageSummaryWithUnsupported(),
+      model_aliases: { "claude-opus-4-20250514": "claude-4" },
+    };
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+    const trigger = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Model: 1 hidden"]',
+    );
+    expect(trigger).not.toBeNull();
+    trigger!.click();
+    await flushEffects();
+    const groupRow = () =>
+      [...document.querySelectorAll<HTMLButtonElement>(".kit-filter-dropdown__item")].find(
+        (row) =>
+          row.querySelector(".kit-filter-dropdown__label")?.textContent?.trim() === "claude-4",
+      );
+    expect(groupRow()).toBeDefined();
+    expect(document.querySelectorAll(".kit-filter-dropdown__item")).toHaveLength(1);
+    expect(groupRow()!.querySelector(".kit-filter-dropdown__check.on")).not.toBeNull();
+    expect(groupRow()!.getAttribute("title")).toBe("claude-opus-4-20250514");
+    [...document.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent?.trim() === "Select all")!
+      .click();
+    await flushEffects();
+    expect(usage.excludedModels).toBe("");
+    expect(groupRow()).toBeDefined();
+    expect(groupRow()!.querySelector(".kit-filter-dropdown__check.on")).not.toBeNull();
+    usage.cancelInFlightReads();
+  });
+
+  it("restores hidden models from a shared URL", async () => {
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    router.route = "usage";
+    router.params = { exclude_model: "model-alpha" };
+    usage.summary = usageSummaryWithUnsupported();
+
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+
+    expect(usage.excludedModels).toBe("model-alpha");
+    expect(router.params.exclude_model).toBe("model-alpha");
+    expect(usage.hasActiveFilters).toBe(true);
+  });
+
+  it("refreshes once when Clear all clears shared filters, usage filters and the brush", async () => {
+    const fetchAll = vi.spyOn(usage, "fetchAll").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    router.route = "usage";
+    router.params = { exclude_model: "model-alpha", exclude_agent: "hidden-agent", machine: "box" };
+    usage.summary = usageSummaryWithUnsupported();
+
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+    usage.setTimeRange("2024-06-01", "2024-06-02");
+    fetchAll.mockClear();
+    document.querySelector<HTMLButtonElement>(".clear-all")!.click();
+    await flushEffects();
+
+    expect(usage.hasActiveFilters).toBe(false);
+    expect(usage.selectedTimeRange).toBeNull();
+    expect(fetchAll).toHaveBeenCalledTimes(1);
+    expect(fetchAll).toHaveBeenCalledWith({ preserveTimeRange: true });
+  });
+
+  it("uses stable project keys in the Project filter", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    router.route = "usage";
+    router.params = {};
+    const summary = usageSummaryWithUnsupported();
+    summary.projectTotals = [
+      {
+        project_key: "project-key-1",
+        project: "shared-label",
+        inputTokens: 80,
+        outputTokens: 40,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        cost: testMoney(8),
+      },
+      {
+        project_key: "project-key-2",
+        project: "shared-label",
+        inputTokens: 20,
+        outputTokens: 10,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        cost: testMoney(2),
+      },
+    ];
+    usage.summary = summary;
+
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+
+    const projectFilter = document.querySelector<HTMLButtonElement>(
+      '.kit-filter-dropdown__btn[aria-label="Project: All"]',
+    );
+    expect(projectFilter).not.toBeNull();
+
+    projectFilter!.click();
+    await tick();
+    const projectOptions = document.querySelectorAll<HTMLButtonElement>(
+      ".kit-filter-dropdown__item",
+    );
+    expect(projectOptions).toHaveLength(2);
+    expect(projectOptions[0]?.textContent).toContain("shared-label");
+    expect(projectOptions[1]?.textContent).toContain("shared-label");
+
+    projectOptions[1]!.click();
+    expect(usage.excludedProjectKeys).toBe("project-key-2");
+    expect(usage.excludedProjects).toBe("");
+
+    usage.summary = {
+      ...summary,
+      projectTotals: [summary.projectTotals[0]!],
+    };
+    await unmount(component);
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+
+    const remountedProjectFilter = document.querySelector<HTMLButtonElement>(
+      ".usage-toolbar .kit-filter-dropdown__btn",
+    );
+    expect(remountedProjectFilter).not.toBeNull();
+    remountedProjectFilter!.click();
+    await tick();
+    expect(document.querySelectorAll(".kit-filter-dropdown__item")).toHaveLength(2);
+    const remountedOptions = document.querySelectorAll<HTMLButtonElement>(
+      ".kit-filter-dropdown__item",
+    );
+    remountedOptions[1]!.click();
+    expect(usage.excludedProjectKeys).toBe("");
+
+    usage.excludedProjectKeys = "unlisted-project-key";
+
+    const deselectAll = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(".kit-filter-dropdown__bulk-btn"),
+    ).find((button) => button.textContent?.trim() === "Deselect all");
+    expect(deselectAll).not.toBeUndefined();
+
+    deselectAll!.click();
+    expect(usage.excludedProjectKeys).toBe("unlisted-project-key,project-key-1,project-key-2");
+
+    const selectAll = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(".kit-filter-dropdown__bulk-btn"),
+    ).find((button) => button.textContent?.trim() === "Select all");
+    expect(selectAll).not.toBeUndefined();
+
+    selectAll!.click();
+    expect(usage.excludedProjectKeys).toBe("");
+  });
+
+  it("shows legacy project-name exclusions until they are cleared", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    router.route = "usage";
+    router.params = {};
+    usage.excludedProjects = "legacy-project";
+    usage.summary = usageSummaryWithUnsupported();
+
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+
+    const projectFilter = document.querySelector<HTMLButtonElement>(
+      '.kit-filter-dropdown__btn[aria-label="Project: 1 hidden"]',
+    );
+    expect(projectFilter).not.toBeNull();
+
+    projectFilter!.click();
+    await tick();
+    const selectAll = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(".kit-filter-dropdown__bulk-btn"),
+    ).find((button) => button.textContent?.trim() === "Select all");
+    expect(selectAll).not.toBeUndefined();
+
+    selectAll!.click();
+    expect(usage.excludedProjects).toBe("");
+  });
+
+  it("hydrates token mode from the canonical URL before fetching", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    const fetchAll = vi.spyOn(usage, "fetchAll").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    router.route = "usage";
+    router.params = { view: "tokens", project: "demo" };
+
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+
+    expect(usage.mode).toBe("token");
+    expect(
+      document
+        .querySelector(
+          '[role="radiogroup"][aria-label="Usage metric"] ' + '[role="radio"][aria-checked="true"]',
+        )
+        ?.textContent?.trim(),
+    ).toBe("Tokens");
+    expect(fetchAll).toHaveBeenCalled();
+  });
+
+  it("hydrates and renders an Output-only token selection", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    router.route = "usage";
+    router.params = {
+      view: "tokens",
+      token_types: "output",
+      project: "demo",
+    };
+
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+
+    expect(usage.selectedTokenTypes).toEqual(["output"]);
+    expect(document.querySelector('button[aria-label="Token types: Output"]')).not.toBeNull();
+    expect(router.params).toEqual(
+      expect.objectContaining({
+        view: "tokens",
+        token_types: "output",
+        project: "demo",
+      }),
+    );
+  });
+
+  it("switches metrics without dropping filters", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    const fetchTopSessions = vi.spyOn(usage, "fetchTopSessions").mockResolvedValue("ok");
+    const replaceParams = vi.spyOn(router, "replaceParams");
+    window.history.replaceState(null, "", "/usage?view=tokens&project=demo&window_days=90");
+    router.route = "usage";
+    router.params = {
+      view: "tokens",
+      project: "demo",
+      window_days: "90",
+    };
+    usage.mode = "token";
+
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+    const costOption = document.querySelector<HTMLButtonElement>(
+      '[role="radiogroup"][aria-label="Usage metric"] ' + '[role="radio"]:first-child',
+    );
+    expect(costOption).not.toBeNull();
+
+    costOption!.click();
+    await flushEffects();
+
+    expect(usage.mode).toBe("cost");
+    expect(replaceParams).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        project: "demo",
+        window_days: "90",
+      }),
+    );
+    expect(replaceParams.mock.lastCall?.[0]).not.toHaveProperty("view");
+    expect(fetchTopSessions).toHaveBeenCalledOnce();
+  });
+
+  it("normalizes the legacy token route while retaining filters", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    const replace = vi.spyOn(router, "replace");
+    window.history.replaceState(null, "", "/token-usage?project=demo&window_days=90");
+    router.route = "token-usage";
+    router.params = {
+      project: "demo",
+      window_days: "90",
+    };
+
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+
+    expect(replace).toHaveBeenCalledWith("usage", {
+      project: "demo",
+      window_days: "90",
+      view: "tokens",
+    });
+    expect(router.route).toBe("usage");
+    expect(usage.mode).toBe("token");
+  });
+
+  it("removes an unsupported metric value from the canonical URL", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    const replaceParams = vi.spyOn(router, "replaceParams");
+    router.route = "usage";
+    router.params = { view: "unknown", project: "demo" };
+
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+
+    expect(usage.mode).toBe("cost");
+    expect(replaceParams).toHaveBeenCalled();
+    expect(replaceParams.mock.lastCall?.[0]).not.toHaveProperty("view");
+  });
+
+  it("materializes rolling bounds before fetching a returned bare page", async () => {
+    const fetchStates: Array<{
+      isPinned: boolean;
+      from: string;
+      to: string;
+    }> = [];
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-10T12:00:00"));
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(usage, "fetchAll").mockImplementation(() => {
+      fetchStates.push({
+        isPinned: usage.isPinned,
+        from: usage.from,
+        to: usage.to,
+      });
+      return Promise.resolve();
+    });
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    router.route = "usage";
+    router.params = {};
+    usage.isPinned = true;
+    usage.windowDays = 30;
+    usage.from = "2026-01-01";
+    usage.to = "2026-01-07";
+    yokedDates.setEnabled(false);
+
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+
+    expect(usage.isPinned).toBe(false);
+    expect(usage.from).toBe("2026-06-11");
+    expect(usage.to).toBe("2026-07-10");
+    expect(fetchStates[0]).toEqual({
+      isPinned: false,
+      from: "2026-06-11",
+      to: "2026-07-10",
+    });
+  });
+
+  it("refreshes an unpinned rolling range after midnight", async () => {
+    const fetchDates: Array<{ from: string; to: string }> = [];
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-10T12:00:00"));
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(usage, "fetchAll").mockImplementation(() => {
+      fetchDates.push({ from: usage.from, to: usage.to });
+      return Promise.resolve();
+    });
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    router.route = "usage";
+    router.params = {};
+    usage.isPinned = false;
+    usage.windowDays = 30;
+    usage.from = "2026-06-10";
+    usage.to = "2026-07-09";
+    yokedDates.setEnabled(false);
+
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+
+    expect(usage.isPinned).toBe(false);
+    expect(usage.from).toBe("2026-06-11");
+    expect(usage.to).toBe("2026-07-10");
+    expect(fetchDates[0]).toEqual({
+      from: "2026-06-11",
+      to: "2026-07-10",
+    });
+  });
+
+  it("renders the unsupported Copilot note from the summary contract", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+
+    router.route = "usage";
+    router.params = {};
+    usage.summary = usageSummaryWithUnsupported("copilot-no-token-data");
+
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+
+    expect(document.body.textContent).toContain("Copilot sessions matched this range");
+  });
+
+  it("shares full-universe model colors across Usage panels and palette changes", async () => {
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    router.route = "usage";
+    router.params = {};
+    usage.summary = tenModelUsageSummary();
+    usage.toggles.timeSeries.groupBy = "model";
+    usage.toggles.attribution.groupBy = "model";
+    usage.toggles.attribution.view = "list";
+    settings.chartPalette = "agentsview";
+
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+
+    const firstMark = () =>
+      document.querySelector<SVGElement>(".chart-svg .cost-seg, .chart-svg .lc-area-path");
+    const firstDot = () => document.querySelector<HTMLElement>(".list-dot");
+    expect(firstMark()?.getAttribute("fill")).toBe("var(--accent-blue)");
+    expect(firstDot()?.style.background).toBe("var(--accent-blue)");
+
+    settings.chartPalette = "matplotlib";
+    await tick();
+
+    expect(firstMark()?.getAttribute("fill")).toBe("#3977a7");
+    expect(firstDot()?.style.background).toBe("rgb(57, 119, 167)");
+  });
+
+  it("loads agent metadata on mount for the Agent dropdown", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+    const loadAgents = vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+
+    router.route = "usage";
+    router.params = {};
+
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+
+    expect(loadAgents).toHaveBeenCalled();
+  });
+
+  it("keeps billing-only agents available after filtering and deselects them", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+    vi.spyOn(usage, "fetchAllWithResult").mockResolvedValue("ok");
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    router.route = "usage";
+    sessions.agents = [{ name: "grok", session_count: 1 }];
+    sessions.filters.agent = "";
+    const summary = usageSummaryWithUnsupported();
+    summary.agentTotals = [
+      {
+        agent: "grok-bot",
+        inputTokens: 12,
+        outputTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        cost: testMoney(0),
+      },
+    ];
+    usage.summary = summary;
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+    document.querySelector<HTMLButtonElement>('[aria-label="Agent: All"]')!.click();
+    await flushEffects();
+    const billingOption = [
+      ...document.querySelectorAll<HTMLButtonElement>(".kit-filter-dropdown__item"),
+    ].find((button) => button.textContent?.includes("grok-bot"));
+    expect(billingOption).toBeDefined();
+    usage.summary = { ...summary, agentTotals: [] };
+    await flushEffects();
+    const retainedOption = [
+      ...document.querySelectorAll<HTMLButtonElement>(".kit-filter-dropdown__item"),
+    ].find((button) => button.textContent?.includes("grok-bot"));
+    expect(retainedOption).toBeDefined();
+    retainedOption!.click();
+    expect(usage.excludedAgents).toBe("grok-bot");
+    await unmount(component);
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+    document.querySelector<HTMLButtonElement>('.usage-toolbar [aria-label^="Agent:"]')!.click();
+    await flushEffects();
+    expect(
+      [...document.querySelectorAll(".kit-filter-dropdown__item")].some((button) =>
+        button.textContent?.includes("grok-bot"),
+      ),
+    ).toBe(true);
+    [...document.querySelectorAll<HTMLButtonElement>(".kit-filter-dropdown__bulk-btn")]
+      .find((button) => button.textContent?.trim() === "Deselect all")!
+      .click();
+    expect(usage.excludedAgents.split(",").sort()).toEqual(["grok", "grok-bot"]);
+  });
+
+  it.each(["2026-01-01T00:00:00Z", null])(
+    "includes billing history older than sessions (%s) in All",
+    async (earliestSession) => {
+      vi.stubGlobal(
+        "ResizeObserver",
+        class {
+          observe() {}
+          unobserve() {}
+          disconnect() {}
+        },
+      );
+      vi.spyOn(usage, "fetchAll").mockResolvedValue();
+      vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+      router.route = "usage";
+      sync.stats = {
+        session_count: 0,
+        message_count: 0,
+        project_count: 0,
+        machine_count: 0,
+        earliest_session: earliestSession,
+        earliest_account_usage: "2020-06-01T12:00:00Z",
+      };
+      component = mount(UsagePage, { target: document.body });
+      await flushEffects();
+      document
+        .querySelector<HTMLButtonElement>(".usage-toolbar .kit-date-range-picker__trigger")!
+        .click();
+      await flushEffects();
+      [...document.querySelectorAll<HTMLButtonElement>("button")]
+        .find((button) => button.textContent?.trim() === "All")!
+        .click();
+      await flushEffects();
+      expect(usage.from).toBe("2020-06-01");
+    },
+  );
+
+  it("ignores response-scoped project keys restored from a URL", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+
+    router.route = "usage";
+    router.params = {
+      exclude_model: "fixture-model",
+      exclude_project_key: "pl1:sha256:stale",
+    };
+    usage.excludedProjectKeys = "";
+    usage.excludedModels = "";
+
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+
+    expect(usage.excludedProjectKeys).toBe("");
+    expect(usage.excludedModels).toBe("fixture-model");
+  });
+
+  it("seeds bare Usage from an enabled fixed range", async () => {
+    const fetchStates: Array<{
+      isPinned: boolean;
+      from: string;
+      to: string;
+    }> = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(usage, "fetchAll").mockImplementation(() => {
+      fetchStates.push({
+        isPinned: usage.isPinned,
+        from: usage.from,
+        to: usage.to,
+      });
+      return Promise.resolve();
+    });
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    router.route = "usage";
+    router.params = {};
+    usage.isPinned = false;
+    usage.windowDays = 30;
+    usage.from = "2026-05-22";
+    usage.to = "2026-06-20";
+    yokedDates.setEnabled(true);
+    yokedDates.updateFromPanel({
+      from: "2026-06-01",
+      to: "2026-06-07",
+      mode: "fixed",
+    });
+
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+
+    expect(usage.isPinned).toBe(true);
+    expect(usage.from).toBe("2026-06-01");
+    expect(usage.to).toBe("2026-06-07");
+    expect(fetchStates[0]).toEqual({
+      isPinned: true,
+      from: "2026-06-01",
+      to: "2026-06-07",
+    });
+  });
+
+  it("keeps the note hidden without an unsupported usage signal", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+
+    router.route = "usage";
+    router.params = {};
+    usage.summary = usageSummaryWithUnsupported();
+
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+
+    expect(document.body.textContent).not.toContain("Copilot sessions matched this range");
+  });
+
+  it("renders a generic unsupported usage note for unknown kinds", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+
+    router.route = "usage";
+    router.params = {};
+    usage.summary = usageSummaryWithUnsupported("future-no-token-data");
+
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+
+    expect(document.body.textContent).toContain("Matching sessions do not expose token usage data");
+    expect(document.body.textContent).not.toContain("Copilot sessions matched this range");
+  });
+});
+
+describe("Usage attribution navigation", () => {
+  it("refreshes once after an agent click under a brush and project selection", async () => {
+    const refresh = vi.spyOn(usage, "fetchAll").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    router.route = "usage";
+    router.params = {};
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+    usage.selectedTimeRange = { from: "2024-01-08", to: "2024-01-14" };
+    usage.selectedProjectKey = "pl1:sha256:alpha";
+    refresh.mockClear();
+    usage.toggleSelection("agent", "codex");
+    await flushEffects();
+    expect(refresh).toHaveBeenCalledExactlyOnceWith({ preserveTimeRange: true });
+    sessions.filters.agent = "";
+    usage.selectedTimeRange = null;
+  });
+
+  it("keeps chart colors and the legend while clearing a model selection and after the clear refresh fails", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    const full = tenModelUsageSummary();
+    let clearFails = false;
+    vi.spyOn(UsageService, "getApiV1UsageSummary").mockImplementation(async (params) => {
+      if (clearFails && !params?.model) throw new Error("clear refresh failed");
+      const response = structuredClone(full);
+      if (params?.model) {
+        response.modelTotals = response.modelTotals.filter((entry) => entry.model === params.model);
+        for (const day of response.daily) {
+          day.modelBreakdowns = day.modelBreakdowns?.filter(
+            (entry) => entry.modelName === params.model,
+          );
+        }
+      }
+      return response;
+    });
+    vi.spyOn(UsageService, "getApiV1UsageTopSessions").mockResolvedValue([]);
+    vi.spyOn(UsageService, "getApiV1UsageComparison").mockResolvedValue({
+      priorFrom: "2026-06-01",
+      priorTo: "2026-06-30",
+      priorTotalCost: testMoney(0),
+      deltaPct: 0,
+    });
+    vi.spyOn(UsageService, "getApiV1UsagePairwiseComparison").mockRejectedValue(
+      new Error("pairwise not under test"),
+    );
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    router.route = "usage";
+    router.params = {};
+    usage.toggles.timeSeries.groupBy = "model";
+    usage.toggles.attribution.groupBy = "model";
+    usage.toggles.attribution.view = "list";
+    component = mount(UsagePage, { target: document.body });
+    await vi.waitFor(() => expect(usage.summary?.modelTotals).toHaveLength(10));
+    await vi.waitFor(() => expect(usage.isQuerying).toBe(false));
+    await flushEffects();
+    const colors = () => ({
+      legend: [...document.querySelectorAll<HTMLElement>(".legend-item")].map((item) => [
+        item.textContent?.trim(),
+        item.querySelector<HTMLElement>(".legend-dot")!.style.background,
+      ]),
+      rows: [...document.querySelectorAll<HTMLElement>(".list-row")].map((row) => [
+        row.querySelector(".list-label")!.textContent,
+        row.querySelector<HTMLElement>(".list-dot")!.style.background,
+      ]),
+    });
+    const initial = colors();
+    expect(initial.legend).toHaveLength(10);
+    expect(initial.rows).toHaveLength(10);
+
+    [...document.querySelectorAll<HTMLElement>(".list-row")]
+      .find((row) => row.querySelector(".list-label")!.textContent === "model-zulu")!
+      .dispatchEvent(new MouseEvent("click", { detail: 1, bubbles: true }));
+    await vi.waitFor(() => expect(usage.summary?.modelTotals).toHaveLength(1));
+    await vi.waitFor(() => expect(usage.isQuerying).toBe(false));
+    await flushEffects();
+    expect(colors()).toEqual(initial);
+
+    clearFails = true;
+    [...document.querySelectorAll<HTMLButtonElement>(".attribution-panel button")]
+      .find((button) => button.textContent?.trim() === "Clear selection")!
+      .click();
+    await flushEffects();
+    expect(usage.selectedModel).toBe("");
+    expect(colors()).toEqual(initial);
+    await vi.waitFor(() => expect(usage.errors.summary).toBe("clear refresh failed"));
+    await vi.waitFor(() => expect(usage.isQuerying).toBe(false));
+    await flushEffects();
+    expect(colors()).toEqual(initial);
+    usage.cancelInFlightReads();
+  });
+
+  it.each(["button", "Escape"])("%s Back keeps the current dates and selection", async (action) => {
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    window.history.replaceState(null, "", "/usage?from=2024-01-01&to=2024-01-31");
+    router.route = "usage";
+    router.params = { from: "2024-01-01", to: "2024-01-31" };
+    usage.summary = usageSummaryWithUnsupported();
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+    usage.toggleSelection("project", "pl1:sha256:alpha");
+    usage.setOpenProject("pl1:sha256:alpha");
+    await flushEffects();
+    usage.applyDateRange("2024-01-01", "2024-03-31");
+    usage.excludedModels = "model-hidden";
+    await flushEffects();
+    expect(window.location.search).toContain("to=2024-03-31");
+    if (action === "button") {
+      [...document.querySelectorAll<HTMLButtonElement>(".attribution-panel button")]
+        .find((button) => button.textContent?.trim() === "← All projects")!
+        .click();
+    } else {
+      const panel = document.querySelector<HTMLElement>(".attribution-panel")!;
+      panel.focus();
+      panel.dispatchEvent(
+        new KeyboardEvent("keydown", { key: action, bubbles: true, cancelable: true }),
+      );
+    }
+    await flushEffects();
+    expect(usage.zoomedProject).toBeNull();
+    expect(usage.isSelected("project", "pl1:sha256:alpha")).toBe(true);
+    expect(router.params).toEqual(
+      expect.objectContaining({
+        from: "2024-01-01",
+        to: "2024-03-31",
+        exclude_model: "model-hidden",
+      }),
+    );
+    expect(usage.to).toBe("2024-03-31");
+    expect(window.location.search).toContain("to=2024-03-31");
+  });
+});

@@ -1,0 +1,273 @@
+{
+  "tool": "call-ccc-parity-oracle/1",
+  "case": "claude",
+  "fixture": {
+    "relative_to_root": "-home-user-code-example-api/9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10.jsonl",
+    "bytes": 2051,
+    "sha256": "2bd510821d4abf83235752eff81e0e9824d0c41b3d2d4b84956d1130992467b6"
+  },
+  "parse": {
+    "session_id": "9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10",
+    "provider": "claude",
+    "agent": "Claude Code",
+    "raw_session_id": "9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10",
+    "source_file": "-home-user-code-example-api/9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10.jsonl",
+    "project": "example_api",
+    "cwd": "/home/user/code/example-api",
+    "source_version": "1.0.30",
+    "read_from": "source",
+    "malformed_lines": 1,
+    "truncated": false,
+    "counts": {
+      "messages": 8,
+      "user_messages": 3,
+      "assistant_messages": 5,
+      "system_messages": 0,
+      "system_records": 1,
+      "sidechain_messages": 0,
+      "compact_boundaries": 1,
+      "tool_calls": 1,
+      "tool_results": 1
+    },
+    "messages": [
+      {
+        "ordinal": 0,
+        "role": "user",
+        "timestamp": "2026-05-04T09:15:00Z",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "27b0ddf035f8462235c4f146e4af8827373bd0562d0762f2decd31224ef0b8f5",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "27b0ddf035f8462235c4f146e4af8827373bd0562d0762f2decd31224ef0b8f5"
+      },
+      {
+        "ordinal": 1,
+        "role": "assistant",
+        "timestamp": "2026-05-04T09:15:04Z",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "0fd8879b7f6c84a9ef86ea329b0c6f1e8af3d05c7f15ad94cde250354385ae1b",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "0fd8879b7f6c84a9ef86ea329b0c6f1e8af3d05c7f15ad94cde250354385ae1b"
+      },
+      {
+        "ordinal": 2,
+        "role": "assistant",
+        "timestamp": "2026-05-04T09:15:06Z",
+        "model": "claude-sonnet-4-5",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "027dbea2501513bec637cb073fe15f46b55c1f22f6a7a78f79d30e6b25e3f74a",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "tool_calls": [
+          {
+            "name": "Read",
+            "category": "Read",
+            "tool_use_id": "toolu_01Example0000000000000000",
+            "input_sha256": "6dac855d054638d5dcc4bbdef2c6435158a0298a4ac9f874c27c442de0665fcc",
+            "result_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        ]
+      },
+      {
+        "ordinal": 3,
+        "role": "user",
+        "timestamp": "2026-05-04T09:15:06.5Z",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "tool_results": [
+          {
+            "tool_use_id": "toolu_01Example0000000000000000",
+            "source": "tool_result",
+            "content_sha256": "6ea2dfc7208b960dbedb0822ab0dfaac058baf8a18fb1317a8a29cdefbd3e43a",
+            "content_size": 37
+          }
+        ]
+      },
+      {
+        "ordinal": 4,
+        "role": "assistant",
+        "timestamp": "2026-05-04T09:15:09Z",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "7d4877e250281d2ed29888211edda3bea7fdf1e3318708ed0815cc1e137a5a3f",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "7d4877e250281d2ed29888211edda3bea7fdf1e3318708ed0815cc1e137a5a3f"
+      },
+      {
+        "ordinal": 5,
+        "role": "assistant",
+        "timestamp": "2026-05-04T09:16:00Z",
+        "is_system": true,
+        "is_sidechain": false,
+        "is_compact_boundary": true,
+        "content_sha256": "c3b698ca1ce47e3dbc781840c058437be9ea64443151fb43e7ffd38624e169ba",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "ordinal": 6,
+        "role": "user",
+        "timestamp": "2026-05-04T09:16:30Z",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "03bb4f6f98cc0f7e5f40acd87854acf2bf3b53284e49dff683af18c9194ce97b",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "03bb4f6f98cc0f7e5f40acd87854acf2bf3b53284e49dff683af18c9194ce97b"
+      },
+      {
+        "ordinal": 7,
+        "role": "assistant",
+        "timestamp": "2026-05-04T09:16:36Z",
+        "model": "claude-sonnet-4-5",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "96e074803645846dbd8fa809f85782532b1621fe2bb82ab62300945783bce29e",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "96e074803645846dbd8fa809f85782532b1621fe2bb82ab62300945783bce29e"
+      }
+    ]
+  },
+  "archive": {
+    "session_id": "9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10",
+    "provider": "claude",
+    "agent": "",
+    "raw_session_id": "9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10",
+    "source_file": "-home-user-code-example-api/9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10.jsonl",
+    "project": "example_api",
+    "cwd": "/home/user/code/example-api",
+    "source_version": "1.0.30",
+    "read_from": "archive",
+    "projection": "full",
+    "malformed_lines": 1,
+    "truncated": false,
+    "counts": {
+      "messages": 7,
+      "user_messages": 2,
+      "assistant_messages": 5,
+      "system_messages": 0,
+      "system_records": 1,
+      "sidechain_messages": 0,
+      "compact_boundaries": 1,
+      "tool_calls": 1,
+      "tool_results": 1
+    },
+    "messages": [
+      {
+        "ordinal": 0,
+        "role": "user",
+        "timestamp": "2026-05-04T09:15:00Z",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "27b0ddf035f8462235c4f146e4af8827373bd0562d0762f2decd31224ef0b8f5",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "27b0ddf035f8462235c4f146e4af8827373bd0562d0762f2decd31224ef0b8f5"
+      },
+      {
+        "ordinal": 1,
+        "role": "assistant",
+        "timestamp": "2026-05-04T09:15:04Z",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "0fd8879b7f6c84a9ef86ea329b0c6f1e8af3d05c7f15ad94cde250354385ae1b",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "0fd8879b7f6c84a9ef86ea329b0c6f1e8af3d05c7f15ad94cde250354385ae1b"
+      },
+      {
+        "ordinal": 2,
+        "role": "assistant",
+        "timestamp": "2026-05-04T09:15:06Z",
+        "model": "claude-sonnet-4-5",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "027dbea2501513bec637cb073fe15f46b55c1f22f6a7a78f79d30e6b25e3f74a",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "tool_calls": [
+          {
+            "name": "Read",
+            "category": "Read",
+            "tool_use_id": "toolu_01Example0000000000000000",
+            "input_sha256": "6dac855d054638d5dcc4bbdef2c6435158a0298a4ac9f874c27c442de0665fcc",
+            "result_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "result_size": 37,
+            "file_path": "/home/user/code/example-api/internal/retry/policy.go"
+          }
+        ],
+        "tool_results": [
+          {
+            "tool_use_id": "toolu_01Example0000000000000000",
+            "source": "tool_result",
+            "content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "content_size": 37
+          }
+        ]
+      },
+      {
+        "ordinal": 4,
+        "role": "assistant",
+        "timestamp": "2026-05-04T09:15:09Z",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "7d4877e250281d2ed29888211edda3bea7fdf1e3318708ed0815cc1e137a5a3f",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "7d4877e250281d2ed29888211edda3bea7fdf1e3318708ed0815cc1e137a5a3f"
+      },
+      {
+        "ordinal": 5,
+        "role": "assistant",
+        "timestamp": "2026-05-04T09:16:00Z",
+        "is_system": true,
+        "is_sidechain": false,
+        "is_compact_boundary": true,
+        "content_sha256": "c3b698ca1ce47e3dbc781840c058437be9ea64443151fb43e7ffd38624e169ba",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "ordinal": 6,
+        "role": "user",
+        "timestamp": "2026-05-04T09:16:30Z",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "03bb4f6f98cc0f7e5f40acd87854acf2bf3b53284e49dff683af18c9194ce97b",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "03bb4f6f98cc0f7e5f40acd87854acf2bf3b53284e49dff683af18c9194ce97b"
+      },
+      {
+        "ordinal": 7,
+        "role": "assistant",
+        "timestamp": "2026-05-04T09:16:36Z",
+        "model": "claude-sonnet-4-5",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "96e074803645846dbd8fa809f85782532b1621fe2bb82ab62300945783bce29e",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "96e074803645846dbd8fa809f85782532b1621fe2bb82ab62300945783bce29e"
+      }
+    ]
+  },
+  "excluded_fields": [
+    "absolute paths (the two trees are checked out at different locations)",
+    "file mtime and inode (the fixtures are copied separately for each side)",
+    "archive created_at / sync bookkeeping timestamps (host clock)",
+    "database file name and data directory (per-side temporary directories)"
+  ]
+}

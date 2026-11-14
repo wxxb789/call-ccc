@@ -1,0 +1,392 @@
+import { debounce } from "@kenn-io/kit-ui";
+import { SearchService } from "../api/generated/index.js";
+import { ApiError, getServerUrl, isAbortError, isTransient } from "../api/runtime.js";
+import type { DbSearchResult as SearchResult } from "../api/generated/index.js";
+import type { GetApiV1SearchParams } from "../api/generated/models/getApiV1SearchParams.js";
+import { resolveRange, type RangeSelection } from "../components/shared/rangeSelection.js";
+import { reportErrorShown, reportTelemetry } from "../utils/telemetry.js";
+
+export type SearchMode = "fulltext" | "semantic" | "hybrid";
+export type SearchSort = "relevance" | "recency";
+export type SnippetFormat = "highlighted-html" | "plain-text";
+
+export interface PaletteSearchResult {
+  session_id: string;
+  project: string;
+  agent: string;
+  name?: string;
+  ordinal: number;
+  timestamp: string;
+  snippet: string;
+  rank: number;
+  snippetFormat: SnippetFormat;
+}
+
+/** The palette's state when it closed on a picked result. */
+export interface RetainedSearch {
+  query: string;
+  project: string;
+  selectedIndex: number;
+}
+
+export interface SearchFailure {
+  detail: string | null;
+  kind: "generic" | "timeout" | "semantic-unavailable";
+}
+
+interface ContentSearchMatch {
+  session_id: string;
+  project: string;
+  agent: string;
+  ordinal: number;
+  timestamp: string;
+  snippet: string;
+  score?: number;
+}
+
+type SearchModeStorage = Pick<Storage, "getItem" | "setItem">;
+
+export const SEARCH_MODE_STORAGE_KEY = "agentsview-search-mode";
+const SEARCH_DEBOUNCE_MS = 300;
+const PALETTE_RESULT_LIMIT = 30;
+const CONTENT_SEARCH_LIMIT = 120;
+const SEARCH_MODES: readonly SearchMode[] = ["fulltext", "semantic", "hybrid"];
+
+function availableStorage(): SearchModeStorage | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function loadMode(storage: SearchModeStorage | null): SearchMode {
+  try {
+    const value = storage?.getItem(SEARCH_MODE_STORAGE_KEY);
+    return SEARCH_MODES.includes(value as SearchMode) ? (value as SearchMode) : "fulltext";
+  } catch {
+    return "fulltext";
+  }
+}
+
+function normalizeFullText(results: SearchResult[]): PaletteSearchResult[] {
+  return results.map((result) => ({
+    session_id: result.session_id,
+    project: result.project,
+    agent: result.agent,
+    name: result.name || undefined,
+    ordinal: result.ordinal,
+    timestamp: result.session_ended_at,
+    snippet: result.snippet,
+    rank: result.rank,
+    snippetFormat: "highlighted-html",
+  }));
+}
+
+function normalizeContent(matches: ContentSearchMatch[]): PaletteSearchResult[] {
+  const seenSessions = new Set<string>();
+  const results: PaletteSearchResult[] = [];
+
+  for (const [index, match] of matches.entries()) {
+    if (seenSessions.has(match.session_id)) continue;
+    seenSessions.add(match.session_id);
+    results.push({
+      session_id: match.session_id,
+      project: match.project,
+      agent: match.agent,
+      ordinal: match.ordinal,
+      timestamp: match.timestamp,
+      snippet: match.snippet,
+      rank: match.score ?? index,
+      snippetFormat: "plain-text",
+    });
+    if (results.length === PALETTE_RESULT_LIMIT) break;
+  }
+
+  return results;
+}
+
+function errorDetail(error: unknown): string | null {
+  if (error instanceof ApiError || error instanceof Error) {
+    return error.message || null;
+  }
+  return null;
+}
+
+function isTimeoutDetail(detail: string | null): boolean {
+  return detail !== null && /(?:timed out|timeout|deadline exceeded)/i.test(detail);
+}
+
+// failureKind classifies semantic/hybrid failures the palette can act on.
+// A 501 means semantic search is not serving on this daemon (vector config
+// disabled, or no index built yet) — the palette renders setup guidance for
+// it instead of the raw backend error string.
+function failureKind(
+  mode: SearchMode,
+  error: unknown,
+  detail: string | null,
+): SearchFailure["kind"] {
+  if (mode === "fulltext") return "generic";
+  if (error instanceof ApiError && error.status === 501) {
+    return "semantic-unavailable";
+  }
+  return isTimeoutDetail(detail) ? "timeout" : "generic";
+}
+
+/** Retries one transient failure, unless another tab selected a different server meanwhile. */
+async function searchFullText(params: GetApiV1SearchParams, signal: AbortSignal) {
+  const server = getServerUrl();
+  try {
+    return await SearchService.getApiV1Search(params, { signal });
+  } catch (error: unknown) {
+    if ((error instanceof ApiError && error.status === 501) || !isTransient(error)) throw error;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    if (getServerUrl() !== server) throw error;
+    return SearchService.getApiV1Search(params, { signal });
+  }
+}
+
+export class SearchStore {
+  query: string = $state("");
+  project: string = $state("");
+  sort: SearchSort = $state("relevance");
+  mode: SearchMode = $state("fulltext");
+  range: RangeSelection = $state({ mode: "relative", days: 0 });
+  results: PaletteSearchResult[] = $state([]);
+  isSearching: boolean = $state(false);
+  error: SearchFailure | null = $state(null);
+  // Telemetry counts per palette open: search_run once per mode, and search_empty
+  // once when the open ends on an accepted empty result. endSession() closes it.
+  private reportedModes = new Set<SearchMode>();
+  private endedEmpty = false;
+
+  private storage: SearchModeStorage | null;
+  private abortController: AbortController | null = null;
+  private requestVersion = 0;
+  // A query waiting out the debounce, which has no request in flight yet.
+  private queued = false;
+  // Set by retain() and taken by the next palette open through restore().
+  private retained: RetainedSearch | null = null;
+  // The retained results belong to an earlier query than the retained one.
+  private retainedStale = false;
+
+  private debouncedSearch = debounce((query: string, project: string) => {
+    this.queued = false;
+    void this.executeSearch(query, project);
+  }, SEARCH_DEBOUNCE_MS);
+
+  constructor(storage: SearchModeStorage | null = availableStorage()) {
+    this.storage = storage;
+    this.mode = loadMode(storage);
+  }
+
+  search(query: string, project?: string) {
+    this.query = query;
+    if (project !== undefined) this.project = project;
+
+    this.cancelInFlight();
+    if (!query.trim()) {
+      this.cancelQueued();
+      this.results = [];
+      this.error = null;
+      this.isSearching = false;
+      return;
+    }
+
+    this.queued = true;
+    this.isSearching = true;
+    this.debouncedSearch(query, this.project);
+  }
+
+  setMode(mode: SearchMode) {
+    if (mode === this.mode) return;
+    this.mode = mode;
+    try {
+      this.storage?.setItem(SEARCH_MODE_STORAGE_KEY, mode);
+    } catch {
+      // Storage can be disabled; the in-memory preference still applies.
+    }
+
+    this.cancelQueued();
+    this.cancelInFlight();
+    if (this.query.trim()) {
+      void this.executeSearch(this.query, this.project);
+    }
+  }
+
+  setSort(sort: SearchSort) {
+    this.sort = sort;
+    if (this.query.trim()) {
+      this.cancelQueued();
+      this.cancelInFlight();
+      void this.executeSearch(this.query, this.project);
+    }
+  }
+
+  retry() {
+    if (!this.query.trim() || !this.error) return;
+    this.cancelQueued();
+    this.cancelInFlight();
+    void this.executeSearch(this.query, this.project);
+  }
+
+  setRange(range: RangeSelection) {
+    this.range = range;
+    this.cancelQueued();
+    this.cancelInFlight();
+    if (this.query.trim()) {
+      void this.executeSearch(this.query, this.project);
+    }
+  }
+
+  resetRange() {
+    this.range = { mode: "relative", days: 0 };
+  }
+
+  clear() {
+    this.query = "";
+    this.results = [];
+    this.error = null;
+    this.isSearching = false;
+    this.retained = null;
+    this.retainedStale = false;
+    this.cancelQueued();
+    this.cancelInFlight();
+  }
+
+  /**
+   * Keeps the query, project, sort, range and results for the next palette
+   * open, so a picked result that turns out wrong is one Cmd+K away from the
+   * list it came from. The palette calls this instead of clear() when it
+   * closes on a picked result.
+   */
+  retain(search: RetainedSearch) {
+    this.retainedStale = this.queued || this.isSearching;
+    this.cancelQueued();
+    this.cancelInFlight();
+    this.isSearching = false;
+    this.query = search.query;
+    this.project = search.project;
+    this.retained = search;
+  }
+
+  /**
+   * Hands the retained search to a new palette open, once. Returns null when
+   * nothing was retained. When the retained results predate the query, the
+   * query runs again and the selection starts from the top.
+   */
+  restore(): RetainedSearch | null {
+    const search = this.retained;
+    const stale = this.retainedStale;
+    this.retained = null;
+    this.retainedStale = false;
+    if (search === null) return null;
+    if (stale && this.query.trim()) {
+      void this.executeSearch(this.query, this.project);
+      return { ...search, selectedIndex: 0 };
+    }
+    return search;
+  }
+
+  resetSort() {
+    this.sort = "relevance";
+  }
+
+  /** Ends a palette open. Call it before clear(), which discards the outcome. */
+  endSession() {
+    if (this.endedEmpty) reportTelemetry("search_empty");
+    this.endedEmpty = false;
+    this.reportedModes.clear();
+  }
+
+  private cancelQueued() {
+    this.queued = false;
+    this.debouncedSearch.cancel();
+  }
+
+  private cancelInFlight() {
+    this.endedEmpty = false;
+    this.requestVersion += 1;
+    this.abortController?.abort();
+    this.abortController = null;
+  }
+
+  private async executeSearch(query: string, project: string) {
+    this.cancelInFlight();
+    const requestVersion = this.requestVersion;
+    const controller = new AbortController();
+    const { signal } = controller;
+    this.abortController = controller;
+    this.isSearching = true;
+    this.error = null;
+    const mode = this.mode;
+    if (!this.reportedModes.has(mode)) {
+      this.reportedModes.add(mode);
+      reportTelemetry("search_run", { query_type: mode === "fulltext" ? "text" : mode });
+    }
+    // All time must omit both bounds, rather than use the picker's fallback
+    // start date when the earliest archived session is unknown.
+    const range =
+      this.range.mode === "relative" && this.range.days === 0 ? null : resolveRange(this.range);
+    const dates = range ? { date_from: range.from, date_to: range.to } : {};
+
+    try {
+      let results: PaletteSearchResult[];
+      if (mode === "fulltext") {
+        const params = {
+          q: query,
+          project: project || undefined,
+          limit: PALETTE_RESULT_LIMIT,
+          sort: this.sort,
+          ...dates,
+        };
+        const response = await searchFullText(params, signal);
+        results = normalizeFullText(response.results ?? []);
+      } else {
+        const response = await SearchService.getApiV1SearchContent(
+          {
+            pattern: query.trim(),
+            mode,
+            project: project || undefined,
+            limit: CONTENT_SEARCH_LIMIT,
+            include_one_shot: true,
+            include_automated: true,
+            ...dates,
+            ...(range ? { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone } : {}),
+          },
+          {
+            signal,
+            headers: { "X-AgentsView-Search-Intent": "semantic" },
+          },
+        );
+        results = normalizeContent(response.matches ?? []);
+      }
+
+      if (requestVersion !== this.requestVersion || signal.aborted) return;
+      this.results = results;
+      this.endedEmpty = results.length === 0;
+      this.error = null;
+    } catch (error: unknown) {
+      if (requestVersion !== this.requestVersion || signal.aborted || isAbortError(error)) {
+        return;
+      }
+      this.results = [];
+      const detail = errorDetail(error);
+      this.error = { detail, kind: failureKind(mode, error, detail) };
+      reportErrorShown("search");
+    } finally {
+      if (requestVersion === this.requestVersion && !signal.aborted) {
+        this.isSearching = false;
+        this.abortController = null;
+      }
+    }
+  }
+}
+
+export function createSearchStore(
+  storage: SearchModeStorage | null = availableStorage(),
+): SearchStore {
+  return new SearchStore(storage);
+}
+
+export const searchStore = createSearchStore();

@@ -1,0 +1,355 @@
+<script lang="ts">
+  import { errorTelemetry } from "../../utils/error-telemetry.js";
+  import StatCard from "../analytics/StatCard.svelte";
+  import { usage } from "../../stores/usage.svelte.js";
+  import { m } from "../../i18n/index.js";
+  import { formatCount } from "../../utils/format.js";
+  import { ZERO_MONEY, compareMoney, divideMoney, formatMoney } from "../../money.js";
+  import {
+    ALL_TOKEN_TYPES,
+    sumSelectedTokens,
+  } from "../../stores/usageTokenTypes.js";
+
+  function fmtPct(v: number): string {
+    return `${(v * 100).toFixed(1)}%`;
+  }
+
+  const isTokenMode = $derived(usage.mode === "token");
+
+  const inputTokens = $derived(
+    usage.summary?.totals.inputTokens ?? 0,
+  );
+
+  const outputTokens = $derived(
+    usage.summary?.totals.outputTokens ?? 0,
+  );
+
+  const cacheCreationTokens = $derived(
+    usage.summary?.totals.cacheCreationTokens ?? 0,
+  );
+
+  const cacheReadTokens = $derived(
+    usage.summary?.totals.cacheReadTokens ?? 0,
+  );
+
+  // Everything the model read: uncached input plus cache writes and reads.
+  const totalInputTokens = $derived(
+    inputTokens + cacheCreationTokens + cacheReadTokens,
+  );
+
+  const totalTokens = $derived(
+    usage.summary
+      ? sumSelectedTokens(
+          usage.summary.totals,
+          usage.selectedTokenTypes,
+        )
+      : 0,
+  );
+
+  // "cached" here means input tokens that were actually
+  // served from cache, i.e. cacheReadTokens. Cache-creation
+  // tokens are cache writes — fresh input paying the
+  // cache-write surcharge rather than being replayed from
+  // cache — so folding them in would overstate cache usage
+  // on workloads that only warm the cache.
+  const cachedTokens = $derived(
+    usage.summary?.totals.cacheReadTokens ?? 0,
+  );
+
+  const dailyBurnCost = $derived.by(() => {
+    const s = usage.summary;
+    if (!s || !s.daily || s.daily.length === 0) return ZERO_MONEY;
+    return divideMoney(s.totals.totalCost, s.daily.length);
+  });
+
+  const dailyBurnTokens = $derived.by(() => {
+    const daily = usage.summary?.daily;
+    if (!daily || daily.length === 0) return 0;
+    return daily.reduce(
+      (total, day) =>
+        total + breakdownTokens(day),
+      0,
+    ) / daily.length;
+  });
+
+  const peakCost = $derived.by(() => {
+    const s = usage.summary;
+    if (!s || !s.daily || s.daily.length === 0) {
+      return { date: "", cost: ZERO_MONEY };
+    }
+    let best = s.daily[0]!;
+    for (const d of s.daily) {
+      if (compareMoney(d.totalCost, best.totalCost) > 0) best = d;
+    }
+    return { date: best.date, cost: best.totalCost };
+  });
+
+  const peakTokens = $derived.by(() => {
+    const daily = usage.summary?.daily;
+    if (!daily || daily.length === 0) {
+      return { date: "", value: 0 };
+    }
+    let best = daily[0]!;
+    let bestTokens = breakdownTokens(best);
+    for (const day of daily) {
+      const tokens = breakdownTokens(day);
+      if (tokens > bestTokens) {
+        best = day;
+        bestTokens = tokens;
+      }
+    }
+    return { date: best.date, value: bestTokens };
+  });
+
+  function breakdownTokens(day: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationTokens: number;
+    cacheReadTokens: number;
+  }): number {
+    return sumSelectedTokens(day, usage.selectedTokenTypes);
+  }
+
+  function selectedTokenLabel(): string {
+    if (usage.selectedTokenTypes.length === ALL_TOKEN_TYPES.length) {
+      return m.usage_summary_total_tokens();
+    }
+    if (usage.selectedTokenTypes.length !== 1) {
+      return m.usage_selected_tokens();
+    }
+    switch (usage.selectedTokenTypes[0]) {
+      case "input":
+        return m.usage_uncached_input();
+      case "cache_write":
+        return m.usage_cache_writes();
+      case "cache_read":
+        return m.usage_cache_reads();
+      case "output":
+        return m.analytics_metric_output_tokens();
+    }
+    return m.usage_selected_tokens();
+  }
+
+  const activeDays = $derived.by(() => {
+    const daily = usage.summary?.daily;
+    if (!daily) return 0;
+    return daily.filter((day) =>
+      isTokenMode
+        ? breakdownTokens(day) > 0
+        : day.totalCost.microdollars > 0
+    ).length;
+  });
+
+  const vsPrior = $derived.by(() => {
+    const summary = usage.summary;
+    const c = summary?.comparison;
+    if (!summary || !c) return null;
+    const current = summary.totals.totalCost.microdollars;
+    const prior = c.priorTotalCost.microdollars;
+    const deltaPct = prior > 0 ? (current - prior) / prior : 0;
+    const sign = deltaPct >= 0 ? "+" : "";
+    return m.usage_summary_vs_prior({
+      value: `${sign}${(deltaPct * 100).toFixed(0)}%`,
+    });
+  });
+
+  function fmtCredits(v: number): string {
+    return String(v.toFixed(0));
+  }
+
+  interface Card {
+    label: () => string;
+    value: () => string;
+    sub?: () => string;
+    featured?: boolean;
+    /** Context counts (projects, models, days) read one step quieter. */
+    context?: boolean;
+  }
+
+  const cards = $derived.by(() => {
+    if (isTokenMode) {
+      return [
+        {
+          label: selectedTokenLabel,
+          value: () => formatCount(totalTokens),
+          featured: true,
+        },
+        {
+          label: () => m.usage_summary_total_input(),
+          value: () => formatCount(totalInputTokens),
+        },
+        {
+          label: () => m.usage_uncached_input(),
+          value: () => formatCount(inputTokens),
+          sub: () =>
+            cachedTokens > 0
+              ? m.usage_summary_cached_tokens({
+                  value: `+${formatCount(cachedTokens)}`,
+                })
+              : "",
+        },
+        {
+          label: () => m.analytics_metric_output_tokens(),
+          value: () => formatCount(outputTokens),
+        },
+        {
+          label: () => m.usage_summary_daily_burn_tokens(),
+          value: () => formatCount(dailyBurnTokens),
+          sub: () => m.usage_summary_avg_day(),
+        },
+        {
+          label: () => m.usage_summary_peak_day_tokens(),
+          value: () => formatCount(peakTokens.value),
+          sub: () => peakTokens.date,
+        },
+        {
+          label: () => m.usage_summary_cache_hit(),
+          value: () => fmtPct(usage.summary?.cacheStats.hitRate ?? 0),
+        },
+        {
+          label: () => m.analytics_summary_projects(),
+          context: true,
+          value: () =>
+            formatCount(usage.summary?.projectTotals.length ?? 0),
+        },
+        {
+          label: () => m.usage_models(),
+          context: true,
+          value: () => formatCount(usage.summary?.modelTotals.length ?? 0),
+        },
+        {
+          label: () => m.analytics_summary_active_days(),
+          context: true,
+          value: () => formatCount(activeDays),
+        },
+      ] satisfies Card[];
+    }
+
+    const baseCards: Card[] = [
+      {
+        label: () => m.usage_summary_total_cost(),
+        value: () => formatMoney(usage.summary?.totals.totalCost ?? ZERO_MONEY),
+        sub: () => vsPrior ?? "",
+        featured: true,
+      },
+      ...(usage.colorSummary?.totals.copilotAICredits
+        ? [
+            {
+              label: () => m.usage_summary_copilot_ai_credits(),
+              value: () => fmtCredits(usage.summary?.totals.copilotAICredits ?? 0),
+            },
+          ]
+        : []),
+      {
+        label: () => m.usage_summary_total_input(),
+        value: () => formatCount(totalInputTokens),
+      },
+      {
+        label: () => m.usage_uncached_input(),
+        value: () => formatCount(inputTokens),
+        sub: () =>
+          cachedTokens > 0
+            ? m.usage_summary_cached_tokens({
+                value: `+${formatCount(cachedTokens)}`,
+              })
+            : "",
+      },
+      {
+        label: () => m.analytics_metric_output_tokens(),
+        value: () => formatCount(outputTokens),
+      },
+      {
+        label: () => m.usage_summary_daily_burn(),
+        value: () => formatMoney(dailyBurnCost),
+        sub: () => m.usage_summary_avg_day(),
+      },
+      {
+        label: () => m.usage_summary_peak_day(),
+        value: () => formatMoney(peakCost.cost),
+        sub: () => peakCost.date,
+      },
+      {
+        label: () => m.usage_summary_cache_hit(),
+        value: () =>
+          fmtPct(usage.summary?.cacheStats.hitRate ?? 0),
+      },
+      {
+        label: () => m.analytics_summary_projects(),
+        context: true,
+        value: () =>
+          formatCount(usage.summary?.projectTotals.length ?? 0),
+      },
+      {
+        label: () => m.usage_models(),
+        context: true,
+        value: () =>
+          formatCount(usage.summary?.modelTotals.length ?? 0),
+      },
+      {
+        label: () => m.analytics_summary_active_days(),
+        context: true,
+        value: () => formatCount(activeDays),
+      },
+    ];
+    return baseCards;
+  });
+</script>
+
+<div class="summary-cards">
+  {#each cards as card}
+    <StatCard
+      value={card.value()}
+      label={card.label()}
+      sub={card.sub?.() ?? ""}
+      tier={card.featured ? "lead" : card.context ? "context" : "standard"}
+      featured={card.featured}
+      error={!!usage.errors.summary}
+    />
+  {/each}
+</div>
+
+{#if usage.errors.summary}
+  <div class="error-bar" {@attach errorTelemetry("analytics")}>
+    <span>{usage.errors.summary}</span>
+    <button
+      class="retry-btn"
+      onclick={() => usage.fetchAll({ preserveTimeRange: true })}
+    >
+      {m.shared_retry()}
+    </button>
+  </div>
+{/if}
+
+<style>
+  .summary-cards {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .error-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg-surface);
+    border: 1px solid var(--accent-red);
+    border-radius: var(--radius-sm);
+    font-size: 11px;
+    color: var(--accent-red);
+  }
+
+  .retry-btn {
+    padding: 2px 8px;
+    border: 1px solid var(--accent-red);
+    border-radius: var(--radius-sm);
+    font-size: 11px;
+    color: var(--accent-red);
+    cursor: pointer;
+  }
+
+  .retry-btn:hover {
+    background: var(--accent-red);
+    color: var(--accent-red-foreground);
+  }
+</style>

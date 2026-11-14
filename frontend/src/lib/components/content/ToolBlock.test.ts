@@ -1,0 +1,1009 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { mount, tick, unmount, type ComponentProps } from "svelte";
+import type { DbToolCall as ToolCall } from "../../api/generated/index.js";
+import { setLocale } from "../../i18n/index.js";
+import retainedFixtureSource from "../../utils/__fixtures__/retained-tool-image-1735.json?raw";
+const SMALL_PNG_DATA_URI =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+import ToolBlock from "./ToolBlock.svelte";
+import { ui } from "../../stores/ui.svelte.js";
+
+const copyToClipboardMock = vi.hoisted(() => vi.fn().mockResolvedValue(true));
+const searchState = vi.hoisted(() => ({ active: false, current: "", query: "" }));
+vi.mock("../../utils/clipboard.js", () => ({ copyToClipboard: copyToClipboardMock }));
+vi.mock("../../stores/inSessionSearch.svelte.js", () => ({
+  inSessionSearch: {
+    get isActive() {
+      return searchState.active;
+    },
+    get debouncedQuery() {
+      return searchState.query;
+    },
+    navigationRevision: 1,
+    isCurrentBlock: (key: string | undefined) => !!key && key === searchState.current,
+    countForBlock: (key: string | undefined) => (key && key === searchState.current ? 1 : 0),
+    currentOccurrence: () => 0,
+  },
+}));
+const components: ReturnType<typeof mount>[] = [];
+async function render(props: Partial<ComponentProps<typeof ToolBlock>> = {}) {
+  components.push(mount(ToolBlock, { target: document.body, props: { content: "", ...props } }));
+  await tick();
+}
+async function click(selector: string) {
+  const button = document.querySelector<HTMLButtonElement>(selector);
+  expect(button).not.toBeNull();
+  button!.click();
+  await Promise.resolve();
+  await tick();
+}
+async function formatted() {
+  const button = Array.from(
+    document.querySelectorAll<HTMLButtonElement>(".output-mode button"),
+  ).find((node) => node.textContent?.trim() === "Formatted");
+  expect(button).toBeDefined();
+  button!.click();
+  await tick();
+}
+function call(
+  tool_name: string,
+  params: Record<string, unknown> = {},
+  rest: Partial<ToolCall> = {},
+): ToolCall {
+  return { call_index: 0, category: "", tool_name, input_json: JSON.stringify(params), ...rest };
+}
+const text = (selector: string) => document.querySelector(selector)?.textContent ?? "";
+const longCommand = Array.from({ length: 30 }, (_, i) => `echo hidden-line-${i}`).join("\n");
+beforeEach(() => {
+  setLocale("en");
+  searchState.active = false;
+  searchState.current = "";
+  searchState.query = "";
+  copyToClipboardMock.mockClear();
+});
+afterEach(async () => {
+  for (const component of components.splice(0)) await unmount(component);
+  vi.unstubAllGlobals();
+  document.body.replaceChildren();
+  setLocale("en");
+});
+
+describe("ToolBlock output and controls", () => {
+  it("starts with both input and output collapsed", async () => {
+    await render({ content: "input", toolCall: call("Read", {}, { result_content: "output" }) });
+    expect(document.querySelector(".tool-content")).toBeNull();
+    await click(".tool-header");
+    expect(text(".tool-content")).toBe("input");
+    expect(document.querySelector(".output-content")).toBeNull();
+    expect(text(".output-header")).toContain("output");
+  });
+  it("toggles the input and output independently", async () => {
+    await render({ content: "input", toolCall: call("Read", {}, { result_content: "output" }) });
+    await click(".tool-header");
+    await click(".output-header");
+    expect(text(".output-content")).toBe("output");
+    await click(".output-header");
+    expect(document.querySelector(".output-content")).toBeNull();
+    expect(text(".tool-content")).toBe("input");
+    await click(".tool-header");
+    expect(document.querySelector(".tool-content")).toBeNull();
+  });
+  it.each([undefined, ""])(
+    "omits output for an absent or empty result: %s",
+    async (result_content) => {
+      await render({ content: "input", toolCall: call("Read", {}, { result_content }) });
+      await click(".tool-header");
+      expect(document.querySelector(".output-header")).toBeNull();
+    },
+  );
+  it("omits output without a structured tool call", async () => {
+    await render({ content: "legacy input" });
+    await click(".tool-header");
+    expect(document.querySelector(".output-header")).toBeNull();
+  });
+  it("shows only the first result line in the collapsed preview", async () => {
+    await render({ toolCall: call("Read", {}, { result_content: "first\nsecond" }) });
+    await click(".tool-header");
+    expect(text(".output-header .tool-preview")).toBe("first");
+    expect(text(".output-header")).not.toContain("second");
+  });
+  it("switches raw and sanitized formatted output without changing source", async () => {
+    const result = "# Heading\n\n**bold**\n<script>alert(1)</script>";
+    await render({ toolCall: call("Read", {}, { result_content: result }) });
+    await click(".tool-header");
+    await click(".output-header");
+    expect(text(".output-content")).toBe(result);
+    await formatted();
+    expect(text(".formatted-output h1")).toBe("Heading");
+    expect(text(".formatted-output strong")).toBe("bold");
+    expect(document.querySelector(".formatted-output script")).toBeNull();
+    await click(".output-mode button:first-child");
+    expect(text(".output-content")).toBe(result);
+  });
+  it("colors fenced code in formatted output without inserting search marks", async () => {
+    await render({
+      toolCall: call("Read", {}, { result_content: "```ts\nconst target = true;\n```" }),
+    });
+    await click(".tool-header");
+    await click(".output-header");
+    await formatted();
+    await vi.waitFor(
+      () => expect(document.querySelector(".formatted-output code span[style]")).not.toBeNull(),
+      { timeout: 10000 },
+    );
+    expect(text(".formatted-output code")).toContain("const target = true;");
+    expect(document.querySelector("mark")).toBeNull();
+  });
+  it("copies raw output while it remains collapsed", async () => {
+    const result = "# raw\n**output**";
+    await render({ toolCall: call("Read", {}, { result_content: result }) });
+    await click(".tool-header");
+    await click('button[aria-label="Copy output"]');
+    expect(copyToClipboardMock).toHaveBeenCalledWith(result);
+    expect(document.querySelector(".output-content")).toBeNull();
+  });
+  it("shows retained image placeholders in block order in output and history", async () => {
+    const result =
+      '[{"type":"input_text","text":"Before"},{"byte_size":3,"media_type":"image/png","sha256":"","text":"[Image: image/png, 3 bytes]","type":"agentsview_image","version":1},{"type":"text","text":"After"}]';
+    const toolCall: ToolCall = {
+      call_index: 0,
+      tool_name: "view_image",
+      category: "Other",
+      result_content: result,
+      result_events: [
+        {
+          event_index: 0,
+          status: "completed",
+          source: "tool_result",
+          content: result,
+          content_length: result.length,
+        },
+      ],
+    };
+    await render({ toolCall });
+    await tick();
+    document.querySelector<HTMLButtonElement>(".tool-header")!.click();
+    await tick();
+    expect(document.querySelector(".output-header .tool-preview")?.textContent).toBe("Before");
+    document.querySelector<HTMLButtonElement>(".output-header")!.click();
+    document.querySelector<HTMLButtonElement>(".history-header")!.click();
+    await tick();
+    expect(document.querySelector(".output-content")?.textContent).toBe(
+      "Before\n\n[Image: image/png, 3 bytes]\n\nAfter",
+    );
+    expect(document.querySelector(".history-content")?.textContent).toBe(
+      "Before\n\n[Image: image/png, 3 bytes]\n\nAfter",
+    );
+    document.querySelector<HTMLButtonElement>(".output-mode button:nth-child(2)")!.click();
+    await tick();
+    expect(
+      Array.from(document.querySelectorAll(".formatted-output p"), (p) => p.textContent),
+    ).toEqual(["Before", "[Image: image/png, 3 bytes]", "After"]);
+    document.querySelector<HTMLButtonElement>('button[aria-label="Copy output"]')!.click();
+    await tick();
+    expect(copyToClipboardMock).toHaveBeenCalledWith(result);
+  });
+
+  it("renders the constructed retained PNG between text blocks", async () => {
+    const result = retainedFixtureSource;
+    const blocks = JSON.parse(result) as Array<{ image_url?: string }>;
+    const imageURL = blocks[1]?.image_url;
+    expect(imageURL).toMatch(/^data:image\/png;base64,/);
+    expect(new TextEncoder().encode(result).byteLength).toBe(1_441_138);
+
+    const toolCall: ToolCall = {
+      call_index: 0,
+      tool_name: "view_image",
+      category: "Other",
+      result_content: result,
+    };
+    await render({ toolCall });
+    document.querySelector<HTMLButtonElement>(".tool-header")!.click();
+    await tick();
+    document.querySelector<HTMLButtonElement>(".output-header")!.click();
+    await tick();
+
+    const raw = document.querySelector(".output-content");
+    expect(raw?.querySelector("img")).toBeNull();
+    expect(raw?.textContent).toBe(result);
+
+    document.querySelector<HTMLButtonElement>(".output-mode button:nth-child(2)")!.click();
+    await tick();
+
+    const formatted = document.querySelector(".formatted-output");
+    expect(formatted).not.toBeNull();
+    expect(formatted!.querySelectorAll("img")).toHaveLength(1);
+    expect(formatted!.querySelector("img")?.getAttribute("src")).toBe(imageURL);
+    expect(Array.from(formatted!.querySelectorAll("p"), (p) => p.textContent)).toEqual([
+      "Before",
+      "",
+      "After",
+    ]);
+    expect(formatted!.textContent).not.toContain("input_image");
+    expect(formatted!.textContent).not.toContain(imageURL!);
+
+    document.querySelector<HTMLButtonElement>(".output-mode button:nth-child(1)")!.click();
+    await tick();
+    expect(document.querySelector(".output-content")?.textContent).toBe(result);
+
+    document.querySelector<HTMLButtonElement>('button[aria-label="Copy output"]')!.click();
+    await tick();
+    expect(copyToClipboardMock).toHaveBeenCalledWith(result);
+  });
+
+  it("renders an image-only retained result", async () => {
+    const result = JSON.stringify([{ type: "input_image", image_url: SMALL_PNG_DATA_URI }]);
+    const toolCall: ToolCall = {
+      call_index: 0,
+      tool_name: "view_image",
+      category: "Other",
+      result_content: result,
+    };
+    await render({ toolCall });
+    document.querySelector<HTMLButtonElement>(".tool-header")!.click();
+    await tick();
+    document.querySelector<HTMLButtonElement>(".output-header")!.click();
+    await tick();
+    document.querySelector<HTMLButtonElement>(".output-mode button:nth-child(2)")!.click();
+    await tick();
+
+    const formatted = document.querySelector(".formatted-output");
+    expect(formatted?.querySelectorAll("img")).toHaveLength(1);
+    expect(formatted?.textContent).not.toContain("input_image");
+  });
+
+  it("renders migrated asset references in formatted output", async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response("image"));
+    vi.stubGlobal("fetch", fetchMock);
+    const createObjectURL = vi
+      .fn()
+      .mockReturnValueOnce("blob:first")
+      .mockReturnValueOnce("blob:second");
+    vi.stubGlobal(
+      "URL",
+      class extends URL {
+        static override createObjectURL = createObjectURL;
+        static override revokeObjectURL = vi.fn();
+      },
+    );
+    const result = JSON.stringify([
+      { type: "input_text", text: "Before" },
+      { type: "agentsview_image", version: 1, text: "![first](asset://first)" },
+      { type: "agentsview_image", version: 1, text: "![second](asset://nested/second)" },
+      { type: "text", text: "After" },
+    ]);
+    const base = document.createElement("base");
+    base.href = "http://localhost/app/";
+    document.head.appendChild(base);
+
+    const toolCall: ToolCall = {
+      call_index: 0,
+      tool_name: "view_image",
+      category: "Other",
+      result_content: result,
+    };
+    await render({ toolCall });
+    await tick();
+    document.querySelector<HTMLButtonElement>(".tool-header")!.click();
+    await tick();
+    document.querySelector<HTMLButtonElement>(".output-header")!.click();
+    await tick();
+    document.querySelector<HTMLButtonElement>(".output-mode button:nth-child(2)")!.click();
+    await tick();
+
+    await vi.waitFor(() => {
+      expect(
+        Array.from(document.querySelectorAll<HTMLImageElement>(".formatted-output img"), (img) =>
+          img.getAttribute("src"),
+        ),
+      ).toEqual(["blob:first", "blob:second"]);
+    });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/app/api/v1/assets/first",
+      "/app/api/v1/assets/nested%2Fsecond",
+    ]);
+    base.remove();
+  });
+
+  it("preserves long path metadata in the accessible text and title", async () => {
+    const path = "/home/person/project/" + "very-long-directory/".repeat(6) + "src/example.ts";
+    await render({ toolCall: call("Read", { file_path: path }) });
+    await click(".tool-header");
+    expect(text(".tool-meta")).toContain(path);
+    expect(document.querySelector(`.meta-value[title="${path}"]`)).not.toBeNull();
+  });
+  it("reveals a field match and shows the field in full while find runs", async () => {
+    const cwd = "/workspace/" + "nested-directory/".repeat(5) + "service-under-test";
+    searchState.active = true;
+    searchState.current = "7:tool-meta:0.0";
+    searchState.query = "nested-directory";
+    await render({
+      toolCall: call("shell_command", { command: "make test", cwd }, { category: "Bash" }),
+      searchScope: { ordinal: 7, callIdx: 0 },
+    });
+    expect(document.querySelector(".tool-header")?.getAttribute("aria-expanded")).toBe("true");
+    expect(document.querySelector(".tool-meta .meta-value")).toBeNull();
+    expect(text(".tool-meta")).toBe(`cwd: ${cwd}`);
+  });
+  it("keeps canonical path metadata accessible without labelling ordinary metadata", async () => {
+    const path =
+      "/workspace/packages/agentsview/frontend/src/lib/components/content/ToolBlock.svelte";
+    await render({ toolCall: call("Read", { file_path: path }, { category: "Read" }) });
+    await click(".tool-header");
+    const file = document.querySelector(".meta-tag");
+    expect(file?.textContent).toContain("content/ToolBlock.svelte");
+    expect(file?.querySelector(".kit-sr-only")?.textContent).toBe(path);
+    expect(file?.querySelector("[aria-label]")).toBeNull();
+    expect(document.querySelector(".meta-tag:nth-child(2) [aria-label]")).toBeNull();
+  });
+  it("localizes result event metadata labels for status, source, and agent", async () => {
+    setLocale("zh-CN");
+    await render({
+      toolCall: call(
+        "wait",
+        {},
+        {
+          category: "Other",
+          result_content: "latest summary",
+          result_events: [
+            {
+              source: "wait_output",
+              status: "completed",
+              content: "Finished successfully",
+              content_length: 21,
+              agent_id: "agent-1",
+              event_index: 0,
+            },
+          ],
+        },
+      ),
+    });
+    await click(".tool-header");
+    await click(".history-header");
+    expect(text(".output-header .output-label")).toBe("输出");
+    expect(text(".history-header .output-label")).toBe("历史");
+    expect(
+      Array.from(document.querySelectorAll(".meta-label"), (node) => node.textContent),
+    ).toEqual(["状态：", "来源：", "agent："]);
+  });
+  it("renders chronological result history with status, source and agent metadata", async () => {
+    const result_events = [
+      {
+        event_index: 4,
+        status: "running",
+        source: "wait",
+        agent_id: "a",
+        content: "first event",
+        content_length: 11,
+      },
+      {
+        event_index: 9,
+        status: "completed",
+        source: "wait",
+        agent_id: "b",
+        content: "last event",
+        content_length: 10,
+      },
+    ];
+    await render({ toolCall: call("Task", {}, { result_events }) });
+    await click(".tool-header");
+    expect(document.querySelector(".result-history")).toBeNull();
+    expect(text(".history-header .tool-preview")).toContain("completed: last event");
+    await click(".history-header");
+    expect(
+      Array.from(document.querySelectorAll(".history-content"), (node) => node.textContent),
+    ).toEqual(["first event", "last event"]);
+    expect(text(".result-history")).toContain("running");
+    expect(text(".result-history")).toContain("completed");
+    expect(text(".result-history")).toContain("wait");
+    expect(text(".result-history")).toContain("a");
+    await click(".history-header");
+    expect(document.querySelector(".result-history")).toBeNull();
+  });
+  it("hides empty timing-only events from result history", async () => {
+    const timing = (event_index: number, status: string, content = "") => ({
+      event_index,
+      status,
+      source: "tool_execution",
+      content,
+      content_length: content.length,
+    });
+    await render({
+      toolCall: call("bash", {}, { result_events: [timing(0, "started"), timing(1, "completed")] }),
+    });
+    await click(".tool-header");
+    expect(document.querySelector(".history-header")).toBeNull();
+  });
+  it("keeps the raw event index on history rows after hiding timing marks", async () => {
+    const timing = (event_index: number, status: string, content = "") => ({
+      event_index,
+      status,
+      source: "tool_execution",
+      content,
+      content_length: content.length,
+    });
+    await render({
+      toolCall: call(
+        "bash",
+        {},
+        { result_events: [timing(0, "started"), timing(1, "completed", "done")] },
+      ),
+      searchScope: { ordinal: 3, callIdx: 0 },
+    });
+    await click(".tool-header");
+    expect(text(".history-header .tool-preview")).toBe("completed: done");
+    await click(".history-header");
+    const rows = Array.from(document.querySelectorAll<HTMLElement>(".history-content"));
+    expect(rows.map((node) => node.textContent)).toEqual(["done"]);
+    expect(rows[0]!.dataset.searchBlock).toBe("3:tool-history:0.1");
+  });
+  it("localizes input, output, history and line controls without translating content", async () => {
+    setLocale("zh-CN");
+    await render({
+      content: longCommand,
+      toolCall: call(
+        "Bash",
+        {},
+        {
+          result_content: "Do not translate output",
+          result_events: [
+            {
+              event_index: 0,
+              status: "completed",
+              source: "wait",
+              content: "Do not translate history",
+              content_length: 24,
+            },
+          ],
+        },
+      ),
+    });
+    expect(document.querySelector('button[aria-label="复制输入"]')).not.toBeNull();
+    await click(".tool-header");
+    expect(text(".output-label")).toContain("输出");
+    expect(text(".show-more-btn")).toContain("30");
+    expect(text(".show-more-btn")).not.toContain("Show");
+    await click(".output-header");
+    expect(text(".output-content")).toBe("Do not translate output");
+    expect(document.querySelector('button[aria-label="复制输出"]')).not.toBeNull();
+    await click(".history-header");
+    expect(text(".history-content")).toBe("Do not translate history");
+    expect(text(".history-header")).not.toContain("History");
+  });
+});
+
+describe("ToolBlock input source and copy", () => {
+  it.each([
+    ["exec", "Bash", '  text(await tools.exec_command({cmd: "echo hello"}));\n'],
+    ["apply_patch", "Edit", "*** Begin Patch\n*** Add File: example.txt\n+hello\n*** End Patch\n"],
+    ["exec", "Bash", '<script>throw new Error("must remain text")</script>'],
+    ["exec", "Bash", '"use strict"'],
+    ["exec", "Bash", '["a"]'],
+  ])("renders and copies raw %s input verbatim", async (name, category, input_json) => {
+    await render({ toolCall: call(name, {}, { category, input_json }) });
+    await click('button[aria-label="Copy input"]');
+    expect(copyToClipboardMock).toHaveBeenCalledExactlyOnceWith(input_json);
+    expect(document.querySelector(".tool-content")).toBeNull();
+    await click(".tool-header");
+    expect(text(".tool-content")).toBe(input_json);
+    expect(document.querySelector(".tool-content script")).toBeNull();
+  });
+  it("copies the full raw script while its preview is truncated", async () => {
+    const script =
+      "  // recorded script\n" + "await step();\n".repeat(25) + 'text("final command");\n';
+    await render({ toolCall: call("exec", {}, { category: "Bash", input_json: script }) });
+    await click(".tool-header");
+    expect(text(".tool-content")).toContain("  // recorded script\n");
+    expect(text(".tool-content")).not.toContain("final command");
+    await click('button[aria-label="Copy input"]');
+    expect(copyToClipboardMock).toHaveBeenCalledExactlyOnceWith(script);
+    expect(text(".tool-content")).not.toContain("final command");
+    await click(".show-more-btn");
+    expect(text(".tool-content")).toBe(script);
+    await click(".show-more-btn");
+    expect(text(".tool-content")).not.toContain("final command");
+  });
+  it("reveals the full raw script when search targets text beyond its preview", async () => {
+    const script = "await step();\n".repeat(25) + 'text("final command");';
+    searchState.active = true;
+    searchState.current = "7:tool-input:0";
+    searchState.query = "final command";
+    await render({
+      toolCall: call("exec", {}, { category: "Bash", input_json: script }),
+      searchScope: { ordinal: 7, callIdx: 0 },
+    });
+    expect(document.querySelector(".tool-header")?.getAttribute("aria-expanded")).toBe("true");
+    expect(text(".tool-content")).toBe(script);
+  });
+  it("copies a complete task prompt without expanding", async () => {
+    const prompt = "Work on this task\nwith all details.";
+    await render({ toolCall: call("Task", { subagent_type: "Explore", prompt }) });
+    await click('button[aria-label="Copy input"]');
+    expect(copyToClipboardMock).toHaveBeenCalledWith(prompt);
+    expect(document.querySelector(".tool-content")).toBeNull();
+  });
+  it("copies all 230 Bash lines before show-all expansion", async () => {
+    const command = Array.from({ length: 230 }, (_, i) => `echo hidden-line-${i}`).join("\n");
+    await render({ toolCall: call("Bash", { command }, { category: "Bash" }) });
+    await click(".tool-header");
+    expect(text(".tool-content")).not.toContain("hidden-line-229");
+    await click('button[aria-label="Copy input"]');
+    expect(copyToClipboardMock).toHaveBeenCalledWith(command);
+    expect(text(".tool-content")).not.toContain("hidden-line-229");
+  });
+  it.each([
+    [
+      "custom Edit category",
+      call(
+        "mcp__custom__edit",
+        { old_string: "before", new_string: "after" },
+        { category: "Edit" },
+      ),
+      "-before",
+      "+after",
+    ],
+    [
+      "Write category",
+      call("write_file", { content: "first\nsecond" }, { category: "Write" }),
+      "+first",
+      "+second",
+    ],
+    ["empty Write", call("Write", { content: "" }, { category: "Write" }), "empty file", ""],
+    [
+      "apply patch fallback",
+      call("apply_patch", { patch: "*** Begin Patch\n+new\n*** End Patch" }),
+      "Begin Patch",
+      "+new",
+    ],
+    ["path without category", call("Read", { file_path: "/tmp/file.txt" }), "/tmp/file.txt", ""],
+    [
+      "path with empty category",
+      call("Read", { file_path: "/tmp/file.txt" }, { category: "" }),
+      "/tmp/file.txt",
+      "",
+    ],
+    [
+      "Cursor ApplyPatch diff",
+      call(
+        "ApplyPatch",
+        { diff: "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-before\n+after" },
+        { category: "Edit" },
+      ),
+      "-before",
+      "+after",
+    ],
+  ] as const)("renders %s from the shared source", async (_name, toolCall, first, second) => {
+    await render({ toolCall });
+    await click(".tool-header");
+    const body = text(".diff-view") || text(".tool-content");
+    expect(body).toContain(first);
+    if (second) expect(body).toContain(second);
+  });
+  it("shows a Bash command as code with its working directory as a field", async () => {
+    const command = "/bin/bash -lc \"python - <<'PY'\nprint('hi')\nPY\"";
+    await render({
+      toolCall: call("shell_command", { command, cwd: "/workspace/app" }, { category: "Bash" }),
+    });
+    await click(".tool-header");
+    expect(document.querySelector(".tool-content.tool-command code")?.textContent).toBe(command);
+    expect(text(".tool-meta")).toContain("cwd:");
+    expect(text(".tool-meta")).toContain("/workspace/app");
+    expect(text(".tool-meta")).not.toContain("cmd:");
+    await click('button[aria-label="Copy input"]');
+    expect(copyToClipboardMock).toHaveBeenCalledExactlyOnceWith(command);
+  });
+  it("copies the command when the block shows legacy segment text", async () => {
+    await render({
+      content: "$ make build",
+      toolCall: call("Bash", { command: "make build" }, { category: "Bash" }),
+    });
+    await click('button[aria-label="Copy input"]');
+    expect(copyToClipboardMock).toHaveBeenCalledExactlyOnceWith("make build");
+  });
+  it("shows the file field and the leading hunk header as one strip", async () => {
+    await render({
+      toolCall: call(
+        "Edit",
+        { file_path: "src/app.go", old_string: "before", new_string: "after" },
+        { category: "Edit" },
+      ),
+    });
+    await click(".tool-header");
+    const strip = document.querySelector(".tool-meta.diff-strip");
+    expect(strip?.textContent).toContain("src/app.go");
+    const hunk = strip?.querySelector(".diff-strip-hunk")?.textContent ?? "";
+    expect(hunk.startsWith("@@")).toBe(true);
+    // The header moves into the strip rather than repeating above the code.
+    expect(text(".diff-view")).not.toContain("@@");
+    expect(text(".diff-view")).toContain("-before");
+    expect(text(".diff-view")).toContain("+after");
+  });
+  it("keeps the leading hunk header in the diff while in-session search runs", async () => {
+    // Search offsets index the diff's source text, so the header must stay
+    // in the code block instead of moving into the strip.
+    searchState.active = true;
+    searchState.current = "3:tool-input:0";
+    searchState.query = "after";
+    await render({
+      toolCall: call(
+        "Edit",
+        { file_path: "src/app.go", old_string: "before", new_string: "after" },
+        { category: "Edit" },
+      ),
+      searchScope: { ordinal: 3, callIdx: 0 },
+    });
+    expect(document.querySelector(".tool-header")?.getAttribute("aria-expanded")).toBe("true");
+    expect(document.querySelector(".tool-meta.diff-strip")).not.toBeNull();
+    expect(document.querySelector(".diff-strip-hunk")).toBeNull();
+    const diff = text(".diff-view");
+    expect(diff.startsWith("@@")).toBe(true);
+    expect(diff).toContain("-before");
+    expect(diff).toContain("+after");
+  });
+  it("names the file in the header and copies the diff of a per-file change", async () => {
+    const diff = "@@ -1 +1 @@\n-old\n+new\n";
+    await render({
+      toolCall: call(
+        "apply_patch",
+        { path: "src/app.go", kind: { type: "update" }, diff },
+        { category: "Edit" },
+      ),
+    });
+    expect(text(".tool-header .tool-preview")).toBe("src/app.go");
+    await click(".tool-header");
+    expect(text(".diff-view")).toContain("+new");
+    await click('button[aria-label="Copy input"]');
+    expect(copyToClipboardMock).toHaveBeenCalledExactlyOnceWith(diff);
+  });
+  it("prefers supplied content over synthesized input", async () => {
+    await render({ content: "explicit source", toolCall: call("Bash", { command: "fallback" }) });
+    await click(".tool-header");
+    expect(text(".tool-content")).toBe("explicit source");
+  });
+  it("handles an absent or invalid input_json", async () => {
+    await render({
+      content: "legacy",
+      toolCall: {
+        call_index: 0,
+        category: "",
+        tool_name: "Read",
+        input_json: "{",
+      },
+    });
+    await click(".tool-header");
+    expect(text(".tool-content")).toBe("legacy");
+    await click('button[aria-label="Copy input"]');
+    expect(copyToClipboardMock).toHaveBeenCalledExactlyOnceWith("legacy");
+  });
+  it("handles a tool call without input_json", async () => {
+    await render({
+      toolCall: {
+        call_index: 0,
+        category: "",
+        tool_name: "Read",
+      },
+    });
+    await click(".tool-header");
+    expect(document.querySelector(".tool-content")).toBeNull();
+  });
+  it("handles legacy content without a structured call", async () => {
+    await render({ content: "legacy source" });
+    await click(".tool-header");
+    expect(text(".tool-content")).toBe("legacy source");
+  });
+  it("truncates long input until Show all and supports Show less", async () => {
+    await render({ toolCall: call("Bash", { command: longCommand }, { category: "Bash" }) });
+    await click(".tool-header");
+    expect(text(".tool-content")).not.toContain("hidden-line-29");
+    expect(text(".show-more-btn")).toContain("30");
+    await click(".show-more-btn");
+    expect(text(".tool-content")).toContain("hidden-line-29");
+    expect(text(".show-more-btn").toLowerCase()).toContain("show less");
+    await click(".show-more-btn");
+    expect(text(".tool-content")).not.toContain("hidden-line-29");
+  });
+  it("does not offer Show all for short input", async () => {
+    await render({ content: "one\ntwo" });
+    await click(".tool-header");
+    expect(document.querySelector(".show-more-btn")).toBeNull();
+  });
+  it("reveals hidden Bash input only for the current block", async () => {
+    searchState.active = true;
+    searchState.current = "7:tool-input:0";
+    searchState.query = "hidden-line-29";
+    await render({
+      toolCall: call("Bash", { command: longCommand }, { category: "Bash" }),
+      searchScope: { ordinal: 7, callIdx: 0 },
+    });
+    expect(document.querySelector(".tool-header")?.getAttribute("aria-expanded")).toBe("true");
+    expect(text(".tool-content")).toContain("hidden-line-29");
+    expect(text(".show-more-btn").toLowerCase()).toContain("show less");
+    expect(document.querySelector("mark")).toBeNull();
+  });
+});
+
+describe("ToolBlock collapsed previews", () => {
+  it.each([
+    ["Codex cmd", call("Bash", { cmd: "ls -la" }), "ls -la"],
+    ["Claude command", call("Bash", { command: "git status" }), "git status"],
+    [
+      "Edit counts",
+      call("Edit", { file_path: "/tmp/test.ts", old_string: "a\nb", new_string: "c\nd\ne" }),
+      "test.ts",
+    ],
+    [
+      "TodoWrite in progress",
+      call("TodoWrite", {
+        todos: [
+          { content: "pending item", status: "pending" },
+          { content: "active item", status: "in_progress" },
+        ],
+      }),
+      "active item",
+    ],
+    [
+      "TodoWrite final item",
+      call("TodoWrite", {
+        todos: [
+          { content: "first", status: "completed" },
+          { content: "last", status: "completed" },
+        ],
+      }),
+      "last",
+    ],
+    [
+      "TaskCreate subject",
+      call("TaskCreate", { subject: "Create release", description: "details" }),
+      "Create release",
+    ],
+    [
+      "TaskUpdate subject",
+      call("TaskUpdate", { taskId: "1", status: "completed", subject: "Ship release" }),
+      "Ship release",
+    ],
+    ["TaskUpdate status", call("TaskUpdate", { taskId: "1", status: "completed" }), "completed"],
+    ["Skill", call("Skill", { skill: "my-skill" }), "my-skill"],
+    ["lowercase skill", call("skill", { name: "my-skill" }), "my-skill"],
+    ["ToolSearch", call("ToolSearch", { query: "select:Read" }), "select:Read"],
+    [
+      "Task description",
+      call("Task", { description: "Explore source", prompt: "Long prompt" }),
+      "Explore source",
+    ],
+    [
+      "Task prompt fallback",
+      call("Task", { prompt: "Prompt first line\nsecond line" }),
+      "Prompt first line",
+    ],
+    [
+      "Agent",
+      call("Agent", { description: "Inspect implementation", prompt: "details" }),
+      "Inspect implementation",
+    ],
+    [
+      "Zencoder subagent",
+      call("subagent", { description: "Explore project", prompt: "details" }, { category: "Task" }),
+      "Explore project",
+    ],
+  ] as const)("preserves %s summary", async (_name, toolCall, expected) => {
+    await render({ toolCall });
+    expect(text(".tool-header .tool-preview")).toContain(expected);
+  });
+  it("prefers the structured summary to display content and retains it when expanded", async () => {
+    await render({
+      content: "legacy misleading preview",
+      toolCall: call("Bash", { command: "git status" }),
+    });
+    expect(text(".tool-preview")).toContain("git status");
+    expect(text(".tool-preview")).not.toContain("misleading");
+    await click(".tool-header");
+    expect(text(".tool-preview")).toContain("git status");
+  });
+  it("limits a multiline command preview to its first line", async () => {
+    await render({ toolCall: call("Bash", { command: "echo first\necho second" }) });
+    expect(text(".tool-preview")).toContain("echo first");
+    expect(text(".tool-preview")).not.toContain("echo second");
+  });
+  it("shows legacy preview only while collapsed", async () => {
+    await render({ content: "legacy first\nlegacy second" });
+    expect(text(".tool-preview")).toBe("legacy first");
+    await click(".tool-header");
+    expect(document.querySelector(".tool-preview")).toBeNull();
+  });
+  it("prefers structured TodoWrite summaries to legacy content", async () => {
+    await render({
+      content: "legacy todo",
+      toolCall: call("TodoWrite", { todos: [{ content: "active task", status: "in_progress" }] }),
+    });
+    expect(text(".tool-preview")).toContain("active task");
+    expect(text(".tool-preview")).not.toContain("legacy todo");
+  });
+});
+
+describe("ToolBlock result images", () => {
+  const imageResult = JSON.stringify([{ type: "input_image", image_url: SMALL_PNG_DATA_URI }]);
+  const previews = () =>
+    Array.from(document.querySelectorAll<HTMLImageElement>(".tool-images img"), (img) => ({
+      src: img.getAttribute("src"),
+      alt: img.getAttribute("alt"),
+    }));
+
+  it("shows a generated image while collapsed and keeps its payload out of the text", async () => {
+    await render({
+      toolCall: call(
+        "image_generation",
+        { id: "ig_1", status: "completed", revised_prompt: "A teal circle" },
+        {
+          category: "Tool",
+          result_content: imageResult,
+          result_events: [
+            {
+              event_index: 0,
+              status: "completed",
+              source: "image_generation_call",
+              content: imageResult,
+              content_length: imageResult.length,
+            },
+          ],
+        },
+      ),
+    });
+    expect(previews()).toEqual([{ src: SMALL_PNG_DATA_URI, alt: "A teal circle" }]);
+
+    await click(".tool-header");
+    expect(text(".tool-content")).toContain("revised_prompt: A teal circle");
+    expect(text(".tool-content")).not.toContain("base64");
+    expect(text(".output-header .tool-preview")).toMatch(/^\[Image: image\/png, \d+ bytes\]$/);
+    expect(text(".history-header .tool-preview")).toMatch(
+      /^completed: \[Image: image\/png, \d+ bytes\]$/,
+    );
+    expect(previews()).toHaveLength(1);
+  });
+
+  it("shows other tools' images only once the block is expanded", async () => {
+    await render({
+      toolCall: call(
+        "view_image",
+        { path: "/workspace/shot.png" },
+        { result_content: imageResult },
+      ),
+    });
+    expect(previews()).toEqual([]);
+    await click(".tool-header");
+    expect(previews()).toEqual([{ src: SMALL_PNG_DATA_URI, alt: "Image from tool output" }]);
+  });
+
+  it("opens the image at full size and closes it again", async () => {
+    await render({
+      toolCall: call(
+        "image_generation",
+        { revisedPrompt: "A teal circle" },
+        { result_content: imageResult },
+      ),
+    });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+
+    await click('.tool-images button[aria-label="Show image at full size"]');
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog?.getAttribute("aria-label")).toBe("A teal circle");
+    expect(dialog?.querySelector(".kit-modal-header")).toBeNull();
+    expect(dialog?.querySelector("img")?.getAttribute("src")).toBe(SMALL_PNG_DATA_URI);
+    expect(dialog?.querySelector("img")?.getAttribute("alt")).toBe("A teal circle");
+    expect(document.querySelector(".tool-header")?.getAttribute("aria-expanded")).toBe("false");
+
+    await click('[role="dialog"] button[aria-label="Close full-size image"]');
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(ui.activeModal).toBeNull();
+  });
+
+  it("loads offloaded images in the preview and the full-size view", async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response("image"));
+    vi.stubGlobal("fetch", fetchMock);
+    const createObjectURL = vi
+      .fn()
+      .mockReturnValueOnce("blob:preview")
+      .mockReturnValueOnce("blob:full-size");
+    vi.stubGlobal(
+      "URL",
+      class extends URL {
+        static override createObjectURL = createObjectURL;
+        static override revokeObjectURL = vi.fn();
+      },
+    );
+    const offloaded = JSON.stringify([
+      {
+        type: "agentsview_image",
+        version: 1,
+        text: "![Image: image/png, 3 bytes](asset://abc.png)",
+        image_ref: "asset://abc.png",
+      },
+    ]);
+    await render({ toolCall: call("image_generation", {}, { result_content: offloaded }) });
+
+    await vi.waitFor(() => {
+      expect(previews().map((preview) => preview.src)).toEqual(["blob:preview"]);
+    });
+    await click('.tool-images button[aria-label="Show image at full size"]');
+    await vi.waitFor(() => {
+      expect(document.querySelector('[role="dialog"] img')?.getAttribute("src")).toBe(
+        "blob:full-size",
+      );
+    });
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      expect.stringMatching(/\/api\/v1\/assets\/abc\.png$/),
+      expect.stringMatching(/\/api\/v1\/assets\/abc\.png$/),
+    ]);
+    ui.activeModal = null;
+  });
+
+  it("holds the app modal slot so Escape closes only the dialog", async () => {
+    await render({ toolCall: call("image_generation", {}, { result_content: imageResult }) });
+    await click('.tool-images button[aria-label="Show image at full size"]');
+    expect(ui.activeModal).toBe("toolImage");
+
+    // The global Escape handler clears the slot before it would leave the session.
+    ui.activeModal = null;
+    await tick();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("releases the modal slot when an open viewer unmounts", async () => {
+    await render({ toolCall: call("image_generation", {}, { result_content: imageResult }) });
+    await click('.tool-images button[aria-label="Show image at full size"]');
+    expect(ui.activeModal).toBe("toolImage");
+
+    for (const component of components.splice(0)) await unmount(component);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(ui.activeModal).toBeNull();
+  });
+});
+
+const docbankLookup = vi.hoisted(() => vi.fn());
+vi.mock("../../api/generated/sessions/sessions.js", () => ({
+  getApiV1SessionsByIdFileReferences: docbankLookup,
+}));
+
+it("mounts tracked Docbank rows for tool output and history events", async () => {
+  const { imageOccurrence, trackDocbank } = await import("./docbankTestHelpers.js");
+  await trackDocbank({
+    integration: "enabled",
+    occurrences: [
+      { ...imageOccurrence, size: 3, call_index: 0, tool_use_id: "read-1", tool_name: "Read" },
+      {
+        ...imageOccurrence,
+        size: 3,
+        call_index: 0,
+        tool_use_id: "read-1",
+        tool_name: "Read",
+        event_index: 0,
+      },
+    ],
+  });
+  await render({
+    sessionId: "session-1",
+    ordinal: 0,
+    toolCall: call(
+      "Read",
+      {},
+      {
+        tool_use_id: "read-1",
+        result_content: "Image removed from archive",
+        result_events: [
+          {
+            event_index: 0,
+            source: "tool_result",
+            status: "completed",
+            content: "old result",
+            content_length: 10,
+            timestamp: "2026-01-01T00:00:00Z",
+          },
+        ],
+      },
+    ),
+  });
+  await click(".tool-header");
+  expect(document.querySelectorAll(".docbank-matches")).toHaveLength(1);
+  await click(".history-header");
+  expect(document.querySelectorAll(".docbank-matches")).toHaveLength(2);
+});

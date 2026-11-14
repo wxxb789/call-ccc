@@ -1,0 +1,8 @@
+# Package patterns the gate builds, vets and tests.
+#
+# Narrowed to what call/ccc builds and its own tests, which compile the inherited packages they
+# depend on. The rest of the carried AgentsView module is excluded for reasons that are measured in
+# docs/harness.md: its postgres/clickhouse/duckdb suites start containers, internal/db needs a staged
+# sqlite3.h, and internal/sync alone exceeds a ten-minute default timeout on a 4-core host.
+./cmd/ccc/...
+./internal/ccc/...

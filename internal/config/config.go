@@ -1,0 +1,4384 @@
+package config
+
+import (
+	"bytes"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"log"
+	"maps"
+	"net"
+	"net/url"
+	"os"
+	"path/filepath"
+	"reflect"
+	"regexp"
+	"runtime"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/BurntSushi/toml"
+	"github.com/gofrs/flock"
+	"github.com/spf13/pflag"
+	"go.kenn.io/agentsview/internal/friction"
+	"go.kenn.io/agentsview/internal/jsonutil"
+	"go.kenn.io/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/pathutil"
+	"go.kenn.io/kit/atomicfile"
+	"go.kenn.io/kit/embedconfig"
+	"go.kenn.io/kit/embedlocal"
+)
+
+// TerminalConfig holds terminal launch preferences.
+type TerminalConfig struct {
+	// Mode: "auto" (detect terminal), "custom" (use CustomBin),
+	// or "clipboard" (never launch, always copy).
+	Mode string `json:"mode" toml:"mode"`
+	// CustomBin is the terminal binary path (used when Mode == "custom").
+	CustomBin string `json:"custom_bin,omitempty" toml:"custom_bin"`
+	// CustomArgs is a template for terminal args. Use {cmd} as
+	// placeholder for the resume command (e.g. "-- bash -c {cmd}").
+	CustomArgs string `json:"custom_args,omitempty" toml:"custom_args"`
+}
+
+// ProxyConfig controls an optional managed reverse proxy.
+type ProxyConfig struct {
+	// Mode enables a managed proxy implementation.
+	// Currently supported: "caddy".
+	Mode string `json:"mode,omitempty" toml:"mode"`
+	// Bin overrides the proxy executable path.
+	Bin string `json:"bin,omitempty" toml:"bin"`
+	// BindHost is the local interface/IP the proxy binds to.
+	BindHost string `json:"bind_host,omitempty" toml:"bind_host"`
+	// PublicPort selects the managed proxy listener port and public URL port.
+	PublicPort int `json:"public_port,omitempty" toml:"public_port"`
+	// TLSCert and TLSKey are used by managed HTTPS mode.
+	TLSCert string `json:"tls_cert,omitempty" toml:"tls_cert"`
+	TLSKey  string `json:"tls_key,omitempty" toml:"tls_key"`
+	// AllowedSubnets restrict inbound clients to these CIDRs.
+	AllowedSubnets []string `json:"allowed_subnets,omitempty" toml:"allowed_subnets"`
+}
+
+// PGConfig holds PostgreSQL connection settings.
+type PGConfig struct {
+	RawTenant         string `toml:"raw_tenant" json:"raw_tenant,omitempty"`
+	RawDerivation     bool   `toml:"raw_derivation" json:"raw_derivation,omitempty"`
+	RawPollSeconds    int    `toml:"raw_poll_seconds" json:"raw_poll_seconds,omitempty"`
+	RawAttemptSeconds int    `toml:"raw_attempt_seconds" json:"raw_attempt_seconds,omitempty"`
+	RawMaxAttempts    int    `toml:"raw_max_attempts" json:"raw_max_attempts,omitempty"`
+
+	URL             string   `toml:"url" json:"url"`
+	Schema          string   `toml:"schema" json:"schema"`
+	MachineName     string   `toml:"machine_name" json:"machine_name"`
+	AllowInsecure   bool     `toml:"allow_insecure" json:"allow_insecure"`
+	Projects        []string `toml:"projects" json:"projects,omitempty"`
+	ExcludeProjects []string `toml:"exclude_projects" json:"exclude_projects,omitempty"`
+	// PushVectors gates the vector phase of pg push. A pointer so an
+	// absent key defaults to enabled without a load-time default pass.
+	PushVectors *bool `toml:"push_vectors" json:"push_vectors,omitempty"`
+}
+
+// PushVectorsEnabled reports whether pg push should run its vector phase
+// for this target; unset means enabled.
+func (p PGConfig) PushVectorsEnabled() bool {
+	return p.PushVectors == nil || *p.PushVectors
+}
+
+type pgEnvOverrides struct {
+	URL         string
+	Schema      string
+	MachineName string
+}
+
+// ResolvedPGTarget is one PostgreSQL target after target selection,
+// defaulting, and default-target env overrides are applied.
+type ResolvedPGTarget struct {
+	Name      string
+	Config    PGConfig
+	IsDefault bool
+}
+
+var pgConfigKeys = map[string]struct{}{
+	"raw_tenant": {}, "raw_derivation": {}, "raw_poll_seconds": {}, "raw_attempt_seconds": {}, "raw_max_attempts": {},
+
+	"url":              {},
+	"schema":           {},
+	"machine_name":     {},
+	"allow_insecure":   {},
+	"projects":         {},
+	"exclude_projects": {},
+	"push_vectors":     {},
+}
+
+// ClickHouseConfig holds ClickHouse connection settings for push and serve.
+type ClickHouseConfig struct {
+	URL             string   `toml:"url" json:"url"`
+	Database        string   `toml:"database" json:"database"`
+	MachineName     string   `toml:"machine_name" json:"machine_name"`
+	AllowInsecure   bool     `toml:"allow_insecure" json:"allow_insecure"`
+	Projects        []string `toml:"projects" json:"projects,omitempty"`
+	ExcludeProjects []string `toml:"exclude_projects" json:"exclude_projects,omitempty"`
+	// PushVectors gates the vector phase of clickhouse push. A pointer so an
+	// omitted key keeps the default (enabled) while an explicit false opts out.
+	PushVectors *bool `toml:"push_vectors" json:"push_vectors,omitempty"`
+	// PushBatchSize sets how many sessions clickhouse push writes per batch.
+	// Each batch runs one lightweight DELETE per dependent table, so larger
+	// batches mean fewer part rewrites but more session payloads in memory
+	// at once. Nil keeps the push default.
+	PushBatchSize *int `toml:"push_batch_size" json:"push_batch_size,omitempty"`
+}
+
+// PushVectorsEnabled reports whether clickhouse push should run its vector
+// phase: on unless push_vectors = false.
+func (c ClickHouseConfig) PushVectorsEnabled() bool {
+	return c.PushVectors == nil || *c.PushVectors
+}
+
+type clickHouseEnvOverrides struct {
+	URL         string
+	Database    string
+	MachineName string
+}
+
+// ResolvedClickHouseTarget is one ClickHouse target after target selection,
+// defaulting, and default-target env overrides are applied.
+type ResolvedClickHouseTarget struct {
+	Name      string
+	Config    ClickHouseConfig
+	IsDefault bool
+}
+
+var clickHouseConfigKeys = map[string]struct{}{
+	"url":              {},
+	"database":         {},
+	"machine_name":     {},
+	"allow_insecure":   {},
+	"projects":         {},
+	"exclude_projects": {},
+	"push_vectors":     {},
+	"push_batch_size":  {},
+}
+
+// DuckDBConfig holds DuckDB mirror and Quack connection settings.
+//
+//nolint:recvcheck // Value encoding and pointer decoding intentionally implement distinct interfaces.
+type DuckDBConfig struct {
+	Path          string `toml:"path" json:"path"`
+	URL           string `toml:"url" json:"url"`
+	Token         string `toml:"token" json:"token,omitempty"`
+	MachineName   string `toml:"machine_name" json:"machine_name"`
+	AllowInsecure bool   `toml:"allow_insecure" json:"allow_insecure"`
+	// AttachTimeout bounds how long a remote Quack ATTACH (and its cheap TCP
+	// preflight) may run before the client gives up, so an unresponsive
+	// endpoint fails fast instead of hanging forever. Zero selects the
+	// package default; a negative value disables the guard.
+	AttachTimeout   time.Duration `toml:"attach_timeout" json:"attach_timeout,omitzero"`
+	Projects        []string      `toml:"projects" json:"projects,omitempty"`
+	ExcludeProjects []string      `toml:"exclude_projects" json:"exclude_projects,omitempty"`
+}
+
+type duckDBConfigJSON DuckDBConfig
+
+func (c DuckDBConfig) MarshalJSONTo(out *jsontext.Encoder) error {
+	return jsonutil.MarshalDurationFields(out, duckDBConfigJSON(c))
+}
+
+func (c *DuckDBConfig) UnmarshalJSONFrom(in *jsontext.Decoder) error {
+	var decoded duckDBConfigJSON
+	if err := jsonutil.UnmarshalDurationFields(in, &decoded); err != nil {
+		return err
+	}
+	*c = DuckDBConfig(decoded)
+	return nil
+}
+
+// VectorConfig holds settings for the optional local semantic-search
+// vector index (embeddings + vectors.db).
+type VectorConfig struct {
+	Enabled bool   `toml:"enabled" json:"enabled"`
+	DBPath  string `toml:"db_path" json:"db_path,omitempty"`
+	// IncludeAutomated controls whether automated (e.g. roborev) sessions'
+	// messages are embedded into the vector index, mirroring the
+	// IncludeAutomated convention search already uses to exclude those
+	// sessions from results by default. Default false: automated sessions
+	// are excluded from embedding, since they otherwise dominate a large
+	// archive's index with content that search already hides by default.
+	// `embeddings build --include-automated` can override this for a
+	// one-off build; see that flag's help for the scheduled-build caveat.
+	IncludeAutomated bool `toml:"include_automated" json:"include_automated"`
+	// RecallMaxRevisionLag is how many Recall corpus revisions the Recall
+	// vector index may trail the corpus and still answer vector and hybrid
+	// queries. Every insert, delete, or text edit of an accepted Recall entry
+	// is one revision, so while extraction runs the index trails by a few
+	// until the next build. Entries newer than the index are missing only
+	// from the vector ranking; hybrid still finds them by keyword. 0 requires
+	// an exact match, which was the only behavior before this setting.
+	// Default 256.
+	RecallMaxRevisionLag int                    `toml:"recall_max_revision_lag" json:"recall_max_revision_lag"`
+	Embeddings           VectorEmbeddingsConfig `toml:"embeddings" json:"embeddings"`
+	Embed                VectorEmbedConfig      `toml:"embed" json:"embed"`
+}
+
+// VectorEmbeddingsConfig describes the embedding space — the model identity
+// every server must share — and the named servers that can encode it.
+//
+// Model identity (model, dimension, request_dimensions, max_input_chars,
+// query_prefix, document_prefix, input_suffix) is deliberately global rather
+// than per-server: it joins the generation fingerprint, and query vectors are
+// only comparable to stored document vectors from the same space.
+// ModelContextTokens is also global because it describes the model, but only
+// controls conservative request batching and does not join the fingerprint.
+// Servers differ only in transport and capacity, so a build run on any server
+// produces vectors every other server's queries can search.
+type VectorEmbeddingsConfig struct {
+	Model     string `toml:"model" json:"model"`
+	Dimension int    `toml:"dimension" json:"dimension"`
+	// RequestDimensions, when true, sends Dimension as the OpenAI-compatible
+	// "dimensions" request field — for documents at build time and queries at
+	// search time alike — asking the endpoint for Matryoshka-reduced vectors
+	// of exactly that length (e.g. Qwen3-Embedding through Ollama). Requires
+	// a model and endpoint that support dimension selection; when false (the
+	// default) the field is never sent and Dimension only validates response
+	// length. Part of the generation fingerprint: enabling it re-embeds the
+	// archive on the next build.
+	RequestDimensions bool `toml:"request_dimensions" json:"request_dimensions,omitempty"`
+	// MaxInputChars caps the rune length of each chunk sent for
+	// embedding. Default 8192.
+	MaxInputChars int `toml:"max_input_chars" json:"max_input_chars"`
+	// ModelContextTokens is the maximum tokens the model accepts for one
+	// input. When a server sets MaxBatchTokens, builds conservatively charge
+	// this full amount for every input while composing request batches.
+	// Zero leaves token-budget batching disabled. Default 0.
+	ModelContextTokens int `toml:"model_context_tokens" json:"model_context_tokens,omitempty"`
+	// QueryPrefix is prepended verbatim to search queries before embedding.
+	// It allows instruction-tuned models to distinguish queries from indexed
+	// documents. Changing it cuts a new vector generation. Default empty.
+	QueryPrefix string `toml:"query_prefix" json:"query_prefix,omitempty"`
+	// DocumentPrefix is prepended verbatim to every document chunk before
+	// embedding. Changing it cuts a new vector generation. Default empty.
+	DocumentPrefix string `toml:"document_prefix" json:"document_prefix,omitempty"`
+	// InputSuffix is appended verbatim to every text sent for embedding
+	// (documents and queries alike). Some models expect a terminator the
+	// serving layer does not add — e.g. Qwen3-Embedding under llama.cpp
+	// wants "<|endoftext|>" appended client-side. Changing it cuts a new
+	// vector generation. Default empty.
+	InputSuffix string `toml:"input_suffix" json:"input_suffix,omitempty"`
+	// DefaultServer names the server used for search-time query encoding
+	// and for builds that don't select one (scheduled builds, and
+	// `embeddings build` without --using). Optional when exactly one
+	// server is defined.
+	DefaultServer string `toml:"default_server" json:"default_server,omitempty"`
+	// Servers is the set of named OpenAI-compatible endpoints that serve
+	// Model, keyed by the name `embeddings build --using <name>` selects.
+	// Nil means the table was omitted; an empty map means it was explicit.
+	Servers map[string]VectorEmbeddingsServerConfig `toml:"servers" json:"servers"`
+}
+
+// VectorEmbeddingsServerConfig is one named embeddings server: transport
+// and capacity settings only; the model identity lives on
+// VectorEmbeddingsConfig.
+type VectorEmbeddingsServerConfig struct {
+	Endpoint string `toml:"endpoint" json:"endpoint"`
+	Local    bool   `toml:"local" json:"local,omitempty"`
+	// OllamaCPUFallback retries invalid Metal vectors once through Ollama's
+	// native CPU embedding path. It is transport-only and defaults to false.
+	OllamaCPUFallback bool `toml:"ollama_cpu_fallback" json:"ollama_cpu_fallback,omitempty"`
+	// APIKeyEnv names the environment variable holding the API key.
+	// Empty means anonymous access.
+	APIKeyEnv string `toml:"api_key_env" json:"api_key_env,omitempty"`
+	// BatchSize is the number of inputs sent per HTTP call. Default 32, or 8
+	// for a built-in server (no endpoint).
+	BatchSize int `toml:"batch_size" json:"batch_size"`
+	// MaxBatchTokens is the provider's maximum total input tokens per HTTP
+	// call. When set with ModelContextTokens, builds reduce BatchSize so the
+	// worst-case request remains within this cap. Zero disables the cap.
+	MaxBatchTokens int `toml:"max_batch_tokens" json:"max_batch_tokens,omitempty"`
+	// Concurrency is the number of documents embedded in parallel during a
+	// build against this server. Sequential requests leave a build
+	// round-trip-bound against remote endpoints, so the default is 4;
+	// servers that process one request at a time simply queue the extras.
+	// A built-in server runs on the CPU, so its default is 1.
+	Concurrency int `toml:"concurrency" json:"concurrency"`
+	// Timeout is a parseable duration string applied to each HTTP
+	// call. Default "30s", or "5m" for a built-in server (no endpoint).
+	Timeout string `toml:"timeout" json:"timeout"`
+	// MaxRetries is the maximum total attempts on retryable errors other than
+	// document-build 429 rate limits, which retry until success or
+	// cancellation instead of consuming this budget (see
+	// vector.EncoderConfig.RetryRateLimits). Other 4xx responses fail fast;
+	// 0 means one attempt. Default 3.
+	MaxRetries int `toml:"max_retries" json:"max_retries"`
+
+	// apiKey is read from AGENTSVIEW_EMBEDDINGS_API_KEY or
+	// AGENTSVIEW_EMBEDDINGS_API_KEY_FILE for the deployment server; it takes
+	// precedence over APIKeyEnv.
+	apiKey string
+}
+
+const defaultNomicModel = "nomic-embed-text"
+
+func isNomicModel(model string) bool {
+	return model == defaultNomicModel || model == "nomic-embed-text:latest" || model == "nomic-embed-text:v1.5"
+}
+
+// ServerNames returns the available server names, including automatic
+// discovery when an untagged Nomic recipe has no configured server table.
+func (c VectorEmbeddingsConfig) ServerNames() []string {
+	if c.Servers == nil && c.Model == defaultNomicModel {
+		return []string{"automatic"}
+	}
+	return sortedServerNames(c.Servers)
+}
+
+// ResolvedDefaultServer returns the server name used when no explicit
+// choice is made: default_server when set, otherwise the only defined
+// server, otherwise "".
+func (c VectorEmbeddingsConfig) ResolvedDefaultServer() string {
+	if c.DefaultServer != "" {
+		return c.DefaultServer
+	}
+	if names := c.ServerNames(); len(names) == 1 {
+		return names[0]
+	}
+	return ""
+}
+
+// Server resolves name to a defined embeddings server; "" means the
+// default. The resolved name is returned alongside the server so callers
+// can report which server a build actually used.
+func (c VectorEmbeddingsConfig) Server(name string) (string, VectorEmbeddingsServerConfig, error) {
+	if name == "" {
+		name = c.ResolvedDefaultServer()
+	}
+	s, ok := c.Servers[name]
+	if !ok && name == "automatic" && c.Servers == nil && c.Model == defaultNomicModel {
+		return name, normalizedEmbeddingsServers(map[string]VectorEmbeddingsServerConfig{"automatic": {}}, toml.MetaData{})[name], nil
+	}
+	if !ok {
+		return "", VectorEmbeddingsServerConfig{}, fmt.Errorf(
+			"[vector.embeddings] no server named %q; define it under [vector.embeddings.servers.%s] (have: %s)",
+			name, name, strings.Join(c.ServerNames(), ", "))
+	}
+	return name, s, nil
+}
+
+// Transport defaults for a server with an endpoint, which is usually a
+// remote API or a GPU-backed local server.
+const (
+	defaultEmbeddingsBatchSize   = 32
+	defaultEmbeddingsConcurrency = 4
+	defaultEmbeddingsTimeout     = "30s"
+)
+
+// Transport defaults for a built-in server (no endpoint: automatic discovery
+// or local = true). Kit's shared local server runs the model on the CPU,
+// where one full-context input can take seconds, so a request carries fewer
+// inputs, builds send one request at a time, and each request may run longer.
+const (
+	defaultBuiltinEmbeddingsBatchSize   = embedlocal.BatchItems
+	defaultBuiltinEmbeddingsConcurrency = 1
+	defaultBuiltinEmbeddingsTimeout     = embedlocal.RequestTimeout
+)
+
+// normalizedEmbeddingsServers fills each named server's unset transport
+// fields with their defaults: batch_size 32, concurrency 4, and timeout
+// "30s" for a server with an endpoint; batch_size 8, concurrency 1, and
+// timeout "5m" for a built-in server; max_retries 3 for both.
+// meta.IsDefined distinguishes "unset" (apply the default) from an explicit
+// zero — an explicit max_retries = 0 disables retries, and an explicit zero
+// batch_size/concurrency stays zero so validation rejects it instead of
+// silently substituting the default.
+func normalizedEmbeddingsServers(
+	servers map[string]VectorEmbeddingsServerConfig, meta toml.MetaData,
+) map[string]VectorEmbeddingsServerConfig {
+	out := make(map[string]VectorEmbeddingsServerConfig, len(servers))
+	for name, s := range servers {
+		batchSize := defaultEmbeddingsBatchSize
+		concurrency := defaultEmbeddingsConcurrency
+		timeout := defaultEmbeddingsTimeout
+		if s.Endpoint == "" {
+			batchSize = defaultBuiltinEmbeddingsBatchSize
+			concurrency = defaultBuiltinEmbeddingsConcurrency
+			timeout = defaultBuiltinEmbeddingsTimeout.String()
+		}
+		if !meta.IsDefined("vector", "embeddings", "servers", name, "batch_size") {
+			s.BatchSize = batchSize
+		}
+		if !meta.IsDefined("vector", "embeddings", "servers", name, "concurrency") {
+			s.Concurrency = concurrency
+		}
+		if s.Timeout == "" {
+			s.Timeout = timeout
+		}
+		if !meta.IsDefined("vector", "embeddings", "servers", name, "max_retries") {
+			s.MaxRetries = 3
+		}
+		out[name] = s
+	}
+	return out
+}
+
+// sortedServerNames returns the configured server names in sorted order,
+// for deterministic error messages and validation.
+func sortedServerNames(servers map[string]VectorEmbeddingsServerConfig) []string {
+	names := make([]string, 0, len(servers))
+	for name := range servers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// embeddingsServerKey reports whether name is a toml key of
+// VectorEmbeddingsServerConfig, read from the struct tags so the answer
+// follows the type.
+func embeddingsServerKey(name string) bool {
+	for field := range reflect.TypeFor[VectorEmbeddingsServerConfig]().Fields() {
+		tag, _, _ := strings.Cut(field.Tag.Get("toml"), ",")
+		if tag == name {
+			return true
+		}
+	}
+	return false
+}
+
+// rejectUnknownVectorKeys errors on any key under [vector] that no config
+// field decodes. The TOML decoder accepts such keys and the loader then
+// drops them, so the setting looks applied and has no effect; #1866 is
+// max_batch_tokens written under [vector.embeddings] doing exactly that.
+// Check disabled sections too so a misspelled enabled key cannot bypass this.
+func rejectUnknownVectorKeys(meta toml.MetaData) error {
+	for _, key := range meta.Undecoded() {
+		if key[0] != "vector" {
+			continue
+		}
+		if len(key) == 3 && key[1] == "embeddings" && embeddingsServerKey(key[2]) {
+			return fmt.Errorf(
+				"[vector.embeddings] %s belongs under [vector.embeddings.servers.<name>]; "+
+					"a value written here has no effect",
+				key[2])
+		}
+		return fmt.Errorf(
+			"%s: unknown config key; a value written here has no effect",
+			key.String())
+	}
+	return nil
+}
+
+// VectorEmbedConfig configures when the daemon runs embedding work.
+type VectorEmbedConfig struct {
+	// RunAfterSync enables debounced embedding of sync deltas.
+	// Defaults to true when unset; read it via RunAfterSyncEnabled.
+	RunAfterSync *bool `toml:"run_after_sync" json:"run_after_sync,omitempty"`
+	// Recall explicitly permits automatic Recall embedding. It defaults to
+	// false because Recall entries may contain distilled private content.
+	Recall bool `toml:"recall" json:"recall"`
+	// BackstopInterval is a parseable duration string for a periodic
+	// full rescan. Default "24h"; a negative duration disables it.
+	BackstopInterval string `toml:"backstop_interval" json:"backstop_interval"`
+}
+
+// DefaultRecallMaxRevisionLag is the default [vector]
+// recall_max_revision_lag: room for about 50 minutes of steady extraction
+// between Recall index builds.
+const DefaultRecallMaxRevisionLag = 256
+
+// Validate checks the vector config for internal consistency. It is a
+// no-op when the section is disabled.
+func (c VectorConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	if c.RecallMaxRevisionLag < 0 {
+		return fmt.Errorf(
+			"[vector] recall_max_revision_lag must be 0 or greater, got %d",
+			c.RecallMaxRevisionLag)
+	}
+	if c.Embeddings.Model == "" {
+		return errors.New("[vector.embeddings] model is required when [vector] is enabled")
+	}
+	if c.Embeddings.Dimension <= 0 {
+		return errors.New("[vector.embeddings] dimension must be greater than 0 when [vector] is enabled")
+	}
+	if c.Embeddings.MaxInputChars <= 0 {
+		return fmt.Errorf(
+			"[vector.embeddings] max_input_chars must be greater than 0, got %d",
+			c.Embeddings.MaxInputChars)
+	}
+	if c.Embeddings.ModelContextTokens < 0 {
+		return fmt.Errorf(
+			"[vector.embeddings] model_context_tokens must not be negative, got %d",
+			c.Embeddings.ModelContextTokens)
+	}
+	if err := c.Embeddings.validateServers(); err != nil {
+		return err
+	}
+	backstop, err := time.ParseDuration(c.Embed.BackstopInterval)
+	if err != nil {
+		return fmt.Errorf("[vector.embed] invalid backstop_interval %q: %w", c.Embed.BackstopInterval, err)
+	}
+	if backstop == 0 {
+		return errors.New("[vector.embed] backstop_interval must not be zero; " +
+			"use a negative value to disable or omit for the 24h default")
+	}
+	return nil
+}
+
+// ResolvedDBPath returns DBPath if set, else <dataDir>/vectors.db.
+func (c VectorConfig) ResolvedDBPath(dataDir string) string {
+	if c.DBPath != "" {
+		return c.DBPath
+	}
+	return filepath.Join(dataDir, "vectors.db")
+}
+
+// EmbedModel maps the configured model identity onto kit's shared model
+// contract. Vectors are stored as the endpoint returns them (no client-side
+// normalization) so existing generations keep their exact values.
+func (c VectorEmbeddingsConfig) EmbedModel() embedconfig.Model {
+	return embedconfig.Model{
+		Name:              c.Model,
+		Dimensions:        c.Dimension,
+		Metric:            embedconfig.MetricCosine,
+		Normalization:     embedconfig.NormalizationNone,
+		RequestDimensions: c.RequestDimensions,
+	}
+}
+
+// EmbedRoles maps the configured prefixes and the shared input suffix onto
+// kit's role contract: documents get document_prefix, queries get
+// query_prefix, and both get input_suffix.
+func (c VectorEmbeddingsConfig) EmbedRoles() embedconfig.Roles {
+	return embedconfig.Roles{
+		DocumentPrefix: c.DocumentPrefix,
+		DocumentSuffix: c.InputSuffix,
+		QueryPrefix:    c.QueryPrefix,
+		QuerySuffix:    c.InputSuffix,
+		InputType:      embedconfig.InputTypeNone,
+	}
+}
+
+// EmbedDeployment maps the server endpoint onto kit's deployment contract.
+// agentsview has always accepted plaintext endpoints on the local network, so
+// private addresses and host names are trusted.
+func (c VectorEmbeddingsServerConfig) EmbedDeployment() embedconfig.Deployment {
+	return embedconfig.Deployment{BaseURL: c.Endpoint, TrustPrivateNetwork: true}
+}
+
+// EmbedTransport maps the server timeout onto kit's transport contract.
+func (c VectorEmbeddingsServerConfig) EmbedTransport() (embedconfig.Transport, error) {
+	timeout, err := time.ParseDuration(c.Timeout)
+	if err != nil {
+		return embedconfig.Transport{}, fmt.Errorf("invalid timeout %q: %w", c.Timeout, err)
+	}
+	return embedconfig.Transport{Timeout: timeout}, nil
+}
+
+// APIKey returns a deployment-provided key when set. Otherwise it reads the
+// environment variable named by APIKeyEnv, returning "" when unset.
+func (c VectorEmbeddingsServerConfig) APIKey() string {
+	if c.apiKey != "" {
+		return c.apiKey
+	}
+	if c.APIKeyEnv == "" {
+		return ""
+	}
+	return os.Getenv(c.APIKeyEnv)
+}
+
+// validateServers checks available servers, their default and transport
+// settings, and the dimensions supported by local Nomic.
+func (c VectorEmbeddingsConfig) validateServers() error {
+	names := c.ServerNames()
+	if len(names) == 0 {
+		return errors.New("[vector.embeddings] at least one server is required when [vector] is enabled; " +
+			"define one under [vector.embeddings.servers.<name>]")
+	}
+	if c.DefaultServer == "" && len(names) > 1 {
+		return fmt.Errorf(
+			"[vector.embeddings] default_server is required when more than one server is defined (have: %s)",
+			strings.Join(names, ", "))
+	}
+	if c.DefaultServer != "" {
+		if !slices.Contains(names, c.DefaultServer) {
+			return fmt.Errorf(
+				"[vector.embeddings] default_server %q is not a defined server (have: %s)",
+				c.DefaultServer, strings.Join(names, ", "))
+		}
+	}
+	local := c.Servers == nil
+	for _, name := range sortedServerNames(c.Servers) {
+		if c.Servers[name].Local && !isNomicModel(c.Model) {
+			return fmt.Errorf("[vector.embeddings.servers.%s] local requires nomic-embed-text; changing models requires rebuilding the index", name)
+		}
+		local = local || c.Servers[name].Local
+		if err := c.Servers[name].validate(name, c.ModelContextTokens); err != nil {
+			return err
+		}
+	}
+	if local {
+		if c.Dimension > 768 {
+			return fmt.Errorf("[vector.embeddings] dimension must be at most 768 for local %q, got %d", c.Model, c.Dimension)
+		}
+		if c.Dimension < 768 && !c.RequestDimensions {
+			return errors.New("[vector.embeddings] request_dimensions must be true for local Nomic dimensions below 768")
+		}
+	}
+	return nil
+}
+
+// validate checks one named server's transport settings.
+func (c VectorEmbeddingsServerConfig) validate(name string, modelContextTokens int) error {
+	section := fmt.Sprintf("[vector.embeddings.servers.%s]", name)
+	if c.Local && c.Endpoint != "" {
+		return fmt.Errorf("%s local cannot be combined with endpoint", section)
+	}
+	if c.Endpoint == "" && !c.Local {
+		return fmt.Errorf("%s endpoint is required", section)
+	}
+	endpoint, err := c.EmbedDeployment().Canonical()
+	if err != nil && !c.Local {
+		return fmt.Errorf("%s %w", section, err)
+	}
+	if c.OllamaCPUFallback && !strings.HasSuffix(endpoint, "/v1") {
+		return fmt.Errorf(
+			"%s ollama_cpu_fallback requires an endpoint ending in /v1", section)
+	}
+	if c.BatchSize <= 0 {
+		return fmt.Errorf("%s batch_size must be greater than 0, got %d", section, c.BatchSize)
+	}
+	if c.MaxBatchTokens < 0 {
+		return fmt.Errorf(
+			"%s max_batch_tokens must not be negative, got %d", section, c.MaxBatchTokens)
+	}
+	if c.MaxBatchTokens > 0 && modelContextTokens <= 0 {
+		return fmt.Errorf(
+			"%s max_batch_tokens requires [vector.embeddings] model_context_tokens", section)
+	}
+	if c.MaxBatchTokens > 0 && c.MaxBatchTokens < modelContextTokens {
+		return fmt.Errorf(
+			"%s max_batch_tokens (%d) must be at least model_context_tokens (%d)",
+			section, c.MaxBatchTokens, modelContextTokens)
+	}
+	if c.Concurrency <= 0 {
+		return fmt.Errorf("%s concurrency must be greater than 0, got %d", section, c.Concurrency)
+	}
+	if c.MaxRetries < 0 {
+		return fmt.Errorf("%s max_retries must be >= 0, got %d", section, c.MaxRetries)
+	}
+	timeout, err := time.ParseDuration(c.Timeout)
+	if err != nil {
+		return fmt.Errorf("%s invalid timeout %q: %w", section, c.Timeout, err)
+	}
+	if timeout <= 0 {
+		return fmt.Errorf("%s timeout must be greater than 0, got %q", section, c.Timeout)
+	}
+	return nil
+}
+
+// RunAfterSyncEnabled reports whether embedding should run after sync,
+// defaulting to true when RunAfterSync is unset.
+func (c VectorEmbedConfig) RunAfterSyncEnabled() bool {
+	if c.RunAfterSync == nil {
+		return true
+	}
+	return *c.RunAfterSync
+}
+
+// AutomatedConfig holds user-supplied additions to the
+// automated-session classifier. Parse-only; all semantic
+// normalization (trim, dedupe, length cap, built-in overlap
+// drop) happens inside the db setters.
+type AutomatedConfig struct {
+	Prefixes     []string `toml:"prefixes" json:"prefixes,omitempty"`
+	Substrings   []string `toml:"substrings" json:"substrings,omitempty"`
+	ExactMatches []string `toml:"exact_matches" json:"exact_matches,omitempty"`
+}
+
+// DefaultFrictionBackfillDays bounds catch-up to recent complete local dates.
+const DefaultFrictionBackfillDays = 7
+
+// FrictionConfig controls the opt-in Friction Log review.
+type FrictionConfig struct {
+	// Enabled reviews changed sessions in the background after each sync.
+	Enabled bool `toml:"enabled" json:"enabled,omitempty"`
+	// Timezone is the IANA zone digests are dated in. An empty value uses
+	// the local zone; AGENTSVIEW_FRICTION_TZ overrides this setting.
+	Timezone string `json:"timezone,omitempty" toml:"timezone"`
+	// BackfillDays bounds catch-up to recent complete local dates.
+	BackfillDays int `json:"backfill_days" toml:"backfill_days"`
+	// SeatPatterns are globs over session file paths with one {seat} capture.
+	SeatPatterns []string `json:"seat_patterns,omitempty" toml:"seat_patterns"`
+	// Kata is the hub's automatic filing policy.
+	Kata FrictionKataConfig `json:"kata,omitzero" toml:"kata"`
+}
+
+// FrictionKataConfig controls automatic filing of Friction Log patterns to
+// Kata. Only the filing hub with [kata] enabled acts on it.
+type FrictionKataConfig struct {
+	// AutoFile files recent unlinked patterns every hour.
+	AutoFile bool `json:"auto_file,omitempty" toml:"auto_file"`
+	// Kinds limits automatic filing to these kinds; empty means every kind
+	// that can be filed.
+	Kinds []string `json:"kinds,omitempty" toml:"kinds"`
+	// MinSessions is how many sessions a pattern must appear in before it
+	// is filed automatically; 0 means DefaultFrictionAutoFileMinSessions.
+	MinSessions int `json:"min_sessions,omitempty" toml:"min_sessions"`
+}
+
+// DefaultFrictionAutoFileMinSessions files only patterns that recur across
+// sessions. Correction, pattern and deferral fingerprints include the
+// session, so at this default they are filed only by hand.
+const DefaultFrictionAutoFileMinSessions = 2
+
+// FileMinSessions returns the session count automatic filing requires.
+func (c FrictionKataConfig) FileMinSessions() int {
+	if c.MinSessions == 0 {
+		return DefaultFrictionAutoFileMinSessions
+	}
+	return c.MinSessions
+}
+
+// FileKinds returns the kinds automatic filing considers.
+func (c FrictionKataConfig) FileKinds() []friction.Kind {
+	if len(c.Kinds) == 0 {
+		return friction.FileableKinds
+	}
+	out := make([]friction.Kind, 0, len(c.Kinds))
+	for _, k := range c.Kinds {
+		out = append(out, friction.Kind(k))
+	}
+	return out
+}
+
+// Validate checks the zone name, backfill bound, and seat patterns.
+func (c FrictionConfig) Validate() error {
+	if tz := strings.TrimSpace(c.Timezone); tz != "" {
+		if tz == "Local" {
+			return fmt.Errorf("[friction] timezone %q is not an IANA zone", tz)
+		}
+		if _, err := time.LoadLocation(tz); err != nil {
+			return fmt.Errorf("[friction] timezone %q is not an IANA zone", tz)
+		}
+	}
+	if c.BackfillDays < 1 || c.BackfillDays > 3650 {
+		return errors.New("[friction] backfill_days must be between 1 and 3650")
+	}
+	for _, p := range c.SeatPatterns {
+		if strings.Count(p, "{seat}") != 1 {
+			return fmt.Errorf("[friction] seat_patterns entry %q must contain exactly one {seat}", p)
+		}
+	}
+	if _, err := friction.CompileSeatPatterns(c.SeatPatterns); err != nil {
+		return fmt.Errorf("[friction] seat_patterns: %w", err)
+	}
+	seen := make(map[string]bool, len(c.Kata.Kinds))
+	for _, k := range c.Kata.Kinds {
+		if !friction.Fileable(friction.Kind(k)) {
+			return fmt.Errorf("[friction.kata] kinds entry %q cannot be filed; use correction, error, workaround, deferral or pattern", k)
+		}
+		if seen[k] {
+			return fmt.Errorf("[friction.kata] kinds entry %q repeats", k)
+		}
+		seen[k] = true
+	}
+	if c.Kata.MinSessions < 0 {
+		return fmt.Errorf("[friction.kata] min_sessions must be at least 1, got %d", c.Kata.MinSessions)
+	}
+	return nil
+}
+
+// AgentConfig holds per-agent runtime overrides.
+type AgentConfig struct {
+	Binary      string `json:"binary,omitempty" toml:"binary"`
+	Sandbox     string `json:"sandbox,omitempty" toml:"sandbox"`
+	AllowUnsafe bool   `json:"allow_unsafe,omitempty" toml:"allow_unsafe"`
+}
+
+// InsightsConfig controls an optional OpenAI-compatible chat-completions
+// endpoint for generated insights.
+type InsightsConfig struct {
+	Endpoint  string `json:"endpoint,omitempty" toml:"endpoint"`
+	Model     string `json:"model,omitempty" toml:"model"`
+	APIKeyEnv string `json:"api_key_env,omitempty" toml:"api_key_env"`
+	AllowHTTP bool   `json:"allow_http,omitempty" toml:"allow_http"`
+	// DefaultAgent selects the agent CLI insight generation uses when a
+	// request does not choose one. Empty keeps DefaultInsightAgent.
+	DefaultAgent string `json:"default_agent,omitempty" toml:"default_agent"`
+}
+
+// DefaultInsightAgent is the insight agent used when neither the request nor
+// [insights] default_agent selects one.
+const DefaultInsightAgent = "claude"
+
+// insightAgentNames lists the agent CLIs that can generate stored insights,
+// in display order. internal/insight re-exports the same names so config
+// validation and generation stay in step.
+var insightAgentNames = []string{
+	"claude",
+	"codex",
+	"copilot",
+	"gemini",
+	"kiro",
+}
+
+// InsightAgentNames returns the supported insight agent names in display
+// order.
+func InsightAgentNames() []string {
+	return slices.Clone(insightAgentNames)
+}
+
+// ParseInsightAgent normalizes an insight agent name and rejects names this
+// build cannot generate with.
+func ParseInsightAgent(value string) (string, error) {
+	name := strings.ToLower(strings.TrimSpace(value))
+	if slices.Contains(insightAgentNames, name) {
+		return name, nil
+	}
+	return "", fmt.Errorf(
+		"insight agent must be one of %s (got %q)",
+		strings.Join(insightAgentNames, ", "), value,
+	)
+}
+
+// APIKey reads the configured key from the environment. The key itself is
+// intentionally never part of the serialized configuration.
+func (c InsightsConfig) APIKey() string {
+	if strings.TrimSpace(c.APIKeyEnv) == "" {
+		return ""
+	}
+	return os.Getenv(strings.TrimSpace(c.APIKeyEnv))
+}
+
+// Validate checks endpoint intent, transport safety, and the default agent.
+func (c InsightsConfig) Validate() error {
+	if strings.TrimSpace(c.DefaultAgent) != "" {
+		if _, err := ParseInsightAgent(c.DefaultAgent); err != nil {
+			return fmt.Errorf("[insights] %w", err)
+		}
+	}
+	endpoint := strings.TrimSpace(c.Endpoint)
+	model := strings.TrimSpace(c.Model)
+	configured := endpoint != "" || model != "" ||
+		strings.TrimSpace(c.APIKeyEnv) != "" || c.AllowHTTP
+	if !configured {
+		return nil
+	}
+	if endpoint == "" || model == "" {
+		return errors.New("[insights] endpoint and model are required together")
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("[insights] endpoint %q must be an http(s) URL", RedactedEndpoint(endpoint))
+	}
+	if u.User != nil {
+		return fmt.Errorf("[insights] endpoint must not contain URL credentials: %q", RedactedEndpoint(endpoint))
+	}
+	if err := ValidateExtractTransport(u, c.AllowHTTP); err != nil {
+		return fmt.Errorf("[insights] %w", err)
+	}
+	return nil
+}
+
+type CustomModelRate struct {
+	InputMicrodollarsPerMTok         int64 `json:"input_microdollars_per_mtok" toml:"input_microdollars_per_mtok"`
+	OutputMicrodollarsPerMTok        int64 `json:"output_microdollars_per_mtok" toml:"output_microdollars_per_mtok"`
+	CacheCreationMicrodollarsPerMTok int64 `json:"cache_creation_microdollars_per_mtok,omitempty" toml:"cache_creation_microdollars_per_mtok"`
+	// Zero means no separate 1h rate: 1h-TTL cache writes then bill at
+	// cache_creation_microdollars_per_mtok.
+	CacheCreation1hMicrodollarsPerMTok int64 `json:"cache_creation_1h_microdollars_per_mtok,omitempty" toml:"cache_creation_1h_microdollars_per_mtok"`
+	CacheReadMicrodollarsPerMTok       int64 `json:"cache_read_microdollars_per_mtok,omitempty" toml:"cache_read_microdollars_per_mtok"`
+	// PriceAs prices the model exactly like this catalog model, including
+	// its long-context tiers and later catalog updates. It excludes the
+	// rate fields.
+	PriceAs string `json:"price_as,omitempty" toml:"price_as,omitempty"`
+}
+
+var customModelRateFields = []string{
+	"input_microdollars_per_mtok", "output_microdollars_per_mtok",
+	"cache_creation_microdollars_per_mtok",
+	"cache_creation_1h_microdollars_per_mtok",
+	"cache_read_microdollars_per_mtok",
+}
+
+// PricingAliases returns the price_as mappings in custom, keyed by the
+// reported model name.
+func PricingAliases(custom map[string]CustomModelRate) map[string]string {
+	out := make(map[string]string)
+	for model, rate := range custom {
+		if rate.PriceAs != "" {
+			out[model] = rate.PriceAs
+		}
+	}
+	return out
+}
+
+func decodeCustomModelPricing(data string) (map[string]CustomModelRate, error) {
+	var decoded struct {
+		CustomModelPricing map[string]CustomModelRate `toml:"custom_model_pricing"`
+	}
+	metadata, err := toml.Decode(data, &decoded)
+	if err != nil {
+		return nil, fmt.Errorf("parsing config: %w", err)
+	}
+	for _, key := range metadata.Undecoded() {
+		if len(key) != 3 || key[0] != "custom_model_pricing" {
+			continue
+		}
+		return nil, fmt.Errorf(
+			"%s: unsupported pricing field; use price_as, input_microdollars_per_mtok, output_microdollars_per_mtok, cache_creation_microdollars_per_mtok, cache_creation_1h_microdollars_per_mtok, or cache_read_microdollars_per_mtok",
+			key.String(),
+		)
+	}
+	for model, rate := range decoded.CustomModelPricing {
+		hasRates := slices.ContainsFunc(customModelRateFields, func(field string) bool {
+			return metadata.IsDefined("custom_model_pricing", model, field)
+		})
+		if !metadata.IsDefined("custom_model_pricing", model, "price_as") {
+			if rate.InputMicrodollarsPerMTok < 0 ||
+				rate.OutputMicrodollarsPerMTok < 0 ||
+				rate.CacheCreationMicrodollarsPerMTok < 0 ||
+				rate.CacheCreation1hMicrodollarsPerMTok < 0 ||
+				rate.CacheReadMicrodollarsPerMTok < 0 {
+				return nil, fmt.Errorf(
+					"custom_model_pricing.%s: rates must not be negative", model)
+			}
+			continue
+		}
+		target := rate.PriceAs
+		switch {
+		case hasRates:
+			return nil, fmt.Errorf(
+				"custom_model_pricing.%q: price_as cannot be combined with rate fields", model)
+		case target == "":
+			return nil, fmt.Errorf("custom_model_pricing.%q: price_as must not be empty", model)
+		}
+	}
+	return decoded.CustomModelPricing, nil
+}
+
+type RemoteTransport string
+
+const (
+	RemoteTransportHTTP RemoteTransport = "http"
+	RemoteTransportSSH  RemoteTransport = "ssh"
+)
+
+type ChartPalette string
+
+const (
+	ChartPaletteAgentsview ChartPalette = "agentsview"
+	ChartPaletteMatplotlib ChartPalette = "matplotlib"
+	ChartPaletteColorblind ChartPalette = "colorblind"
+	DefaultChartPalette                 = ChartPaletteAgentsview
+)
+
+func ParseChartPalette(value string) (ChartPalette, error) {
+	palette := ChartPalette(value)
+	switch palette {
+	case ChartPaletteAgentsview, ChartPaletteMatplotlib, ChartPaletteColorblind:
+		return palette, nil
+	default:
+		return "", fmt.Errorf(
+			`chart_palette must be "agentsview", "matplotlib", or "colorblind" (got %q)`,
+			value,
+		)
+	}
+}
+
+// ArchiveContent selects how much session content the SQLite archive stores.
+// The policy applies when rows are written; it never rewrites rows already in
+// the archive.
+type ArchiveContent string
+
+const (
+	// ArchiveContentFull stores every parsed field.
+	ArchiveContentFull ArchiveContent = "full"
+	// ArchiveContentTranscripts keeps message text, thinking text, titles,
+	// and tool call metadata while dropping tool inputs and tool results.
+	ArchiveContentTranscripts ArchiveContent = "transcripts"
+	// ArchiveContentUsage keeps only the session and message rows needed for
+	// token and cost reporting.
+	ArchiveContentUsage ArchiveContent = "usage"
+)
+
+// ParseArchiveContent validates a config or environment value. An empty value
+// selects the full policy.
+func ParseArchiveContent(value string) (ArchiveContent, error) {
+	policy := ArchiveContent(value)
+	switch policy {
+	case "":
+		return ArchiveContentFull, nil
+	case ArchiveContentFull, ArchiveContentTranscripts, ArchiveContentUsage:
+		return policy, nil
+	default:
+		return "", fmt.Errorf(
+			`archive_content must be "full", "transcripts", or "usage" (got %q)`,
+			value,
+		)
+	}
+}
+
+// OmitsToolContent reports whether tool inputs and tool results are dropped
+// at the storage boundary.
+func (a ArchiveContent) OmitsToolContent() bool {
+	return a == ArchiveContentTranscripts || a == ArchiveContentUsage
+}
+
+// UsageOnly reports whether the archive keeps only usage accounting rows.
+func (a ArchiveContent) UsageOnly() bool {
+	return a == ArchiveContentUsage
+}
+
+// RemoteHost describes one target for config-driven `agentsview sync`
+// fan-out. An omitted Transport selects HTTP, which requires URL and Token.
+// The SSH transport takes no URL or Token and uses Destination, or Host when
+// Destination is empty, as the ssh destination. A zero/empty Interval disables
+// periodic remote sync for this host.
+//
+//nolint:recvcheck // Value encoding and pointer decoding intentionally implement distinct interfaces.
+type RemoteHost struct {
+	Host      string          `toml:"host" json:"host"`
+	Transport RemoteTransport `toml:"transport,omitempty" json:"transport,omitempty"`
+	URL       string          `toml:"url,omitempty" json:"url,omitempty"`
+	Token     string          `toml:"token,omitempty" json:"-"`
+	// Destination is the ssh destination for ssh entries. Empty means Host.
+	Destination string        `toml:"destination,omitempty" json:"destination,omitempty"`
+	Interval    time.Duration `toml:"interval,omitempty" json:"interval,omitzero"`
+}
+
+// SSHDestination returns the argument passed to ssh for this entry.
+func (h RemoteHost) SSHDestination() string {
+	if h.Destination != "" {
+		return h.Destination
+	}
+	return h.Host
+}
+
+type remoteHostJSON RemoteHost
+
+func (h RemoteHost) MarshalJSONTo(out *jsontext.Encoder) error {
+	return jsonutil.MarshalDurationFields(out, remoteHostJSON(h))
+}
+
+func (h *RemoteHost) UnmarshalJSONFrom(in *jsontext.Decoder) error {
+	var decoded remoteHostJSON
+	if err := jsonutil.UnmarshalDurationFields(in, &decoded); err != nil {
+		return err
+	}
+	*h = RemoteHost(decoded)
+	return nil
+}
+
+// SessionSource adds one agent session root with optional machine attribution.
+// Legacy per-agent directory settings are resolved into the same root set.
+type SessionSource struct {
+	Agent   parser.AgentType `toml:"agent" json:"agent"`
+	Dir     string           `toml:"dir" json:"dir"`
+	Machine string           `toml:"machine,omitempty" json:"machine,omitempty"`
+}
+
+type sessionSourceConfig struct {
+	Agent   string  `toml:"agent"`
+	Dir     string  `toml:"dir"`
+	Machine *string `toml:"machine"`
+}
+
+// Config holds all application configuration.
+//
+//nolint:recvcheck // Value encoding and pointer decoding intentionally implement distinct interfaces.
+type Config struct {
+	// CodexCloud is the [agents.codex-cloud] table, read from config.toml
+	// only.
+	CodexCloud CodexCloudConfig `json:"-" toml:"-"`
+	// ClaudeAI is the organizations setting of [agents.claude-ai], read
+	// from config.toml only.
+	ClaudeAI             ClaudeAIConfig              `json:"-" toml:"-"`
+	Host                 string                      `json:"host" toml:"host"`
+	Port                 int                         `json:"port" toml:"port"`
+	ChartPalette         ChartPalette                `json:"chart_palette" toml:"chart_palette"`
+	ZoomLevel            *ZoomLevel                  `json:"zoom_level,omitempty" toml:"zoom_level,omitempty"`
+	DataDir              string                      `json:"data_dir" toml:"data_dir"`
+	DBPath               string                      `json:"-" toml:"-"`
+	PublicURL            string                      `json:"public_url,omitempty" toml:"public_url"`
+	PublicOrigins        []string                    `json:"public_origins,omitempty" toml:"public_origins"`
+	Proxy                ProxyConfig                 `json:"proxy,omitempty" toml:"proxy"`
+	WatchExcludePatterns []string                    `json:"watch_exclude_patterns,omitempty" toml:"watch_exclude_patterns"`
+	DisabledAgents       []parser.AgentType          `json:"disabled_agents,omitempty" toml:"disabled_agents"`
+	CursorSecret         string                      `json:"cursor_secret" toml:"cursor_secret"`
+	CursorAdminAPIKey    string                      `json:"cursor_admin_api_key,omitempty" toml:"cursor_admin_api_key"`
+	CursorAdminEmail     string                      `json:"cursor_admin_email,omitempty" toml:"cursor_admin_email"`
+	CursorAdminUserID    string                      `json:"cursor_admin_user_id,omitempty" toml:"cursor_admin_user_id"`
+	GithubToken          string                      `json:"github_token,omitempty" toml:"github_token"`
+	Terminal             TerminalConfig              `json:"terminal,omitempty" toml:"terminal"`
+	AuthToken            string                      `json:"auth_token,omitempty" toml:"auth_token"`
+	RequireAuth          bool                        `json:"require_auth" toml:"require_auth"`
+	NoBrowser            bool                        `json:"no_browser" toml:"no_browser"`
+	DisableUpdateCheck   bool                        `json:"disable_update_check" toml:"disable_update_check"`
+	PersistentDaemon     bool                        `json:"-" toml:"-"`
+	NoSync               bool                        `json:"-" toml:"-"`
+	SkipInitialSync      bool                        `json:"-" toml:"-"`
+	ArchiveContent       ArchiveContent              `json:"archive_content" toml:"archive_content"`
+	PG                   PGConfig                    `json:"pg,omitempty" toml:"pg"`
+	DefaultPG            string                      `json:"default_pg,omitempty" toml:"default_pg"`
+	PGTargets            map[string]PGConfig         `json:"-" toml:"-"`
+	ClickHouse           ClickHouseConfig            `json:"clickhouse,omitempty" toml:"clickhouse"`
+	DefaultClickHouse    string                      `json:"default_clickhouse,omitempty" toml:"default_clickhouse"`
+	ClickHouseTargets    map[string]ClickHouseConfig `json:"-" toml:"-"`
+	DuckDB               DuckDBConfig                `json:"duckdb,omitempty" toml:"duckdb"`
+	Vector               VectorConfig                `json:"vector,omitempty" toml:"vector"`
+	Recall               RecallConfig                `json:"recall,omitempty" toml:"recall"`
+	ImageText            ImageTextConfig             `json:"image_text,omitempty" toml:"image_text"`
+	Integrations         IntegrationsConfig          `json:"integrations,omitempty" toml:"integrations"`
+	Insights             InsightsConfig              `json:"insights,omitempty" toml:"insights"`
+	Kata                 KataConfig                  `json:"-" toml:"kata"`
+	Friction             FrictionConfig              `json:"friction,omitempty" toml:"friction"`
+	Automated            AutomatedConfig             `json:"automated,omitempty" toml:"automated"`
+	Agent                map[string]AgentConfig      `json:"agent,omitempty" toml:"agent"`
+	WriteTimeout         time.Duration               `json:"-" toml:"-"`
+	// InstallationID identifies this data directory independently of its label.
+	InstallationID string `json:"-" toml:"-"`
+	// InstallationCreatedAt is when InstallationID was created, or zero for
+	// IDs created before the time was recorded.
+	InstallationCreatedAt time.Time `json:"-" toml:"-"`
+	// LocalMachineName is the display label, defaulting to the system hostname.
+	LocalMachineName string `json:"-" toml:"local_machine_name"`
+
+	// AgentDirs maps each AgentType to its configured
+	// directories. Single-dir agents store a one-element
+	// slice; unconfigured agents use nil.
+	AgentDirs map[parser.AgentType][]string `json:"-" toml:"-"`
+
+	// SessionSources contains resolved structured sources. SourceMachines maps
+	// each effective configured root to its machine label for sync.
+	SessionSources []SessionSource                        `json:"-" toml:"-"`
+	SourceMachines map[parser.AgentType]map[string]string `json:"-" toml:"-"`
+	// ProviderMetadata holds provider-resolved metadata directories keyed by
+	// canonical transcript root. It is computed once while loading configuration.
+	ProviderMetadata     map[parser.AgentType]map[string][]string `json:"-" toml:"-"`
+	sessionSourceConfigs []sessionSourceConfig
+
+	// agentHomes holds alternate agent home directories from the config
+	// file, keyed by agent. Each home derives the agent's native session
+	// roots during resolution and is additive to every other root source.
+	agentHomes map[parser.AgentType][]string
+
+	// agentDirSource tracks how each agent's dirs were
+	// set so loadFile doesn't override env-set values.
+	agentDirSource map[parser.AgentType]dirSource
+
+	ResultContentBlockedCategories []string         `json:"result_content_blocked_categories,omitempty" toml:"result_content_blocked_categories"`
+	ToolResultImages               ToolResultImages `json:"tool_result_images,omitempty" toml:"tool_result_images"`
+
+	// SyncIncludeCwdPrefixes, when non-empty, restricts local session
+	// ingestion to sessions whose working directory equals one of the
+	// prefixes or lives underneath one. Sessions without a recorded
+	// cwd are skipped while the filter is active. Config-file only;
+	// remote sync is unaffected because the prefixes describe local
+	// paths.
+	SyncIncludeCwdPrefixes []string `json:"-" toml:"sync_include_cwd_prefixes"`
+
+	// ScanProtectedPaths allows local Git and skill metadata discovery to
+	// read paths inside macOS locations guarded by a TCC consent prompt
+	// (Documents, Downloads, Desktop, iCloud Drive, cloud-provider folders
+	// such as Dropbox, and removable or network volumes under /Volumes). It
+	// defaults to false so a first sync never
+	// asks for access to folders the user did not point us at; sessions
+	// there keep path-only project identity instead of Git remote,
+	// worktree, and branch detail. Setting it accepts one macOS prompt per
+	// location in exchange for that detail. No effect off macOS.
+	ScanProtectedPaths bool `json:"-" toml:"scan_protected_paths"`
+
+	// EventsCoalesceInterval is the minimum wall-clock time between
+	// SSE data_changed broadcasts to connected clients. Emits that
+	// arrive within this window after a prior broadcast are coalesced
+	// into a single trailing broadcast, bounding dashboard refetch
+	// work during bursts of sync activity. Zero disables coalescing.
+	EventsCoalesceInterval time.Duration `json:"events_coalesce_interval,omitzero" toml:"events_coalesce_interval"`
+
+	// SyncIdleAfter pauses local ingestion after client inactivity. Restart to apply changes.
+	SyncIdleAfter     time.Duration `json:"sync_idle_after,omitzero" toml:"sync_idle_after"`
+	DaemonIdleTimeout time.Duration `json:"daemon_idle_timeout,omitzero" toml:"daemon_idle_timeout"`
+
+	// SyncInterval is the minimum time between starts of watcher-triggered syncs.
+	SyncInterval time.Duration `json:"sync_interval,omitzero" toml:"sync_interval"`
+
+	ModelAliases       map[string]string          `json:"model_aliases,omitempty" toml:"model_aliases"`
+	CustomModelPricing map[string]CustomModelRate `json:"custom_model_pricing,omitempty" toml:"custom_model_pricing"`
+
+	// RemoteHosts is the config-file list of remote targets that
+	// `agentsview sync` (with no --host) syncs after the local
+	// pass. CLI/config-file only; never serialized to the
+	// settings API, so there is no web-UI editing of this list.
+	RemoteHosts []RemoteHost `json:"-" toml:"-"`
+	// ArchiveSources is file-only configuration, never exposed by settings APIs.
+	ArchiveSources []ArchiveSource `json:"-" toml:"-"`
+
+	// HostExplicit is true when the user passed --host on the CLI.
+	// Used to prevent auto-bind to 0.0.0.0 when the user
+	// explicitly requested a specific host.
+	HostExplicit bool `json:"-" toml:"-"`
+	// PortExplicit is true when the user passed --port on the CLI.
+	PortExplicit bool `json:"-" toml:"-"`
+	// AuthSettingsSaved records that Settings owns authentication for this lifetime.
+	AuthSettingsSaved bool `json:"-" toml:"-"`
+
+	// DeploymentEmbeddings is the embedding transport from deployment env,
+	// set only without a [vector] section.
+	DeploymentEmbeddings *VectorEmbeddingsServerConfig `json:"-" toml:"-"`
+	// NoDaemonAutostart suppresses daemon autostart for this invocation
+	// only; pg push --embed sets it to keep the archive writer local.
+	NoDaemonAutostart bool `json:"-" toml:"-"`
+	// RequireDaemon sends archive writes only through a live writable daemon;
+	// never autostart one or open the archive directly.
+	RequireDaemon bool `json:"-" toml:"-"`
+
+	// vectorSectionDefined records a [vector] section in config.toml.
+	vectorSectionDefined bool
+	validationScope      ValidationScope
+	pgConfigErr          error
+	clickHouseConfigErr  error
+
+	pgEnvOverrides         pgEnvOverrides
+	clickHouseEnvOverrides clickHouseEnvOverrides
+}
+
+type configJSON Config
+
+func (c Config) MarshalJSONTo(out *jsontext.Encoder) error {
+	return jsonutil.MarshalDurationFields(out, configJSON(c))
+}
+
+func (c *Config) UnmarshalJSONFrom(in *jsontext.Decoder) error {
+	var decoded configJSON
+	if err := jsonutil.UnmarshalDurationFields(in, &decoded); err != nil {
+		return err
+	}
+	*c = Config(decoded)
+	return nil
+}
+
+func (c Config) ResolvedChartPalette() ChartPalette {
+	if c.ChartPalette == "" {
+		return DefaultChartPalette
+	}
+	return c.ChartPalette
+}
+
+type dirSource int
+
+const (
+	dirDefault dirSource = iota
+	dirFile
+	dirEnv
+)
+
+// ResolveDirs returns the effective directories for an agent.
+func (c Config) AgentDisabled(agent parser.AgentType) bool {
+	return slices.Contains(c.DisabledAgents, agent)
+}
+
+func (c Config) ConfiguredDirs(agent parser.AgentType) []string {
+	return append([]string(nil), c.AgentDirs[agent]...)
+}
+
+func (c Config) ResolveDirs(agent parser.AgentType) []string {
+	return c.ConfiguredDirs(agent)
+}
+
+// LocalProviderFactories returns the provider set used for local filesystem
+// ingestion. Remote import and export deliberately use the full registry.
+func (c Config) LocalProviderFactories() []parser.ProviderFactory {
+	factories := parser.ProviderFactories()
+	for i, factory := range factories {
+		factories[i] = parser.ConfigureProviderFactory(factory, c.ProviderMetadata[factory.Definition().Type])
+	}
+	return slices.DeleteFunc(factories, func(factory parser.ProviderFactory) bool {
+		return c.AgentDisabled(factory.Definition().Type)
+	})
+}
+
+func NormalizeDisabledAgents(
+	values []string,
+) ([]parser.AgentType, error) {
+	requested := make(map[parser.AgentType]struct{}, len(values))
+	for _, value := range values {
+		agent := parser.AgentType(strings.ToLower(strings.TrimSpace(value)))
+		found := false
+		for _, def := range parser.Registry {
+			if def.Type != agent {
+				continue
+			}
+			found = true
+			if !def.FileBased && def.EnvVar == "" {
+				return nil, fmt.Errorf(
+					`disabled_agents: %q is not a configurable session provider`,
+					agent,
+				)
+			}
+			requested[agent] = struct{}{}
+			break
+		}
+		if !found {
+			return nil, fmt.Errorf(
+				`disabled_agents: unknown session provider %q`, agent,
+			)
+		}
+	}
+	normalized := make([]parser.AgentType, 0, len(requested))
+	for _, def := range parser.Registry {
+		if _, ok := requested[def.Type]; ok {
+			normalized = append(normalized, def.Type)
+		}
+	}
+	return normalized, nil
+}
+
+// IsUserConfigured reports whether the agent's directories
+// were explicitly set by the user (via env var or config file)
+// rather than populated from defaults.
+func (c *Config) IsUserConfigured(
+	agent parser.AgentType,
+) bool {
+	return c.agentDirSource[agent] != dirDefault
+}
+
+// ValidateRemoteHosts checks the configured remote_hosts entries
+// for semantic errors. It checks the trimmed values that loadFile
+// already normalized, so what is validated here is exactly what is
+// passed to remote sync. Returns an aggregated error naming every
+// offending entry, or nil when all entries are valid.
+func (c Config) ValidateRemoteHosts() error {
+	var problems []string
+	seen := make(map[string]int, len(c.RemoteHosts))
+	for i, h := range c.RemoteHosts {
+		if h.Host == "" {
+			problems = append(problems,
+				fmt.Sprintf("entry %d: host is required", i+1))
+		}
+		if h.Interval < 0 {
+			problems = append(problems,
+				fmt.Sprintf("entry %d (%q): invalid interval %s",
+					i+1, h.Host, h.Interval))
+		}
+		problems = append(problems, validateRemoteTransport(i+1, h)...)
+		// Remote sync namespaces sessions and cached state by host.
+		if h.Host != "" {
+			if first, ok := seen[h.Host]; ok {
+				problems = append(problems,
+					fmt.Sprintf("entry %d: duplicate host %q (already at entry %d)",
+						i+1, h.Host, first))
+			} else {
+				seen[h.Host] = i + 1
+			}
+		}
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("remote_hosts: %s",
+			strings.Join(problems, "; "))
+	}
+	return nil
+}
+
+func validateRemoteTransport(entry int, h RemoteHost) []string {
+	prefix := fmt.Sprintf("entry %d (%q): ", entry, h.Host)
+	var problems []string
+	switch h.Transport {
+	case "", RemoteTransportHTTP:
+		if err := validateRemoteHTTPURL(h.URL); err != nil {
+			problems = append(problems, prefix+err.Error())
+		}
+		if h.Token == "" {
+			problems = append(problems, prefix+"token is required for http")
+		}
+		if h.Destination != "" {
+			problems = append(problems, prefix+"destination is only valid for ssh")
+		}
+	case RemoteTransportSSH:
+		if h.URL != "" {
+			problems = append(problems, prefix+"url is only valid for http")
+		}
+		if h.Token != "" {
+			problems = append(problems, prefix+"token is only valid for http")
+		}
+		if strings.HasPrefix(h.SSHDestination(), "-") {
+			problems = append(problems, prefix+"destination must not start with -")
+		}
+	default:
+		problems = append(problems, fmt.Sprintf(
+			"%sinvalid transport %q; use http or ssh", prefix, h.Transport))
+	}
+	return problems
+}
+
+func validateRemoteHTTPURL(raw string) error {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return errors.New("url is required")
+	}
+	u, err := url.Parse(value)
+	if err != nil {
+		return fmt.Errorf("invalid url: %w", err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return errors.New("url must use http or https")
+	}
+	if u.Hostname() == "" {
+		return errors.New("url must include a host")
+	}
+	if u.User != nil {
+		return errors.New("url must not include userinfo")
+	}
+	if u.RawQuery != "" || u.ForceQuery {
+		return errors.New("url must not include query")
+	}
+	if u.Fragment != "" || u.RawFragment != "" || strings.Contains(value, "#") {
+		return errors.New("url must not include fragment")
+	}
+	return nil
+}
+
+// Default returns a Config with default values.
+func Default() (Config, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return Config{}, fmt.Errorf(
+			"determining home directory: %w", err,
+		)
+	}
+	dataDir := filepath.Join(home, ".agentsview")
+	hostname, err := os.Hostname()
+	if err != nil {
+		return Config{}, fmt.Errorf("identify local sync machine: %w", err)
+	}
+	if strings.TrimSpace(hostname) == "" {
+		return Config{}, errors.New("identify local sync machine: hostname is empty")
+	}
+
+	agentDirs := make(map[parser.AgentType][]string)
+	agentDirSource := make(map[parser.AgentType]dirSource)
+	for _, def := range parser.Registry {
+		dirs := make([]string, 0, len(def.DefaultDirs))
+		root := ""
+		if def.DefaultRootEnvVar != "" {
+			root = os.Getenv(def.DefaultRootEnvVar)
+		}
+		for _, rel := range def.DefaultDirs {
+			if root != "" {
+				dirs = append(dirs, reRootDefaultDir(root, rel, def.DefaultRootDir))
+				continue
+			}
+			dirs = append(dirs, filepath.Join(home, rel))
+		}
+		if def.Type == parser.AgentCodeBuddy && runtime.GOOS == "windows" {
+			if localAppData := os.Getenv("LOCALAPPDATA"); filepath.IsAbs(localAppData) {
+				dirs[0] = filepath.Join(localAppData, "CodeBuddyExtension", "Data")
+			}
+		}
+		// XDG_STATE_HOME replaces the state directory, including both .local
+		// and state components of the home-relative default.
+		if def.Type == parser.AgentEvener {
+			if stateHome := os.Getenv("XDG_STATE_HOME"); filepath.IsAbs(stateHome) {
+				dirs = []string{filepath.Join(stateHome, "evener")}
+			}
+		}
+		// CRUSH_GLOBAL_DATA and XDG_DATA_HOME override Crush's default
+		// data directory following the upstream XDG conventions.
+		if def.Type == parser.AgentCrush && root == "" {
+			if crushGlobal := os.Getenv("CRUSH_GLOBAL_DATA"); crushGlobal != "" && filepath.IsAbs(crushGlobal) {
+				dirs = []string{crushGlobal}
+			} else if xdgData := os.Getenv("XDG_DATA_HOME"); xdgData != "" && filepath.IsAbs(xdgData) {
+				dirs = []string{filepath.Join(xdgData, "crush")}
+			}
+		}
+		// Keep the Hermes profiles container as a stable provider root. The
+		// provider enumerates its children on every discovery pass, so profiles
+		// created after startup become visible without rebuilding Config or the
+		// sync engine. Env/config overrides still replace all default roots.
+		if def.Type == parser.AgentHermes && root == "" {
+			dirs = append(dirs,
+				filepath.Join(home, ".hermes", "profiles"),
+			)
+		}
+		agentDirs[def.Type] = dirs
+		agentDirSource[def.Type] = dirDefault
+	}
+
+	return Config{
+		Host:                           "127.0.0.1",
+		Port:                           8080,
+		ChartPalette:                   DefaultChartPalette,
+		ArchiveContent:                 ArchiveContentFull,
+		DataDir:                        dataDir,
+		DBPath:                         filepath.Join(dataDir, "sessions.db"),
+		WriteTimeout:                   30 * time.Second,
+		LocalMachineName:               hostname,
+		AgentDirs:                      agentDirs,
+		agentDirSource:                 agentDirSource,
+		SourceMachines:                 make(map[parser.AgentType]map[string]string),
+		WatchExcludePatterns:           []string{".git", "node_modules", "__pycache__", ".venv", "venv", "vendor", ".next", "*.lock*"},
+		ResultContentBlockedCategories: []string{"Read", "Glob"},
+		EventsCoalesceInterval:         10 * time.Second,
+		DaemonIdleTimeout:              20 * time.Minute,
+		SyncIdleAfter:                  10 * time.Minute,
+		SyncInterval:                   5 * time.Second,
+		Agent:                          map[string]AgentConfig{},
+		CodexCloud:                     defaultCodexCloudConfig(),
+		Vector: VectorConfig{
+			RecallMaxRevisionLag: DefaultRecallMaxRevisionLag,
+			Embeddings: VectorEmbeddingsConfig{
+				MaxInputChars: 8192,
+			},
+			Embed: VectorEmbedConfig{
+				BackstopInterval: "24h",
+			},
+		},
+		Recall: RecallConfig{
+			Extract: RecallExtractConfig{
+				MaxWindowChars:   50000,
+				QuietPeriod:      "30m",
+				BackstopInterval: "1h",
+				FailureBackoff:   "1h",
+			},
+		},
+		Friction: FrictionConfig{BackfillDays: DefaultFrictionBackfillDays},
+		Kata:     defaultKataConfig(),
+	}, nil
+}
+
+func reRootDefaultDir(root, rel, defaultRoot string) string {
+	rel = filepath.Clean(rel)
+	if defaultRoot != "" {
+		return filepath.Join(root, strings.TrimPrefix(rel, filepath.Clean(defaultRoot)+string(filepath.Separator)))
+	}
+	if _, tail, ok := strings.Cut(rel, string(filepath.Separator)); ok && tail != "" {
+		return filepath.Join(root, tail)
+	}
+	return root
+}
+
+// dedupeTrimmedStrings trims each value and drops empty and repeated
+// entries while preserving first-seen order.
+func dedupeTrimmedStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			continue
+		}
+		if _, dup := seen[value]; dup {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+// AgentHomeDirs derives the native session roots that an agent keeps under
+// an alternate home directory, mirroring how DefaultRootEnvVar re-roots the
+// agent's default directories. It returns nil for agents without defaults.
+func AgentHomeDirs(def parser.AgentDef, home string) []string {
+	if len(def.DefaultDirs) == 0 {
+		return nil
+	}
+	dirs := make([]string, 0, len(def.DefaultDirs))
+	for _, rel := range def.DefaultDirs {
+		dirs = append(dirs, reRootDefaultDir(home, rel, def.DefaultRootDir))
+	}
+	return dirs
+}
+
+// Load builds a Config by layering: defaults < config file < env < flags.
+// The provided FlagSet must already be parsed by the caller.
+// Only flags that were explicitly set override the lower layers.
+func Load(fs *flag.FlagSet) (Config, error) {
+	cfg, err := loadConfigLayers(0)
+	if err != nil {
+		return cfg, err
+	}
+	applyFlags(&cfg, fs)
+	if err := finishLoadedConfig(&cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+// LoadPFlags builds a Config from a parsed Cobra/pflag FlagSet.
+func LoadPFlags(fs *pflag.FlagSet) (Config, error) {
+	return LoadPFlagsFor(fs, 0)
+}
+
+// LoadSettingsRestartConfig keeps a successful Settings auth save authoritative
+// across Settings restarts while reading later edits to the saved config.
+func LoadSettingsRestartConfig(current Config, fs *pflag.FlagSet) (Config, error) {
+	cfg, err := LoadPFlags(fs)
+	if err != nil || !current.AuthSettingsSaved {
+		return cfg, err
+	}
+	saved, err := loadReadOnlyFor(ScopeLocal, current.DataDir)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.RequireAuth = saved.RequireAuth
+	cfg.AuthSettingsSaved = true
+	return cfg, nil
+}
+
+// LoadPFlagsFor loads a command's config, warning about invalid unused sections.
+func LoadPFlagsFor(fs *pflag.FlagSet, scope ValidationScope) (Config, error) {
+	cfg, err := loadConfigLayers(scope)
+	if err != nil {
+		return cfg, err
+	}
+	applyPFlags(&cfg, fs)
+	if err := finishLoadedConfig(&cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+// LoadRemoteServePFlags builds the config for a serve command that reads a
+// replica or mirror instead of the local archive, from a parsed Cobra/pflag
+// FlagSet. It uses isolated serve defaults so the remote serve never picks up
+// the local archive path.
+func LoadRemoteServePFlags(fs *pflag.FlagSet) (Config, error) {
+	cfg, err := loadPGServeBase()
+	if err != nil {
+		return cfg, err
+	}
+	applyPFlags(&cfg, fs)
+	if err := finishLoadedConfig(&cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+func loadPGServeBase() (Config, error) {
+	cfg, err := Default()
+	if err != nil {
+		return cfg, err
+	}
+	cfg.loadEnv()
+	if err := expandDataDir(&cfg); err != nil {
+		return cfg, err
+	}
+	if err := cfg.loadFile(); err != nil {
+		return cfg, fmt.Errorf("loading config file: %w", err)
+	}
+	cfg.DBPath = filepath.Join(cfg.DataDir, "sessions.db")
+
+	// pg serve intentionally ignores persisted normal serve/public/proxy
+	// settings so an existing SQLite-backed serve deployment cannot silently
+	// reconfigure the PG-backed server. Until a dedicated pg-serve config
+	// namespace exists, only deployment variables and explicit pg-serve
+	// flags shape its network/proxy behavior.
+	cfg.Host = "127.0.0.1"
+	cfg.Port = 8080
+	cfg.PublicURL = ""
+	cfg.PublicOrigins = nil
+	cfg.Proxy = ProxyConfig{}
+	cfg.NoBrowser = false
+	cfg.HostExplicit = false
+	return cfg, cfg.applyDeploymentEnv()
+}
+
+// LoadMinimal builds a Config from defaults, env, and config file,
+// without parsing CLI flags. Use this for subcommands that manage
+// their own flag sets.
+func LoadMinimal() (Config, error) {
+	return LoadMinimalFor(0)
+}
+
+// LoadMinimalFor loads a command's config without flags. Zero scope is strict.
+func LoadMinimalFor(scope ValidationScope) (Config, error) {
+	cfg, err := loadConfigLayers(scope)
+	if err != nil {
+		return cfg, err
+	}
+	if err := finishLoadedConfig(&cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+// loadConfigLayers leaves runtime roots unresolved until flags are applied.
+func loadConfigLayers(scope ValidationScope) (Config, error) {
+	cfg, err := Default()
+	if err != nil {
+		return cfg, err
+	}
+	cfg.validationScope = scope
+	cfg.loadEnv()
+	if err := expandDataDir(&cfg); err != nil {
+		return cfg, err
+	}
+
+	if err := cfg.loadFile(); err != nil {
+		return cfg, fmt.Errorf("loading config file: %w", err)
+	}
+	if scope.uses(ScopeDeployment) {
+		return cfg, cfg.applyDeploymentEnv()
+	}
+	return cfg, nil
+}
+
+func finishLoadedConfig(cfg *Config) error {
+	// Resolve installation identity before source roots and their metadata.
+	if err := cfg.ensureInstallationID(); err != nil {
+		return fmt.Errorf("ensuring installation identity: %w", err)
+	}
+	if err := finalize(cfg); err != nil {
+		return err
+	}
+	if err := cfg.ensureCursorSecret(); err != nil {
+		return fmt.Errorf("ensuring cursor secret: %w", err)
+	}
+	cfg.DBPath = filepath.Join(cfg.DataDir, "sessions.db")
+	return nil
+}
+
+// LoadReadOnly builds a Config from defaults, env, and config.toml without
+// writing config migrations or generated secrets. Use it for diagnostic
+// commands that must not mutate user state.
+func LoadReadOnly() (Config, error) {
+	return LoadReadOnlyFor(0)
+}
+
+// LoadReadOnlyFor loads scoped config without migrations or generated secrets.
+func LoadReadOnlyFor(scope ValidationScope) (Config, error) {
+	return loadReadOnlyFor(scope, "")
+}
+
+// LoadReadOnlyAt validates the complete config in dataDir, including deployment
+// environment, without migrations or generated secrets.
+func LoadReadOnlyAt(dataDir string) (Config, error) {
+	return loadReadOnlyFor(0, dataDir)
+}
+
+func loadReadOnlyFor(scope ValidationScope, dataDir string) (Config, error) {
+	cfg, err := Default()
+	if err != nil {
+		return cfg, err
+	}
+	cfg.validationScope = scope
+	cfg.loadEnv()
+	if dataDir != "" {
+		cfg.DataDir = dataDir
+	}
+	if err := expandDataDir(&cfg); err != nil {
+		return cfg, err
+	}
+
+	if err := cfg.loadFileReadOnly(); err != nil {
+		return cfg, fmt.Errorf("loading config file: %w", err)
+	}
+	if scope.uses(ScopeDeployment) {
+		if err := cfg.applyDeploymentEnv(); err != nil {
+			return cfg, err
+		}
+	}
+	if err := cfg.readInstallationID(); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return cfg, fmt.Errorf("reading installation identity: %w", err)
+	}
+	if err := finalize(&cfg); err != nil {
+		return cfg, err
+	}
+	cfg.DBPath = filepath.Join(cfg.DataDir, "sessions.db")
+	return cfg, nil
+}
+
+func (c *Config) configPath() string {
+	return filepath.Join(c.DataDir, "config.toml")
+}
+
+func (c *Config) jsonConfigPath() string {
+	return filepath.Join(c.DataDir, "config.json")
+}
+
+// migrateJSONToTOML converts config.json to config.toml if
+// config.json exists and config.toml does not. The original
+// JSON file is renamed to config.json.bak.
+func (c *Config) migrateJSONToTOML() error {
+	return c.withConfigLock(func() error {
+		jsonPath := c.jsonConfigPath()
+		tomlPath := c.configPath()
+
+		if _, err := os.Stat(tomlPath); err == nil {
+			return nil // TOML already exists
+		}
+		data, err := os.ReadFile(jsonPath)
+		if os.IsNotExist(err) {
+			return nil // no JSON to migrate
+		}
+		if err != nil {
+			return fmt.Errorf("reading config.json for migration: %w", err)
+		}
+
+		var m map[string]any
+		if err := json.Unmarshal(data, &m); err != nil {
+			return fmt.Errorf("parsing config.json for migration: %w", err)
+		}
+
+		var buf bytes.Buffer
+		if err := toml.NewEncoder(&buf).Encode(m); err != nil {
+			return fmt.Errorf("encoding config.toml: %w", err)
+		}
+		if err := os.WriteFile(tomlPath, buf.Bytes(), 0o600); err != nil {
+			return fmt.Errorf("writing config.toml: %w", err)
+		}
+		if err := atomicfile.Replace(jsonPath, jsonPath+".bak"); err != nil {
+			return fmt.Errorf("renaming config.json to .bak: %w", err)
+		}
+		return nil
+	})
+}
+
+func (c *Config) loadFile() error {
+	return c.loadFileWithMigration(true)
+}
+
+func (c *Config) loadFileReadOnly() error {
+	return c.loadFileWithMigration(false)
+}
+
+func (c *Config) loadFileWithMigration(migrate bool) error {
+	if migrate {
+		if err := c.migrateJSONToTOML(); err != nil {
+			return err
+		}
+		if err := c.migrateAgentTables(); err != nil {
+			return err
+		}
+	}
+
+	path := c.configPath()
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if migrate {
+			return nil
+		}
+		return c.loadLegacyJSONReadOnly()
+	} else if err != nil {
+		return fmt.Errorf("checking config: %w", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading config: %w", err)
+	}
+	return c.applyConfigTOML(string(data))
+}
+
+func (c *Config) loadLegacyJSONReadOnly() error {
+	data, err := os.ReadFile(c.jsonConfigPath())
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading config.json: %w", err)
+	}
+
+	converted, err := legacyJSONToTOML(data)
+	if err != nil {
+		return err
+	}
+	return c.applyConfigTOML(converted)
+}
+
+func legacyJSONToTOML(data []byte) (string, error) {
+	var m map[string]any
+	decoder := jsontext.NewDecoder(bytes.NewReader(data))
+	// Keep integer literals exact until TOML conversion, including values
+	// beyond float64's integer precision.
+	numbers := json.UnmarshalFromFunc(func(dec *jsontext.Decoder, value *any) error {
+		if dec.PeekKind() != '0' {
+			return errors.ErrUnsupported
+		}
+		raw, err := dec.ReadValue()
+		*value = raw.Clone()
+		return err
+	})
+	if err := json.UnmarshalDecode(decoder, &m, json.WithUnmarshalers(numbers)); err != nil {
+		return "", fmt.Errorf("parsing config.json: %w", err)
+	}
+	var trailing any
+	if err := json.UnmarshalDecode(decoder, &trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = errors.New("multiple JSON values")
+		}
+		return "", fmt.Errorf("parsing config.json: %w", err)
+	}
+	normalized, err := normalizeLegacyJSONNumbers(m)
+	if err != nil {
+		return "", fmt.Errorf("parsing config.json: %w", err)
+	}
+	m = normalized.(map[string]any)
+
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(m); err != nil {
+		return "", fmt.Errorf("encoding config.json: %w", err)
+	}
+	return buf.String(), nil
+}
+
+func normalizeLegacyJSONNumbers(value any) (any, error) {
+	switch typed := value.(type) {
+	case jsontext.Value:
+		if strings.ContainsAny(typed.String(), ".eE") {
+			return strconv.ParseFloat(string(typed), 64)
+		}
+		return strconv.ParseInt(string(typed), 10, 64)
+	case map[string]any:
+		for key, child := range typed {
+			normalized, err := normalizeLegacyJSONNumbers(child)
+			if err != nil {
+				return nil, err
+			}
+			typed[key] = normalized
+		}
+	case []any:
+		for index, child := range typed {
+			normalized, err := normalizeLegacyJSONNumbers(child)
+			if err != nil {
+				return nil, err
+			}
+			typed[index] = normalized
+		}
+	}
+	return value, nil
+}
+
+func (c *Config) applyConfigTOML(data string) error {
+	data, _, err := convertAgentTables(data)
+	if err != nil {
+		return err
+	}
+	var file struct {
+		LocalMachineName               *string                `toml:"local_machine_name"`
+		GithubToken                    string                 `toml:"github_token"`
+		CursorSecret                   string                 `toml:"cursor_secret"`
+		CursorAdminAPIKey              string                 `toml:"cursor_admin_api_key"`
+		CursorAdminEmail               string                 `toml:"cursor_admin_email"`
+		CursorAdminUserID              string                 `toml:"cursor_admin_user_id"`
+		Host                           string                 `toml:"host"`
+		Port                           int                    `toml:"port"`
+		ChartPalette                   ChartPalette           `toml:"chart_palette"`
+		ZoomLevel                      *ZoomLevel             `toml:"zoom_level"`
+		PublicURL                      string                 `toml:"public_url"`
+		PublicOrigins                  []string               `toml:"public_origins"`
+		Proxy                          ProxyConfig            `toml:"proxy"`
+		WatchExcludePatterns           []string               `toml:"watch_exclude_patterns"`
+		DisabledAgents                 []string               `toml:"disabled_agents"`
+		SyncIncludeCwdPrefixes         []string               `toml:"sync_include_cwd_prefixes"`
+		ScanProtectedPaths             bool                   `toml:"scan_protected_paths"`
+		ResultContentBlockedCategories []string               `toml:"result_content_blocked_categories"`
+		ToolResultImages               string                 `toml:"tool_result_images"`
+		Terminal                       TerminalConfig         `toml:"terminal"`
+		AuthToken                      string                 `toml:"auth_token"`
+		RequireAuth                    bool                   `toml:"require_auth"`
+		RemoteAccess                   bool                   `toml:"remote_access"`
+		DisableUpdateCheck             bool                   `toml:"disable_update_check"`
+		ArchiveContent                 string                 `toml:"archive_content"`
+		DefaultPG                      string                 `toml:"default_pg"`
+		PG                             PGConfig               `toml:"pg"`
+		DefaultClickHouse              string                 `toml:"default_clickhouse"`
+		ClickHouse                     ClickHouseConfig       `toml:"clickhouse"`
+		DuckDB                         DuckDBConfig           `toml:"duckdb"`
+		Vector                         VectorConfig           `toml:"vector"`
+		Recall                         RecallConfig           `toml:"recall"`
+		ImageText                      ImageTextConfig        `toml:"image_text"`
+		Integrations                   IntegrationsConfig     `toml:"integrations"`
+		Insights                       InsightsConfig         `toml:"insights"`
+		Kata                           KataConfig             `toml:"kata"`
+		Friction                       FrictionConfig         `toml:"friction"`
+		Automated                      AutomatedConfig        `toml:"automated"`
+		Agent                          map[string]AgentConfig `toml:"agent"`
+		EventsCoalesceInterval         time.Duration          `toml:"events_coalesce_interval"`
+		DaemonIdleTimeout              time.Duration          `toml:"daemon_idle_timeout"`
+		SyncIdleAfter                  time.Duration          `toml:"sync_idle_after"`
+		SyncInterval                   time.Duration          `toml:"sync_interval"`
+		RemoteHosts                    []RemoteHost           `toml:"remote_hosts"`
+		ArchiveSources                 []ArchiveSource        `toml:"archive_sources"`
+		SessionSources                 []sessionSourceConfig  `toml:"session_sources"`
+		ModelAliases                   map[string]string      `toml:"model_aliases"`
+	}
+	meta, err := toml.Decode(data, &file)
+	if err != nil {
+		return fmt.Errorf("parsing config: %w", err)
+	}
+	for _, key := range meta.Undecoded() {
+		if len(key) > 0 && key[0] == "archive_sources" {
+			return fmt.Errorf("unknown archive source setting %s", key.String())
+		}
+	}
+	c.ArchiveSources = file.ArchiveSources
+	if err := c.ValidateArchiveSources(); err != nil {
+		return err
+	}
+	if meta.IsDefined("vector") {
+		if err := rejectUnknownVectorKeys(meta); err != nil {
+			return err
+		}
+		c.vectorSectionDefined = true
+	}
+	if file.ZoomLevel != nil {
+		if err := c.validateSection(ScopeServer, "zoom_level", file.ZoomLevel.Validate); err != nil {
+			return err
+		}
+	}
+	for key, name := range file.ModelAliases {
+		if key == "" || name == "" || key == "__all__" || name == "__all__" || key == "__other__" || name == "__other__" || strings.Contains(key+name, ",") || key != strings.TrimSpace(key) || name != strings.TrimSpace(name) {
+			return fmt.Errorf("model_aliases.%q: names must be non-empty, trimmed, contain no commas, and differ from __all__ and __other__", key)
+		}
+		if target, ok := file.ModelAliases[name]; ok && target != name {
+			return fmt.Errorf("model_aliases.%q: alias chains are unsupported", key)
+		}
+	}
+	customModelPricing, err := decodeCustomModelPricing(data)
+	if err != nil {
+		return err
+	}
+	var raw map[string]any
+	if _, err := toml.Decode(data, &raw); err != nil {
+		return fmt.Errorf("parsing config raw: %w", err)
+	}
+	if file.GithubToken != "" {
+		c.GithubToken = file.GithubToken
+	}
+	if file.CursorSecret != "" {
+		c.CursorSecret = file.CursorSecret
+	}
+	if file.LocalMachineName != nil {
+		name := strings.TrimSpace(*file.LocalMachineName)
+		if name == "" {
+			return errors.New("local_machine_name must be non-empty")
+		}
+		c.LocalMachineName = name
+	}
+	if file.CursorAdminAPIKey != "" && c.CursorAdminAPIKey == "" {
+		c.CursorAdminAPIKey = file.CursorAdminAPIKey
+	}
+	if file.CursorAdminEmail != "" && c.CursorAdminEmail == "" {
+		c.CursorAdminEmail = file.CursorAdminEmail
+	}
+	if file.CursorAdminUserID != "" && c.CursorAdminUserID == "" {
+		c.CursorAdminUserID = file.CursorAdminUserID
+	}
+	if file.Host != "" {
+		c.Host = file.Host
+	}
+	if file.Port != 0 {
+		c.Port = file.Port
+	}
+	if meta.IsDefined("chart_palette") {
+		if err := c.validateSection(ScopeServer, "chart_palette", func() error {
+			_, err := ParseChartPalette(string(file.ChartPalette))
+			return err
+		}); err != nil {
+			return err
+		}
+		c.ChartPalette = file.ChartPalette
+	}
+	if file.ZoomLevel != nil {
+		c.ZoomLevel = file.ZoomLevel
+	}
+	if file.PublicURL != "" {
+		c.PublicURL = file.PublicURL
+	}
+	if file.PublicOrigins != nil {
+		c.PublicOrigins = file.PublicOrigins
+	}
+	if file.Proxy.Mode != "" || file.Proxy.Bin != "" ||
+		file.Proxy.BindHost != "" || file.Proxy.PublicPort != 0 ||
+		file.Proxy.TLSCert != "" || file.Proxy.TLSKey != "" ||
+		file.Proxy.AllowedSubnets != nil {
+		c.Proxy = file.Proxy
+	}
+	if file.WatchExcludePatterns != nil {
+		c.WatchExcludePatterns = file.WatchExcludePatterns
+	}
+	if meta.IsDefined("disabled_agents") {
+		disabled, err := NormalizeDisabledAgents(file.DisabledAgents)
+		if err != nil {
+			return err
+		}
+		c.DisabledAgents = disabled
+	}
+	if file.SyncIncludeCwdPrefixes != nil {
+		c.SyncIncludeCwdPrefixes = file.SyncIncludeCwdPrefixes
+	}
+	if file.ScanProtectedPaths {
+		c.ScanProtectedPaths = true
+	}
+	if file.ResultContentBlockedCategories != nil {
+		c.ResultContentBlockedCategories = file.ResultContentBlockedCategories
+	}
+	if meta.IsDefined("tool_result_images") {
+		policy, err := ParseToolResultImages(file.ToolResultImages)
+		if err != nil {
+			return err
+		}
+		c.ToolResultImages = policy
+	}
+	if file.Terminal.Mode != "" {
+		c.Terminal = file.Terminal
+	}
+	if file.AuthToken != "" && c.AuthToken == "" {
+		c.AuthToken = file.AuthToken
+	}
+	c.RequireAuth = file.RequireAuth || file.RemoteAccess
+	c.DisableUpdateCheck = file.DisableUpdateCheck
+	if meta.IsDefined("archive_content") {
+		policy, err := ParseArchiveContent(file.ArchiveContent)
+		if err != nil {
+			return err
+		}
+		c.ArchiveContent = policy
+	}
+	if meta.IsDefined("default_pg") {
+		c.DefaultPG = normalizePGTargetName(file.DefaultPG)
+	}
+	if meta.IsDefined("default_clickhouse") {
+		c.DefaultClickHouse = normalizeTargetName(file.DefaultClickHouse)
+	}
+	legacyPG, namedPG, err := parsePGConfigSection(raw["pg"])
+	if err != nil {
+		c.pgConfigErr = fmt.Errorf("pg: %w", err)
+		if _, semantic := errors.AsType[*targetValidationError](err); !semantic || c.validationScope.uses(ScopePG) {
+			return c.pgConfigErr
+		}
+	}
+	if len(namedPG) > 0 {
+		c.PG = PGConfig{}
+		c.PGTargets = namedPG
+	} else {
+		c.PGTargets = nil
+		if legacyPG.URL != "" {
+			c.PG.URL = legacyPG.URL
+		}
+		if legacyPG.Schema != "" {
+			c.PG.Schema = legacyPG.Schema
+		}
+		if legacyPG.MachineName != "" {
+			c.PG.MachineName = legacyPG.MachineName
+		}
+		if legacyPG.AllowInsecure {
+			c.PG.AllowInsecure = true
+		}
+		if legacyPG.Projects != nil {
+			c.PG.Projects = legacyPG.Projects
+		}
+		if legacyPG.ExcludeProjects != nil {
+			c.PG.ExcludeProjects = legacyPG.ExcludeProjects
+		}
+		if legacyPG.PushVectors != nil {
+			c.PG.PushVectors = legacyPG.PushVectors
+		}
+	}
+	legacyCH, namedCH, err := parseClickHouseConfigSection(raw["clickhouse"])
+	if err != nil {
+		c.clickHouseConfigErr = fmt.Errorf("clickhouse: %w", err)
+		if _, semantic := errors.AsType[*targetValidationError](err); !semantic || c.validationScope.uses(ScopeClickHouse) {
+			return c.clickHouseConfigErr
+		}
+	}
+	if len(namedCH) > 0 {
+		c.ClickHouse = ClickHouseConfig{}
+		c.ClickHouseTargets = namedCH
+	} else {
+		c.ClickHouseTargets = nil
+		if legacyCH.URL != "" {
+			c.ClickHouse.URL = legacyCH.URL
+		}
+		if legacyCH.Database != "" {
+			c.ClickHouse.Database = legacyCH.Database
+		}
+		if legacyCH.MachineName != "" {
+			c.ClickHouse.MachineName = legacyCH.MachineName
+		}
+		if legacyCH.AllowInsecure {
+			c.ClickHouse.AllowInsecure = true
+		}
+		if legacyCH.Projects != nil {
+			c.ClickHouse.Projects = legacyCH.Projects
+		}
+		if legacyCH.ExcludeProjects != nil {
+			c.ClickHouse.ExcludeProjects = legacyCH.ExcludeProjects
+		}
+		if legacyCH.PushVectors != nil {
+			c.ClickHouse.PushVectors = legacyCH.PushVectors
+		}
+		if legacyCH.PushBatchSize != nil {
+			c.ClickHouse.PushBatchSize = legacyCH.PushBatchSize
+		}
+	}
+	// Merge duckdb field-by-field so env vars override only
+	// the fields they set, preserving config-file settings.
+	if file.DuckDB.Path != "" && c.DuckDB.Path == "" {
+		c.DuckDB.Path = file.DuckDB.Path
+	}
+	if file.DuckDB.URL != "" && c.DuckDB.URL == "" {
+		c.DuckDB.URL = file.DuckDB.URL
+	}
+	if file.DuckDB.Token != "" && c.DuckDB.Token == "" {
+		c.DuckDB.Token = file.DuckDB.Token
+	}
+	if file.DuckDB.MachineName != "" && c.DuckDB.MachineName == "" {
+		c.DuckDB.MachineName = file.DuckDB.MachineName
+	}
+	if file.DuckDB.AllowInsecure {
+		c.DuckDB.AllowInsecure = true
+	}
+	if file.DuckDB.AttachTimeout != 0 && c.DuckDB.AttachTimeout == 0 {
+		c.DuckDB.AttachTimeout = file.DuckDB.AttachTimeout
+	}
+	if file.DuckDB.Projects != nil && c.DuckDB.Projects == nil {
+		c.DuckDB.Projects = file.DuckDB.Projects
+	}
+	if file.DuckDB.ExcludeProjects != nil && c.DuckDB.ExcludeProjects == nil {
+		c.DuckDB.ExcludeProjects = file.DuckDB.ExcludeProjects
+	}
+	if file.Vector.Enabled {
+		c.Vector.Enabled = true
+	}
+	if file.Vector.DBPath != "" {
+		c.Vector.DBPath = file.Vector.DBPath
+	}
+	// IsDefined distinguishes "unset" (keep the default false) from an
+	// explicit include_automated = false, matching the other vector
+	// section fields' treatment even though both currently agree.
+	if meta.IsDefined("vector", "include_automated") {
+		c.Vector.IncludeAutomated = file.Vector.IncludeAutomated
+	}
+	if meta.IsDefined("vector", "recall_max_revision_lag") {
+		c.Vector.RecallMaxRevisionLag = file.Vector.RecallMaxRevisionLag
+	}
+	if file.Vector.Embeddings.Model != "" {
+		c.Vector.Embeddings.Model = file.Vector.Embeddings.Model
+	}
+	if file.Vector.Embeddings.Dimension != 0 {
+		c.Vector.Embeddings.Dimension = file.Vector.Embeddings.Dimension
+	}
+	if file.Vector.Embeddings.RequestDimensions {
+		c.Vector.Embeddings.RequestDimensions = true
+	}
+	if meta.IsDefined("vector", "embeddings", "max_input_chars") {
+		c.Vector.Embeddings.MaxInputChars = file.Vector.Embeddings.MaxInputChars
+	}
+	if meta.IsDefined("vector", "embeddings", "model_context_tokens") {
+		c.Vector.Embeddings.ModelContextTokens = file.Vector.Embeddings.ModelContextTokens
+	}
+	if meta.IsDefined("vector", "embeddings", "query_prefix") {
+		c.Vector.Embeddings.QueryPrefix = file.Vector.Embeddings.QueryPrefix
+	}
+	if meta.IsDefined("vector", "embeddings", "document_prefix") {
+		c.Vector.Embeddings.DocumentPrefix = file.Vector.Embeddings.DocumentPrefix
+	}
+	if meta.IsDefined("vector", "embeddings", "input_suffix") {
+		c.Vector.Embeddings.InputSuffix = file.Vector.Embeddings.InputSuffix
+	}
+	if file.Vector.Embeddings.DefaultServer != "" {
+		c.Vector.Embeddings.DefaultServer = file.Vector.Embeddings.DefaultServer
+	}
+	if meta.IsDefined("vector", "embeddings", "servers") {
+		c.Vector.Embeddings.Servers = normalizedEmbeddingsServers(file.Vector.Embeddings.Servers, meta)
+	}
+	if c.Vector.Enabled && c.Vector.Embeddings.Model == "" && !meta.IsDefined("vector", "embeddings", "servers") {
+		c.Vector.Embeddings.Model = defaultNomicModel
+		if !meta.IsDefined("vector", "embeddings", "dimension") {
+			c.Vector.Embeddings.Dimension = 768
+		}
+		if !meta.IsDefined("vector", "embeddings", "max_input_chars") {
+			c.Vector.Embeddings.MaxInputChars = 4000
+		}
+		if !meta.IsDefined("vector", "embeddings", "model_context_tokens") {
+			c.Vector.Embeddings.ModelContextTokens = 2048
+		}
+		if !meta.IsDefined("vector", "embeddings", "query_prefix") {
+			c.Vector.Embeddings.QueryPrefix = "search_query: "
+		}
+		if !meta.IsDefined("vector", "embeddings", "document_prefix") {
+			c.Vector.Embeddings.DocumentPrefix = "search_document: "
+		}
+	}
+	if file.Vector.Embed.RunAfterSync != nil {
+		c.Vector.Embed.RunAfterSync = file.Vector.Embed.RunAfterSync
+	}
+	if meta.IsDefined("vector", "embed", "recall") {
+		c.Vector.Embed.Recall = file.Vector.Embed.Recall
+	}
+	if file.Vector.Embed.BackstopInterval != "" {
+		c.Vector.Embed.BackstopInterval = file.Vector.Embed.BackstopInterval
+	}
+	c.mergeRecallExtractTOML(file.Recall, meta)
+	if meta.IsDefined("image_text") {
+		c.ImageText = file.ImageText
+	}
+	if meta.IsDefined("integrations") {
+		c.Integrations = file.Integrations
+	}
+	if meta.IsDefined("insights") {
+		c.Insights = file.Insights
+		c.Insights.Endpoint = strings.TrimSpace(c.Insights.Endpoint)
+		c.Insights.Model = strings.TrimSpace(c.Insights.Model)
+		c.Insights.APIKeyEnv = strings.TrimSpace(c.Insights.APIKeyEnv)
+		c.Insights.DefaultAgent = strings.ToLower(
+			strings.TrimSpace(c.Insights.DefaultAgent),
+		)
+	}
+	if meta.IsDefined("kata") {
+		mergeKataTOML(&c.Kata, file.Kata, meta)
+	}
+	if meta.IsDefined("friction", "enabled") {
+		c.Friction.Enabled = file.Friction.Enabled
+	}
+	if meta.IsDefined("friction", "timezone") {
+		c.Friction.Timezone = strings.TrimSpace(file.Friction.Timezone)
+	}
+	if meta.IsDefined("friction", "backfill_days") {
+		c.Friction.BackfillDays = file.Friction.BackfillDays
+	}
+	if meta.IsDefined("friction", "kata", "auto_file") {
+		c.Friction.Kata.AutoFile = file.Friction.Kata.AutoFile
+	}
+	if meta.IsDefined("friction", "kata", "min_sessions") {
+		c.Friction.Kata.MinSessions = file.Friction.Kata.MinSessions
+	}
+	if meta.IsDefined("friction", "kata", "kinds") {
+		c.Friction.Kata.Kinds = make([]string, 0, len(file.Friction.Kata.Kinds))
+		for _, k := range file.Friction.Kata.Kinds {
+			c.Friction.Kata.Kinds = append(c.Friction.Kata.Kinds, strings.TrimSpace(k))
+		}
+	}
+	if meta.IsDefined("friction", "seat_patterns") {
+		c.Friction.SeatPatterns = make([]string, 0, len(file.Friction.SeatPatterns))
+		for _, p := range file.Friction.SeatPatterns {
+			if p = strings.TrimSpace(p); p != "" {
+				c.Friction.SeatPatterns = append(c.Friction.SeatPatterns, p)
+			}
+		}
+	}
+	// IsDefined distinguishes "unset" (leave default 10s) from an
+	// explicit "0s" (disable coalescing). Checking != 0 would silently
+	// ignore the latter.
+	if meta.IsDefined("events_coalesce_interval") {
+		c.EventsCoalesceInterval = file.EventsCoalesceInterval
+	}
+	if meta.IsDefined("sync_idle_after") {
+		c.SyncIdleAfter = file.SyncIdleAfter
+	}
+	if meta.IsDefined("daemon_idle_timeout") {
+		c.DaemonIdleTimeout = file.DaemonIdleTimeout
+	}
+	if meta.IsDefined("sync_interval") {
+		c.SyncInterval = file.SyncInterval
+	}
+	if file.Automated.Prefixes != nil {
+		c.Automated.Prefixes = file.Automated.Prefixes
+	}
+	if file.Automated.Substrings != nil {
+		c.Automated.Substrings = file.Automated.Substrings
+	}
+	if file.Automated.ExactMatches != nil {
+		c.Automated.ExactMatches = file.Automated.ExactMatches
+	}
+	if len(file.Agent) > 0 {
+		if c.Agent == nil {
+			c.Agent = map[string]AgentConfig{}
+		}
+		for name, cfg := range file.Agent {
+			name = strings.TrimSpace(strings.ToLower(name))
+			if name == "" {
+				continue
+			}
+			cfg.Binary = strings.TrimSpace(cfg.Binary)
+			c.Agent[name] = cfg
+		}
+	}
+	if file.ModelAliases != nil {
+		c.ModelAliases = file.ModelAliases
+	}
+	if len(customModelPricing) > 0 {
+		c.CustomModelPricing = customModelPricing
+	}
+	if len(file.RemoteHosts) > 0 {
+		hosts := make([]RemoteHost, len(file.RemoteHosts))
+		for i, h := range file.RemoteHosts {
+			hosts[i] = RemoteHost{
+				Host:        strings.TrimSpace(h.Host),
+				Transport:   RemoteTransport(strings.TrimSpace(string(h.Transport))),
+				URL:         strings.TrimSpace(h.URL),
+				Token:       strings.TrimSpace(h.Token),
+				Destination: strings.TrimSpace(h.Destination),
+				Interval:    h.Interval,
+			}
+		}
+		c.RemoteHosts = hosts
+	}
+	if meta.IsDefined("session_sources") {
+		c.sessionSourceConfigs = append([]sessionSourceConfig(nil), file.SessionSources...)
+	}
+
+	c.CodexCloud = parseCodexCloudTable(c.configPath(), raw["agents"])
+	c.ClaudeAI = parseClaudeAITable(c.configPath(), raw["agents"])
+	if err := c.applyAgentDirectories(raw["agents"]); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ConfiguredAgentHomes returns the alternate home directories configured
+// for an agent, as written in the config file, or nil when none are set.
+func (c *Config) ConfiguredAgentHomes(agent parser.AgentType) []string {
+	homes := c.agentHomes[agent]
+	if len(homes) == 0 {
+		return nil
+	}
+	return append([]string(nil), homes...)
+}
+
+// NormalizeAgentHomes validates a settings update for alternate agent
+// homes. It rejects agents without home support and empty or S3 entries,
+// trims whitespace, and drops repeated spellings while keeping order.
+func NormalizeAgentHomes(
+	values map[string][]string,
+) (map[parser.AgentType][]string, error) {
+	normalized := make(map[parser.AgentType][]string, len(values))
+	for rawAgent, homes := range values {
+		agent := parser.AgentType(strings.ToLower(strings.TrimSpace(rawAgent)))
+		def, ok := parser.AgentByType(agent)
+		if !ok {
+			return nil, fmt.Errorf(
+				`agent_homes: unknown session provider %q`, rawAgent)
+		}
+		if !def.HomesSupported {
+			return nil, fmt.Errorf(
+				`agent_homes: %q does not support alternate homes`, agent)
+		}
+		if _, dup := normalized[agent]; dup {
+			return nil, fmt.Errorf(
+				`agent_homes: session provider %q is listed more than once`, agent)
+		}
+		seen := make(map[string]struct{}, len(homes))
+		cleaned := make([]string, 0, len(homes))
+		for i, raw := range homes {
+			home := strings.TrimSpace(raw)
+			if _, err := normalizeAgentHomeDir(home); err != nil {
+				return nil, fmt.Errorf(
+					"agent_homes: agents.%s.homes: entry %d: %w", def.Type, i+1, err)
+			}
+			if _, dup := seen[home]; dup {
+				continue
+			}
+			seen[home] = struct{}{}
+			cleaned = append(cleaned, home)
+		}
+		normalized[agent] = cleaned
+	}
+	return normalized, nil
+}
+
+func (c *Config) ensureCursorSecret() error {
+	if c.CursorSecret != "" {
+		return nil
+	}
+
+	return c.withConfigLock(func() error {
+		existing, err := c.readConfigMap()
+		if err != nil {
+			return err
+		}
+		if secret, ok := existing["cursor_secret"].(string); ok && secret != "" {
+			c.CursorSecret = secret
+			return nil
+		}
+
+		b := make([]byte, 32)
+		if _, err := rand.Read(b); err != nil {
+			return fmt.Errorf("generating secret: %w", err)
+		}
+		secret := base64.StdEncoding.EncodeToString(b)
+		existing["cursor_secret"] = secret
+		if err := c.writeConfigMap(existing); err != nil {
+			return err
+		}
+		c.CursorSecret = secret
+		return nil
+	})
+}
+
+// readConfigMap reads the TOML config file into a map. Returns
+// an empty map if the file does not exist.
+func (c *Config) readConfigMap() (map[string]any, error) {
+	existing := make(map[string]any)
+	data, err := os.ReadFile(c.configPath())
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("reading config: %w", err)
+	}
+	if err == nil {
+		if _, err := toml.Decode(string(data), &existing); err != nil {
+			return nil, fmt.Errorf("existing config invalid: %w", err)
+		}
+	}
+	return existing, nil
+}
+
+// writeConfigMap encodes a map as TOML and writes it to the
+// config file.
+func (c *Config) writeConfigMap(m map[string]any) error {
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(m); err != nil {
+		return fmt.Errorf("marshaling config: %w", err)
+	}
+	if err := os.WriteFile(c.configPath(), buf.Bytes(), 0o600); err != nil {
+		return fmt.Errorf("writing config: %w", err)
+	}
+	return nil
+}
+
+func (c *Config) withConfigLock(fn func() error) error {
+	return c.withFileLock(c.configPath()+".lock", fn)
+}
+
+func (c *Config) withFileLock(lockPath string, fn func() error) error {
+	if err := os.MkdirAll(c.DataDir, 0o700); err != nil {
+		return fmt.Errorf("creating data dir: %w", err)
+	}
+	// On macOS the flock syscall succeeds on a directory, whereas on
+	// Linux it errors. Detect that case explicitly so a path created as
+	// a directory is reported as an unusable lock on every platform.
+	if info, statErr := os.Stat(lockPath); statErr == nil && info.IsDir() {
+		return fmt.Errorf(
+			"locking %s: path is a directory, not a lock file", lockPath)
+	}
+	lock := flock.New(lockPath)
+	if err := lock.Lock(); err != nil {
+		return fmt.Errorf("locking %s: %w", lockPath, err)
+	}
+	defer func() {
+		_ = lock.Unlock()
+	}()
+	return fn()
+}
+
+// dataDirFromEnv returns the data directory from the environment, preferring
+// AGENTSVIEW_DATA_DIR and falling back to the legacy AGENT_VIEWER_DATA_DIR.
+// Returns "" when neither is set.
+func dataDirFromEnv() string {
+	if v := os.Getenv("AGENTSVIEW_DATA_DIR"); v != "" {
+		return v
+	}
+	return os.Getenv("AGENT_VIEWER_DATA_DIR")
+}
+
+func (c *Config) loadEnv() {
+	for _, def := range parser.Registry {
+		if v := firstEnv(def.EnvVar, def.NativeEnvVar); v != "" {
+			if def.Type == parser.AgentGoose {
+				v = parser.ResolveGoosePathRoot(v)
+				if v == "" {
+					// A whitespace-only override must not replace the
+					// defaults or a configured goose_dirs entry.
+					continue
+				}
+			}
+			c.AgentDirs[def.Type] = []string{v}
+			c.agentDirSource[def.Type] = dirEnv
+		}
+	}
+	if v := dataDirFromEnv(); v != "" {
+		c.DataDir = v
+	}
+	if v := os.Getenv("AGENTSVIEW_AUTH_TOKEN"); v != "" {
+		c.AuthToken = v
+	}
+	if v := os.Getenv("AGENTSVIEW_PG_URL"); v != "" {
+		c.pgEnvOverrides.URL = v
+	}
+	if v := os.Getenv("AGENTSVIEW_PG_SCHEMA"); v != "" {
+		c.pgEnvOverrides.Schema = v
+	}
+	if v := os.Getenv("AGENTSVIEW_PG_MACHINE"); v != "" {
+		c.pgEnvOverrides.MachineName = v
+	}
+	if v := os.Getenv("AGENTSVIEW_CLICKHOUSE_URL"); v != "" {
+		c.clickHouseEnvOverrides.URL = v
+	}
+	if v := os.Getenv("AGENTSVIEW_CLICKHOUSE_DATABASE"); v != "" {
+		c.clickHouseEnvOverrides.Database = v
+	}
+	if v := os.Getenv("AGENTSVIEW_CLICKHOUSE_MACHINE"); v != "" {
+		c.clickHouseEnvOverrides.MachineName = v
+	}
+	if v := firstEnv(
+		"AGENTSVIEW_CURSOR_ADMIN_API_KEY",
+		"CURSOR_ADMIN_API_KEY",
+	); v != "" {
+		c.CursorAdminAPIKey = v
+	}
+	if v := firstEnv(
+		"AGENTSVIEW_CURSOR_ADMIN_EMAIL",
+		"CURSOR_ADMIN_EMAIL",
+	); v != "" {
+		c.CursorAdminEmail = v
+	}
+	if v := firstEnv(
+		"AGENTSVIEW_CURSOR_ADMIN_USER_ID",
+		"CURSOR_ADMIN_USER_ID",
+	); v != "" {
+		c.CursorAdminUserID = v
+	}
+	if v := os.Getenv("AGENTSVIEW_DUCKDB_PATH"); v != "" {
+		c.DuckDB.Path = v
+	}
+	if v := os.Getenv("AGENTSVIEW_DUCKDB_URL"); v != "" {
+		c.DuckDB.URL = v
+	}
+	if v := os.Getenv("AGENTSVIEW_DUCKDB_TOKEN"); v != "" {
+		c.DuckDB.Token = v
+	}
+	if v := os.Getenv("AGENTSVIEW_DUCKDB_MACHINE"); v != "" {
+		c.DuckDB.MachineName = v
+	}
+	if v := os.Getenv("AGENTSVIEW_DUCKDB_ATTACH_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			c.DuckDB.AttachTimeout = d
+		} else {
+			log.Printf(
+				"warning: invalid AGENTSVIEW_DUCKDB_ATTACH_TIMEOUT %q: %v",
+				v, err,
+			)
+		}
+	}
+	if v := os.Getenv("AGENTSVIEW_DISABLE_UPDATE_CHECK"); v != "" {
+		c.DisableUpdateCheck = v == "1" || v == "true"
+	}
+	if v := os.Getenv("AGENTSVIEW_ARCHIVE_CONTENT"); v != "" {
+		if policy, err := ParseArchiveContent(v); err == nil {
+			c.ArchiveContent = policy
+		} else {
+			log.Printf(
+				"warning: invalid AGENTSVIEW_ARCHIVE_CONTENT: %v", err,
+			)
+		}
+	}
+}
+
+func firstEnv(names ...string) string {
+	for _, name := range names {
+		if v := os.Getenv(name); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+type stringListFlag []string
+
+func (f *stringListFlag) String() string {
+	return strings.Join(*f, ",")
+}
+
+func (f *stringListFlag) Set(value string) error {
+	for part := range strings.SplitSeq(value, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		*f = append(*f, part)
+	}
+	return nil
+}
+
+func (f *stringListFlag) Type() string {
+	return "stringList"
+}
+
+// RegisterServeFlags registers serve-command flags on fs.
+// The caller must call fs.Parse before passing fs to Load.
+func RegisterServeFlags(fs *flag.FlagSet) {
+	fs.String("host", "127.0.0.1", "Interface/IP for the backend HTTP server to bind")
+	fs.Int("port", 8080, "Backend HTTP port; an explicit nonzero port must be available (0 selects an available port)")
+	fs.String(
+		"public-url", "",
+		"Browser URL, also added to trusted origins; does not bind a listener",
+	)
+	fs.Var(
+		&stringListFlag{},
+		"public-origin",
+		"Trusted origin for Host/Origin checks; does not change the browser URL (repeatable or comma-separated)",
+	)
+	fs.String(
+		"proxy", "",
+		"Managed reverse proxy mode (currently: caddy)",
+	)
+	fs.String(
+		"caddy-bin", "",
+		"Caddy binary to use when -proxy=caddy (default: caddy)",
+	)
+	fs.String(
+		"proxy-bind-host", "",
+		"Local interface/IP for managed Caddy to bind (default: 127.0.0.1)",
+	)
+	fs.Int(
+		"public-port", 0,
+		"Managed Caddy HTTP/HTTPS listener port; also sets the public URL port (default: URL port or 8443)",
+	)
+	fs.String(
+		"tls-cert", "",
+		"TLS certificate path for managed Caddy HTTPS mode",
+	)
+	fs.String(
+		"tls-key", "",
+		"TLS key path for managed Caddy HTTPS mode",
+	)
+	fs.Var(
+		&stringListFlag{},
+		"allowed-subnet",
+		"Client CIDR allowed to connect to the managed proxy (repeatable or comma-separated)",
+	)
+	fs.Bool(
+		"no-browser", false,
+		"Don't open browser on startup",
+	)
+	fs.Bool(
+		"no-sync", false,
+		"Skip initial sync and disable background sync/file watching",
+	)
+	fs.Bool(
+		"no-update-check", false,
+		"Disable the update check API endpoint",
+	)
+	fs.Bool(
+		"require-auth", false,
+		"Require a bearer token for all API requests",
+	)
+	fs.Duration(
+		"events-coalesce-interval", 10*time.Second,
+		"Minimum interval between SSE data_changed broadcasts (0 disables coalescing)",
+	)
+	fs.Duration(
+		"write-timeout", 30*time.Second,
+		"Max API response time before a 503 (0 disables); some long-running routes are exempt",
+	)
+}
+
+// RegisterServePFlags registers serve-command flags on fs.
+func RegisterServePFlags(fs *pflag.FlagSet) {
+	fs.String("host", "127.0.0.1", "Interface/IP for the backend HTTP server to bind")
+	fs.Int("port", 8080, "Backend HTTP port; an explicit nonzero port must be available (0 selects an available port)")
+	fs.String(
+		"public-url", "",
+		"Browser URL, also added to trusted origins; does not bind a listener",
+	)
+	fs.Var(
+		&stringListFlag{},
+		"public-origin",
+		"Trusted origin for Host/Origin checks; does not change the browser URL (repeatable or comma-separated)",
+	)
+	fs.String(
+		"proxy", "",
+		"Managed reverse proxy mode (currently: caddy)",
+	)
+	fs.String(
+		"caddy-bin", "",
+		"Caddy binary to use when -proxy=caddy (default: caddy)",
+	)
+	fs.String(
+		"proxy-bind-host", "",
+		"Local interface/IP for managed Caddy to bind (default: 127.0.0.1)",
+	)
+	fs.Int(
+		"public-port", 0,
+		"Managed Caddy HTTP/HTTPS listener port; also sets the public URL port (default: URL port or 8443)",
+	)
+	fs.String(
+		"tls-cert", "",
+		"TLS certificate path for managed Caddy HTTPS mode",
+	)
+	fs.String(
+		"tls-key", "",
+		"TLS key path for managed Caddy HTTPS mode",
+	)
+	fs.Var(
+		&stringListFlag{},
+		"allowed-subnet",
+		"Client CIDR allowed to connect to the managed proxy (repeatable or comma-separated)",
+	)
+	fs.Bool(
+		"no-browser", false,
+		"Don't open browser on startup",
+	)
+	fs.Bool(
+		"no-sync", false,
+		"Skip initial sync and disable background sync/file watching",
+	)
+	fs.Bool(
+		"no-update-check", false,
+		"Disable the update check API endpoint",
+	)
+	fs.Bool(
+		"require-auth", false,
+		"Require a bearer token for all API requests",
+	)
+	fs.Duration(
+		"events-coalesce-interval", 10*time.Second,
+		"Minimum interval between SSE data_changed broadcasts (0 disables coalescing)",
+	)
+	fs.Duration(
+		"write-timeout", 30*time.Second,
+		"Max API response time before a 503 (0 disables); some long-running routes are exempt",
+	)
+}
+
+// applyFlags copies explicitly-set flags from fs into cfg.
+func applyFlags(cfg *Config, fs *flag.FlagSet) {
+	if fs == nil {
+		return
+	}
+	fs.Visit(func(f *flag.Flag) {
+		applyFlagValue(cfg, f.Name, f.Value.String())
+	})
+}
+
+// applyPFlags copies explicitly-set pflags from fs into cfg.
+func applyPFlags(cfg *Config, fs *pflag.FlagSet) {
+	if fs == nil {
+		return
+	}
+	fs.Visit(func(f *pflag.Flag) {
+		applyFlagValue(cfg, f.Name, f.Value.String())
+	})
+}
+
+func applyFlagValue(cfg *Config, name, value string) {
+	switch name {
+	case "host":
+		cfg.Host = value
+		cfg.HostExplicit = true
+	case "port":
+		cfg.Port, _ = strconv.Atoi(value)
+		cfg.PortExplicit = true
+	case "public-url":
+		cfg.PublicURL = value
+	case "public-origin":
+		cfg.PublicOrigins = splitFlagList(value)
+	case "proxy":
+		cfg.Proxy.Mode = value
+	case "caddy-bin":
+		cfg.Proxy.Bin = value
+	case "proxy-bind-host":
+		cfg.Proxy.BindHost = value
+	case "public-port":
+		cfg.Proxy.PublicPort, _ = strconv.Atoi(value)
+	case "tls-cert":
+		cfg.Proxy.TLSCert = value
+	case "tls-key":
+		cfg.Proxy.TLSKey = value
+	case "allowed-subnet":
+		cfg.Proxy.AllowedSubnets = splitFlagList(value)
+	case "no-browser":
+		cfg.NoBrowser = value == "true"
+	case "no-sync":
+		cfg.NoSync = value == "true"
+	case "no-update-check":
+		cfg.DisableUpdateCheck = value == "true"
+	case "require-auth":
+		cfg.RequireAuth = value == "true"
+	case "events-coalesce-interval":
+		if d, err := time.ParseDuration(value); err == nil {
+			cfg.EventsCoalesceInterval = d
+		}
+	case "write-timeout":
+		if d, err := time.ParseDuration(value); err == nil {
+			cfg.WriteTimeout = d
+		}
+	case "pg":
+		// Read-routing only. The CLI resolver combines this flag
+		// with cfg.PG from env/config and does not persist a new
+		// config field for it.
+	}
+}
+
+func splitFlagList(value string) []string {
+	if value == "" {
+		return nil
+	}
+	var out []string
+	for part := range strings.SplitSeq(value, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		out = append(out, part)
+	}
+	return out
+}
+
+func finalize(cfg *Config) error {
+	if err := expandLocalPaths(cfg); err != nil {
+		return err
+	}
+	// The data directory is final only now: AGENTSVIEW_DATA_DIR is applied
+	// after Default, and expandLocalPaths expands it.
+	for _, def := range parser.Registry {
+		if def.DataDirRoot != "" {
+			cfg.AgentDirs[def.Type] = []string{filepath.Join(cfg.DataDir, filepath.FromSlash(def.DataDirRoot))}
+		}
+	}
+	if strings.TrimSpace(cfg.LocalMachineName) == "" {
+		return errors.New("identify local sync machine: hostname is empty")
+	}
+	if err := cfg.resolveSessionSources(); err != nil {
+		return err
+	}
+	return cfg.validateSections()
+}
+
+func (c *Config) resolveSessionSources() error {
+	type rootState struct {
+		dir     string
+		machine string
+	}
+
+	resolved := make([]SessionSource, 0)
+	rootsByAgent := make(map[parser.AgentType]map[string]rootState, len(c.AgentDirs))
+	metadata := make(map[parser.AgentType]map[string][]string)
+	recordMetadata := func(agent parser.AgentType, canonical, metadataDir string) {
+		if metadataDir == "" {
+			return
+		}
+		if metadata[agent] == nil {
+			metadata[agent] = make(map[string][]string)
+		}
+		if slices.Contains(metadata[agent][canonical], metadataDir) {
+			return
+		}
+		metadata[agent][canonical] = append(metadata[agent][canonical], metadataDir)
+	}
+	for _, def := range parser.Registry {
+		seen := make(map[string]rootState)
+		dirs := make([]string, 0, len(c.AgentDirs[def.Type]))
+		for _, rawDir := range c.AgentDirs[def.Type] {
+			value := strings.TrimSpace(rawDir)
+			if value == "" {
+				continue
+			}
+			value, metadataDir, err := normalizeRuntimeSessionRoot(def.Type, value)
+			if err != nil {
+				return fmt.Errorf("resolve %s session source %q: %w", def.Type, rawDir, err)
+			}
+			key, err := sessionSourceComparisonKey(value)
+			if err != nil {
+				return fmt.Errorf(
+					"resolve %s session source %q: %w", def.Type, value, err,
+				)
+			}
+			if existing, ok := seen[key]; ok {
+				recordMetadata(def.Type, existing.dir, metadataDir)
+				continue
+			}
+			recordMetadata(def.Type, value, metadataDir)
+			seen[key] = rootState{
+				dir:     value,
+				machine: c.InstallationID,
+			}
+			dirs = append(dirs, value)
+		}
+		c.AgentDirs[def.Type] = dirs
+		rootsByAgent[def.Type] = seen
+	}
+
+	var problems []string
+	for _, def := range parser.Registry {
+		homes := c.agentHomes[def.Type]
+		if len(homes) == 0 {
+			continue
+		}
+		seen := rootsByAgent[def.Type]
+		if seen == nil {
+			seen = make(map[string]rootState)
+			rootsByAgent[def.Type] = seen
+		}
+		for i, rawHome := range homes {
+			home, err := normalizeAgentHomeDir(rawHome)
+			if err != nil {
+				problems = append(problems,
+					fmt.Sprintf("agents.%s.homes: entry %d: %v", def.Type, i+1, err))
+				continue
+			}
+			for _, rawDir := range AgentHomeDirs(def, home) {
+				dir, metadataDir, err := normalizeRuntimeSessionRoot(def.Type, rawDir)
+				if err != nil {
+					problems = append(problems, fmt.Sprintf("agents.%s.homes: entry %d: %v", def.Type, i+1, err))
+					continue
+				}
+				key, err := sessionSourceComparisonKey(dir)
+				if err != nil {
+					problems = append(problems,
+						fmt.Sprintf("agents.%s.homes: entry %d: %v", def.Type, i+1, err))
+					continue
+				}
+				if existing, duplicate := seen[key]; duplicate {
+					recordMetadata(def.Type, existing.dir, metadataDir)
+					continue
+				}
+				recordMetadata(def.Type, dir, metadataDir)
+				seen[key] = rootState{dir: dir, machine: c.InstallationID}
+				c.AgentDirs[def.Type] = append(c.AgentDirs[def.Type], dir)
+			}
+			c.agentDirSource[def.Type] = dirFile
+		}
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("agent homes: %s", strings.Join(problems, "; "))
+	}
+
+	for i, input := range c.sessionSourceConfigs {
+		entry := i + 1
+		agent := parser.AgentType(strings.TrimSpace(strings.ToLower(input.Agent)))
+		if agent == "" {
+			problems = append(problems,
+				fmt.Sprintf("entry %d: agent is required", entry))
+			continue
+		}
+		def, ok := parser.AgentByType(agent)
+		if !ok {
+			problems = append(problems,
+				fmt.Sprintf("entry %d: unknown agent %q; use a registered parser name such as claude, codex, or copilot", entry, input.Agent))
+			continue
+		}
+		if def.DataDirRoot != "" {
+			problems = append(problems,
+				fmt.Sprintf("entry %d (%s): %s keeps its sessions in the AgentsView data directory and takes no session_sources entry", entry, agent, agent))
+			continue
+		}
+		factory, hasFactory := parser.ProviderFactoryByType(agent)
+		if !hasFactory ||
+			factory.Capabilities().Source.DiscoverSources != parser.CapabilitySupported {
+			problems = append(problems,
+				fmt.Sprintf("entry %d (%s): session_sources requires a discoverable filesystem provider; %s is import-only", entry, agent, agent))
+			continue
+		}
+		rawDir := strings.TrimSpace(input.Dir)
+		if strings.HasPrefix(strings.ToLower(rawDir), "s3://") {
+			problems = append(problems,
+				fmt.Sprintf("entry %d (%s): dir %q is an S3 root; session_sources supports filesystem roots only, so configure S3 through the existing per-agent directory setting", entry, agent, input.Dir))
+			continue
+		}
+		dir, metadataDir, err := normalizeRuntimeSessionRoot(agent, input.Dir)
+		if err != nil {
+			problems = append(problems,
+				fmt.Sprintf("entry %d (%s): %v", entry, agent, err))
+			continue
+		}
+		machine := c.InstallationID
+		if input.Machine != nil {
+			machine = strings.TrimSpace(*input.Machine)
+			if machine == "" {
+				problems = append(problems,
+					fmt.Sprintf("entry %d (%s): machine must not be empty when set", entry, agent))
+				continue
+			}
+			if machine == "local" {
+				problems = append(problems,
+					fmt.Sprintf("entry %d (%s): machine %q is reserved for legacy local attribution; use the actual machine name or omit machine", entry, agent, machine))
+				continue
+			}
+		}
+
+		seen := rootsByAgent[agent]
+		if seen == nil {
+			seen = make(map[string]rootState)
+			rootsByAgent[agent] = seen
+		}
+		key, err := sessionSourceComparisonKey(dir)
+		if err != nil {
+			problems = append(problems,
+				fmt.Sprintf("entry %d (%s): %v", entry, agent, err))
+			continue
+		}
+		state, duplicate := seen[key]
+		if duplicate {
+			dir = state.dir
+			state.machine = machine
+			seen[key] = state
+		} else {
+			seen[key] = rootState{
+				dir:     dir,
+				machine: machine,
+			}
+			c.AgentDirs[agent] = append(c.AgentDirs[agent], dir)
+		}
+		recordMetadata(agent, dir, metadataDir)
+		c.agentDirSource[agent] = dirFile
+		resolved = append(resolved, SessionSource{
+			Agent: agent, Dir: dir, Machine: machine,
+		})
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("session_sources: %s", strings.Join(problems, "; "))
+	}
+
+	sourceMachines := make(map[parser.AgentType]map[string]string, len(rootsByAgent))
+	for agent, roots := range rootsByAgent {
+		machines := make(map[string]string, len(roots))
+		for _, state := range roots {
+			if strings.HasPrefix(strings.ToLower(state.dir), "s3://") {
+				continue
+			}
+			machines[state.dir] = state.machine
+		}
+		sourceMachines[agent] = machines
+	}
+	c.SessionSources = resolved
+	c.SourceMachines = sourceMachines
+	c.ProviderMetadata = metadata
+	return nil
+}
+
+func sessionSourceComparisonKey(dir string) (string, error) {
+	if strings.HasPrefix(strings.ToLower(dir), "s3://") {
+		return dir, nil
+	}
+	return pathutil.LocalComparisonKey(dir)
+}
+
+// Runtime scan roots are canonical absolute paths. The original home's
+// absolute path is kept separately for sidecars when only its session
+// directory is linked into another home.
+func normalizeRuntimeSessionRoot(agent parser.AgentType, raw string) (dir, metadataDir string, err error) {
+	if strings.HasPrefix(strings.ToLower(raw), "s3://") {
+		return raw, "", nil
+	}
+	expanded, err := normalizeSessionSourceDir(raw)
+	if err != nil {
+		return "", "", err
+	}
+	return parser.ResolveProviderRoot(agent, expanded)
+}
+
+// normalizeAgentHomeDir validates and expands one alternate agent home.
+// Homes are local directories only: the derived session roots must be
+// watched and read through the filesystem provider paths.
+func normalizeAgentHomeDir(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", errors.New("home is required")
+	}
+	if strings.HasPrefix(strings.ToLower(value), "s3://") {
+		return "", fmt.Errorf("home %q is an S3 root; homes must be local directories, so configure S3 through the per-agent directory setting", raw)
+	}
+	return normalizeSessionSourceDir(value)
+}
+
+func normalizeSessionSourceDir(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", errors.New("dir is required")
+	}
+	if strings.ContainsRune(value, '\x00') {
+		return "", fmt.Errorf("dir %q contains a NUL byte", raw)
+	}
+	// Structured sources resolve after expandLocalPaths has already expanded
+	// the legacy per-agent arrays, so expand here too. Without it a "~/..."
+	// root is never scanned and cannot deduplicate against, or relabel, the
+	// equivalent expanded legacy root. This resolves the path only; separator
+	// and case spelling are still left exactly as configured.
+	expanded, err := pathutil.ExpandHome(value)
+	if err != nil {
+		return "", fmt.Errorf("expanding dir %q: %w", raw, err)
+	}
+	return expanded, nil
+}
+
+func resolvePublicURL(value string, proxyCfg ProxyConfig) (string, error) {
+	if strings.TrimSpace(value) == "" {
+		return "", nil
+	}
+	u, err := url.Parse(strings.TrimSpace(value))
+	if err != nil {
+		return "", err
+	}
+	if u == nil || u.Host == "" {
+		return "", fmt.Errorf("%q must include a host", value)
+	}
+	if ip := net.ParseIP(u.Hostname()); ip != nil && ip.IsUnspecified() {
+		return "", fmt.Errorf(
+			"%q uses a wildcard bind address; use a hostname or IP reachable by the browser for public_url, and set --host or --proxy-bind-host to choose the listening interface",
+			value,
+		)
+	}
+	if u.User != nil {
+		return "", fmt.Errorf("%q must not include user info", value)
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("%q must not include query or fragment", value)
+	}
+	if u.Path != "" && u.Path != "/" {
+		return "", fmt.Errorf("%q must not include a path", value)
+	}
+	if proxyCfg.Mode != "caddy" {
+		return normalizePublicOrigin(value)
+	}
+
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", fmt.Errorf("%q must use http or https", value)
+	}
+	resolvedPort := proxyCfg.PublicPort
+	if resolvedPort == 0 {
+		resolvedPort = 8443
+	}
+	if rawPort := u.Port(); rawPort != "" {
+		explicitPort, err := strconv.Atoi(rawPort)
+		if err != nil || explicitPort < 1 || explicitPort > 65535 {
+			return "", fmt.Errorf("%q has an invalid port", value)
+		}
+		if proxyCfg.PublicPort != 0 && explicitPort != proxyCfg.PublicPort {
+			return "", fmt.Errorf(
+				"%q conflicts with configured public port %d",
+				value, proxyCfg.PublicPort,
+			)
+		}
+		resolvedPort = explicitPort
+	}
+
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return "", fmt.Errorf("%q must include a host", value)
+	}
+	if resolvedPort == defaultPortForScheme(scheme) {
+		return scheme + "://" + hostLiteral(host), nil
+	}
+	return scheme + "://" + net.JoinHostPort(host, strconv.Itoa(resolvedPort)), nil
+}
+
+func normalizePublicOrigins(origins []string) ([]string, error) {
+	if len(origins) == 0 {
+		return nil, nil
+	}
+	normalized := make([]string, 0, len(origins))
+	seen := make(map[string]bool, len(origins))
+	for _, origin := range origins {
+		if strings.TrimSpace(origin) == "" {
+			continue
+		}
+		norm, err := normalizePublicOrigin(origin)
+		if err != nil {
+			return nil, err
+		}
+		if seen[norm] {
+			continue
+		}
+		seen[norm] = true
+		normalized = append(normalized, norm)
+	}
+	if len(normalized) == 0 {
+		return nil, nil
+	}
+	return normalized, nil
+}
+
+func normalizePublicOrigin(origin string) (string, error) {
+	origin = strings.TrimSpace(origin)
+	u, err := url.Parse(origin)
+	if err != nil {
+		return "", fmt.Errorf("parsing %q: %w", origin, err)
+	}
+	if u == nil || u.Host == "" {
+		return "", fmt.Errorf("%q must include a host", origin)
+	}
+	if u.User != nil {
+		return "", fmt.Errorf("%q must not include user info", origin)
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("%q must not include query or fragment", origin)
+	}
+	if u.Path != "" && u.Path != "/" {
+		return "", fmt.Errorf("%q must not include a path", origin)
+	}
+
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", fmt.Errorf("%q must use http or https", origin)
+	}
+
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return "", fmt.Errorf("%q must include a host", origin)
+	}
+	port := u.Port()
+	if port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return "", fmt.Errorf("%q has an invalid port", origin)
+		}
+		if n == defaultPortForScheme(scheme) {
+			port = ""
+		}
+	}
+
+	if port == "" {
+		return scheme + "://" + hostLiteral(host), nil
+	}
+	return scheme + "://" + net.JoinHostPort(host, port), nil
+}
+
+func normalizeProxyConfig(cfg *ProxyConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	cfg.Mode = strings.ToLower(strings.TrimSpace(cfg.Mode))
+	switch cfg.Mode {
+	case "", "caddy":
+	default:
+		return fmt.Errorf("invalid proxy mode %q", cfg.Mode)
+	}
+	if cfg.Mode == "caddy" && strings.TrimSpace(cfg.Bin) == "" {
+		cfg.Bin = "caddy"
+	}
+	if cfg.Mode == "caddy" {
+		cfg.BindHost = strings.TrimSpace(cfg.BindHost)
+		if cfg.BindHost == "" {
+			cfg.BindHost = "127.0.0.1"
+		}
+		if cfg.PublicPort < 0 || cfg.PublicPort > 65535 {
+			return fmt.Errorf("invalid public port %d", cfg.PublicPort)
+		}
+	}
+	var err error
+	cfg.AllowedSubnets, err = normalizeAllowedSubnets(cfg.AllowedSubnets)
+	if err != nil {
+		return fmt.Errorf("invalid allowed subnets: %w", err)
+	}
+	return nil
+}
+
+func normalizeAllowedSubnets(subnets []string) ([]string, error) {
+	if len(subnets) == 0 {
+		return nil, nil
+	}
+	normalized := make([]string, 0, len(subnets))
+	seen := make(map[string]bool, len(subnets))
+	for _, subnet := range subnets {
+		subnet = strings.TrimSpace(subnet)
+		if subnet == "" {
+			continue
+		}
+		network, err := parseAllowedSubnet(subnet)
+		if err != nil {
+			return nil, fmt.Errorf("parsing %q: %w", subnet, err)
+		}
+		value := network.String()
+		if seen[value] {
+			continue
+		}
+		seen[value] = true
+		normalized = append(normalized, value)
+	}
+	if len(normalized) == 0 {
+		return nil, nil
+	}
+	return normalized, nil
+}
+
+func parseAllowedSubnet(value string) (*net.IPNet, error) {
+	_, network, err := net.ParseCIDR(value)
+	if err == nil {
+		return network, nil
+	}
+	expanded, ok := expandIPv4CIDRShorthand(value)
+	if !ok {
+		return nil, err
+	}
+	_, network, err = net.ParseCIDR(expanded)
+	if err != nil {
+		return nil, err
+	}
+	return network, nil
+}
+
+func expandIPv4CIDRShorthand(value string) (string, bool) {
+	addr, mask, ok := strings.Cut(value, "/")
+	if !ok || strings.Contains(addr, ":") {
+		return "", false
+	}
+	parts := strings.Split(addr, ".")
+	if len(parts) == 0 || len(parts) > 4 {
+		return "", false
+	}
+	if slices.Contains(parts, "") {
+		return "", false
+	}
+	for len(parts) < 4 {
+		parts = append(parts, "0")
+	}
+	return strings.Join(parts, ".") + "/" + mask, true
+}
+
+func defaultPortForScheme(scheme string) int {
+	if scheme == "https" {
+		return 443
+	}
+	return 80
+}
+
+func hostLiteral(host string) string {
+	if strings.Contains(host, ":") {
+		return "[" + host + "]"
+	}
+	return host
+}
+
+func normalizePGTargetName(name string) string {
+	return normalizeTargetName(name)
+}
+
+func isReservedPGTargetName(name string) bool {
+	return isReservedMirrorTargetName(name)
+}
+
+func parsePGConfigSection(value any) (PGConfig, map[string]PGConfig, error) {
+	return parseNamedTargetSection[PGConfig](
+		"pg", "PG", value, pgConfigKeys, isReservedPGTargetName,
+	)
+}
+
+func parseClickHouseConfigSection(value any) (ClickHouseConfig, map[string]ClickHouseConfig, error) {
+	return parseNamedTargetSection[ClickHouseConfig](
+		"clickhouse", "ClickHouse", value, clickHouseConfigKeys, isReservedMirrorTargetName,
+	)
+}
+
+// ResolveDataDir returns the effective data directory by applying
+// defaults and environment overrides, without reading any files.
+// Use this to determine where migration should target before
+// calling Load or LoadMinimal.
+func ResolveDataDir() (string, error) {
+	cfg, err := Default()
+	if err != nil {
+		return "", err
+	}
+	if v := dataDirFromEnv(); v != "" {
+		cfg.DataDir = v
+	}
+	if err := expandDataDir(&cfg); err != nil {
+		return "", err
+	}
+	return cfg.DataDir, nil
+}
+
+// IsDefaultAgentsviewDataDir reports whether path is (or symlink-resolves to) a
+// default ~/.agentsview data directory. It is the single guard shared by the
+// CLI and HTTP recall-import paths.
+func IsDefaultAgentsviewDataDir(path string) bool {
+	clean := filepath.Clean(strings.TrimSpace(path))
+	if clean == "" || clean == "." {
+		return false
+	}
+	if filepath.Base(clean) == ".agentsview" {
+		return true
+	}
+	resolved, err := filepath.EvalSymlinks(clean)
+	if err != nil {
+		return false
+	}
+	return filepath.Base(filepath.Clean(resolved)) == ".agentsview"
+}
+
+// IsDefaultAgentsviewDBPath reports whether dbPath lives inside a default
+// ~/.agentsview directory after resolving symlinks. It also resolves a direct
+// symlink whose target does not exist yet, so a lab sessions.db pointing at a
+// not-yet-created ~/.agentsview/sessions.db is still guarded: opening SQLite
+// through that dangling link would otherwise create the production archive.
+func IsDefaultAgentsviewDBPath(dbPath string) bool {
+	dbPath = strings.TrimSpace(dbPath)
+	if dbPath == "" {
+		return false
+	}
+	if resolved, err := filepath.EvalSymlinks(dbPath); err == nil {
+		if defaultAgentsviewDBDir(resolved) {
+			return true
+		}
+	}
+	if target, err := os.Readlink(dbPath); err == nil {
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(dbPath), target)
+		}
+		if defaultAgentsviewDBDir(target) {
+			return true
+		}
+	}
+	return false
+}
+
+func defaultAgentsviewDBDir(dbPath string) bool {
+	return filepath.Base(filepath.Dir(filepath.Clean(dbPath))) == ".agentsview"
+}
+
+// DefaultPGTargetName returns the effective named PG target for this config.
+func (c *Config) DefaultPGTargetName() (string, error) {
+	if c.pgConfigErr != nil {
+		return "", c.pgConfigErr
+	}
+	return defaultNamedTargetName("pg", "default_pg", c.DefaultPG, c.PGTargets)
+}
+
+func (c *Config) validatePGTargets() error {
+	_, err := c.DefaultPGTargetName()
+	return err
+}
+
+func (c *Config) PGTargetNames() ([]string, string, error) {
+	if c.pgConfigErr != nil {
+		return nil, "", c.pgConfigErr
+	}
+	return namedTargetNames("pg", "default_pg", c.DefaultPG, c.PGTargets)
+}
+
+// RawPGTarget returns the configured PG target before env expansion and
+// default-field synthesis. An empty name selects the effective default target.
+func (c *Config) RawPGTarget(name string) (PGConfig, error) {
+	if err := c.validatePGTargets(); err != nil {
+		return PGConfig{}, err
+	}
+	targetName := normalizePGTargetName(name)
+	if len(c.PGTargets) == 0 {
+		if targetName != "" {
+			return PGConfig{}, fmt.Errorf(
+				"pg target %q is not configured; config uses a single legacy [pg] block",
+				name,
+			)
+		}
+		return c.PG, nil
+	}
+	if targetName == "" {
+		var err error
+		targetName, err = c.DefaultPGTargetName()
+		if err != nil {
+			return PGConfig{}, err
+		}
+	}
+	targetCfg, ok := c.PGTargets[targetName]
+	if !ok {
+		return PGConfig{}, fmt.Errorf(
+			"pg target %q is not configured",
+			targetName,
+		)
+	}
+	return targetCfg, nil
+}
+
+func (c *Config) resolvePGConfig(
+	pg PGConfig, applyDefaultEnv bool,
+) (PGConfig, error) {
+	if applyDefaultEnv {
+		if c.pgEnvOverrides.URL != "" {
+			pg.URL = c.pgEnvOverrides.URL
+		}
+		if c.pgEnvOverrides.Schema != "" {
+			pg.Schema = c.pgEnvOverrides.Schema
+		}
+		if c.pgEnvOverrides.MachineName != "" {
+			pg.MachineName = c.pgEnvOverrides.MachineName
+		}
+		if active, err := deploymentVarsActive("AGENTSVIEW_PG_ALLOW_INSECURE"); err != nil {
+			return pg, err
+		} else if active {
+			if v, set, err := lookupEnvBool("AGENTSVIEW_PG_ALLOW_INSECURE"); err != nil {
+				return pg, err
+			} else if set {
+				pg.AllowInsecure = v
+			}
+		}
+	}
+	if pg.URL != "" {
+		expanded, err := expandBracedEnv(pg.URL)
+		if err != nil {
+			return pg, fmt.Errorf("expanding url: %w", err)
+		}
+		pg.URL = expanded
+	}
+	if pg.Schema == "" {
+		pg.Schema = "agentsview"
+	}
+	if pg.MachineName == "" {
+		pg.MachineName = c.InstallationID
+	}
+	return pg, nil
+}
+
+// ResolvePG returns the effective default PG target with defaults applied
+// and environment variables expanded in URL.
+func (c *Config) ResolvePG() (PGConfig, error) {
+	return c.ResolvePGTarget("")
+}
+
+// ResolvePGTarget resolves one named PG target, or the effective default
+// target when name is empty. In legacy single-target mode, only the empty
+// name is valid.
+func (c *Config) ResolvePGTarget(name string) (PGConfig, error) {
+	if err := c.validatePGTargets(); err != nil {
+		return PGConfig{}, err
+	}
+	targetName := normalizePGTargetName(name)
+	if len(c.PGTargets) == 0 {
+		if targetName != "" {
+			return PGConfig{}, fmt.Errorf(
+				"pg target %q is not configured; config uses a single legacy [pg] block",
+				name,
+			)
+		}
+		return c.resolvePGConfig(c.PG, true)
+	}
+	defaultName, err := c.DefaultPGTargetName()
+	if err != nil {
+		return PGConfig{}, err
+	}
+	if targetName == "" {
+		targetName = defaultName
+	}
+	targetCfg, ok := c.PGTargets[targetName]
+	if !ok {
+		return PGConfig{}, fmt.Errorf(
+			"pg target %q is not configured",
+			targetName,
+		)
+	}
+	return c.resolvePGConfig(targetCfg, targetName == defaultName)
+}
+
+// ResolvePGTargets resolves every configured PG target. Legacy single-target
+// mode returns one unnamed default target.
+func (c *Config) ResolvePGTargets() ([]ResolvedPGTarget, error) {
+	if err := c.validatePGTargets(); err != nil {
+		return nil, err
+	}
+	if len(c.PGTargets) == 0 {
+		pg, err := c.resolvePGConfig(c.PG, true)
+		if err != nil {
+			return nil, err
+		}
+		return []ResolvedPGTarget{{
+			Config:    pg,
+			IsDefault: true,
+		}}, nil
+	}
+	names, defaultName, err := c.PGTargetNames()
+	if err != nil {
+		return nil, err
+	}
+	targets := make([]ResolvedPGTarget, 0, len(names))
+	for _, name := range names {
+		targetCfg, err := c.resolvePGConfig(
+			c.PGTargets[name], name == defaultName,
+		)
+		if err != nil {
+			return nil, err
+		}
+		targets = append(targets, ResolvedPGTarget{
+			Name:      name,
+			Config:    targetCfg,
+			IsDefault: name == defaultName,
+		})
+	}
+	return targets, nil
+}
+
+func (c *Config) DefaultClickHouseTargetName() (string, error) {
+	if c.clickHouseConfigErr != nil {
+		return "", c.clickHouseConfigErr
+	}
+	return defaultNamedTargetName(
+		"clickhouse", "default_clickhouse", c.DefaultClickHouse, c.ClickHouseTargets,
+	)
+}
+
+func (c *Config) validateClickHouseTargets() error {
+	_, err := c.DefaultClickHouseTargetName()
+	return err
+}
+
+func (c *Config) ClickHouseTargetNames() ([]string, string, error) {
+	if c.clickHouseConfigErr != nil {
+		return nil, "", c.clickHouseConfigErr
+	}
+	return namedTargetNames(
+		"clickhouse", "default_clickhouse", c.DefaultClickHouse, c.ClickHouseTargets,
+	)
+}
+
+func (c *Config) RawClickHouseTarget(name string) (ClickHouseConfig, error) {
+	if err := c.validateClickHouseTargets(); err != nil {
+		return ClickHouseConfig{}, err
+	}
+	targetName := normalizeTargetName(name)
+	if len(c.ClickHouseTargets) == 0 {
+		if targetName != "" {
+			return ClickHouseConfig{}, fmt.Errorf(
+				"clickhouse target %q is not configured; config uses a single legacy [clickhouse] block",
+				name,
+			)
+		}
+		return c.ClickHouse, nil
+	}
+	if targetName == "" {
+		var err error
+		targetName, err = c.DefaultClickHouseTargetName()
+		if err != nil {
+			return ClickHouseConfig{}, err
+		}
+	}
+	targetCfg, ok := c.ClickHouseTargets[targetName]
+	if !ok {
+		return ClickHouseConfig{}, fmt.Errorf(
+			"clickhouse target %q is not configured",
+			targetName,
+		)
+	}
+	return targetCfg, nil
+}
+
+func (c *Config) resolveClickHouseConfig(
+	name string, ch ClickHouseConfig, applyDefaultEnv bool,
+) (ClickHouseConfig, error) {
+	if ch.PushBatchSize != nil && *ch.PushBatchSize < 1 {
+		section := "[clickhouse]"
+		if name != "" {
+			section = "[clickhouse." + name + "]"
+		}
+		return ch, fmt.Errorf(
+			"%s push_batch_size must be at least 1, got %d; remove the key to use the default",
+			section, *ch.PushBatchSize,
+		)
+	}
+	if applyDefaultEnv {
+		if c.clickHouseEnvOverrides.URL != "" {
+			ch.URL = c.clickHouseEnvOverrides.URL
+		}
+		if c.clickHouseEnvOverrides.Database != "" {
+			ch.Database = c.clickHouseEnvOverrides.Database
+		}
+		if c.clickHouseEnvOverrides.MachineName != "" {
+			ch.MachineName = c.clickHouseEnvOverrides.MachineName
+		}
+	}
+	if ch.URL != "" {
+		expanded, err := expandBracedEnv(ch.URL)
+		if err != nil {
+			return ch, fmt.Errorf("expanding url: %w", err)
+		}
+		ch.URL = expanded
+	}
+	if ch.Database == "" {
+		if name := clickHouseURLDatabase(ch.URL); name != "" {
+			ch.Database = name
+		} else {
+			ch.Database = "agentsview"
+		}
+	}
+	if ch.MachineName == "" {
+		ch.MachineName = c.InstallationID
+	}
+	return ch, nil
+}
+
+// clickHouseURLDatabase returns the database name from a clickhouse-go DSN
+// path, or empty when the URL has no path.
+func clickHouseURLDatabase(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	name := strings.Trim(u.Path, "/")
+	if i := strings.IndexByte(name, '/'); i >= 0 {
+		name = name[:i]
+	}
+	return name
+}
+
+func (c *Config) ResolveClickHouse() (ClickHouseConfig, error) {
+	return c.ResolveClickHouseTarget("")
+}
+
+func (c *Config) ResolveClickHouseTarget(name string) (ClickHouseConfig, error) {
+	if err := c.validateClickHouseTargets(); err != nil {
+		return ClickHouseConfig{}, err
+	}
+	targetName := normalizeTargetName(name)
+	if len(c.ClickHouseTargets) == 0 {
+		if targetName != "" {
+			return ClickHouseConfig{}, fmt.Errorf(
+				"clickhouse target %q is not configured; config uses a single legacy [clickhouse] block",
+				name,
+			)
+		}
+		return c.resolveClickHouseConfig("", c.ClickHouse, true)
+	}
+	defaultName, err := c.DefaultClickHouseTargetName()
+	if err != nil {
+		return ClickHouseConfig{}, err
+	}
+	if targetName == "" {
+		targetName = defaultName
+	}
+	targetCfg, ok := c.ClickHouseTargets[targetName]
+	if !ok {
+		return ClickHouseConfig{}, fmt.Errorf(
+			"clickhouse target %q is not configured",
+			targetName,
+		)
+	}
+	return c.resolveClickHouseConfig(targetName, targetCfg, targetName == defaultName)
+}
+
+func (c *Config) ResolveClickHouseTargets() ([]ResolvedClickHouseTarget, error) {
+	if err := c.validateClickHouseTargets(); err != nil {
+		return nil, err
+	}
+	if len(c.ClickHouseTargets) == 0 {
+		ch, err := c.resolveClickHouseConfig("", c.ClickHouse, true)
+		if err != nil {
+			return nil, err
+		}
+		return []ResolvedClickHouseTarget{{
+			Config:    ch,
+			IsDefault: true,
+		}}, nil
+	}
+	names, defaultName, err := c.ClickHouseTargetNames()
+	if err != nil {
+		return nil, err
+	}
+	targets := make([]ResolvedClickHouseTarget, 0, len(names))
+	for _, name := range names {
+		targetCfg, err := c.resolveClickHouseConfig(
+			name, c.ClickHouseTargets[name], name == defaultName,
+		)
+		if err != nil {
+			return nil, err
+		}
+		targets = append(targets, ResolvedClickHouseTarget{
+			Name:      name,
+			Config:    targetCfg,
+			IsDefault: name == defaultName,
+		})
+	}
+	return targets, nil
+}
+
+// ResolveDuckDB returns a copy of DuckDB config with defaults applied
+// and environment variables expanded in path, URL, and token.
+func (c *Config) ResolveDuckDB() (DuckDBConfig, error) {
+	duck := c.DuckDB
+	if duck.Path != "" {
+		expanded, err := expandBracedEnv(duck.Path)
+		if err != nil {
+			return duck, fmt.Errorf("expanding path: %w", err)
+		}
+		expanded, err = pathutil.ExpandHome(expanded)
+		if err != nil {
+			return duck, fmt.Errorf("expanding path: %w", err)
+		}
+		duck.Path = expanded
+	}
+	if duck.URL != "" {
+		expanded, err := expandBracedEnv(duck.URL)
+		if err != nil {
+			return duck, fmt.Errorf("expanding url: %w", err)
+		}
+		duck.URL = expanded
+	}
+	if duck.Token != "" {
+		expanded, err := expandBracedEnv(duck.Token)
+		if err != nil {
+			return duck, fmt.Errorf("expanding token: %w", err)
+		}
+		duck.Token = expanded
+	}
+	if duck.Path == "" {
+		duck.Path = filepath.Join(c.DataDir, "sessions.duckdb")
+	}
+	if duck.MachineName == "" {
+		duck.MachineName = c.InstallationID
+	}
+	return duck, nil
+}
+
+var (
+	bracedEnvPattern      = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+	bareEnvPattern        = regexp.MustCompile(`^\$([A-Za-z_][A-Za-z0-9_]*)$`)
+	partialBareEnvPattern = regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*)`)
+)
+
+// IsEnvDependentURL reports whether s would have environment variables
+// expanded by expandBracedEnv: it contains any ${VAR} reference, or the
+// whole string is a single bare $VAR shortcut. Embedded bare $VAR
+// references (e.g. "postgres://$USER@host") are deliberately NOT expanded
+// and so do not count. Callers that must persist a literal URL into a
+// context without the shell environment (e.g. a background service) use
+// this to reject env-dependent values. It shares the exact patterns
+// expandBracedEnv uses so the rejection check cannot drift from the
+// expansion semantics.
+func IsEnvDependentURL(s string) bool {
+	return bracedEnvPattern.MatchString(s) ||
+		bareEnvPattern.MatchString(strings.TrimSpace(s))
+}
+
+// bareEnvWarned tracks which bare $VAR names have already been warned
+// about, so each distinct variable triggers a warning at most once.
+var bareEnvWarned sync.Map
+
+// expandBracedEnv expands ${VAR} references in s. As a convenience,
+// if the entire string is a single bare $VAR (e.g. "$PGURL"), it is
+// expanded as a whole-string shortcut. Bare $VAR references embedded
+// in a larger string (e.g. "postgres://$USER@host") are NOT expanded;
+// use ${VAR} syntax instead.
+func expandBracedEnv(s string) (string, error) {
+	if parts := bareEnvPattern.FindStringSubmatch(s); parts != nil {
+		val, ok := os.LookupEnv(parts[1])
+		if !ok {
+			return "", fmt.Errorf("environment variable %s is not set", parts[1])
+		}
+		return val, nil
+	}
+
+	// Warn about bare $VAR references that won't be expanded.
+	if remaining := bracedEnvPattern.ReplaceAllString(s, ""); partialBareEnvPattern.MatchString(remaining) {
+		for _, m := range partialBareEnvPattern.FindAllStringSubmatch(remaining, -1) {
+			if _, set := os.LookupEnv(m[1]); set {
+				if _, warned := bareEnvWarned.LoadOrStore(m[1], true); !warned {
+					log.Printf("warning: pg.url contains bare $%s which will NOT be expanded; use ${%s} syntax instead", m[1], m[1])
+				}
+			}
+		}
+	}
+
+	var missingVars []string
+	result := bracedEnvPattern.ReplaceAllStringFunc(s, func(match string) string {
+		name := bracedEnvPattern.FindStringSubmatch(match)[1]
+		val, ok := os.LookupEnv(name)
+		if !ok {
+			missingVars = append(missingVars, name)
+			return ""
+		}
+		return val
+	})
+	if len(missingVars) > 0 {
+		return "", fmt.Errorf("environment variable(s) not set: %s",
+			strings.Join(missingVars, ", "))
+	}
+	return result, nil
+}
+
+// SaveTerminalConfig persists terminal settings to the config file.
+func (c *Config) SaveTerminalConfig(tc TerminalConfig) error {
+	live := tc
+	expanded, err := pathutil.ExpandHome(live.CustomBin)
+	if err != nil {
+		return fmt.Errorf("expanding terminal custom binary: %w", err)
+	}
+	live.CustomBin = expanded
+
+	return c.withConfigLock(func() error {
+		existing, err := c.readConfigMap()
+		if err != nil {
+			return fmt.Errorf("reading config file: %w", err)
+		}
+
+		existing["terminal"] = tc
+		if err := c.writeConfigMap(existing); err != nil {
+			return err
+		}
+		c.Terminal = live
+		return nil
+	})
+}
+
+// SaveSettings persists a partial settings update to the config file.
+// The patch map contains config keys mapped to their new values. Only
+// the keys present in patch are written; other config keys are preserved.
+func (c *Config) SaveSettings(patch map[string]any) error {
+	patch = maps.Clone(patch)
+	if value, ok := patch["tool_result_images"]; ok {
+		policy, ok := value.(ToolResultImages)
+		if !ok {
+			return errors.New("tool_result_images must use the typed configuration value")
+		}
+		if _, err := ParseToolResultImages(string(policy)); err != nil {
+			return err
+		}
+	}
+	if value, ok := patch["chart_palette"]; ok {
+		palette, ok := value.(ChartPalette)
+		if !ok {
+			return errors.New("chart_palette must use the typed configuration value")
+		}
+		if _, err := ParseChartPalette(string(palette)); err != nil {
+			return err
+		}
+	}
+	if value, ok := patch["zoom_level"]; ok {
+		zoom, ok := value.(ZoomLevel)
+		if !ok {
+			return errors.New("zoom_level must use the typed configuration value")
+		}
+		if err := zoom.Validate(); err != nil {
+			return err
+		}
+	}
+	if value, ok := patch["disabled_agents"]; ok {
+		agents, ok := value.([]parser.AgentType)
+		if !ok {
+			return errors.New("disabled_agents must use typed session provider values")
+		}
+		raw := make([]string, len(agents))
+		for i, agent := range agents {
+			raw[i] = string(agent)
+		}
+		normalized, err := NormalizeDisabledAgents(raw)
+		if err != nil {
+			return err
+		}
+		patch["disabled_agents"] = normalized
+	}
+	var agentHomes map[parser.AgentType][]string
+	if value, ok := patch["agent_homes"]; ok {
+		homes, ok := value.(map[parser.AgentType][]string)
+		if !ok {
+			return errors.New("agent_homes must use typed session provider values")
+		}
+		raw := make(map[string][]string, len(homes))
+		for agent, dirs := range homes {
+			raw[string(agent)] = dirs
+		}
+		normalized, err := NormalizeAgentHomes(raw)
+		if err != nil {
+			return err
+		}
+		agentHomes = normalized
+		delete(patch, "agent_homes")
+	}
+	return c.withConfigLock(func() error {
+		existing, err := c.readConfigMap()
+		if err != nil {
+			return fmt.Errorf("reading config file: %w", err)
+		}
+
+		if _, err := convertAgentTableMap(existing); err != nil {
+			return err
+		}
+		if err := setAgentHomes(existing, agentHomes); err != nil {
+			return err
+		}
+
+		for key, value := range patch {
+			if value == nil {
+				delete(existing, key)
+				continue
+			}
+			existing[key] = value
+		}
+
+		// When require_auth is written, remove the legacy
+		// remote_access key so it cannot override on next load.
+		if _, ok := patch["require_auth"]; ok {
+			delete(existing, "remote_access")
+		}
+
+		if err := c.writeConfigMap(existing); err != nil {
+			return err
+		}
+
+		// Update in-memory config for known keys.
+		if v, ok := patch["terminal"]; ok {
+			if tc, ok := v.(TerminalConfig); ok {
+				c.Terminal = tc
+			} else if m, ok := v.(map[string]any); ok {
+				if s, ok := m["mode"].(string); ok {
+					c.Terminal.Mode = s
+				}
+				if s, ok := m["custom_bin"].(string); ok {
+					c.Terminal.CustomBin = s
+				}
+				if s, ok := m["custom_args"].(string); ok {
+					c.Terminal.CustomArgs = s
+				}
+			}
+		}
+		if v, ok := patch["github_token"]; ok {
+			if s, ok := v.(string); ok {
+				c.GithubToken = s
+			}
+		}
+		if v, ok := patch["auth_token"]; ok {
+			if s, ok := v.(string); ok {
+				c.AuthToken = s
+			}
+		}
+		if v, ok := patch["require_auth"]; ok {
+			if b, ok := v.(bool); ok {
+				c.RequireAuth = b
+				c.AuthSettingsSaved = true
+			}
+		}
+		if v, ok := patch["chart_palette"]; ok {
+			if palette, ok := v.(ChartPalette); ok {
+				c.ChartPalette = palette
+			}
+		}
+		if v, ok := patch["zoom_level"]; ok {
+			if zoom, ok := v.(ZoomLevel); ok {
+				c.ZoomLevel = new(zoom)
+			}
+		}
+		if v, ok := patch["tool_result_images"]; ok {
+			if policy, ok := v.(ToolResultImages); ok {
+				c.ToolResultImages = policy
+			}
+		}
+		if v, ok := patch["disabled_agents"]; ok {
+			if agents, ok := v.([]parser.AgentType); ok {
+				c.DisabledAgents = append([]parser.AgentType(nil), agents...)
+			}
+		}
+		for agent, dirs := range agentHomes {
+			if c.agentHomes == nil {
+				c.agentHomes = make(map[parser.AgentType][]string)
+			}
+			if len(dirs) == 0 {
+				delete(c.agentHomes, agent)
+				continue
+			}
+			c.agentHomes[agent] = append([]string(nil), dirs...)
+		}
+		return nil
+	})
+}
+
+// EnsureAuthToken generates and persists an auth token if one does
+// not already exist. Called when require_auth is enabled.
+func (c *Config) EnsureAuthToken() error {
+	if c.AuthToken != "" {
+		return nil
+	}
+	return c.withConfigLock(func() error {
+		existing, err := c.readConfigMap()
+		if err != nil {
+			return err
+		}
+		if token, ok := existing["auth_token"].(string); ok && token != "" {
+			c.AuthToken = token
+			return nil
+		}
+
+		b := make([]byte, 32)
+		if _, err := rand.Read(b); err != nil {
+			return fmt.Errorf("generating auth token: %w", err)
+		}
+		token := base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(b)
+		existing["auth_token"] = token
+		if err := c.writeConfigMap(existing); err != nil {
+			return err
+		}
+		c.AuthToken = token
+		return nil
+	})
+}
+
+// ValidateArtifactOriginID checks the persisted single-writer origin prefix.
+func ValidateArtifactOriginID(origin string) error {
+	if origin == "" {
+		return errors.New("artifact origin is required")
+	}
+	if origin != strings.TrimSpace(origin) {
+		return fmt.Errorf("invalid artifact origin %q", origin)
+	}
+	if origin == "local" {
+		return fmt.Errorf("invalid artifact origin %q", origin)
+	}
+	if strings.ContainsAny(origin, `/\`) || filepath.Base(origin) != origin {
+		return fmt.Errorf("invalid artifact origin %q", origin)
+	}
+	if strings.HasPrefix(origin, "-") || strings.HasSuffix(origin, "-") {
+		return fmt.Errorf("invalid artifact origin %q", origin)
+	}
+	for _, r := range origin {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' {
+			continue
+		}
+		return fmt.Errorf("invalid artifact origin %q", origin)
+	}
+	return nil
+}
+
+// SaveGithubToken persists the GitHub token to the config file.
+func (c *Config) SaveGithubToken(token string) error {
+	return c.withConfigLock(func() error {
+		existing, err := c.readConfigMap()
+		if err != nil {
+			return fmt.Errorf("reading config file: %w", err)
+		}
+
+		existing["github_token"] = token
+		if err := c.writeConfigMap(existing); err != nil {
+			return fmt.Errorf("writing config: %w", err)
+		}
+		c.GithubToken = token
+		return nil
+	})
+}
+
+// ErrInvalidVectorSetup marks settings a vector setup would reject, as
+// opposed to failures reading or locking the config file.
+var ErrInvalidVectorSetup = errors.New("invalid vector setup")
+
+type invalidVectorSetupError struct{ error }
+
+func (e invalidVectorSetupError) Unwrap() error { return e.error }
+
+func (invalidVectorSetupError) Is(target error) bool { return target == ErrInvalidVectorSetup }
+
+// VectorSetupEmbeddings returns the validated embeddings recipe SaveVectorSetup
+// would save now, so status and activation select the same provider.
+func (c *Config) VectorSetupEmbeddings() (VectorEmbeddingsConfig, error) {
+	var embeddings VectorEmbeddingsConfig
+	err := c.withConfigLock(func() error {
+		_, candidate, err := c.vectorSetupCandidate()
+		if err == nil {
+			embeddings = candidate.Vector.Embeddings
+		}
+		return err
+	})
+	return embeddings, err
+}
+
+// VectorExplicitlyDisabled reports a saved opt-out.
+func (c *Config) VectorExplicitlyDisabled() (bool, error) {
+	existing, err := c.readConfigMap()
+	if err != nil {
+		return false, err
+	}
+	section, _ := existing["vector"].(map[string]any)
+	enabled, ok := section["enabled"].(bool)
+	return ok && !enabled, nil
+}
+
+// SharedVectorSetup returns an in-memory setup when the current settings permit it.
+func (c *Config) SharedVectorSetup() (Config, bool, error) {
+	var candidate Config
+	eligible := false
+	err := c.withConfigLock(func() error {
+		existing, err := c.readConfigMap()
+		if err != nil {
+			return err
+		}
+		if c.Vector.Embeddings.Servers != nil || c.Vector.Embeddings.DefaultServer != "" || (c.Vector.Embeddings.Model != "" && c.Vector.Embeddings.Model != defaultNomicModel) {
+			return nil
+		}
+		section, _ := existing["vector"].(map[string]any)
+		if enabled, ok := section["enabled"].(bool); ok && !enabled {
+			return nil
+		}
+		embeddings, _ := section["embeddings"].(map[string]any)
+		if model, _ := embeddings["model"].(string); model != "" && model != defaultNomicModel {
+			return nil
+		}
+		if _, ok := embeddings["servers"]; ok {
+			return nil
+		}
+		if _, ok := embeddings["default_server"]; ok {
+			return nil
+		}
+		pg, err := c.ResolvePGTargets()
+		if err != nil {
+			return err
+		}
+		for _, target := range pg {
+			if target.Config.URL != "" && target.Config.PushVectorsEnabled() {
+				return nil
+			}
+		}
+		ch, err := c.ResolveClickHouseTargets()
+		if err != nil {
+			return err
+		}
+		for _, target := range ch {
+			if target.Config.URL != "" && target.Config.PushVectorsEnabled() {
+				return nil
+			}
+		}
+		_, candidate, err = c.vectorSetupCandidate()
+		if err != nil {
+			return err
+		}
+		candidate.Vector.DBPath = c.Vector.DBPath
+		name, server, err := candidate.Vector.Embeddings.Server("")
+		if err != nil {
+			return err
+		}
+		server.Local = true
+		candidate.Vector.Embeddings.Servers = map[string]VectorEmbeddingsServerConfig{name: server}
+		eligible = true
+		return nil
+	})
+	return candidate, eligible, err
+}
+
+// SaveVectorSetup records the selected action while keeping omitted defaults omitted.
+func (c *Config) SaveVectorSetup() error {
+	return c.withConfigLock(func() error {
+		existing, _, err := c.vectorSetupCandidate()
+		if err != nil {
+			return err
+		}
+		return c.writeConfigMap(existing)
+	})
+}
+
+func (c *Config) vectorSetupCandidate() (map[string]any, Config, error) {
+	existing, err := c.readConfigMap()
+	if err != nil {
+		if _, ok := errors.AsType[toml.ParseError](err); ok {
+			err = invalidVectorSetupError{err}
+		}
+		return nil, Config{}, err
+	}
+	section, ok := existing["vector"].(map[string]any)
+	if !ok && existing["vector"] != nil {
+		return nil, Config{}, invalidVectorSetupError{errors.New("vector must be a table")}
+	}
+	if section == nil {
+		section = make(map[string]any)
+	}
+	section["enabled"] = true
+	existing["vector"] = section
+	encoded, err := toml.Marshal(existing)
+	if err != nil {
+		return nil, Config{}, err
+	}
+	candidate, err := Default()
+	if err != nil {
+		return nil, Config{}, err
+	}
+	candidate.DataDir = c.DataDir
+	if err := candidate.applyConfigTOML(string(encoded)); err != nil {
+		return nil, Config{}, invalidVectorSetupError{err}
+	}
+	if err := candidate.Vector.Validate(); err != nil {
+		return nil, Config{}, invalidVectorSetupError{err}
+	}
+	return existing, candidate, nil
+}

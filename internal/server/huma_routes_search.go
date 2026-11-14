@@ -1,0 +1,208 @@
+package server
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"strings"
+
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/service"
+
+	"github.com/danielgtaylor/huma/v2"
+)
+
+func (s *Server) registerSearchRoutes() {
+	group := huma.NewGroup(s.api, "/api/v1/search")
+	configureRouteGroup(group, "Search")
+
+	s.getLong(group, "", "Search sessions", s.humaSearch)
+	s.getLong(group, "/content", "Search session content", s.humaSearchContent)
+}
+
+type searchSort string
+
+type contentSearchMode string
+
+type contentSearchScope string
+
+type searchInput struct {
+	DateFrom string     `query:"date_from" format:"date" doc:"Filter sessions active on or after this date"`
+	DateTo   string     `query:"date_to" format:"date" doc:"Filter sessions active on or before this date"`
+	Query    string     `query:"q" required:"true" doc:"Search query"`
+	Project  string     `query:"project" doc:"Filter by project"`
+	Sort     searchSort `query:"sort" enum:"relevance,recency" default:"relevance" doc:"Sort order"`
+	Limit    int        `query:"limit" minimum:"0" doc:"Maximum number of results"`
+	Cursor   int        `query:"cursor" minimum:"0" doc:"Pagination cursor"`
+}
+
+type contentSearchInput struct {
+	Pattern            string             `query:"pattern" doc:"Pattern to search for; mutually exclusive with concepts"`
+	Concepts           []string           `query:"concepts,explode" doc:"Two to five semantic concepts that must all have evidence in one session; repeatable and mutually exclusive with pattern"`
+	Mode               contentSearchMode  `query:"mode" enum:"substring,regex,fts,terms,semantic,hybrid" doc:"Search mode"`
+	KeywordFallback    bool               `query:"allow_keyword_fallback" doc:"Return hybrid keyword matches when semantic search is unavailable"`
+	Scope              contentSearchScope `query:"scope" enum:"top,all,subordinate" doc:"Result scope: top, all, or subordinate (blank lexical scope keeps sidebar child filtering)"`
+	SearchIntent       string             `header:"X-AgentsView-Search-Intent" doc:"Required for semantic/hybrid GET searches"`
+	In                 string             `query:"in" doc:"Comma-separated content sources"`
+	ExcludeSystem      bool               `query:"exclude_system" doc:"Exclude system messages"`
+	Reveal             bool               `query:"reveal" doc:"Return unredacted secret matches for localhost callers"`
+	Project            string             `query:"project" doc:"Filter by project"`
+	ExcludeProject     string             `query:"exclude_project" doc:"Exclude a project"`
+	Machine            string             `query:"machine" doc:"Exact machine ID or alias, comma-separated IDs or aliases, or a unique whole display label (case-sensitive). Blank means all machines; unknown or ambiguous values return HTTP 400."`
+	GitBranch          string             `query:"git_branch" doc:"Filter by git branch; opaque (project, branch) tokens from the /branches endpoint"`
+	SessionID          string             `query:"session_id" doc:"Filter by exact full stored session ID"`
+	GitBranchExact     string             `query:"git_branch_exact" doc:"Filter by exact raw git branch"`
+	Agent              string             `query:"agent" doc:"Filter by agent"`
+	Date               string             `query:"date" format:"date" doc:"Filter sessions active on this YYYY-MM-DD date"`
+	DateFrom           string             `query:"date_from" format:"date" doc:"Filter sessions active on or after this date"`
+	DateTo             string             `query:"date_to" format:"date" doc:"Filter sessions active on or before this date"`
+	Timezone           string             `query:"timezone" doc:"IANA timezone for calendar-date filters; defaults to UTC"`
+	ActiveSince        string             `query:"active_since" format:"date-time" doc:"Filter sessions active since this RFC3339 timestamp"`
+	ExcludeActiveSince string             `query:"exclude_active_since" format:"date-time" doc:"Keep sessions whose ended_at, started_at, or created_at activity is at or before this RFC3339 timestamp"`
+	IncludeChildren    bool               `query:"include_children" doc:"Include child sessions"`
+	IncludeAutomated   bool               `query:"include_automated" doc:"Include automated sessions"`
+	IncludeOneShot     bool               `query:"include_one_shot" doc:"Include one-shot sessions"`
+	ExcludeSession     []string           `query:"exclude_session,explode" doc:"Session IDs to exclude; repeatable"`
+	Limit              int                `query:"limit" minimum:"0" doc:"Maximum number of results"`
+	Cursor             int                `query:"cursor" minimum:"0" doc:"Pagination cursor"`
+	Context            int                `query:"context" doc:"Include N messages of context before and after each match (max 10)"`
+}
+
+func (s *Server) humaSearch(
+	ctx context.Context,
+	in *searchInput,
+) (*jsonOutput[searchResponse], error) {
+	query := strings.TrimSpace(in.Query)
+	if query == "" {
+		return nil, apiError(http.StatusBadRequest, "query required")
+	}
+	res, err := s.sessions.Search(ctx, service.SearchRequest{
+		DateFrom: in.DateFrom,
+		DateTo:   in.DateTo,
+		Query:    query,
+		Project:  in.Project,
+		Sort:     string(in.Sort),
+		Cursor:   in.Cursor,
+		Limit:    in.Limit,
+	})
+	if err != nil {
+		if errors.Is(err, service.ErrSearchUnavailable) {
+			return nil, apiError(http.StatusNotImplemented, "search not available")
+		}
+		if _, ok := errors.AsType[*db.SearchInputError](err); ok {
+			return nil, apiError(http.StatusBadRequest, err.Error())
+		}
+		return nil, serverError(err)
+	}
+	return &jsonOutput[searchResponse]{
+		Body: searchResponse{
+			Query:   query,
+			Results: res.Results,
+			Count:   len(res.Results),
+			Next:    res.NextCursor,
+		},
+	}, nil
+}
+
+func (s *Server) humaSearchContent(
+	ctx context.Context,
+	in *contentSearchInput,
+) (*jsonOutput[*service.ContentSearchResult], error) {
+	if strings.TrimSpace(in.Pattern) == "" && len(in.Concepts) == 0 {
+		return nil, apiError(http.StatusBadRequest, "pattern or concepts required")
+	}
+	normalized, err := service.NormalizeContentSearchRequest(service.ContentSearchRequest{
+		Pattern: in.Pattern, Concepts: in.Concepts, Mode: string(in.Mode),
+		Limit: in.Limit, Cursor: in.Cursor,
+	})
+	if err != nil {
+		return nil, apiError(http.StatusBadRequest, err.Error())
+	}
+	mode := contentSearchMode(normalized.Mode)
+	if in.Reveal && !isLocalhostContext(ctx) {
+		return nil, apiError(http.StatusForbidden, "reveal is only permitted from localhost")
+	}
+	if requiresSemanticSearchIntent(mode) &&
+		in.SearchIntent != service.SemanticSearchIntentValue {
+		return nil, apiError(http.StatusForbidden,
+			"semantic and hybrid search require "+service.SemanticSearchIntentHeader)
+	}
+	if in.Scope != "" && !db.ContentSearchModeSupportsScope(string(mode)) {
+		return nil, apiError(http.StatusBadRequest,
+			db.ContentSearchScopeUnsupportedMsg)
+	}
+	var sources []string
+	if in.In != "" {
+		sources = strings.Split(in.In, ",")
+	}
+	if err := validateDateFilterValues(in.Date, in.DateFrom, in.DateTo, in.ActiveSince); err != nil {
+		return nil, err
+	}
+	timezone, err := db.NormalizeSessionTimezone(in.Timezone)
+	if err != nil {
+		return nil, apiError(http.StatusBadRequest, err.Error())
+	}
+	res, err := s.sessions.SearchContent(ctx, service.ContentSearchRequest{
+		Pattern:            in.Pattern,
+		Concepts:           in.Concepts,
+		Mode:               string(in.Mode),
+		KeywordFallback:    in.KeywordFallback,
+		Sources:            sources,
+		ExcludeSystem:      in.ExcludeSystem,
+		Reveal:             in.Reveal,
+		Project:            in.Project,
+		ExcludeProject:     in.ExcludeProject,
+		Machine:            in.Machine,
+		GitBranch:          in.GitBranch,
+		SessionID:          in.SessionID,
+		GitBranchExact:     in.GitBranchExact,
+		Agent:              in.Agent,
+		Date:               in.Date,
+		DateFrom:           in.DateFrom,
+		DateTo:             in.DateTo,
+		Timezone:           timezone,
+		ActiveSince:        in.ActiveSince,
+		ExcludeActiveSince: in.ExcludeActiveSince,
+		IncludeChildren:    in.IncludeChildren,
+		IncludeAutomated:   in.IncludeAutomated,
+		IncludeOneShot:     in.IncludeOneShot,
+		ExcludeSessionIDs:  in.ExcludeSession,
+		Scope:              string(in.Scope),
+		Limit:              in.Limit,
+		Cursor:             in.Cursor,
+		Context:            in.Context,
+	})
+	if err != nil {
+		if handled := handleHumaContextError(err); handled != nil {
+			return nil, handled
+		}
+		if handled := handleHumaReadOnly(err); handled != nil {
+			return nil, handled
+		}
+		if errors.Is(err, db.ErrSemanticTransient) {
+			// The embeddings endpoint itself is unreachable at query
+			// time; semantic search is configured and otherwise ready,
+			// so this must read as "temporarily unavailable, retry" (503)
+			// rather than 501's "not implemented / disabled".
+			return nil, apiError(http.StatusServiceUnavailable, err.Error())
+		}
+		if errors.Is(err, db.ErrSemanticUnavailable) {
+			return nil, apiError(http.StatusNotImplemented, err.Error())
+		}
+		if handled := machineFilterHTTPError(err); handled != nil {
+			return nil, handled
+		}
+		if _, ok := errors.AsType[*db.SearchInputError](err); ok {
+			return nil, apiError(http.StatusBadRequest, err.Error())
+		}
+		return nil, apiError(http.StatusInternalServerError, err.Error())
+	}
+	if res.Matches == nil {
+		res.Matches = []db.ContentMatch{}
+	}
+	return &jsonOutput[*service.ContentSearchResult]{Body: res}, nil
+}
+
+func requiresSemanticSearchIntent(mode contentSearchMode) bool {
+	return mode == "semantic" || mode == "hybrid"
+}

@@ -1,0 +1,10 @@
+{"payload":{"cwd":"/home/user/code/example-api","id":"0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812","originator":"codex_cli_rs"},"timestamp":"2026-05-04T09:15:00.000Z","type":"session_meta"}
+{"payload":{"cwd":"/tmp","model":"gpt-5.2-codex"},"timestamp":"2026-05-04T09:15:01.000Z","type":"turn_context"}
+{"payload":{"content":[{"text":"Where is the retry cap configured?","type":"input_text"}],"role":"user"},"timestamp":"2026-05-04T09:15:02.000Z","type":"response_item"}
+{"payload":{"arguments":{"command":"grep -rn maxBackoffSeconds internal/retry"},"call_id":"call_01Example000000000000000000","name":"shell","type":"function_call"},"timestamp":"2026-05-04T09:15:05.000Z","type":"response_item"}
+{"payload":{"call_id":"call_01Example000000000000000000","output":"internal/retry/config.go:41: maxBackoffSeconds = 30","type":"function_call_output"},"timestamp":"2026-05-04T09:15:06.000Z","type":"response_item"}
+{"payload":{"content":[{"text":"It is set in internal/retry/config.go.","type":"output_text"}],"role":"assistant"},"timestamp":"2026-05-04T09:15:07.000Z","type":"response_item"}
+{"payload":{"info":{"last_token_usage":{"cached_input_tokens":1024,"input_tokens":3820,"output_tokens":74,"total_tokens":3894}},"type":"token_count"},"timestamp":"2026-05-04T09:15:08.000Z","type":"event_msg"}
+{"payload":{"message":"Compacted: the retry cap question was answered from internal/retry/config.go."},"timestamp":"2026-05-04T09:16:00.000Z","type":"compacted"}
+{"payload":{"content":[{"text":"And the attempt limit?","type":"input_text"}],"role":"user"},"timestamp":"2026-05-04T09:16:10.000Z","type":"response_item"}
+{"payload":{"content":[{"text":"Four attempts, in internal/retry/policy.go.","type":"output_text"}],"role":"assistant"},"timestamp":"2026-05-04T09:16:12.000Z","type":"response_item"}

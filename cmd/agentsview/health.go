@@ -1,0 +1,431 @@
+package main
+
+import (
+	"context"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
+	"fmt"
+	"io"
+	"strconv"
+	"strings"
+	"text/tabwriter"
+	"time"
+
+	"github.com/spf13/cobra"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/service"
+	"go.kenn.io/agentsview/internal/stringutil"
+)
+
+// HealthConfig configures the `health` command.
+type HealthConfig struct {
+	JSON  bool
+	Limit int
+}
+
+const (
+	defaultHealthLimit = 20
+	maxHealthLimit     = db.MaxSessionLimit
+)
+
+func runHealth(cmd *cobra.Command, args []string, cfg HealthConfig) error {
+	svc, cleanup, err := resolveService(cmd)
+	if err != nil {
+		return fmt.Errorf("resolving service: %w", err)
+	}
+	defer cleanup()
+
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	if len(args) == 0 {
+		return runHealthList(ctx, svc, cfg, cmd.OutOrStdout())
+	}
+	return runHealthDetail(ctx, svc, args[0], cfg.JSON, cmd.OutOrStdout())
+}
+
+func runHealthList(
+	ctx context.Context, svc service.SessionService, cfg HealthConfig,
+	w io.Writer,
+) error {
+	limit := cfg.Limit
+	if limit <= 0 {
+		limit = defaultHealthLimit
+	}
+	if limit > maxHealthLimit {
+		limit = maxHealthLimit
+	}
+
+	page, err := svc.List(ctx, healthListFilter(limit))
+	if err != nil {
+		return fmt.Errorf("listing sessions: %w", err)
+	}
+
+	if cfg.JSON {
+		return json.MarshalEncode(jsontext.NewEncoder(w, jsontext.WithIndent("  ")), page.Sessions)
+	}
+
+	if len(page.Sessions) == 0 {
+		_, err := fmt.Fprintln(w, "No sessions found.")
+		return err
+	}
+	printHealthList(w, page.Sessions)
+	return nil
+}
+
+func runHealthDetail(
+	ctx context.Context, svc service.SessionService,
+	sessionID string, asJSON bool, w io.Writer,
+) error {
+	resolved, err := resolveHealthSessionID(ctx, svc, sessionID)
+	if err != nil {
+		return fmt.Errorf("resolving session id: %w", err)
+	}
+	if resolved == "" {
+		return healthSessionNotFoundError(sessionID)
+	}
+	sess, err := svc.Get(ctx, resolved)
+	if err != nil {
+		return fmt.Errorf("getting session: %w", err)
+	}
+	if sess == nil {
+		return healthSessionNotFoundError(sessionID)
+	}
+
+	if asJSON {
+		return json.MarshalEncode(jsontext.NewEncoder(w, jsontext.WithIndent("  ")), sess)
+	}
+	printHealthDetail(w, sess.Session)
+	return nil
+}
+
+func healthSessionNotFoundError(sessionID string) error {
+	return withCLIHint(fmt.Errorf("%w: %s", errSessionNotFound, sessionID),
+		"Run `agentsview session list --json` to find a session ID, then retry `agentsview health <id>`.")
+}
+
+func healthListFilter(limit int) service.ListFilter {
+	return service.ListFilter{
+		Limit:            limit,
+		IncludeOneShot:   true,
+		IncludeAutomated: true,
+	}
+}
+
+func resolveHealthSessionID(
+	ctx context.Context,
+	svc service.SessionService,
+	partial string,
+) (string, error) {
+	if partial == "" {
+		return "", nil
+	}
+	exactDetail, err := svc.Get(ctx, partial)
+	if err != nil {
+		return "", err
+	}
+	matches, err := svc.FindSessionIDsByPartial(
+		ctx, partial, resolveLookupLimit,
+	)
+	if err != nil {
+		return "", err
+	}
+	if exactDetail != nil {
+		for _, m := range matches {
+			if m != partial && shortID(m) == partial {
+				return "", ambiguousMatchErr(partial, matches)
+			}
+		}
+		return partial, nil
+	}
+	switch len(matches) {
+	case 0:
+		return "", nil
+	case 1:
+		return matches[0], nil
+	}
+
+	exact := ""
+	for _, m := range matches {
+		if m == partial {
+			exact = m
+			break
+		}
+	}
+	if exact != "" {
+		for _, m := range matches {
+			if m != exact && shortID(m) == partial {
+				return "", ambiguousMatchErr(partial, matches)
+			}
+		}
+		return exact, nil
+	}
+	return "", ambiguousMatchErr(partial, matches)
+}
+
+// resolveLookupLimit caps the partial-match query for
+// ambiguity detection. The previous limit of 5 was a real
+// hole: if the exact ID was in the top 5 but a colliding
+// short-ID match fell outside that window, the function would
+// silently resolve to the exact match instead of reporting
+// ambiguity. A limit this high also acts as a defensive bound
+// -- a user with hundreds of substring matches has bigger
+// problems than a missed ambiguity warning.
+const resolveLookupLimit = 1000
+
+// resolveSessionID returns the unique session id matching the
+// input (full ID or substring against id), or "" when no row
+// matches. Substring matching covers the short IDs shown in
+// `health` list output.
+//
+// When the input matches multiple rows, an exact full-ID match
+// wins as long as no other matching row's displayed short ID
+// also equals the input. This preserves the natural case where
+// a local ID is a substring of a host-prefixed remote ID
+// (host~<id>) -- the user typed the full local ID and clearly
+// meant that row -- while still flagging true display
+// collisions where two sessions are indistinguishable in the
+// list output.
+func resolveSessionID(
+	ctx context.Context, database *db.DB, partial string,
+) (string, error) {
+	matches, err := database.FindSessionIDsByPartial(
+		ctx, partial, resolveLookupLimit,
+	)
+	if err != nil {
+		return "", err
+	}
+	switch len(matches) {
+	case 0:
+		return "", nil
+	case 1:
+		return matches[0], nil
+	}
+
+	exact := ""
+	for _, m := range matches {
+		if m == partial {
+			exact = m
+			break
+		}
+	}
+	if exact != "" {
+		for _, m := range matches {
+			if m != exact && shortID(m) == partial {
+				return "", ambiguousMatchErr(partial, matches)
+			}
+		}
+		return exact, nil
+	}
+	return "", ambiguousMatchErr(partial, matches)
+}
+
+func ambiguousMatchErr(partial string, matches []string) error {
+	return fmt.Errorf(
+		"ambiguous id %q matches %d sessions: %s",
+		partial, len(matches), strings.Join(matches, ", "),
+	)
+}
+
+func printHealthList(w io.Writer, sessions []db.Session) {
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw,
+		"DATE\tAGENT\tGRADE\tOUTCOME\tMSGS\tFAILS\tPROJECT\tID")
+	fmt.Fprintln(tw,
+		"----\t-----\t-----\t-------\t----\t-----\t-------\t--")
+	for _, s := range sessions {
+		fmt.Fprintf(tw,
+			"%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\n",
+			shortDate(sessionDisplayTime(s)),
+			truncate(s.Agent, 10),
+			gradeCell(s.HealthGrade),
+			outcomeCell(s.Outcome),
+			s.MessageCount,
+			s.FinalFailureStreak,
+			truncate(s.Project, 30),
+			shortID(s.ID),
+		)
+	}
+	_ = tw.Flush()
+}
+
+func printHealthDetail(w io.Writer, s db.Session) {
+	fmt.Fprintf(w, "Session:  %s\n", s.ID)
+	fmt.Fprintf(w, "Project:  %s\n", nonEmpty(s.Project, "(none)"))
+	fmt.Fprintf(w, "Agent:    %s\n", nonEmpty(s.Agent, "(unknown)"))
+	if s.GitBranch != "" {
+		fmt.Fprintf(w, "Branch:   %s\n", s.GitBranch)
+	}
+	if s.Cwd != "" {
+		fmt.Fprintf(w, "Cwd:      %s\n", s.Cwd)
+	}
+	fmt.Fprintf(w, "Started:  %s\n", longDate(strDeref(s.StartedAt)))
+	fmt.Fprintf(w, "Ended:    %s\n", longDate(strDeref(s.EndedAt)))
+	fmt.Fprintf(w, "Messages: %d (%d user)\n",
+		s.MessageCount, s.UserMessageCount)
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "Health")
+	fmt.Fprintf(w, "  Grade:   %s%s\n",
+		gradeCell(s.HealthGrade),
+		formatScore(s.HealthScore))
+	fmt.Fprintf(w, "  Outcome: %s%s\n",
+		outcomeCell(s.Outcome),
+		formatConfidence(s.OutcomeConfidence, s.EndedWithRole))
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "Signals")
+	fmt.Fprintf(w, "  Tool failures:        %d\n",
+		s.ToolFailureSignalCount)
+	fmt.Fprintf(w, "  Tool retries:         %d\n", s.ToolRetryCount)
+	fmt.Fprintf(w, "  Edit churn:           %d\n", s.EditChurnCount)
+	fmt.Fprintf(w, "  Consecutive fails:    %d\n",
+		s.ConsecutiveFailureMax)
+	fmt.Fprintf(w, "  Final failure streak: %d\n",
+		s.FinalFailureStreak)
+	fmt.Fprintf(w, "  Secret findings:      %d\n", s.SecretLeakCount)
+	fmt.Fprintf(w, "  Compactions:          %s\n",
+		formatCompactions(
+			s.CompactionCount, s.MidTaskCompactionCount,
+		))
+	fmt.Fprintf(w, "  Context pressure:     %s\n",
+		formatPressure(s.ContextPressureMax))
+
+	if s.SignalsPendingSince != nil {
+		fmt.Fprintln(w)
+		fmt.Fprintf(w,
+			"Signals pending since %s (deferred recompute).\n",
+			*s.SignalsPendingSince)
+	}
+}
+
+func gradeCell(g *string) string {
+	if g == nil || *g == "" {
+		return "-"
+	}
+	return *g
+}
+
+func outcomeCell(o string) string {
+	if o == "" {
+		return "-"
+	}
+	return o
+}
+
+func formatScore(score *int) string {
+	if score == nil {
+		return ""
+	}
+	return fmt.Sprintf(" (score %d)", *score)
+}
+
+func formatConfidence(conf, endedWith string) string {
+	parts := []string{}
+	if conf != "" {
+		parts = append(parts, conf+" confidence")
+	}
+	if endedWith != "" {
+		parts = append(parts, "ended with "+endedWith)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, ", ") + ")"
+}
+
+func formatCompactions(total, midTask int) string {
+	if total == 0 {
+		return "0"
+	}
+	if midTask == 0 {
+		return strconv.Itoa(total)
+	}
+	return fmt.Sprintf("%d (%d mid-task)", total, midTask)
+}
+
+func formatPressure(p *float64) string {
+	if p == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%.0f%%", *p*100)
+}
+
+func sessionDisplayTime(s db.Session) string {
+	if s.EndedAt != nil && *s.EndedAt != "" {
+		return *s.EndedAt
+	}
+	if s.StartedAt != nil && *s.StartedAt != "" {
+		return *s.StartedAt
+	}
+	return s.CreatedAt
+}
+
+func shortDate(ts string) string {
+	if ts == "" {
+		return "-"
+	}
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		if t, err = time.Parse(time.RFC3339, ts); err != nil {
+			return ts
+		}
+	}
+	return t.Local().Format("2006-01-02")
+}
+
+func longDate(ts string) string {
+	if ts == "" {
+		return "-"
+	}
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		if t, err = time.Parse(time.RFC3339, ts); err != nil {
+			return ts
+		}
+	}
+	return t.Local().Format("2006-01-02 15:04")
+}
+
+func strDeref(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+func nonEmpty(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	if n <= 1 {
+		return stringutil.SafeTruncate(s, n)
+	}
+	return stringutil.SafeTruncate(s, n-1) + "…"
+}
+
+func shortID(id string) string {
+	if i := strings.LastIndex(id, "~"); i >= 0 {
+		id = id[i+1:]
+	}
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
+}
+
+func writeJSON(w io.Writer, v any) {
+	enc := jsontext.NewEncoder(w, jsontext.WithIndent("  "))
+	if err := json.MarshalEncode(enc, v); err != nil {
+		fatal("encoding json: %v", err)
+	}
+}

@@ -1,0 +1,654 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { mount, tick, unmount } from "svelte";
+import { dismissFlash } from "@kenn-io/kit-ui";
+// @ts-ignore
+import SettingsPage from "./SettingsPage.svelte";
+import { SettingsService } from "../../api/generated/index";
+import { settings } from "../../stores/settings.svelte.js";
+import { sync } from "../../stores/sync.svelte.js";
+import { router } from "../../stores/router.svelte.js";
+import { initI18n, LOCALE_STORAGE_KEY, setLocale } from "../../i18n/index.js";
+
+vi.mock("../../api/runtime.js", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("../../api/runtime.js")>();
+  return {
+    ...orig,
+    getAuthToken: vi.fn(() => ""),
+    isRemoteConnection: vi.fn(() => false),
+    setAuthToken: vi.fn(),
+    setServerUrl: vi.fn(),
+  };
+});
+
+vi.mock("../../api/generated/index", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("../../api/generated/index")>();
+  return {
+    ...orig,
+    SettingsService: {
+      getApiV1Settings: vi.fn(),
+      putApiV1Settings: vi.fn(),
+    },
+  };
+});
+
+const settingsService = SettingsService as unknown as {
+  getApiV1Settings: ReturnType<typeof vi.fn>;
+  putApiV1Settings: ReturnType<typeof vi.fn>;
+};
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  localStorage.clear();
+  initI18n();
+  settings.loading = false;
+  settings.loaded = false;
+  settings.needsAuth = false;
+  settings.error = null;
+  settings.saveError = null;
+  settings.readOnly = false;
+  settings.saving = false;
+  router.params = {};
+  dismissFlash();
+});
+
+afterEach(() => {
+  dismissFlash();
+  document.body.innerHTML = "";
+});
+
+describe("SettingsPage", () => {
+  it("writes the selected panel while preserving other parameters", async () => {
+    router.route = "settings";
+    router.params = { source: "example" };
+    settingsService.getApiV1Settings.mockResolvedValue({
+      agent_dirs: {},
+      chart_palette: "agentsview",
+      github_configured: false,
+      host: "127.0.0.1",
+      port: 8080,
+      read_only: false,
+      require_auth: false,
+      terminal: { mode: "auto" },
+    });
+    const component = mount(SettingsPage, { target: document.body });
+    try {
+      await tick();
+      await tick();
+      const nav = document.querySelector(".kit-settings__nav")!;
+      const button = [...nav.querySelectorAll("button")].find((item) =>
+        item.textContent?.includes("Tool-result images"),
+      )!;
+      button.click();
+      await tick();
+      expect(router.params).toMatchObject({ panel: "tool-result-images", source: "example" });
+    } finally {
+      unmount(component);
+    }
+  });
+
+  it("follows browser navigation between settings panels", async () => {
+    window.history.replaceState(null, "", "/settings?panel=appearance");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    settingsService.getApiV1Settings.mockResolvedValue({
+      agent_dirs: {},
+      chart_palette: "agentsview",
+      github_configured: false,
+      host: "127.0.0.1",
+      port: 8080,
+      read_only: false,
+      require_auth: false,
+      terminal: { mode: "auto" },
+    });
+    const component = mount(SettingsPage, { target: document.body });
+    try {
+      await tick();
+      await tick();
+      window.history.pushState(null, "", "/settings?panel=tool-result-images");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+      await tick();
+      expect(document.querySelector(".settings-panel:not([hidden])")?.textContent).toContain(
+        "Tool-result images",
+      );
+    } finally {
+      unmount(component);
+    }
+  });
+
+  it("opens Session Providers from the requested panel", async () => {
+    router.params = { panel: "agent-directories" };
+    settingsService.getApiV1Settings.mockResolvedValue({
+      agent_dirs: {},
+      chart_palette: "agentsview",
+      github_configured: false,
+      host: "127.0.0.1",
+      port: 8080,
+      read_only: false,
+      require_auth: false,
+      terminal: { mode: "auto" },
+    });
+    const component = mount(SettingsPage, { target: document.body });
+    try {
+      await tick();
+      await tick();
+      expect(document.querySelector(".settings-panel:not([hidden])")?.textContent).toContain(
+        "Session providers",
+      );
+    } finally {
+      unmount(component);
+    }
+  });
+
+  it("hides full resync for an archive-only database", async () => {
+    settingsService.getApiV1Settings.mockResolvedValue({
+      agent_dirs: {},
+      chart_palette: "agentsview",
+      github_configured: false,
+      host: "127.0.0.1",
+      port: 8080,
+      read_only: false,
+      require_auth: false,
+      terminal: { mode: "auto" },
+    });
+    sync.serverVersion = { archive_only: true } as NonNullable<typeof sync.serverVersion>;
+    const component = mount(SettingsPage, { target: document.body });
+    try {
+      await tick();
+      await tick();
+      expect(document.body.textContent).toContain("Settings");
+      expect(document.querySelector('button[title="Full Resync"]')).toBeNull();
+      expect(document.body.textContent).not.toContain("Full Resync");
+    } finally {
+      unmount(component);
+      sync.serverVersion = null;
+    }
+  });
+
+  it("renders browser-local settings without a worktree mappings panel", async () => {
+    let resolveSettings!: (value: unknown) => void;
+    settingsService.getApiV1Settings.mockReturnValue(
+      new Promise((resolve) => {
+        resolveSettings = resolve;
+      }),
+    );
+    const component = mount(SettingsPage, {
+      target: document.body,
+    });
+    await tick();
+
+    expect(document.body.textContent).toContain("Loading settings");
+    expect(document.body.textContent).not.toContain("Date ranges");
+
+    resolveSettings({
+      agent_dirs: {},
+      chart_palette: "agentsview",
+      github_configured: false,
+      host: "127.0.0.1",
+      port: 8080,
+      read_only: true,
+      require_auth: false,
+      terminal: { mode: "auto" },
+    });
+    await tick();
+    await tick();
+
+    expect(document.body.textContent).toContain("Date ranges");
+    expect(document.body.textContent).toContain("Link date ranges across pages");
+    // Classification rules live on the Data page; Settings has no panel for them.
+    const navLabels = Array.from(document.body.querySelectorAll(".kit-settings__nav button")).map(
+      (button) => button.textContent ?? "",
+    );
+    expect(navLabels.some((label) => label.includes("Date ranges"))).toBe(true);
+    expect(navLabels.some((label) => label.includes("Worktree mappings"))).toBe(false);
+    expect(document.body.textContent).not.toContain("Open Data › Rules");
+    expect(document.body.textContent).not.toContain("available in local mode only");
+
+    unmount(component);
+  });
+
+  it("persists the selected interface language for reload", async () => {
+    settingsService.getApiV1Settings.mockResolvedValue({
+      agent_dirs: {},
+      chart_palette: "agentsview",
+      github_configured: false,
+      host: "127.0.0.1",
+      port: 8080,
+      read_only: false,
+      require_auth: false,
+      terminal: { mode: "auto" },
+    });
+
+    const component = mount(SettingsPage, {
+      target: document.body,
+    });
+    await tick();
+    await tick();
+
+    expect(document.body.querySelector('select[aria-label="Interface language"]')).toBeNull();
+    expect(document.body.textContent).toContain("Settings");
+
+    const trigger = document.body.querySelector(
+      'button[title="Interface language"]',
+    ) as HTMLButtonElement | null;
+    expect(trigger).toBeTruthy();
+
+    trigger!.click();
+    await tick();
+
+    const option = Array.from(document.body.querySelectorAll('[role="option"]')).find((el) =>
+      el.textContent?.includes("日本語"),
+    );
+    expect(option).toBeTruthy();
+
+    (option as HTMLElement).dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    await tick();
+
+    expect(localStorage.getItem(LOCALE_STORAGE_KEY)).toBe("ja");
+    expect(document.body.textContent).toContain("Settings");
+
+    unmount(component);
+  });
+
+  it("groups settings and switches the visible panel", async () => {
+    settingsService.getApiV1Settings.mockResolvedValue({
+      agent_dirs: {},
+      chart_palette: "agentsview",
+      github_configured: false,
+      host: "127.0.0.1",
+      port: 8080,
+      read_only: false,
+      require_auth: false,
+      terminal: { mode: "auto" },
+    });
+    const component = mount(SettingsPage, {
+      target: document.body,
+    });
+    await tick();
+    await tick();
+
+    const nav = document.body.querySelector('nav[aria-label="Settings"]');
+    expect(nav).not.toBeNull();
+    const searchStatus = document.body.querySelector('[role="status"]');
+    expect(searchStatus).not.toBeNull();
+    expect(searchStatus?.textContent?.trim()).toBe("");
+    expect(nav!.textContent).toContain("Preferences");
+    expect(nav!.textContent).toContain("Data");
+    expect(nav!.textContent).toContain("Connections");
+    expect(nav!.textContent).toContain("Session providers");
+    expect(nav!.textContent).not.toContain("Agent Directories");
+
+    // Every destination carries an icon so the list scans by shape.
+    const navItems = Array.from(nav!.querySelectorAll<HTMLElement>(".kit-settings__nav-item"));
+    expect(navItems).toHaveLength(9);
+    for (const item of navItems) {
+      expect(
+        item.querySelector(".kit-settings__nav-icon svg"),
+        item.textContent ?? "",
+      ).not.toBeNull();
+    }
+
+    const visiblePanel = () =>
+      document.body.querySelector<HTMLElement>(".settings-panel:not([hidden])");
+    expect(visiblePanel()?.textContent).toContain("Appearance");
+
+    const scroller = document.body.querySelector<HTMLElement>(".kit-settings__scroll")!;
+    scroller.scrollTop = 240;
+
+    const terminal = Array.from(nav!.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Terminal"),
+    );
+    expect(terminal).toBeTruthy();
+    terminal!.click();
+    await tick();
+
+    expect(visiblePanel()?.textContent).toContain("Launch mode");
+    expect(visiblePanel()?.textContent).not.toContain("Block visibility");
+    expect(scroller.scrollTop).toBe(0);
+
+    unmount(component);
+  });
+
+  it.each(["Reading width", "message layout"])(
+    "finds Appearance by the %s label it shows",
+    async (query) => {
+      settingsService.getApiV1Settings.mockResolvedValue({
+        agent_dirs: {},
+        chart_palette: "agentsview",
+        github_configured: false,
+        host: "127.0.0.1",
+        port: 8080,
+        read_only: false,
+        require_auth: false,
+        terminal: { mode: "auto" },
+      });
+      const component = mount(SettingsPage, { target: document.body });
+      await tick();
+      await tick();
+
+      const search = document.body.querySelector<HTMLInputElement>(
+        'input[type="search"][aria-label="Search settings"]',
+      )!;
+      search.value = query;
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+      await tick();
+
+      const nav = document.body.querySelector('nav[aria-label="Settings"]')!;
+      // With no match the nav still shows the active panel (Appearance by
+      // default), so the no-results state is what tells a miss apart.
+      expect(
+        document.body.querySelector(".settings-page")?.classList.contains("settings-no-results"),
+      ).toBe(false);
+      const found = nav.querySelectorAll("button");
+      expect(found).toHaveLength(1);
+      expect(found[0]?.textContent).toContain("Appearance");
+
+      unmount(component);
+    },
+  );
+
+  it("filters settings by keywords and restores the selected panel", async () => {
+    settingsService.getApiV1Settings.mockResolvedValue({
+      agent_dirs: {},
+      chart_palette: "agentsview",
+      github_configured: false,
+      host: "127.0.0.1",
+      port: 8080,
+      read_only: false,
+      require_auth: false,
+      terminal: { mode: "auto" },
+    });
+    const component = mount(SettingsPage, {
+      target: document.body,
+    });
+    await tick();
+    await tick();
+
+    const nav = document.body.querySelector('nav[aria-label="Settings"]')!;
+    const terminal = Array.from(nav.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Terminal"),
+    )!;
+    terminal.click();
+    await tick();
+
+    const search = document.body.querySelector<HTMLInputElement>(
+      'input[type="search"][aria-label="Search settings"]',
+    );
+    expect(search).not.toBeNull();
+
+    search!.value = "vectors";
+    search!.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+
+    expect(nav.querySelectorAll("button")).toHaveLength(1);
+    expect(nav.textContent).toContain("Embeddings");
+
+    search!.value = "no such setting";
+    search!.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+
+    expect(document.body.textContent).toContain("No matching settings");
+    expect(
+      document.body.querySelector(".settings-page")?.classList.contains("settings-no-results"),
+    ).toBe(true);
+
+    settings.loading = true;
+    await tick();
+    settings.loading = false;
+    settings.loaded = true;
+    await tick();
+
+    expect(
+      document.body.querySelector(".settings-page")?.classList.contains("settings-no-results"),
+    ).toBe(true);
+    expect(document.body.querySelector(".kit-settings__panel")).not.toBeNull();
+
+    const restoredSearch = document.body.querySelector<HTMLInputElement>(
+      'input[type="search"][aria-label="Search settings"]',
+    )!;
+    const restoredNav = document.body.querySelector('nav[aria-label="Settings"]')!;
+    restoredSearch.value = "";
+    restoredSearch.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+
+    expect(restoredNav.querySelectorAll("button")).toHaveLength(9);
+    expect(
+      document.body.querySelector(".settings-page")?.classList.contains("settings-no-results"),
+    ).toBe(false);
+    expect(restoredNav.querySelector('[aria-current="true"]')?.textContent).toContain("Terminal");
+
+    unmount(component);
+  });
+
+  it("keeps the image ingest policy and the image cleanup in one section", async () => {
+    settingsService.getApiV1Settings.mockResolvedValue({
+      agent_dirs: {},
+      chart_palette: "agentsview",
+      github_configured: false,
+      host: "127.0.0.1",
+      port: 8080,
+      read_only: false,
+      require_auth: false,
+      terminal: { mode: "auto" },
+      tool_result_images: "keep",
+    });
+    const component = mount(SettingsPage, { target: document.body });
+    await tick();
+    await tick();
+
+    const nav = document.body.querySelector('nav[aria-label="Settings"]')!;
+    expect(nav.textContent).not.toContain("Archive content");
+
+    // The words that used to find the Archive content section find this one.
+    const search = document.body.querySelector<HTMLInputElement>(
+      'input[type="search"][aria-label="Search settings"]',
+    )!;
+    for (const word of ["archive", "retention", "storage", "placeholders"]) {
+      search.value = word;
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+      await tick();
+      const labels = Array.from(nav.querySelectorAll("button")).map((b) => b.textContent ?? "");
+      expect(
+        labels.some((label) => label.includes("Tool-result images")),
+        word,
+      ).toBe(true);
+    }
+
+    search.value = "";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    Array.from(nav.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.includes("Tool-result images"))!
+      .click();
+    await tick();
+
+    const panel = document.body.querySelector<HTMLElement>(".settings-panel:not([hidden])")!;
+    expect(
+      panel.querySelector('[role="radiogroup"][aria-label="Tool-result images"]'),
+    ).not.toBeNull();
+    expect(panel.querySelector(".tool-image-cleanup")).not.toBeNull();
+
+    unmount(component);
+  });
+
+  it("preserves a terminal draft while switching panels", async () => {
+    settingsService.getApiV1Settings.mockResolvedValue({
+      agent_dirs: {},
+      chart_palette: "agentsview",
+      github_configured: false,
+      host: "127.0.0.1",
+      port: 8080,
+      read_only: false,
+      require_auth: false,
+      terminal: { mode: "auto" },
+    });
+    const component = mount(SettingsPage, {
+      target: document.body,
+    });
+    await tick();
+    await tick();
+
+    const nav = document.body.querySelector('nav[aria-label="Settings"]')!;
+    const terminal = Array.from(nav.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Terminal"),
+    )!;
+    terminal.click();
+    await tick();
+
+    const customMode = Array.from(
+      document.body.querySelectorAll<HTMLElement>('[role="radio"]'),
+    ).find((control) => control.textContent?.includes("Custom"));
+    expect(customMode).toBeTruthy();
+    customMode!.click();
+    await tick();
+
+    const binary = document.body.querySelector<HTMLInputElement>("#terminal-bin")!;
+    binary.value = "/usr/bin/kitty";
+    binary.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+
+    const search = document.body.querySelector<HTMLInputElement>(
+      'input[type="search"][aria-label="Search settings"]',
+    )!;
+    search.value = "no such setting";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    expect(document.body.textContent).toContain("No matching settings");
+    expect(
+      document.body.querySelector(".settings-page")?.classList.contains("settings-no-results"),
+    ).toBe(true);
+    expect(document.body.querySelector("#terminal-bin")).toBe(binary);
+
+    search.value = "";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+
+    const appearance = Array.from(nav.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Appearance"),
+    )!;
+    appearance.click();
+    await tick();
+    terminal.click();
+    await tick();
+
+    expect(document.body.querySelector<HTMLInputElement>("#terminal-bin")?.value).toBe(
+      "/usr/bin/kitty",
+    );
+
+    unmount(component);
+  });
+
+  it("searches localized keywords and localizes the clear control", async () => {
+    setLocale("zh-CN");
+    settingsService.getApiV1Settings.mockResolvedValue({
+      agent_dirs: {},
+      chart_palette: "agentsview",
+      github_configured: false,
+      host: "127.0.0.1",
+      port: 8080,
+      read_only: false,
+      require_auth: false,
+      terminal: { mode: "auto" },
+    });
+    const component = mount(SettingsPage, {
+      target: document.body,
+    });
+    await tick();
+    await tick();
+
+    const search = document.body.querySelector<HTMLInputElement>(
+      'input[type="search"][aria-label="搜索设置"]',
+    )!;
+    search.value = "向量";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+
+    const nav = document.body.querySelector('nav[aria-label="设置"]')!;
+    expect(nav.querySelectorAll("button")).toHaveLength(1);
+    expect(nav.textContent).toContain("语义嵌入");
+    expect(document.body.querySelector('button[aria-label="清除搜索"]')).not.toBeNull();
+
+    search.value = "vectors";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+
+    expect(nav.querySelectorAll("button")).toHaveLength(1);
+    expect(nav.textContent).toContain("语义嵌入");
+    expect(document.body.querySelector('[role="status"]')?.textContent).toContain("显示：语义嵌入");
+
+    unmount(component);
+  });
+
+  it("matches localized search terms without requiring accents", async () => {
+    setLocale("fr");
+    settingsService.getApiV1Settings.mockResolvedValue({
+      agent_dirs: {},
+      chart_palette: "agentsview",
+      github_configured: false,
+      host: "127.0.0.1",
+      port: 8080,
+      read_only: false,
+      require_auth: false,
+      terminal: { mode: "auto" },
+    });
+    const component = mount(SettingsPage, {
+      target: document.body,
+    });
+    await tick();
+    await tick();
+
+    const search = document.body.querySelector<HTMLInputElement>(
+      'input[type="search"][aria-label="Rechercher dans les paramètres"]',
+    )!;
+    search.value = "parametres";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+
+    const nav = document.body.querySelector('nav[aria-label="Paramètres"]')!;
+    expect(nav.querySelectorAll("button")).toHaveLength(1);
+    expect(nav.textContent).toContain("Langue");
+
+    unmount(component);
+  });
+});
+
+describe("SettingsPage in Spanish", () => {
+  it("renders the settings chrome and language picker in Spanish", async () => {
+    setLocale("es");
+    settingsService.getApiV1Settings.mockResolvedValue({
+      agent_dirs: {},
+      chart_palette: "agentsview",
+      github_configured: false,
+      host: "127.0.0.1",
+      port: 8080,
+      read_only: false,
+      require_auth: false,
+      terminal: { mode: "auto" },
+    });
+    const component = mount(SettingsPage, {
+      target: document.body,
+    });
+    await tick();
+    await tick();
+
+    expect(document.body.textContent).toContain("Configuración");
+    expect(document.body.querySelector('nav[aria-label="Configuración"]')).not.toBeNull();
+    const trigger = document.body.querySelector<HTMLButtonElement>(
+      'button[title="Idioma de la interfaz"]',
+    );
+    expect(trigger).not.toBeNull();
+    expect(trigger!.textContent).toContain("Español");
+
+    const search = document.body.querySelector<HTMLInputElement>(
+      'input[type="search"][aria-label="Buscar en la configuración"]',
+    )!;
+    search.value = "idioma";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+
+    const nav = document.body.querySelector('nav[aria-label="Configuración"]')!;
+    expect(nav.querySelectorAll("button")).toHaveLength(1);
+    expect(nav.textContent).toContain("Idioma");
+
+    unmount(component);
+  });
+});

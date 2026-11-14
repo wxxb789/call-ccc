@@ -1,0 +1,836 @@
+<script lang="ts">
+  import { untrack, type Snippet } from "svelte";
+  import { TextInput } from "@kenn-io/kit-ui";
+  import { m } from "../../i18n/index.js";
+  import { formatCount } from "../../utils/format.js";
+  import { sessions } from "../../stores/sessions.svelte.js";
+  import { router } from "../../stores/router.svelte.js";
+  import { hasSessionRouteDateIntent } from "../../stores/sessionRouteParams.js";
+  import { starred } from "../../stores/starred.svelte.js";
+  import {
+    agentColor,
+    agentForeground,
+    agentLabel,
+  } from "../../utils/agents.js";
+  import type { GroupMode } from "../sidebar/session-list-utils.js";
+  import { CheckIcon, FunnelIcon } from "../../icons.js";
+
+  interface Props {
+    groupMode?: GroupMode;
+    showDisplay?: boolean;
+    showStarred?: boolean;
+    /** Show label and pull request filters. Pages whose data ignores
+     *  them (usage, analytics) turn this off. */
+    showLabelFilters?: boolean;
+    align?: "left" | "right";
+    onToggleGroupByAgent?: () => void;
+    onToggleGroupByProject?: () => void;
+    onClearGroupMode?: () => void;
+    extraActive?: boolean;
+    onClearExtra?: () => void;
+    extraSections?: Snippet;
+  }
+
+  let {
+    groupMode = "none",
+    showDisplay = true,
+    showStarred = true,
+    showLabelFilters = true,
+    align = "right",
+    onToggleGroupByAgent,
+    onToggleGroupByProject,
+    onClearGroupMode,
+    extraActive = false,
+    onClearExtra,
+    extraSections,
+  }: Props = $props();
+
+  let open = $state(false);
+  let filterBtnRef: HTMLButtonElement | undefined =
+    $state(undefined);
+  let dropdownRef: HTMLDivElement | undefined =
+    $state(undefined);
+  let agentSearch = $state("");
+  let machineSearch = $state("");
+  let labelDraft = $state("");
+  let prDraft = $state("");
+
+  const sortedAgents = $derived.by(() => {
+    const agents = [...sessions.agents].sort(
+      (a, b) => b.session_count - a.session_count,
+    );
+    if (!agentSearch) return agents;
+    const q = agentSearch.toLowerCase();
+    return agents.filter((a) =>
+      agentLabel(a.name).toLowerCase().includes(q),
+    );
+  });
+
+  const sortedMachines = $derived.by(() => {
+    const machines = [...sessions.machines].sort((a, b) =>
+      sessions.machineLabel(a).localeCompare(sessions.machineLabel(b)),
+    );
+    if (!machineSearch) return machines;
+    const q = machineSearch.toLowerCase();
+    return machines.filter((machine) =>
+      sessions.machineLabel(machine).toLowerCase().includes(q),
+    );
+  });
+
+  $effect(() => {
+    if (open) {
+      untrack(() => { sessions.loadAgents(); sessions.loadMachines(); });
+      agentSearch = "";
+      machineSearch = "";
+      labelDraft = "";
+      prDraft = "";
+    }
+  });
+
+  function onLabelKeydown(event: KeyboardEvent) {
+    if (event.key !== "Enter" || event.isComposing) return;
+    event.preventDefault();
+    if (!labelDraft.trim()) return;
+    sessions.addLabelFilter(labelDraft);
+    labelDraft = "";
+  }
+
+  function onPRKeydown(event: KeyboardEvent) {
+    if (event.key !== "Enter" || event.isComposing) return;
+    event.preventDefault();
+    if (!prDraft.trim()) return;
+    sessions.setPRFilter(prDraft);
+    prDraft = "";
+  }
+
+  let hasFilters = $derived(
+    (showLabelFilters ? sessions.hasActiveFilters : sessions.hasSharedFilters) ||
+      (showStarred && starred.filterOnly) ||
+      extraActive,
+  );
+  let isRecentlyActiveOn = $derived(
+    sessions.filters.recentlyActive,
+  );
+  let isHideUnknownOn = $derived(
+    sessions.filters.hideUnknownProject,
+  );
+  let isHideSingleTurnOn = $derived(
+    !sessions.filters.includeOneShot,
+  );
+  let isIncludeAutomatedOn = $derived(
+    sessions.filters.includeAutomated,
+  );
+
+  $effect(() => {
+    if (!open) return;
+    function onClickOutside(e: MouseEvent) {
+      const target = e.target as Node;
+      if (
+        filterBtnRef?.contains(target) ||
+        dropdownRef?.contains(target)
+      )
+        return;
+      open = false;
+    }
+    document.addEventListener("click", onClickOutside, true);
+    return () =>
+      document.removeEventListener(
+        "click",
+        onClickOutside,
+        true,
+      );
+  });
+
+  function clearFilters() {
+    onClearGroupMode?.();
+    onClearExtra?.();
+    const clearDateYoke = hasSessionRouteDateIntent(
+      router.route,
+      router.params,
+    );
+    if (sessions.hasActiveFilters && starred.filterOnly) {
+      if (showStarred) starred.filterOnly = false;
+      sessions.clearSessionFilters({ clearDateYoke, preserveLabelsAndPR: !showLabelFilters });
+    } else if (sessions.hasActiveFilters) {
+      sessions.clearSessionFilters({ clearDateYoke, preserveLabelsAndPR: !showLabelFilters });
+    } else if (showStarred && starred.filterOnly) {
+      starred.filterOnly = false;
+      sessions.load();
+    }
+  }
+
+  function toggleStarredOnly() {
+    starred.filterOnly = !starred.filterOnly;
+    sessions.load();
+  }
+</script>
+
+<button
+  class="filter-btn"
+  bind:this={filterBtnRef}
+  onclick={() => (open = !open)}
+  title={m.sidebar_filters_filter_sessions()}
+  aria-label={m.sidebar_filters_filters()}
+  aria-expanded={open}
+>
+  <FunnelIcon size="14" strokeWidth="2" aria-hidden="true" />
+  {#if hasFilters || (showDisplay && groupMode !== "none")}
+    <span class="filter-indicator"></span>
+  {/if}
+</button>
+
+{#if open}
+  <div
+    class="filter-dropdown kit-popover-card"
+    class:left={align === "left"}
+    bind:this={dropdownRef}
+  >
+    {#if showDisplay}
+      <div class="filter-section">
+        <div class="filter-section-label">{m.sidebar_filters_display()}</div>
+        <button
+          class="filter-toggle"
+          class:active={groupMode === "agent"}
+          onclick={onToggleGroupByAgent}
+        >
+          <span
+            class="toggle-check"
+            class:on={groupMode === "agent"}
+          ></span>
+          <span class="toggle-label" title={m.sidebar_filters_group_by_agent()}>{m.sidebar_filters_group_by_agent()}</span>
+        </button>
+        <button
+          class="filter-toggle"
+          class:active={groupMode === "project"}
+          onclick={onToggleGroupByProject}
+        >
+          <span
+            class="toggle-check"
+            class:on={groupMode === "project"}
+          ></span>
+          <span class="toggle-label" title={m.sidebar_filters_group_by_project()}>{m.sidebar_filters_group_by_project()}</span>
+        </button>
+      </div>
+    {/if}
+    {#if showStarred}
+      <div class="filter-section">
+        <div class="filter-section-label">{m.sidebar_filters_starred()}</div>
+        <button
+          class="filter-toggle"
+          class:active={starred.filterOnly}
+          onclick={toggleStarredOnly}
+        >
+          <span
+            class="toggle-check"
+            class:on={starred.filterOnly}
+          ></span>
+          <span class="toggle-label" title={m.sidebar_filters_starred_only()}>{m.sidebar_filters_starred_only()}</span>
+          {#if starred.count > 0}
+            <span class="starred-count">{formatCount(starred.count)}</span>
+          {/if}
+        </button>
+      </div>
+    {/if}
+    <div class="filter-section">
+      <div class="filter-section-label">{m.sidebar_filters_activity()}</div>
+      <button
+        class="filter-toggle"
+        class:active={isRecentlyActiveOn}
+        onclick={() =>
+          sessions.setRecentlyActiveFilter(
+            !isRecentlyActiveOn,
+          )}
+      >
+        <span
+          class="toggle-check"
+          class:on={isRecentlyActiveOn}
+        ></span>
+        <span class="toggle-label" title={m.sidebar_filters_recently_active()}>{m.sidebar_filters_recently_active()}</span>
+      </button>
+    </div>
+    <div class="filter-section">
+      <div class="filter-section-label">
+        {m.sidebar_filters_session_type()}
+      </div>
+      <button
+        class="filter-toggle"
+        class:active={isHideSingleTurnOn}
+        onclick={() =>
+          sessions.setIncludeOneShotFilter(
+            isHideSingleTurnOn,
+          )}
+      >
+        <span
+          class="toggle-check"
+          class:on={isHideSingleTurnOn}
+        ></span>
+        <span class="toggle-label" title={m.sidebar_filters_hide_single_turn()}>{m.sidebar_filters_hide_single_turn()}</span>
+      </button>
+      <button
+        class="filter-toggle"
+        class:active={isIncludeAutomatedOn}
+        onclick={() =>
+          sessions.setIncludeAutomatedFilter(
+            !isIncludeAutomatedOn,
+          )}
+      >
+        <span
+          class="toggle-check"
+          class:on={isIncludeAutomatedOn}
+        ></span>
+        <span class="toggle-label" title={m.sidebar_filters_include_automated()}>{m.sidebar_filters_include_automated()}</span>
+      </button>
+    </div>
+    <div class="filter-section">
+      <div class="filter-section-label">{m.sidebar_filters_project()}</div>
+      <button
+        class="filter-toggle"
+        class:active={isHideUnknownOn}
+        onclick={() =>
+          sessions.setHideUnknownProjectFilter(
+            !isHideUnknownOn,
+          )}
+      >
+        <span
+          class="toggle-check"
+          class:on={isHideUnknownOn}
+        ></span>
+        <span class="toggle-label" title={m.sidebar_filters_hide_unknown()}>{m.sidebar_filters_hide_unknown()}</span>
+      </button>
+    </div>
+    <div class="filter-section">
+      <div class="filter-section-label">{m.sidebar_filters_agent()}</div>
+      {#if sessions.agents.length > 5}
+        <input
+          class="agent-search"
+          type="text"
+          placeholder={m.sidebar_filters_search_agents()}
+          bind:value={agentSearch}
+        />
+      {/if}
+      <div class="agent-select-list">
+        <button
+          class="agent-select-row"
+          class:selected={!sessions.filters.agent}
+          style:--agent-color={"var(--accent-blue)"}
+          style:--agent-foreground={"var(--accent-blue-foreground)"}
+          onclick={() => sessions.setAgentFilter("")}
+        >
+          <span
+            class="agent-check"
+            class:on={!sessions.filters.agent}
+          >
+            {#if !sessions.filters.agent}
+              <CheckIcon size="9" strokeWidth="2.4" aria-hidden="true" />
+            {/if}
+          </span>
+          <span class="agent-select-name">{m.sidebar_filters_all_agents()}</span>
+        </button>
+        {#each sortedAgents as agent (agent.name)}
+          {@const selected =
+            sessions.isAgentSelected(agent.name)}
+          <button
+            class="agent-select-row"
+            class:selected
+            style:--agent-color={agentColor(agent.name)}
+            style:--agent-foreground={agentForeground(agent.name)}
+            onclick={() =>
+              sessions.toggleAgentFilter(agent.name)}
+          >
+            <span
+              class="agent-check"
+              class:on={selected}
+            >
+              {#if selected}
+                <CheckIcon size="9" strokeWidth="2.4" aria-hidden="true" />
+              {/if}
+            </span>
+            <span
+              class="agent-dot-mini"
+              style:background={agentColor(agent.name)}
+            ></span>
+            <span class="agent-select-name">
+              {agentLabel(agent.name)}
+            </span>
+            <span class="agent-select-count">
+              {formatCount(agent.session_count)}
+            </span>
+          </button>
+        {:else}
+          <span class="agent-select-empty">
+            {agentSearch ? m.sidebar_filters_no_match() : m.sidebar_filters_no_agents()}
+          </span>
+        {/each}
+      </div>
+    </div>
+    {#if sessions.machines.length > 0 || sessions.machineFilterPending || sessions.machineFilterUpdateFailed || sessions.machineFilterError}
+      <div class="filter-section">
+        <div class="filter-section-label">{m.sidebar_filters_machine()}</div>
+        {#if sessions.machineFilterUpdateFailed}
+          <p class="agent-select-empty" role="alert">{m.sidebar_filters_machine_update_failed()}</p>
+        {/if}
+        {#if sessions.machineFilterError}<p role="alert">{sessions.machineFilterError}</p>{/if}
+        {#if sessions.machineFilterPending}<p class="agent-select-empty" role="status">{m.sidebar_filters_machine_loading()}</p>{/if}
+        {#if sessions.machines.length > 5}
+          <input
+            class="agent-search"
+            type="text"
+            placeholder={m.sidebar_filters_search_machines()}
+            bind:value={machineSearch}
+          />
+        {/if}
+        <div class="agent-select-list">
+          {#each sortedMachines as machine (machine)}
+            {@const selected =
+              sessions.isMachineSelected(machine)}
+            <button
+              class="agent-select-row"
+              class:selected
+              style:--agent-color={"var(--accent-blue)"}
+              style:--agent-foreground={"var(--accent-blue-foreground)"}
+              title={machine}
+              disabled={sessions.machineRowsDisabled}
+              onclick={() =>
+                sessions.toggleMachineFilter(machine)}
+            >
+              <span
+                class="agent-check"
+                class:on={selected}
+              >
+                {#if selected}
+                  <CheckIcon size="9" strokeWidth="2.4" aria-hidden="true" />
+                {/if}
+              </span>
+              <span class="agent-select-name">
+                {sessions.machineLabel(machine)}
+              </span>
+            </button>
+          {:else}
+            {#if !sessions.machineFilterPending && !sessions.machineFilterUpdateFailed}
+              <span class="agent-select-empty">
+                {machineSearch ? m.sidebar_filters_no_match() : m.sidebar_filters_no_machines()}
+              </span>
+            {/if}
+          {/each}
+        </div>
+      </div>
+    {/if}
+    {#if showLabelFilters}
+      <div class="filter-section">
+        <div class="filter-section-label">{m.sidebar_filters_labels()}</div>
+        {#each sessions.filters.labels as label (label)}
+          <button
+            class="filter-toggle active"
+            title={m.shared_active_filters_remove_label({ label })}
+            onclick={() => sessions.removeLabelFilter(label)}
+          >
+            <span class="toggle-check on"></span>
+            <span class="filter-value">{label}</span>
+          </button>
+        {/each}
+        <TextInput
+          size="sm"
+          block
+          bind:value={labelDraft}
+          placeholder={m.sidebar_filters_label_placeholder()}
+          ariaLabel={m.sidebar_filters_label_input()}
+          onkeydown={onLabelKeydown}
+        />
+      </div>
+      <div class="filter-section">
+        <div class="filter-section-label">{m.sidebar_filters_pull_request()}</div>
+        {#if sessions.filters.pr}
+          <button
+            class="filter-toggle active"
+            title={m.shared_active_filters_clear_pull_request()}
+            onclick={() => sessions.setPRFilter("")}
+          >
+            <span class="toggle-check on"></span>
+            <span class="filter-value">{sessions.filters.pr}</span>
+          </button>
+        {/if}
+        <TextInput
+          size="sm"
+          block
+          bind:value={prDraft}
+          placeholder={m.sidebar_filters_pull_request_placeholder()}
+          ariaLabel={m.sidebar_filters_pull_request_input()}
+          onkeydown={onPRKeydown}
+        />
+      </div>
+    {/if}
+    <div class="filter-section">
+      <div class="filter-section-label">{m.sidebar_filters_min_prompts()}</div>
+      <div class="pill-buttons">
+        {#each [2, 3, 5, 10] as n}
+          <button
+            class="pill-btn"
+            class:active={sessions.filters.minUserMessages === n}
+            onclick={() =>
+              sessions.setMinUserMessagesFilter(
+                sessions.filters.minUserMessages === n ? 0 : n,
+              )}
+          >
+            {n}
+          </button>
+        {/each}
+      </div>
+    </div>
+
+    {@render extraSections?.()}
+
+    {#if hasFilters || (showDisplay && groupMode !== "none")}
+      <button
+        class="clear-filters-btn"
+        onclick={clearFilters}
+      >
+        {m.sidebar_filters_clear_filters()}
+      </button>
+    {/if}
+  </div>
+{/if}
+
+<style>
+  .filter-btn {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 4px;
+    color: var(--text-muted);
+    transition: color 0.1s, background 0.1s;
+  }
+
+  .filter-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-surface-hover);
+  }
+
+  .filter-indicator {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent-green);
+  }
+
+  .filter-dropdown {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 4px;
+    /* Wide enough to keep every option on one line. The sidebar stretches
+       it across its own width. */
+    width: 240px;
+    max-height: min(560px, calc(100vh - 128px));
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+    /* Card chrome comes from the shared kit-popover-card class; a deeper
+       shadow lifts it clear of the rows underneath. */
+    padding: 6px;
+    box-shadow:
+      var(--shadow-lg),
+      0 1px 3px color-mix(in srgb, var(--text-primary) 12%, transparent);
+    z-index: var(--z-popover);
+    text-transform: none;
+    letter-spacing: normal;
+    animation: dropdown-in 0.12s ease-out;
+    transform-origin: top right;
+  }
+
+  /* The card is usually shorter than its sections, so the clipped edge
+     fades out instead of slicing a row in half. The fade sticks to the
+     card's bottom while there is more below; at the end it sits under the
+     last section, over empty space, and the bottom padding moves into it. */
+  .filter-dropdown {
+    padding-bottom: 0;
+  }
+
+  .filter-dropdown::after {
+    content: "";
+    position: sticky;
+    bottom: 0;
+    display: block;
+    /* Taller than a section heading, so a heading cut by the edge fades
+       out completely instead of showing its top half. */
+    height: 28px;
+    margin-inline: -6px;
+    background: linear-gradient(transparent, var(--bg-popover));
+    pointer-events: none;
+  }
+
+  .filter-dropdown.left {
+    left: 0;
+    right: auto;
+    transform-origin: top left;
+  }
+
+  @keyframes dropdown-in {
+    from {
+      opacity: 0;
+      transform: scale(0.95) translateY(-2px);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1) translateY(0);
+    }
+  }
+
+  .filter-section {
+    padding: 4px 0;
+  }
+
+  .filter-section + .filter-section {
+    border-top: 1px solid var(--border-muted);
+    margin-top: 2px;
+    padding-top: 6px;
+  }
+
+  .filter-section-label {
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 2px;
+  }
+
+  .filter-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 3px 6px;
+    font-size: 12.5px;
+    color: var(--text-secondary);
+    text-align: left;
+    border-radius: 4px;
+    transition: background 0.1s, color 0.1s;
+  }
+
+  .toggle-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .filter-toggle:hover {
+    background: var(--bg-surface-hover);
+  }
+
+  .filter-toggle.active {
+    background: var(--bg-surface-hover);
+    color: var(--accent-green);
+    font-weight: 500;
+  }
+
+  .filter-value {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .filter-section :global(.kit-text-input) {
+    margin-top: 2px;
+  }
+
+  .toggle-check {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    border: 1.5px solid var(--text-muted);
+    flex-shrink: 0;
+    transition: background 0.1s, border-color 0.1s;
+  }
+
+  .toggle-check.on {
+    background: var(--accent-green);
+    border-color: var(--accent-green);
+  }
+
+  .agent-search {
+    width: 100%;
+    height: 24px;
+    padding: 0 8px;
+    margin-bottom: 4px;
+    font-size: 12px;
+    color: var(--text-primary);
+    background: var(--bg-inset);
+    border: 1px solid var(--border-muted);
+    border-radius: 4px;
+    outline: none;
+    transition: border-color 0.1s;
+  }
+
+  .agent-search::placeholder {
+    color: var(--text-muted);
+  }
+
+  .agent-search:focus {
+    border-color: var(--accent-blue);
+  }
+
+  /* Rows have a fixed height so the list's visible area ends on a whole
+     row: six rows and their gaps, plus bottom padding that shows once the
+     list is scrolled to its end. */
+  .agent-select-list {
+    --agent-row: 25px;
+    display: flex;
+    flex-direction: column;
+    max-height: calc(6 * var(--agent-row) + 5px);
+    padding-bottom: 4px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    gap: 1px;
+  }
+
+  .agent-select-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    box-sizing: border-box;
+    height: var(--agent-row);
+    padding: 0 6px;
+    font-size: 12.5px;
+    color: var(--text-secondary);
+    text-align: left;
+    border-radius: 3px;
+    transition: background 0.08s, color 0.08s;
+    flex-shrink: 0;
+  }
+
+  .agent-select-row:hover {
+    background: var(--bg-surface-hover);
+  }
+
+  .agent-select-row.selected {
+    color: var(--agent-color, var(--accent-blue));
+    font-weight: 500;
+    background: color-mix(
+      in srgb,
+      var(--agent-color, var(--accent-blue)) 10%,
+      transparent
+    );
+  }
+
+  .agent-check {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    border: 1.5px solid var(--text-muted);
+    flex-shrink: 0;
+    transition: background 0.1s, border-color 0.1s;
+    color: var(--agent-foreground, var(--accent-blue-foreground));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .agent-check.on {
+    background: var(--agent-color, var(--accent-blue));
+    border-color: var(--agent-color, var(--accent-blue));
+    color: var(--agent-foreground, var(--accent-blue-foreground));
+  }
+
+  .agent-dot-mini {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .agent-select-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .agent-select-count {
+    flex-shrink: 0;
+    font-size: 10.5px;
+    font-weight: 500;
+    color: var(--text-muted);
+    min-width: 14px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .agent-select-empty {
+    display: block;
+    padding: 6px 8px;
+    font-size: 12px;
+    color: var(--text-muted);
+    text-align: center;
+  }
+
+  .pill-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .pill-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    border: 1px solid var(--border-muted);
+    border-radius: 4px;
+    transition:
+      background 0.1s,
+      border-color 0.1s,
+      color 0.1s;
+  }
+
+  .pill-btn:hover {
+    background: var(--bg-surface-hover);
+    border-color: var(--border-default);
+  }
+
+  .pill-btn.active {
+    background: var(--bg-surface-hover);
+    border-color: var(--accent-green);
+    color: var(--accent-green);
+    font-weight: 500;
+  }
+
+  .clear-filters-btn {
+    display: block;
+    width: 100%;
+    padding: 4px 8px;
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--text-muted);
+    text-align: center;
+    border-top: 1px solid var(--border-muted);
+    padding-top: 8px;
+    transition: color 0.1s;
+  }
+
+  .starred-count {
+    margin-left: auto;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--accent-amber);
+    min-width: 14px;
+    text-align: center;
+  }
+
+  .clear-filters-btn:hover {
+    color: var(--text-primary);
+  }
+</style>

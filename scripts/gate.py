@@ -12,6 +12,9 @@ or N/A -- is rewritten to FAIL before the verdict, so it exits 1.
 
 Knobs (in-repo, auditable):
   scripts/gate-targets.txt    Go package patterns for build/vet/test; absent = ./...
+  scripts/gate-goflags.txt    extra Go flags for build/vet/test (e.g. -tags fts5)
+  scripts/upstream-manifest.txt  the carry manifest, which also says which files the secrets step
+                              scans (this repository's own; the carried tree is the parity step's)
   scripts/gate-required.txt   steps that MUST be PASS; a listed step that is
                               skipped, unavailable or a platform boundary fails
   scripts/upstream-parity.py  source-side parity check, run when present
@@ -30,7 +33,12 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from upstream_manifest import ManifestError, load_manifest  # noqa: E402  (path set up above)
 
 ROOT = Path(os.environ.get("CALLCCC_GATE_ROOT") or Path(__file__).resolve().parent.parent).resolve()
 PASS, FAIL, SKIP, BOUNDARY, NA = "PASS", "FAIL", "SKIP", "BOUNDARY", "N/A"
@@ -95,6 +103,20 @@ def go_targets() -> list[str]:
     return read_list("gate-targets.txt") or ["./..."]
 
 
+def go_flags() -> list[str]:
+    """Extra Go flags from ``scripts/gate-goflags.txt``, folded into build/vet/test.
+
+    The inherited AgentsView build passes ``-tags fts5`` on every Go command it ships, and the flag is
+    not cosmetic: without it the SQLite driver has no FTS5 module, so a binary built here could not
+    load an archive that has a full-text index. The knob stays in the tree rather than in a shell
+    history so the flags a gate run used are auditable next to the targets it used.
+    """
+    flags: list[str] = []
+    for line in read_list("gate-goflags.txt"):
+        flags.extend(line.split())
+    return flags
+
+
 def go_env() -> tuple[dict[str, str], str | None]:
     """Return (environment, boundary_reason). boundary_reason means 'cannot build here'."""
     env = {"GOFLAGS": "-mod=mod", "CGO_ENABLED": "1"}
@@ -117,7 +139,9 @@ def step_gofmt(go_files: list[str]) -> tuple[str, str]:
     return PASS, f"{len(go_files)} file(s) gofmt-clean"
 
 
-def step_go(sub: str, go_files: list[str], boundary: str | None, targets: list[str]) -> tuple[str, str]:
+def step_go(
+    sub: str, go_files: list[str], boundary: str | None, targets: list[str], flags: list[str]
+) -> tuple[str, str]:
     name = {"build": "go build", "vet": "go vet", "test": "go test -count=1"}[sub]
     if not (ROOT / "go.mod").exists():
         return SKIP, "no go.mod yet"
@@ -128,7 +152,10 @@ def step_go(sub: str, go_files: list[str], boundary: str | None, targets: list[s
     if not shutil.which("go"):
         return FAIL, "go not found on PATH"
     env, _ = go_env()
-    cmd = ["go", sub, *targets] if sub in ("build", "vet") else ["go", "test", "-count=1", *targets]
+    if sub == "test":
+        cmd = ["go", "test", "-count=1", *flags, *targets]
+    else:
+        cmd = ["go", sub, *flags, *targets]
     proc = run(cmd, env=env)
     detail = tail((proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else ""))
     if proc.returncode != 0:
@@ -163,34 +190,82 @@ def step_parity() -> tuple[str, str]:
     return PASS, tail(proc.stdout, 800).replace("\n", " | ") or "rc=0"
 
 
-def step_secrets() -> tuple[str, str]:
-    """Scan the whole working tree -- untracked and gitignored files included.
+def secrets_scope() -> tuple[Path | None, int, str]:
+    """Stage this repository's own files for the leak scan and describe the scope.
 
-    ``--no-git`` (no git history, current files only) has no gitignore switch, so
-    a local ``.env`` is read here even though CI's clean checkout never has one;
-    the PASS message below states the scope instead of implying a tracked-tree one.
+    The carried AgentsView tree is not scanned here: it is upstream's content, byte-verified against
+    the pinned revision by the parity step, and a credential shape inside upstream's own
+    secret-detector corpora (``internal/secrets/rules_test.go`` and friends) is upstream's test data,
+    not a credential call/ccc committed. What this step is for is the other half -- the files this
+    repository owns -- and the manifest is what says which those are, so a new project file is scanned
+    automatically and a carried one cannot be mistaken for ours.
+
+    Returns ``(directory, file count, note)``. ``directory`` is None when the copy could not be made,
+    which the caller reports instead of scanning something else.
+    """
+    manifest_path = ROOT / "scripts" / "upstream-manifest.txt"
+    try:
+        manifest = load_manifest(manifest_path)
+        owned = manifest.owned
+    except (OSError, ManifestError) as broken:
+        # A tree without a carry manifest is not this repository's shape (a throw-away test tree, a
+        # copy): the honest fallback is to scan the whole tree and say so.
+        return ROOT, -1, f"no readable carry manifest ({broken}), so the whole tree was scanned"
+    staged = Path(tempfile.mkdtemp(prefix="ccc-secrets-"))
+    copied = 0
+    for path in ROOT.rglob("*"):
+        if not path.is_file() or ".git" in path.relative_to(ROOT).parts:
+            continue
+        relative = path.relative_to(ROOT).as_posix()
+        if not any(relative == prefix or (prefix.endswith("/") and relative.startswith(prefix))
+                   for prefix in owned):
+            continue
+        target = staged / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
+        copied += 1
+    return staged, copied, (
+        f"{copied} file(s) this repository owns (the carried upstream tree is covered by the parity "
+        f"step, not by this scan)")
+
+
+def step_secrets() -> tuple[str, str]:
+    """Scan this repository's own files for credentials.
+
+    ``--no-git`` (no git history, current files only) has no gitignore switch, so a local ``.env`` is
+    read here even though CI's clean checkout never has one; the PASS message states the scope
+    instead of implying a tracked-tree one.
     """
     if not shutil.which("gitleaks"):
         return SKIP, "gitleaks not installed on this host (CI installs it)"
-    proc = run(
-        ["gitleaks", "detect", "--no-git", "--source", ".", "--redact", "--no-banner", "--exit-code", "7"],
-        timeout=600,
-    )
+    scope, copied, note = secrets_scope()
+    if scope is None:
+        return FAIL, note
+    try:
+        proc = run(
+            ["gitleaks", "detect", "--no-git", "--source", str(scope), "--redact", "--no-banner",
+             "--exit-code", "7"],
+            timeout=600,
+        )
+    finally:
+        if scope != ROOT:
+            shutil.rmtree(scope, ignore_errors=True)
     if proc.returncode == 0:
-        return PASS, "no leaks found in the working tree (untracked and gitignored files included)"
+        return PASS, f"no leaks found in {note}"
     if proc.returncode == 7:
-        return FAIL, "gitleaks reported leaks (redacted):\n" + tail(proc.stdout, 1200)
+        return FAIL, f"gitleaks reported leaks (redacted) in {note}:\n" + tail(proc.stdout, 1200)
     return SKIP, f"gitleaks did not complete (rc={proc.returncode}): " + tail(proc.stderr, 400)
 
 
 def build_steps() -> list[tuple[str, str, str]]:
     go_files = tracked_go_files()
     targets = go_targets()
+    flags = go_flags()
     _, boundary = go_env()
     steps: list[tuple[str, str, str]] = []
     steps.append(("gofmt", *step_gofmt(go_files)))
     for sub in ("build", "vet", "test"):
-        steps.append((sub, *step_go(sub, go_files, boundary, targets)))
+        steps.append((sub, *step_go(sub, go_files, boundary, targets, flags)))
     steps.append(("selftest", *step_selftest()))
     steps.append(("parity", *step_parity()))
     steps.append(("secrets", *step_secrets()))

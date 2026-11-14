@@ -1,0 +1,1252 @@
+package db
+
+import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+
+	"github.com/gofrs/flock"
+)
+
+const (
+	// Version 5 rebuilds version 4 facts and rollups so Posit Assistant
+	// sidecar events use request-scoped pricing semantics.
+	// Version 6 rebuilds version 5 facts and rollups because
+	// the pricing resolver now strips reasoning-effort/speed tiers (Devin's
+	// "-thinking"/"-high"/"-medium-fast"/... suffixes) to the base model, so
+	// the same facts and catalog produce costs that the EffectivePricingDigest
+	// (which hashes only catalog rows) cannot detect. A new generation forces
+	// cached rollups to rebuild with the corrected resolution.
+	// Version 7 rebuilds version 6 facts and rollups so provider-specific
+	// billing identity survives cache generation and rollup aggregation.
+	// Version 8 introduces a cross-process generation lease. Older binaries
+	// select version 7 and therefore cannot open a leased generation without
+	// participating in its retirement protocol.
+	// Version 9 rebuilds version 8 rollups because Codex Luna Reserve
+	// turns stored as gpt-reserve now resolve to gpt-5.6-luna catalog
+	// rates. EffectivePricingDigest hashes only catalog rows, so the
+	// same facts and catalog would otherwise keep the unpriced costs.
+	// Version 10 rebuilds rollups with Bedrock pricing for namespaced Codex
+	// models, including historical AWS rates for timestamped usage.
+	// Version 11 rebuilds Copilot store usage with request-scoped pricing.
+	// Version 12 rebuilds version 11 rollups because models carrying an
+	// Ollama Cloud tag (kimi-k2.7-code:cloud, gpt-oss:120b-cloud) now price
+	// at the untagged model's catalog rate. EffectivePricingDigest hashes
+	// only catalog rows, so the same facts and catalog would otherwise keep
+	// the unpriced costs.
+	// Version 13 rebuilds facts and rollups with session-scoped Devin
+	// message source identities: bare node_id/step_id values collide
+	// across sessions, so previously deduplicated Devin usage was dropped.
+	// Version 14 rebuilds version 13 rollups because Codex auto-review turns
+	// stored as codex-auto-review now resolve to gpt-5.6-luna catalog rates.
+	// EffectivePricingDigest hashes only catalog rows, so the same facts and
+	// catalog would otherwise keep the unpriced costs.
+	// Version 15 records each rollup install's pricing lookups and re-resolves
+	// only those, so a price change rebuilds just the sessions that used the
+	// changed rows. Because the identity re-runs the resolver, it also catches
+	// resolver changes like those behind versions 6, 9, 12 and 14 whenever
+	// they change a used lookup's result.
+	// Version 16 retains proven message prefixes for incremental token fills.
+	// Version 17 tracks journal coverage and the archive revision of rollup builds.
+	// Version 18 adds stored per-day totals. Main builds already wrote version
+	// 17 caches without them, so keeping 17 would fail their schema check and
+	// leave those archives on a temporary cache after every restart.
+	// Version 19 preserves account agents and uncapped billing counters.
+	// Version 20 rebuilds account billing rollups without request pricing bands.
+	// Version 21 stores group keys and labels separately from version 20 writers.
+	// Version 22 deduplicates Claude snapshots by message ID when requestId is
+	// absent.
+	// Version 23 stores each fact's cost status so harness-recorded costs
+	// price a row only when the catalog cannot.
+	// Version 24 separates snapshot ranking from billed output and stores priced
+	// totals for external account rows that cannot deduplicate against other usage.
+	usageCacheFormatVersion             = 24
+	usageCacheApplicationID             = 0x41565543
+	usageCacheKind                      = "agentsview-usage-facts"
+	usageCacheRetirementProtocolVersion = 1
+	usageCacheRetirementProtocolFormat  = 8
+
+	usageCacheMetadataKind                = "cache_kind"
+	usageCacheMetadataFormatVersion       = "format_version"
+	usageCacheMetadataSourceDatabaseID    = "source_database_id"
+	usageCacheMetadataNextInstallRevision = "next_install_revision"
+	usageCacheMetadataNextRollupRevision  = "next_rollup_install_revision"
+	usageCacheMetadataDeletionRevision    = "deletion_revision"
+	usageCacheMetadataCursorHighWaterMark = "cursor_high_water_mark"
+	usageCacheMetadataResetEpoch          = "reset_epoch"
+	usageCacheMetadataSourceMutation      = "source_mutation_revision"
+	usageCacheMetadataBackfillCompletedAt = "backfill_completed_at"
+	usageCacheMetadataRetirementProtocol  = "retirement_protocol_version"
+)
+
+// Each column defines its table declaration, rollup source, and trigger behavior.
+var usageDayTotalsColumns = []struct {
+	name, definition, source string
+	key, sum                 bool
+}{
+	{"timezone_id", "INTEGER NOT NULL REFERENCES usage_rollup_timezones(id) ON DELETE CASCADE", "i.timezone_id", true, false},
+	{"local_date", "TEXT NOT NULL", "{row}.local_date", true, false},
+	{"project", "TEXT NOT NULL", "i.project", true, false},
+	{"agent", "TEXT NOT NULL", "i.baked_agent", true, false},
+	{"machine", "TEXT NOT NULL", "i.machine", true, false},
+	{"git_branch", "TEXT NOT NULL", "i.git_branch", true, false},
+	{"is_automated", "INTEGER NOT NULL", "i.is_automated", true, false},
+	{"user_message_count", "INTEGER NOT NULL", "i.user_message_count", true, false},
+	{"reported_model", "TEXT NOT NULL", "{row}.reported_model", true, false},
+	{"provider_id", "TEXT NOT NULL", "{row}.provider_id", true, false},
+	{"rate_hash", "TEXT NOT NULL", "{row}.rate_hash", true, false},
+	{"band_threshold", "INTEGER NOT NULL", "{row}.band_threshold", true, false},
+	{"priced_model", "TEXT NOT NULL", "{row}.priced_model", false, false},
+	{"pricing_timestamp", "TEXT NOT NULL", "{row}.pricing_timestamp", false, false},
+	{"row_count", "INTEGER NOT NULL", "1", false, true},
+	{"input_tokens", "INTEGER NOT NULL", "{row}.input_tokens", false, true},
+	{"output_tokens", "INTEGER NOT NULL", "{row}.output_tokens", false, true},
+	{"cache_creation_tokens", "INTEGER NOT NULL", "{row}.cache_creation_tokens", false, true},
+	{"cache_read_tokens", "INTEGER NOT NULL", "{row}.cache_read_tokens", false, true},
+	{"estimated_cost_microdollars", "INTEGER NOT NULL", "{row}.estimated_cost_microdollars", false, true},
+	{"savings_microdollars", "INTEGER NOT NULL", "{row}.savings_microdollars", false, true},
+	{"computed_request_count", "INTEGER NOT NULL", "{row}.computed_request_count", false, true},
+	{"computed_aggregate_count", "INTEGER NOT NULL", "{row}.computed_aggregate_count", false, true},
+	{"reported_count", "INTEGER NOT NULL", "{row}.reported_count", false, true},
+	{"base_request_count", "INTEGER NOT NULL", "{row}.base_request_count", false, true},
+}
+
+var usageDayTotalsColumnNames = func() string {
+	names := make([]string, 0, len(usageDayTotalsColumns))
+	for _, column := range usageDayTotalsColumns {
+		names = append(names, column.name)
+	}
+	return strings.Join(names, ", ")
+}()
+
+func usageDayTotalsSchemaSQL() string {
+	var definitions, keys, updates []string
+	for _, column := range usageDayTotalsColumns {
+		definitions = append(definitions, column.name+" "+column.definition)
+		if column.key {
+			keys = append(keys, column.name)
+		}
+		if column.sum {
+			updates = append(updates, column.name+"=usage_day_totals."+column.name+"+excluded."+column.name)
+		}
+	}
+	keyNames := strings.Join(keys, ", ")
+	var schema strings.Builder
+	schema.WriteString("CREATE TABLE usage_day_totals (" + strings.Join(definitions, ", ") + ", PRIMARY KEY (" + keyNames + ")) WITHOUT ROWID;\n")
+	for _, action := range []string{"INSERT", "DELETE"} {
+		row, sign := "NEW.", ""
+		if action == "DELETE" {
+			row, sign = "OLD.", "-"
+		}
+		var values, keyValues []string
+		for _, column := range usageDayTotalsColumns {
+			value := strings.ReplaceAll(column.source, "{row}.", row)
+			if column.key {
+				keyValues = append(keyValues, value)
+			}
+			if column.sum {
+				value = sign + value
+			}
+			values = append(values, value)
+		}
+		fmt.Fprintf(&schema, `CREATE TRIGGER usage_day_totals_%s AFTER %s ON usage_daily_rollups
+BEGIN
+    INSERT INTO usage_day_totals (%s)
+    SELECT %s FROM usage_rollup_installs i WHERE i.id=%srollup_install_id AND i.has_authoritative=0
+    ON CONFLICT (%s) DO UPDATE SET %s;
+`, strings.ToLower(action), action, usageDayTotalsColumnNames, strings.Join(values, ", "), row, keyNames, strings.Join(updates, ", "))
+		if action == "DELETE" {
+			fmt.Fprintf(&schema, `    DELETE FROM usage_day_totals WHERE row_count=0 AND (%s) =
+        (SELECT %s FROM usage_rollup_installs i WHERE i.id=OLD.rollup_install_id);
+`, keyNames, strings.Join(keyValues, ", "))
+		}
+		schema.WriteString("END;\n")
+	}
+	return schema.String()
+}
+
+var usageCacheSchemaSQL = `
+CREATE TABLE usage_cache_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE usage_cached_sessions (
+    id INTEGER PRIMARY KEY,
+    session_id TEXT NOT NULL UNIQUE,
+    source_sync_marker TEXT NOT NULL,
+    source_transcript_rev TEXT NOT NULL,
+    usage_event_fingerprint TEXT NOT NULL,
+    install_revision INTEGER NOT NULL,
+    source_usage_generation TEXT NOT NULL,
+    source_message_ordinal INTEGER
+);
+CREATE TABLE usage_facts (
+    cached_session_id INTEGER NOT NULL REFERENCES usage_cached_sessions(id)
+        ON DELETE CASCADE,
+    fact_index INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    message_ordinal INTEGER,
+    timestamp_ms INTEGER,
+    timestamp_ns INTEGER,
+    raw_timestamp TEXT NOT NULL DEFAULT '',
+    uses_session_start INTEGER NOT NULL,
+    model TEXT NOT NULL,
+    provider_id TEXT NOT NULL DEFAULT '',
+    input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    reasoning_tokens INTEGER NOT NULL,
+    cache_creation_tokens INTEGER NOT NULL,
+    cache_creation_1h_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL,
+    web_search_requests INTEGER NOT NULL,
+    reported_cost_microdollars INTEGER,
+    cost_source TEXT NOT NULL DEFAULT '',
+    cost_status TEXT NOT NULL DEFAULT '',
+    request_scoped INTEGER NOT NULL,
+    claude_message_id TEXT NOT NULL DEFAULT '',
+    claude_request_id TEXT NOT NULL DEFAULT '',
+    source_uuid TEXT NOT NULL DEFAULT '',
+    usage_dedup_key TEXT NOT NULL DEFAULT '',
+    token_eligible INTEGER NOT NULL,
+    activity_eligible INTEGER NOT NULL,
+    ranking_output_tokens INTEGER,
+    PRIMARY KEY (cached_session_id, fact_index)
+) WITHOUT ROWID;
+CREATE INDEX usage_facts_claude_identity
+    ON usage_facts (claude_message_id, claude_request_id)
+    WHERE claude_message_id != '';
+CREATE INDEX usage_facts_source_uuid
+    ON usage_facts (source_uuid) WHERE source_uuid != '';
+CREATE INDEX usage_facts_usage_dedup_key
+    ON usage_facts (usage_dedup_key) WHERE usage_dedup_key != '';
+CREATE TABLE cursor_usage_facts (
+    source_id INTEGER PRIMARY KEY,
+    agent TEXT NOT NULL,
+    timestamp_ms INTEGER,
+    raw_timestamp TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    cache_creation_tokens INTEGER NOT NULL,
+    cache_read_tokens INTEGER NOT NULL,
+    charged_microdollars INTEGER NOT NULL,
+    is_headless INTEGER NOT NULL,
+    dedup_key TEXT NOT NULL
+);
+CREATE INDEX cursor_usage_facts_dedup_key
+    ON cursor_usage_facts (dedup_key);
+CREATE TABLE usage_rollup_timezones (
+    id INTEGER PRIMARY KEY,
+    timezone_key TEXT NOT NULL UNIQUE,
+    timezone_name TEXT NOT NULL,
+    interval_fingerprint TEXT NOT NULL,
+    last_requested_at TEXT NOT NULL,
+    change_revision INTEGER,
+    change_install_revision INTEGER NOT NULL DEFAULT 0,
+    change_pricing TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE usage_rollup_days (
+    timezone_id INTEGER NOT NULL REFERENCES usage_rollup_timezones(id)
+        ON DELETE CASCADE,
+    local_date TEXT NOT NULL,
+    from_ms INTEGER NOT NULL,
+    to_ms INTEGER NOT NULL,
+    PRIMARY KEY (timezone_id, local_date)
+) WITHOUT ROWID;
+CREATE TABLE usage_rollup_installs (
+    id INTEGER PRIMARY KEY,
+    timezone_id INTEGER NOT NULL REFERENCES usage_rollup_timezones(id)
+        ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    source_change_revision INTEGER NOT NULL,
+    source_pricing TEXT NOT NULL,
+    source_sync_marker TEXT NOT NULL,
+    source_transcript_rev TEXT NOT NULL,
+    usage_event_fingerprint TEXT NOT NULL,
+    fact_install_revision INTEGER NOT NULL,
+    baked_agent TEXT NOT NULL,
+    group_key TEXT NOT NULL DEFAULT '',
+    group_label TEXT NOT NULL DEFAULT '',
+    baked_started_at TEXT NOT NULL,
+    project TEXT NOT NULL DEFAULT '',
+    machine TEXT NOT NULL DEFAULT '',
+    git_branch TEXT NOT NULL DEFAULT '',
+    is_automated INTEGER NOT NULL DEFAULT 0,
+    user_message_count INTEGER NOT NULL DEFAULT 0,
+    has_authoritative INTEGER NOT NULL DEFAULT 0,
+    pricing_inputs TEXT NOT NULL,
+	pricing_hash TEXT NOT NULL,
+    install_revision INTEGER NOT NULL,
+    cached_at TEXT NOT NULL,
+    UNIQUE (timezone_id, session_id)
+);
+CREATE INDEX usage_rollup_installs_changes
+    ON usage_rollup_installs (timezone_id, install_revision, source_change_revision);
+CREATE TABLE usage_rollup_invalidations (
+    timezone_id INTEGER NOT NULL REFERENCES usage_rollup_timezones(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL REFERENCES usage_cached_sessions(session_id) ON DELETE CASCADE,
+    PRIMARY KEY (timezone_id, session_id)
+) WITHOUT ROWID;
+CREATE TRIGGER usage_rollup_invalidated AFTER DELETE ON usage_rollup_installs
+WHEN EXISTS (SELECT 1 FROM usage_cached_sessions WHERE session_id=OLD.session_id)
+ AND EXISTS (SELECT 1 FROM usage_rollup_timezones WHERE id=OLD.timezone_id)
+BEGIN
+    INSERT OR IGNORE INTO usage_rollup_invalidations(timezone_id, session_id)
+        VALUES (OLD.timezone_id, OLD.session_id);
+END;
+CREATE TABLE usage_daily_rollups (
+    rollup_install_id INTEGER NOT NULL REFERENCES usage_rollup_installs(id)
+        ON DELETE CASCADE,
+    local_date TEXT NOT NULL,
+    reported_model TEXT NOT NULL,
+    provider_id TEXT NOT NULL DEFAULT '',
+    priced_model TEXT NOT NULL,
+    matched_pattern TEXT NOT NULL,
+    rate_ok INTEGER NOT NULL,
+    rate_hash TEXT NOT NULL,
+	pricing_timestamp TEXT NOT NULL,
+    band_threshold INTEGER NOT NULL DEFAULT -1,
+    input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    reasoning_tokens INTEGER NOT NULL,
+    cache_creation_tokens INTEGER NOT NULL,
+    cache_read_tokens INTEGER NOT NULL,
+    web_search_requests INTEGER NOT NULL,
+    estimated_cost_microdollars INTEGER NOT NULL,
+    savings_microdollars INTEGER NOT NULL,
+    authoritative_cost_microdollars INTEGER,
+    computed_request_count INTEGER NOT NULL,
+    computed_aggregate_count INTEGER NOT NULL,
+    reported_count INTEGER NOT NULL,
+    base_request_count INTEGER NOT NULL,
+    discarded_snapshot_output_tokens INTEGER NOT NULL,
+    PRIMARY KEY (
+        rollup_install_id, local_date, reported_model,
+        provider_id, rate_hash, band_threshold
+    )
+) WITHOUT ROWID;
+CREATE INDEX usage_daily_rollups_window
+    ON usage_daily_rollups (local_date, rollup_install_id);
+
+` + usageDayTotalsSchemaSQL() + `
+CREATE TRIGGER usage_day_totals_install_delete BEFORE DELETE ON usage_rollup_installs
+WHEN EXISTS (SELECT 1 FROM usage_rollup_timezones WHERE id=OLD.timezone_id)
+BEGIN
+    DELETE FROM usage_daily_rollups WHERE rollup_install_id=OLD.id;
+END;
+CREATE TABLE usage_activity_rollups (
+    rollup_install_id INTEGER NOT NULL REFERENCES usage_rollup_installs(id)
+        ON DELETE CASCADE,
+    local_date TEXT NOT NULL,
+	model TEXT NOT NULL,
+    user_message_count INTEGER NOT NULL,
+    PRIMARY KEY (rollup_install_id, local_date, model)
+) WITHOUT ROWID;
+CREATE TABLE usage_rollup_exceptions (
+    rollup_install_id INTEGER NOT NULL REFERENCES usage_rollup_installs(id)
+        ON DELETE CASCADE,
+    group_kind TEXT NOT NULL,
+    group_key TEXT NOT NULL,
+    cached_session_id INTEGER NOT NULL,
+    fact_index INTEGER NOT NULL,
+    source_session_id TEXT NOT NULL,
+    local_date TEXT NOT NULL,
+    source TEXT NOT NULL,
+    message_ordinal INTEGER,
+    timestamp_ms INTEGER,
+    timestamp_ns INTEGER,
+    raw_timestamp TEXT NOT NULL,
+    uses_session_start INTEGER NOT NULL,
+    model TEXT NOT NULL,
+    provider_id TEXT NOT NULL DEFAULT '',
+    input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    reasoning_tokens INTEGER NOT NULL,
+    cache_creation_tokens INTEGER NOT NULL,
+    cache_creation_1h_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL,
+    web_search_requests INTEGER NOT NULL,
+    reported_cost_microdollars INTEGER,
+    cost_source TEXT NOT NULL,
+    cost_status TEXT NOT NULL,
+    request_scoped INTEGER NOT NULL,
+    is_headless INTEGER NOT NULL,
+    claude_message_id TEXT NOT NULL,
+    claude_request_id TEXT NOT NULL,
+    source_uuid TEXT NOT NULL,
+    usage_dedup_key TEXT NOT NULL,
+    ranking_output_tokens INTEGER,
+    PRIMARY KEY (
+        rollup_install_id, group_kind, group_key, cached_session_id, fact_index
+    )
+) WITHOUT ROWID;
+CREATE INDEX usage_rollup_exceptions_window
+    ON usage_rollup_exceptions (
+        local_date, rollup_install_id, group_kind, group_key
+    );
+CREATE TABLE usage_rollup_account_totals (
+    rollup_install_id INTEGER NOT NULL REFERENCES usage_rollup_installs(id)
+        ON DELETE CASCADE,
+    local_date TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    is_headless INTEGER NOT NULL,
+    reported_model TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    priced_model TEXT NOT NULL,
+    matched_pattern TEXT NOT NULL,
+    rate_ok INTEGER NOT NULL,
+    rate_hash TEXT NOT NULL,
+    band_threshold INTEGER NOT NULL,
+    pricing_key TEXT NOT NULL,
+    pricing_timestamp TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    reasoning_tokens INTEGER NOT NULL,
+    cache_creation_tokens INTEGER NOT NULL,
+    cache_read_tokens INTEGER NOT NULL,
+    estimated_cost_microdollars INTEGER NOT NULL,
+    savings_microdollars INTEGER NOT NULL,
+    computed_request_count INTEGER NOT NULL,
+    computed_aggregate_count INTEGER NOT NULL,
+    reported_count INTEGER NOT NULL,
+    base_request_count INTEGER NOT NULL,
+    PRIMARY KEY (
+        rollup_install_id, local_date, agent, is_headless, reported_model,
+        provider_id, rate_hash, band_threshold
+    )
+) WITHOUT ROWID;`
+
+type usageCache struct {
+	db         *sql.DB
+	path       string
+	temporary  bool
+	databaseID string
+	fill       *usageFillCoordinator
+	rollup     *usageRollupCoordinator
+	cancel     context.CancelFunc
+	lease      *flock.Flock
+
+	lifecycleMu sync.Mutex
+	users       int
+	retiring    bool
+	retired     chan struct{}
+}
+
+type usageCacheProbe struct {
+	Exists                    bool
+	Recognized                bool
+	Compatible                bool
+	FormatVersion             int
+	SourceDatabaseID          string
+	RetirementProtocolVersion int
+	Err                       error
+}
+
+type usageCacheManager struct {
+	usageWindowObserver usageWindowObserver
+
+	archivePath string
+	archive     *DB
+	ctx         context.Context
+	cancel      context.CancelFunc
+
+	mu          sync.Mutex
+	retireMu    sync.Mutex
+	retireWait  sync.WaitGroup
+	generations map[string]*usageCache
+	currentID   string
+	closed      bool
+}
+
+func newUsageCacheManager(archivePath string) *usageCacheManager {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &usageCacheManager{
+		archivePath: archivePath,
+		generations: make(map[string]*usageCache),
+		ctx:         ctx,
+		cancel:      cancel,
+	}
+}
+
+func (m *usageCacheManager) attachArchive(archive *DB) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.archive = archive
+}
+
+func usageCacheGenerationPath(
+	archivePath string, formatVersion int, databaseID string,
+) string {
+	digest := sha256.Sum256([]byte(databaseID))
+	name := fmt.Sprintf(
+		"usage-cache-v%d-%x.db", formatVersion, digest[:16],
+	)
+	return filepath.Join(filepath.Dir(archivePath), name)
+}
+
+func (m *usageCacheManager) Generation(
+	ctx context.Context, databaseID string,
+) (*usageCache, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	databaseID = strings.TrimSpace(databaseID)
+	if databaseID == "" {
+		return nil, errors.New("usage cache source database id is required")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return nil, errors.New("usage cache manager is closed")
+	}
+	if m.currentID != "" && databaseID != m.currentID {
+		return nil, fmt.Errorf("%w before opening generation %s",
+			errUsageCacheSourceChanged, databaseID)
+	}
+	if cache := m.generations[databaseID]; cache != nil {
+		return cache, nil
+	}
+
+	cache, err := m.openPersistentGeneration(ctx, databaseID)
+	if err != nil {
+		log.Printf(
+			"warning: usage cache is non-persistent because %s is unavailable: %v",
+			filepath.Dir(m.archivePath), err,
+		)
+		cache, err = openTemporaryUsageCache(ctx, databaseID)
+		if err != nil {
+			return nil, fmt.Errorf("opening temporary usage cache: %w", err)
+		}
+	}
+	if cache == nil {
+		return nil, errors.New("opening usage cache returned no database")
+	}
+	cacheContext, cancel := context.WithCancel(m.ctx)
+	cache.cancel = cancel
+	cache.retired = make(chan struct{})
+	m.generations[databaseID] = cache
+	if m.archive != nil {
+		cache.fill = newUsageFillCoordinator(cacheContext, m.archive, cache)
+		cache.rollup = newUsageRollupCoordinator(cacheContext, cache)
+	}
+	if !cache.temporary {
+		if err := retireStaleUsageCacheGenerations(
+			ctx, m.archivePath, cache.path,
+		); err != nil {
+			log.Printf("warning: retiring stale usage cache generations: %v", err)
+		}
+	}
+	return cache, nil
+}
+
+func (m *usageCacheManager) acquireGeneration(
+	ctx context.Context, databaseID string,
+) (*usageCache, func(), error) {
+	cache, err := m.Generation(ctx, databaseID)
+	if err != nil {
+		return nil, nil, err
+	}
+	release, ok := cache.acquire()
+	if !ok {
+		return nil, nil, fmt.Errorf("%w while acquiring generation %s",
+			errUsageCacheSourceChanged, databaseID)
+	}
+	return cache, release, nil
+}
+
+func (cache *usageCache) acquire() (func(), bool) {
+	cache.lifecycleMu.Lock()
+	defer cache.lifecycleMu.Unlock()
+	if cache.retiring {
+		return nil, false
+	}
+	cache.users++
+	var once sync.Once
+	return func() {
+		once.Do(cache.release)
+	}, true
+}
+
+func (cache *usageCache) startDetachedWork(work func()) bool {
+	release, ok := cache.acquire()
+	if !ok {
+		return false
+	}
+	go func() {
+		defer release()
+		work()
+	}()
+	return true
+}
+
+func (cache *usageCache) release() {
+	cache.lifecycleMu.Lock()
+	defer cache.lifecycleMu.Unlock()
+	cache.users--
+	if cache.retiring && cache.users == 0 {
+		close(cache.retired)
+	}
+}
+
+func (cache *usageCache) beginRetirement() <-chan struct{} {
+	cache.lifecycleMu.Lock()
+	defer cache.lifecycleMu.Unlock()
+	if !cache.retiring {
+		cache.retiring = true
+		if cache.cancel != nil {
+			cache.cancel()
+		}
+		if cache.users == 0 {
+			close(cache.retired)
+		}
+	}
+	return cache.retired
+}
+
+func (m *usageCacheManager) openPersistentGeneration(
+	ctx context.Context, databaseID string,
+) (*usageCache, error) {
+	path := usageCacheGenerationPath(
+		m.archivePath, usageCacheFormatVersion, databaseID,
+	)
+	lease, err := acquireUsageCacheLease(path)
+	if err != nil {
+		return nil, err
+	}
+	releaseLease := true
+	defer func() {
+		if releaseLease {
+			_ = lease.Close()
+		}
+	}()
+	probe := probeUsageCache(ctx, path)
+	if probe.Err != nil {
+		return nil, probe.Err
+	}
+	if !probe.Exists {
+		cache, published, err := publishUsageCache(ctx, path, databaseID)
+		if err != nil {
+			return nil, err
+		}
+		if published {
+			if cache == nil {
+				return nil, fmt.Errorf(
+					"published usage cache is unavailable: %s", path,
+				)
+			}
+			cache.lease = lease
+			releaseLease = false
+			return cache, nil
+		}
+		probe = probeUsageCacheWithBusyTimeout(ctx, path, 5000)
+		if probe.Err != nil {
+			return nil, probe.Err
+		}
+	}
+	if !probe.Recognized {
+		return nil, fmt.Errorf("usage cache path is foreign or unverifiable: %s", path)
+	}
+	if probe.SourceDatabaseID != databaseID {
+		return nil, fmt.Errorf("usage cache source database id mismatch at %s", path)
+	}
+	if probe.Compatible {
+		cache, err := openUsageCache(ctx, path, databaseID, false)
+		if err != nil {
+			return nil, err
+		}
+		cache.lease = lease
+		releaseLease = false
+		return cache, nil
+	}
+	return nil, fmt.Errorf("usage cache generation is incompatible: %s", path)
+}
+
+func usageCacheLeasePath(path string) string {
+	return path + ".lease"
+}
+
+func acquireUsageCacheLease(path string) (*flock.Flock, error) {
+	lease := flock.New(
+		usageCacheLeasePath(path), flock.SetPermissions(0o600),
+	)
+	if err := lease.RLock(); err != nil {
+		return nil, fmt.Errorf("acquiring usage cache lease for %s: %w", path, err)
+	}
+	return lease, nil
+}
+
+func publishUsageCache(
+	ctx context.Context, path, databaseID string,
+) (*usageCache, bool, error) {
+	file, err := os.CreateTemp(filepath.Dir(path), ".usage-cache-init-*.db")
+	if err != nil {
+		return nil, false, fmt.Errorf("creating usage cache generation: %w", err)
+	}
+	temporaryPath := file.Name()
+	if err := file.Close(); err != nil {
+		_ = os.Remove(temporaryPath)
+		return nil, false, err
+	}
+	_ = os.Remove(temporaryPath)
+	cache, err := initializeUsageCache(ctx, temporaryPath, databaseID, false)
+	if err != nil {
+		_ = removeUsageCacheFiles(temporaryPath)
+		return nil, false, err
+	}
+	if err := cache.db.Close(); err != nil {
+		_ = removeUsageCacheFiles(temporaryPath)
+		return nil, false, err
+	}
+	if err := os.Link(temporaryPath, path); err != nil {
+		_ = removeUsageCacheFiles(temporaryPath)
+		if errors.Is(err, os.ErrExist) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("publishing usage cache %s: %w", path, err)
+	}
+	if err := removeUsageCacheFiles(temporaryPath); err != nil {
+		return nil, false, err
+	}
+	cache, err = openUsageCache(ctx, path, databaseID, false)
+	return cache, true, err
+}
+
+func openTemporaryUsageCache(
+	ctx context.Context, databaseID string,
+) (*usageCache, error) {
+	file, err := os.CreateTemp("", "agentsview-usage-cache-*.db")
+	if err != nil {
+		return nil, err
+	}
+	path := file.Name()
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return nil, err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return nil, err
+	}
+	cache, err := initializeUsageCache(ctx, path, databaseID, true)
+	if err != nil {
+		_ = removeUsageCacheFiles(path)
+	}
+	return cache, err
+}
+
+func initializeUsageCache(
+	ctx context.Context, path, databaseID string, temporary bool,
+) (*usageCache, error) {
+	database, err := openUsageCacheDatabase(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	failed := true
+	defer func() {
+		if failed {
+			_ = database.Close()
+		}
+	}()
+	if _, err := database.ExecContext(ctx,
+		`PRAGMA auto_vacuum=INCREMENTAL; VACUUM`); err != nil {
+		return nil, fmt.Errorf("configuring usage cache auto-vacuum: %w", err)
+	}
+	if _, err := database.ExecContext(ctx,
+		fmt.Sprintf("PRAGMA application_id=%d", usageCacheApplicationID)); err != nil {
+		return nil, fmt.Errorf("identifying usage cache: %w", err)
+	}
+	if _, err := database.ExecContext(ctx, usageCacheSchemaSQL); err != nil {
+		return nil, fmt.Errorf("creating usage cache schema: %w", err)
+	}
+
+	tx, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("starting usage cache metadata transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	metadata := []struct{ key, value string }{
+		{usageCacheMetadataKind, usageCacheKind},
+		{usageCacheMetadataFormatVersion, strconv.Itoa(usageCacheFormatVersion)},
+		{usageCacheMetadataSourceDatabaseID, databaseID},
+		{usageCacheMetadataNextInstallRevision, "1"},
+		{usageCacheMetadataNextRollupRevision, "1"},
+		{usageCacheMetadataDeletionRevision, "0"},
+		{usageCacheMetadataCursorHighWaterMark, "0"},
+		{usageCacheMetadataResetEpoch, "0"},
+		{usageCacheMetadataSourceMutation, "0"},
+		{usageCacheMetadataBackfillCompletedAt, ""},
+		{
+			usageCacheMetadataRetirementProtocol,
+			strconv.Itoa(usageCacheRetirementProtocolVersion),
+		},
+	}
+	for _, item := range metadata {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO usage_cache_metadata(key, value) VALUES (?, ?)`,
+			item.key, item.value,
+		); err != nil {
+			return nil, fmt.Errorf("writing usage cache metadata %s: %w", item.key, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing usage cache metadata: %w", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return nil, fmt.Errorf("securing usage cache: %w", err)
+	}
+	failed = false
+	return &usageCache{
+		db: database, path: path, temporary: temporary, databaseID: databaseID,
+	}, nil
+}
+
+func openUsageCache(
+	ctx context.Context, path, databaseID string, temporary bool,
+) (*usageCache, error) {
+	database, err := openUsageCacheDatabase(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if err := database.PingContext(ctx); err != nil {
+		_ = database.Close()
+		return nil, fmt.Errorf("opening usage cache %s: %w", path, err)
+	}
+	return &usageCache{
+		db: database, path: path, temporary: temporary, databaseID: databaseID,
+	}, nil
+}
+
+func openUsageCacheDatabase(ctx context.Context, path string) (*sql.DB, error) {
+	database, err := sql.Open(sqliteUsageDriverName, makeDSN(path, false))
+	if err != nil {
+		return nil, fmt.Errorf("opening usage cache %s: %w", path, err)
+	}
+	database.SetMaxOpenConns(readerMaxOpenConns)
+	database.SetMaxIdleConns(readerMaxOpenConns)
+	if err := database.PingContext(ctx); err != nil {
+		_ = database.Close()
+		return nil, fmt.Errorf("opening usage cache %s: %w", path, err)
+	}
+	return database, nil
+}
+
+func probeUsageCache(ctx context.Context, path string) usageCacheProbe {
+	return probeUsageCacheWithBusyTimeout(ctx, path, 0)
+}
+
+func probeUsageCacheWithBusyTimeout(
+	ctx context.Context, path string, busyTimeoutMillis int,
+) usageCacheProbe {
+	probe := usageCacheProbe{}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return probe
+		}
+		probe.Err = fmt.Errorf("checking usage cache %s: %w", path, err)
+		return probe
+	}
+	probe.Exists = true
+	dsn := strings.Replace(makeDSN(path, true), "_busy_timeout=5000",
+		"_busy_timeout="+strconv.Itoa(busyTimeoutMillis), 1)
+	database, err := sql.Open("sqlite3", dsn)
+	if err != nil {
+		probe.Err = fmt.Errorf("probing usage cache %s: %w", path, err)
+		return probe
+	}
+	database.SetMaxOpenConns(1)
+	defer database.Close()
+	if err := database.PingContext(ctx); err != nil {
+		probe.Err = fmt.Errorf("probing usage cache %s: %w", path, err)
+		return probe
+	}
+	var applicationID int
+	if err := database.QueryRowContext(ctx, `PRAGMA application_id`).Scan(&applicationID); err != nil {
+		probe.Err = fmt.Errorf("reading usage cache application id: %w", err)
+		return probe
+	}
+	if applicationID != usageCacheApplicationID {
+		return probe
+	}
+	var hasMetadata bool
+	if err := database.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'usage_cache_metadata')`,
+	).Scan(&hasMetadata); err != nil {
+		probe.Err = fmt.Errorf("checking usage cache metadata table: %w", err)
+		return probe
+	}
+	if !hasMetadata {
+		return probe
+	}
+	var kind string
+	if err := database.QueryRowContext(ctx,
+		`SELECT value FROM usage_cache_metadata WHERE key = ?`,
+		usageCacheMetadataKind,
+	).Scan(&kind); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return probe
+		}
+		probe.Err = fmt.Errorf("reading usage cache kind: %w", err)
+		return probe
+	}
+	if kind != usageCacheKind {
+		return probe
+	}
+	probe.Recognized = true
+	var formatText string
+	formatErr := database.QueryRowContext(ctx,
+		`SELECT value FROM usage_cache_metadata WHERE key = ?`,
+		usageCacheMetadataFormatVersion,
+	).Scan(&formatText)
+	if formatErr != nil && !errors.Is(formatErr, sql.ErrNoRows) {
+		probe.Err = fmt.Errorf("reading usage cache format version: %w", formatErr)
+		return probe
+	}
+	probe.FormatVersion, _ = strconv.Atoi(formatText)
+	sourceErr := database.QueryRowContext(ctx,
+		`SELECT value FROM usage_cache_metadata WHERE key = ?`,
+		usageCacheMetadataSourceDatabaseID,
+	).Scan(&probe.SourceDatabaseID)
+	if sourceErr != nil && !errors.Is(sourceErr, sql.ErrNoRows) {
+		probe.Err = fmt.Errorf("reading usage cache source database id: %w", sourceErr)
+		return probe
+	}
+	var retirementProtocolText string
+	retirementProtocolErr := database.QueryRowContext(ctx,
+		`SELECT value FROM usage_cache_metadata WHERE key = ?`,
+		usageCacheMetadataRetirementProtocol,
+	).Scan(&retirementProtocolText)
+	if retirementProtocolErr != nil && !errors.Is(retirementProtocolErr, sql.ErrNoRows) {
+		probe.Err = fmt.Errorf(
+			"reading usage cache retirement protocol: %w", retirementProtocolErr)
+		return probe
+	}
+	probe.RetirementProtocolVersion, _ = strconv.Atoi(retirementProtocolText)
+	probe.Compatible = probe.FormatVersion == usageCacheFormatVersion &&
+		probe.SourceDatabaseID != "" &&
+		probe.RetirementProtocolVersion == usageCacheRetirementProtocolVersion &&
+		usageCacheSchemaComplete(ctx, database)
+	return probe
+}
+
+func usageCacheSchemaComplete(ctx context.Context, database *sql.DB) bool {
+	var metadataCount int
+	if err := database.QueryRowContext(ctx, `
+		SELECT count(*) FROM usage_cache_metadata
+		WHERE key IN (
+			'cache_kind', 'format_version',
+			'source_database_id', 'next_install_revision',
+			'next_rollup_install_revision',
+			'deletion_revision', 'cursor_high_water_mark',
+			'backfill_completed_at', 'retirement_protocol_version', 'reset_epoch'
+		)`).Scan(&metadataCount); err != nil || metadataCount != 10 {
+		return false
+	}
+	queries := []string{
+		`SELECT key, value FROM usage_cache_metadata LIMIT 0`,
+		`SELECT id, session_id, source_sync_marker, source_transcript_rev,
+                source_usage_generation, source_message_ordinal,
+		        usage_event_fingerprint, install_revision
+		 FROM usage_cached_sessions LIMIT 0`,
+		`SELECT cached_session_id, fact_index, source, message_ordinal,
+		        timestamp_ms, timestamp_ns, raw_timestamp, uses_session_start, model,
+		        input_tokens, output_tokens, reasoning_tokens,
+		        cache_creation_tokens, cache_creation_1h_tokens,
+		        cache_read_tokens, web_search_requests,
+		        reported_cost_microdollars, cost_source, cost_status, request_scoped,
+		        claude_message_id, claude_request_id, source_uuid,
+		        usage_dedup_key, token_eligible, activity_eligible, ranking_output_tokens
+		 FROM usage_facts LIMIT 0`,
+		`SELECT source_id, agent, timestamp_ms, raw_timestamp, model,
+		        input_tokens, output_tokens, cache_creation_tokens,
+		        cache_read_tokens, charged_microdollars,
+		        is_headless, dedup_key
+		 FROM cursor_usage_facts LIMIT 0`,
+		`SELECT id, timezone_key, timezone_name, interval_fingerprint,
+		        last_requested_at, change_revision, change_install_revision, change_pricing
+		 FROM usage_rollup_timezones LIMIT 0`,
+		`SELECT timezone_id, local_date, from_ms, to_ms
+		 FROM usage_rollup_days LIMIT 0`,
+		`SELECT timezone_id, session_id FROM usage_rollup_invalidations LIMIT 0`,
+		`SELECT id, timezone_id, session_id, source_change_revision, source_pricing, source_sync_marker,
+		        source_transcript_rev, usage_event_fingerprint,
+		        fact_install_revision, group_key, group_label, baked_agent, baked_started_at, project, machine, git_branch, is_automated, user_message_count, has_authoritative,
+		        pricing_inputs, pricing_hash, install_revision, cached_at
+		 FROM usage_rollup_installs LIMIT 0`,
+		`SELECT rollup_install_id, local_date, reported_model, priced_model,
+		        matched_pattern, rate_ok, rate_hash, band_threshold,
+		        input_tokens, output_tokens, reasoning_tokens,
+		        cache_creation_tokens, cache_read_tokens, web_search_requests,
+		        estimated_cost_microdollars, savings_microdollars,
+		        authoritative_cost_microdollars, computed_request_count,
+		        computed_aggregate_count, reported_count, base_request_count,
+		        discarded_snapshot_output_tokens
+		 FROM usage_daily_rollups LIMIT 0`,
+		"SELECT " + usageDayTotalsColumnNames + " FROM usage_day_totals LIMIT 0",
+		`SELECT rollup_install_id, local_date, model, user_message_count
+		 FROM usage_activity_rollups LIMIT 0`,
+		`SELECT rollup_install_id, group_kind, group_key, cached_session_id,
+		        fact_index, source_session_id, local_date, source,
+		        message_ordinal, timestamp_ms, timestamp_ns, raw_timestamp,
+		        uses_session_start, model, input_tokens, output_tokens, ranking_output_tokens,
+		        reasoning_tokens, cache_creation_tokens,
+		        cache_creation_1h_tokens, cache_read_tokens,
+		        web_search_requests, reported_cost_microdollars, cost_source,
+		        cost_status, request_scoped, is_headless, claude_message_id, claude_request_id,
+		        source_uuid, usage_dedup_key
+		 FROM usage_rollup_exceptions LIMIT 0`,
+		`SELECT rollup_install_id, local_date, agent, is_headless,
+		        reported_model, provider_id, priced_model, matched_pattern,
+		        rate_ok, rate_hash, band_threshold, pricing_key,
+		        pricing_timestamp, input_tokens, output_tokens,
+		        reasoning_tokens, cache_creation_tokens, cache_read_tokens,
+		        estimated_cost_microdollars, savings_microdollars,
+		        computed_request_count, computed_aggregate_count,
+		        reported_count, base_request_count
+		 FROM usage_rollup_account_totals LIMIT 0`,
+	}
+	for _, query := range queries {
+		if _, err := database.ExecContext(ctx, query); err != nil {
+			return false
+		}
+	}
+	for _, index := range []string{
+		"usage_rollup_installs_changes", "usage_daily_rollups_window", "usage_rollup_exceptions_window",
+		"usage_facts_claude_identity", "usage_facts_source_uuid",
+		"usage_facts_usage_dedup_key", "cursor_usage_facts_dedup_key",
+	} {
+		var exists bool
+		if err := database.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?)`,
+			index,
+		).Scan(&exists); err != nil || !exists {
+			return false
+		}
+	}
+	return true
+}
+
+func removeUsageCacheFiles(path string) error {
+	var errs []error
+	for _, candidate := range []string{path, path + "-wal", path + "-shm"} {
+		if err := os.Remove(candidate); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func isUsageCacheGenerationFilename(name string) bool {
+	const prefix = "usage-cache-v"
+	const suffix = ".db"
+	if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, suffix) {
+		return false
+	}
+	identity := strings.TrimSuffix(strings.TrimPrefix(name, prefix), suffix)
+	separator := strings.LastIndexByte(identity, '-')
+	if separator <= 0 || separator == len(identity)-1 {
+		return false
+	}
+	version, err := strconv.Atoi(identity[:separator])
+	if err != nil || version <= 0 {
+		return false
+	}
+	digest := identity[separator+1:]
+	if len(digest) != 32 {
+		return false
+	}
+	for _, character := range digest {
+		if (character < '0' || character > '9') &&
+			(character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func retireStaleUsageCacheGenerations(
+	ctx context.Context, archivePath, currentPath string,
+) error {
+	entries, err := os.ReadDir(filepath.Dir(archivePath))
+	if err != nil {
+		return err
+	}
+	currentPath = filepath.Clean(currentPath)
+	var errs []error
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 ||
+			!isUsageCacheGenerationFilename(entry.Name()) {
+			continue
+		}
+		path := filepath.Join(filepath.Dir(archivePath), entry.Name())
+		if filepath.Clean(path) == currentPath {
+			continue
+		}
+		if _, err := retireUsageCacheGeneration(ctx, archivePath, path); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func retireUsageCacheGeneration(
+	ctx context.Context, archivePath, path string,
+) (bool, error) {
+	lease := flock.New(
+		usageCacheLeasePath(path), flock.SetPermissions(0o600),
+	)
+	defer func() { _ = lease.Close() }()
+	locked, err := lease.TryLock()
+	if err != nil {
+		return false, fmt.Errorf("acquiring usage cache retirement lease for %s: %w",
+			path, err)
+	}
+	if !locked {
+		return false, nil
+	}
+	probe := probeUsageCache(ctx, path)
+	if probe.Err != nil {
+		return false, probe.Err
+	}
+	if !probe.Recognized || probe.SourceDatabaseID == "" ||
+		probe.FormatVersion < usageCacheRetirementProtocolFormat ||
+		probe.FormatVersion > usageCacheFormatVersion ||
+		probe.RetirementProtocolVersion != usageCacheRetirementProtocolVersion {
+		return false, nil
+	}
+	expectedPath := usageCacheGenerationPath(
+		archivePath, probe.FormatVersion, probe.SourceDatabaseID,
+	)
+	if filepath.Clean(expectedPath) != filepath.Clean(path) {
+		return false, nil
+	}
+	if err := removeUsageCacheFiles(path); err != nil {
+		return false, fmt.Errorf("removing retired usage cache %s: %w", path, err)
+	}
+	return true, nil
+}
+
+func retireUsageCaches(
+	caches []*usageCache, archivePath string, removePersistent bool,
+) error {
+	retired := make([]<-chan struct{}, len(caches))
+	for index, cache := range caches {
+		retired[index] = cache.beginRetirement()
+	}
+	var errs []error
+	for index, cache := range caches {
+		<-retired[index]
+		if cache.fill != nil {
+			cache.fill.Close()
+		}
+		var closeErr error
+		if cache.db != nil {
+			closeErr = cache.db.Close()
+			errs = append(errs, closeErr)
+		}
+		var leaseErr error
+		if cache.lease != nil {
+			leaseErr = cache.lease.Close()
+			errs = append(errs, leaseErr)
+		}
+		if cache.temporary {
+			errs = append(errs, removeUsageCacheFiles(cache.path))
+		} else if removePersistent && closeErr == nil && leaseErr == nil {
+			_, err := retireUsageCacheGeneration(
+				context.Background(), archivePath, cache.path,
+			)
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (m *usageCacheManager) detachAllLocked() []*usageCache {
+	caches := make([]*usageCache, 0, len(m.generations))
+	for databaseID, cache := range m.generations {
+		caches = append(caches, cache)
+		delete(m.generations, databaseID)
+	}
+	return caches
+}
+
+func (m *usageCacheManager) RetireExcept(databaseID string) error {
+	m.retireMu.Lock()
+	defer m.retireMu.Unlock()
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil
+	}
+	m.currentID = databaseID
+	caches := make([]*usageCache, 0, len(m.generations))
+	for cachedID, cache := range m.generations {
+		if cachedID == databaseID {
+			continue
+		}
+		caches = append(caches, cache)
+		delete(m.generations, cachedID)
+	}
+	m.mu.Unlock()
+	return retireUsageCaches(caches, m.archivePath, true)
+}
+
+// retireExceptAsync detaches the old generation immediately; callers can hold
+// a lease on it until their request unwinds, so closing it must happen later.
+func (m *usageCacheManager) retireExceptAsync(databaseID string) {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	m.currentID = databaseID
+	var caches []*usageCache
+	for id, cache := range m.generations {
+		if id != databaseID {
+			caches = append(caches, cache)
+			delete(m.generations, id)
+			cache.beginRetirement()
+		}
+	}
+	if len(caches) == 0 {
+		m.mu.Unlock()
+		return
+	}
+	m.retireWait.Add(1)
+	m.mu.Unlock()
+	go func() {
+		defer m.retireWait.Done()
+		if err := retireUsageCaches(caches, m.archivePath, true); err != nil {
+			log.Printf("warning: retiring usage cache generations: %v", err)
+		}
+	}()
+}
+
+func (m *usageCacheManager) Close() error {
+	m.retireMu.Lock()
+	defer m.retireMu.Unlock()
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil
+	}
+	m.closed = true
+	m.cancel()
+	caches := m.detachAllLocked()
+	m.mu.Unlock()
+	err := retireUsageCaches(caches, m.archivePath, false)
+	m.retireWait.Wait()
+	return err
+}

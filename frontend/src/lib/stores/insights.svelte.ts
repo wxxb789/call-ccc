@@ -1,0 +1,386 @@
+import { m } from "../i18n/index.js";
+import { AGENT_NAMES } from "../api/types/insights.js";
+import type {
+  InsightType,
+  AgentName,
+  CannedInsightKind,
+  AutomatedScope,
+  Session,
+} from "../api/types.js";
+import type { CannedSessionFiltersInput as InsightGenerationFilters } from "../api/generated/index.js";
+import { InsightsService, type DbInsight } from "../api/generated/index";
+import { ApiError, isAbortError } from "../api/runtime.js";
+import {
+  generateInsight,
+  type GenerateInsightHandle,
+  type InsightLogEvent,
+} from "../api/client.js";
+import { localDateStr } from "../utils/dates.js";
+import { LatestRead } from "../utils/latest-read.js";
+
+/** Agent used until the server reports a configured default. */
+const BUILT_IN_AGENT: AgentName = "claude";
+
+function isAgentName(value: string | undefined): value is AgentName {
+  return value !== undefined && (AGENT_NAMES as readonly string[]).includes(value);
+}
+
+export interface InsightTask {
+  clientId: string;
+  type: InsightType;
+  dateFrom: string;
+  dateTo: string;
+  project: string;
+  agent?: AgentName;
+  kind?: CannedInsightKind;
+  promptText: string;
+  automatedScope: AutomatedScope;
+  sessionId?: string;
+  sessionFilters?: InsightGenerationFilters;
+  status: "generating" | "done" | "error";
+  phase: string;
+  error: string | null;
+  insightId: number | null;
+  logs: InsightLogEvent[];
+}
+
+const MAX_TASK_LOG_LINES = 200;
+
+interface GenerationSnapshot {
+  type: InsightType;
+  dateFrom: string;
+  dateTo: string;
+  project: string;
+  agent?: AgentName;
+  kind?: CannedInsightKind;
+  promptText: string;
+  automatedScope: AutomatedScope;
+  sessionId?: string;
+  sessionFilters?: InsightGenerationFilters;
+}
+
+class InsightsStore {
+  dateFrom: string = $state(localDateStr(new Date()));
+  dateTo: string = $state(localDateStr(new Date()));
+  type: InsightType = $state("daily_activity");
+  cannedKind: CannedInsightKind = $state("prompt_maturity_review");
+  project: string = $state("");
+  agent: AgentName = $state(BUILT_IN_AGENT);
+  /** True once the picker chose an agent. The configured server default
+   *  stops replacing that choice. */
+  agentChosen = $state(false);
+  sessionAgent: string = $state("");
+  automatedScope: AutomatedScope = $state("human");
+  items: DbInsight[] = $state([]);
+  selectedId: number | null = $state(null);
+  selectedTaskId: string | null = $state(null);
+  loading = $state(false);
+  promptText: string = $state("");
+  tasks: InsightTask[] = $state([]);
+
+  #handles = new Map<string, GenerateInsightHandle>();
+  #nextTaskId = 0;
+  #version = 0;
+  #listRead = new LatestRead();
+
+  get selectedItem(): DbInsight | undefined {
+    return this.items.find((s) => s.id === this.selectedId);
+  }
+
+  get selectedTask(): InsightTask | undefined {
+    if (this.selectedTaskId === null) return undefined;
+    return this.tasks.find((t) => t.clientId === this.selectedTaskId);
+  }
+
+  get generatingCount(): number {
+    return this.tasks.filter((t) => t.status === "generating").length;
+  }
+
+  async load() {
+    const v = ++this.#version;
+    const signal = this.#listRead.begin();
+    this.loading = true;
+    try {
+      const res = await InsightsService.getApiV1Insights({}, { signal });
+      if (this.#version === v && this.#listRead.isCurrent(signal)) {
+        this.items = res.insights;
+        if (this.selectedId !== null && !this.items.some((s) => s.id === this.selectedId)) {
+          this.selectedId = null;
+        }
+      }
+    } catch (e) {
+      if (isAbortError(e) || !this.#listRead.isCurrent(signal)) return;
+      if (this.#version === v) {
+        this.items = [];
+      }
+    } finally {
+      if (this.#listRead.finish(signal)) {
+        this.loading = false;
+      }
+    }
+  }
+
+  cancelInFlightReads(): void {
+    this.#version++;
+    this.#listRead.cancel();
+    this.loading = false;
+  }
+
+  setDateFrom(date: string) {
+    this.dateFrom = date;
+  }
+
+  setDateTo(date: string) {
+    this.dateTo = date;
+  }
+
+  setType(type: InsightType) {
+    this.type = type;
+  }
+
+  setCannedKind(kind: CannedInsightKind) {
+    this.cannedKind = kind;
+  }
+
+  setProject(project: string) {
+    this.project = project;
+  }
+
+  setAgent(agent: AgentName) {
+    this.agentChosen = true;
+    this.agent = agent;
+  }
+
+  get requestAgent(): AgentName | undefined {
+    return this.agentChosen ? this.agent : undefined;
+  }
+
+  resetAgent() {
+    this.agentChosen = false;
+    this.agent = BUILT_IN_AGENT;
+  }
+
+  /** applyDefaultAgent adopts the agent configured on the server. It is
+   *  ignored once the picker chose an agent, and for responses that omit the
+   *  field or name an agent this build does not support. */
+  applyDefaultAgent(agent: string | undefined) {
+    if (this.agentChosen || !isAgentName(agent)) return;
+    this.agent = agent;
+  }
+
+  setSessionAgent(agent: string) {
+    this.sessionAgent = agent;
+  }
+
+  setAutomatedScope(scope: AutomatedScope) {
+    this.automatedScope = scope;
+  }
+
+  select(id: number) {
+    this.selectedId = id;
+    this.selectedTaskId = null;
+  }
+
+  selectTask(clientId: string) {
+    this.selectedTaskId = clientId;
+    this.selectedId = null;
+  }
+
+  generate() {
+    this.#startGeneration({
+      type: this.type,
+      dateFrom: this.dateFrom,
+      dateTo: this.dateTo,
+      project: this.project,
+      agent: this.requestAgent,
+      kind: this.type === "llm_canned" ? this.cannedKind : undefined,
+      promptText: this.promptText,
+      automatedScope: this.automatedScope,
+      sessionId: undefined,
+      sessionFilters:
+        this.type === "llm_canned" && this.sessionAgent ? { agent: this.sessionAgent } : undefined,
+    });
+  }
+
+  generateForSession(
+    session: Session,
+    type: "agent_analysis" | "tool_effectiveness" = "agent_analysis",
+  ) {
+    const date = sessionInsightDate(session);
+    this.type = type;
+    this.dateFrom = date;
+    this.dateTo = date;
+    this.project = session.project || "";
+    this.automatedScope = "human";
+    this.#startGeneration(
+      {
+        type,
+        dateFrom: date,
+        dateTo: date,
+        project: session.project || "",
+        agent: this.requestAgent,
+        promptText: this.promptText,
+        automatedScope: "human",
+        sessionId: session.id,
+      },
+      undefined,
+      true,
+    );
+  }
+
+  retryTask(clientId: string) {
+    const task = this.tasks.find((t) => t.clientId === clientId);
+    if (!task || task.status === "generating") return;
+    this.#startGeneration(
+      {
+        type: task.type,
+        dateFrom: task.dateFrom,
+        dateTo: task.dateTo,
+        project: task.project,
+        agent: task.agent,
+        kind: task.kind,
+        promptText: task.promptText,
+        automatedScope: task.automatedScope,
+        sessionId: task.sessionId,
+        sessionFilters: task.sessionFilters ? { ...task.sessionFilters } : undefined,
+      },
+      clientId,
+      true,
+    );
+  }
+
+  #startGeneration(
+    snap: GenerationSnapshot,
+    clientId: string = String(++this.#nextTaskId),
+    selectTask = false,
+  ) {
+    const task: InsightTask = {
+      clientId,
+      type: snap.type,
+      dateFrom: snap.dateFrom,
+      dateTo: snap.dateTo,
+      project: snap.project,
+      agent: snap.agent,
+      kind: snap.kind,
+      promptText: snap.promptText,
+      automatedScope: snap.automatedScope,
+      sessionId: snap.sessionId,
+      sessionFilters: snap.sessionFilters ? { ...snap.sessionFilters } : undefined,
+      status: "generating",
+      phase: "generating",
+      error: null,
+      insightId: null,
+      logs: [],
+    };
+    if (this.tasks.some((t) => t.clientId === clientId)) {
+      this.tasks = this.tasks.map((t) => (t.clientId === clientId ? task : t));
+    } else {
+      this.tasks = [...this.tasks, task];
+    }
+    if (selectTask) {
+      this.selectedTaskId = clientId;
+      this.selectedId = null;
+    }
+
+    const handle = generateInsight(
+      {
+        type: snap.type,
+        date_from: snap.dateFrom,
+        date_to: snap.dateTo,
+        project: snap.project || undefined,
+        prompt: snap.promptText || undefined,
+        session_id: snap.sessionId,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        agent: snap.agent,
+        kind: snap.kind,
+        llm_opt_in: snap.type === "llm_canned" ? true : undefined,
+        automated_scope: snap.automatedScope,
+        ...(snap.type === "llm_canned" && snap.sessionFilters
+          ? { filters: snap.sessionFilters }
+          : {}),
+      },
+      (phase) => {
+        this.tasks = this.tasks.map((t) => (t.clientId === clientId ? { ...t, phase } : t));
+      },
+      (logEvent) => {
+        this.tasks = this.tasks.map((t) => {
+          if (t.clientId !== clientId) {
+            return t;
+          }
+          const nextLogs =
+            t.logs.length >= MAX_TASK_LOG_LINES
+              ? [...t.logs.slice(1), logEvent]
+              : [...t.logs, logEvent];
+          return { ...t, logs: nextLogs };
+        });
+      },
+    );
+    this.#handles.set(clientId, handle);
+
+    handle.done
+      .then((insight) => {
+        this.#handles.delete(clientId);
+        this.tasks = this.tasks.filter((t) => t.clientId !== clientId);
+
+        const filtersMatch = this.project === snap.project;
+        if (filtersMatch) {
+          this.items = [insight, ...this.items.filter((s) => s.id !== insight.id)];
+          this.selectedId = insight.id;
+        } else {
+          void this.load();
+        }
+      })
+      .catch((e) => {
+        this.#handles.delete(clientId);
+        if (e instanceof DOMException && e.name === "AbortError") {
+          this.tasks = this.tasks.filter((t) => t.clientId !== clientId);
+          return;
+        }
+        const msg = e instanceof Error ? e.message : m.activity_insight_generation_failed();
+        this.tasks = this.tasks.map((t) =>
+          t.clientId === clientId ? { ...t, status: "error" as const, error: msg } : t,
+        );
+        this.selectedTaskId = clientId;
+        this.selectedId = null;
+      });
+  }
+
+  cancelTask(clientId: string) {
+    this.#handles.get(clientId)?.abort();
+  }
+
+  dismissTask(clientId: string) {
+    this.#handles.delete(clientId);
+    this.tasks = this.tasks.filter((t) => t.clientId !== clientId);
+    if (this.selectedTaskId === clientId) {
+      this.selectedTaskId = null;
+    }
+  }
+
+  async deleteItem(id: number) {
+    try {
+      await InsightsService.deleteApiV1InsightsById({ id });
+    } catch (e) {
+      if (!(e instanceof ApiError && e.status === 404)) {
+        return;
+      }
+    }
+    this.items = this.items.filter((s) => s.id !== id);
+    if (this.selectedId === id) {
+      this.selectedId = null;
+    }
+  }
+
+  cancelAll() {
+    for (const handle of this.#handles.values()) {
+      handle.abort();
+    }
+  }
+}
+
+export const insights = new InsightsStore();
+
+function sessionInsightDate(session: Session): string {
+  const ts = session.started_at || session.ended_at || session.created_at;
+  return ts.slice(0, 10);
+}

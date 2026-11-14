@@ -1,0 +1,928 @@
+<script lang="ts">
+  import { modelPickerItems } from "../../utils/model-groups.js";
+  import { Card } from "@kenn-io/kit-ui";
+  import { onMount, onDestroy, untrack } from "svelte";
+  import RangePicker from "../shared/RangePicker.svelte";
+  import {
+    resolveRange,
+    selectionFromWindow,
+    type RangeSelection,
+  } from "../shared/rangeSelection.js";
+  import SummaryCards from "./SummaryCards.svelte";
+  import Heatmap from "./Heatmap.svelte";
+  import ActivityTimeline from "./ActivityTimeline.svelte";
+  import ProjectBreakdown from "./ProjectBreakdown.svelte";
+  import HourOfWeekHeatmap from "./HourOfWeekHeatmap.svelte";
+  import SessionShape from "./SessionShape.svelte";
+  import VelocityMetrics from "./VelocityMetrics.svelte";
+  import OutcomeTotals from "./OutcomeTotals.svelte";
+  import ToolUsage from "./ToolUsage.svelte";
+  import TopSkills from "./TopSkills.svelte";
+  import SkillTrend from "./SkillTrend.svelte";
+  import AgentComparison from "./AgentComparison.svelte";
+  import SessionHealthSection from "./SessionHealthSection.svelte";
+  import TopSessions from "./TopSessions.svelte";
+  import ActiveFilters from "./ActiveFilters.svelte";
+  import SessionFilterControl from "../filters/SessionFilterControl.svelte";
+  import SidebarToggleButton from "../layout/SidebarToggleButton.svelte";
+  import FilterDropdown from "../usage/FilterDropdown.svelte";
+  import {
+    analytics,
+    ANALYTICS_DEFAULT_WINDOW_DAYS,
+  } from "../../stores/analytics.svelte.js";
+  import { outcomeTotals } from "../../stores/outcomeTotals.svelte.js";
+  import { settings } from "../../stores/settings.svelte.js";
+  import { analyticsPageDates } from "../../stores/analyticsPageDates.js";
+  import { sessions } from "../../stores/sessions.svelte.js";
+  import { filtersToParams } from "../../stores/sessionFilters.js";
+  import { events } from "../../stores/events.svelte.js";
+  import { starred } from "../../stores/starred.svelte.js";
+  import { ui } from "../../stores/ui.svelte.js";
+  import { sync } from "../../stores/sync.svelte.js";
+  import { router } from "../../stores/router.svelte.js";
+  import {
+    yokedDates,
+    panelDateState,
+    panelDateToSessionFilterParams,
+    rangeToPanelDate,
+    sessionParamsToPanelDate,
+    type PanelDateState,
+  } from "../../stores/yokedDates.svelte.js";
+  import { parseLocalDate, rollingRange } from "../../utils/dates.js";
+  import { exportAnalyticsCSV } from "../../utils/csv-export.js";
+  import RefreshControl from "../shared/RefreshControl.svelte";
+  import { m } from "../../i18n/index.js";
+
+  interface Props {
+    suppressSessionDateRestore?: boolean;
+    suppressSessionDateRefresh?: boolean;
+    onSessionDateRestoreSuppressed?: () => void;
+  }
+
+  let {
+    suppressSessionDateRestore = false,
+    suppressSessionDateRefresh = false,
+    onSessionDateRestoreSuppressed,
+  }: Props = $props();
+
+  const SESSION_ANALYTICS_WINDOW_PARAM = "window_days";
+
+  const earliestSession = $derived(sync.stats?.earliest_session ?? null);
+
+  const rangeSelection = $derived(
+    selectionFromWindow({
+      isPinned: analytics.isPinned,
+      windowDays: analytics.windowDays,
+      from: analytics.from,
+      to: analytics.to,
+      earliestSession,
+    }),
+  );
+
+  function applyRange(sel: RangeSelection) {
+    cancelInitialLoad();
+    userDateSelectionPending = true;
+    if (sel.mode === "relative" && sel.days > 0) {
+      sessionDateIntentEstablished = true;
+      analytics.setRollingWindow(sel.days);
+      const state = panelDateState(analytics.from, analytics.to, {
+        mode: "rolling",
+        windowDays: sel.days,
+      });
+      if (state) {
+        yokedDates.updateFromPanel(state);
+        writeSessionDateParams(state);
+      }
+    } else {
+      const range = resolveRange(sel, earliestSession);
+      sessionDateIntentEstablished = true;
+      analytics.setDateRange(range.from, range.to);
+      const state = panelDateState(range.from, range.to, {
+        mode: "fixed",
+      });
+      if (state) {
+        yokedDates.updateFromPanel(state);
+        writeSessionDateParams(state);
+      }
+    }
+  }
+
+  function parseSessionAnalyticsWindowDays(
+    raw: string | undefined,
+  ): number | null {
+    if (!raw) return null;
+    const n = Number.parseInt(raw, 10);
+    if (!Number.isInteger(n) || n <= 0 || String(n) !== raw) {
+      return null;
+    }
+    return n;
+  }
+
+  function hasSessionDateParams(params: Record<string, string>): boolean {
+    return !!params["date"] || !!params["date_from"] || !!params["date_to"];
+  }
+
+  function rollingPanelDate(days: number): PanelDateState | null {
+    const range = rollingRange(days);
+    return panelDateState(range.from, range.to, {
+      mode: "rolling",
+      windowDays: days,
+    });
+  }
+
+  function sessionAnalyticsDateUrlSignature(
+    params: Record<string, string>,
+    state: PanelDateState | null,
+  ): string {
+    if (state?.mode === "rolling") {
+      return JSON.stringify({
+        mode: state.mode,
+        windowDays: state.windowDays ?? null,
+        from: state.from,
+        to: state.to,
+      });
+    }
+    if (state) {
+      return JSON.stringify({
+        mode: state.mode,
+        date: params["date"] ?? "",
+        dateFrom: params["date_from"] ?? "",
+        dateTo: params["date_to"] ?? "",
+        from: state.from,
+        to: state.to,
+      });
+    }
+    if (hasSessionDateParams(params)) {
+      return JSON.stringify({
+        mode: "invalid",
+        date: params["date"] ?? "",
+        dateFrom: params["date_from"] ?? "",
+        dateTo: params["date_to"] ?? "",
+      });
+    }
+    return JSON.stringify({ mode: "none" });
+  }
+
+  function sessionDateFiltersAreClear(): boolean {
+    return !sessions.filters.date &&
+      !sessions.filters.dateFrom &&
+      !sessions.filters.dateTo;
+  }
+
+  function analyticsDateYokeIsClear(): boolean {
+    return (
+      !hasSessionDateParams(router.params) &&
+      parseSessionAnalyticsWindowDays(
+        router.params[SESSION_ANALYTICS_WINDOW_PARAM],
+      ) === null &&
+      sessionDateFiltersAreClear() &&
+      yokedDates.range === null
+    );
+  }
+
+  function syncSessionFiltersForDateState(
+    state: PanelDateState,
+  ): boolean {
+    const before = JSON.stringify(filtersToParams(sessions.filters));
+    const params = panelDateToSessionFilterParams(state);
+    sessions.applyPanelDateFilters(
+      params,
+      state.mode === "rolling" ? state.windowDays ?? null : null,
+    );
+    const after = JSON.stringify(filtersToParams(sessions.filters));
+    return before !== after;
+  }
+
+  function writeSessionDateParams(state: PanelDateState): void {
+    const sessionChanged = syncSessionFiltersForDateState(state);
+    const params = filtersToParams(sessions.filters);
+    if (starred.filterOnly) params.starred = "true";
+    delete params[SESSION_ANALYTICS_WINDOW_PARAM];
+    if (state.mode === "rolling" && state.windowDays) {
+      params[SESSION_ANALYTICS_WINDOW_PARAM] = String(state.windowDays);
+    }
+    if (router.isRootPath) {
+      router.navigateToSessions(params);
+    } else {
+      router.replaceParams(params);
+    }
+    if (sessionChanged) sessions.load();
+  }
+
+  function analyticsPanelDateSignature(): string {
+    return JSON.stringify({
+      from: analytics.from,
+      to: analytics.to,
+      isPinned: analytics.isPinned,
+      windowDays: analytics.windowDays,
+      selectedDate: analytics.selectedDate,
+      selectedDow: analytics.selectedDow,
+      selectedHour: analytics.selectedHour,
+    });
+  }
+
+  function applyAnalyticsPanelDate(state: PanelDateState): boolean {
+    const before = analyticsPanelDateSignature();
+    if (state.mode === "rolling" && state.windowDays) {
+      analytics.applyRollingWindow(state.windowDays);
+    } else {
+      analytics.applyDateRange(state.from, state.to);
+    }
+    const after = analyticsPanelDateSignature();
+    return before !== after;
+  }
+
+  function currentAnalyticsPanelDate(): PanelDateState | null {
+    if (!analytics.isPinned) {
+      return panelDateState(analytics.from, analytics.to, {
+        mode: "rolling",
+        windowDays: analytics.windowDays,
+      });
+    }
+    return panelDateState(analytics.from, analytics.to, {
+      mode: "fixed",
+    });
+  }
+
+  async function refreshAnalytics(): Promise<void> {
+    cancelInitialLoad();
+    const refresh = analytics.fetchAll();
+    // A pull-request lookup can take minutes, so refresh keeps its totals;
+    // changing the window or filters reloads them through the outcome effect.
+    const outcomes = outcomeWindow && !outcomeFiltersUnsupported &&
+      (!outcomeTotals.includePullRequests || outcomeTotals.pullRequestLookupFailed)
+      ? outcomeTotals.load(outcomeWindow)
+      : undefined;
+    if (!router.isRootPath && !suppressSessionDateRefresh) {
+      const state = currentAnalyticsPanelDate();
+      if (state && !analyticsDateYokeIsClear()) {
+        yokedDates.updateFromPanel(state);
+        writeSessionDateParams(state);
+      }
+    }
+    await Promise.all([refresh, outcomes]);
+  }
+
+  function handleActivityRangeSelect(from: string, to: string) {
+    analytics.setActivitySelection(from, to);
+  }
+
+  function handleActivityRangeClear() {
+    analytics.clearActivitySelection();
+  }
+
+  function shortTz(tz: string): string {
+    const slash = tz.lastIndexOf("/");
+    return slash >= 0
+      ? tz.slice(slash + 1).replace(/_/g, " ")
+      : tz;
+  }
+
+  let knownModels: string[] = $state([]);
+
+  function mergeIntoKnownModels(names: string[]): void {
+    if (names.length === 0) return;
+    const set = new Set(knownModels);
+    let changed = false;
+    for (const model of names) {
+      if (model && !set.has(model)) {
+        set.add(model);
+        changed = true;
+      }
+    }
+    if (changed) {
+      knownModels = [...set].sort();
+    }
+  }
+
+  $effect(() => {
+    const fromSummary = analytics.summary?.models ?? [];
+    untrack(() => mergeIntoKnownModels(fromSummary));
+  });
+
+  $effect(() => {
+    const selected = analytics.model.split(",").filter(Boolean);
+    untrack(() => mergeIntoKnownModels(selected));
+  });
+
+  const modelItems = $derived(
+    modelPickerItems(knownModels, analytics.model, analytics.modelAliases),
+  );
+  function handleExportCSV() {
+    exportAnalyticsCSV({
+      from: analytics.from,
+      to: analytics.to,
+      summary: analytics.summary,
+      activity: analytics.activity,
+      projects: analytics.projects,
+      tools: analytics.tools,
+      velocity: analytics.velocity,
+    });
+  }
+
+  let unsubEvents: (() => void) | undefined;
+  let analyticsDateUrlInitRan = $state(false);
+  let analyticsDateUrlInitComplete = $state(false);
+  let lastAnalyticsDateUrlSignature: string | null = $state(null);
+  let sessionDateIntentEstablished = false;
+  let userDateSelectionPending = false;
+  const INITIAL_LOAD_CEILING_MS = 2000;
+  let initialLoadTimer: ReturnType<typeof setTimeout> | undefined;
+  // Child mount effects run before the page's first-load effect.
+  let initialLoadDeferred = $state(sessions.loading || sessions.machineFilterPending);
+
+  function cancelInitialLoad() {
+    clearTimeout(initialLoadTimer);
+    initialLoadTimer = undefined;
+    initialLoadDeferred = false;
+  }
+
+  function releaseInitialLoad() {
+    if (!initialLoadDeferred) return;
+    cancelInitialLoad();
+    void analytics.fetchAll();
+  }
+
+  function startAnalyticsLoad(deferrable = false) {
+    cancelInitialLoad();
+    if (deferrable && sessions.loading) {
+      initialLoadDeferred = true;
+      initialLoadTimer = setTimeout(releaseInitialLoad, INITIAL_LOAD_CEILING_MS);
+    } else {
+      void analytics.fetchAll();
+    }
+  }
+
+  analytics.setFetchStartHandler(cancelInitialLoad);
+
+  // The outcome totals are read on their own, not through analytics.fetchAll,
+  // because the GitHub half of the aggregation shells out once per repository
+  // and must never be pulled into the page's normal refresh.
+  const outcomeFiltersUnsupported = $derived(Boolean(
+    analytics.machine || analytics.model || analytics.termination ||
+    analytics.minUserMessages > 0 || analytics.recentlyActive ||
+    analytics.selectedDow !== null || analytics.selectedHour !== null,
+  ));
+
+  const outcomeWindow = $derived.by(() => {
+    if (sync.serverVersion?.session_stats_available !== true) return null;
+    const from = analytics.selectedDate ?? analytics.selectedActivityRange?.from ?? analytics.from;
+    const to = analytics.selectedDate ?? analytics.selectedActivityRange?.to ?? analytics.to;
+    const start = parseLocalDate(from);
+    const end = parseLocalDate(to);
+    if (!start || !end) return null;
+    // Dashboard dates include the last day; stats bounds exclude the end.
+    // Advance by a local calendar day so DST changes keep midnight aligned.
+    end.setDate(end.getDate() + 1);
+    return {
+      since: start.toISOString(),
+      until: end.toISOString(),
+      timezone: analytics.timezone,
+      agent: analytics.agent || undefined,
+      includeProject: analytics.project ? [analytics.project] : undefined,
+      includeOneShot: analytics.includeOneShot,
+      includeAutomated: analytics.includeAutomated,
+    };
+  });
+
+  $effect(() => {
+    const window = outcomeWindow;
+    const unsupported = outcomeFiltersUnsupported;
+    untrack(() => {
+      if (!window || unsupported) outcomeTotals.reset();
+      else void outcomeTotals.load(window);
+    });
+  });
+
+  $effect(() => {
+    if (initialLoadDeferred && !sessions.loading && !sessions.machineFilterPending) {
+      untrack(() => {
+        clearTimeout(initialLoadTimer);
+        initialLoadTimer = setTimeout(releaseInitialLoad, 0);
+      });
+    }
+  });
+
+  onMount(() => {
+    // The URL-date effect owns the initial load so deep links and stored yoke
+    // ranges are applied before the first analytics request. RefreshControl
+    // handles the periodic refresh after that. SSE events only flag new data --
+    // refetching on every event would thrash the aggregation -- so refetching
+    // stays bounded to the RefreshControl scheduler and its manual button.
+    unsubEvents = events.subscribe(() => analytics.markNewData());
+  });
+
+  // Sync sidebar filters to analytics dashboard. Runs whenever
+  // the sidebar filters change. Uses untrack on analytics state
+  // so that local drill-downs don't re-trigger.
+  $effect(() => {
+    if (sessions.machineFilterPending) return;
+    const headerProject = sessions.filters.project;
+    const headerMachine = sessions.filters.machine;
+    const headerAgent = sessions.filters.agent;
+    const headerTermination = sessions.filters.termination;
+    const headerRecentlyActive = sessions.filters.recentlyActive;
+    const headerMinUserMessages =
+      sessions.filters.minUserMessages;
+    const headerIncludeOneShot =
+      sessions.filters.includeOneShot;
+    const headerIncludeAutomated =
+      sessions.filters.includeAutomated;
+
+    const curProject = untrack(() => analytics.project);
+    const curMachine = untrack(() => analytics.machine);
+    const curAgent = untrack(() => analytics.agent);
+    const curTermination = untrack(() => analytics.termination);
+    const curRecentlyActive = untrack(
+      () => analytics.recentlyActive,
+    );
+    const curMinUser = untrack(
+      () => analytics.minUserMessages,
+    );
+    const curIncludeOneShot = untrack(
+      () => analytics.includeOneShot,
+    );
+    const curIncludeAutomated = untrack(
+      () => analytics.includeAutomated,
+    );
+    const curAutomatedScope = untrack(
+      () => analytics.automatedScope,
+    );
+
+    let changed = false;
+    if (curProject !== headerProject) {
+      analytics.project = headerProject;
+      changed = true;
+    }
+    if (curMachine !== headerMachine) {
+      analytics.machine = headerMachine;
+      changed = true;
+    }
+    if (curAgent !== headerAgent) {
+      analytics.agent = headerAgent;
+      changed = true;
+    }
+    if (curTermination !== headerTermination) {
+      analytics.termination = headerTermination;
+      changed = true;
+    }
+
+    if (curRecentlyActive !== headerRecentlyActive) {
+      analytics.recentlyActive = headerRecentlyActive;
+      changed = true;
+    }
+
+    const minUserVal = headerMinUserMessages > 0
+      ? headerMinUserMessages
+      : 0;
+    if (curMinUser !== minUserVal) {
+      analytics.minUserMessages = minUserVal;
+      changed = true;
+    }
+
+    if (curIncludeOneShot !== headerIncludeOneShot) {
+      analytics.includeOneShot = headerIncludeOneShot;
+      changed = true;
+    }
+
+    if (curIncludeAutomated !== headerIncludeAutomated) {
+      analytics.includeAutomated = headerIncludeAutomated;
+      changed = true;
+    }
+    const headerAutomatedScope = headerIncludeAutomated
+      ? "all"
+      : "human";
+    if (curAutomatedScope !== headerAutomatedScope) {
+      analytics.automatedScope = headerAutomatedScope;
+      changed = true;
+    }
+
+    if (changed && analyticsDateUrlInitComplete) {
+      untrack(() => startAnalyticsLoad());
+    }
+  });
+
+  $effect(() => {
+    if (sessions.machineFilterPending) return;
+    const route = router.route;
+    const params = router.params;
+    const earliestSession = sync.stats?.earliest_session ?? undefined;
+    untrack(() => {
+      if (route !== "sessions") return;
+      if (router.isRootPath) {
+        if (lastAnalyticsDateUrlSignature !== "root-landing") {
+          analytics.applyRollingWindow(
+            ANALYTICS_DEFAULT_WINDOW_DAYS,
+          );
+          startAnalyticsLoad(lastAnalyticsDateUrlSignature === null && !analyticsDateUrlInitRan);
+        }
+        lastAnalyticsDateUrlSignature = "root-landing";
+        analyticsDateUrlInitRan = false;
+        analyticsDateUrlInitComplete = false;
+        sessionDateIntentEstablished = false;
+        return;
+      }
+
+      const fixedState = sessionParamsToPanelDate(params, {
+        earliest: earliestSession,
+      });
+      const hasDateParams = hasSessionDateParams(params);
+      const windowDays = parseSessionAnalyticsWindowDays(
+        params[SESSION_ANALYTICS_WINDOW_PARAM],
+      );
+      let state: PanelDateState | null = null;
+
+      if (windowDays !== null) {
+        state = rollingPanelDate(windowDays);
+      } else {
+        state = fixedState;
+      }
+
+      const firstRun = !analyticsDateUrlInitRan;
+      const initialHydration = firstRun && !userDateSelectionPending;
+      userDateSelectionPending = false;
+      const dateSignature = sessionAnalyticsDateUrlSignature(
+        params,
+        state,
+      );
+      const dateChanged = firstRun ||
+        lastAnalyticsDateUrlSignature !== dateSignature;
+
+      if (!state) {
+        if (hasDateParams) {
+          if (firstRun) {
+            startAnalyticsLoad(initialHydration);
+          }
+          lastAnalyticsDateUrlSignature = dateSignature;
+          analyticsDateUrlInitRan = true;
+          analyticsDateUrlInitComplete = true;
+          return;
+        }
+        let changed = false;
+        if (firstRun) {
+          if (suppressSessionDateRestore) {
+            sessionDateIntentEstablished = false;
+            onSessionDateRestoreSuppressed?.();
+          } else {
+            const seed = yokedDates.seedForPanel();
+            const retained = seed
+              ? null
+              : analyticsPageDates.restoreWithIntent("sessions");
+            state = seed
+              ? rangeToPanelDate(seed)
+              : retained?.state ?? null;
+            sessionDateIntentEstablished = seed !== null ||
+              retained?.explicitDateIntent === true;
+          }
+          if (state) {
+            changed = applyAnalyticsPanelDate(state);
+            if (sessionDateIntentEstablished) {
+              writeSessionDateParams(state);
+            }
+          }
+        } else if (dateChanged && sessionDateFiltersAreClear()) {
+          sessionDateIntentEstablished = false;
+          yokedDates.clear();
+        } else if (dateChanged) {
+          sessionDateIntentEstablished = true;
+          state = rollingPanelDate(analytics.windowDays);
+          if (state) {
+            changed = applyAnalyticsPanelDate(state);
+            const sessionChanged =
+              syncSessionFiltersForDateState(state);
+            yokedDates.updateFromPanel(state);
+            if (sessionChanged) sessions.load();
+          }
+        }
+        if (changed || initialHydration) {
+          startAnalyticsLoad(initialHydration);
+        }
+        lastAnalyticsDateUrlSignature = dateSignature;
+        analyticsDateUrlInitRan = true;
+        analyticsDateUrlInitComplete = true;
+        return;
+      }
+
+      let changed = false;
+      let sessionChanged = false;
+      if (dateChanged) {
+        sessionDateIntentEstablished = true;
+        changed = applyAnalyticsPanelDate(state);
+        sessionChanged = syncSessionFiltersForDateState(state);
+        yokedDates.updateFromPanel(state);
+      }
+      if (changed || initialHydration) {
+        startAnalyticsLoad(initialHydration);
+      }
+      if (sessionChanged && !firstRun) {
+        sessions.load();
+      }
+      lastAnalyticsDateUrlSignature = dateSignature;
+      analyticsDateUrlInitRan = true;
+      analyticsDateUrlInitComplete = true;
+    });
+  });
+
+  onDestroy(() => {
+    cancelInitialLoad();
+    analytics.setFetchStartHandler(undefined);
+    analytics.cancelInFlightReads();
+    outcomeTotals.reset();
+    const state = currentAnalyticsPanelDate();
+    if (state) {
+      analyticsPageDates.retain(
+        "sessions",
+        state,
+        sessionDateIntentEstablished,
+      );
+    }
+    unsubEvents?.();
+  });
+</script>
+
+<div class="analytics-page">
+  <div class="analytics-toolbar">
+    {#if !ui.isMobileViewport && !ui.sidebarOpen}
+      <div
+        class="toolbar-filter-anchor"
+        data-sidebar-focus-region="content"
+      >
+        <SidebarToggleButton placement="content" />
+        <SessionFilterControl
+          showDisplay={false}
+          showStarred={false}
+          showLabelFilters={false}
+          align="left"
+        />
+      </div>
+    {/if}
+
+    <RangePicker
+      selection={rangeSelection}
+      busy={analytics.isQuerying}
+      {earliestSession}
+      onSelect={applyRange}
+    />
+    <RefreshControl
+      lastUpdatedAt={analytics.lastUpdatedAt}
+      queryDurationMs={analytics.lastQueryDurationMs}
+      querySteps={analytics.lastQuerySteps}
+      liveQuery={analytics.liveQuery}
+      busy={analytics.isQuerying}
+      onRefresh={refreshAnalytics}
+      label={m.analytics_refresh()}
+    />
+    <FilterDropdown
+      label={m.analytics_model()}
+      selectedLabel={analytics.model !== analytics.displayedModels ? analytics.model : ""}
+      items={modelItems}
+      excludedCsv={analytics.displayedModels}
+      mode="include"
+      onToggle={(name) => analytics.toggleModel(name)}
+      onSelectAll={() => analytics.clearModel()}
+    />
+    <button class="export-btn" onclick={handleExportCSV}>
+      {m.analytics_export_csv()}
+    </button>
+  </div>
+
+  <ActiveFilters />
+
+  <div
+    class="analytics-content"
+    class:querying={analytics.isQuerying}
+    aria-busy={analytics.isQuerying}
+  >
+    {#if analytics.isQuerying}
+      <div class="query-progress" aria-hidden="true"></div>
+    {/if}
+
+    <SummaryCards />
+
+    <div class="chart-grid">
+      <Card level="default" padding="none" class="chart-panel wide">
+        <Heatmap />
+      </Card>
+
+      <Card level="default" padding="none" class="chart-panel">
+        <div class="chart-header">
+          <h3 class="chart-title">
+            {m.analytics_activity_by_day_hour()}
+            <span class="tz-label">
+              {shortTz(analytics.timezone)}
+            </span>
+          </h3>
+        </div>
+        <ActivityTimeline
+          deferInitialFetch={initialLoadDeferred}
+          onRangeSelect={handleActivityRangeSelect}
+          onRangeClear={handleActivityRangeClear}
+        />
+        <div class="chart-divider"></div>
+        <HourOfWeekHeatmap />
+      </Card>
+
+      <Card level="default" padding="none" class="chart-panel">
+        <TopSessions />
+      </Card>
+
+      <Card level="default" padding="none" class="chart-panel wide">
+        <ProjectBreakdown />
+      </Card>
+
+      <Card level="default" padding="none" class="chart-panel">
+        <SessionShape />
+      </Card>
+
+      <Card level="default" padding="none" class="chart-panel wide">
+        <ToolUsage />
+      </Card>
+
+      <Card level="default" padding="none" class="chart-panel wide">
+        <TopSkills />
+      </Card>
+
+      <Card level="default" padding="none" class="chart-panel wide">
+        <SkillTrend />
+      </Card>
+
+      <Card level="default" padding="none" class="chart-panel wide">
+        <VelocityMetrics />
+      </Card>
+
+      <Card level="default" padding="none" class="chart-panel wide">
+        <AgentComparison />
+      </Card>
+
+      <Card level="default" padding="none" class="chart-panel wide">
+        <OutcomeTotals
+          stats={outcomeTotals.stats}
+          loading={outcomeTotals.loading}
+          unavailable={outcomeFiltersUnsupported}
+          backendAvailable={sync.serverVersion?.session_stats_available}
+          githubConfigured={settings.githubConfigured}
+          error={outcomeTotals.error}
+          includePullRequests={outcomeTotals.includePullRequests}
+          onIncludePullRequests={() => {
+            if (outcomeWindow) void outcomeTotals.loadWithPullRequests(outcomeWindow);
+          }}
+          onRetry={() => {
+            if (outcomeWindow) void outcomeTotals.retry(outcomeWindow);
+          }}
+        />
+      </Card>
+    </div>
+
+    <SessionHealthSection />
+  </div>
+</div>
+
+<style>
+  .analytics-page {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .analytics-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 16px;
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border-muted);
+    flex-shrink: 0;
+  }
+
+  .toolbar-filter-anchor {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .export-btn {
+    height: 24px;
+    padding: 0 8px;
+    border-radius: var(--radius-sm);
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s;
+    margin-left: auto;
+  }
+
+  .export-btn:hover {
+    background: var(--bg-surface-hover);
+    color: var(--text-secondary);
+  }
+
+  .analytics-content {
+    flex: 1;
+    overflow-y: auto;
+    /* Reserve the scrollbar's width up front so right-aligned controls do not
+       shift when loaded results first make a tall pane scroll. */
+    scrollbar-gutter: stable;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    position: relative;
+    transition: opacity 0.12s;
+  }
+
+  .analytics-content.querying {
+    opacity: 0.88;
+  }
+
+  .query-progress {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 4;
+    height: 2px;
+    overflow: hidden;
+    background: color-mix(
+      in srgb,
+      var(--accent-blue) 16%,
+      transparent
+    );
+  }
+
+  .query-progress::before {
+    content: "";
+    display: block;
+    width: 38%;
+    height: 100%;
+    background: var(--accent-blue);
+    border-radius: 999px;
+    animation: query-progress 1s ease-in-out infinite;
+  }
+
+  .chart-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+
+  .chart-grid :global(.chart-panel) {
+    padding: 12px;
+    min-height: 200px;
+    min-width: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .chart-grid :global(.chart-panel > .kit-card__body) {
+    display: contents;
+  }
+
+  .chart-grid :global(.chart-panel.wide) {
+    grid-column: 1 / -1;
+  }
+
+  .chart-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  .chart-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .tz-label {
+    font-weight: 400;
+    color: var(--text-muted);
+    font-size: 11px;
+    margin-left: 4px;
+  }
+
+  .chart-divider {
+    height: 1px;
+    background: var(--border-muted);
+    margin: 12px 0;
+  }
+
+  @media (max-width: 760px) {
+    .chart-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @keyframes query-progress {
+    0% {
+      transform: translateX(-105%);
+    }
+    100% {
+      transform: translateX(265%);
+    }
+  }
+</style>

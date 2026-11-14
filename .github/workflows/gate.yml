@@ -19,11 +19,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Pinned while the repository has no Go module of its own; the increment
-      # that lands the module switches this to go-version-file: go.mod.
+      # The module's own go directive: the workflow and the carried tree cannot
+      # disagree about the Go version the gate builds with. CGO is required by
+      # the inherited SQLite driver, so the jobs keep a C compiler installed;
+      # the Windows runner is the one disclosed boundary (docs/harness.md).
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.27.x'
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - uses: actions/setup-python@v5
         with:

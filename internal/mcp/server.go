@@ -1,0 +1,457 @@
+// ABOUTME: Builds and serves the agentsview MCP server (stdio or
+// ABOUTME: StreamableHTTP) over the supported read-only history tools.
+package mcp
+
+import (
+	"context"
+	"crypto/subtle"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
+	"go.kenn.io/agentsview/internal/apiclient"
+	"go.kenn.io/agentsview/internal/mcpdiscovery"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"go.kenn.io/agentsview/internal/service"
+)
+
+// Tool names. The same constant is used to register a tool and to refer
+// to it in tests.
+const (
+	ToolSearchSessions       = "search_sessions"
+	ToolQueryRecall          = "query_recall"
+	ToolListSessions         = "list_sessions"
+	ToolGetSessionOverview   = "get_session_overview"
+	ToolGetMessages          = "get_messages"
+	ToolSearchContent        = "search_content"
+	ToolGetMemoryStatus      = "get_memory_status"
+	ToolGetUsageSummary      = "get_usage_summary"
+	ToolGetSessionUsage      = "get_session_usage"
+	ToolGetToolCalls         = "get_tool_calls"
+	ToolGetRecentEdits       = "get_recent_edits"
+	ToolGetChildSessions     = "get_child_sessions"
+	ToolCompareUsage         = "compare_usage"
+	ToolGetActivityReport    = "get_activity_report"
+	ToolGetToolUsage         = "get_tool_usage"
+	ToolGetQualitySignals    = "get_quality_signals"
+	ToolSearchDocs           = "search_docs"
+	ToolGetFrictionDigest    = "get_friction_digest"
+	ToolListFrictionPatterns = "list_friction_patterns"
+)
+
+const ToolGetSessionFileReferences = "get_session_file_references"
+
+const ToolGetCompactionSummaries = "get_compaction_summaries"
+
+// Profile selects the tools advertised by an MCP server while keeping their
+// implementations and schemas shared.
+type Profile string
+
+const (
+	// ProfileFull preserves the complete read-only AgentsView MCP surface.
+	ProfileFull Profile = "full"
+	// ProfileMemory limits discovery to the evidence search/read pair used by
+	// conversation-memory clients.
+	ProfileMemory Profile = "memory"
+)
+
+// ParseProfile validates a user-facing profile name. An empty name selects the
+// backward-compatible full profile.
+func ParseProfile(name string) (Profile, error) {
+	switch profile := Profile(strings.TrimSpace(name)); profile {
+	case "", ProfileFull:
+		return ProfileFull, nil
+	case ProfileMemory:
+		return ProfileMemory, nil
+	default:
+		return "", fmt.Errorf(
+			"unknown MCP profile %q (want full or memory)", name)
+	}
+}
+
+// ServeOptions configures the MCP server. Service is required; Version is
+// reported in the server's implementation info; Now is injectable so
+// tests can control the self-reference exclusion window (defaults to
+// time.Now).
+type ServeOptions struct {
+	DiscoveryDirectory string
+	BackendURL         string
+	Service            service.SessionService
+	Version            string
+	Now                func() time.Time
+	// Profile controls which shared tools the server advertises. The zero
+	// value preserves the full profile.
+	Profile Profile
+	// Token, when non-empty, requires every StreamableHTTP request to
+	// carry "Authorization: Bearer <Token>". It has no effect on stdio.
+	// The command layer sets it for non-loopback HTTP binds so the
+	// network-reachable surface is never unauthenticated.
+	Token string
+}
+
+// newServer builds an MCP server with the tools supported by its backing
+// service. Shared by the stdio and StreamableHTTP transports.
+func newServer(opts ServeOptions) *mcp.Server {
+	version := opts.Version
+	if version == "" {
+		version = "dev"
+	}
+	s := mcp.NewServer(&mcp.Implementation{
+		Name:       "agentsview",
+		Title:      "agentsview session history",
+		Version:    version,
+		WebsiteURL: "https://agentsview.io",
+		Icons: []mcp.Icon{{
+			Source:   serverIconSource,
+			MIMEType: "image/png",
+			Sizes:    []string{"256x256"},
+		}},
+	}, &mcp.ServerOptions{Instructions: "Use returned web_url values when linking to recorded sessions."})
+
+	s.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+			if method != "tools/call" {
+				return next(ctx, method, request)
+			}
+			ctx, stale := apiclient.TrackArchiveFreshness(ctx, nil)
+			result, err := next(ctx, method, request)
+			if call, ok := result.(*mcp.CallToolResult); ok && call != nil && stale() {
+				call.Content = append(call.Content, &mcp.TextContent{Text: "Warning: " + apiclient.ArchiveStaleWarning})
+			}
+			return result, err
+		}
+	})
+
+	t := &toolset{svc: opts.Service, now: opts.Now, version: version}
+	closedWorld, nonDestructive, openWorld := false, false, true
+	readOnly := &mcp.ToolAnnotations{
+		ReadOnlyHint: true, DestructiveHint: &nonDestructive,
+		IdempotentHint: true, OpenWorldHint: &closedWorld,
+	}
+	// Semantic content and Recall search can contact an embedding provider; file
+	// references query an independently configured Docbank service.
+	externalRead := &mcp.ToolAnnotations{
+		ReadOnlyHint: true, DestructiveHint: &nonDestructive,
+		IdempotentHint: true, OpenWorldHint: &openWorld,
+	}
+	memoryOnly := opts.Profile == ProfileMemory
+
+	mcp.AddTool(s, &mcp.Tool{Name: ToolGetCompactionSummaries, Description: "Read full compaction summaries for one session_id or sessions active since active_since. Use next_cursor to continue.", Annotations: readOnly}, t.compactionSummaries)
+
+	if !memoryOnly {
+		addFileReferencesTool(s, t, externalRead)
+		mcp.AddTool(s, &mcp.Tool{
+			Name: ToolSearchSessions,
+			Description: "Full-text search across all recorded AI agent sessions (Claude Code, Codex, Gemini, " +
+				"Antigravity, and others) from every project and machine. Returns ranked snippets with a " +
+				"match_ordinal usable with get_messages to read the surrounding conversation. For prior-work " +
+				"questions, prefer search_content with mode hybrid or semantic when a vector search index " +
+				"is configured. Use this tool for keyword search, with optional date_from/date_to bounds. " +
+				"Every term must appear (AND); wrap the query in double quotes for an exact phrase. " +
+				"Sessions active in the last 10 minutes (including the current conversation) are excluded " +
+				"unless include_active is set. Set session_id to look up one raw UUID or full stored ID. " +
+				"That lookup returns one metadata row, includes active sessions, ignores other search " +
+				"arguments, and reports missing or ambiguous raw IDs as errors. Its snippet is empty and " +
+				"match_ordinal is 0; call get_messages with that anchor for the first message. " +
+				"Use get_session_overview for a known full ID when you need a message preview.",
+			Annotations: readOnly,
+		}, t.searchSessions)
+
+		if service.SupportsRecallQueries(opts.Service) {
+			mcp.AddTool(s, &mcp.Tool{
+				Name: ToolQueryRecall,
+				Description: "Search distilled knowledge extracted from prior sessions. " +
+					"Use lexical mode for exact terms, vector mode for semantic similarity, " +
+					"or hybrid mode to fuse both rankings. Returns recall entries with their " +
+					"source-session evidence and retrieval scores.",
+				Annotations: externalRead,
+			}, t.queryRecall)
+		}
+
+		mcp.AddTool(s, &mcp.Tool{
+			Name: ToolListSessions,
+			Description: "List recorded agent sessions with filters (project, agent, machine, date range, labels, pull request). " +
+				"Returns compact metadata rows, newest first. For prior-work questions, prefer search_content " +
+				"with mode hybrid or semantic when a vector search index is configured; use search_sessions " +
+				"for keyword search. One-shot and automated sessions are excluded by default; " +
+				"set include_one_shot or include_automated to include them.",
+			Annotations: readOnly,
+		}, t.listSessions)
+
+		mcp.AddTool(s, &mcp.Tool{
+			Name: ToolGetSessionOverview,
+			Description: "Cheap summary of one session: metadata, the opening user message, and the last few " +
+				"conversation messages. Call this before get_messages to decide whether a session is relevant.",
+			Annotations: readOnly,
+		}, t.sessionOverview)
+	}
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name: ToolGetMessages,
+		Description: "Read a slice of one session's transcript. Choose linear pagination (from/direction/" +
+			"limit) or a symmetric window centered on an ordinal (around, with before/after sizing each " +
+			"side, default 5; mutually exclusive with from/direction). Defaults return only user and " +
+			"assistant messages, each truncated to 2000 characters; truncated messages are flagged so you " +
+			"can re-fetch with a higher max_chars_per_message. Each page reports how many scanned messages " +
+			"the role/system filter dropped as filtered, so across a full pagination sweep, returned plus " +
+			"filtered messages add up to the session's message_count (which counts all stored messages, " +
+			"system included).",
+		Annotations: readOnly,
+	}, t.getMessages)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name: ToolGetMemoryStatus,
+		Description: "Report whether conversation memory is ready. Includes archive backend, lexical " +
+			"and semantic search capability, vector generation coverage, and source telemetry availability.",
+		Annotations: readOnly,
+	}, t.getMemoryStatus)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name: ToolSearchContent,
+		Description: "Search raw session text, including thinking, tool inputs, and results. " +
+			"Prefer mode hybrid (semantic similarity plus keywords) for finding " +
+			"prior work and answering contextual questions, especially when the exact wording is unknown. " +
+			"Hybrid returns keyword matches with effective_mode hybrid_keyword and a note when search by meaning is unavailable. " +
+			"Use terms when every literal term must occur within one " +
+			"user/assistant exchange, or fully quoted substring text or regex for exact error messages, identifiers, and code fragments. " +
+			"Use concepts with two to five semantic ideas to keep only sessions with evidence for every idea. " +
+			"The default mode remains substring. On SQLite, a substring search of several words lists exact text first, " +
+			"then messages holding every word, then those holding more of the words, and reports matched_words. Scope defaults to all, including child sessions and sidechain messages; " +
+			"top excludes them and subordinate returns only them. Child sessions bypass the one-shot exclusion. " +
+			"The response reports effective_scope and exclusions.children. Set context to include N messages of " +
+			"surrounding conversation with each match. Matches from the last 10 minutes (including the " +
+			"current conversation) are excluded unless include_active is set; current_session_id replaces " +
+			"that heuristic with one exact exclusion. One-shot and automated " +
+			"sessions are excluded by default; set include_one_shot or include_automated to include them. " +
+			"Empty first pages return measured hints with code, message, and retry_with arguments; preserve other arguments when retrying.",
+		Annotations: externalRead,
+	}, t.searchContent)
+
+	if !memoryOnly {
+		mcp.AddTool(s, &mcp.Tool{
+			Name: ToolGetUsageSummary,
+			Description: "Aggregate token usage and cost across all agents: totals plus per-day breakdown, " +
+				"filterable by project, agent, machine, and date range. Use get_session_usage for one " +
+				"session's breakdown.",
+			Annotations: readOnly,
+		}, t.usageSummary)
+
+		mcp.AddTool(s, &mcp.Tool{
+			Name: ToolGetSessionUsage,
+			Description: "Explain one session's token usage and cost, the same report as `agentsview session " +
+				"usage`. Call it after get_activity_report with sessions_sort cost finds an expensive " +
+				"session. Returns total output and peak context tokens, cost and its " +
+				"source, models with no known price, input, output, and cache read and write tokens and " +
+				"cost per model, and a page of per-request rows (breakdown_sort cost puts the most " +
+				"expensive requests first). Totals include subagent sessions unless own_only is set. " +
+				"Reads the archive as stored without refreshing source files.",
+			Annotations: readOnly,
+		}, t.sessionUsage)
+
+		mcp.AddTool(s, &mcp.Tool{
+			Name: ToolGetToolCalls,
+			Description: "List the tool calls one session made, in order: tool name, category, input, and " +
+				"result size. Filter by category (for example Edit, Write, or Bash) to see what the agent " +
+				"ran or changed. Inputs have secret-shaped values masked and are cut to max_input_chars.",
+			Annotations: readOnly,
+		}, t.toolCalls)
+
+		mcp.AddTool(s, &mcp.Tool{
+			Name: ToolGetRecentEdits,
+			Description: "Find which sessions edited a file. Returns files whose path contains path, newest " +
+				"edit first, each with its recent Edit and Write calls and the session that made each one.",
+			Annotations: readOnly,
+		}, t.recentEdits)
+
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolGetChildSessions,
+			Description: "List the sub-agent and fork sessions started from one session.",
+			Annotations: readOnly,
+		}, t.childSessions)
+
+		mcp.AddTool(s, &mcp.Tool{
+			Name: ToolCompareUsage,
+			Description: "Compare token usage and cost between two models or two projects over one date " +
+				"range. Returns each side's totals and the differences between them.",
+			Annotations: readOnly,
+		}, t.compareUsage)
+
+		mcp.AddTool(s, &mcp.Tool{
+			Name: ToolGetActivityReport,
+			Description: "Report agent time, sessions, and cost for a day, week, month, or custom range. Returns " +
+				"totals, the busiest moment, breakdowns by project, model, and agent, and a page of the " +
+				"sessions in the range. Page through the sessions with sessions_cursor. Call " +
+				"get_session_usage on a session to see where its cost came from.",
+			Annotations: readOnly,
+		}, t.activityReport)
+
+		mcp.AddTool(s, &mcp.Tool{
+			Name: ToolGetToolUsage,
+			Description: "Show which tools agents call and how often, by category, agent, and tool name, " +
+				"with a weekly trend. Use get_quality_signals for tool failures and retries.",
+			Annotations: readOnly,
+		}, t.toolUsage)
+
+		mcp.AddTool(s, &mcp.Tool{
+			Name: ToolGetQualitySignals,
+			Description: "Show where agents struggled: health grades, outcomes, tool failures and retries, " +
+				"edit churn, context pressure, and prompt quality, by agent and project. Set signal to " +
+				"also get example sessions for one signal.",
+			Annotations: readOnly,
+		}, t.qualitySignals)
+
+		mcp.AddTool(s, &mcp.Tool{
+			Name: ToolSearchDocs,
+			Description: "Search the AgentsView guides for setup, configuration, MCP, sync, search, and " +
+				"usage reporting. Returns matching sections with links to the published pages.",
+			Annotations: readOnly,
+		}, searchDocs)
+	}
+
+	if !memoryOnly && service.SupportsFriction(opts.Service) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name: ToolGetFrictionDigest,
+			Description: "Read one dated Friction Log digest. Includes heuristic findings (user corrections, " +
+				"tool errors, workarounds, deferrals, health patterns, frustration, interruptions) and P0 " +
+				"alerts for one local day. " +
+				"format markdown returns the rendered digest; summary returns the counts-only object. " +
+				"Findings are deterministic heuristics, not ground truth.",
+			Annotations: readOnly,
+		}, t.frictionDigest)
+		mcp.AddTool(s, &mcp.Tool{
+			Name: ToolListFrictionPatterns,
+			Description: "List recurring friction patterns ranked by occurrences across digests. Includes " +
+				"first/last seen dates, distinct session counts, and a web_url for the latest occurrence. " +
+				"Filter by kind or since (YYYY-MM-DD).",
+			Annotations: readOnly,
+		}, t.listFrictionPatterns)
+	}
+
+	return s
+}
+
+// addFileReferencesTool advertises the Docbank lookup only when the backend has Docbank configured.
+func addFileReferencesTool(s *mcp.Server, t *toolset, readOnly *mcp.ToolAnnotations) {
+	if service.SupportsFileReferences(t.svc) {
+		mcp.AddTool(s, &mcp.Tool{Name: ToolGetSessionFileReferences, Description: "Find exact bytes of session files and images in Docbank by SHA-256. Returns current, prior, and trashed versions, or explicit unavailable evidence.", Annotations: readOnly}, t.fileReferences)
+	}
+}
+
+// newHTTPHandler builds the StreamableHTTP handler with its protections.
+// Passing nil options keeps the SDK's default DNS-rebinding protection
+// (DisableLocalhostProtection stays false): a request arriving on a
+// loopback address with a non-loopback Host header is rejected 403,
+// which blocks a malicious web page from reaching a loopback MCP server
+// via DNS rebinding. withBearerAuth then adds token auth for non-loopback
+// binds (see the command layer).
+func newHTTPHandler(opts ServeOptions) http.Handler {
+	srv := newServer(opts)
+	var handler http.Handler = mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return srv }, nil)
+	return withBearerAuth(handler, opts.Token)
+}
+
+// withBearerAuth wraps next so every request must present
+// "Authorization: Bearer <token>". When token is empty the handler is
+// returned unwrapped (loopback binds run without listener auth). The
+// comparison is constant-time to avoid leaking the token via timing.
+func withBearerAuth(next http.Handler, token string) http.Handler {
+	if token == "" {
+		return next
+	}
+	want := []byte("Bearer " + token)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got := []byte(r.Header.Get("Authorization"))
+		if subtle.ConstantTimeCompare(got, want) != 1 {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// ServeStdio runs the MCP server over stdio. It blocks until stdin is
+// closed (the client disconnected) or ctx is cancelled, both of which are
+// the normal end of life for a stdio server and return nil. Only an
+// unexpected transport failure is surfaced as an error.
+func ServeStdio(ctx context.Context, opts ServeOptions) error {
+	err := newServer(opts).Run(ctx, &mcp.StdioTransport{})
+	if isCleanStdioShutdown(err) {
+		return nil
+	}
+	return fmt.Errorf("serve MCP over stdio: %w", err)
+}
+
+// isCleanStdioShutdown reports whether a Run error represents the normal
+// end of a stdio session (client disconnect or signal) rather than a
+// failure. A stdio MCP server that loses its client has simply finished
+// its job. When stdin closes while requests are in flight, the SDK
+// surfaces the internal jsonrpc2 "server is closing" wire error: it is
+// not the exported mcp.ErrConnectionClosed and does not wrap io.EOF in an
+// errors.Is-traversable way, so that specific case is matched on its
+// stable message as a last resort.
+func isCleanStdioShutdown(err error) bool {
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, context.Canceled) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, mcp.ErrConnectionClosed) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "server is closing") ||
+		strings.Contains(msg, "connection closed")
+}
+
+// ServeHTTP runs the MCP server over StreamableHTTP on addr. When ctx is
+// cancelled the HTTP server is shut down gracefully so in-flight tool
+// calls can finish. addr must already be validated as a safe bind
+// address (see the cmd layer's loopback guard).
+func ServeHTTP(ctx context.Context, opts ServeOptions, addr string) (result error) {
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = listener.Close() }()
+	if opts.DiscoveryDirectory != "" {
+		cleanup, err := mcpdiscovery.Publish(opts.DiscoveryDirectory, listener.Addr().String(), opts.Token, opts.BackendURL)
+		if err != nil {
+			return err
+		}
+		defer func() { result = errors.Join(result, cleanup()) }()
+	}
+	httpServer := &http.Server{Addr: addr, Handler: newHTTPHandler(opts)}
+	fmt.Fprintf(os.Stderr, "agentsview mcp: serving on %s\n", addr)
+
+	errCh := make(chan error, 1)
+	go func() {
+		err := httpServer.Serve(listener)
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+			return
+		}
+		errCh <- nil
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		// Graceful shutdown with a short bound; in-flight tool calls
+		// usually finish in milliseconds, so 10s is plenty.
+		shutdownCtx, cancel := context.WithTimeout(
+			context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		_ = httpServer.Shutdown(shutdownCtx)
+		return ctx.Err()
+	}
+}

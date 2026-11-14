@@ -1,0 +1,420 @@
+import type { EventSource } from "eventsource";
+import { triggerResync, triggerSync, watchSession, type SyncHandle } from "../api/client.js";
+import { MetadataService, SyncService } from "../api/generated/index";
+import { ApiError, isAbortError, isRemoteConnection } from "../api/runtime.js";
+import { m } from "../i18n/index.js";
+import { reportSyncFailed } from "../utils/telemetry.js";
+import { fileReferences } from "./file-references.svelte.js";
+import { events } from "./events.svelte.js";
+import type {
+  SyncProgress,
+  SyncSyncStats as SyncStats,
+  DbStats as Stats,
+  VersionInfo,
+} from "../api/generated/index.js";
+import type { DbSessionTiming as SessionTiming } from "../api/generated/index.js";
+
+type SyncCompleteListener = () => void;
+
+/**
+ * Sync, or rebuild the archive when the server says a plain sync cannot bring
+ * it current. A daemon with a stale archive answers /sync with 409 until the
+ * required full rebuild runs.
+ */
+function syncOrRebuild(onProgress?: (p: SyncProgress) => void): SyncHandle {
+  let current = triggerSync(onProgress);
+  const done = current.done.catch((err: unknown) => {
+    if (!(err instanceof ApiError && err.status === 409)) throw err;
+    current = triggerResync(onProgress);
+    return current.done;
+  });
+  return { abort: () => current.abort(), done };
+}
+
+const POLL_INTERVAL_MS = 10_000;
+
+/**
+ * Compare two commit hashes, tolerating short vs full SHA.
+ * Returns true when both are known and they disagree.
+ * Uses prefix comparison only when one hash is shorter
+ * than the other (i.e. an abbreviation).
+ */
+export function commitsDisagree(a: string | undefined, b: string | undefined): boolean {
+  if (!a || !b) return false;
+  if (a === "unknown" || b === "unknown") return false;
+  if (a === b) return false;
+  if (a.length === b.length) return true;
+  const minLen = Math.min(a.length, b.length);
+  return a.slice(0, minLen) !== b.slice(0, minLen);
+}
+
+class SyncStore {
+  archiveStale: boolean = $state(false);
+  syncPending: boolean = $state(false);
+
+  syncing: boolean = $state(false);
+  // Message from the last sync or resync that failed, cleared when one
+  // succeeds. The header Sync button has no other place to report it.
+  lastSyncError: string | null = $state(null);
+  progress: SyncProgress | null = $state(null);
+  lastSync: string | null = $state(null);
+  lastSyncStats: SyncStats | null = $state(null);
+  stats: Stats | null = $state(null);
+  serverVersion: VersionInfo | null = $state(null);
+  versionMismatch: boolean = $state(false);
+  // True when connected to a remote server that the browser cannot
+  // reach (network error, CSP block, or the server being down).
+  // Surfaced in the status bar so the failure is not silent.
+  remoteUnreachable: boolean = $state(false);
+  // True when the backend process answers but one of its dependencies
+  // is not ready yet, such as a PostgreSQL-backed server before PG
+  // becomes reachable.
+  backendDegraded: boolean = $state(false);
+  backendDegradedMessage: string | null = $state(null);
+  updateAvailable: boolean = $state(false);
+  latestVersion: string | null = $state(null);
+  readonly buildCommit: string = import.meta.env.VITE_BUILD_COMMIT;
+  readonly isDesktop: boolean =
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).has("desktop");
+
+  get readOnly(): boolean {
+    return this.serverVersion?.read_only === true;
+  }
+
+  get archiveOnly(): boolean {
+    return this.serverVersion?.archive_only === true;
+  }
+
+  private watchEventSource: EventSource | null = null;
+  private watchVisibilityHandler: (() => void) | null = null;
+  private pollVisibilityHandler: (() => void) | null = null;
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private lastStatsParams: {
+    include_one_shot?: boolean;
+    include_automated?: boolean;
+  } = { include_one_shot: true };
+  private statsVersion = 0;
+  private syncCompleteListeners: SyncCompleteListener[] = [];
+  private statusHydrated = false;
+  private pendingHydration = false;
+  private statusProgressActive = false;
+
+  /** Register a callback invoked after any sync completes. */
+  onSyncComplete(listener: SyncCompleteListener) {
+    this.syncCompleteListeners.push(listener);
+  }
+
+  private notifySyncComplete() {
+    for (const fn of this.syncCompleteListeners) {
+      fn();
+    }
+  }
+
+  /** Record whether the backend process responded. Only flags a
+   * failure when a remote server is configured — local failures are
+   * handled by the visibility health check, which reloads the page.
+   * A successful liveness-style response does not prove PG-backed
+   * reads are healthy, so it must not clear backendDegraded. */
+  private markRemoteReachable(reachable: boolean) {
+    if (reachable) {
+      this.remoteUnreachable = false;
+      return;
+    }
+    this.clearBackendDegraded();
+    if (isRemoteConnection()) {
+      this.remoteUnreachable = true;
+    }
+  }
+
+  markBackendDegraded(message = m.status_bar_sync_not_ready()) {
+    this.remoteUnreachable = false;
+    this.backendDegraded = true;
+    this.backendDegradedMessage = message;
+  }
+
+  clearBackendDegraded() {
+    this.backendDegraded = false;
+    this.backendDegradedMessage = null;
+  }
+
+  private markBackendFailure(error: unknown) {
+    if (error instanceof ApiError && error.status >= 500) {
+      this.markBackendDegraded();
+      return;
+    }
+    this.markRemoteReachable(false);
+  }
+
+  async loadStatus() {
+    try {
+      const status = await SyncService.getApiV1SyncStatus();
+      this.markRemoteReachable(true);
+      if (this.serverVersion === null) {
+        await this.loadVersion({ updateBackendHealth: false });
+      }
+      const newLastSync = status.last_sync || null;
+      const isInitial = !this.statusHydrated;
+      this.statusHydrated = true;
+      const changed = newLastSync !== null && newLastSync !== this.lastSync;
+      this.lastSync = newLastSync;
+      this.lastSyncStats = status.stats ?? null;
+      this.archiveStale = status.archive_stale === true;
+      this.syncPending = status.sync_pending === true;
+      const statusProgress = status.progress ?? null;
+      let statusProgressCompleted = false;
+      if (statusProgress) {
+        this.statusProgressActive = true;
+        this.syncing = true;
+        this.progress = statusProgress;
+      } else if (this.statusProgressActive) {
+        this.statusProgressActive = false;
+        this.syncing = false;
+        this.progress = null;
+        statusProgressCompleted = true;
+      }
+      const shouldRetryStats = this.backendDegraded;
+      // Suppress notifications on initial hydration and
+      // when a local sync just completed (pendingHydration).
+      if (this.pendingHydration) {
+        this.pendingHydration = false;
+      } else if (statusProgress) {
+        return;
+      } else if (statusProgressCompleted) {
+        await this.loadStats();
+        this.notifySyncComplete();
+      } else if (changed && !isInitial) {
+        await this.loadStats();
+        this.notifySyncComplete();
+      } else if (shouldRetryStats) {
+        await this.loadStats();
+      }
+    } catch (error) {
+      this.markBackendFailure(error);
+      this.pendingHydration = false;
+      console.warn("Failed to load sync status:", error);
+    }
+  }
+
+  startPolling() {
+    this.stopPolling();
+    this.pollVisibilityHandler = () => {
+      if (!document.hidden) void this.loadStatus();
+    };
+    document.addEventListener("visibilitychange", this.pollVisibilityHandler);
+    this.pollTimer = setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      void this.loadStatus();
+    }, POLL_INTERVAL_MS);
+  }
+
+  stopPolling() {
+    if (this.pollVisibilityHandler) {
+      document.removeEventListener("visibilitychange", this.pollVisibilityHandler);
+      this.pollVisibilityHandler = null;
+    }
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+  }
+
+  async loadStats(params?: { include_one_shot?: boolean; include_automated?: boolean }) {
+    if (params !== undefined) {
+      this.lastStatsParams = params;
+    }
+    const version = ++this.statsVersion;
+    try {
+      const result = await MetadataService.getApiV1Stats(this.lastStatsParams);
+      if (this.statsVersion === version) {
+        this.stats = result;
+        this.clearBackendDegraded();
+      }
+    } catch (error) {
+      if (this.statsVersion === version) {
+        this.markBackendFailure(error);
+        console.warn("Failed to load sync stats:", error);
+      }
+    }
+  }
+
+  async loadVersion(opts: { updateBackendHealth?: boolean } = {}) {
+    const updateBackendHealth = opts.updateBackendHealth ?? true;
+    try {
+      this.serverVersion = await MetadataService.getApiV1Version();
+      fileReferences.enabled = this.serverVersion.docbank_enabled === true;
+      events.setAvailable(this.serverVersion.read_only !== true);
+      this.markRemoteReachable(true);
+      this.versionMismatch = commitsDisagree(this.buildCommit, this.serverVersion.commit);
+    } catch (error) {
+      events.settleStartup();
+      if (updateBackendHealth) {
+        this.markBackendFailure(error);
+      }
+      console.warn("Failed to load version info:", error);
+    }
+  }
+
+  async checkForUpdate() {
+    // Desktop app uses the native Tauri updater; the
+    // Go backend endpoint checks upstream releases which
+    // is irrelevant and potentially wrong for forks.
+    if (this.isDesktop) return;
+    try {
+      const result = await MetadataService.getApiV1UpdateCheck();
+      this.updateAvailable = result.update_available;
+      this.latestVersion = result.latest_version ?? null;
+    } catch (error) {
+      console.warn("Failed to check for updates:", error);
+    }
+  }
+
+  triggerSync(onComplete?: () => void) {
+    if (this.archiveOnly) return;
+    if (this.readOnly) {
+      void this.refreshReadOnly(onComplete);
+      return;
+    }
+    // A stale archive only becomes current through a full rebuild, which a
+    // plain sync does not run on a daemon with a sync engine.
+    this.runSync(this.archiveStale ? triggerResync : syncOrRebuild, onComplete);
+  }
+
+  triggerResync(onComplete?: () => void, onError?: (err: Error) => void): boolean {
+    if (this.archiveOnly) return false;
+    if (this.readOnly) {
+      onError?.(new Error("Full resync is unavailable for read-only backends."));
+      return false;
+    }
+    return this.runSync(triggerResync, onComplete, onError);
+  }
+
+  private async refreshReadOnly(onComplete?: () => void): Promise<boolean> {
+    if (this.syncing) return false;
+    this.syncing = true;
+    this.progress = null;
+    this.statusProgressActive = false;
+    try {
+      this.pendingHydration = true;
+      await Promise.all([this.loadStatus(), this.loadStats()]);
+      this.notifySyncComplete();
+      onComplete?.();
+      return true;
+    } finally {
+      this.syncing = false;
+      this.progress = null;
+    }
+  }
+
+  private runSync(
+    syncFn: (onProgress?: (p: SyncProgress) => void) => SyncHandle,
+    onComplete?: () => void,
+    onError?: (err: Error) => void,
+  ): boolean {
+    if (this.syncing) return false;
+    this.syncing = true;
+    this.progress = null;
+    this.statusProgressActive = false;
+
+    const finalizeSync = () => {
+      this.syncing = false;
+      this.progress = null;
+    };
+
+    const handle = syncFn((p: SyncProgress) => {
+      this.progress = p;
+    });
+
+    handle.done
+      .then((s: SyncStats) => {
+        this.lastSyncError = null;
+        this.lastSyncStats = s;
+        void this.loadStats();
+        finalizeSync();
+        this.notifySyncComplete();
+        // Hydrate the authoritative server timestamp.
+        // pendingHydration suppresses the notification so
+        // the poll path won't double-fire.
+        this.pendingHydration = true;
+        void this.loadStatus();
+        onComplete?.();
+      })
+      .catch((err: unknown) => {
+        if (isAbortError(err)) {
+          return;
+        }
+        finalizeSync();
+        if (err instanceof Error) {
+          onError?.(err);
+        } else {
+          onError?.(new Error("Sync failed"));
+        }
+      });
+
+    handle.done.catch((err: unknown) => {
+      if (isAbortError(err)) return;
+      this.lastSyncError = err instanceof Error ? err.message : "Sync failed";
+      reportSyncFailed(err);
+    });
+
+    return true;
+  }
+
+  watchSession(sessionId: string, onUpdate: () => void, onTiming?: (t: SessionTiming) => void) {
+    this.unwatchSession();
+    let settle!: (seen: boolean) => void;
+    const ready = new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => settle(false), 1000);
+      settle = (seen) => {
+        clearTimeout(timer);
+        resolve(seen);
+      };
+    });
+    const open = () => {
+      this.watchEventSource = watchSession(sessionId, onUpdate, onTiming);
+      const es = this.watchEventSource;
+      es.addEventListener("error", () => {
+        if (this.watchEventSource !== es) return;
+        settle(false);
+      });
+      es.addEventListener("session_ready", () => {
+        if (this.watchEventSource !== es) return;
+        settle(true);
+        onUpdate();
+      });
+    };
+    if (typeof document === "undefined") {
+      open();
+      return ready;
+    }
+    this.watchVisibilityHandler = () => {
+      if (document.hidden) {
+        this.closeSessionStream();
+      } else if (!this.watchEventSource || this.watchEventSource.readyState === 2) {
+        open();
+        // A rejected reconnect, such as a deleted session's 404, never sends session_ready.
+        onUpdate();
+      }
+    };
+    document.addEventListener("visibilitychange", this.watchVisibilityHandler);
+    if (!document.hidden) open();
+    else settle(false);
+    return ready;
+  }
+
+  unwatchSession() {
+    if (this.watchVisibilityHandler) {
+      document.removeEventListener("visibilitychange", this.watchVisibilityHandler);
+      this.watchVisibilityHandler = null;
+    }
+    this.closeSessionStream();
+  }
+
+  private closeSessionStream() {
+    if (this.watchEventSource) {
+      this.watchEventSource.close();
+      this.watchEventSource = null;
+    }
+  }
+}
+
+export const sync = new SyncStore();

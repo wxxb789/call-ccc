@@ -1,0 +1,98 @@
+import { getLocale, setLocale as setParaglideLocale } from "../paraglide/runtime.js";
+import { m } from "../paraglide/messages.js";
+
+export { m };
+// Current BCP 47 tag (en / zh-CN / zh-TW / ko / fr / ja / az / es) for kit-ui components that
+// take a `locale` prop, so their date/tooltip formatting follows the app
+// language setting instead of the browser locale.
+export { getLocale };
+
+export const DEFAULT_LOCALE = "en";
+export const LOCALE_STORAGE_KEY = "agentsview-locale";
+export const SUPPORTED_LOCALES = ["en", "zh-CN", "zh-TW", "ko", "fr", "ja", "az", "es"] as const;
+
+export type SupportedLocale = (typeof SUPPORTED_LOCALES)[number];
+
+export function normalizeLocale(value: string | null | undefined): SupportedLocale {
+  return matchingLocale(value) ?? DEFAULT_LOCALE;
+}
+
+function matchingLocale(value: string | null | undefined): SupportedLocale | null {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === "en" || normalized.startsWith("en-")) return "en";
+  if (normalized === "zh-cn" || normalized.startsWith("zh-hans")) {
+    return "zh-CN";
+  }
+  if (
+    normalized === "zh-tw" ||
+    normalized.startsWith("zh-tw-") ||
+    normalized.startsWith("zh-hant")
+  ) {
+    return "zh-TW";
+  }
+  if (normalized === "ko" || normalized.startsWith("ko-")) return "ko";
+  if (normalized === "fr" || normalized.startsWith("fr-")) return "fr";
+  if (normalized === "ja" || normalized.startsWith("ja-")) return "ja";
+  if (normalized === "az" || normalized.startsWith("az-")) return "az";
+  if (normalized === "es" || normalized.startsWith("es-")) return "es";
+  return null;
+}
+
+function storedLocale(): SupportedLocale | null {
+  try {
+    const raw = localStorage?.getItem(LOCALE_STORAGE_KEY);
+    if (raw && SUPPORTED_LOCALES.includes(raw as SupportedLocale)) {
+      return raw as SupportedLocale;
+    }
+  } catch {
+    // Ignore storage failures and fall back to browser detection.
+  }
+  return null;
+}
+
+function browserLocales(): string[] {
+  if (typeof navigator === "undefined") return [];
+  const languages = Array.isArray(navigator.languages) ? navigator.languages : [];
+  return [...languages, navigator.language].filter(Boolean);
+}
+
+export function chooseInitialLocale(): SupportedLocale {
+  const stored = storedLocale();
+  if (stored) return stored;
+  const browserLocale = browserLocales()
+    .map(matchingLocale)
+    .find((value): value is SupportedLocale => value !== null);
+  return browserLocale ?? DEFAULT_LOCALE;
+}
+
+export function setLocale(value: SupportedLocale) {
+  void setParaglideLocale(value);
+  try {
+    localStorage?.setItem(LOCALE_STORAGE_KEY, value);
+  } catch {
+    // Ignore storage failures; the active in-memory locale still changes.
+  }
+}
+
+export function formatDateTime(
+  value: Date | number | string,
+  options: Intl.DateTimeFormatOptions = {},
+): string {
+  return new Intl.DateTimeFormat(getLocale(), options).format(new Date(value));
+}
+
+export function formatDayRange(from: string, to: string, collapseSingleDay = true): string {
+  const options: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", year: "numeric" };
+  const first = formatDateTime(`${from}T00:00:00`, options);
+  return collapseSingleDay && from === to
+    ? first
+    : m.data_workspace_activity_range({
+        first,
+        last: formatDateTime(`${to}T00:00:00`, options),
+      });
+}
+
+export function initI18n() {
+  setLocale(chooseInitialLocale());
+}

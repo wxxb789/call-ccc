@@ -1,0 +1,733 @@
+import { test, expect, type Locator, type Page } from "@playwright/test";
+import { SessionsPage } from "./pages/sessions-page";
+
+function readZoom(page: Page): Promise<string> {
+  return page.evaluate(() => document.documentElement.style.getPropertyValue("zoom"));
+}
+
+async function isolateServerZoom(page: Page): Promise<void> {
+  const response = await page.request.get("/api/v1/settings");
+  const settingsBody: Record<string, unknown> = await response.json();
+  delete settingsBody.zoom_level;
+  await page.route("**/api/v1/settings", async (route) => {
+    if (["GET", "PUT"].includes(route.request().method())) {
+      await route.fulfill({ json: settingsBody });
+      return;
+    }
+    await route.continue();
+  });
+}
+
+test.beforeEach(async ({ page }) => {
+  await isolateServerZoom(page);
+});
+
+function luminance([r, g, b]: [number, number, number]): number {
+  const [rr, gg, bb] = [r, g, b].map((channel) => {
+    const value = channel / 255;
+    return value <= 0.03928 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * rr! + 0.7152 * gg! + 0.0722 * bb!;
+}
+
+function contrastRatio(
+  foreground: [number, number, number],
+  background: [number, number, number],
+): number {
+  const lighter = Math.max(luminance(foreground), luminance(background));
+  const darker = Math.min(luminance(foreground), luminance(background));
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+/** Parses a computed color: rgb()/rgba(), or the color(srgb r g b) form
+ * Chromium reports for color-mix() results, with channels in 0..1. */
+function parseRgb(value: string): [number, number, number] {
+  const rgb = value.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+  if (rgb) {
+    return [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])];
+  }
+  const srgb = value.match(/color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/);
+  if (srgb) {
+    return [
+      Math.round(Number(srgb[1]) * 255),
+      Math.round(Number(srgb[2]) * 255),
+      Math.round(Number(srgb[3]) * 255),
+    ];
+  }
+  throw new Error(`Expected rgb() or color(srgb) color, got ${value}`);
+}
+
+async function elementColors(locator: Locator): Promise<{
+  background: string;
+  foreground: string;
+}> {
+  return locator.evaluate((element) => {
+    const styles = getComputedStyle(element);
+    return {
+      background: styles.backgroundColor,
+      foreground: styles.color,
+    };
+  });
+}
+
+function expectReadableContrast(colors: { background: string; foreground: string }) {
+  expect(
+    contrastRatio(parseRgb(colors.foreground), parseRgb(colors.background)),
+  ).toBeGreaterThanOrEqual(4.5);
+}
+
+/** Resolves an element's computed color through a canvas, so color-mix()
+ * results compare as plain sRGB bytes on every engine. */
+async function resolvedColor(
+  locator: Locator,
+  property: string,
+): Promise<[number, number, number]> {
+  return locator.evaluate((element, name) => {
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 1;
+    const context = canvas.getContext("2d")!;
+    context.fillStyle = getComputedStyle(element).getPropertyValue(name);
+    context.fillRect(0, 0, 1, 1);
+    const [r, g, b] = context.getImageData(0, 0, 1, 1).data;
+    return [r!, g!, b!] as [number, number, number];
+  }, property);
+}
+
+test.describe("Appearance accessibility", () => {
+  test("keeps Quality semantic wrappers as rendered layout boxes", async ({ page }) => {
+    let failSignals = false;
+    await page.route("**/api/v1/analytics/signals*", (route) => {
+      if (failSignals) {
+        return route.fulfill({ status: 500, body: "request failed" });
+      }
+      return route.fulfill({
+        json: {
+          scored_sessions: 2,
+          unscored_sessions: 0,
+          grade_distribution: { A: 1, B: 1 },
+          avg_health_score: 85,
+          outcome_distribution: { completed: 2 },
+          outcome_confidence_distribution: { high: 2 },
+          tool_health: {
+            total_failure_signals: 1,
+            total_retries: 0,
+            total_edit_churn: 0,
+            sessions_with_failures: 1,
+            failure_rate: 50,
+          },
+          context_health: {
+            avg_compaction_count: 0,
+            sessions_with_compaction: 0,
+            mid_task_compaction_count: 0,
+            sessions_with_mid_task_compaction: 0,
+            sessions_with_context_data: 2,
+            avg_context_pressure: 0.2,
+            high_pressure_sessions: 0,
+          },
+          quality_health: {
+            computed_sessions: 2,
+            totals: {
+              short_prompt_count: 2,
+              unstructured_start: 1,
+              missing_success_criteria_count: 0,
+              missing_verification_count: 0,
+              duplicate_prompt_count: 0,
+              no_code_context_count: 0,
+              runaway_tool_loop_count: 0,
+              frustration_marker_count: 0,
+            },
+            sessions_with_signal: {
+              short_prompt_count: 2,
+              unstructured_start: 1,
+              missing_success_criteria_count: 0,
+              missing_verification_count: 0,
+              duplicate_prompt_count: 0,
+              no_code_context_count: 0,
+              runaway_tool_loop_count: 0,
+              frustration_marker_count: 0,
+            },
+          },
+          trend: [],
+          by_agent: [],
+          by_project: [],
+          calibration: {},
+        },
+      });
+    });
+    await page.route("**/api/v1/analytics/signal-sessions*", (route) =>
+      route.fulfill({
+        json: {
+          signal: "short_prompt_count",
+          sessions: [
+            {
+              session_id: "example-session",
+              project: "agentsview",
+              agent: "codex",
+              date: "2026-07-10",
+              is_automated: false,
+              outcome: "completed",
+              health_score: 90,
+              health_grade: "A",
+              signal_total: 1,
+              reason_code: "short_prompt",
+              excerpt: "Example evidence",
+              message_ordinal: 7,
+              failure_signals: 0,
+              retries: 0,
+              edit_churn: 0,
+            },
+          ],
+        },
+      }),
+    );
+
+    await page.goto("/quality");
+    await expect(page.getByRole("heading", { name: "Quality patterns" })).toBeVisible();
+    await page.locator(".driver-row").first().click();
+    await expect(page.locator(".evidence-panel-live")).toBeVisible();
+
+    const contentDisplays = await page.evaluate(() => {
+      const display = (selector: string) =>
+        getComputedStyle(document.querySelector(selector)!).display;
+      return {
+        recommendation: display(".recommendation-content"),
+        summary: display(".summary-grid .stat-card"),
+        pattern: display(".pattern-card-content"),
+        evidence: display(".evidence-panel-live"),
+      };
+    });
+    expect(contentDisplays).toEqual({
+      recommendation: "grid",
+      summary: "flex",
+      pattern: "flex",
+      evidence: "grid",
+    });
+
+    failSignals = true;
+    await page.reload();
+    const alert = page.getByRole("alert");
+    await expect(alert).toBeVisible();
+    await expect(alert).toHaveCSS("display", "grid");
+  });
+
+  test("legacy zoom scales the UI on web without horizontal overflow", async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("agentsview-font-scale", "130");
+    });
+    const sp = new SessionsPage(page);
+    await page.goto("/sessions");
+    await sp.sessionItems.first().waitFor({ state: "attached" });
+    if (await page.evaluate(() => matchMedia("(max-width: 760px)").matches)) {
+      await page.getByRole("button", { name: "Toggle sidebar", exact: true }).click();
+    }
+    await expect(sp.sessionItems.first()).toBeVisible();
+
+    expect(await readZoom(page)).toBe("1.3");
+
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(2);
+
+    await sp.selectFirstSession();
+    await expect(sp.messageRows.first()).toBeVisible();
+  });
+
+  test("zoom at 90% renders and scrolls the transcript", async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("agentsview-zoom-level", "90");
+    });
+    const sp = new SessionsPage(page);
+    await page.goto("/sessions");
+    await sp.sessionItems.first().waitFor({ state: "attached" });
+    if (await page.evaluate(() => matchMedia("(max-width: 760px)").matches)) {
+      await page.getByRole("button", { name: "Toggle sidebar", exact: true }).click();
+    }
+    await expect(sp.sessionItems.first()).toBeVisible();
+
+    expect(await readZoom(page)).toBe("0.9");
+
+    await sp.selectFirstSession();
+    await expect(sp.messageRows.first()).toBeVisible();
+  });
+
+  test("high contrast applies the root class and overrides tokens", async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("theme", "light");
+      localStorage.setItem("agentsview-high-contrast", "true");
+    });
+    const sp = new SessionsPage(page);
+    await sp.goto();
+
+    const hasClass = await page.evaluate(() =>
+      document.documentElement.classList.contains("high-contrast"),
+    );
+    expect(hasClass).toBe(true);
+
+    // Browsers may normalize #000000 to #000; compare after stripping
+    // leading # and zero-padding each channel to 6 hex digits.
+    const textPrimary = await page.evaluate((): string => {
+      const raw = getComputedStyle(document.documentElement)
+        .getPropertyValue("--text-primary")
+        .trim();
+      // Expand shorthand #rgb → #rrggbb before comparing.
+      if (/^#[0-9a-fA-F]{3}$/.test(raw)) {
+        return "#" + raw[1]!.repeat(2) + raw[2]!.repeat(2) + raw[3]!.repeat(2);
+      }
+      return raw;
+    });
+    expect(textPrimary).toBe("#000000");
+  });
+
+  test("dark high contrast keeps accent-filled controls readable", async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("theme", "dark");
+      localStorage.setItem("agentsview-high-contrast", "true");
+    });
+    const sp = new SessionsPage(page);
+    await sp.goto();
+
+    // Measure a real kit-ui primary/solid Button (the Import modal's
+    // confirm action) rather than a synthetic element, so a kit-ui Button
+    // styling regression fails this test. The button is disabled here, so
+    // this measures the disabled-primary treatment: accent-tinted ink on a
+    // faint accent wash must stay readable.
+    await page.getByRole("button", { name: "More actions" }).click();
+    await page.getByRole("menuitem", { name: "Import conversations" }).click();
+    const solidButton = page.locator(".kit-button--solid.kit-button--info");
+    await expect(solidButton).toBeVisible();
+    expectReadableContrast(await elementColors(solidButton));
+    await page.keyboard.press("Escape");
+    await expect(solidButton).toBeHidden();
+
+    await sp.selectFirstSession();
+    const agentBadge = page.locator(".agent-badge").first();
+    await expect(agentBadge).toBeVisible();
+    expectReadableContrast(await elementColors(agentBadge));
+
+    const nonBlueAgentBadgeColors = await page.evaluate(() => {
+      const badge = document.createElement("span");
+      badge.className = "agent-badge";
+      badge.style.background = "var(--accent-green)";
+      badge.style.color = "var(--accent-green-foreground)";
+      badge.textContent = "Codex";
+      document.body.append(badge);
+      const styles = getComputedStyle(badge);
+      const result = {
+        background: styles.backgroundColor,
+        foreground: styles.color,
+      };
+      badge.remove();
+      return result;
+    });
+    expectReadableContrast(nonBlueAgentBadgeColors);
+
+    const userRoleIcon = page.locator(".role-icon", { hasText: "U" }).first();
+    await expect(userRoleIcon).toBeVisible();
+    expectReadableContrast(await elementColors(userRoleIcon));
+
+    const assistantRoleIcon = page.locator(".role-icon", { hasText: "A" }).first();
+    await expect(assistantRoleIcon).toBeVisible();
+    expectReadableContrast(await elementColors(assistantRoleIcon));
+  });
+
+  test("custom message colors render readably in every theme mode", async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("theme", "light");
+      localStorage.setItem(
+        "agentsview-message-colors",
+        JSON.stringify({
+          colors: { user: "#0072b2", assistant: "#d55e00", tool: "#009e73" },
+          patterns: true,
+        }),
+      );
+    });
+    const sp = new SessionsPage(page);
+    await sp.goto();
+    await sp.selectFirstSession();
+    const user = page.locator(".message.is-user").first();
+    const assistant = page.locator(".message:not(.is-user)").first();
+    await expect(user).toBeVisible();
+    await expect(assistant).toBeVisible();
+
+    for (const mode of [
+      { dark: false, highContrast: false },
+      { dark: true, highContrast: false },
+      { dark: false, highContrast: true },
+      { dark: true, highContrast: true },
+    ]) {
+      await page.evaluate(({ dark, highContrast }) => {
+        document.documentElement.classList.toggle("dark", dark);
+        document.documentElement.classList.toggle("high-contrast", highContrast);
+      }, mode);
+      const label = JSON.stringify(mode);
+      expect(await resolvedColor(user, "border-left-color"), label).toEqual([0, 114, 178]);
+      // Reading the rail back through a canvas can round a channel by one,
+      // so compare each channel within 1.
+      const assistantRail = await resolvedColor(assistant, "border-left-color");
+      [213, 94, 0].forEach((channel, index) => {
+        expect(Math.abs(assistantRail[index]! - channel), label).toBeLessThanOrEqual(1);
+      });
+      await expect(user).toHaveCSS("border-left-style", "solid");
+      await expect(assistant).toHaveCSS("border-left-style", "double");
+      for (const message of [user, assistant]) {
+        const ratio = contrastRatio(
+          await resolvedColor(message.locator(".role-label"), "color"),
+          await resolvedColor(message, "background-color"),
+        );
+        expect(ratio, label).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  });
+
+  test("parallel tool calls carry the tool marker in pattern mode", async ({ page }) => {
+    // Use a small fixture so the injected calls stay in view without a reload.
+    await page.route("**/api/v1/sessions/*/messages*", async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      const assistant = body.messages?.find(
+        (message: { role: string }) => message.role === "assistant",
+      );
+      if (assistant) {
+        assistant.has_tool_use = true;
+        assistant.tool_calls = ["a", "b"].map((id) => ({
+          tool_use_id: `parallel-${id}`,
+          tool_name: "Read",
+          category: "Read",
+          input_json: "{}",
+          result_content: "",
+        }));
+      }
+      await route.fulfill({ response, json: body });
+    });
+    await page.goto("/sessions/test-session-small-5");
+    const rail = page.locator(".parallel-group").first();
+    await expect(rail).toBeVisible();
+    // By default one solid neutral rule encloses the group.
+    await expect(rail).toHaveCSS("border-left-style", "solid");
+    await expect(rail).toHaveCSS("border-left-width", "2px");
+
+    await page.evaluate(() =>
+      localStorage.setItem(
+        "agentsview-message-colors",
+        JSON.stringify({ colors: { tool: "#009e73" }, patterns: true }),
+      ),
+    );
+    await page.reload();
+    await expect(rail).toBeVisible();
+    await expect(rail).toHaveCSS("border-left-style", "dashed");
+    await expect(rail).toHaveCSS("border-left-width", "3px");
+    expect(await resolvedColor(rail, "border-left-color")).toEqual([0, 158, 115]);
+  });
+});
+
+async function openAppearance(page: Page, url: string) {
+  await page.goto(url);
+  await expect(page.getByRole("heading", { name: "Appearance", exact: true })).toBeVisible();
+  await expect(page.getByTitle("Zoom", { exact: true })).toBeVisible();
+}
+
+async function expectZoom(page: Page, label: string, css: string, stored: string | null) {
+  await expect(page.getByTitle("Zoom", { exact: true })).toHaveText(`Zoom ${label}`);
+  await expect.poll(() => readZoom(page)).toBe(css);
+  expect(await page.evaluate(() => localStorage.getItem("agentsview-zoom-level"))).toBe(stored);
+  expect(await page.evaluate(() => localStorage.getItem("agentsview-font-scale"))).toBeNull();
+}
+
+for (const desktop of [false, true]) {
+  test.describe(`Shared zoom in ${desktop ? "desktop-marked browser" : "browser"}`, () => {
+    const url = desktop ? "/settings?desktop" : "/settings";
+
+    for (const state of [
+      { canonical: null, legacy: null, label: "100%", css: "1", stored: null },
+      { canonical: null, legacy: "120", label: "120%", css: "1.2", stored: "120" },
+      { canonical: "100", legacy: "130", label: "130%", css: "1.3", stored: "130" },
+      { canonical: "150", legacy: "120", label: "150%", css: "1.5", stored: "150" },
+      { canonical: "bad", legacy: "90", label: "90%", css: "0.9", stored: "90" },
+    ]) {
+      test(`restores canonical ${state.canonical} and legacy ${state.legacy} through reload`, async ({
+        page,
+      }) => {
+        await page.addInitScript(({ canonical, legacy }) => {
+          if (sessionStorage.getItem("zoom-seeded")) return;
+          if (canonical !== null) localStorage.setItem("agentsview-zoom-level", canonical);
+          if (legacy !== null) localStorage.setItem("agentsview-font-scale", legacy);
+          sessionStorage.setItem("zoom-seeded", "true");
+        }, state);
+        await openAppearance(page, url);
+        await expectZoom(page, state.label, state.css, state.stored);
+        await page.reload();
+        await expectZoom(page, state.label, state.css, state.stored);
+      });
+    }
+
+    for (const width of [1280, 768, 400]) {
+      test(`selects shared zoom and reloads at width ${width}`, async ({ page }) => {
+        await page.setViewportSize({ width, height: 900 });
+        await openAppearance(page, url);
+        await expect(page.getByText("Text size", { exact: true })).toHaveCount(0);
+        await expect(page.getByText("Desktop zoom", { exact: true })).toHaveCount(0);
+        await page.getByTitle("Zoom", { exact: true }).click();
+        await expect(page.getByRole("option")).toHaveText([
+          "67%",
+          "75%",
+          "80%",
+          "90%",
+          "100%",
+          "110%",
+          "120%",
+          "125%",
+          "130%",
+          "150%",
+          "175%",
+          "200%",
+        ]);
+        await page.getByRole("option", { name: "120%", exact: true }).click();
+        await expectZoom(page, "120%", "1.2", "120");
+        await expect
+          .poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth))
+          .toBeLessThanOrEqual(2);
+        await page.reload();
+        await expectZoom(page, "120%", "1.2", "120");
+        await page.getByTitle("Zoom", { exact: true }).click();
+        await expect(page.getByRole("option", { name: "120%", exact: true })).toHaveAttribute(
+          "aria-selected",
+          "true",
+        );
+        await page.getByRole("combobox", { name: "Zoom", exact: true }).fill("133");
+        await expect(page.getByText("No matches", { exact: true })).toBeVisible();
+        await page.keyboard.press("Enter");
+        expect(await readZoom(page)).toBe("1.2");
+        await page.keyboard.press("Escape");
+      });
+    }
+
+    test("selects the native sink only with both desktop and bridge markers", async ({ page }) => {
+      await page.addInitScript(() => {
+        localStorage.setItem("agentsview-zoom-level", "150");
+        localStorage.setItem("agentsview-font-scale", "120");
+        const calls: number[] = [];
+        Object.assign(window, {
+          zoomCalls: calls,
+          __TAURI__: {
+            webviewWindow: {
+              getCurrentWebviewWindow: () => ({
+                setZoom: async (factor: number) => {
+                  calls.push(factor);
+                },
+              }),
+            },
+          },
+        });
+      });
+      await openAppearance(page, url);
+      await expectZoom(page, "150%", desktop ? "1" : "1.5", "150");
+      expect(
+        await page.evaluate(() => (window as Window & { zoomCalls?: number[] }).zoomCalls),
+      ).toEqual(desktop ? [1.5] : []);
+      await page.getByTitle("Zoom", { exact: true }).click();
+      await page.getByRole("option", { name: "120%", exact: true }).click();
+      await expectZoom(page, "120%", desktop ? "1" : "1.2", "120");
+      expect(
+        await page.evaluate(() => (window as Window & { zoomCalls?: number[] }).zoomCalls),
+      ).toEqual(desktop ? [1.5, 1.2] : []);
+    });
+  });
+}
+
+test("Shared zoom synchronizes Appearance, desktop status bar, and shortcuts", async ({ page }) => {
+  await openAppearance(page, "/settings?desktop");
+  await page.getByTitle("Zoom", { exact: true }).click();
+  await page.getByRole("option", { name: "120%", exact: true }).click();
+  await expect(page.locator(".zoom-level")).toHaveText("120%");
+  await page
+    .locator(".zoom-controls")
+    .getByTitle(/Zoom in/)
+    .click();
+  await expectZoom(page, "125%", "1.25", "125");
+  await page.keyboard.press("ControlOrMeta+-");
+  await expectZoom(page, "120%", "1.2", "120");
+  await page.keyboard.press("ControlOrMeta+=");
+  await expectZoom(page, "125%", "1.25", "125");
+  await page.keyboard.press("ControlOrMeta+0");
+  await expectZoom(page, "100%", "1", "100");
+  await expect(page.locator(".zoom-level")).toHaveText("100%");
+  await page.reload();
+  await expectZoom(page, "100%", "1", "100");
+});
+
+test("Shared zoom keeps desktop controls and shortcut interception out of the browser", async ({
+  page,
+}) => {
+  await openAppearance(page, "/settings");
+  await page.getByTitle("Zoom", { exact: true }).click();
+  await page.getByRole("option", { name: "120%", exact: true }).click();
+  await expect(page.locator(".zoom-controls")).toHaveCount(0);
+  const prevented = await page.evaluate(() => {
+    const event = new KeyboardEvent("keydown", {
+      key: "0",
+      ctrlKey: true,
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    document.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  expect(prevented).toBe(false);
+  await expectZoom(page, "120%", "1.2", "120");
+});
+
+test("Zoom menus keep the interface scale and stay aligned with their trigger", async ({
+  page,
+}) => {
+  await openAppearance(page, "/settings");
+  const trigger = page.getByTitle("Zoom", { exact: true });
+  const option = page.getByRole("option", { name: "100%", exact: true });
+  await trigger.click();
+  const normal = (await option.boundingBox())!;
+  await page.getByRole("option", { name: "120%", exact: true }).click();
+  await expect.poll(() => readZoom(page)).toBe("1.2");
+  await trigger.click();
+  const enlarged = (await option.boundingBox())!;
+  expect(enlarged.height / normal.height).toBeCloseTo(1.2, 1);
+  const panel = (await page.locator(".kit-typeahead__panel").boundingBox())!;
+  const button = (await page.getByRole("combobox", { name: "Zoom", exact: true }).boundingBox())!;
+  expect(Math.abs(panel.x - button.x)).toBeLessThanOrEqual(2);
+  expect(Math.abs(panel.width - button.width)).toBeLessThanOrEqual(2);
+  expect(
+    Math.min(
+      Math.abs(panel.y - button.y - button.height),
+      Math.abs(panel.y + panel.height - button.y),
+    ),
+  ).toBeLessThanOrEqual(4);
+});
+
+test("transcript header menus open beside their triggers at 120% zoom", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("agentsview-zoom-level", "120"));
+  const sp = new SessionsPage(page);
+  await sp.goto();
+  await sp.selectFirstSession();
+  await expect.poll(() => readZoom(page)).toBe("1.2");
+
+  for (const trigger of [
+    page.locator(".view-trigger"),
+    page.getByRole("button", { name: "More actions" }),
+  ]) {
+    await trigger.click();
+    const menu = page.getByRole("menu");
+    await expect(menu).toBeVisible();
+    const button = (await trigger.boundingBox())!;
+    const box = (await menu.boundingBox())!;
+    const viewport = page.viewportSize()!;
+    // The menu opens just below its trigger, right-aligned to it, and
+    // stays inside the window.
+    expect(Math.abs(box.y - (button.y + button.height))).toBeLessThanOrEqual(8);
+    expect(Math.abs(box.x + box.width - (button.x + button.width))).toBeLessThanOrEqual(8);
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+    await trigger.click();
+    await expect(menu).toHaveCount(0);
+  }
+});
+
+test("configured zoom is a default and browser choices stay independent", async ({
+  page,
+  browser,
+}) => {
+  const response = await page.request.get("/api/v1/settings");
+  const defaults = { ...(await response.json()), zoom_level: 120 };
+  const other = await browser.newPage();
+  const writes: string[] = [];
+  try {
+    for (const client of [page, other]) {
+      await client.route("**/api/v1/settings", (route) => {
+        if (route.request().method() === "PUT") writes.push(route.request().postData() ?? "");
+        return route.fulfill({ json: defaults });
+      });
+      await openAppearance(client, "/settings");
+      await expectZoom(client, "120%", "1.2", null);
+    }
+    await page.getByTitle("Zoom", { exact: true }).click();
+    await page.getByRole("option", { name: "150%", exact: true }).click();
+    await expectZoom(page, "150%", "1.5", "150");
+    await expectZoom(other, "120%", "1.2", null);
+    await other.getByTitle("Zoom", { exact: true }).click();
+    await other.getByRole("option", { name: "100%", exact: true }).click();
+    await expectZoom(other, "100%", "1", "100");
+    for (const client of [page, other]) await client.reload();
+    await expectZoom(page, "150%", "1.5", "150");
+    await expectZoom(other, "100%", "1", "100");
+    expect(writes).toEqual([]);
+  } finally {
+    await other.close();
+  }
+});
+
+test("the date picker contains its calendar at 200% zoom", async ({ page }) => {
+  await page.setViewportSize({ width: 2200, height: 1400 });
+  await page.addInitScript(() => localStorage.setItem("agentsview-zoom-level", "200"));
+  await page.goto("/activity");
+  await page.locator(".kit-date-range-picker__trigger").click();
+  await page.getByRole("radio", { name: "Custom", exact: true }).click();
+  const panel = page.locator(".kit-date-range-picker__panel");
+  const calendar = panel.locator(".kit-calendar");
+  await expect(calendar).toBeVisible();
+  const shell = (await panel.boundingBox())!;
+  const grid = (await calendar.boundingBox())!;
+  expect(grid.x).toBeGreaterThanOrEqual(shell.x);
+  expect(grid.x + grid.width).toBeLessThanOrEqual(shell.x + shell.width);
+});
+
+test("the codex-cloud status tooltip follows its trigger and wraps long paths at 150% zoom", async ({
+  page,
+}) => {
+  const home = `/synthetic/${"0123456789abcdef".repeat(8)}`;
+  await page.route("**/api/v1/codex-cloud/status", (route) =>
+    route.fulfill({
+      json: [{ key: "account-a", homes: [home], state: "waiting" }],
+    }),
+  );
+  const openTooltip = async () => {
+    const trigger = page.locator(".kit-tooltip-trigger", {
+      has: page.locator(".codex-cloud-status"),
+    });
+    await trigger.focus();
+    const tooltip = page.getByRole("tooltip");
+    await expect(tooltip).toBeVisible();
+    return {
+      trigger: (await trigger.boundingBox())!,
+      tooltip: (await tooltip.boundingBox())!,
+      // How far the detail text paints past the bubble's right edge. The
+      // detail is an inline span, so its line boxes, not its scroll size,
+      // show where the text runs.
+      overflow: await tooltip.locator(".codex-cloud-detail").evaluate((el) => {
+        const bubble = el.closest('[role="tooltip"]')!.getBoundingClientRect();
+        return Math.max(...Array.from(el.getClientRects(), (line) => line.right - bubble.right));
+      }),
+      lineHeight: await tooltip
+        .locator(".codex-cloud-detail")
+        .evaluate((el) => el.getClientRects()[0]!.height),
+    };
+  };
+
+  await page.goto("/");
+  const normal = await openTooltip();
+
+  await page.evaluate(() => localStorage.setItem("agentsview-zoom-level", "150"));
+  await page.reload();
+  await expect.poll(() => readZoom(page)).toBe("1.5");
+  const { trigger, tooltip, overflow, lineHeight } = await openTooltip();
+
+  // The detail keeps the interface scale.
+  expect(lineHeight / normal.lineHeight).toBeGreaterThan(1.3);
+  // The bubble sits just above its trigger, inside the viewport.
+  const viewport = page.viewportSize()!;
+  expect(tooltip.x).toBeGreaterThanOrEqual(0);
+  expect(tooltip.y).toBeGreaterThanOrEqual(0);
+  expect(tooltip.x + tooltip.width).toBeLessThanOrEqual(viewport.width);
+  expect(trigger.y - (tooltip.y + tooltip.height)).toBeGreaterThanOrEqual(0);
+  expect(trigger.y - (tooltip.y + tooltip.height)).toBeLessThanOrEqual(16);
+  // A long path wraps inside the bubble instead of running past its edge.
+  expect(overflow).toBeLessThanOrEqual(0);
+});

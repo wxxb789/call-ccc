@@ -1,0 +1,105 @@
+package server
+
+import (
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestWithTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		operation      string
+		timeout        time.Duration
+		handler        http.HandlerFunc
+		wantStatus     int
+		wantBody       string
+		wantHeaderKey  string
+		wantHeaderVal  string
+		assertResponse func(t *testing.T, resp *http.Response)
+	}{
+		{
+			name:      "timeout",
+			operation: "GET /test",
+			timeout:   10 * time.Millisecond, //nolint:kennlint // deadlinetest: the case asserts deadline expiry inside its synctest bubble
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				<-r.Context().Done()
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte("too slow"))
+			},
+			assertResponse: func(t *testing.T, resp *http.Response) {
+				t.Helper()
+
+				assertTimeoutResponse(
+					t, resp,
+					"GET /test",
+					"10ms",
+					"--write-timeout",
+				)
+			},
+		},
+		{
+			name:      "success",
+			operation: "GET /test",
+			timeout:   time.Second,
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-Custom", "value")
+				w.WriteHeader(http.StatusCreated)
+				w.Write([]byte(`{"status":"ok"}`))
+			},
+			wantStatus:    http.StatusCreated,
+			wantBody:      `{"status":"ok"}`,
+			wantHeaderKey: "X-Custom",
+			wantHeaderVal: "value",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// Virtual time keeps the deadline and handler delay independent of host scheduling.
+			synctest.Test(t, func(t *testing.T) {
+				s := newTestServerMinimal(t, tt.timeout)
+				handlerDone := make(chan struct{})
+				wrapped := s.withTimeout(tt.operation, func(w http.ResponseWriter, r *http.Request) {
+					defer close(handlerDone)
+					tt.handler(w, r)
+				})
+				// A timeout returns before the handler finishes; join it while time can still advance.
+				defer func() { <-handlerDone }()
+
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+				w := httptest.NewRecorder()
+				wrapped.ServeHTTP(w, req)
+
+				resp := w.Result()
+				defer resp.Body.Close()
+
+				if tt.assertResponse != nil {
+					tt.assertResponse(t, resp)
+					return
+				}
+
+				assertRecorderStatus(t, w, tt.wantStatus)
+
+				if tt.wantHeaderKey != "" {
+					assert.Equal(t, tt.wantHeaderVal,
+						resp.Header.Get(tt.wantHeaderKey),
+						"header %s", tt.wantHeaderKey)
+				}
+
+				body, err := io.ReadAll(resp.Body)
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantBody, string(body))
+			})
+		})
+	}
+}

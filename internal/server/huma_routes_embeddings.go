@@ -1,0 +1,279 @@
+package server
+
+import (
+	"context"
+	"errors"
+	"net/http"
+
+	"go.kenn.io/agentsview/internal/vector"
+
+	"github.com/danielgtaylor/huma/v2"
+)
+
+// EmbeddingsRuntime owns the writable daemon's live vector setup.
+type EmbeddingsRuntime interface {
+	Manager(store string) EmbeddingsManager
+	IncludeAutomated() bool
+	SetupStatus(context.Context) (EmbeddingsSetupStatus, error)
+	// Setup approves at most approvedBytes of download, the size the user saw.
+	Setup(approvedBytes int64) error
+}
+
+type EmbeddingsSetupStatus = vector.SetupStatus
+
+func WithEmbeddingsRuntime(runtime EmbeddingsRuntime) Option {
+	return func(s *Server) { s.embeddingsRuntime = runtime }
+}
+
+type embeddingsSetupInput struct {
+	Body struct {
+		ApprovedBytes int64 `json:"approved_bytes,omitempty" minimum:"0" doc:"Download size the user saw; a larger download is declined"`
+	}
+}
+
+func (s *Server) humaEmbeddingsSetup(_ context.Context, in *embeddingsSetupInput) (*embeddingsBuildOutput, error) {
+	if s.embeddingsRuntime == nil {
+		return nil, s.embeddingsUnavailableError()
+	}
+	if err := s.embeddingsRuntime.Setup(in.Body.ApprovedBytes); err != nil {
+		if errors.Is(err, vector.ErrBuildRunning) {
+			return nil, embeddingsActionError(err)
+		}
+		if errors.Is(err, vector.ErrInvalidBuildRequest) {
+			return nil, apiError(http.StatusBadRequest, err.Error())
+		}
+		return nil, internalError("set up embeddings", err)
+	}
+	return &embeddingsBuildOutput{Status: http.StatusAccepted, Body: embeddingsBuildResponse{Started: true}}, nil
+}
+
+// EmbeddingsManager is the subset of *vector.Manager's API the embeddings
+// build lifecycle routes need. Declaring it here (rather than depending on
+// *vector.Manager directly) lets tests substitute a fake. TryBuild is
+// intentionally excluded: it is the scheduler's synchronous entry point
+// (Task 16), not part of the HTTP surface.
+type EmbeddingsManager interface {
+	StartBuild(req vector.BuildRequest) error
+	Wait()
+	Status() vector.BuildStatus
+	Generations(ctx context.Context) ([]vector.GenerationInfo, error)
+	Activate(ctx context.Context, id int64, force bool) error
+	Retire(ctx context.Context, id int64, force bool) error
+}
+
+// WithEmbeddingsUnavailableReason records why the embeddings routes are
+// unavailable, so their 501 responses carry an actionable message instead of
+// the generic "embeddings manager not available" — e.g. when the daemon
+// disabled vector serving at startup because another process held
+// vectors.write.lock.
+func WithEmbeddingsUnavailableReason(reason string) Option {
+	return func(s *Server) { s.embeddingsUnavailableReason = reason }
+}
+
+// embeddingsUnavailableError is the 501 every embeddings route returns while
+// no manager is wired, carrying the recorded cause when one exists.
+func (s *Server) embeddingsUnavailableError() error {
+	msg := s.embeddingsUnavailableReason
+	if msg == "" {
+		msg = "embeddings manager not available"
+	}
+	return apiError(http.StatusNotImplemented, msg)
+}
+
+func (s *Server) registerEmbeddingsRoutes() {
+	group := huma.NewGroup(s.api, "/api/v1/embeddings")
+	configureRouteGroup(group, "Embeddings")
+	registerRoute(group, http.MethodPost, "/setup", "Set up search by meaning", s.humaEmbeddingsSetup, s.humaTimeout(), func(op *huma.Operation) { op.DefaultStatus = http.StatusAccepted })
+
+	registerRoute(group, http.MethodPost, "/build", "Start an embeddings build", s.humaEmbeddingsBuild,
+		s.humaTimeout(), func(op *huma.Operation) { op.DefaultStatus = http.StatusAccepted })
+	s.get(group, "/status", "Embeddings build status", s.humaEmbeddingsStatus)
+	s.get(group, "/generations", "List embedding generations", s.humaEmbeddingsGenerations)
+	s.post(group, "/generations/{id}/activate", "Activate an embedding generation",
+		s.humaEmbeddingsActivate)
+	s.post(group, "/generations/{id}/retire", "Retire an embedding generation",
+		s.humaEmbeddingsRetire)
+}
+
+// embeddingsBuildRequest mirrors vector.BuildRequest for the HTTP surface,
+// with IncludeAutomated as a tri-state: omitted (null) means "use the
+// daemon's configured [vector].include_automated scope", matching how
+// scheduler and CLI builds resolve it; an explicit value overrides the
+// config for this build only.
+type embeddingsBuildRequest struct {
+	Store            string `json:"store,omitempty"`
+	FullRebuild      bool   `json:"full_rebuild,omitempty"`
+	Backstop         bool   `json:"backstop,omitempty"`
+	RepairInvalid    bool   `json:"repair_invalid,omitempty"`
+	IncludeAutomated *bool  `json:"include_automated,omitempty"`
+	Using            string `json:"using,omitempty"`
+}
+
+type embeddingsBuildInput struct {
+	Body embeddingsBuildRequest
+}
+
+type embeddingsBuildResponse struct {
+	Started bool `json:"started"`
+}
+
+type embeddingsBuildOutput struct {
+	Status int `status:"202"`
+	Body   embeddingsBuildResponse
+}
+
+type embeddingsGenerationsResponse struct {
+	Generations []vector.GenerationInfo `json:"generations"`
+}
+
+type embeddingsStoreInput struct {
+	Store string `query:"store"`
+}
+
+type embeddingsGenerationActionRequest struct {
+	Force bool `json:"force,omitempty"`
+}
+
+type embeddingsGenerationActionInput struct {
+	ID    int64  `path:"id" required:"true" doc:"Generation ordinal ID"`
+	Store string `query:"store"`
+	Body  embeddingsGenerationActionRequest
+}
+
+func (s *Server) embeddingsManagerFor(store string) EmbeddingsManager {
+	if s.embeddingsRuntime == nil {
+		return nil
+	}
+	return s.embeddingsRuntime.Manager(store)
+}
+
+func (s *Server) humaEmbeddingsBuild(
+	_ context.Context, in *embeddingsBuildInput,
+) (*embeddingsBuildOutput, error) {
+	manager := s.embeddingsManagerFor(in.Body.Store)
+	if manager == nil {
+		return nil, s.embeddingsUnavailableError()
+	}
+	includeAutomated := s.embeddingsRuntime.IncludeAutomated()
+	if in.Body.IncludeAutomated != nil {
+		includeAutomated = *in.Body.IncludeAutomated
+	}
+	spec := vector.MessageIndexSpec()
+	if in.Body.Store == vector.RecallIndexSpec().Name {
+		spec = vector.RecallIndexSpec()
+	}
+	includeAutomated = spec.NormalizeIncludeAutomated(includeAutomated)
+	req := vector.BuildRequest{
+		FullRebuild:      in.Body.FullRebuild,
+		Backstop:         in.Body.Backstop,
+		RepairInvalid:    in.Body.RepairInvalid,
+		IncludeAutomated: includeAutomated,
+		Using:            in.Body.Using,
+	}
+	release, ok := s.idle.BeginWork()
+	if !ok {
+		return nil, apiError(http.StatusServiceUnavailable, "server is shutting down")
+	}
+	if err := manager.StartBuild(req); err != nil {
+		release()
+		if errors.Is(err, vector.ErrBuildRunning) {
+			return nil, apiError(http.StatusConflict, err.Error())
+		}
+		if errors.Is(err, vector.ErrUnknownServer) ||
+			errors.Is(err, vector.ErrInvalidBuildRequest) {
+			return nil, apiError(http.StatusBadRequest, err.Error())
+		}
+		return nil, internalError("start embeddings build", err)
+	}
+	go func() {
+		manager.Wait()
+		release()
+	}()
+	return &embeddingsBuildOutput{
+		Status: http.StatusAccepted,
+		Body:   embeddingsBuildResponse{Started: true},
+	}, nil
+}
+
+func (s *Server) humaEmbeddingsStatus(ctx context.Context, in *embeddingsStoreInput) (*jsonOutput[vector.BuildStatus], error) {
+	var setup *EmbeddingsSetupStatus
+	if s.embeddingsRuntime != nil {
+		status, err := s.embeddingsRuntime.SetupStatus(ctx)
+		if err != nil {
+			status.Error = err.Error()
+		}
+		setup = &status
+		if !status.Enabled {
+			return &jsonOutput[vector.BuildStatus]{Body: vector.BuildStatus{Setup: setup}}, nil
+		}
+	}
+	manager := s.embeddingsManagerFor(in.Store)
+	if manager == nil {
+		if setup != nil && setup.Action != "" {
+			return &jsonOutput[vector.BuildStatus]{Body: vector.BuildStatus{Setup: setup}}, nil
+		}
+		return nil, s.embeddingsUnavailableError()
+	}
+	body := manager.Status()
+	body.Setup = setup
+	return &jsonOutput[vector.BuildStatus]{Body: body}, nil
+}
+
+func (s *Server) humaEmbeddingsGenerations(
+	ctx context.Context, in *embeddingsStoreInput,
+) (*jsonOutput[embeddingsGenerationsResponse], error) {
+	manager := s.embeddingsManagerFor(in.Store)
+	if manager == nil {
+		return nil, s.embeddingsUnavailableError()
+	}
+	gens, err := manager.Generations(ctx)
+	if err != nil {
+		return nil, internalError("list embedding generations", err)
+	}
+	if gens == nil {
+		gens = []vector.GenerationInfo{}
+	}
+	return &jsonOutput[embeddingsGenerationsResponse]{
+		Body: embeddingsGenerationsResponse{Generations: gens},
+	}, nil
+}
+
+func (s *Server) humaEmbeddingsActivate(
+	ctx context.Context, in *embeddingsGenerationActionInput,
+) (*noContentOutput, error) {
+	manager := s.embeddingsManagerFor(in.Store)
+	if manager == nil {
+		return nil, s.embeddingsUnavailableError()
+	}
+	if err := manager.Activate(ctx, in.ID, in.Body.Force); err != nil {
+		return nil, embeddingsActionError(err)
+	}
+	return &noContentOutput{Status: http.StatusNoContent}, nil
+}
+
+func (s *Server) humaEmbeddingsRetire(
+	ctx context.Context, in *embeddingsGenerationActionInput,
+) (*noContentOutput, error) {
+	manager := s.embeddingsManagerFor(in.Store)
+	if manager == nil {
+		return nil, s.embeddingsUnavailableError()
+	}
+	if err := manager.Retire(ctx, in.ID, in.Body.Force); err != nil {
+		return nil, embeddingsActionError(err)
+	}
+	return &noContentOutput{Status: http.StatusNoContent}, nil
+}
+
+// embeddingsActionError maps Activate/Retire's sentinels — ErrBuildRunning
+// and ErrGenerationRefused to 409 Conflict, ErrGenerationNotFound to 404 Not
+// Found — with the underlying message, and anything else to a generic
+// internal error.
+func embeddingsActionError(err error) error {
+	if errors.Is(err, vector.ErrBuildRunning) || errors.Is(err, vector.ErrGenerationRefused) {
+		return apiError(http.StatusConflict, err.Error())
+	}
+	if errors.Is(err, vector.ErrGenerationNotFound) {
+		return apiError(http.StatusNotFound, err.Error())
+	}
+	return internalError("embeddings generation action", err)
+}

@@ -560,6 +560,37 @@ class GateProbeCase(GateTree, unittest.TestCase):
         for step in ("build", "vet", "test"):
             self.assertEqual(self.step_line(text, step)[0], "PASS", text)
 
+    def test_gate_goflags_file_is_folded_into_the_go_commands(self) -> None:
+        """``scripts/gate-goflags.txt`` reaches build/vet/test, ahead of the targets.
+
+        The inherited AgentsView module builds with ``-tags fts5`` on every Go command, and a binary
+        built without it cannot load an archive that has a full-text index, so the flags a gate run
+        used have to come from the tree rather than from whoever typed the command.
+        """
+        self.stub("go")
+        self.write("go.mod", "module example.com/throwaway\n\ngo 1.27\n")
+        self.write("main.go", "package main\n")
+        self.write("scripts/gate-goflags.txt", "# the inherited build tag\n-tags fts5\n")
+        self.write("scripts/gate-targets.txt", "./cmd/ccc/...\n")
+        seen: list[list[str]] = []
+
+        def accepting(cmd, env=None, timeout=1800):
+            if cmd[0] == "go":
+                seen.append(list(cmd))
+            return tool_result(cmd)
+
+        rc, text = self.run_in_process(tracked_go_files=lambda: ["main.go"], run=accepting)
+        self.assertEqual(rc, 0, text)
+        self.assertEqual(
+            seen,
+            [
+                ["go", "build", "-tags", "fts5", "./cmd/ccc/..."],
+                ["go", "vet", "-tags", "fts5", "./cmd/ccc/..."],
+                ["go", "test", "-count=1", "-tags", "fts5", "./cmd/ccc/..."],
+            ],
+            text,
+        )
+
     def test_go_env_sets_cgo_and_the_windows_c_compiler_boundary(self) -> None:
         """The environment every Go step is handed, and the one excused host.
 
@@ -593,6 +624,58 @@ class GateProbeCase(GateTree, unittest.TestCase):
         self.assertEqual(proc.returncode, 127, proc.stderr)
         self.assertEqual(proc.stdout, "")
         self.assertIn(missing, proc.stderr)
+
+    def test_secrets_step_scans_this_repositorys_own_files(self) -> None:
+        """The carried tree is the parity step's to verify; the leak scan reads what is ours.
+
+        ``secrets_scope`` stages exactly the paths the carry manifest calls project-owned, so an
+        upstream credential shape in upstream's own detector corpora cannot fail a gate run here and a
+        credential this repository commits cannot hide behind that.
+        """
+        self.stub("gitleaks")
+        self.write("scripts/upstream-manifest.txt",
+                   "pin " + "a" * 40 + "\nowned\tproject/\nfile\t100644\tabc\t3\tcarried.txt\n")
+        self.write("project/ours.txt", "ours\n")
+        self.write("carried.txt", "theirs\n")
+        seen: list[list[str]] = []
+        scopes: list[Path] = []
+
+        def accepting(cmd, env=None, timeout=1800):
+            if cmd[0] == "gitleaks":
+                seen.append(list(cmd))
+                source = Path(cmd[cmd.index("--source") + 1])
+                scopes.append(source)
+                staged = sorted(p.name for p in source.rglob("*") if p.is_file())
+                self.assertEqual(staged, ["ours.txt"], f"scanned {staged}")
+            return tool_result(cmd)
+
+        rc, text = self.run_in_process(run=accepting)
+        self.assertEqual(rc, 0, text)
+        self.assertEqual(len(seen), 1, text)
+        self.assertNotEqual(scopes[0], self.root, text)
+        status, detail = self.step_line(text, "secrets")
+        self.assertEqual(status, "PASS", text)
+        self.assertIn("this repository owns", detail)
+
+    def test_secrets_step_without_a_manifest_says_what_it_scanned(self) -> None:
+        """A tree with no carry manifest cannot narrow the scan, and must not pretend it did."""
+        self.stub("gitleaks")
+        self.write("loose.txt", "no manifest here\n")
+        seen: list[list[str]] = []
+
+        def accepting(cmd, env=None, timeout=1800):
+            if cmd[0] == "gitleaks":
+                seen.append(list(cmd))
+            return tool_result(cmd)
+
+        rc, text = self.run_in_process(run=accepting)
+        self.assertEqual(rc, 0, text)
+        self.assertEqual(len(seen), 1, text)
+        self.assertEqual(seen[0][seen[0].index("--source") + 1], str(self.root), text)
+        status, detail = self.step_line(text, "secrets")
+        self.assertEqual(status, "PASS", text)
+        self.assertIn("no readable carry manifest", detail)
+        self.assertIn("whole tree", detail)
 
     def test_gitleaks_run_that_did_not_complete_is_skipped_not_failed(self) -> None:
         """Any rc other than 0 and the leak code 7 leaves the step a disclosed SKIP."""
@@ -765,19 +848,16 @@ class HostCase(GateTree, unittest.TestCase):
         )
 
     def suite_size(self) -> int:
-        """How many cases this suite defines, counted off the loaded module.
+        """How many cases this suite defines: what the gate's own discovery finds.
 
-        A nested run that discovered a subset -- one file it could not import,
-        one case it dropped -- would otherwise be green and prove nothing about
-        the cases it never ran.
+        Counted from the *discovery* the selftest step performs over
+        ``scripts/tests/test_*.py``, not from one module, because a suite that
+        grew a second file would otherwise be counted short: a nested run that
+        discovered a subset -- one file it could not import, one case it dropped
+        -- must fail here rather than read as green over the cases it never ran.
         """
-        module = sys.modules[type(self).__module__]
         loader = unittest.TestLoader()
-        return sum(
-            loader.loadTestsFromTestCase(value).countTestCases()
-            for value in vars(module).values()
-            if isinstance(value, type) and issubclass(value, unittest.TestCase)
-        )
+        return loader.discover(str(REPO_ROOT / "scripts" / "tests"), pattern="test_*.py").countTestCases()
 
     def nested_statuses(self, text: str) -> dict[str, str]:
         """The status the nested run printed per case, keyed by case name.
@@ -790,8 +870,13 @@ class HostCase(GateTree, unittest.TestCase):
         """
         statuses: dict[str, str] = {}
         for line in text.splitlines():
-            name, sep, rest = line.partition(" (test_gate.")
+            name, sep, rest = line.partition(" (")
             if not sep or " ... " not in rest:
+                continue
+            # The qualifier is ``<module>.<class>.<case>`` for every case the
+            # discovering runner prints, whichever file defines it.
+            qualifier, close, _ = rest.partition(")")
+            if not close or "." not in qualifier:
                 continue
             statuses[name.strip()] = rest.rsplit(" ... ", 1)[1].split()[0]
         return statuses

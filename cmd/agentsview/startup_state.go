@@ -1,0 +1,301 @@
+// ABOUTME: startup-state.json publishes the starting daemon's pid, phase,
+// ABOUTME: and progress so `serve status` can report them during startup.
+package main
+
+import (
+	"encoding/json/v2"
+	"log"
+	"os"
+	"path/filepath"
+	"strconv"
+	"sync"
+	"time"
+
+	"go.kenn.io/agentsview/internal/db"
+	syncpkg "go.kenn.io/agentsview/internal/sync"
+)
+
+// startupStateFileName is the data-dir file holding the starting
+// daemon's progress snapshot. It exists exactly as long as the daemon
+// start lock is held; readers must only trust it while
+// IsDaemonStarting reports true.
+const startupStateFileName = "startup-state.json"
+
+// startupDetailThrottle bounds how often detail-only updates rewrite
+// the state file during high-frequency sync progress callbacks.
+const startupDetailThrottle = time.Second
+
+type startupState struct {
+	PID              int       `json:"pid"`
+	Version          string    `json:"version,omitempty"`
+	StartedAt        time.Time `json:"started_at"`
+	Phase            string    `json:"phase"`
+	Detail           string    `json:"detail,omitempty"`
+	LogPath          string    `json:"log_path,omitempty"`
+	Host             string    `json:"host,omitempty"`
+	BrowserURL       string    `json:"browser_url,omitempty"`
+	Port             int       `json:"port,omitempty"`
+	ExplicitPort     *int      `json:"explicit_port,omitempty"`
+	RuntimeError     string    `json:"runtime_error,omitempty"`
+	CreateTime       string    `json:"create_time,omitempty"`
+	APIVersion       int       `json:"api_version,omitempty"`
+	DataVersion      int       `json:"data_version,omitempty"`
+	CaddyPID         int       `json:"caddy_pid,omitempty"`
+	CaddyCreateTime  string    `json:"caddy_create_time,omitempty"`
+	RequireAuth      bool      `json:"require_auth,omitempty"`
+	RequireAuthKnown bool      `json:"require_auth_known,omitempty"`
+	Persistent       bool      `json:"persistent,omitempty"`
+	IdleTimeout      string    `json:"idle_timeout,omitempty"`
+	NoSync           bool      `json:"no_sync,omitempty"`
+	NoSyncKnown      bool      `json:"no_sync_known,omitempty"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+func startupStatePath(dataDir string) string {
+	return filepath.Join(dataDir, startupStateFileName)
+}
+
+// serveLogPath is where a background-launched serve child writes its
+// startup output.
+func serveLogPath(dataDir string) string {
+	return filepath.Join(dataDir, "serve.log")
+}
+
+// startupStateWriter persists throttled startup progress snapshots.
+// Write failures are logged once and otherwise ignored: startup
+// transparency must never break startup.
+type startupStateWriter struct {
+	mu           sync.Mutex
+	path         string
+	state        startupState
+	syncProgress syncpkg.Progress
+	lastWrite    time.Time
+	warnOnce     sync.Once
+	now          func() time.Time
+}
+
+func newStartupStateWriter(
+	dataDir string, now func() time.Time,
+) *startupStateWriter {
+	w := &startupStateWriter{
+		path: startupStatePath(dataDir),
+		now:  now,
+	}
+	w.state.PID = os.Getpid()
+	w.state.Version = version
+	w.state.StartedAt = now()
+	if createTime, ok := processCreateTimeMillis(w.state.PID); ok {
+		w.state.CreateTime = strconv.FormatInt(createTime, 10)
+	}
+	if runningAsBackgroundChild() {
+		// Only a background child's output lands in serve.log; a
+		// foreground serve prints to the invoking terminal.
+		w.state.LogPath = serveLogPath(dataDir)
+	}
+	return w
+}
+
+// SetPhase records a phase transition and clears the previous phase's
+// detail. Phase changes persist immediately, bypassing the throttle.
+func (w *startupStateWriter) SetPhase(phase string) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if phase == w.state.Phase {
+		return
+	}
+	w.state.Phase = phase
+	w.state.Detail = ""
+	w.write()
+}
+
+// SetPhaseDetail publishes a discrete startup step immediately. Unlike session
+// counters, a step may be reported only once before a long operation starts.
+func (w *startupStateWriter) SetPhaseDetail(phase, detail string) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.state.Phase == phase && w.state.Detail == detail {
+		return
+	}
+	w.state.Phase, w.state.Detail = phase, detail
+	w.write()
+}
+
+// SetCaddyProcess publishes the managed proxy identity as soon as it starts,
+// before the daemon runtime record exists. This lets daemon stop clean up the
+// proxy even when startup is interrupted before runtime publication.
+func (w *startupStateWriter) SetCaddyProcess(pid int) {
+	if w == nil || pid <= 0 {
+		return
+	}
+	createTime := ""
+	if created, ok := processCreateTimeMillis(pid); ok {
+		createTime = strconv.FormatInt(created, 10)
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.state.CaddyPID = pid
+	w.state.CaddyCreateTime = createTime
+	w.write()
+}
+
+// SetSyncProgress publishes one-shot stages immediately; only repeated session
+// counters may be throttled. A dropped stage has no later callback to retry it.
+func (w *startupStateWriter) SetSyncProgress(p syncpkg.Progress) {
+	if w == nil {
+		return
+	}
+	phase := "initial sync"
+	if p.Resync {
+		phase = "full resync"
+	}
+	detail := startupProgressDetail(p)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	previous := w.syncProgress
+	w.syncProgress = p
+	if phase != w.state.Phase || p.Phase != previous.Phase ||
+		p.Detail != previous.Detail || p.Hint != previous.Hint ||
+		(p.SessionsTotal > 0) != (previous.SessionsTotal > 0) {
+		w.state.Phase, w.state.Detail = phase, detail
+		w.write()
+	} else {
+		w.setDetailLocked(detail)
+	}
+}
+
+// SetDetail records fine-grained progress within the current phase,
+// persisted at most once per startupDetailThrottle.
+func (w *startupStateWriter) SetDetail(detail string) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.setDetailLocked(detail)
+}
+
+func (w *startupStateWriter) setDetailLocked(detail string) {
+	// state.Detail only changes when a write happens, so this dedup
+	// compares against what a reader can actually see. Storing a
+	// throttled detail in memory first would make a stable detail
+	// match itself on every later call and never persist.
+	if detail == "" || detail == w.state.Detail {
+		return
+	}
+	// Publish the first detail for a new phase immediately. This costs at most
+	// one extra write per phase and prevents the phase write itself from hiding
+	// the only useful description of a long-running step. Once detail exists,
+	// keep throttling high-frequency counter updates as before.
+	if w.state.Detail != "" && w.now().Sub(w.lastWrite) < startupDetailThrottle {
+		return
+	}
+	w.state.Detail = detail
+	w.write()
+}
+
+// write persists the current state atomically via temp file + rename
+// so readers never observe a partial JSON document. Callers hold w.mu.
+func (w *startupStateWriter) write() {
+	w.state.UpdatedAt = w.now()
+	data, err := json.Marshal(w.state)
+	if err != nil {
+		w.warn(err)
+		return
+	}
+	if err := writeStartupState(filepath.Dir(w.path), data); err != nil {
+		w.warn(err)
+		return
+	}
+	w.lastWrite = w.now()
+}
+
+func writeStartupState(dataDir string, data []byte) error {
+	root, err := os.OpenRoot(dataDir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	tmp := startupStateFileName + ".tmp"
+	if err := root.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	defer func() { _ = root.Remove(tmp) }()
+	// Root.Rename can replace a snapshot still open by Windows readers.
+	return root.Rename(tmp, startupStateFileName)
+}
+
+func (w *startupStateWriter) warn(err error) {
+	w.warnOnce.Do(func() {
+		log.Printf("warning: cannot write startup state: %v", err)
+	})
+}
+
+// readStartupState loads the startup snapshot, or nil when the file is
+// missing or unreadable (legacy daemon version, mid-write race).
+func readStartupState(dataDir string) *startupState {
+	root, err := os.OpenRoot(dataDir)
+	if err != nil {
+		return nil
+	}
+	defer root.Close()
+	// Root readers share delete access on Windows so snapshots can be replaced.
+	data, err := root.ReadFile(startupStateFileName)
+	if err != nil {
+		return nil
+	}
+	var st startupState
+	if err := json.Unmarshal(data, &st); err != nil {
+		return nil
+	}
+	return &st
+}
+
+// publishStartupStateFallback records the endpoint after bind when the
+// definitive runtime record cannot be written. Keep the existing snapshot so
+// lifecycle readers can still report startup progress and require a daemon-
+// authored snapshot before trusting this fallback.
+func publishStartupStateFallback(
+	dataDir, host string, port int, browserURL string, requireAuth, noSync bool, explicitPort *int, caddyPID int, runtimeErr error,
+) {
+	st := readStartupState(dataDir)
+	if st == nil || host == "" || port <= 0 || runtimeErr == nil {
+		return
+	}
+	st.Host = host
+	st.BrowserURL = browserURL
+	st.Port = port
+	st.ExplicitPort = explicitPort
+	st.RuntimeError = runtimeErr.Error()
+	st.RequireAuth = requireAuth
+	st.RequireAuthKnown = true
+	st.NoSync = noSync
+	st.NoSyncKnown = true
+	st.APIVersion = daemonAPIVersion
+	st.DataVersion = db.CurrentDataVersion()
+	st.CaddyPID = caddyPID
+	st.CaddyCreateTime = ""
+	if caddyPID > 0 {
+		if caddyCreateTime, ok := processCreateTimeMillis(caddyPID); ok {
+			st.CaddyCreateTime = strconv.FormatInt(caddyCreateTime, 10)
+		}
+	}
+	if createTime, ok := processCreateTimeMillis(st.PID); ok {
+		st.CreateTime = strconv.FormatInt(createTime, 10)
+	}
+	st.UpdatedAt = time.Now()
+	data, err := json.Marshal(st)
+	if err != nil {
+		return
+	}
+	_ = writeStartupState(dataDir, data)
+}
+
+func removeStartupState(dataDir string) {
+	_ = os.Remove(startupStatePath(dataDir))
+}

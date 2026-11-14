@@ -1,0 +1,966 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vite-plus/test";
+import { mount, tick, unmount } from "svelte";
+// @ts-ignore
+import SessionList from "./SessionList.svelte";
+import { readProgress } from "../../stores/read-progress.svelte.js";
+import { sessions } from "../../stores/sessions.svelte.js";
+import type { Session } from "../../api/types.js";
+import { SessionsService } from "../../api/generated/index.js";
+import { starred } from "../../stores/starred.svelte.js";
+import { ui } from "../../stores/ui.svelte.js";
+import { m, setLocale } from "../../i18n/index.js";
+import { ITEM_HEIGHT, OVERSCAN, STORAGE_KEY_GROUP } from "./session-list-utils.js";
+
+vi.mock("../../api/client.js", () => ({
+  listSessions: vi.fn().mockResolvedValue({
+    sessions: [],
+    total: 0,
+  }),
+  getSidebarSessionIndex: vi.fn().mockResolvedValue({
+    sessions: [],
+    total: 0,
+  }),
+  getSession: vi.fn(),
+  getAgents: vi.fn().mockResolvedValue({ agents: [] }),
+  getMachines: vi.fn().mockResolvedValue({ machines: [] }),
+  getStats: vi.fn().mockResolvedValue({
+    session_count: 0,
+    message_count: 0,
+    project_count: 0,
+    machine_count: 0,
+    earliest_session: null,
+  }),
+  watchEvents: vi.fn(() => ({ close: () => {} })),
+  listStarred: vi.fn().mockResolvedValue({ session_ids: [] }),
+  bulkStarSessions: vi.fn().mockResolvedValue(undefined),
+  starSession: vi.fn().mockResolvedValue(undefined),
+  unstarSession: vi.fn().mockResolvedValue(undefined),
+}));
+
+class ResizeObserverMock {
+  observe = vi.fn();
+  disconnect = vi.fn();
+}
+
+describe("SessionList filter dropdown", () => {
+  let component: ReturnType<typeof mount> | undefined;
+  let originalResizeObserver: typeof ResizeObserver | undefined;
+  let clientHeightSpy: MockInstance<() => number> | undefined;
+  let rafSpy: MockInstance<typeof requestAnimationFrame> | undefined;
+
+  beforeEach(() => {
+    originalResizeObserver = globalThis.ResizeObserver;
+    Object.defineProperty(globalThis, "ResizeObserver", {
+      configurable: true,
+      writable: true,
+      value: ResizeObserverMock,
+    });
+    clientHeightSpy = vi
+      .spyOn(HTMLElement.prototype, "clientHeight", "get")
+      .mockReturnValue(ITEM_HEIGHT * 3);
+    rafSpy = vi
+      .spyOn(globalThis, "requestAnimationFrame")
+      .mockImplementation((cb: FrameRequestCallback) => {
+        queueMicrotask(() => cb(0));
+        return 1;
+      });
+    sessions.sessions = [];
+    sessions.projects = [];
+    sessions.agents = [];
+    sessions.machines = [];
+    sessions.activeSessionId = null;
+    sessions.nextCursor = null;
+    sessions.loading = false;
+    sessions.selectedIds = new Set();
+    sessions.selectMode = false;
+    sessions.sidebarIndexVersion++;
+    sessions.hydratedSessionsByVersion = new Map([[sessions.sidebarIndexVersion, new Map()]]);
+    readProgress.reset();
+    starred.filterOnly = false;
+    starred.ids = new Set();
+    ui.sidebarOpen = true;
+    ui.isMobileViewport = false;
+    setLocale("en");
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    if (component) {
+      unmount(component);
+      component = undefined;
+    }
+    document.body.innerHTML = "";
+    Object.defineProperty(globalThis, "ResizeObserver", {
+      configurable: true,
+      writable: true,
+      value: originalResizeObserver,
+    });
+    clientHeightSpy?.mockRestore();
+    rafSpy?.mockRestore();
+    readProgress.reset();
+    ui.sidebarOpen = true;
+    ui.isMobileViewport = false;
+    vi.restoreAllMocks();
+  });
+
+  it("labels compact header controls with hover hints", async () => {
+    component = mount(SessionList, { target: document.body });
+    await tick();
+
+    const filterButton = document.querySelector<HTMLButtonElement>(".filter-btn");
+
+    expect(filterButton).not.toBeNull();
+    expect(filterButton?.title).toBe("Filter sessions");
+    expect(filterButton?.getAttribute("aria-label")).toBe("Filters");
+  });
+
+  it("places the desktop collapse control to the right of the filter", async () => {
+    component = mount(SessionList, { target: document.body });
+    await tick();
+
+    const filterButton = document.querySelector<HTMLButtonElement>(".filter-btn");
+    const collapseButton = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Close sidebar"]',
+    );
+
+    expect(filterButton).not.toBeNull();
+    expect(collapseButton).not.toBeNull();
+    expect(filterButton?.nextElementSibling).toBe(collapseButton);
+    expect(collapseButton?.title).toBe("Toggle sidebar (b)");
+
+    collapseButton!.click();
+    await tick();
+
+    expect(ui.sidebarOpen).toBe(false);
+  });
+
+  it("does not duplicate the hamburger inside the mobile drawer", async () => {
+    ui.isMobileViewport = true;
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+
+    expect(document.querySelector('button[aria-label="Close sidebar"]')).toBeNull();
+  });
+
+  it("renders translated sidebar filter controls and row actions", async () => {
+    setLocale("zh-CN");
+    sessions.agents = [
+      { name: "claude", session_count: 4 },
+      { name: "codex", session_count: 2 },
+    ];
+    sessions.machines = ["workstation"];
+    sessions.sessions = [
+      makeSession({
+        id: "translated-session",
+        display_name: "Translated row",
+        is_index_only: false,
+      }),
+    ];
+    vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+
+    const filterButton = document.querySelector<HTMLButtonElement>(".filter-btn");
+    expect(filterButton).not.toBeNull();
+    expect(filterButton?.title).toBe("筛选会话");
+    expect(filterButton?.getAttribute("aria-label")).toBe("筛选器");
+
+    filterButton!.click();
+    await tick();
+
+    expect(document.body.textContent).toContain("显示");
+    expect(document.body.textContent).toContain("按 agent 分组");
+    expect(document.body.textContent).toContain("仅显示已固定");
+    expect(document.body.textContent).toContain("最近活跃");
+    expect(document.body.textContent).toContain("隐藏单轮");
+    expect(document.body.textContent).toContain("所有 agents");
+    expect(document.body.textContent).toContain("Machine");
+    expect(document.body.textContent).toContain("最少提示数");
+
+    const row = document.querySelector<HTMLElement>(".session-item");
+    expect(row).not.toBeNull();
+    row!.dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 7,
+        clientY: 8,
+      }),
+    );
+    await tick();
+
+    expect(document.body.textContent).toContain("重命名");
+    expect(document.body.textContent).toContain("更改项目");
+    expect(document.body.textContent).toContain("在新标签页打开");
+    expect(document.body.textContent).toContain("删除");
+
+    sessions.selectMode = true;
+    sessions.selectedIds = new Set(["translated-session"]);
+    await tick();
+
+    expect(document.body.textContent).toContain("已选择 1 个");
+    const batchSelectButton = document.querySelector<HTMLButtonElement>(".batch-select-all-btn");
+    expect(batchSelectButton?.textContent?.trim()).toBe("清除");
+    expect(document.body.textContent).toContain("取消");
+  });
+
+  it("shows the unread indicator only for rows whose hydrated token changed", async () => {
+    sessions.sessions = [
+      makeSession({
+        id: "changed",
+        display_name: "Changed",
+        transcript_revision: "new",
+        is_index_only: true,
+      }),
+      makeSession({
+        id: "same",
+        display_name: "Same",
+        transcript_revision: "same",
+        is_index_only: true,
+      }),
+    ];
+    readProgress.baseline("changed", "old", 1);
+    readProgress.baseline("same", "same", 1);
+    vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+
+    const indicators = document.querySelectorAll('[aria-label="Unread messages"]');
+    expect(indicators).toHaveLength(1);
+  });
+
+  it("assigns an individual session from its searchable project editor", async () => {
+    sessions.projects = [{ name: "destination", session_count: 4 }];
+    sessions.sessions = [
+      makeSession({
+        id: "move-session",
+        display_name: "Move this session",
+        is_index_only: false,
+        project_assigned: false,
+      }),
+    ];
+    vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+    vi.spyOn(sessions, "loadProjects").mockResolvedValue(undefined);
+    const assign = vi.spyOn(sessions, "assignSessionProject").mockResolvedValue("destination");
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+    document
+      .querySelector<HTMLElement>(".session-item")!
+      .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 12, clientY: 12 }));
+    await tick();
+    Array.from(document.querySelectorAll<HTMLButtonElement>(".context-menu-item"))
+      .find((button) => button.textContent?.includes("Change project"))!
+      .click();
+    await tick();
+
+    expect(document.body.textContent).toContain(m.data_session_assignment_automatic());
+    document
+      .querySelector<HTMLButtonElement>(`[title="${m.data_session_assignment_target()}"]`)!
+      .click();
+    await tick();
+    document
+      .querySelector<HTMLElement>('[role="option"]')!
+      .dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    await tick();
+    Array.from(document.querySelectorAll<HTMLButtonElement>(".project-editor button"))
+      .find((button) => button.textContent?.includes(m.data_session_assignment_save()))!
+      .click();
+    await tick();
+
+    expect(assign).toHaveBeenCalledWith("move-session", "destination");
+  });
+
+  it("restores automatic assignment for a manually moved session", async () => {
+    sessions.sessions = [
+      makeSession({
+        id: "manual-session",
+        display_name: "Manual session",
+        is_index_only: false,
+        project_assigned: true,
+      }),
+    ];
+    vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+    vi.spyOn(sessions, "loadProjects").mockResolvedValue(undefined);
+    const clear = vi.spyOn(sessions, "clearSessionProjectAssignment").mockResolvedValue("proj");
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+    document
+      .querySelector<HTMLElement>(".session-item")!
+      .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 12, clientY: 12 }));
+    await tick();
+    Array.from(document.querySelectorAll<HTMLButtonElement>(".context-menu-item"))
+      .find((button) => button.textContent?.includes("Change project"))!
+      .click();
+    await tick();
+
+    expect(document.body.textContent).toContain(m.data_session_assignment_manual());
+    Array.from(document.querySelectorAll<HTMLButtonElement>(".project-editor button"))
+      .find((button) => button.textContent?.includes(m.data_session_assignment_use_automatic()))!
+      .click();
+    await tick();
+
+    expect(clear).toHaveBeenCalledWith("manual-session");
+  });
+});
+
+describe("SessionList visible hydration", () => {
+  let component: ReturnType<typeof mount> | undefined;
+  let originalResizeObserver: typeof ResizeObserver | undefined;
+  let clientHeightSpy: MockInstance<() => number> | undefined;
+  let rafSpy: MockInstance<typeof requestAnimationFrame> | undefined;
+
+  beforeEach(() => {
+    originalResizeObserver = globalThis.ResizeObserver;
+    Object.defineProperty(globalThis, "ResizeObserver", {
+      configurable: true,
+      writable: true,
+      value: ResizeObserverMock,
+    });
+    clientHeightSpy = vi
+      .spyOn(HTMLElement.prototype, "clientHeight", "get")
+      .mockReturnValue(ITEM_HEIGHT * 3);
+    rafSpy = vi
+      .spyOn(globalThis, "requestAnimationFrame")
+      .mockImplementation((cb: FrameRequestCallback) => {
+        queueMicrotask(() => cb(0));
+        return 1;
+      });
+    sessions.sessions = [];
+    sessions.details.clear();
+    sessions.activeSessionId = null;
+    sessions.nextCursor = null;
+    sessions.loading = false;
+    sessions.selectedIds = new Set();
+    sessions.selectMode = false;
+    sessions.sidebarIndexVersion++;
+    sessions.hydratedSessionsByVersion = new Map([[sessions.sidebarIndexVersion, new Map()]]);
+    readProgress.reset();
+    starred.filterOnly = false;
+    starred.ids = new Set();
+    setLocale("en");
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    if (component) {
+      unmount(component);
+      component = undefined;
+    }
+    document.body.innerHTML = "";
+    Object.defineProperty(globalThis, "ResizeObserver", {
+      configurable: true,
+      writable: true,
+      value: originalResizeObserver,
+    });
+    clientHeightSpy?.mockRestore();
+    rafSpy?.mockRestore();
+    readProgress.reset();
+    vi.restoreAllMocks();
+  });
+
+  it("hydrates visible viewport rows plus overscan", async () => {
+    const viewportHeight = ITEM_HEIGHT * 2.5;
+    clientHeightSpy!.mockReturnValue(viewportHeight);
+    sessions.sessions = Array.from({ length: 20 }, (_, i) =>
+      makeSession({ id: `s${i}`, is_index_only: true }),
+    );
+    const hydrate = vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+
+    expect(hydrate).toHaveBeenCalledWith(
+      Array.from({ length: Math.ceil(viewportHeight / ITEM_HEIGHT) + OVERSCAN }, (_, i) => `s${i}`),
+      sessions.sidebarIndexVersion,
+    );
+  });
+
+  it("paints stored titles immediately after an identical index reload", async () => {
+    const row = { ...makeSession({ id: "reload-row" }), is_teammate: false };
+    vi.spyOn(SessionsService, "getApiV1SessionsSidebarIndex").mockResolvedValue({
+      sessions: [row],
+      total: 1,
+    });
+    const getDetail = vi
+      .spyOn(SessionsService, "getApiV1SessionsById")
+      .mockResolvedValueOnce(makeSession({ id: "reload-row", first_message: "Saved title" }))
+      .mockReturnValue(new Promise(() => {}));
+    await sessions.load();
+    await sessions.hydrateVisibleSessions(["reload-row"]);
+    await sessions.load();
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+    await tick();
+
+    expect(getDetail).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent).toContain("Saved title");
+  });
+
+  it("paints first visible index-only rows before hydration resolves", async () => {
+    sessions.sessions = [
+      makeSession({ id: "pending", project: "placeholder", is_index_only: true }),
+    ];
+    vi.spyOn(sessions, "hydrateVisibleSessions").mockReturnValue(new Promise<void>(() => {}));
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+
+    expect(document.querySelector(".session-name")?.textContent).toBe("placeholder");
+  });
+
+  it("keeps long session labels intact for responsive CSS clipping", async () => {
+    const title = "test: validate GitLab write parity against a real GitLab instance";
+    sessions.sessions = [
+      makeSession({
+        id: "long-title",
+        first_message: title,
+        is_index_only: false,
+      }),
+    ];
+    vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+
+    const name = document.querySelector<HTMLElement>(".session-name");
+    expect(name).not.toBeNull();
+    expect(name?.textContent).toBe(title);
+  });
+
+  it("reveals a deep-linked child inside a collapsed group", async () => {
+    sessions.sessions = [
+      makeSession({ id: "launcher", first_message: "Launcher", is_index_only: true }),
+      makeSession({
+        id: "worker",
+        first_message: "Worker",
+        parent_session_id: "launcher",
+        relationship_type: "subagent",
+        started_at: "2024-01-01T00:00:30Z",
+        is_index_only: true,
+      }),
+    ];
+    sessions.activeSessionId = "worker";
+    vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+    await tick();
+    expect(document.querySelector('[data-session-id="worker"]')).not.toBeNull();
+  });
+
+  it("marks the active session row for assistive tech", async () => {
+    sessions.sessions = [
+      makeSession({
+        id: "active-session",
+        first_message: "Selected transcript",
+        is_index_only: false,
+      }),
+      makeSession({
+        id: "other-session",
+        first_message: "Other transcript",
+        is_index_only: false,
+      }),
+    ];
+    sessions.activeSessionId = "active-session";
+    vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+
+    const active = document.querySelector<HTMLElement>('[data-session-id="active-session"]');
+    const other = document.querySelector<HTMLElement>('[data-session-id="other-session"]');
+    expect(active).not.toBeNull();
+    expect(active?.getAttribute("aria-current")).toBe("page");
+    expect(other).not.toBeNull();
+    expect(other?.hasAttribute("aria-current")).toBe(false);
+  });
+
+  it("hydrates newly visible rows after scrolling", async () => {
+    sessions.sessions = Array.from({ length: 50 }, (_, i) =>
+      makeSession({ id: `s${i}`, is_index_only: true }),
+    );
+    const hydrate = vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+    hydrate.mockClear();
+
+    const scroller = document.querySelector<HTMLElement>(".session-list-scroll");
+    expect(scroller).not.toBeNull();
+    scroller!.scrollTop = ITEM_HEIGHT * 20;
+    scroller!.dispatchEvent(new Event("scroll"));
+    await Promise.resolve();
+    await tick();
+
+    expect(hydrate.mock.calls.some(([ids]) => ids.includes("s20"))).toBe(true);
+  });
+
+  it("retries visible hydration when an index-only row becomes visible again", async () => {
+    sessions.sessions = Array.from({ length: 50 }, (_, i) =>
+      makeSession({ id: `s${i}`, is_index_only: true }),
+    );
+    const hydrate = vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+    hydrate.mockClear();
+
+    const scroller = document.querySelector<HTMLElement>(".session-list-scroll");
+    expect(scroller).not.toBeNull();
+    scroller!.scrollTop = ITEM_HEIGHT * 20;
+    scroller!.dispatchEvent(new Event("scroll"));
+    await Promise.resolve();
+    await tick();
+    hydrate.mockClear();
+
+    scroller!.scrollTop = 0;
+    scroller!.dispatchEvent(new Event("scroll"));
+    await Promise.resolve();
+    await tick();
+
+    expect(hydrate.mock.calls.some(([ids]) => ids.includes("s0"))).toBe(true);
+  });
+
+  it("keeps starred-only filtering after grouping", async () => {
+    sessions.sessions = [
+      makeSession({ id: "root", display_name: "Root", is_index_only: true }),
+      makeSession({
+        id: "starred-child",
+        parent_session_id: "root",
+        display_name: "Starred child",
+        is_index_only: true,
+      }),
+      makeSession({
+        id: "unstarred",
+        display_name: "Unstarred",
+        is_index_only: true,
+      }),
+    ];
+    starred.filterOnly = true;
+    starred.ids = new Set(["starred-child"]);
+    vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+
+    expect(document.body.textContent).toContain("Starred child");
+    expect(document.body.textContent).not.toContain("Root");
+    expect(document.body.textContent).not.toContain("Unstarred");
+  });
+
+  it("reloads the sidebar when starred-only is toggled", async () => {
+    const load = vi.spyOn(sessions, "load").mockResolvedValue(undefined);
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+    load.mockClear();
+
+    const filterButton = document.querySelector<HTMLButtonElement>(".filter-btn");
+    expect(filterButton).not.toBeNull();
+    filterButton!.click();
+    await tick();
+
+    const starredButton = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(".filter-toggle"),
+    ).find((button) => button.textContent?.includes("Starred only"));
+    expect(starredButton).not.toBeNull();
+
+    starredButton!.click();
+    await tick();
+
+    expect(starred.filterOnly).toBe(true);
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders the primary session surface as a native href", async () => {
+    sessions.sessions = [
+      makeSession({
+        id: "native-session",
+        display_name: "Native link session",
+        is_index_only: false,
+      }),
+    ];
+    vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+
+    const link = document.querySelector<HTMLAnchorElement>(".session-info-link");
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute("href")).toBe("/sessions/native-session");
+  });
+
+  it("keeps keyboard-style anchor activation on the SPA session path", async () => {
+    const selectSession = vi.spyOn(sessions, "selectSession").mockImplementation(() => {});
+    sessions.sessions = [
+      makeSession({
+        id: "keyboard-session",
+        display_name: "Keyboard target",
+        is_index_only: false,
+      }),
+    ];
+    vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+
+    const link = document.querySelector<HTMLAnchorElement>(".session-info-link");
+    expect(link).not.toBeNull();
+    const click = new MouseEvent("click", {
+      bubbles: true,
+      cancelable: true,
+      detail: 0,
+    });
+    link!.dispatchEvent(click);
+
+    expect(click.defaultPrevented).toBe(true);
+    expect(selectSession).toHaveBeenCalledWith("keyboard-session");
+  });
+
+  it("toggles selection from the session link in select mode", async () => {
+    const selectSession = vi.spyOn(sessions, "selectSession").mockImplementation(() => {});
+    sessions.sessions = [
+      makeSession({
+        id: "link-select-session",
+        display_name: "Link selection target",
+        is_index_only: false,
+      }),
+    ];
+    vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+
+    const selectModeButton = document.querySelector<HTMLButtonElement>(".select-toggle-btn");
+    expect(selectModeButton).not.toBeNull();
+    selectModeButton!.click();
+    await tick();
+
+    const link = document.querySelector<HTMLAnchorElement>(".session-info-link");
+    expect(link).not.toBeNull();
+    const click = new MouseEvent("click", {
+      bubbles: true,
+      cancelable: true,
+    });
+    link!.dispatchEvent(click);
+
+    expect(click.defaultPrevented).toBe(true);
+    expect(selectSession).not.toHaveBeenCalled();
+    expect([...sessions.selectedIds]).toEqual(["link-select-session"]);
+  });
+
+  it("keeps the non-link parts of the row selectable", async () => {
+    const selectSession = vi.spyOn(sessions, "selectSession").mockImplementation(() => {});
+    sessions.sessions = [
+      makeSession({
+        id: "row-session",
+        display_name: "Row target",
+        is_index_only: false,
+      }),
+    ];
+    vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+
+    // The star and status sit outside the session link; clicking the row
+    // itself still selects the session.
+    const row = document.querySelector<HTMLElement>(".session-item");
+    expect(row).not.toBeNull();
+    row!.click();
+
+    expect(selectSession).toHaveBeenCalledWith("row-session");
+  });
+
+  it("keeps button-discoverable rows alongside native session links", async () => {
+    sessions.sessions = [
+      makeSession({
+        id: "button-session",
+        display_name: "Button target",
+        is_index_only: false,
+      }),
+    ];
+    vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+
+    const row = document.querySelector<HTMLElement>(".session-item");
+    const link = document.querySelector<HTMLAnchorElement>(".session-info-link");
+    expect(row).not.toBeNull();
+    expect(row?.getAttribute("role")).toBe("button");
+    expect(row?.getAttribute("tabindex")).toBe("0");
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute("href")).toBe("/sessions/button-session");
+  });
+
+  it("opens the same canonical href from the context menu in a new tab", async () => {
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null as unknown as Window);
+    sessions.sessions = [
+      makeSession({
+        id: "native-open-session",
+        display_name: "Open in new tab target",
+        is_index_only: false,
+      }),
+    ];
+    vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+
+    const row = document.querySelector<HTMLElement>(".session-item");
+    expect(row).not.toBeNull();
+    row!.dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 7,
+        clientY: 8,
+      }),
+    );
+    await tick();
+
+    const openInNewTab = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(".context-menu-item"),
+    ).find((button) => button.textContent === "Open in new tab");
+    expect(openInNewTab).not.toBeNull();
+    openInNewTab!.click();
+
+    expect(openSpy).toHaveBeenCalledWith("/sessions/native-open-session", "_blank", "noopener");
+  });
+
+  it.each(["continuation", "subagent", "teammate"])(
+    "renders a shared %s under both expanded parent groups",
+    async (kind) => {
+      sessions.sessions = [
+        makeSession({ id: "root-a", display_name: "Parent A" }),
+        makeSession({ id: "root-b", display_name: "Parent B" }),
+        makeSession({
+          id: "shared-child",
+          display_name: "Shared child",
+          parent_session_ids: ["root-a", "root-b"],
+          relationship_type: kind === "subagent" ? "subagent" : "continuation",
+          is_teammate: kind === "teammate",
+        }),
+      ];
+      vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+
+      component = mount(SessionList, { target: document.body });
+      await tick();
+      for (const id of ["root-a", "root-b"]) {
+        const expand = document.querySelector<HTMLButtonElement>(
+          `[data-session-id="${id}"] button[aria-label="Expand"]`,
+        );
+        expect(expand).not.toBeNull();
+        expand!.click();
+        await tick();
+      }
+
+      expect(document.querySelectorAll('[data-session-id="shared-child"]')).toHaveLength(2);
+      document
+        .querySelector<HTMLButtonElement>(
+          '[data-session-id="root-a"] button[aria-label="Collapse"]',
+        )!
+        .click();
+      await tick();
+      expect(document.querySelectorAll('[data-session-id="shared-child"]')).toHaveLength(1);
+      expect(document.querySelector('[data-session-id="shared-child"]')?.textContent).toContain(
+        "Shared child",
+      );
+    },
+  );
+
+  it("uses is_teammate for the collapsed group teammate hint", async () => {
+    sessions.sessions = [
+      makeSession({ id: "root", display_name: "Root", is_index_only: true }),
+      makeSession({
+        id: "team",
+        parent_session_id: "root",
+        display_name: "Team task",
+        is_teammate: true,
+        is_index_only: true,
+      }),
+    ];
+    vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+
+    expect(document.querySelectorAll(".group-hint-icon")).toHaveLength(1);
+  });
+
+  it("shows unread state from a collapsed group child", async () => {
+    sessions.sessions = [
+      makeSession({
+        id: "root",
+        display_name: "Root",
+        transcript_revision: "same",
+        is_index_only: true,
+      }),
+      makeSession({
+        id: "team",
+        parent_session_id: "root",
+        display_name: "Changed team task",
+        is_teammate: true,
+        transcript_revision: "new",
+        is_index_only: true,
+      }),
+    ];
+    readProgress.baseline("root", "same", 0);
+    readProgress.baseline("team", "old", 0);
+    vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+
+    const indicator = document.querySelector('[aria-label="Unread messages"]');
+    expect(indicator).not.toBeNull();
+    expect(indicator?.closest<HTMLElement>(".session-item")?.dataset.sessionId).toBe("root");
+  });
+
+  it("selects only rendered session rows when selecting all visible", async () => {
+    sessions.sessions = [
+      makeSession({
+        id: "parent",
+        display_name: "Parent session",
+        started_at: "2024-01-01T00:00:00Z",
+        ended_at: "2024-01-01T00:01:00Z",
+        is_index_only: false,
+      }),
+      makeSession({
+        id: "child",
+        parent_session_id: "parent",
+        display_name: "Visible continuation",
+        started_at: "2024-01-01T00:02:00Z",
+        ended_at: "2024-01-01T00:03:00Z",
+        is_index_only: false,
+      }),
+    ];
+    vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+
+    expect(document.querySelector<HTMLElement>('[data-session-id="child"]')).not.toBeNull();
+    expect(document.querySelector<HTMLElement>('[data-session-id="parent"]')).toBeNull();
+
+    const selectModeButton = document.querySelector<HTMLButtonElement>(".select-toggle-btn");
+    expect(selectModeButton).not.toBeNull();
+    selectModeButton!.click();
+    await tick();
+
+    const selectAllButton = document.querySelector<HTMLButtonElement>(".batch-select-all-btn");
+    expect(selectAllButton).not.toBeNull();
+    selectAllButton!.click();
+    await tick();
+
+    expect([...sessions.selectedIds]).toEqual(["child"]);
+  });
+
+  it("deletes only selected rows that are still rendered", async () => {
+    sessions.sessions = [
+      makeSession({
+        id: "visible",
+        display_name: "Visible session",
+        is_index_only: false,
+      }),
+      makeSession({
+        id: "hidden",
+        display_name: "Hidden session",
+        is_index_only: false,
+      }),
+    ];
+    vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+    const batchDelete = vi.spyOn(sessions, "batchDeleteSessions").mockResolvedValue(undefined);
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+
+    const selectModeButton = document.querySelector<HTMLButtonElement>(".select-toggle-btn");
+    expect(selectModeButton).not.toBeNull();
+    selectModeButton!.click();
+    await tick();
+
+    const selectAllButton = document.querySelector<HTMLButtonElement>(".batch-select-all-btn");
+    expect(selectAllButton).not.toBeNull();
+    selectAllButton!.click();
+    await tick();
+    expect([...sessions.selectedIds]).toEqual(["visible", "hidden"]);
+
+    sessions.sessions = sessions.sessions.filter((s) => s.id !== "hidden");
+    await tick();
+
+    expect(document.querySelector('[data-session-id="hidden"]')).toBeNull();
+    expect(document.body.textContent).toContain(
+      m.sidebar_selected_count({
+        countLabel: "1",
+      }),
+    );
+
+    const deleteButton = document.querySelector<HTMLButtonElement>(".batch-delete-btn");
+    expect(deleteButton).not.toBeNull();
+    deleteButton!.click();
+    await tick();
+
+    expect(batchDelete).toHaveBeenCalledWith(["visible"]);
+  });
+
+  it("does not auto-page when saved grouping starts collapsed", async () => {
+    localStorage.setItem(STORAGE_KEY_GROUP, "agent");
+    sessions.sessions = Array.from({ length: 30 }, (_, i) =>
+      makeSession({
+        id: `s${i}`,
+        agent: i % 2 === 0 ? "claude" : "codex",
+        display_name: `Session ${i}`,
+        is_index_only: true,
+      }),
+    );
+    sessions.nextCursor = "next-page";
+    vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+    const loadMore = vi.spyOn(sessions, "loadMore").mockResolvedValue(undefined);
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+    await tick();
+
+    expect(loadMore).not.toHaveBeenCalled();
+  });
+});
+
+function makeSession(overrides: Partial<Session> & { id: string }): Session {
+  return {
+    compaction_count: 0,
+    consecutive_failure_max: 0,
+    edit_churn_count: 0,
+    ended_with_role: "",
+    final_failure_streak: 0,
+    has_peak_context_tokens: false,
+    has_total_output_tokens: false,
+    mid_task_compaction_count: 0,
+    outcome: "",
+    outcome_confidence: "",
+    secret_leak_count: 0,
+    tool_failure_signal_count: 0,
+    tool_retry_count: 0,
+    project: "proj",
+    machine: "local",
+    agent: "claude",
+    first_message: null,
+    started_at: "2024-01-01T00:00:00Z",
+    ended_at: "2024-01-01T00:01:00Z",
+    message_count: 1,
+    user_message_count: 1,
+    total_output_tokens: 0,
+    peak_context_tokens: 0,
+    is_automated: false,
+    created_at: "2024-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
