@@ -69,6 +69,12 @@ def tail(text: str, limit: int = 2500) -> str:
 def tracked_go_files() -> list[str]:
     """The ``*.go`` files gofmt looks at: the tracked ones, minus a top-level ``vendor/``.
 
+    Both branches answer in one spelling: POSIX-form relative paths
+    (``deep/vendor/nested.go``), the form ``git ls-files`` prints on every
+    platform. The walk below normalises with ``as_posix()`` instead of letting
+    ``str()`` drift with the host separator, so the list handed to ``gofmt`` --
+    and the list a test can pin -- is the same one on Windows as here.
+
     A tree without git (a ``CALLCCC_GATE_ROOT`` copy, a throw-away test tree) has
     no notion of "tracked", so the walk below answers with everything it can see
     while dropping the same two things the git branch drops: ``.git/`` and a
@@ -80,7 +86,7 @@ def tracked_go_files() -> list[str]:
         for path in ROOT.rglob("*.go"):
             relative = path.relative_to(ROOT)
             if ".git" not in relative.parts and relative.parts[0] != "vendor":
-                files.append(str(relative))
+                files.append(relative.as_posix())
         return sorted(files)
     return [line for line in proc.stdout.splitlines() if line and not line.startswith("vendor/")]
 

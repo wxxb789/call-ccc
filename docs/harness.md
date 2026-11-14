@@ -21,7 +21,11 @@ python3 scripts/gate.py     # must print GATE: PASS; CI runs this same file
 `gofmt` is the one step that also has to answer in a tree without git: it takes `git ls-files '*.go'`
 when the tree is a repository (the normal case, CI included), and otherwise walks the tree skipping
 `.git/` and a top-level `vendor/`. Both branches drop the same two things, and a nested `vendor/`
-stays — a Go `vendor` directory is a module-root concept.
+stays — a Go `vendor` directory is a module-root concept. Both branches also answer in one spelling:
+POSIX-form relative paths (`deep/vendor/nested.go`) on every platform, which is what `git ls-files`
+prints and what the walk normalises to with `as_posix()`. The list handed to `gofmt` — and any test
+that pins it — therefore does not depend on the host's separator, and a regression to `str(relative)`
+is what the suite's Windows-flavoured case exists to catch.
 
 `secrets` scans wider than the repository: `--no-git` means "current files only" and leaves no
 gitignore switch, so the scan reads the whole working tree, untracked and gitignored files included. A

@@ -26,7 +26,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest import mock
 
 GATE = Path(__file__).resolve().parents[1] / "gate.py"
@@ -43,6 +43,25 @@ def load_shipped_gate():
 def tool_result(cmd, rc=0, out="", err=""):
     """A ``CompletedProcess`` shaped like the ones the gate's own ``run()`` returns."""
     return subprocess.CompletedProcess(cmd, rc, out, err)
+
+
+class WindowsSpelledTree(PureWindowsPath):
+    """A root whose ``rglob`` answers with Windows-spelled children, without Windows.
+
+    The path flavour is the whole difference a Windows host makes to a relative
+    path: ``PureWindowsPath`` spells a nested file ``deep\\vendor\\nested.go``
+    where a POSIX host spells it ``deep/vendor/nested.go``. The children are
+    supplied rather than walked, so a case can drive the shipped walk on this
+    host; ``__fspath__``/``relative_to`` come from ``PureWindowsPath`` and match
+    the children's flavour, which is what the shipped code relies on.
+    """
+
+    def __init__(self, root: str, children: list[str]) -> None:
+        super().__init__(root)
+        self._children = [PureWindowsPath(child) for child in children]
+
+    def rglob(self, pattern: str) -> list[PureWindowsPath]:
+        return [child for child in self._children if child.match(pattern)]
 
 
 class GateTree:
@@ -121,6 +140,18 @@ class GateCase(GateTree, unittest.TestCase):
         self.assertEqual(len(lines), 1, stdout)
         return lines[0]
 
+    def step_line(self, stdout: str, name: str) -> tuple[str, str]:
+        """The ``(status, detail)`` the run printed for step ``name``.
+
+        A case that asserts a *status* has to read the step's own line: an
+        ``assertIn`` on the detail text alone cannot tell a SKIP from a FAIL,
+        and the verdict line names only the steps that did not run at all.
+        """
+        rows = [line.split(None, 2) for line in stdout.splitlines() if line.startswith("  ")]
+        rows = [row for row in rows if len(row) >= 2 and row[1] == name]
+        self.assertEqual(len(rows), 1, stdout)
+        return rows[0][0], (rows[0][2] if len(rows[0]) > 2 else "")
+
     def test_required_step_that_skips_fails_the_gate(self) -> None:
         """A required step reported as N/A/SKIP/BOUNDARY must fail, not footnote."""
         self.write("scripts/gate-required.txt", "parity\n")
@@ -169,15 +200,17 @@ class GateCase(GateTree, unittest.TestCase):
     def test_selftest_step_runs_the_trees_own_tests(self) -> None:
         self.write_sample_test()
         proc = self.gate()
-        self.assertIn("PASS", proc.stdout)
-        self.assertIn("selftest", proc.stdout)
+        status, detail = self.step_line(proc.stdout, "selftest")
+        self.assertEqual(status, "PASS", proc.stdout + proc.stderr)
+        self.assertIn("Ran 1 test", detail)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
     def test_selftest_step_fails_on_a_failing_test(self) -> None:
         self.write_sample_test(passes=False)
         proc = self.gate()
+        status, _ = self.step_line(proc.stdout, "selftest")
+        self.assertEqual(status, "FAIL", proc.stdout + proc.stderr)
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
-        self.assertIn("selftest", proc.stdout)
 
     def test_parity_hook_that_fails_fails_the_gate(self) -> None:
         """A hook that exists and exits non-zero is a FAIL, never the absent-hook N/A."""
@@ -190,8 +223,10 @@ class GateCase(GateTree, unittest.TestCase):
     def test_missing_gofmt_fails_the_gate(self) -> None:
         """No toolchain on PATH fails on Linux and macOS, naming the tool it wanted."""
         proc = self.gate(env={"PATH": str(self.no_go_tools())})
+        status, detail = self.step_line(proc.stdout, "gofmt")
+        self.assertEqual(status, "FAIL", proc.stdout + proc.stderr)
+        self.assertIn("gofmt not found (Go toolchain is required)", detail)
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
-        self.assertIn("gofmt not found (Go toolchain is required)", proc.stdout)
         self.assertNotIn("GATE: PASS", proc.stdout)
 
     def test_missing_go_fails_the_gate(self) -> None:
@@ -199,8 +234,11 @@ class GateCase(GateTree, unittest.TestCase):
         self.write("go.mod", "module example.com/throwaway\n\ngo 1.27\n")
         self.write("main.go", "package main\n")
         proc = self.gate(env={"PATH": str(self.no_go_tools())})
+        for step in ("build", "vet", "test"):
+            status, detail = self.step_line(proc.stdout, step)
+            self.assertEqual(status, "FAIL", proc.stdout + proc.stderr)
+            self.assertIn("go not found on PATH", detail)
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
-        self.assertIn("go not found on PATH", proc.stdout)
         self.assertNotIn("GATE: PASS", proc.stdout)
 
 
@@ -299,8 +337,15 @@ class GateProbeCase(GateTree, unittest.TestCase):
         """The no-git branch drops the same things the git branch drops.
 
         Nothing in the stub bin answers to ``git``, so this is the walk a
-        ``CALLCCC_GATE_ROOT`` copy of the tree takes: a nested ``vendor/`` is
-        part of the module and stays, a top-level one is not and goes.
+        ``CALLCCC_GATE_ROOT`` copy of the tree takes -- and a throw-away tree is
+        not a repository, so the same branch is taken even where ``git`` is
+        reachable without ``PATH`` (Windows resolves a subprocess through more
+        than ``PATH``): a nested ``vendor/`` is part of the module and stays, a
+        top-level one is not and goes. The literal below is also a spelling
+        claim -- POSIX-form relative paths on every platform, what
+        ``git ls-files`` prints (docs/harness.md) -- which
+        ``test_walk_branch_spells_paths_the_same_on_a_windows_root`` pins with a
+        Windows path flavour, the half of the claim this host cannot produce.
         """
         self.write("main.go", "package main\n")
         self.write("vendor/vendored.go", "package main\n")
@@ -308,6 +353,29 @@ class GateProbeCase(GateTree, unittest.TestCase):
         gate = load_shipped_gate()
         gate.ROOT = self.root
         with mock.patch.dict(os.environ, {"PATH": str(self.stub_bin)}):
+            found = gate.tracked_go_files()
+        self.assertEqual(found, ["deep/vendor/nested.go", "main.go"])
+
+    def test_walk_branch_spells_paths_the_same_on_a_windows_root(self) -> None:
+        """The walk answers with POSIX-form paths on a Windows-spelled root too.
+
+        ``tracked_go_files()`` promises one spelling on every platform -- the
+        one ``git ls-files`` prints -- and on Windows the walk's ``str(relative)``
+        used to break that promise by spelling ``deep/vendor/nested.go`` with
+        backslashes. This case drives the shipped walk against a root whose paths
+        are ``PureWindowsPath`` values, which is the difference Windows makes, so
+        a regression fails on this host instead of only in the Windows CI job.
+        """
+        gate = load_shipped_gate()
+        gate.ROOT = WindowsSpelledTree(
+            "D:/tree",
+            ["D:/tree/main.go", "D:/tree/vendor/vendored.go", "D:/tree/deep/vendor/nested.go"],
+        )
+
+        def no_git(cmd, env=None, timeout=1800):
+            return tool_result(cmd, 127, "", "git: not found\n")
+
+        with mock.patch.object(gate, "run", side_effect=no_git):
             found = gate.tracked_go_files()
         self.assertEqual(found, ["deep/vendor/nested.go", "main.go"])
 
