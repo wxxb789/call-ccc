@@ -12,9 +12,14 @@ Most cases build a throw-away tree and run the shipped gate as a subprocess with
 verdict depends on which tools this machine happens to have installed.
 ``GateProbeCase`` is the exception: it drives the shipped file in-process with
 one probe patched, because it asserts statuses an installed toolchain cannot
-produce here. Both must hold on every Python 3 the repository documents
-(``docs/conventions.md``), which is why no case inherits from ``PurePath``: that
-class' argument handling is not the same before and after 3.12.
+produce here. ``HostCase`` closes that class of defect from the outside: it
+re-runs this whole suite in a child whose ``PATH`` holds no tools at all and,
+once, with the host answering the way Windows does without a C compiler -- so a
+case that leans on a tool this machine happens to have, or on the platform it
+happens to run, fails here instead of in a CI job nobody can watch. Every case
+must hold on every Python 3 the repository documents (``docs/conventions.md``),
+which is why no case inherits from ``PurePath``: that class' argument handling
+is not the same before and after 3.12.
 """
 
 from __future__ import annotations
@@ -33,6 +38,68 @@ from pathlib import Path, PureWindowsPath
 from unittest import mock
 
 GATE = Path(__file__).resolve().parents[1] / "gate.py"
+REPO_ROOT = GATE.parents[1]
+
+#: Set for a nested run of this suite, so the child's ``HostCase`` copies skip
+#: instead of nesting a run of their own; nothing else in the suite reads it.
+SELFCHECK = "CALLCCC_SUITE_SELFCHECK"
+
+#: The one case allowed to skip under an isolated ``PATH``: it exercises the
+#: git branch, and no stub bin can hold a git that is not in the tree.
+GIT_CASE = "test_only_tracked_go_files_outside_vendor_reach_gofmt"
+
+#: A tool lookup answered the way a Windows host answers it, for the one
+#: question the gate asks the host about itself: ``go_env()`` asks whether a C
+#: compiler is reachable, because CGO depends on one being installed
+#: separately. Off Windows the shipped lookup is ``shutil.which``; this stand-in
+#: reproduces the two things Windows' answer does differently -- a PATH split on
+#: ``os.pathsep`` and the PATHEXT suffixes -- so a case can put the answer
+#: Windows would give in front of the shipped probe instead of asserting from
+#: memory what a Windows machine does.
+REAL_WHICH = shutil.which
+
+
+def windows_like_which(name, *args, **kwargs):
+    """Resolve ``name`` the way Windows resolves it, over the PATH in force."""
+    if os.name == "nt" or not isinstance(name, str):
+        return REAL_WHICH(name, *args, **kwargs)
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not directory:
+            continue
+        for candidate in (name, name + ".bat", name + ".exe"):
+            path = os.path.join(directory, candidate)
+            if os.path.isfile(path):
+                return path
+    return None
+
+
+#: The nested run's program, run by the interpreter running this suite with the
+#: repository root as its working directory. It discovers this suite exactly as
+#: the gate's selftest step does, and -- when asked -- makes the host answer the
+#: way Windows does without a C compiler *before* the cases run: ``sys.platform``
+#: for the branch, and the suite's own ``windows_like_which`` for the compiler
+#: probe, so the nested run and the case that pins the fixture's stub bin cannot
+#: answer differently. ``descriptions=False`` keeps one line per case, which is
+#: what ``HostCase.nested_statuses`` reads.
+NESTED_RUNNER = '''\
+import os, shutil, sys, unittest
+
+tests_dir = os.path.join("scripts", "tests")
+sys.path.insert(0, os.path.abspath(tests_dir))
+suite = unittest.TestLoader().discover(tests_dir, pattern="test_*.py")
+import test_gate  # the module discovery just imported: this suite's own helpers
+
+if "--windows-without-compiler" in sys.argv:
+    sys.platform = "win32"
+    shutil.which = test_gate.windows_like_which
+# The marker is the *shipped* probe's own answer under the host this child just
+# set up -- its PATH holds no compiler, so the answer is the boundary exactly
+# when the Windows answer reached it -- and not a restatement of the flag.
+_, boundary = test_gate.load_shipped_gate().go_env()
+print("nested run: host answer =", "windows-without-compiler" if boundary else "this host")
+result = unittest.TextTestRunner(verbosity=2, descriptions=False).run(suite)
+sys.exit(0 if result.wasSuccessful() else 1)
+'''
 
 
 def load_shipped_gate():
@@ -83,8 +150,18 @@ class WindowsSpelledTree:
 class GateTree:
     """One throw-away tree, one stub bin and one pinned ``PATH`` per case.
 
-    Fixtures and read-the-printed-verdict helpers, so both case classes below
-    can use them without one class running the other's tests.
+    Fixtures and read-the-printed-verdict helpers, so the case classes below can
+    use them without one class running the other's tests.
+
+    The stub bin holds the two tools the *shipped gate* asks the host about
+    before it looks at the tree at all: ``gofmt`` (a missing one is a FAIL) and
+    ``gcc`` (a missing one is the Windows C-compiler boundary). Both answers
+    belong to the host, not to any case's subject, so a case gets them out of
+    the way by construction -- review round 7 found two cases that stubbed ``go``
+    but not ``gcc``, and so observed BOUNDARY on Windows where they expected a
+    FAIL and three recorded commands. A case that *is* about a missing tool
+    pins ``PATH`` to a bin that lacks it (``no_go_tools()``) or patches the
+    probe (``go_env``), and never by forgetting the stub.
     """
 
     def setUp(self) -> None:
@@ -93,6 +170,7 @@ class GateTree:
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
         self.stub_bin = self.root / "stub-bin"
         self.stub("gofmt")  # so gofmt's own absence is never the failing reason
+        self.stub("gcc")  # so the Windows C-compiler boundary is never the failing reason
 
     def stub(self, name: str, exit_code: int = 0, where: Path | None = None) -> None:
         """Make ``name`` findable on a pinned ``PATH`` without installing a tool.
@@ -125,11 +203,12 @@ class GateTree:
         )
 
     def no_go_tools(self) -> Path:
-        """A bin dir holding no Go toolchain.
+        """A bin dir holding no Go toolchain, replacing the default stub bin.
 
-        The ``gcc`` stub keeps the Windows-only "no C compiler" boundary out of
-        the way: the rule under test is the missing Go toolchain, which is a
-        failure on every platform.
+        It is a bin of its own, so it carries its own ``gcc`` stub: on Windows a
+        bin without one answers with the C-compiler boundary before the missing
+        Go toolchain is ever looked for, and the rule under test here is the
+        missing Go toolchain, which is a failure on every platform.
         """
         directory = self.root / "no-go-tools"
         self.stub("gcc", where=directory)
@@ -633,6 +712,220 @@ class GateProbeCase(GateTree, unittest.TestCase):
         with mock.patch.object(gate, "run", side_effect=no_git):
             found = gate.tracked_go_files()
         self.assertEqual(found, ["deep/vendor/nested.go", "main.go"])
+
+
+class HostCase(GateTree, unittest.TestCase):
+    """Cases about the host this suite runs on, not about a gate verdict.
+
+    Three review rounds in a row found the same defect shape: a case whose
+    expectations only hold on the platform, the ``PATH`` or the interpreter its
+    author happened to have. These cases close the class from the outside --
+    each runs *this whole suite* again in a child process and reads the child's
+    result -- so the next case of that shape fails here, on this host, in this
+    window, instead of in the one CI job nobody can watch.
+
+    The child's ``PATH`` is a directory holding nothing, and one of the two runs
+    puts the Windows answer in front of the platform probe. Every tool a case
+    needs therefore has to come from the stub bin the case itself builds.
+    ``CALLCCC_SUITE_SELFCHECK`` is set in the child's environment so the child's
+    own copies of these cases skip instead of nesting a third run; those two
+    skips are the only thing the guard suppresses.
+    """
+
+    #: This class' nested-run cases, by name: the ones the guard makes skip
+    #: inside a child. Any *other* case skipping under an isolated ``PATH`` or a
+    #: forced platform answer is the defect these cases exist to catch.
+    GUARDED = (
+        "test_suite_holds_in_a_child_whose_path_holds_no_tools",
+        "test_suite_holds_when_the_host_answers_windows_without_a_compiler",
+    )
+
+    def nested_run(self, windows_without_compiler: bool = False) -> subprocess.CompletedProcess:
+        """Run this suite in a child process: no host tools, optionally Windows.
+
+        The child is started the way the gate starts the selftest step -- the
+        interpreter running this case, the repository root as working directory
+        -- with ``PATH`` pointing at one empty directory,
+        ``PYTHONDONTWRITEBYTECODE`` keeping it from writing bytecode into the
+        repository, and ``CALLCCC_GATE_ROOT`` dropped so it resolves the tree it
+        lives in, as a fresh gate run would.
+        """
+        tools = self.root / "no-host-tools"
+        tools.mkdir(parents=True, exist_ok=True)
+        env = os.environ.copy()
+        env["PATH"] = str(tools)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env[SELFCHECK] = "1"
+        env.pop("CALLCCC_GATE_ROOT", None)
+        argv = [sys.executable, "-c", NESTED_RUNNER]
+        if windows_without_compiler:
+            argv.append("--windows-without-compiler")
+        return subprocess.run(
+            argv, cwd=str(REPO_ROOT), capture_output=True, text=True, env=env, timeout=900
+        )
+
+    def suite_size(self) -> int:
+        """How many cases this suite defines, counted off the loaded module.
+
+        A nested run that discovered a subset -- one file it could not import,
+        one case it dropped -- would otherwise be green and prove nothing about
+        the cases it never ran.
+        """
+        module = sys.modules[type(self).__module__]
+        loader = unittest.TestLoader()
+        return sum(
+            loader.loadTestsFromTestCase(value).countTestCases()
+            for value in vars(module).values()
+            if isinstance(value, type) and issubclass(value, unittest.TestCase)
+        )
+
+    def nested_statuses(self, text: str) -> dict[str, str]:
+        """The status the nested run printed per case, keyed by case name.
+
+        The nested runner switches docstrings off, so a case is one line of the
+        shape ``name (test_gate.Case.name) ... ok`` and the field after the last
+        ``...`` is its status -- ``ok``, ``FAIL``, or ``skipped '<reason>'``.
+        A case that the child never printed is absent from the mapping, which is
+        what makes a dropped case fail the count below rather than pass.
+        """
+        statuses: dict[str, str] = {}
+        for line in text.splitlines():
+            name, sep, rest = line.partition(" (test_gate.")
+            if not sep or " ... " not in rest:
+                continue
+            statuses[name.strip()] = rest.rsplit(" ... ", 1)[1].split()[0]
+        return statuses
+
+    def nested_summary(self, proc: subprocess.CompletedProcess) -> str:
+        """A one-line summary of a nested run, filtered to be safe in a message.
+
+        The child's per-case lines name ``(test_gate.…)`` exactly as this run's
+        do, so pasting its raw output into an assertion would make a nested
+        break read as a break of *this* run to anything parsing the outer output
+        (the suite's mutation driver does). Only the child's summary line, its
+        verdict line and the names of its broken cases go in.
+        """
+        text = proc.stdout + proc.stderr
+        ran = next(
+            (line for line in text.splitlines() if line.startswith("Ran ")),
+            "no 'Ran N tests' line",
+        )
+        verdict = next(
+            (line for line in text.splitlines() if line.startswith(("OK", "FAILED"))),
+            "no verdict line",
+        )
+        broken = [
+            line.split(": ", 1)[1].split(" (")[0]
+            for line in text.splitlines()
+            if line.startswith(("FAIL: ", "ERROR: "))
+        ]
+        summary = f"nested run rc={proc.returncode}: {ran} | {verdict}"
+        return summary + (f" | broken: {', '.join(broken)}" if broken else "")
+
+    def assert_nested_green(self, proc: subprocess.CompletedProcess) -> dict[str, str]:
+        """Assert the nested run ran every case and broke none; return its statuses."""
+        text = proc.stdout + proc.stderr
+        summary = self.nested_summary(proc)
+        statuses = self.nested_statuses(text)
+        self.assertEqual(proc.returncode, 0, summary)
+        self.assertEqual(len(statuses), self.suite_size(), summary)
+        ran = [line for line in text.splitlines() if line.startswith("Ran ")]
+        self.assertEqual(len(ran), 1, summary)
+        self.assertEqual(ran[0].split()[1], str(self.suite_size()), summary)
+        return statuses
+
+    def assert_only_expected_skips(
+        self, statuses: dict[str, str], message: str
+    ) -> None:
+        """The nested run's non-``ok`` cases must be exactly the expected skips.
+
+        A skipped case proves nothing, so the two kinds of legitimate skip are
+        named and everything else is a failure of this assertion. The git case
+        cannot run without a host tool -- it exercises ``git ls-files`` against
+        the real binary, by design, and no stub bin holds a git that is not
+        there -- and the child's own copies of this class skip because the guard
+        told them to. That the guard *did* fire is asserted too: if it stopped
+        being set, a child that nested a third run would be the symptom, and
+        this is the case that would notice first.
+        """
+        expected = sorted({GIT_CASE, *self.GUARDED})
+        self.assertEqual(
+            sorted(name for name, status in statuses.items() if status != "ok"),
+            expected,
+            message,
+        )
+        for name in expected:
+            self.assertEqual(statuses.get(name), "skipped", f"{name}: {message}")
+
+    def test_suite_holds_in_a_child_whose_path_holds_no_tools(self) -> None:
+        """No case may need a tool this machine happens to have installed.
+
+        Every stub a case needs lives in the bin inside its own throw-away
+        tree, so an empty ambient ``PATH`` changes nothing for a case that
+        stages what it uses -- and fails a case that quietly reaches for this
+        host's ``go``, ``gofmt``, ``gcc``, ``gitleaks`` or ``git``.
+        """
+        if os.environ.get(SELFCHECK):
+            self.skipTest(f"already a nested run ({SELFCHECK} is set)")
+        proc = self.nested_run()
+        statuses = self.assert_nested_green(proc)
+        self.assert_only_expected_skips(statuses, self.nested_summary(proc))
+
+    def test_suite_holds_when_the_host_answers_windows_without_a_compiler(self) -> None:
+        """The Go-command cases must not flip when the platform probe says Windows.
+
+        This is the defect review round 7 found: a fixture that stubs ``go`` but
+        no C compiler, under a host answering "Windows, no compiler", so
+        ``step_go()`` returns BOUNDARY before the mocked runner is ever called --
+        the failure-result case sees BOUNDARY where it expects a FAIL, and the
+        target-pattern case records no command where it expects three. The child
+        forces exactly that answer and re-runs every case, so the two are
+        asserted by name here as well as by the child's exit code: a case that
+        forgets its compiler stub fails here, on this host.
+
+        The marker it asserts is the *shipped* probe's answer inside the child,
+        read after the forcing, so this case fails if the forcing stops reaching
+        ``go_env()`` -- quietly re-running the suite on the ordinary host answer
+        would leave every assertion above about the wrong host. On a Windows
+        runner the answer is the host's own and the marker is expected there for
+        a different reason; off Windows it is only true if the forcing worked.
+        """
+        if os.environ.get(SELFCHECK):
+            self.skipTest(f"already a nested run ({SELFCHECK} is set)")
+        proc = self.nested_run(windows_without_compiler=True)
+        message = self.nested_summary(proc)
+        self.assertIn("nested run: host answer = windows-without-compiler", proc.stdout, message)
+        statuses = self.assert_nested_green(proc)
+        for case in (
+            "test_go_step_results_are_failures_when_the_tool_fails",
+            "test_gate_targets_file_replaces_the_default_pattern",
+        ):
+            self.assertEqual(statuses.get(case), "ok", f"{case}: {message}")
+        self.assert_only_expected_skips(statuses, message)
+
+    def test_the_stub_bin_answers_the_windows_compiler_probe(self) -> None:
+        """``go_env()`` under the Windows answer, in both directions, as shipped.
+
+        The bin ``setUp`` hands every case holds a ``gcc`` stub, which is what
+        keeps the C-compiler boundary out of a case whose subject is something
+        else -- so this is the case that fails if that stub goes away. The
+        second half drops the stub and lets the shipped ``go_env()`` answer: it
+        must be the boundary, or the first half would be pinning a probe that no
+        longer asks the host anything.
+        """
+        gate = load_shipped_gate()
+        without_compiler = self.root / "no-compiler"
+        self.stub("gofmt", where=without_compiler)  # a Windows host with Go and no C compiler
+        with mock.patch("sys.platform", "win32"), \
+                mock.patch.object(shutil, "which", windows_like_which):
+            with mock.patch.dict(os.environ, {"PATH": str(self.stub_bin)}):
+                env, boundary = gate.go_env()
+            self.assertEqual(env, {"GOFLAGS": "-mod=mod", "CGO_ENABLED": "1"})
+            self.assertIsNone(boundary)
+            with mock.patch.dict(os.environ, {"PATH": str(without_compiler)}):
+                _, missing = gate.go_env()
+        self.assertIsInstance(missing, str)
+        self.assertIn("C compiler", missing)
 
 
 if __name__ == "__main__":

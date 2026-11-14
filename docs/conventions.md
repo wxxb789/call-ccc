@@ -54,7 +54,15 @@ Inherited AgentsView packages keep their upstream paths and stay where upstream 
   `PureWindowsPath` children rather than a `PureWindowsPath` subclass). Where a rule cannot be
   exercised host-independently through a subprocess, the case drives the shipped module directly —
   `PATH` pinned to a stub bin, one probe patched, or a root whose children carry the Windows path
-  flavour — instead of leaving the rule untested here and hoping a Windows job notices.
+  flavour — instead of leaving the rule untested here and hoping a Windows job notices. The same
+  applies to the *host probes* the gate makes before it looks at a tree: a case's stub bin answers the
+  Go toolchain and the C compiler Windows needs, so a case whose subject is something else cannot fall
+  into the Windows compiler boundary by forgetting a stub — a case that *is* about a missing tool says
+  so, by pinning `PATH` to a bin without it or by patching the probe. The suite enforces that from the
+  outside: two of its cases re-run the *whole* suite in a child process whose `PATH` holds no tools,
+  the second with the host answering Windows-without-a-compiler
+  (`scripts/tests/test_gate.py`, `HostCase`), so a case that leans on this machine, or on the platform
+  it runs on, fails on this machine rather than in a CI job nobody can watch.
 
 ## Commits and branches
 

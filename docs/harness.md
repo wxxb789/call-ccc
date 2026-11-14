@@ -34,6 +34,16 @@ Python 3, and no case may depend on a `pathlib` behaviour that moved between min
 which is why the suite's Windows-flavoured root is a plain object holding `PureWindowsPath` children
 instead of a `PureWindowsPath` subclass.
 
+The same step must not depend on the *host* either, so two of its cases re-run the whole suite in a
+child process — once with `PATH` pointing at a directory that holds no tools at all, once with the
+platform probe answering the way Windows answers without a C compiler (`sys.platform`, and the
+suite's own Windows-shaped tool lookup) — and assert that every case still ran and none flipped. The
+child's copies of those two cases skip, keyed on `CALLCCC_SUITE_SELFCHECK`, so a nested run does not
+nest a third. A case that reaches for a tool this host happens to have, or that reads the platform it
+runs on, therefore fails in the selftest step instead of only in the one CI job nobody can watch; the
+Windows answer is a simulation executed on the running host, never an assertion from memory about a
+machine nobody in the loop has.
+
 `secrets` scans wider than the repository: `--no-git` means "current files only" and leaves no
 gitignore switch, so the scan reads the whole working tree, untracked and gitignored files included. A
 local `.env` therefore fails the gate locally where a clean CI checkout passes; the step is a
@@ -67,7 +77,10 @@ Linux, macOS and Windows are the intended platforms, subject to native harness a
 and macOS a missing Go toolchain or a missing C compiler is a **failure**: the gate cannot silently
 degrade where the project is expected to build fully. On Windows a missing C compiler is a disclosed
 boundary — the gate runs what it can and says so — because CGO on that platform depends on the
-toolchain being installed separately.
+toolchain being installed separately. That boundary is the one host answer a step can turn on, so the
+suite answers it from the case's own stub bin and exercises the boundary itself by forcing the
+platform probe to its Windows answer (see the `selftest` section): no verdict in the suite depends on
+which platform is running it.
 
 ## CI
 
