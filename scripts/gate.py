@@ -4,13 +4,17 @@
 Steps, in order: gofmt, build, vet, test, selftest, parity, secrets.
 Exit 0 only when every step that RAN passed. A step that could not run prints
 SKIP/BOUNDARY with its reason and is never counted as a pass; the verdict line
-then says ``GATE: PASS (partial: ...)``.
+then says ``GATE: PASS (partial: ...)``. A step named in
+scripts/gate-required.txt must be PASS: any other status -- FAIL, SKIP, BOUNDARY
+or N/A -- is rewritten to FAIL before the verdict, so it exits 1.
 
 Knobs (in-repo, auditable):
   scripts/gate-targets.txt    Go package patterns for build/vet/test; absent = ./...
   scripts/gate-required.txt   steps that MUST be PASS; a listed step that is
                               skipped, unavailable or a platform boundary fails
   scripts/upstream-parity.py  source-side parity check, run when present
+  scripts/tests/              stdlib-unittest regression tests for this gate,
+                              run by the selftest step
   CALLCCC_GATE_ROOT           run against another tree (used by
                               scripts/tests/test_gate.py); defaults to this repo
 
@@ -126,7 +130,7 @@ def step_selftest() -> tuple[str, str]:
     if not tests.is_dir() or not any(tests.rglob("test_*.py")):
         return SKIP, "no scripts/tests/test_*.py in this tree yet"
     proc = run([sys.executable, "-m", "unittest", "discover", "-s", "scripts/tests", "-p", "test_*.py"],
-               timeout=900)
+               env={"PYTHONDONTWRITEBYTECODE": "1"}, timeout=900)
     detail = tail((proc.stdout or "") + (proc.stderr or ""), 1200)
     if proc.returncode != 0:
         return FAIL, f"scripts/tests -> rc={proc.returncode}\n{detail}"

@@ -12,6 +12,10 @@ Thumbs.db
 .vscode/
 *~
 
+# Python bytecode from the harness's own scripts
+__pycache__/
+*.pyc
+
 # Local scratch and evidence dumps that must not be committed
 /tmp/
 /scratch/
