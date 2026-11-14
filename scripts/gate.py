@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """call/ccc project gate — one command, real exit codes, no network.
 
-Steps, in order: gofmt, build, vet, test, parity, secrets.
+Steps, in order: gofmt, build, vet, test, selftest, parity, secrets.
 Exit 0 only when every step that RAN passed. A step that could not run prints
 SKIP/BOUNDARY with its reason and is never counted as a pass; the verdict line
 then says ``GATE: PASS (partial: ...)``.
@@ -11,6 +11,8 @@ Knobs (in-repo, auditable):
   scripts/gate-required.txt   steps that MUST be PASS; a listed step that is
                               skipped, unavailable or a platform boundary fails
   scripts/upstream-parity.py  source-side parity check, run when present
+  CALLCCC_GATE_ROOT           run against another tree (used by
+                              scripts/tests/test_gate.py); defaults to this repo
 
 Platform boundary: on Linux/macOS a missing Go toolchain or C compiler is a
 FAILURE; on Windows a missing C compiler is a disclosed BOUNDARY (the project's
@@ -25,8 +27,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(os.environ.get("CALLCCC_GATE_ROOT") or Path(__file__).resolve().parent.parent).resolve()
 PASS, FAIL, SKIP, BOUNDARY, NA = "PASS", "FAIL", "SKIP", "BOUNDARY", "N/A"
+KNOWN_STEPS = ("gofmt", "build", "vet", "test", "selftest", "parity", "secrets")
 
 
 def read_list(name: str) -> list[str]:
@@ -44,9 +47,13 @@ def read_list(name: str) -> list[str]:
 def run(cmd: list[str], env: dict[str, str] | None = None, timeout: int = 1800):
     merged = os.environ.copy()
     merged.update(env or {})
-    return subprocess.run(
-        cmd, cwd=str(ROOT), env=merged, capture_output=True, text=True, timeout=timeout
-    )
+    try:
+        return subprocess.run(
+            cmd, cwd=str(ROOT), env=merged, capture_output=True, text=True, timeout=timeout
+        )
+    except FileNotFoundError as exc:
+        # A missing binary is a step result, not a crash: report it as rc=127.
+        return subprocess.CompletedProcess(cmd, 127, "", f"{exc}\n")
 
 
 def tail(text: str, limit: int = 2500) -> str:
@@ -108,11 +115,23 @@ def step_go(sub: str, go_files: list[str], boundary: str | None, targets: list[s
     if proc.returncode != 0:
         return FAIL, f"{name} {' '.join(targets)} -> rc={proc.returncode}\n{detail}"
     if sub == "test":
-        passed = sum(
-            1 for line in (proc.stdout or "").splitlines() if line.startswith("ok ")
-        )
+        passed = sum(1 for line in (proc.stdout or "").splitlines() if line.startswith("ok "))
         return PASS, f"{passed} package(s) ok"
     return PASS, f"{name} {' '.join(targets)} -> rc=0"
+
+
+def step_selftest() -> tuple[str, str]:
+    """The harness's own tests: a broken gate is a defect like any other."""
+    tests = ROOT / "scripts" / "tests"
+    if not tests.is_dir() or not any(tests.rglob("test_*.py")):
+        return SKIP, "no scripts/tests/test_*.py in this tree yet"
+    proc = run([sys.executable, "-m", "unittest", "discover", "-s", "scripts/tests", "-p", "test_*.py"],
+               timeout=900)
+    detail = tail((proc.stdout or "") + (proc.stderr or ""), 1200)
+    if proc.returncode != 0:
+        return FAIL, f"scripts/tests -> rc={proc.returncode}\n{detail}"
+    ran = [line for line in (proc.stderr or "").splitlines() if line.startswith("Ran ")]
+    return PASS, (ran[-1] if ran else "ok") + f" (rc={proc.returncode})"
 
 
 def step_parity() -> tuple[str, str]:
@@ -139,30 +158,47 @@ def step_secrets() -> tuple[str, str]:
     return SKIP, f"gitleaks did not complete (rc={proc.returncode}): " + tail(proc.stderr, 400)
 
 
-def main() -> int:
+def build_steps() -> list[tuple[str, str, str]]:
     go_files = tracked_go_files()
     targets = go_targets()
     _, boundary = go_env()
-
     steps: list[tuple[str, str, str]] = []
     steps.append(("gofmt", *step_gofmt(go_files)))
     for sub in ("build", "vet", "test"):
         steps.append((sub, *step_go(sub, go_files, boundary, targets)))
+    steps.append(("selftest", *step_selftest()))
     steps.append(("parity", *step_parity()))
     steps.append(("secrets", *step_secrets()))
+    return steps
 
+
+def apply_required(
+    steps: list[tuple[str, str, str]], required: set[str]
+) -> list[tuple[str, str, str]]:
+    """A required step that did not PASS is a failure of the gate, not a footnote.
+
+    Printing an extra FAIL line and then computing the verdict from the original
+    statuses is exactly how a mandatory check silently stops being mandatory.
+    """
+    out: list[tuple[str, str, str]] = []
+    for name, status, detail in steps:
+        if name in required and status != PASS:
+            out.append((name, FAIL, f"REQUIRED but was {status}: {detail}"))
+        else:
+            out.append((name, status, detail))
+    return out
+
+
+def main() -> int:
     required = set(read_list("gate-required.txt"))
-    known = {"gofmt", "build", "vet", "test", "parity", "secrets"}
-    unknown = sorted(required - known)
-    for name in sorted(unknown):
-        steps.append(("required:" + name, FAIL, f"gate-required.txt names an unknown step: {name}"))
+    steps = apply_required(build_steps(), required)
+    for name in sorted(required - set(KNOWN_STEPS)):
+        steps.append((f"required:{name}", FAIL, f"gate-required.txt names an unknown step: {name}"))
 
     print(f"gate: {ROOT}")
-    print(f"gate: go={shutil.which('go') or 'missing'} targets={' '.join(targets)}")
+    print(f"gate: go={shutil.which('go') or 'missing'} targets={' '.join(go_targets())}")
     for name, status, detail in steps:
         print(f"  {status:<8} {name:<8} {detail}")
-        if name in required and status != PASS:
-            print(f"  {'FAIL':<8} {name:<8} required by scripts/gate-required.txt but was {status}")
 
     failed = [s[0] for s in steps if s[1] == FAIL]
     if failed:
