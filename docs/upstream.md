@@ -51,10 +51,11 @@ desktop builds — on every call/ccc pull request.
 | `.github/**` (22 files) | upstream CI definitions would run upstream's CI here |
 | `frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json` | carried with exactly one byte normalised: upstream's blob holds a single CRLF pair in 1.4 MB that this repository's carried `.gitattributes` turns into LF, so git stores the file one byte shorter |
 
-The last row is the one path in 5554 whose bytes cannot be stored unchanged: git normalises text line
-endings on `git add` (`* text=auto eol=lf`, upstream's own attribute file). Carrying it verbatim would
-need an attribute file inside a carried directory — project content in upstream-owned space — so the
-file is kept with the byte git stores and the difference is declared instead of hidden.
+The last row is the only path among upstream's 5580 tracked files whose bytes cannot be stored
+unchanged: git normalises text line endings on `git add` (`* text=auto eol=lf`, upstream's own
+attribute file). Carrying it verbatim would need an attribute file inside a carried directory —
+project content in upstream-owned space — so the file is kept with the byte git stores and the
+difference is declared instead of hidden.
 
 One build input is carried although upstream does not track it: `internal/pricing/fallback.go`
 embeds `internal/pricing/snapshot/litellm_snapshot.json.gz`, which upstream's `Makefile` restores

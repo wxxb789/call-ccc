@@ -197,6 +197,74 @@ func TestInspectReadsTheArchiveItIsGiven(t *testing.T) {
 	}
 }
 
+// TestInspectResolvesAnArchiveBySourcePath pins the reference form the README documents against a
+// data directory that holds the session: `ccc inspect claude:/path/to/<id>.jsonl --data-dir DIR` has
+// to report the archived session, not say it is not in the archive yet.
+func TestInspectResolvesAnArchiveBySourcePath(t *testing.T) {
+	dataDir := isolatedEnvironment(t)
+	cfg, err := config.LoadReadOnly()
+	if err != nil {
+		t.Fatalf("reading the configuration: %v", err)
+	}
+	cfg.DataDir = dataDir
+	cfg.DBPath = filepath.Join(dataDir, "sessions.db")
+	ingestor, err := ccc.NewIngestor(cfg, cfg.DBPath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	_, fixture := claudeFixture(t)
+	if err := ingestor.IngestPaths(context.Background(), fixture); err != nil {
+		t.Fatalf("ingesting the fixture: %v", err)
+	}
+
+	code, stdout, stderr := runCLI(t, "inspect", "claude:"+fixture, "--data-dir", dataDir)
+	if code != 0 {
+		t.Fatalf("exit %d, stderr: %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "archived id:") {
+		t.Errorf("the archive was not reported for a path reference:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "is not in "+cfg.DBPath+" yet") {
+		t.Errorf("the inspection says the session is not in the archive:\n%s", stdout)
+	}
+}
+
+// TestInspectHumanOutputForAnArchiveOnlySession pins the human line an operator reads when the source
+// is gone but the archive holds the session (writeHuman's "not readable here" branch).
+func TestInspectHumanOutputForAnArchiveOnlySession(t *testing.T) {
+	dataDir := isolatedEnvironment(t)
+	cfg, err := config.LoadReadOnly()
+	if err != nil {
+		t.Fatalf("reading the configuration: %v", err)
+	}
+	cfg.DataDir = dataDir
+	cfg.DBPath = filepath.Join(dataDir, "sessions.db")
+	ingestor, err := ccc.NewIngestor(cfg, cfg.DBPath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	sessionID, fixture := claudeFixture(t)
+	if err := ingestor.IngestPaths(context.Background(), fixture); err != nil {
+		t.Fatalf("ingesting the fixture: %v", err)
+	}
+	// The provider root the CLI resolves is emptied: the source exists only in the archive now.
+	t.Setenv("CLAUDE_PROJECTS_DIR", t.TempDir())
+
+	code, stdout, stderr := runCLI(t, "inspect", "claude:"+sessionID, "--data-dir", dataDir)
+	if code != 0 {
+		t.Fatalf("exit %d, stderr: %s", code, stderr)
+	}
+	for _, want := range []string{
+		"source:       not readable here (see warnings)",
+		"archive:      " + filepath.Join(dataDir, "sessions.db") + " [full]",
+		"warning:      no readable source session for claude:" + sessionID,
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("human output is missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
 // TestUsageErrors pins the command line contract: a reference without a provider, an unknown
 // provider, a missing operand and an unknown command are usage errors, not silent guesses.
 func TestUsageErrors(t *testing.T) {

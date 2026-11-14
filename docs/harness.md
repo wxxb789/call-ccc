@@ -53,18 +53,20 @@ procedure; `scripts/upstream-manifest.txt` is the machine-readable record. The s
 
 It verifies, in this order:
 
-1. every carried path is what git stores for it (`git ls-files -s`, i.e. what a fresh clone receives,
-   with `.gitattributes` filters applied) — or, in a tree without git, what its bytes hash to;
-2. no carried file is modified in the working tree relative to what git stores (`git status`
-   porcelain, worktree column only: a staged-but-uncommitted tree is the normal state here);
-3. every declared deviation still differs from upstream (a project-owned file that has quietly
-   become upstream's copy is a stale declaration, not a pass);
-4. the generated build input hashes to the SHA-256 that the carried snapshot tool pins in its own
-   source, so the input is verified against upstream's pin rather than a second hard-coded copy;
-5. `docs/upstream.md` records the pin, and `cmd/ccc/pin.go` reports it, so the revision the binary
+1. `docs/upstream.md` records the pin, and `cmd/ccc/pin.go` reports it, so the revision the binary
    claims cannot drift from the revision the manifest describes;
-6. nothing git would add sits inside the tree unexplained: a tracked or untracked-but-not-ignored
-   path is either named by the manifest or inside a prefix the manifest calls project-owned.
+2. every carried path is what git stores for it (`git ls-files -s`, i.e. what a fresh clone receives,
+   with `.gitattributes` filters applied) — or, in a tree without git, what its bytes hash to;
+3. no carried file is modified in the working tree relative to what git stores (`git status`
+   porcelain, worktree column only: a staged-but-uncommitted tree is the normal state here);
+4. no carried path matches the tree's ignore rules, which would make `git add` skip it in a fresh
+   clone;
+5. nothing git would add sits inside the tree unexplained: a tracked or untracked-but-not-ignored
+   path is either named by the manifest or inside a prefix the manifest calls project-owned;
+6. every declared deviation still differs from upstream (a project-owned file that has quietly
+   become upstream's copy is a stale declaration, not a pass);
+7. the generated build input hashes to the SHA-256 that the carried snapshot tool pins in its own
+   source, so the input is verified against upstream's pin rather than a second hard-coded copy.
 
 `scripts/upstream-compare.py` answers the other half — behaviour — and is deliberately **not** a gate
 step, because it needs network and a second checkout: it fetches the pinned revision into a scratch

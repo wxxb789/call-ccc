@@ -80,32 +80,39 @@ type ArchiveStatus struct {
 	UserMessageCount int       `json:"user_message_count"`
 	MalformedLines   int       `json:"malformed_lines,omitempty"`
 	Truncated        bool      `json:"truncated,omitempty"`
-	Projection       string    `json:"projection,omitempty"`
 }
 
 // resolveSessionID maps a reference onto the archive's stored session id.
 //
-// The archive stores `<agent>:<native id>` (optionally host-prefixed). An exact match is preferred;
-// otherwise the inherited raw-suffix lookup answer decides, and more than one candidate is reported
-// as ambiguous instead of picking one.
+// An identifier is looked up as the archive's `<agent>:<native id>` spelling first and then by the
+// inherited raw-suffix answer, so a native id resolves even when the stored one carries an agent or
+// machine prefix. A reference that names a file resolves through the file the session was read from
+// (`sessions.file_path`, exact path and agent): the stored id is `<agent>:<native id>`, so a path can
+// never be one. More than one candidate is reported as ambiguous instead of picking one.
 func (a *Archive) resolveSessionID(ctx context.Context, ref Ref) (string, bool, error) {
 	if strings.TrimSpace(ref.ID) == "" {
 		return "", false, fmt.Errorf("%s: empty session id", ref.Provider)
 	}
-	candidates := []string{qualifiedID(ref)}
 	if looksLikePath(ref.ID) {
-		// A path reference is about the source, not the stored id: the archive knows the session by
-		// the file it was read from, so match on the basename the id ends with.
-		candidates = []string{filepath.Base(filepath.Clean(ref.ID))}
-	}
-	for _, candidate := range candidates {
-		session, err := a.database.GetSession(ctx, candidate)
+		ids, err := a.database.ListSessionIDsByFilePath(ctx, filepath.Clean(ref.ID), ref.Provider)
 		if err != nil {
 			return "", false, err
 		}
-		if session != nil {
-			return session.ID, true, nil
+		switch len(ids) {
+		case 0:
+			return "", false, nil
+		case 1:
+			return ids[0], true, nil
+		default:
+			return "", false, &AmbiguousError{Ref: ref, Candidates: ids}
 		}
+	}
+	session, err := a.database.GetSession(ctx, qualifiedID(ref))
+	if err != nil {
+		return "", false, err
+	}
+	if session != nil {
+		return session.ID, true, nil
 	}
 	raw := rawSessionID(ref)
 	matches, err := a.database.FindSessionIDsByRawSuffix(ctx, raw, 5)
@@ -149,7 +156,6 @@ func (a *Archive) Status(ctx context.Context, ref Ref) (ArchiveStatus, bool, err
 		UserMessageCount: session.UserMessageCount,
 		MalformedLines:   session.ParserMalformedLines,
 		Truncated:        session.IsTruncated,
-		Projection:       string(a.database.ArchiveContent()),
 	}
 	if session.FilePath != nil {
 		status.SourcePath = *session.FilePath
@@ -157,7 +163,8 @@ func (a *Archive) Status(ctx context.Context, ref Ref) (ArchiveStatus, bool, err
 	return status, true, nil
 }
 
-// Read returns the archived session as a Conversation, in the projection the archive stored.
+// Read returns the archived session as a Conversation. The read names the projection the stored rows
+// show (storageProjection), so a caller can tell a narrowed archive from a complete one.
 func (a *Archive) Read(ctx context.Context, ref Ref) (Conversation, error) {
 	id, found, err := a.resolveSessionID(ctx, ref)
 	if err != nil {
@@ -177,10 +184,10 @@ func (a *Archive) Read(ctx context.Context, ref Ref) (Conversation, error) {
 	if err != nil {
 		return Conversation{}, fmt.Errorf("reading messages of %s: %w", id, err)
 	}
-	return conversationFromArchive(*session, messages, string(a.database.ArchiveContent())), nil
+	return conversationFromArchive(*session, messages), nil
 }
 
-func conversationFromArchive(session db.Session, messages []db.Message, projection string) Conversation {
+func conversationFromArchive(session db.Session, messages []db.Message) Conversation {
 	identity := SourceIdentity{
 		Provider:         session.Agent,
 		Agent:            session.AgentLabel,
@@ -215,13 +222,51 @@ func conversationFromArchive(session db.Session, messages []db.Message, projecti
 			Truncated:      session.IsTruncated,
 			SourceVersion:  session.SourceVersion,
 			ReadFrom:       "archive",
-			Projection:     projection,
 		},
 	}
 	for _, archived := range messages {
 		conversation.Messages = append(conversation.Messages, messageFromArchive(archived))
 	}
+	conversation.Fidelity.Projection = storageProjection(conversation.Messages)
 	return conversation
+}
+
+// storageProjection names the content policy an archive read shows for a session.
+//
+// A read-only handle cannot know the writer's policy: the storage boundary belongs to the writer's
+// own handle and OpenReadOnly never tightens one, so the projection is derived from the rows the read
+// returns -- which is also what a reader needs, since it says what the archive kept and dropped. The
+// three policies leave distinguishable traces in the stored rows (internal/db's archive_content
+// projection): usage clears every message body and keeps only usage rows, transcripts keeps bodies
+// while dropping tool inputs and result content, and full keeps tool payloads. A read that shows a
+// tool payload is therefore full, one that shows a body but no payload is transcripts, and one that
+// shows neither is usage -- as is an archive whose source carried none of that text, which reads the
+// same way.
+func storageProjection(messages []Message) string {
+	var text, toolPayload bool
+	for _, message := range messages {
+		if message.Content != "" || message.Thinking != "" || message.Dialogue != "" {
+			text = true
+		}
+		for _, call := range message.ToolCalls {
+			if call.InputJSON != "" || call.ResultContent != "" {
+				toolPayload = true
+			}
+		}
+		for _, result := range message.ToolResults {
+			if result.ContentRaw != "" {
+				toolPayload = true
+			}
+		}
+	}
+	switch {
+	case toolPayload:
+		return "full"
+	case len(messages) > 0 && text:
+		return "transcripts"
+	default:
+		return "usage"
+	}
 }
 
 func messageFromArchive(archived db.Message) Message {
@@ -235,9 +280,6 @@ func messageFromArchive(archived db.Message) Message {
 		IsSystem:          archived.IsSystem,
 		IsSidechain:       archived.IsSidechain,
 		IsCompactBoundary: archived.IsCompactBoundary,
-		HasContextTokens:  archived.HasContextTokens,
-		ContextTokens:     archived.ContextTokens,
-		OutputTokens:      archived.OutputTokens,
 	}
 	if archived.DialogueText != nil {
 		message.Dialogue = *archived.DialogueText
@@ -254,19 +296,9 @@ func messageFromArchive(archived db.Message) Message {
 			ResultContent:     call.ResultContent,
 			ResultContentSize: call.ResultContentLength,
 		})
-	}
-	for _, result := range archived.ToolResults {
-		message.ToolResults = append(message.ToolResults, ToolResult{
-			ToolUseID:   result.ToolUseID,
-			Status:      result.Status,
-			Source:      result.Source,
-			ContentRaw:  result.ContentRaw,
-			ContentSize: result.ContentLength,
-		})
-	}
-	// A tool result the source recorded as its own message is stored as events on the call instead;
-	// carrying them keeps the result visible in an archive read rather than silently gone.
-	for _, call := range archived.ToolCalls {
+		// A tool result the source recorded as its own message is stored as events on the call
+		// instead; carrying them keeps the result visible in an archive read rather than silently
+		// gone.
 		for _, event := range call.ResultEvents {
 			message.ToolResults = append(message.ToolResults, ToolResult{
 				ToolUseID:   event.ToolUseID,
@@ -276,6 +308,15 @@ func messageFromArchive(archived db.Message) Message {
 				ContentSize: event.ContentLength,
 			})
 		}
+	}
+	for _, result := range archived.ToolResults {
+		message.ToolResults = append(message.ToolResults, ToolResult{
+			ToolUseID:   result.ToolUseID,
+			Status:      result.Status,
+			Source:      result.Source,
+			ContentRaw:  result.ContentRaw,
+			ContentSize: result.ContentLength,
+		})
 	}
 	return message
 }
@@ -389,8 +430,16 @@ func (i *Ingestor) acquireWriteLock() (*flock.Flock, error) {
 	return lock, nil
 }
 
-// engineConfig mirrors the configuration the local AgentsView sync builds, so an ingested session is
-// written exactly the way AgentsView would write it.
+// engineConfig mirrors the configuration the local AgentsView sync builds (cmd/agentsview/sync.go
+// localSyncEngineConfig, and cmd/agentsview/sync_worker.go workerEngineConfig), so an ingested
+// session is written the way AgentsView would write it. Two things are deliberately absent:
+//
+//   - RebuildSources, which contributes configured non-filesystem sources to a full archive rebuild
+//     and is consulted only there (internal/sync's resyncBuildLocked); an ingest of explicit paths
+//     never reaches that path.
+//   - The worker's ToolResultImages and AssetsDir, which offload tool-result images into the daemon's
+//     assets directory; an ingestor writes only into the database path its caller names and has no
+//     assets directory, so the engine keeps the policy the database handle carries.
 func (i *Ingestor) engineConfig() sync.EngineConfig {
 	cfg := i.cfg
 	return sync.EngineConfig{

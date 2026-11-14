@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -215,5 +216,47 @@ func TestFixturesCarryNoHostPathsOrSecrets(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatal("no fixtures were checked")
+	}
+}
+
+// TestEmptyParseOutcomeIsExplained pins the explanation an inspection prints when a read finds
+// nothing: it has to come from the provider's own outcome -- its skip reason, its per-source errors,
+// the sessions it excluded -- rather than from a guess, because the string is what the not-found
+// error a caller reads is built from. The test is deliberately fixture-free: it pins the reader's
+// explanation helpers, not a provider's file format.
+func TestEmptyParseOutcomeIsExplained(t *testing.T) {
+	if got := describeOutcome(parser.ParseOutcome{}); got != "the provider reported no result" {
+		t.Errorf("an outcome with nothing to report explains itself as %q", got)
+	}
+	explained := describeOutcome(parser.ParseOutcome{
+		SkipReason:         parser.SkipNoSession,
+		ExcludedSessionIDs: []string{"a", "b"},
+		SourceErrors: []parser.SourceError{
+			{DisplayPath: "one.jsonl", Err: errors.New("unreadable")},
+			{SessionID: "two", Err: errors.New("truncated")},
+		},
+	})
+	for _, want := range []string{
+		"skipped: no session at this source",
+		"source error on one.jsonl: unreadable",
+		"source error on two: truncated",
+		"2 excluded session(s)",
+	} {
+		if !strings.Contains(explained, want) {
+			t.Errorf("the explanation is missing %q: %s", want, explained)
+		}
+	}
+	for reason, want := range map[parser.SkipReason]string{
+		parser.SkipNoSession:         "no session at this source",
+		parser.SkipUnsupportedSource: "unsupported source",
+		parser.SkipNonInteractive:    "non-interactive session",
+		parser.SkipShadowedBySidecar: "shadowed by a sidecar source",
+	} {
+		if got := skipReasonText(reason); got != want {
+			t.Errorf("skipReasonText(%d) = %q, want %q", reason, got, want)
+		}
+	}
+	if got := skipReasonText(parser.SkipReason(200)); got != "reason 200" {
+		t.Errorf("an unknown skip reason reads as %q", got)
 	}
 }

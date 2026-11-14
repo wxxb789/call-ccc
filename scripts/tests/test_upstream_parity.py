@@ -451,11 +451,10 @@ class RepositoryCase(unittest.TestCase):
         self.assertRegex(manifest.header["pin"], re.compile(r"^[0-9a-f]{40}$"))
         self.assertEqual(manifest.header["carried"], str(len(manifest.files)))
         self.assertTrue(any(record.path == SNAPSHOT for record in manifest.inputs))
-        tool = (REPO_ROOT / TOOL).read_text(encoding="utf-8")
-        pinned = re.search(r'defaultSnapshotSHA256\s*=\s*"([0-9a-f]{64})"', tool)
-        self.assertIsNotNone(pinned, "the carried snapshot tool no longer pins a SHA-256")
+        pinned = module.pinned_snapshot_sha256(REPO_ROOT / TOOL)
+        self.assertTrue(pinned, "the carried snapshot tool no longer pins a SHA-256")
         recorded = next(record.digest for record in manifest.inputs if record.path == SNAPSHOT)
-        self.assertEqual(recorded, pinned.group(1))
+        self.assertEqual(recorded, pinned)
         for path in ("cmd/ccc/", "internal/ccc/", "docs/plans/", "scripts/tests/"):
             self.assertTrue(manifest.is_owned(path), path)
 

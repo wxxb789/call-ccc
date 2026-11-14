@@ -108,3 +108,24 @@ supersede it with a newer one and say which it supersedes.
 - **Reversal:** adopt Cobra when the command surface grows (targets, `formats`, `continue`), which is
   cheap because the CLI holds no logic the core depends on.
 - **Settled by:** goal 0002's command surface.
+
+## Q-0001-06 — The two choices the accepted simplify findings left open
+
+- **Status:** resolved (default taken)
+- **Question:** two accepted simplify findings each named two ways out, and the increment had to pick
+  one. `Message.StopReason`, `Message.HasContextTokens`, `Message.ContextTokens` and
+  `Message.OutputTokens` are write-only — nothing in `cmd/ccc` or `internal/ccc` reads them — so they
+  can be deleted until goal 0002's writer needs them, or carried in the parity dump so a parser
+  regression that stops filling them is visible. And `Fidelity.Projection` was a constant
+  (`db.ArchiveContent()` on a handle `OpenReadOnly` never tightens), so the projection can be derived
+  from the rows an archive read returns, or the field and its warnings can be deleted.
+- **Default taken:** delete the four write-only fields (re-adding them is a small change against the
+  inherited parser's own fields, which the deleted assignments named), and derive the projection from
+  the read's rows — that is what makes the narrowing warning the plan promises fire, and it leaves
+  the committed oracle records unchanged. `ArchiveStatus.Projection` moved onto `ArchiveReport` with
+  it, because a session-row status cannot see how narrow the archive is.
+- **Reversal:** re-add the four fields and dump them in `internal/ccc/parity`; or delete `Projection`
+  and `projectionWarnings` and drop the label from the CLI — both then need
+  `python3 scripts/upstream-compare.py --record` (network) to re-record the oracle.
+- **Settled by:** goal 0002's writer needing the fields, or the operator's preference between a
+  richer dump and a smaller document.

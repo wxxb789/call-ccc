@@ -316,13 +316,9 @@ func messageFromParsed(parsed parser.ParsedMessage) Message {
 		Thinking:          parsed.ThinkingText,
 		Timestamp:         parsed.Timestamp,
 		Model:             parsed.Model,
-		StopReason:        parsed.StopReason,
 		IsSystem:          parsed.IsSystem,
 		IsSidechain:       parsed.IsSidechain,
 		IsCompactBoundary: parsed.IsCompactBoundary,
-		HasContextTokens:  parsed.HasContextTokens,
-		ContextTokens:     parsed.ContextTokens,
-		OutputTokens:      parsed.OutputTokens,
 	}
 	if parsed.DialogueText != nil {
 		message.Dialogue = *parsed.DialogueText
@@ -350,7 +346,10 @@ func messageFromParsed(parsed parser.ParsedMessage) Message {
 	return message
 }
 
-// parseTime reads an archive timestamp column, which stores RFC 3339 text.
+// parseTime reads a session-row timestamp. The archive's timestamp columns hold more than one layout
+// -- internal/db/analytics.go lists RFC 3339, RFC 3339Nano and two space-separated legacy forms, and
+// parseArchiveTimestamp accepts the message-row spellings -- so this strict reader accepts RFC 3339
+// only and reports anything else as the zero time instead of guessing.
 func parseTime(value *string) time.Time {
 	if value == nil || *value == "" {
 		return time.Time{}

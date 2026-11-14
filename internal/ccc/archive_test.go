@@ -9,6 +9,7 @@ import (
 
 	"github.com/gofrs/flock"
 
+	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/parser"
 )
 
@@ -118,7 +119,7 @@ func TestIngestThenArchiveRead(t *testing.T) {
 				ref.ID, sourceCounts, archiveCounts)
 		}
 		t.Logf("%s: stored id %q, %d message(s), %d folded row(s), projection %q",
-			ref.ID, status.SessionID, status.MessageCount, folded, status.Projection)
+			ref.ID, status.SessionID, status.MessageCount, folded, fromArchive.Fidelity.Projection)
 	}
 
 	after := hashTree(t, fixtureRoot(t))
@@ -285,5 +286,171 @@ func TestPathReferenceResolvesTheSameSession(t *testing.T) {
 	}
 	if byPath.Source.SourcePath != path {
 		t.Errorf("path read reports source %q, want %q", byPath.Source.SourcePath, path)
+	}
+}
+
+// TestPathReferenceFindsTheArchivedSession pins the reference form the README documents
+// (`ccc inspect codex:/path/to/<id>.jsonl`) against the archive: a path reference must resolve
+// through the file the session was read from, because the stored id is `<agent>:<native id>` and a
+// path never is one. Before this held, an inspection by path said the session was not in the archive
+// yet while an inspection by id found it.
+func TestPathReferenceFindsTheArchivedSession(t *testing.T) {
+	cfg := fixtureConfig(t)
+	claudeFile := fixturePath(t, filepath.Join("claude", "-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"))
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(cfg, archivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	ctx := context.Background()
+	if err := ingestor.IngestPaths(ctx, claudeFile); err != nil {
+		t.Fatalf("ingesting the fixture: %v", err)
+	}
+	archive, err := OpenArchive(ctx, archivePath)
+	if err != nil {
+		t.Fatalf("opening the archive: %v", err)
+	}
+	defer archive.Close()
+
+	byPath := Ref{Provider: "claude", ID: claudeFile}
+	status, found, err := archive.Status(ctx, byPath)
+	if err != nil {
+		t.Fatalf("status by path: %v", err)
+	}
+	if !found {
+		t.Fatalf("the archive does not resolve the session by its source path %s", claudeFile)
+	}
+	fromPath, err := archive.Read(ctx, byPath)
+	if err != nil {
+		t.Fatalf("reading by path: %v", err)
+	}
+	fromID, err := archive.Read(ctx, claudeFixtureRef)
+	if err != nil {
+		t.Fatalf("reading by id: %v", err)
+	}
+	if Summarize(fromPath.Messages) != Summarize(fromID.Messages) {
+		t.Errorf("the path reference read a different session: %+v vs %+v",
+			Summarize(fromPath.Messages), Summarize(fromID.Messages))
+	}
+
+	inspection, err := Inspect(ctx, InspectOptions{
+		Ref:         byPath,
+		Reader:      NewSourceReader(cfg),
+		ArchivePath: archivePath,
+	})
+	if err != nil {
+		t.Fatalf("inspecting by path: %v", err)
+	}
+	if inspection.Archive == nil {
+		t.Fatalf("inspecting by path did not find the archived session: warnings %v", inspection.Warnings)
+	}
+	if inspection.Archive.Status.SessionID != status.SessionID {
+		t.Errorf("the inspection reports session %q, the status %q",
+			inspection.Archive.Status.SessionID, status.SessionID)
+	}
+}
+
+// TestInspectReportsAnArchiveOnlySession pins the rule the plan states for a session that exists only
+// in an archive (an inspection of a provider root that no longer holds the source): the archived
+// session is reported, and the unreadable source is a warning rather than a silent absence.
+func TestInspectReportsAnArchiveOnlySession(t *testing.T) {
+	cfg := fixtureConfig(t)
+	claudeFile := fixturePath(t, filepath.Join("claude", "-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"))
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(cfg, archivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	ctx := context.Background()
+	if err := ingestor.IngestPaths(ctx, claudeFile); err != nil {
+		t.Fatalf("ingesting the fixture: %v", err)
+	}
+
+	// The provider root this inspection sees is empty: the source is unreadable here.
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentClaude: {t.TempDir()}}
+	inspection, err := Inspect(ctx, InspectOptions{
+		Ref:         claudeFixtureRef,
+		Reader:      NewSourceReader(cfg),
+		ArchivePath: archivePath,
+	})
+	if err != nil {
+		t.Fatalf("inspecting: %v", err)
+	}
+	if inspection.Source != nil {
+		t.Errorf("the inspection read a source session from an empty root: %+v", inspection.Source)
+	}
+	if inspection.Archive == nil {
+		t.Fatalf("the archived session was not reported: warnings %v", inspection.Warnings)
+	}
+	warnings := strings.Join(inspection.Warnings, "\n")
+	if !strings.Contains(warnings, "no readable source session for claude:"+claudeFixtureRef.ID) {
+		t.Errorf("the inspection does not say the source was unreadable: %v", inspection.Warnings)
+	}
+}
+
+// TestArchiveReadNamesItsStorageProjection pins that an archive read reports how narrow the archive
+// is. The storage policy belongs to the writer's handle and a read-only handle cannot see it, so the
+// projection is derived from the rows the read returns; without a transcripts or usage archive the
+// projection would be an unverifiable constant and the warning an inspection promises could not fire.
+func TestArchiveReadNamesItsStorageProjection(t *testing.T) {
+	claudeFile := fixturePath(t, filepath.Join("claude", "-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"))
+	for _, policy := range []config.ArchiveContent{
+		config.ArchiveContentFull,
+		config.ArchiveContentTranscripts,
+		config.ArchiveContentUsage,
+	} {
+		t.Run(string(policy), func(t *testing.T) {
+			cfg := fixtureConfig(t)
+			cfg.ArchiveContent = policy
+			archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+			ingestor, err := NewIngestor(cfg, archivePath)
+			if err != nil {
+				t.Fatalf("building the ingestor: %v", err)
+			}
+			ctx := context.Background()
+			if err := ingestor.IngestPaths(ctx, claudeFile); err != nil {
+				t.Fatalf("ingesting the fixture under %s: %v", policy, err)
+			}
+			archive, err := OpenArchive(ctx, archivePath)
+			if err != nil {
+				t.Fatalf("opening the archive: %v", err)
+			}
+			defer archive.Close()
+			fromArchive, err := archive.Read(ctx, claudeFixtureRef)
+			if err != nil {
+				t.Fatalf("reading the archive: %v", err)
+			}
+			if fromArchive.Fidelity.Projection != string(policy) {
+				t.Errorf("the archive written under %s reads back as projection %q",
+					policy, fromArchive.Fidelity.Projection)
+			}
+
+			inspection, err := Inspect(ctx, InspectOptions{
+				Ref:         claudeFixtureRef,
+				Reader:      NewSourceReader(cfg),
+				ArchivePath: archivePath,
+			})
+			if err != nil {
+				t.Fatalf("inspecting: %v", err)
+			}
+			if inspection.Archive == nil {
+				t.Fatalf("the archived session was not reported: warnings %v", inspection.Warnings)
+			}
+			warnings := strings.Join(inspection.Warnings, "\n")
+			switch policy {
+			case config.ArchiveContentFull:
+				if strings.Contains(warnings, "archive stores the") {
+					t.Errorf("a full archive was reported as narrowed: %v", inspection.Warnings)
+				}
+			case config.ArchiveContentTranscripts:
+				if !strings.Contains(warnings, "archive stores the transcripts projection") {
+					t.Errorf("the transcripts projection was not reported: %v", inspection.Warnings)
+				}
+			case config.ArchiveContentUsage:
+				if !strings.Contains(warnings, "archive stores the usage projection") {
+					t.Errorf("the usage projection was not reported: %v", inspection.Warnings)
+				}
+			}
+		})
 	}
 }

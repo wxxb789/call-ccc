@@ -66,7 +66,7 @@ def digest(path: Path) -> str:
 
 
 def go_source_digest(root: Path, relative: Path) -> tuple[str, int]:
-    """Hash the Rust/Go sources of a package tree, so both sides can be shown to run the same code."""
+    """Hash the Go sources of a package tree, so both sides can be shown to run the same code."""
     hasher = hashlib.sha256()
     files = sorted(path for path in (root / relative).rglob("*.go") if "testdata" not in path.parts)
     for path in files:
@@ -91,7 +91,7 @@ def fetch_pristine(pin: str, remote: str, into: Path) -> None:
             raise SystemExit(f"{' '.join(step)} failed in {into}:\n{proc.stderr.strip()}")
 
 
-def verify_checkout(path: Path, pin: str) -> str:
+def verify_checkout(path: Path, pin: str) -> None:
     if not (path / ".git").exists():
         raise SystemExit(f"{path} is not a git checkout")
     head = run(["git", "rev-parse", "HEAD"], cwd=path)
@@ -103,7 +103,6 @@ def verify_checkout(path: Path, pin: str) -> str:
     status = run(["git", "status", "--porcelain"], cwd=path)
     if status.returncode != 0:
         raise SystemExit(f"git status failed in {path}: {status.stderr.strip()}")
-    return revision
 
 
 def stage_pristine_tree(clone: Path) -> list[str]:

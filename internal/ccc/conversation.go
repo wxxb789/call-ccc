@@ -92,7 +92,6 @@ type Message struct {
 	Thinking    string       `json:"thinking,omitempty"`
 	Timestamp   time.Time    `json:"timestamp,omitempty"`
 	Model       string       `json:"model,omitempty"`
-	StopReason  string       `json:"stop_reason,omitempty"`
 	ToolCalls   []ToolCall   `json:"tool_calls,omitempty"`
 	ToolResults []ToolResult `json:"tool_results,omitempty"`
 	// IsSystem marks a record the provider itself flagged as system-injected (a compaction summary,
@@ -100,9 +99,6 @@ type Message struct {
 	IsSystem          bool `json:"is_system,omitempty"`
 	IsSidechain       bool `json:"is_sidechain,omitempty"`
 	IsCompactBoundary bool `json:"is_compact_boundary,omitempty"`
-	HasContextTokens  bool `json:"has_context_tokens,omitempty"`
-	ContextTokens     int  `json:"context_tokens,omitempty"`
-	OutputTokens      int  `json:"output_tokens,omitempty"`
 }
 
 // Fidelity records what the source itself said about the completeness of this read. A caller that
@@ -114,8 +110,9 @@ type Fidelity struct {
 	// ReadFrom names where the bytes came from: "source" for the provider's own reader, "archive"
 	// for the AgentsView SQLite projection.
 	ReadFrom string `json:"read_from"`
-	// Projection is the archive content policy that produced an archive read ("full", "transcripts",
-	// "usage"); empty for a source read.
+	// Projection names the archive content policy an archive read shows ("full", "transcripts",
+	// "usage"): the storage boundary belongs to the writer's handle, so a read derives the projection
+	// from the rows it returns rather than trusting the handle it opened. Empty for a source read.
 	Projection string `json:"projection,omitempty"`
 }
 

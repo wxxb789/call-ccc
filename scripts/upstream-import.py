@@ -32,6 +32,7 @@ from upstream_manifest import (  # noqa: E402  (path set up above)
     blob_sha1,
     hashed_path,
     load_manifest,
+    pinned_snapshot_sha256,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -191,17 +192,6 @@ def snapshot_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def tool_constant(path: Path) -> str:
-    """The pinned artifact SHA-256 compiled into the carried snapshot tool, if readable."""
-    if not path.exists():
-        return ""
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if "defaultSnapshotSHA256" in line and "=" in line:
-            _, _, value = line.partition("=")
-            return value.strip().strip('"')
-    return ""
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--upstream", required=True, type=Path, help="checkout to read from")
@@ -285,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
         digest = hashlib.sha256(data).hexdigest()
-        pinned = tool_constant(ROOT / PRICING_TOOL)
+        pinned = pinned_snapshot_sha256(ROOT / PRICING_TOOL)
         if pinned and pinned != digest:
             raise SystemExit(f"{path} hashes to {digest}, but the carried tool pins {pinned}")
         input_records.append(Record(

@@ -30,10 +30,12 @@ from upstream_manifest import (  # noqa: E402
     ManifestError,
     hashed_path,
     load_manifest,
+    pinned_snapshot_sha256,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
-MANIFEST = ROOT / "scripts" / "upstream-manifest.txt"
+MANIFEST_RELATIVE = Path("scripts") / "upstream-manifest.txt"
+MANIFEST = ROOT / MANIFEST_RELATIVE
 UPSTREAM_DOC = "docs/upstream.md"
 PIN_SOURCE = "cmd/ccc/pin.go"
 PIN_CONSTANT = re.compile(r'upstreamRevision\s*=\s*"([0-9a-f]{40})"')
@@ -342,13 +344,7 @@ def check_inputs(root: Path, manifest: Manifest) -> list[str]:
     if problems:
         raise Failure(f"{len(problems)} generated input(s) changed", problems)
 
-    pinned = ""
-    tool = root / PRICING_TOOL
-    if tool.exists():
-        for line in tool.read_text(encoding="utf-8").splitlines():
-            if "defaultSnapshotSHA256" in line and "=" in line:
-                pinned = line.partition("=")[2].strip().strip('"')
-                break
+    pinned = pinned_snapshot_sha256(root / PRICING_TOOL)
     recorded = next((r.digest for r in manifest.inputs if r.path == PRICING_INPUT), "")
     if not pinned:
         raise Failure(
@@ -391,7 +387,7 @@ def check_reported_pin(root: Path, manifest: Manifest) -> str:
 
 
 def run(root: Path) -> list[str]:
-    manifest = load_manifest(root / MANIFEST.relative_to(ROOT))
+    manifest = load_manifest(root / MANIFEST_RELATIVE)
     check_pin_documented(root, manifest)
     reported_pin = check_reported_pin(root, manifest)
     tracked, others = tree_files(root)

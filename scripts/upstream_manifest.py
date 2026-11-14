@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from pathlib import Path
 
 HEADER_KEYS = ("pin", "remote", "describe", "commit-date", "upstream-files", "carried", "deviations")
@@ -158,6 +159,25 @@ def load_manifest(path: Path) -> Manifest:
 def blob_sha1(data: bytes) -> str:
     """Git's object name for ``data``: sha1 over ``blob <size>\\0`` plus the bytes."""
     return hashlib.sha1(b"blob %d\x00" % len(data) + data).hexdigest()
+
+
+#: The form the carried snapshot tool pins its artifact in: a quoted 64-hex SHA-256 constant. The
+#: importer, the parity checker and the checker's tests all have to read the same value from the same
+#: source, so the reader lives here instead of being spelled three ways.
+SNAPSHOT_PIN = re.compile(r'defaultSnapshotSHA256\s*=\s*"([0-9a-f]{64})"')
+
+
+def pinned_snapshot_sha256(tool_source: Path) -> str:
+    """The snapshot SHA-256 compiled into the carried ``litellm-snapshot`` tool, or ``""``.
+
+    ``internal/pricing/cmd/litellm-snapshot/main.go`` verifies the restored artifact against this
+    constant, so reading it (rather than a second hard-coded copy) is what keeps the committed input
+    verifiable against upstream's own pin.
+    """
+    if not tool_source.exists():
+        return ""
+    match = SNAPSHOT_PIN.search(tool_source.read_text(encoding="utf-8"))
+    return match.group(1) if match else ""
 
 
 def hashed_path(root: Path, path: str) -> tuple[str, int, bytes]:

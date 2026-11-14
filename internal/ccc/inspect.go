@@ -49,6 +49,11 @@ type SessionReport struct {
 type ArchiveReport struct {
 	Status ArchiveStatus `json:"status"`
 	Counts Counts        `json:"counts"`
+	// Projection names the archive content policy the read shows: how much of the recorded
+	// conversation the archive kept (see storageProjection). It is derived from the read's rows, not
+	// from the status, because the storage boundary is the writer's and a read-only handle cannot see
+	// it.
+	Projection string `json:"projection,omitempty"`
 	// SameMessagesAsSource reports that every message the archive holds also appears in the source
 	// read at the same ordinal with the same role and content. The archive stores a projection, so it
 	// may hold *fewer* rows than the source -- a tool-result-only row is folded into its tool call and
@@ -148,7 +153,11 @@ func archiveReport(
 	if err != nil {
 		return ArchiveReport{}, false, err
 	}
-	report := ArchiveReport{Status: status, Counts: Summarize(conversation.Messages)}
+	report := ArchiveReport{
+		Status:     status,
+		Counts:     Summarize(conversation.Messages),
+		Projection: conversation.Fidelity.Projection,
+	}
 	if sourceMessages != nil {
 		report.SameMessagesAsSource, report.FoldedToolResults, report.Warnings =
 			compareMessages(sourceMessages, conversation.Messages)
@@ -207,7 +216,7 @@ func compareMessages(source, archived []Message) (bool, int, []string) {
 // transcripts or usage projection as the whole conversation would be reading a different session
 // than the one that was recorded.
 func projectionWarnings(report ArchiveReport) []string {
-	switch report.Status.Projection {
+	switch report.Projection {
 	case "", "full":
 		return nil
 	case "transcripts":
@@ -215,7 +224,7 @@ func projectionWarnings(report ArchiveReport) []string {
 	case "usage":
 		return []string{"archive stores the usage projection: message bodies are not in it"}
 	default:
-		return []string{"archive stores the " + report.Status.Projection + " projection"}
+		return []string{"archive stores the " + report.Projection + " projection"}
 	}
 }
 

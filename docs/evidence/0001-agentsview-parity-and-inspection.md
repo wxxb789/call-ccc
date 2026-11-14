@@ -96,10 +96,10 @@ pin 83195c8a6861b8c74a4b6cb87512817fed6f8584 (v0.47.0-181-g83195c8a) from https:
 fetched the pinned revision into <tmp>/upstream
 - restored internal/pricing/snapshot/litellm_snapshot.json.gz in the pristine tree from upstream's pinned artifact
 - copied internal/ccc (10 Go source file(s)) from this tree into the pristine checkout: the oracle and its call/ccc wrapper are identical on both sides, so the only variable is which tree the inherited packages come from
-oracle source: 10 file(s), sha256=244a33d405719ca8e9890efbcd86ed76983160a79423fce271d70324d6736e39 (identical on both sides)
+oracle source: 10 file(s), sha256=294041862d332d7ae2c4078356cf8c4a40c3f6d832a98b32139f4fdb0ec41684 (identical on both sides)
 claude: fixture sha256=2bd510821d4abf83… ours=83a32277577fc32e… pristine=83a32277577fc32e… agreement=yes
 codex: fixture sha256=d9957a8d6f5731a3… ours=db0295aba8d0eec4… pristine=db0295aba8d0eec4… agreement=yes
-RESULT: PASS — 2 case(s) agree byte for byte with the pinned revision      # rc=0, 1m24s
+RESULT: PASS — 2 case(s) agree byte for byte with the pinned revision      # rc=0, 37 s
 ```
 
 The same command against an existing clean checkout (`--upstream /path/to/agentsview`) reports the
@@ -130,7 +130,7 @@ pin 83195c8a6861b8c74a4b6cb87512817fed6f8584 (v0.47.0-181-g83195c8a)
 reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584
 carried: 5553 file(s) identical to the pinned revision (compared through git's own object store)
 deviations: 27 upstream path(s) not carried + 1 generated input(s), all present as declared
-owned: 25 project-owned prefix(es); files seen by git: 5612
+owned: 25 project-owned prefix(es); files seen by git: 5613
 inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go)
 symlinks hashed by their link target: 4
 declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
@@ -182,15 +182,15 @@ gate: go=<go>/bin/go targets=./cmd/ccc/... ./internal/ccc/...
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 69 tests in 12.917s (rc=0)
-  PASS     parity   pin 83195c8a6861b8c74a4b6cb87512817fed6f8584 … carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) … declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md frontend/src/lib/utils/__fix…
+  PASS     selftest Ran 69 tests in 4.967s (rc=0)
+  PASS     parity   pin 83195c8a6861b8c74a4b6cb87512817fed6f8584 (v0.47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) not carried + 1 generated input(s), all present as declared | owned: 25 project-owned prefix(es); files seen by git: 5613 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md frontend/src/lib/utils/__fix…
   PASS     secrets  no leaks found in 58 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
 
-Wall clock for the whole gate on this host: 40 s with a warm build cache (53 s cold). `gofmt` covers the carried tree as well (3574 Go
-files); `build`/`vet`/`test` cover the three call/ccc packages, which compile the inherited packages
-they depend on.
+Wall clock for the whole gate on this host: 18 s with warm caches in this run (53 s cold, measured earlier
+in this increment). `gofmt` covers the carried tree as well (3574 Go files); `build`/`vet`/`test` cover
+the three call/ccc packages, which compile the inherited packages they depend on.
 
 ## 7. Measurements that shaped the harness
 
@@ -227,7 +227,13 @@ upstream's CI; `docs/harness.md` states this, and `parity` covers those files at
   checking when a scan looks clean.
 - **No ingest command.** The write path exists in the engine for tests and the oracle; exposing it
   would need upstream's live-daemon check, which lives in a `package main` call/ccc may not import
-  ([Q-0001-04](../decisions/OPEN-QUESTIONS.md) records the surrounding decisions).
+  ([the plan](../plans/0001-agentsview-parity-and-inspection.md), §3.1, states that boundary and §6
+  records the decision to ship no write command).
+- **The ambiguity branch is not exercised by a fixture.** `AmbiguousError` and the CLI's "pass one of
+  those session ids instead of a guess" line are implemented — the source reader reports several
+  candidate sources for a changed path, and the archive reports every session row that names one
+  source file, instead of taking the first — but the committed fixtures hold one session each, so
+  nothing in this record makes an identifier match more than one source.
 
 ## 9. Re-deriving this record
 

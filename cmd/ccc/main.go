@@ -120,7 +120,6 @@ func runInspect(args []string, stdout, stderr io.Writer) int {
 	reader := ccc.NewSourceReader(cfg)
 	inspection, err := ccc.Inspect(context.Background(), ccc.InspectOptions{
 		Ref:         ref,
-		Config:      cfg,
 		Reader:      reader,
 		ArchivePath: cfg.DBPath,
 	})
@@ -256,7 +255,7 @@ func writeHuman(out io.Writer, inspection ccc.Inspection) {
 	if archived := inspection.Archive; archived == nil {
 		fmt.Fprintf(out, "  archive:      none at %s\n", valueOr(inspection.ArchivePath, "the configured data directory"))
 	} else {
-		fmt.Fprintf(out, "  archive:      %s [%s]\n", archived.Status.Path, archived.Status.Projection)
+		fmt.Fprintf(out, "  archive:      %s [%s]\n", archived.Status.Path, archived.Projection)
 		fmt.Fprintf(out, "  archived id:  %s\n", archived.Status.SessionID)
 		fmt.Fprintf(out, "  archived:     %s\n", describeCounts(archived.Counts))
 		if archived.SameMessagesAsSource {

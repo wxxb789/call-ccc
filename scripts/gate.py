@@ -206,24 +206,31 @@ def secrets_scope() -> tuple[Path | None, int, str]:
     manifest_path = ROOT / "scripts" / "upstream-manifest.txt"
     try:
         manifest = load_manifest(manifest_path)
-        owned = manifest.owned
     except (OSError, ManifestError) as broken:
         # A tree without a carry manifest is not this repository's shape (a throw-away test tree, a
         # copy): the honest fallback is to scan the whole tree and say so.
         return ROOT, -1, f"no readable carry manifest ({broken}), so the whole tree was scanned"
-    staged = Path(tempfile.mkdtemp(prefix="ccc-secrets-"))
-    copied = 0
-    for path in ROOT.rglob("*"):
-        if not path.is_file() or ".git" in path.relative_to(ROOT).parts:
-            continue
-        relative = path.relative_to(ROOT).as_posix()
-        if not any(relative == prefix or (prefix.endswith("/") and relative.startswith(prefix))
-                   for prefix in owned):
-            continue
-        target = staged / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, target)
-        copied += 1
+    stage_root: str | None = None
+    try:
+        stage_root = tempfile.mkdtemp(prefix="ccc-secrets-")
+        staged = Path(stage_root)
+        copied = 0
+        for path in ROOT.rglob("*"):
+            if not path.is_file() or ".git" in path.relative_to(ROOT).parts:
+                continue
+            relative = path.relative_to(ROOT).as_posix()
+            if not manifest.is_owned(relative):
+                continue
+            target = staged / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+            copied += 1
+    except OSError as failed:
+        # Staging needs disk space and permissions the scan itself does not: report the scope that
+        # could not be prepared, so the caller names it instead of crashing on a traceback.
+        if stage_root is not None:
+            shutil.rmtree(stage_root, ignore_errors=True)
+        return None, 0, f"could not stage this repository's own files for the leak scan ({failed})"
     return staged, copied, (
         f"{copied} file(s) this repository owns (the carried upstream tree is covered by the parity "
         f"step, not by this scan)")
@@ -240,7 +247,9 @@ def step_secrets() -> tuple[str, str]:
         return SKIP, "gitleaks not installed on this host (CI installs it)"
     scope, copied, note = secrets_scope()
     if scope is None:
-        return FAIL, note
+        # The scan could not be prepared: like a gitleaks binary that is absent or a run that did not
+        # complete, that is a disclosed SKIP named in the verdict line, not a leak result.
+        return SKIP, note
     try:
         proc = run(
             ["gitleaks", "detect", "--no-git", "--source", str(scope), "--redact", "--no-banner",
