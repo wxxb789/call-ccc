@@ -1,0 +1,29 @@
+<!-- Keep the tree free of build output, local state and secrets. -->
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+
+# Local tooling / editor state
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*~
+
+# Python bytecode from the harness's own scripts
+__pycache__/
+*.pyc
+
+# Local scratch and evidence dumps that must not be committed
+/tmp/
+/scratch/
+*.log
+
+# Secrets: never commit credentials, tokens or real session transcripts
+.env
+.env.*
+*.pem
+*.key
+credentials.json
