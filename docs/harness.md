@@ -27,10 +27,10 @@ Exit code 0 means every step that **ran** passed. A step that could not run is p
 - `scripts/gate-targets.txt` — one Go package pattern per line (`#` comments allowed) for
   build/vet/test. Absent means `./...`. Narrowing it is a disclosure obligation: say why in this file
   and in the increment's report.
-- `scripts/gate-required.txt` — one step name per line. A step listed here that is skipped,
-  unavailable or reported as a platform boundary **fails** the gate: the verdict is computed from the
-  effective status, so listing a step cannot silently become a footnote. This is how a check is
-  promoted from "runs when it can" to "must run".
+- `scripts/gate-required.txt` — one step name per line. A step listed here must be `PASS`: `SKIP`,
+  `BOUNDARY`, `N/A` and `FAIL` all fail the gate, and so does an unknown step name — the verdict is
+  computed from the effective status, so listing a step cannot silently become a footnote. This is how
+  a check is promoted from "runs when it can" to "must run".
 - `scripts/upstream-parity.py` — the source-side parity check. The gate runs it when it exists; the
   increment that introduces the pinned upstream revision is the one that adds it and lists `parity` in
   `scripts/gate-required.txt`.

@@ -25,7 +25,8 @@ Read in this order; do not skip: this file → [`docs/core-design/README.md`](do
 ## How to work here
 
 - Gate: `python scripts/gate.py`, which must end in `GATE: PASS`. It is the same command CI runs;
-  never narrow or skip a step to get green — a step that cannot run is disclosed, not silenced.
+  never narrow or skip a step to get green — a step that cannot run is disclosed, not silenced. The
+  gate also runs its own regression tests from `scripts/tests/` (the `selftest` step, stdlib only).
 - Stage order for an increment: implement → verify (gate) → simplify (report only) → apply (accepted
   findings only) → review (report only) → fix → gate → PR. Report stages must not edit the tree.
 - One goal ≈ one branch ≈ one pull request, squash-merged onto a linear `main`. Do not commit, push

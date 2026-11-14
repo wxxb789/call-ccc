@@ -30,9 +30,12 @@ jobs:
           python-version: '3.13'
 
       # Built from source so the same command works on every runner without a
-      # release download step that can fail on its own.
+      # release download step that can fail on its own. The module path is the
+      # one v8.30.1 declares in its own go.mod (github.com/gitleaks/gitleaks is
+      # the renamed repository, not the module path), and the version is stamped
+      # the way upstream's Makefile does it so `gitleaks version` reports the pin.
       - name: Install gitleaks
-        run: go install github.com/zricethezav/gitleaks/v8@v8.30.1
+        run: go install -ldflags "-X=github.com/zricethezav/gitleaks/v8/version.Version=v8.30.1" github.com/zricethezav/gitleaks/v8@v8.30.1
 
       - name: Gate
         run: python scripts/gate.py

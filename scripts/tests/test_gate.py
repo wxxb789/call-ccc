@@ -12,15 +12,27 @@ not a copy.
 
 from __future__ import annotations
 
+import importlib.util
+import io
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 GATE = Path(__file__).resolve().parents[1] / "gate.py"
+
+
+def load_shipped_gate():
+    """Import scripts/gate.py as a module so main() can be driven in-process."""
+    spec = importlib.util.spec_from_file_location("gate_under_test", GATE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class GateCase(unittest.TestCase):
@@ -112,6 +124,37 @@ class GateCase(unittest.TestCase):
         proc = self.gate()
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
         self.assertIn("selftest", proc.stdout)
+
+
+class GateBoundaryCase(unittest.TestCase):
+    """A required step reported as a platform boundary must fail too.
+
+    BOUNDARY is only produced on a host that cannot run the step (Windows
+    without a C compiler), so the host probe is the one thing stubbed here; the
+    verdict math under test is still the shipped file's.
+    """
+
+    def test_required_step_reported_as_boundary_fails_the_gate(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="gate-boundary-") as tmp:
+            root = Path(tmp)
+            (root / "scripts").mkdir(parents=True)
+            (root / "scripts" / "gate-required.txt").write_text("build\n", encoding="utf-8")
+            (root / "go.mod").write_text("module example.com/throwaway\n\ngo 1.27\n", encoding="utf-8")
+            (root / "main.go").write_text("package main\n", encoding="utf-8")
+
+            gate = load_shipped_gate()
+            gate.ROOT = root
+            out = io.StringIO()
+            with mock.patch.object(
+                gate, "go_env", return_value=({}, "no C compiler on PATH (stubbed)")
+            ), redirect_stdout(out):
+                rc = gate.main()
+
+        text = out.getvalue()
+        self.assertEqual(rc, 1, text)
+        self.assertIn("REQUIRED but was BOUNDARY", text)
+        self.assertIn("GATE: FAIL", text)
+        self.assertNotIn("GATE: PASS", text)
 
 
 if __name__ == "__main__":
