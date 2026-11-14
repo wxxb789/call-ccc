@@ -256,14 +256,21 @@ class GateProbeCase(GateTree, unittest.TestCase):
         self.assertNotIn("GATE: PASS", text)
 
     def test_only_tracked_go_files_outside_vendor_reach_gofmt(self) -> None:
-        """The git branch: tracked ``*.go``, minus a top-level ``vendor/``."""
+        """The git branch: tracked ``*.go``, minus a top-level ``vendor/``.
+
+        Both non-``main.go`` files have to stay out of ``found`` for a different
+        reason: ``untracked.go`` because ``git ls-files`` never lists it, and
+        ``vendor/vendored.go`` because the vendor filter drops it *after* git
+        listed it -- so the vendor file is staged, and deleting that filter
+        changes the assertions.
+        """
         git = shutil.which("git")
         if git is None:
             self.skipTest("git is not on PATH: this case exercises the git branch")
         self.write("main.go", "package main\n")
         self.write("untracked.go", "package main\n")
         self.write("vendor/vendored.go", "package main\n")
-        for args in (["init", "-q"], ["add", "main.go"]):
+        for args in (["init", "-q"], ["add", "main.go", "vendor/vendored.go"]):
             done = subprocess.run([git, *args], cwd=self.root, capture_output=True, text=True)
             self.assertEqual(done.returncode, 0, f"git {args[0]}: {done.stdout}{done.stderr}")
 
