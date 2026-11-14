@@ -1,0 +1,38 @@
+name: gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: gate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned while the repository has no Go module of its own; the increment
+      # that lands the module switches this to go-version-file: go.mod.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      # Built from source so the same command works on every runner without a
+      # release download step that can fail on its own.
+      - name: Install gitleaks
+        run: go install github.com/gitleaks/gitleaks/v8@v8.30.1
+
+      - name: Gate
+        run: python scripts/gate.py
