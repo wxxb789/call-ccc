@@ -49,16 +49,16 @@ type SessionReport struct {
 type ArchiveReport struct {
 	Status ArchiveStatus `json:"status"`
 	Counts Counts        `json:"counts"`
-	// Projection names the archive content policy the read shows: how much of the recorded
-	// conversation the archive kept (see storageProjection). It is derived from the read's rows, not
-	// from the status, because the storage boundary is the writer's and a read-only handle cannot see
-	// it.
-	Projection string `json:"projection,omitempty"`
+	// ContentShown names what the read of the archive itself shows -- its tool payloads and message
+	// text (see contentShown in archive.go) -- and not the storage policy the writer enforced, which
+	// a read-only handle cannot see.
+	ContentShown string `json:"content_shown,omitempty"`
 	// SameMessagesAsSource reports that every message the archive holds also appears in the source
 	// read at the same ordinal with the same role and content. The archive stores a projection, so it
 	// may hold *fewer* rows than the source -- a tool-result-only row is folded into its tool call and
-	// counted in FoldedToolResults -- but it must not hold a different one.
-	SameMessagesAsSource bool `json:"same_messages_as_source"`
+	// counted in FoldedToolResults -- but it must not hold a different one. It is nil when no source
+	// read happened, so a false value is always the result of a comparison that ran.
+	SameMessagesAsSource *bool `json:"same_messages_as_source"`
 	// Warnings names every difference this comparison found.
 	Warnings []string `json:"warnings,omitempty"`
 	// FoldedToolResults counts source rows the archive does not keep as messages because their
@@ -123,13 +123,13 @@ func Inspect(ctx context.Context, opts InspectOptions) (Inspection, error) {
 			return Inspection{}, err
 		default:
 			defer archive.Close()
-			report, found, err := archiveReport(ctx, archive, opts.Ref, sourceMessages)
+			report, found, err := archiveReport(ctx, archive, opts.Ref, sourceMessages, inspection.Source != nil)
 			if err != nil {
 				return Inspection{}, err
 			}
 			if found {
 				inspection.Archive = &report
-				inspection.Warnings = append(inspection.Warnings, projectionWarnings(report)...)
+				inspection.Warnings = append(inspection.Warnings, contentWarnings(report)...)
 				inspection.Warnings = append(inspection.Warnings, report.Warnings...)
 			} else if inspection.Source != nil {
 				inspection.Warnings = append(inspection.Warnings,
@@ -140,10 +140,10 @@ func Inspect(ctx context.Context, opts InspectOptions) (Inspection, error) {
 	return inspection, nil
 }
 
-// report is built from the read archive plus, when the source was readable, the comparison of the
-// two message sets.
+// archiveReport is built from the read archive plus, when the source was readable (sourceRead), the
+// comparison of the two message sets.
 func archiveReport(
-	ctx context.Context, archive *Archive, ref Ref, sourceMessages []Message,
+	ctx context.Context, archive *Archive, ref Ref, sourceMessages []Message, sourceRead bool,
 ) (ArchiveReport, bool, error) {
 	status, found, err := archive.Status(ctx, ref)
 	if err != nil || !found {
@@ -154,13 +154,15 @@ func archiveReport(
 		return ArchiveReport{}, false, err
 	}
 	report := ArchiveReport{
-		Status:     status,
-		Counts:     Summarize(conversation.Messages),
-		Projection: conversation.Fidelity.Projection,
+		Status:       status,
+		Counts:       Summarize(conversation.Messages),
+		ContentShown: conversation.Fidelity.ContentShown,
 	}
-	if sourceMessages != nil {
-		report.SameMessagesAsSource, report.FoldedToolResults, report.Warnings =
-			compareMessages(sourceMessages, conversation.Messages)
+	if sourceRead {
+		same, folded, warnings := compareMessages(sourceMessages, conversation.Messages)
+		report.SameMessagesAsSource = &same
+		report.FoldedToolResults = folded
+		report.Warnings = warnings
 	}
 	if report.FoldedToolResults > 0 {
 		report.Warnings = append(report.Warnings, fmt.Sprintf(
@@ -212,19 +214,30 @@ func compareMessages(source, archived []Message) (bool, int, []string) {
 	return same, folded, warnings
 }
 
-// projectionWarnings names what an archive's storage policy dropped, because a caller that treats a
-// transcripts or usage projection as the whole conversation would be reading a different session
-// than the one that was recorded.
-func projectionWarnings(report ArchiveReport) []string {
-	switch report.Projection {
-	case "", "full":
-		return nil
-	case "transcripts":
-		return []string{"archive stores the transcripts projection: tool inputs and results are not in it"}
-	case "usage":
-		return []string{"archive stores the usage projection: message bodies are not in it"}
+// contentWarnings names what an archive read could not show, because a caller that treats a narrowed
+// archive read as the whole conversation would be reading a different session than the one recorded.
+//
+// Each warning states what the read shows, never which storage policy wrote the archive: a read-only
+// handle cannot see that policy, so an archive that dropped tool payloads and a session that recorded
+// none read the same way, and a message claiming one of them would report an omission that may never
+// have happened.
+func contentWarnings(report ArchiveReport) []string {
+	switch report.ContentShown {
+	case "message-text":
+		return []string{
+			"the archive read shows no tool inputs or results: whether the archive dropped them or " +
+				"the session recorded none is not visible to a read",
+		}
+	case "none":
+		warning := "the archive read shows no message text and no tool inputs or results"
+		if report.Status.MessageCount > report.Counts.Messages {
+			warning += fmt.Sprintf(
+				"; it returns %d of the %d message(s) the session row records, so whole messages are "+
+					"not in this archive", report.Counts.Messages, report.Status.MessageCount)
+		}
+		return []string{warning}
 	default:
-		return []string{"archive stores the " + report.Projection + " projection"}
+		return nil
 	}
 }
 

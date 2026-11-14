@@ -3,10 +3,11 @@
 
 Every carried file must hash to the git blob the manifest recorded for it, every tracked file outside
 the manifest must belong to a path prefix this repository owns, and every declared deviation must
-still be a deviation -- a project-owned file that has been replaced by upstream's copy is a stale
-declaration, not a pass. The generated build input is checked against the SHA-256 pinned inside the
-carried snapshot tool, so the input is verified against upstream's own pin rather than a second
-hard-coded copy.
+still hold what the manifest declares: a project-owned path that has been replaced by upstream's copy
+is a stale declaration, and a path carried with a declared normalisation must still store the bytes
+its record pins -- both read from the working tree, and from git's index where git is available. The
+generated build input is checked against the SHA-256 pinned inside the carried snapshot tool, so the
+input is verified against upstream's own pin rather than a second hard-coded copy.
 
 Run by the gate as the required ``parity`` step (docs/harness.md); also runnable by hand:
 
@@ -189,6 +190,14 @@ def check_files(root: Path, manifest: Manifest, index: dict[str, tuple[str, str]
     symlinks_hashed = 0
     dirty: list[str] = []
     modified = git_modified(root) if index is not None else None
+    if index is not None and modified is None:
+        # A probe that could not answer must not read as "nothing is modified": that is the one answer
+        # which would look like a pass. The ignore probe below fails for the same reason.
+        raise Failure(
+            "could not ask git which carried paths differ from what it stores for them, so the check "
+            "cannot be completed",
+            ["git status --porcelain"],
+        )
     for record in manifest.files:
         if not present(root, record.path):
             missing.append(record.path)
@@ -296,38 +305,90 @@ def check_not_ignored(root: Path, manifest: Manifest, tracked: list[str] | None)
         )
 
 
-def check_deviations(root: Path, manifest: Manifest, index: dict[str, tuple[str, str]] | None) -> list[str]:
-    """Each declared skip must still differ from upstream, or the declaration is stale.
+def check_deviations(
+    root: Path, manifest: Manifest, index: dict[str, tuple[str, str]] | None
+) -> tuple[list[str], list[str], list[str]]:
+    """Each declared deviation must still differ from upstream, or be carried as it declares.
 
-    "Differs" is read the way git reads it where git is available -- the stored blob, filters applied
-    -- because that is the bytes a clone receives; a file git stores with a normalised line ending is
-    a deviation even when the working-tree copy still holds upstream's CRLF.
+    Two kinds of declaration exist, and both are checked against the *working tree* as well as git's
+    index, because the gate reads the working tree (`docs/harness.md`) and a file that quietly became
+    upstream's copy is the same stale declaration whether it was staged or only written on disk.
+
+    - a record with no stored digest declares "upstream's copy is not carried here": the bytes git
+      stores for the path and the bytes on disk must both differ from upstream's blob;
+    - a record with a stored digest declares a path this tree carries anyway, in bytes upstream's blob
+      can never equal (a declared normalisation): the stored bytes are what must hold -- the index
+      where git is available, the file's own bytes where it is not. A working-tree copy that still
+      holds upstream's pre-normalisation bytes is named, not failed: git itself reads that copy as
+      clean, and what a clone receives is the stored form.
+
+    Returns ``(still_differing, stored, pre_normalisation_on_disk)``.
     """
     stale: list[str] = []
     notes: list[str] = []
+    stored_notes: list[str] = []
+    on_disk_only: list[str] = []
     for record in manifest.skips:
-        if index is not None:
-            stored = index.get(record.path)
-            if stored is None:
+        target = root / record.path
+        # Only a file or a link has bytes to compare. A directory where the manifest declares a file
+        # reads as "not carried": that is the answer the git branch already gives for it (a directory
+        # cannot be in the index), and hashing it would raise instead of reporting.
+        on_disk = hashed_path(root, record.path) if target.is_file() or target.is_symlink() else None
+        stored = index.get(record.path) if index is not None else None
+        if stored is None and on_disk is None:
+            if not record.stored_digest:
                 continue  # not carried at all: the declaration is "absent", which is not stale
-            if stored[1] == record.digest:
-                stale.append(record.path)
+            stale.append(f"{record.path}: absent, but the manifest records the bytes this tree stores")
+            continue
+        if record.stored_digest:
+            if record.stored_digest == record.digest:
+                stale.append(
+                    f"{record.path}: the stored bytes are recorded as upstream's own, so the path is "
+                    f"carried, not deviated")
                 continue
-            notes.append(record.path)
+            if index is not None:
+                if stored is None:
+                    stale.append(
+                        f"{record.path}: absent from git's index, but the manifest records the bytes "
+                        f"this tree stores")
+                    continue
+                if stored[1] != record.stored_digest:
+                    stale.append(
+                        f"{record.path}: git stores {stored[1]}, the manifest records "
+                        f"{record.stored_digest}")
+                    continue
+            elif on_disk[0] not in (record.stored_digest, record.digest):
+                stale.append(
+                    f"{record.path}: the file hashes to {on_disk[0]}, neither the bytes this tree "
+                    f"stores ({record.stored_digest}) nor upstream's own ({record.digest})")
+                continue
+            if on_disk is not None and on_disk[0] == record.digest:
+                # A working-tree copy still holding the pre-normalisation bytes: git reads that copy
+                # as clean (its attribute file normalises it on comparison) and a clone checks out the
+                # stored form, so the declaration holds -- but the copy is named, not passed over.
+                on_disk_only.append(record.path)
+            elif on_disk is not None and on_disk[0] != record.stored_digest:
+                stale.append(
+                    f"{record.path}: the working tree hashes to {on_disk[0]}, neither the bytes this "
+                    f"tree stores ({record.stored_digest}) nor upstream's own ({record.digest})")
+                continue
+            stored_notes.append(record.path)
             continue
-        if not present(root, record.path):
+        if stored is not None and stored[1] == record.digest:
+            stale.append(f"{record.path}: it holds upstream's own bytes, so the declaration is stale")
             continue
-        digest, _, _ = hashed_path(root, record.path)
-        if digest == record.digest:
-            stale.append(record.path)
+        if on_disk is not None and on_disk[0] == record.digest:
+            stale.append(
+                f"{record.path}: the working tree holds upstream's own bytes, so the declaration "
+                f"is stale")
             continue
         notes.append(record.path)
     if stale:
         raise Failure(
-            f"{len(stale)} declared deviation(s) hold upstream's own bytes; carry them as files",
+            f"{len(stale)} declared deviation(s) do not hold what the manifest declares",
             stale,
         )
-    return notes
+    return notes, stored_notes, on_disk_only
 
 
 def check_inputs(root: Path, manifest: Manifest) -> list[str]:
@@ -395,7 +456,7 @@ def run(root: Path) -> list[str]:
     carried_checked, mode_unverified, symlinks_hashed = check_files(root, manifest, index)
     check_not_ignored(root, manifest, tracked)
     seen = check_untracked(root, manifest, tracked, others)
-    deviations = check_deviations(root, manifest, index)
+    deviations, stored, on_disk_only = check_deviations(root, manifest, index)
     inputs = check_inputs(root, manifest)
 
     scope = "(git-less tree: file-discovery checks skipped)" if tracked is None else ""
@@ -405,7 +466,8 @@ def run(root: Path) -> list[str]:
         f"carried: {carried_checked} file(s) identical to the pinned revision"
         + ("" if index is None else " (compared through git's own object store)")
         + f" {scope}".rstrip(),
-        f"deviations: {len(manifest.skips)} upstream path(s) not carried"
+        f"deviations: {len(manifest.skips)} upstream path(s) declared "
+        f"({len(stored)} of them carried with the bytes this tree stores)"
         f" + {len(manifest.inputs)} generated input(s), all present as declared",
         f"owned: {len(manifest.owned)} project-owned prefix(es); files seen by git: {seen}",
         f"inputs: {'; '.join(inputs)}",
@@ -422,6 +484,23 @@ def run(root: Path) -> list[str]:
             )
         ]
         if deviations else []
+    ) + (
+        [
+            "declared stored bytes verified: {listed}{more}".format(
+                listed=" ".join(stored[:MAX_LISTED]),
+                more=" …" if len(stored) > MAX_LISTED else "",
+            )
+        ]
+        if stored else []
+    ) + (
+        [
+            "working tree still holds upstream's pre-normalisation bytes for: {listed}{more} "
+            "(git stores the declared bytes; a checkout writes those)".format(
+                listed=" ".join(on_disk_only[:MAX_LISTED]),
+                more=" …" if len(on_disk_only) > MAX_LISTED else "",
+            )
+        ]
+        if on_disk_only else []
     )
 
 

@@ -24,11 +24,13 @@ manifest, through git's own index where git is available (`git ls-files -s`: wha
 receives, `.gitattributes` filters applied) and by hashing bytes where it is not — so the answer is
 the same on every platform, and a file whose line endings git would normalise cannot pass in one
 checkout and fail in another. It then fails if a manifest path is missing or modified in the working
-tree, if a declared deviation has quietly turned back into upstream's copy, if the generated input
-stops hashing to the value the carried snapshot tool pins, if `docs/upstream.md` or `cmd/ccc/pin.go`
-disagree with the manifest about the revision, or if anything git would add sits inside the tree
-without a manifest record or a project-owned prefix. The check is offline; it needs no checkout of
-upstream to answer.
+tree, if a declared deviation has quietly turned back into upstream's copy — staged *or* only written
+on disk, since the gate reads the working tree — or stops holding the stored bytes its record pins, if
+the generated input stops hashing to the value the carried snapshot tool pins, if `docs/upstream.md`
+or `cmd/ccc/pin.go` disagree with the manifest about the revision, or if anything git would add sits
+inside the tree without a manifest record or a project-owned prefix. A `git status` or ignore probe
+that cannot answer fails the check: "nothing is modified" is the one answer that would look like a
+pass. The check is offline; it needs no checkout of upstream to answer.
 
 Behaviour is a separate question from bytes, and it is answered by evidence rather than by this file:
 [`docs/evidence/0001-agentsview-parity-and-inspection.md`](evidence/0001-agentsview-parity-and-inspection.md)
@@ -49,13 +51,16 @@ desktop builds — on every call/ccc pull request.
 | `README.md` | call/ccc's project README lives at this path |
 | `docs/README.md` | call/ccc's docs index lives at this path |
 | `.github/**` (22 files) | upstream CI definitions would run upstream's CI here |
-| `frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json` | carried with exactly one byte normalised: upstream's blob holds a single CRLF pair in 1.4 MB that this repository's carried `.gitattributes` turns into LF, so git stores the file one byte shorter |
+| `frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json` | carried with exactly one byte normalised: upstream's blob holds a single CRLF pair in 1.4 MB that this repository's carried `.gitattributes` turns into LF, so git stores the file one byte shorter. Its record pins both: upstream's blob (`ebcc03dc…`, 1 441 138 B) and the bytes this tree stores (`48adf87e…`, 1 441 137 B), which the parity step verifies through git's index — or against the file's own bytes in a tree without git |
 
 The last row is the only path among upstream's 5580 tracked files whose bytes cannot be stored
 unchanged: git normalises text line endings on `git add` (`* text=auto eol=lf`, upstream's own
 attribute file). Carrying it verbatim would need an attribute file inside a carried directory —
 project content in upstream-owned space — so the file is kept with the byte git stores and the
-difference is declared instead of hidden.
+difference is declared instead of hidden. Because upstream's blob can never be what the tree holds for
+that path, "still differs from upstream" proves nothing about it: the stored digest is recorded and
+checked, and the importer writes those stored bytes so the working tree equals what a clone checks
+out.
 
 One build input is carried although upstream does not track it: `internal/pricing/fallback.go`
 embeds `internal/pricing/snapshot/litellm_snapshot.json.gz`, which upstream's `Makefile` restores
@@ -88,9 +93,14 @@ python3 scripts/upstream-parity.py
 The importer reads upstream's **git objects**, not its working tree, so a checkout with unusual
 `core.autocrlf` cannot smuggle a rewritten file in; it refuses a dirty checkout, refuses to write a
 path this repository owns, and with `--prune` deletes only files the previous manifest carried and
-that this tree has not modified since. A pin update is one commit that changes the manifest and the
-carried files, and it should say in its message why the new revision was taken (a parser fix for a
-format a user's sessions are in, a security fix, a released tag).
+that this tree has not modified since — pruning *before* it writes, because a path can change shape
+between revisions (a file becomes a directory). A path in the importer's `NORMALISED` list is carried
+with the bytes git stores for it and recorded with both digests. A pin update is one commit that
+changes the manifest and the carried files, and it should say in its message why the new revision was
+taken (a parser fix for a format a user's sessions are in, a security fix, a released tag). If the
+`parity` step then reports a carried file differing from the pin, either upstream really changed it or
+the new pin normalises a path this repository has not declared in `NORMALISED`; the step names which
+file, and the fix is one entry there (or an upstream contribution), not a hand-edited manifest.
 
 ## Limits
 

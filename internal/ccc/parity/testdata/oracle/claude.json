@@ -1,5 +1,5 @@
 {
-  "tool": "call-ccc-parity-oracle/1",
+  "tool": "call-ccc-parity-oracle/2",
   "case": "claude",
   "fixture": {
     "relative_to_root": "-home-user-code-example-api/9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10.jsonl",
@@ -149,7 +149,7 @@
     "cwd": "/home/user/code/example-api",
     "source_version": "1.0.30",
     "read_from": "archive",
-    "projection": "full",
+    "content_shown": "tool-payloads",
     "malformed_lines": 1,
     "truncated": false,
     "counts": {

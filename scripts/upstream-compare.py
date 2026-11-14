@@ -92,6 +92,12 @@ def fetch_pristine(pin: str, remote: str, into: Path) -> None:
 
 
 def verify_checkout(path: Path, pin: str) -> None:
+    """Refuse a side that is not a clean checkout of the pin.
+
+    The comparison attributes its dumps to the pinned revision, and ``--record`` rewrites the committed
+    oracle with them, so a checkout holding local edits would attribute this tree's own work to
+    upstream -- the sibling importer refuses a dirty checkout for the same reason.
+    """
     if not (path / ".git").exists():
         raise SystemExit(f"{path} is not a git checkout")
     head = run(["git", "rev-parse", "HEAD"], cwd=path)
@@ -103,6 +109,10 @@ def verify_checkout(path: Path, pin: str) -> None:
     status = run(["git", "status", "--porcelain"], cwd=path)
     if status.returncode != 0:
         raise SystemExit(f"git status failed in {path}: {status.stderr.strip()}")
+    if status.stdout.strip():
+        raise SystemExit(
+            f"{path} has local modifications; compare against a clean checkout of the pin:\n"
+            f"{status.stdout.strip()}")
 
 
 def stage_pristine_tree(clone: Path) -> list[str]:
@@ -197,13 +207,13 @@ def main(argv: list[str] | None = None) -> int:
             clone = args.upstream.resolve()
             verify_checkout(clone, pin)
             staged_clone = clone
-            print(f"using the existing checkout at {clone}")
+            print(f"using the existing checkout at {clone} (clean, at the pin)")
         else:
             clone = scratch / "upstream"
             clone.mkdir(parents=True, exist_ok=True)
             fetch_pristine(pin, remote, clone)
             verify_checkout(clone, pin)
-            print(f"fetched the pinned revision into {clone}")
+            print(f"fetched the pinned revision into {clone} (clean, at the pin)")
 
         for note in stage_pristine_tree(clone):
             print("-", note)

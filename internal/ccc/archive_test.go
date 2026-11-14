@@ -62,7 +62,7 @@ func TestIngestThenArchiveRead(t *testing.T) {
 			t.Errorf("%s: status reports %d message(s), the read returned %d",
 				ref.ID, status.MessageCount, archiveCounts.Messages)
 		}
-		if fromArchive.Fidelity.ReadFrom != "archive" || fromArchive.Fidelity.Projection != "full" {
+		if fromArchive.Fidelity.ReadFrom != "archive" || fromArchive.Fidelity.ContentShown != "tool-payloads" {
 			t.Errorf("%s: archive read fidelity = %+v", ref.ID, fromArchive.Fidelity)
 		}
 		if fromArchive.Fidelity.MalformedLines != fromSource.Fidelity.MalformedLines {
@@ -118,8 +118,8 @@ func TestIngestThenArchiveRead(t *testing.T) {
 			t.Errorf("%s: tool/compaction counts differ (source %+v, archive %+v)",
 				ref.ID, sourceCounts, archiveCounts)
 		}
-		t.Logf("%s: stored id %q, %d message(s), %d folded row(s), projection %q",
-			ref.ID, status.SessionID, status.MessageCount, folded, fromArchive.Fidelity.Projection)
+		t.Logf("%s: stored id %q, %d message(s), %d folded row(s), content shown %q",
+			ref.ID, status.SessionID, status.MessageCount, folded, fromArchive.Fidelity.ContentShown)
 	}
 
 	after := hashTree(t, fixtureRoot(t))
@@ -388,20 +388,29 @@ func TestInspectReportsAnArchiveOnlySession(t *testing.T) {
 	}
 }
 
-// TestArchiveReadNamesItsStorageProjection pins that an archive read reports how narrow the archive
-// is. The storage policy belongs to the writer's handle and a read-only handle cannot see it, so the
-// projection is derived from the rows the read returns; without a transcripts or usage archive the
-// projection would be an unverifiable constant and the warning an inspection promises could not fire.
-func TestArchiveReadNamesItsStorageProjection(t *testing.T) {
+// TestArchiveReadNamesWhatItShows pins that an archive read reports what its rows show. The storage
+// policy belongs to the writer's handle and a read-only handle cannot see it, so the read names the
+// payloads and text it got back; a read that named a policy would report omissions that never
+// happened (a session that recorded no tool payload is not a narrowed archive). The Claude fixture
+// carries a tool call, so the three policies leave the three distinguishable shapes.
+func TestArchiveReadNamesWhatItShows(t *testing.T) {
 	claudeFile := fixturePath(t, filepath.Join("claude", "-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"))
-	for _, policy := range []config.ArchiveContent{
-		config.ArchiveContentFull,
-		config.ArchiveContentTranscripts,
-		config.ArchiveContentUsage,
-	} {
-		t.Run(string(policy), func(t *testing.T) {
+	cases := []struct {
+		policy   config.ArchiveContent
+		shown    string
+		warning  string
+		warnsNil bool
+	}{
+		{policy: config.ArchiveContentFull, shown: "tool-payloads", warnsNil: true},
+		{policy: config.ArchiveContentTranscripts, shown: "message-text",
+			warning: "shows no tool inputs or results"},
+		{policy: config.ArchiveContentUsage, shown: "none",
+			warning: "shows no message text and no tool inputs or results"},
+	}
+	for _, testCase := range cases {
+		t.Run(string(testCase.policy), func(t *testing.T) {
 			cfg := fixtureConfig(t)
-			cfg.ArchiveContent = policy
+			cfg.ArchiveContent = testCase.policy
 			archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
 			ingestor, err := NewIngestor(cfg, archivePath)
 			if err != nil {
@@ -409,7 +418,7 @@ func TestArchiveReadNamesItsStorageProjection(t *testing.T) {
 			}
 			ctx := context.Background()
 			if err := ingestor.IngestPaths(ctx, claudeFile); err != nil {
-				t.Fatalf("ingesting the fixture under %s: %v", policy, err)
+				t.Fatalf("ingesting the fixture under %s: %v", testCase.policy, err)
 			}
 			archive, err := OpenArchive(ctx, archivePath)
 			if err != nil {
@@ -420,9 +429,9 @@ func TestArchiveReadNamesItsStorageProjection(t *testing.T) {
 			if err != nil {
 				t.Fatalf("reading the archive: %v", err)
 			}
-			if fromArchive.Fidelity.Projection != string(policy) {
-				t.Errorf("the archive written under %s reads back as projection %q",
-					policy, fromArchive.Fidelity.Projection)
+			if fromArchive.Fidelity.ContentShown != testCase.shown {
+				t.Errorf("the archive written under %s reads back as content shown %q, want %q",
+					testCase.policy, fromArchive.Fidelity.ContentShown, testCase.shown)
 			}
 
 			inspection, err := Inspect(ctx, InspectOptions{
@@ -436,21 +445,112 @@ func TestArchiveReadNamesItsStorageProjection(t *testing.T) {
 			if inspection.Archive == nil {
 				t.Fatalf("the archived session was not reported: warnings %v", inspection.Warnings)
 			}
+			if inspection.Archive.ContentShown != testCase.shown {
+				t.Errorf("the inspection reports content shown %q, want %q",
+					inspection.Archive.ContentShown, testCase.shown)
+			}
 			warnings := strings.Join(inspection.Warnings, "\n")
-			switch policy {
-			case config.ArchiveContentFull:
-				if strings.Contains(warnings, "archive stores the") {
-					t.Errorf("a full archive was reported as narrowed: %v", inspection.Warnings)
+			if testCase.warnsNil {
+				if strings.Contains(warnings, "shows no message text") ||
+					strings.Contains(warnings, "shows no tool inputs") {
+					t.Errorf("a read carrying tool payloads was reported as narrowed: %v", inspection.Warnings)
 				}
-			case config.ArchiveContentTranscripts:
-				if !strings.Contains(warnings, "archive stores the transcripts projection") {
-					t.Errorf("the transcripts projection was not reported: %v", inspection.Warnings)
-				}
-			case config.ArchiveContentUsage:
-				if !strings.Contains(warnings, "archive stores the usage projection") {
-					t.Errorf("the usage projection was not reported: %v", inspection.Warnings)
-				}
+				return
+			}
+			if !strings.Contains(warnings, testCase.warning) {
+				t.Errorf("the %s read was not reported: %v", testCase.policy, inspection.Warnings)
+			}
+			if strings.Contains(warnings, "projection") {
+				t.Errorf("the warning names a storage policy the read cannot see: %v", inspection.Warnings)
 			}
 		})
 	}
+}
+
+// TestArchiveReadDoesNotCallAPayloadFreeReadNarrowed pins the other half: a session that recorded no
+// tool payload at all, ingested under the full policy, reads back with no tool payloads -- and that is
+// a fact about the rows, not evidence that the writer dropped anything. The read must say so; the
+// label this replaced ("transcripts") claimed the archive stored a projection that never narrowed
+// anything, and a warning built on it reported an omission that never happened.
+func TestArchiveReadDoesNotCallAPayloadFreeReadNarrowed(t *testing.T) {
+	source, cfg := toolFreeFixture(t)
+	cfg.ArchiveContent = config.ArchiveContentFull
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(cfg, archivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	ctx := context.Background()
+	if err := ingestor.IngestPaths(ctx, source); err != nil {
+		t.Fatalf("ingesting the tool-free session: %v", err)
+	}
+	archive, err := OpenArchive(ctx, archivePath)
+	if err != nil {
+		t.Fatalf("opening the archive: %v", err)
+	}
+	defer archive.Close()
+	fromArchive, err := archive.Read(ctx, claudeFixtureRef)
+	if err != nil {
+		t.Fatalf("reading the archive: %v", err)
+	}
+	if fromArchive.Fidelity.ContentShown != "message-text" {
+		t.Errorf("a tool-free session under the full policy reads as %q, want %q",
+			fromArchive.Fidelity.ContentShown, "message-text")
+	}
+	if status, found, err := archive.Status(ctx, claudeFixtureRef); err != nil || !found {
+		t.Fatalf("the tool-free session is not in the archive: found=%v err=%v", found, err)
+	} else if status.MessageCount != len(fromArchive.Messages) {
+		t.Errorf("the session row records %d message(s), the read returned %d",
+			status.MessageCount, len(fromArchive.Messages))
+	}
+
+	inspection, err := Inspect(ctx, InspectOptions{
+		Ref:         claudeFixtureRef,
+		Reader:      NewSourceReader(cfg),
+		ArchivePath: archivePath,
+	})
+	if err != nil {
+		t.Fatalf("inspecting: %v", err)
+	}
+	if inspection.Archive == nil {
+		t.Fatalf("the archived session was not reported: warnings %v", inspection.Warnings)
+	}
+	warnings := strings.Join(inspection.Warnings, "\n")
+	if !strings.Contains(warnings, "the archive read shows no tool inputs or results") {
+		t.Errorf("the read does not say what it showed: %v", inspection.Warnings)
+	}
+	if strings.Contains(warnings, "projection") {
+		t.Errorf("the warning claims a storage policy the read cannot see: %v", inspection.Warnings)
+	}
+}
+
+// toolFreeFixture writes the Claude fixture without its tool records under a throw-away provider root
+// and returns that root's configuration: a session that recorded two text turns and one compaction
+// boundary, and no tool call at all. It is derived from the committed fixture bytes rather than
+// committed itself, so the two shapes cannot drift apart, and every path it writes is temporary.
+func toolFreeFixture(t *testing.T) (string, config.Config) {
+	t.Helper()
+	fixture := fixturePath(t, filepath.Join("claude", "-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"))
+	raw, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatalf("reading the fixture: %v", err)
+	}
+	var kept []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.Contains(line, `"tool_use"`) || strings.Contains(line, `"tool_result"`) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	root := t.TempDir()
+	source := filepath.Join(root, "claude", "-home-user-code-example-api", claudeFixtureRef.ID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(source), 0o755); err != nil {
+		t.Fatalf("preparing the tool-free provider root: %v", err)
+	}
+	if err := os.WriteFile(source, []byte(strings.Join(kept, "\n")), 0o600); err != nil {
+		t.Fatalf("writing the tool-free session: %v", err)
+	}
+	cfg := fixtureConfig(t)
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentClaude: {filepath.Join(root, "claude")}}
+	return source, cfg
 }

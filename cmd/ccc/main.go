@@ -10,6 +10,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -45,7 +46,7 @@ options:
   --data-dir DIR read the archive in DIR (%s/sessions.db) instead of the configured data directory
 
 exit codes:
-  0  the session was found and reported
+  0  the session was found and reported, or the usage was asked for (-h, --help, help)
   1  nothing was found, the reference was ambiguous, or the read failed
   2  the command line could not be understood
 `
@@ -55,6 +56,11 @@ const (
 	exitFailure = 1
 	exitUsage   = 2
 )
+
+// inspectUsage is the one-line usage `ccc inspect` prints for `-h`, for a usage error and for a
+// missing operand: the flag package's help request and a malformed command line get the same text,
+// and only the stream and the exit code tell them apart.
+const inspectUsage = "usage: ccc inspect <provider>:<session-id-or-path> [--json] [--data-dir DIR]\n"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -80,11 +86,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 func runInspect(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("inspect", flag.ContinueOnError)
-	flags.SetOutput(stderr)
+	// The flag package writes both its errors and a requested help text to one stream. They are not
+	// the same thing to a caller -- a usage request is not a command line that could not be understood
+	// -- so its output is buffered here and routed once the parse has answered.
+	var flagOutput bytes.Buffer
+	flags.SetOutput(&flagOutput)
 	asJSON := flags.Bool("json", false, "write the inspection as JSON")
 	dataDir := flags.String("data-dir", "", "data directory whose sessions.db is consulted")
 	flags.Usage = func() {
-		fmt.Fprintf(stderr, "usage: ccc inspect <provider>:<session-id-or-path> [--json] [--data-dir DIR]\n")
+		fmt.Fprint(flags.Output(), inspectUsage)
 	}
 	flagArgs, operands, err := splitFlags(args)
 	if err != nil {
@@ -92,13 +102,18 @@ func runInspect(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	if err := flags.Parse(flagArgs); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fmt.Fprint(stdout, flagOutput.String())
+			return exitOK
+		}
+		fmt.Fprint(stderr, flagOutput.String())
 		return exitUsage
 	}
 	if rest := flags.Args(); len(rest) > 0 {
 		operands = append(operands, rest...)
 	}
 	if len(operands) != 1 {
-		flags.Usage()
+		fmt.Fprint(stderr, inspectUsage)
 		return exitUsage
 	}
 	ref, err := parseRef(operands[0])
@@ -255,12 +270,15 @@ func writeHuman(out io.Writer, inspection ccc.Inspection) {
 	if archived := inspection.Archive; archived == nil {
 		fmt.Fprintf(out, "  archive:      none at %s\n", valueOr(inspection.ArchivePath, "the configured data directory"))
 	} else {
-		fmt.Fprintf(out, "  archive:      %s [%s]\n", archived.Status.Path, archived.Projection)
+		fmt.Fprintf(out, "  archive:      %s [%s]\n", archived.Status.Path, archived.ContentShown)
 		fmt.Fprintf(out, "  archived id:  %s\n", archived.Status.SessionID)
 		fmt.Fprintf(out, "  archived:     %s\n", describeCounts(archived.Counts))
-		if archived.SameMessagesAsSource {
+		switch {
+		case archived.SameMessagesAsSource == nil:
+			fmt.Fprintf(out, "  agreement:    not compared (the source was not readable)\n")
+		case *archived.SameMessagesAsSource:
 			fmt.Fprintf(out, "  agreement:    every archived message matches the source read\n")
-		} else {
+		default:
 			fmt.Fprintf(out, "  agreement:    the archive and the source read differ (see warnings)\n")
 		}
 	}

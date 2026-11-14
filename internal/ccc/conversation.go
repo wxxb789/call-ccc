@@ -110,10 +110,11 @@ type Fidelity struct {
 	// ReadFrom names where the bytes came from: "source" for the provider's own reader, "archive"
 	// for the AgentsView SQLite projection.
 	ReadFrom string `json:"read_from"`
-	// Projection names the archive content policy an archive read shows ("full", "transcripts",
-	// "usage"): the storage boundary belongs to the writer's handle, so a read derives the projection
-	// from the rows it returns rather than trusting the handle it opened. Empty for a source read.
-	Projection string `json:"projection,omitempty"`
+	// ContentShown names what an archive read shows, not the storage policy the writer enforced: a
+	// read-only handle cannot see that policy, so the value describes the rows this read returned.
+	// "tool-payloads": at least one tool input or result body is visible. "message-text": message text
+	// is visible and no tool payload is. "none": neither is visible. Empty for a source read.
+	ContentShown string `json:"content_shown,omitempty"`
 }
 
 // Conversation is the transient interchange document: ordered messages with their tool pairing and

@@ -58,13 +58,19 @@ It verifies, in this order:
 2. every carried path is what git stores for it (`git ls-files -s`, i.e. what a fresh clone receives,
    with `.gitattributes` filters applied) — or, in a tree without git, what its bytes hash to;
 3. no carried file is modified in the working tree relative to what git stores (`git status`
-   porcelain, worktree column only: a staged-but-uncommitted tree is the normal state here);
+   porcelain, worktree column only: a staged-but-uncommitted tree is the normal state here), and a
+   `git status` that cannot answer fails the step instead of dropping the rule;
 4. no carried path matches the tree's ignore rules, which would make `git add` skip it in a fresh
    clone;
 5. nothing git would add sits inside the tree unexplained: a tracked or untracked-but-not-ignored
    path is either named by the manifest or inside a prefix the manifest calls project-owned;
-6. every declared deviation still differs from upstream (a project-owned file that has quietly
-   become upstream's copy is a stale declaration, not a pass);
+6. every declared deviation still holds what the manifest declares, read from the working tree (what
+   the gate actually gated) and from git's index where git is available — a project-owned file that
+   has quietly become upstream's copy is a stale declaration whether it was staged or only written on
+   disk, and a path carried with a declared line-ending normalisation must still store the bytes its
+   record pins, since upstream's own blob can never be what that path holds. A working-tree copy that
+   still holds upstream's pre-normalisation bytes is *reported*, not failed: git reads that copy as
+   clean and a checkout writes the declared bytes;
 7. the generated build input hashes to the SHA-256 that the carried snapshot tool pins in its own
    source, so the input is verified against upstream's pin rather than a second hard-coded copy.
 
@@ -72,8 +78,10 @@ It verifies, in this order:
 step, because it needs network and a second checkout: it fetches the pinned revision into a scratch
 directory, copies `internal/ccc` into it so both sides run the *same* oracle program over the *same*
 fixture bytes, runs parse → sync → archive read on both sides in their own throw-away archives, and
-diffs the two canonical dumps. `internal/ccc/parity/testdata/oracle/*.json` holds the dumps a
-pristine checkout produced; the ordinary test suite re-checks this tree against them offline. The
+diffs the two canonical dumps. A checkout it did not fetch itself (`--upstream`) must be *clean* at
+the pin, exactly as the importer requires: the dumps are attributed to that revision, and `--record`
+rewrites the committed oracle with them. `internal/ccc/parity/testdata/oracle/*.json` holds the dumps
+a pristine checkout produced; the ordinary test suite re-checks this tree against them offline. The
 increment's evidence record holds a run of it with its hashes.
 
 ## `secrets`: what it scans, and what it does not

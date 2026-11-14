@@ -9,7 +9,8 @@ carried 5553
 deviations 28
 #
 # file	shape	blob-sha1	size	path  (mode 100644/100755, 120000 = symlink)
-# skip	shape	blob-sha1	size	path	reason  (upstream paths deliberately not carried)
+# skip	shape	blob-sha1	size	path	reason  (upstream paths deliberately not carried as upstream's bytes)
+# skip	...	stored-blob-sha1	stored-size  (when the path is carried anyway: the bytes this tree stores for it)
 # input	shape	sha256	size	path	reason  (generated build inputs, not tracked upstream)
 # owned	path-prefix  (this repository owns the path; a trailing / means a directory)
 owned	.github/
@@ -5616,5 +5617,5 @@ skip	100644	3830cb05d330f8961b92611cac6d2cc1e9893942	1394	.gitignore	project-own
 skip	100644	1994077070e40fd664e0fa8ce795b9803135523f	14091	AGENTS.md	project-owned: call/ccc's control file lives at this path
 skip	100644	78df1ebf747602a5199c20ea469f8922061d5517	60258	README.md	project-owned: call/ccc's project README lives at this path
 skip	100644	994b4fbcfc5377a67db2262c7eb4fd3adf626d16	5940	docs/README.md	project-owned: call/ccc's docs index lives at this path
-skip	100644	ebcc03dcf9314fe43dacd5db0edbad7987041218	1441138	frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json	carried with one byte normalised: upstream's blob holds a single CRLF pair that this repository's carried .gitattributes turns into LF, so git stores the file one byte shorter
+skip	100644	ebcc03dcf9314fe43dacd5db0edbad7987041218	1441138	frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json	carried with one byte normalised: upstream's blob holds a single CRLF pair that this repository's carried .gitattributes turns into LF, so git stores the file one byte shorter	48adf87eda451584a61c61fdcc34e384d92a6bb8	1441137
 input	100644	75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8	56068	internal/pricing/snapshot/litellm_snapshot.json.gz	generated build input embedded by internal/pricing; upstream restores it from a pinned artifact before every Go build (sha256 pinned in internal/pricing/cmd/litellm-snapshot/main.go)

@@ -16,12 +16,20 @@ Format -- header lines ``key value``, then tab-separated records, sorted by path
     deviations       <paths deliberately not carried or not byte-identical>
 
     file   <mode> <blob-sha1> <size> <path>
-    skip   <mode> <blob-sha1> <size> <path> <reason>
+    skip   <mode> <blob-sha1> <size> <path> <reason> [<stored-blob-sha1> <stored-size>]
     input  <mode> <sha256>    <size> <path> <reason>
 
 ``mode`` is git's: ``100644``, ``100755`` or ``120000`` (symlink; the blob holds the target text).
 ``owned`` records list the path prefixes this repository owns -- anything else tracked in the tree
 must be a ``file`` record, which is what makes an unexplained addition fail the check.
+
+A ``skip`` record names an upstream path this repository does not carry as upstream's own blob: a
+project-owned path, or one carried with a declared byte normalisation (upstream's ``.gitattributes``
+rewrites line endings when git stores a text file). When the path *is* carried anyway, the record
+also holds the digest and size of the bytes this tree stores for it, because upstream's digest could
+never match those -- the normalisation is the reason the path is declared rather than carried. The
+checker verifies the stored bytes (git's index where git is available, the file's own bytes where it
+is not) and still refuses a deviation that has quietly become upstream's copy.
 
 The blob hash is git's own (``sha1("blob <size>\\0" + bytes)``) over the file's committed content.
 It is computed here rather than shelled out to ``git hash-object`` so the check works in a tree
@@ -45,17 +53,25 @@ class ManifestError(ValueError):
 
 
 class Record:
-    """One manifest record."""
+    """One manifest record.
 
-    __slots__ = ("kind", "mode", "digest", "size", "path", "reason")
+    ``stored_digest``/``stored_size`` are set only on a ``skip`` record whose path this tree carries
+    anyway: they are the digest and size of the bytes this tree stores for it (see the module
+    docstring), which upstream's own blob can never equal.
+    """
 
-    def __init__(self, kind: str, mode: str, digest: str, size: int, path: str, reason: str = ""):
+    __slots__ = ("kind", "mode", "digest", "size", "path", "reason", "stored_digest", "stored_size")
+
+    def __init__(self, kind: str, mode: str, digest: str, size: int, path: str, reason: str = "",
+                 stored_digest: str = "", stored_size: int = 0):
         self.kind = kind
         self.mode = mode
         self.digest = digest
         self.size = size
         self.path = path
         self.reason = reason
+        self.stored_digest = stored_digest
+        self.stored_size = stored_size
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"Record({self.kind!r}, {self.mode!r}, {self.digest!r}, {self.size}, {self.path!r})"
@@ -67,6 +83,8 @@ class Record:
         fields = [self.kind, self.mode, self.digest, str(self.size), self.path]
         if self.kind in ("skip", "input"):
             fields.append(self.reason)
+        if self.kind == "skip" and self.stored_digest:
+            fields += [self.stored_digest, str(self.stored_size)]
         return "\t".join(fields)
 
 
@@ -93,6 +111,11 @@ class Manifest:
     def owned(self) -> list[str]:
         return [r.path for r in self.records if r.kind == "owned"]
 
+    @property
+    def stored_deviations(self) -> list[Record]:
+        """Declared deviations this tree carries anyway, with the bytes each record pins."""
+        return [r for r in self.skips if r.stored_digest]
+
     def is_owned(self, path: str) -> bool:
         """True when ``path`` is inside a self-owned prefix (which may be a directory)."""
         for prefix in self.owned:
@@ -111,7 +134,10 @@ class Manifest:
                 lines.append(f"{key} {self.header[key]}")
         lines.append("#")
         lines.append("# file\tshape\tblob-sha1\tsize\tpath  (mode 100644/100755, 120000 = symlink)")
-        lines.append("# skip\tshape\tblob-sha1\tsize\tpath\treason  (upstream paths deliberately not carried)")
+        lines.append("# skip\tshape\tblob-sha1\tsize\tpath\treason  (upstream paths deliberately not "
+                     "carried as upstream's bytes)")
+        lines.append("# skip\t...\tstored-blob-sha1\tstored-size  (when the path is carried anyway: "
+                     "the bytes this tree stores for it)")
         lines.append("# input\tshape\tsha256\tsize\tpath\treason  (generated build inputs, not tracked upstream)")
         lines.append("# owned\tpath-prefix  (this repository owns the path; a trailing / means a directory)")
         for record in self.records:
@@ -142,13 +168,21 @@ def parse_manifest(text: str) -> Manifest:
                 raise ManifestError(f"line {number}: owned takes exactly one field")
             records.append(Record(kind, "", "", 0, fields[1]))
             continue
-        if len(fields) not in (5, 6):
-            raise ManifestError(f"line {number}: {kind} takes 5 or 6 fields, got {len(fields)}")
-        fields += [""] * (6 - len(fields))
-        _, mode, digest, size, path, reason = fields
-        if not size.isdigit():
-            raise ManifestError(f"line {number}: size {size!r} is not a number")
-        records.append(Record(kind, mode, digest, int(size), path, reason))
+        if kind == "skip" and len(fields) == 8:
+            _, mode, digest, size, path, reason, stored_digest, stored_size = fields
+        elif len(fields) in (5, 6):
+            _, mode, digest, size, path, reason = fields + [""] * (6 - len(fields))
+            stored_digest, stored_size = "", ""
+        else:
+            detail = " (or 8 for a declared deviation carried with the bytes this tree stores)" \
+                if kind == "skip" else ""
+            raise ManifestError(
+                f"line {number}: {kind} takes 5 or 6 fields{detail}, got {len(fields)}")
+        for name, value in (("size", size), ("stored size", stored_size)):
+            if value and not value.isdigit():
+                raise ManifestError(f"line {number}: {name} {value!r} is not a number")
+        records.append(Record(kind, mode, digest, int(size), path, reason, stored_digest,
+                              int(stored_size) if stored_size else 0))
     return Manifest(header, records)
 
 

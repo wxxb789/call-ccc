@@ -1,5 +1,5 @@
 {
-  "tool": "call-ccc-parity-oracle/1",
+  "tool": "call-ccc-parity-oracle/2",
   "case": "codex",
   "fixture": {
     "relative_to_root": "2026/05/04/rollout-2026-05-04T09-15-00-0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812.jsonl",
@@ -118,7 +118,7 @@
     "project": "example_api",
     "cwd": "/home/user/code/example-api",
     "read_from": "archive",
-    "projection": "full",
+    "content_shown": "tool-payloads",
     "malformed_lines": 0,
     "truncated": false,
     "counts": {

@@ -22,6 +22,7 @@ import io
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -35,9 +36,15 @@ SCRIPT_DIRS = (str(SCRIPTS),)
 
 #: A revision-shaped pin; the exact digits do not matter to any rule under test.
 PIN = "0123456789abcdef0123456789abcdef01234567"
+REVISION = "fedcba9876543210fedcba9876543210fedcba98"
 SNAPSHOT = "internal/pricing/snapshot/litellm_snapshot.json.gz"
 TOOL = "internal/pricing/cmd/litellm-snapshot/main.go"
 MANIFEST = "scripts/upstream-manifest.txt"
+
+
+def tool_result(cmd, rc=0, out="", err=""):
+    """A ``CompletedProcess`` shaped like the ones the shipped runners return."""
+    return subprocess.CompletedProcess(cmd, rc, out, err)
 
 
 def load_script(name: str):
@@ -70,8 +77,10 @@ class ParityTree:
             "src/b.sh": ("100755", b"#!/bin/sh\necho beta\n"),
             "docs/note.md": ("100644", b"note\n"),
         }
-        # A deviation records the *upstream* blob and holds this tree's own bytes: the two differing
-        # is what makes the declaration meaningful.
+        # A deviation records the *upstream* blob and holds this tree's own bytes: the two differing is
+        # what makes the declaration meaningful. A third element is a declared normalisation -- bytes
+        # this tree stores for a path it carries anyway -- and the record then pins those bytes beside
+        # upstream's blob, because upstream's digest can never be what the tree holds.
         self.deviations = {"README.md": ("100644", b"upstream readme\n")}
         self.snapshot_bytes = b"snapshot-bytes"
         for path, (mode, data) in self.carried.items():
@@ -122,12 +131,29 @@ class ParityTree:
         ]
         for path, (mode, data) in sorted(self.carried.items()):
             lines.append(f"file\t{mode}\t{blob_sha1(data)}\t{len(data)}\t{path}")
-        for path, (mode, data) in sorted(self.deviations.items()):
-            lines.append(f"skip\t{mode}\t{blob_sha1(data)}\t{len(data)}\t{path}\tproject-owned: this tree keeps its own file here")
+        for path, deviation in sorted(self.deviations.items()):
+            mode, upstream = deviation[0], deviation[1]
+            line = (f"skip\t{mode}\t{blob_sha1(upstream)}\t{len(upstream)}\t{path}"
+                    f"\tproject-owned: this tree keeps its own file here")
+            if len(deviation) > 2:
+                stored = deviation[2]
+                line += f"\t{blob_sha1(stored)}\t{len(stored)}"
+            lines.append(line)
         digest = hashlib.sha256(self.snapshot_bytes).hexdigest()
         lines.append(f"input\t100644\t{digest}\t{len(self.snapshot_bytes)}\t{SNAPSHOT}\tgenerated build input")
         (self.root / MANIFEST).parent.mkdir(parents=True, exist_ok=True)
         (self.root / MANIFEST).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def add_stored_deviation(self, path: str, upstream: bytes, stored: bytes,
+                             mode: str = "100644") -> None:
+        """Declare a path this tree carries anyway, pinning the bytes it stores for it.
+
+        The tree is written with the stored bytes, which is what the importer does: upstream's blob is
+        what the record names, and the two can differ only by the declared normalisation.
+        """
+        self.deviations[path] = (mode, upstream, stored)
+        self.write_bytes(path, stored)
+        self.write_manifest()
 
     def run_parity(self, **patches) -> tuple[int, str]:
         """Run the shipped check against this tree, with optional module seams patched.
@@ -140,8 +166,9 @@ class ParityTree:
         """
         if "tree_files" in patches and "ignored_paths" not in patches:
             patches["ignored_paths"] = lambda root, paths: []
-        if "git_index" not in patches and "tree_files" not in patches:
-            # A throw-away tree is not a repository: the check falls back to hashing its bytes.
+        if not ({"git_index", "tree_files", "subprocess"} & set(patches)):
+            # A throw-away tree is not a repository: the check falls back to hashing its bytes. A case
+            # that supplies a scripted ``subprocess`` is asking for the shipped git branch instead.
             patches["git_index"] = lambda root: None
         buffer = io.StringIO()
         with mock.patch.multiple(self.parity, **patches) if patches else _no_patch():
@@ -161,8 +188,13 @@ class _no_patch:
     def __exit__(self, *exc) -> bool: return False
 
 
-class ParityCase(unittest.TestCase):
-    """Cases that assert the shipped check's verdicts."""
+class ParityTreeCase:
+    """The throw-away tree, its helpers and the two verdict assertions the case classes share.
+
+    Deliberately not a ``unittest.TestCase``: a case class that inherited the *cases* would have every
+    one of them discovered twice -- once on the base, once on the subclass -- and a subclass that
+    means to exercise one branch would re-run all the other branches' cases too.
+    """
 
     def setUp(self) -> None:
         self.tree = ParityTree()
@@ -178,6 +210,10 @@ class ParityCase(unittest.TestCase):
         self.assertEqual(code, 1, output)
         self.assertIn("parity: FAIL", output)
         self.assertIn(needle, output)
+
+
+class ParityCase(ParityTreeCase, unittest.TestCase):
+    """Cases that assert the shipped check's verdicts."""
 
     def test_a_clean_tree_passes(self) -> None:
         self.assert_clean(*self.tree.run_parity())
@@ -297,7 +333,7 @@ class ParityCase(unittest.TestCase):
         # carried, not deviated, and the manifest would be lying about which of the two it is.
         self.tree.write_bytes("README.md", self.tree.deviations["README.md"][1])
         code, output = self.tree.run_parity()
-        self.assert_failed(code, output, "hold upstream's own bytes")
+        self.assert_failed(code, output, "holds upstream's own bytes")
 
     def test_a_generated_input_that_changed_fails(self) -> None:
         self.tree.write_bytes(SNAPSHOT, b"different snapshot")
@@ -364,6 +400,175 @@ class ParityCase(unittest.TestCase):
         self.assertEqual(module.blob_sha1(b"hello\n"), "ce013625030ba8dba906f756967f9e9ca394464a")
 
 
+class StoredDeviationCase(ParityTreeCase, unittest.TestCase):
+    """Cases for a declared deviation this tree carries anyway, with the bytes it stores pinned.
+
+    Such a record is the only carried path whose bytes can never equal upstream's blob (upstream's own
+    attribute file rewrites its line endings), so the manifest has to pin the stored digest for the
+    checker to verify anything at all.
+    """
+
+    upstream = b"upstream\r\nreadme\n"
+    stored = b"upstream\nreadme\n"
+
+    def test_the_stored_bytes_are_verified_where_git_is_absent(self) -> None:
+        self.tree.add_stored_deviation("README.md", self.upstream, self.stored)
+        code, output = self.tree.run_parity()
+        self.assert_clean(code, output)
+        self.assertIn("declared stored bytes verified: README.md", output)
+
+    def test_a_working_tree_copy_holding_upstreams_bytes_is_disclosed_not_failed(self) -> None:
+        """A copy of a worktree the importer wrote holds upstream's bytes; git normalises them away."""
+        self.tree.add_stored_deviation("README.md", self.upstream, self.stored)
+        self.tree.write_bytes("README.md", self.upstream)
+        code, output = self.tree.run_parity()
+        self.assert_clean(code, output)
+        self.assertIn("working tree still holds upstream's pre-normalisation bytes for: README.md",
+                      output)
+
+    def test_stored_bytes_that_drifted_fail(self) -> None:
+        self.tree.add_stored_deviation("README.md", self.upstream, self.stored)
+        self.tree.write_bytes("README.md", b"locally rewritten\n")
+        self.assert_failed(*self.tree.run_parity(), "neither the bytes this tree stores")
+
+    def test_a_recorded_path_that_is_absent_fails(self) -> None:
+        self.tree.add_stored_deviation("README.md", self.upstream, self.stored)
+        self.tree.remove("README.md")
+        self.assert_failed(*self.tree.run_parity(), "the manifest records the bytes this tree stores")
+
+    def test_a_record_whose_stored_bytes_are_upstreams_own_fails(self) -> None:
+        """A declaration whose stored byte *is* upstream's blob declares nothing: it is carried."""
+        self.tree.deviations["README.md"] = ("100644", self.upstream, self.upstream)
+        self.tree.write_bytes("README.md", self.upstream)
+        self.tree.write_manifest()
+        self.assert_failed(*self.tree.run_parity(), "carried, not deviated")
+
+
+class ScriptedGit:
+    """The git queries the checker makes, answered from a scripted repository state.
+
+    No case in this suite runs a tool: this stand-in is installed as the parity module's
+    ``subprocess``, and answers in git's own wire formats (``ls-files -s -z``,
+    ``status --porcelain -z``, ``check-ignore -z``), so the shipped parsers and the index branch of
+    the deviation rules run for real on any host.
+    """
+
+    def __init__(self, tracked=(), others=(), index=None, porcelain=b"", ignored=()):
+        self.tracked = list(tracked)
+        self.others = list(others)
+        self.index = dict(index or {})
+        self.porcelain = porcelain
+        self.ignored = list(ignored)
+
+    def run(self, cmd, input=None, **kwargs):  # noqa: A002 - the signature subprocess.run has
+        args = list(cmd[3:])  # drop "git", "-C" and the tree the query runs in
+        if args[:1] == ["ls-files"] and "-s" in args:
+            stdout = "\0".join(
+                f"{mode} {blob} 0\t{path}" for path, (mode, blob) in sorted(self.index.items()))
+        elif args[:1] == ["ls-files"] and "--others" in args:
+            stdout = "\0".join(self.others)
+        elif args[:1] == ["ls-files"]:
+            stdout = "\0".join(self.tracked)
+        elif args[:1] == ["status"]:
+            stdout = self.porcelain.decode("utf-8")
+        elif args[:1] == ["check-ignore"]:
+            stdout = "\0".join(self.ignored)
+        else:
+            raise AssertionError(f"the case does not script this git query: {args}")
+        # Bytes, like ``subprocess.run(capture_output=True)`` without ``text=True``: the shipped
+        # readers decode the output themselves, which is part of what these cases exercise.
+        return tool_result(cmd, 0, stdout.encode("utf-8"), b"")
+
+
+class GitBranchCase(ParityTreeCase, unittest.TestCase):
+    """Cases for the shipped git-backed branches: the index and git's own status output.
+
+    ``ParityTree.run_parity`` patches the two seams by default, so these cases hand it a scripted git
+    instead -- the branch a real repository takes, which nothing else in the suite reaches.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.index = {
+            path: (mode, blob_sha1(data)) for path, (mode, data) in self.tree.carried.items()
+        }
+        self.index["README.md"] = (
+            "100644", blob_sha1((self.tree.root / "README.md").read_bytes()))
+        self.tracked = sorted([*self.tree.carried, "README.md", SNAPSHOT])
+
+    def stage(self, path: str, data: bytes, mode: str = "100644") -> None:
+        self.index[path] = (mode, blob_sha1(data))
+        if path not in self.tracked:
+            self.tracked.append(path)
+
+    def run_with_git(self, **scripted) -> tuple[int, str]:
+        git = ScriptedGit(tracked=self.tracked, index=self.index, **scripted)
+        return self.tree.run_parity(subprocess=git)
+
+    def test_a_clean_tree_passes_through_the_git_branch(self) -> None:
+        code, output = self.run_with_git()
+        self.assert_clean(code, output)
+        self.assertIn("compared through git's own object store", output)
+
+    def test_a_staged_deviation_that_became_upstreams_copy_is_stale(self) -> None:
+        """The index is what a clone receives, so upstream's blob there is a stale declaration."""
+        self.stage("README.md", self.tree.deviations["README.md"][1])
+        code, output = self.run_with_git()
+        self.assert_failed(code, output, "it holds upstream's own bytes")
+
+    def test_an_unstaged_deviation_that_became_upstreams_copy_is_stale(self) -> None:
+        """The gate reads the working tree: an unstaged copy is the same stale declaration."""
+        self.tree.write_bytes("README.md", self.tree.deviations["README.md"][1])
+        code, output = self.run_with_git()
+        self.assert_failed(code, output, "the working tree holds upstream's own bytes")
+
+    def test_a_worktree_modified_carried_file_is_reported_through_git_status(self) -> None:
+        code, output = self.run_with_git(porcelain=b" M docs/note.md\0")
+        self.assert_failed(code, output, "differ from what git stores for them")
+
+    def test_a_staged_but_uncommitted_tree_is_not_dirty(self) -> None:
+        """The second porcelain column is the working tree; only that one means "modified on disk"."""
+        code, output = self.run_with_git(porcelain=b"M  src/a.txt\0")
+        self.assert_clean(code, output)
+
+    def test_a_git_status_that_cannot_answer_fails_instead_of_passing(self) -> None:
+        """A probe with no answer must not read as "nothing is modified" -- that would look like a pass."""
+        code, output = self.tree.run_parity(
+            git_index=lambda root: dict(self.index), git_modified=lambda root: None)
+        self.assert_failed(code, output, "could not ask git which carried paths differ")
+
+    def test_a_carried_normalisation_is_verified_through_the_index(self) -> None:
+        self.tree.add_stored_deviation("README.md", StoredDeviationCase.upstream,
+                                       StoredDeviationCase.stored)
+        self.stage("README.md", StoredDeviationCase.stored)
+        code, output = self.run_with_git()
+        self.assert_clean(code, output)
+        self.assertIn("declared stored bytes verified: README.md", output)
+
+    def test_a_carried_normalisation_whose_stored_digest_drifted_fails(self) -> None:
+        self.tree.add_stored_deviation("README.md", StoredDeviationCase.upstream,
+                                       StoredDeviationCase.stored)
+        self.stage("README.md", b"not what the record pins\n")
+        self.assert_failed(*self.run_with_git(), "git stores")
+
+    def test_a_carried_normalisation_whose_working_tree_holds_upstreams_bytes_is_disclosed(self) -> None:
+        self.tree.add_stored_deviation("README.md", StoredDeviationCase.upstream,
+                                       StoredDeviationCase.stored)
+        self.stage("README.md", StoredDeviationCase.stored)
+        self.tree.write_bytes("README.md", StoredDeviationCase.upstream)
+        code, output = self.run_with_git()
+        self.assert_clean(code, output)
+        self.assertIn("working tree still holds upstream's pre-normalisation bytes for: README.md",
+                      output)
+
+    def test_a_carried_normalisation_whose_working_tree_holds_neither_fails(self) -> None:
+        self.tree.add_stored_deviation("README.md", StoredDeviationCase.upstream,
+                                       StoredDeviationCase.stored)
+        self.stage("README.md", StoredDeviationCase.stored)
+        self.tree.write_bytes("README.md", b"locally rewritten\n")
+        self.assert_failed(*self.run_with_git(), "neither the bytes this tree stores")
+
+
 class ImportCase(unittest.TestCase):
     """Cases that assert the importer's declarations, which the checker trusts."""
 
@@ -393,7 +598,24 @@ class ImportCase(unittest.TestCase):
             self.assertEqual(self.import_script.skip_reason(record.path), "", record.path)
 
     def test_the_importer_refuses_a_pin_that_is_not_the_checkouts_head(self) -> None:
-        """Without a git checkout the revision cannot be confirmed, so the importer must stop."""
+        """A pin that is not the checkout's HEAD must stop the import, named as such.
+
+        The rule has its own answer -- the revision reported back differs from ``--pin`` -- and it is
+        reached here by the module's own ``git`` seam, because a real two-commit checkout would need a
+        host git this suite must not depend on. The answer is asserted by its own words, not by the
+        word "HEAD" that the guard above it also prints.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".git").mkdir()
+            answer = tool_result(["git"], 0, REVISION + "\n", "")
+            with mock.patch.object(self.import_script, "git", lambda *args, **kwargs: answer):
+                with self.assertRaises(SystemExit) as raised:
+                    self.import_script.main(["--upstream", str(root), "--pin", PIN, "--dry-run"])
+            self.assertIn("is not the checkout's HEAD", str(raised.exception))
+
+    def test_the_importer_stops_when_the_revision_cannot_be_confirmed(self) -> None:
+        """Without a git answer the revision cannot be confirmed, so the importer must stop."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / ".git").mkdir()
@@ -401,13 +623,102 @@ class ImportCase(unittest.TestCase):
                 self.import_script.main(["--upstream", str(root), "--pin", PIN, "--dry-run"])
             # Either git is missing or it answered "not a repository": both mean the revision cannot
             # be confirmed, and both must stop the import rather than carry an unverified revision.
-            self.assertIn("HEAD", str(raised.exception))
+            self.assertIn("git rev-parse HEAD failed", str(raised.exception))
 
     def test_the_importer_refuses_a_directory_that_is_not_a_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(SystemExit) as raised:
                 self.import_script.main(["--upstream", directory, "--dry-run"])
             self.assertIn("not a git checkout", str(raised.exception))
+
+    def test_every_declared_normalisation_is_a_skip_path_with_a_reason(self) -> None:
+        """A declared normalisation is carried by the write path, so it must be declared as skipped."""
+        for path in self.import_script.NORMALISED:
+            self.assertIn("normalised", self.import_script.skip_reason(path), path)
+
+
+class ImportWriteCase(unittest.TestCase):
+    """Cases for the importer's write path, driven without git: what it prunes and what it refuses.
+
+    The importer reads a checkout's git objects, which no case here may need; the step that turns
+    those objects into files is a function of its own, so a case can hand it entries and watch the
+    tree -- including the shape change that used to crash half-way through a pin update.
+    """
+
+    def setUp(self) -> None:
+        self.import_script = load_script("upstream-import.py")
+        self.manifest_module = load_script("upstream_manifest.py")
+        self.root = Path(tempfile.mkdtemp(prefix="import-root-"))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+
+    def entry(self, path: str, data: bytes, mode: str = "100644"):
+        """One entry as the importer builds it: ``(mode, blob, path)`` plus the blob's contents."""
+        return (mode, blob_sha1(data), path), {blob_sha1(data): data}
+
+    def previous(self, path: str, data: bytes):
+        return self.manifest_module.Manifest(
+            {"pin": PIN},
+            [self.manifest_module.Record("file", "100644", blob_sha1(data), len(data), path)],
+        )
+
+    def write(self, entries, contents, previous=None, prune=False) -> None:
+        self.import_script.carry_entries(self.root, entries, contents, previous, prune, False)
+
+    def test_a_file_that_became_a_directory_is_pruned_before_the_write(self) -> None:
+        """The revision that carried ``sub`` as a file may carry ``sub/alpha.txt``: prune, then write.
+
+        Written the other way round, the write hits the file the prune is about to remove and stops
+        half-way through the tree with a FileExistsError.
+        """
+        (self.root / "sub").write_bytes(b"carried as a file\n")
+        entry, contents = self.entry("sub/alpha.txt", b"alpha\n")
+        self.write([entry], contents, self.previous("sub", b"carried as a file\n"), prune=True)
+        self.assertEqual((self.root / "sub" / "alpha.txt").read_bytes(), b"alpha\n")
+
+    def test_a_collision_without_prune_is_named_not_a_traceback(self) -> None:
+        (self.root / "sub").write_bytes(b"carried as a file\n")
+        entry, contents = self.entry("sub/alpha.txt", b"alpha\n")
+        with self.assertRaises(SystemExit) as raised:
+            self.write([entry], contents)
+        message = str(raised.exception)
+        self.assertIn("sub is a file", message)
+        self.assertIn("sub/alpha.txt", message)
+        self.assertNotIsInstance(raised.exception, OSError)
+
+    def test_a_directory_where_the_pin_carries_a_file_is_named(self) -> None:
+        (self.root / "note.md").mkdir()
+        entry, contents = self.entry("note.md", b"note\n")
+        with self.assertRaises(SystemExit) as raised:
+            self.write([entry], contents)
+        self.assertIn("note.md is a directory", str(raised.exception))
+
+    def test_prune_refuses_a_file_modified_here(self) -> None:
+        (self.root / "gone.txt").write_bytes(b"edited here\n")
+        with self.assertRaises(SystemExit) as raised:
+            self.write([], {}, self.previous("gone.txt", b"carried\n"), prune=True)
+        self.assertIn("refusing to prune", str(raised.exception))
+        self.assertTrue((self.root / "gone.txt").exists())
+
+    def test_a_declared_normalisation_is_written_with_the_bytes_git_stores(self) -> None:
+        """The worktree must equal what a clone checks out, so the write applies the normalisation."""
+        path = self.import_script.NORMALISED[0]
+        upstream = b"upstream\r\nreadme\n"
+        entry, contents = self.entry(path, upstream)
+        self.write([entry], contents)
+        self.assertEqual((self.root / path).read_bytes(), b"upstream\nreadme\n")
+
+        record = self.import_script.deviation_record("100644", blob_sha1(upstream), upstream, path)
+        self.assertEqual(record.stored_digest, blob_sha1(b"upstream\nreadme\n"))
+        self.assertEqual(record.stored_size, len(b"upstream\nreadme\n"))
+
+    def test_a_normalisation_that_rewrites_nothing_is_refused(self) -> None:
+        """A pin that already stores LF makes the declaration wrong: the path is carried, not deviated."""
+        path = self.import_script.NORMALISED[0]
+        already_stored = b"upstream\nreadme\n"
+        entry, contents = self.entry(path, already_stored)
+        with self.assertRaises(SystemExit) as raised:
+            self.write([entry], contents)
+        self.assertIn("carry it as a file instead", str(raised.exception))
 
 
 class ManifestCase(unittest.TestCase):
@@ -423,6 +734,26 @@ class ManifestCase(unittest.TestCase):
     def test_a_skip_record_carries_its_reason(self) -> None:
         record = self.module.Record("skip", "100644", "abc", 3, "README.md", "project-owned")
         self.assertEqual(record.line, "skip\t100644\tabc\t3\tREADME.md\tproject-owned")
+
+    def test_a_stored_deviation_record_round_trips(self) -> None:
+        """The bytes a carried deviation stores are two more fields: digest and size."""
+        record = self.module.Record("skip", "100644", "abc", 3, "README.md", "normalised", "def", 4)
+        self.assertEqual(record.line, "skip\t100644\tabc\t3\tREADME.md\tnormalised\tdef\t4")
+        parsed = self.module.parse_manifest(record.line + "\n")
+        self.assertEqual([r.line for r in parsed.stored_deviations], [record.line])
+        self.assertEqual((parsed.skips[0].stored_digest, parsed.skips[0].stored_size), ("def", 4))
+
+    def test_a_half_declared_stored_deviation_is_rejected(self) -> None:
+        with self.assertRaises(self.module.ManifestError):
+            self.module.parse_manifest("skip\t100644\tabc\t3\tREADME.md\treason\tdef\n")
+
+    def test_only_a_skip_record_may_pin_stored_bytes(self) -> None:
+        with self.assertRaises(self.module.ManifestError):
+            self.module.parse_manifest("file\t100644\tabc\t3\tREADME.md\treason\tdef\t4\n")
+
+    def test_a_stored_size_that_is_not_a_number_is_rejected(self) -> None:
+        with self.assertRaises(self.module.ManifestError):
+            self.module.parse_manifest("skip\t100644\tabc\t3\tREADME.md\treason\tdef\tbig\n")
 
     def test_a_manifest_without_a_pin_is_not_a_manifest(self) -> None:
         manifest = self.module.parse_manifest("file\t100644\tabc\t3\tx\n")
@@ -457,6 +788,69 @@ class RepositoryCase(unittest.TestCase):
         self.assertEqual(recorded, pinned)
         for path in ("cmd/ccc/", "internal/ccc/", "docs/plans/", "scripts/tests/"):
             self.assertTrue(manifest.is_owned(path), path)
+
+    def test_the_declared_normalisation_records_the_bytes_this_tree_stores(self) -> None:
+        """The one path upstream's attribute file rewrites must pin the bytes this tree stores.
+
+        Upstream's blob can never be what this tree holds for that path, so a record without a stored
+        digest would leave 1.4 MB verified against nothing. The case reads the file as it sits in the
+        tree and requires it to be one of the two forms the record names -- the stored bytes a checkout
+        writes, or upstream's pre-normalisation bytes that git normalises away -- at that form's size.
+        """
+        module = load_script("upstream_manifest.py")
+        manifest = module.load_manifest(REPO_ROOT / MANIFEST)
+        normalised = {record.path: record for record in manifest.stored_deviations}
+        self.assertEqual(sorted(normalised),
+                         sorted(load_script("upstream-import.py").NORMALISED))
+        for path, record in normalised.items():
+            self.assertNotEqual(record.stored_digest, record.digest, path)
+            digest, size, _ = module.hashed_path(REPO_ROOT, path)
+            forms = {record.stored_digest: record.stored_size, record.digest: record.size}
+            self.assertIn(digest, forms, f"{path} holds bytes the manifest does not name")
+            self.assertEqual(forms[digest], size, path)
+
+
+class CompareCheckoutCase(unittest.TestCase):
+    """The comparison harness must refuse a side that is not a clean checkout of the pin.
+
+    It attributes the dumps it compares -- and, with ``--record``, the oracle it rewrites -- to the
+    pinned revision, so a checkout holding local edits would credit this tree's own work to upstream.
+    The probe runs through the module's own ``run`` seam: no case here may need a host git.
+    """
+
+    def setUp(self) -> None:
+        self.compare = load_script("upstream-compare.py")
+
+    def probe(self, status_output: str):
+        def run(cmd, cwd=None, env=None):
+            if "rev-parse" in cmd:
+                return tool_result(cmd, 0, REVISION + "\n", "")
+            return tool_result(cmd, 0, status_output, "")
+        return run
+
+    def checkout(self, status_output: str) -> Path:
+        directory = tempfile.TemporaryDirectory(prefix="compare-checkout-")
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        (root / ".git").mkdir()
+        return root
+
+    def test_a_clean_checkout_passes(self) -> None:
+        with mock.patch.object(self.compare, "run", self.probe("")):
+            self.compare.verify_checkout(self.checkout(""), REVISION)
+
+    def test_a_dirty_checkout_is_refused(self) -> None:
+        with mock.patch.object(self.compare, "run", self.probe(" M README.md\n")):
+            with self.assertRaises(SystemExit) as raised:
+                self.compare.verify_checkout(self.checkout(" M README.md\n"), REVISION)
+        self.assertIn("local modifications", str(raised.exception))
+        self.assertIn("README.md", str(raised.exception))
+
+    def test_a_checkout_at_another_revision_is_refused(self) -> None:
+        with mock.patch.object(self.compare, "run", self.probe("")):
+            with self.assertRaises(SystemExit) as raised:
+                self.compare.verify_checkout(self.checkout(""), PIN)
+        self.assertIn("not the pinned", str(raised.exception))
 
 
 if __name__ == "__main__":

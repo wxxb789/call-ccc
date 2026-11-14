@@ -129,3 +129,28 @@ supersede it with a newer one and say which it supersedes.
   `python3 scripts/upstream-compare.py --record` (network) to re-record the oracle.
 - **Settled by:** goal 0002's writer needing the fields, or the operator's preference between a
   richer dump and a smaller document.
+
+## Q-0001-07 — What an archive read may say about the tool payloads it does not show
+
+- **Status:** resolved (default taken). Supersedes the `Fidelity.Projection` half of Q-0001-06; that
+  entry's other half (deleting the four write-only `Message` fields) stands.
+- **Question:** the review of increment 0001 (finding A02) measured a session with two text messages
+  and no tool call, ingested under the **default** policy, reading back as projection `"transcripts"`
+  with the warning `archive stores the transcripts projection: tool inputs and results are not in it`.
+  The writer's `archive_content` policy lives on the writer's own handle
+  (`internal/db.SetArchiveContent`; `OpenReadOnly` never tightens one), so naming a policy is an
+  inference from row shape — and in that measurement it reported an omission that never happened.
+  Keep the policy vocabulary with a caveat, or report only what the rows show?
+- **Default taken:** report only what the rows show. `Fidelity.Projection` is
+  `Fidelity.ContentShown` with the values `tool-payloads`, `message-text` and `none`; the CLI prints
+  that, and the warnings are worded as what the read could not show (`the archive read shows no tool
+  inputs or results: whether the archive dropped them or the session recorded none is not visible to a
+  read`), naming the message counts when the session row records more messages than the read returned.
+  The oracle dumps were re-recorded (`python3 scripts/upstream-compare.py --record`, network), which
+  moved the dump tool id to `call-ccc-parity-oracle/2`; `docs/evidence/0001-…md` carries the new
+  hashes.
+- **Reversal:** put the policy words back — one `switch` in `internal/ccc/archive.go` — and re-record
+  the oracle again, since the dumped value changes with them.
+- **Settled by:** the owner's preference between a label that names the writer's policy as an
+  inference and one that states what the read shows; goal 0002's writer needing a policy name it
+  cannot have.

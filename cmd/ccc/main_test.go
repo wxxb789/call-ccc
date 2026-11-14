@@ -184,7 +184,7 @@ func TestInspectReadsTheArchiveItIsGiven(t *testing.T) {
 		t.Fatalf("exit %d, stderr: %s", code, stderr)
 	}
 	for _, want := range []string{
-		"archive:      " + filepath.Join(dataDir, "sessions.db") + " [full]",
+		"archive:      " + filepath.Join(dataDir, "sessions.db") + " [tool-payloads]",
 		"archived:     7 message(s)",
 		"agreement:    every archived message matches the source read",
 	} {
@@ -229,8 +229,10 @@ func TestInspectResolvesAnArchiveBySourcePath(t *testing.T) {
 	}
 }
 
-// TestInspectHumanOutputForAnArchiveOnlySession pins the human line an operator reads when the source
-// is gone but the archive holds the session (writeHuman's "not readable here" branch).
+// TestInspectHumanOutputForAnArchiveOnlySession pins the human lines an operator reads when the source
+// is gone but the archive holds the session (writeHuman's "not readable here" branch), and that the
+// missing source is not reported as a comparison: the agreement line says the comparison did not run,
+// and the JSON leaves the field null rather than shipping a false that a real mismatch would share.
 func TestInspectHumanOutputForAnArchiveOnlySession(t *testing.T) {
 	dataDir := isolatedEnvironment(t)
 	cfg, err := config.LoadReadOnly()
@@ -256,17 +258,44 @@ func TestInspectHumanOutputForAnArchiveOnlySession(t *testing.T) {
 	}
 	for _, want := range []string{
 		"source:       not readable here (see warnings)",
-		"archive:      " + filepath.Join(dataDir, "sessions.db") + " [full]",
+		"archive:      " + filepath.Join(dataDir, "sessions.db") + " [tool-payloads]",
+		"agreement:    not compared (the source was not readable)",
 		"warning:      no readable source session for claude:" + sessionID,
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("human output is missing %q:\n%s", want, stdout)
 		}
 	}
+	// The JSON must not carry a comparison result either: false would be indistinguishable from a
+	// comparison that ran and found a difference, so the field is null when no source was read.
+	code, stdout, stderr = runCLI(t, "inspect", "claude:"+sessionID, "--data-dir", dataDir, "--json")
+	if code != 0 {
+		t.Fatalf("exit %d, stderr: %s", code, stderr)
+	}
+	var document struct {
+		Archive struct {
+			ContentShown         string `json:"content_shown"`
+			SameMessagesAsSource *bool  `json:"same_messages_as_source"`
+		} `json:"archive"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+		t.Fatalf("stdout is not one JSON document: %v\n%s", err, stdout)
+	}
+	if !strings.Contains(stdout, `"same_messages_as_source": null`) {
+		t.Errorf("the JSON does not report the comparison as not run: %s", stdout)
+	}
+	if document.Archive.SameMessagesAsSource != nil {
+		t.Errorf("same_messages_as_source = %v, want null", *document.Archive.SameMessagesAsSource)
+	}
+	if document.Archive.ContentShown != "tool-payloads" {
+		t.Errorf("content_shown = %q, want %q", document.Archive.ContentShown, "tool-payloads")
+	}
 }
 
 // TestUsageErrors pins the command line contract: a reference without a provider, an unknown
-// provider, a missing operand and an unknown command are usage errors, not silent guesses.
+// provider, a missing operand, an unknown option and an unknown command are usage errors, not silent
+// guesses. A usage error's text belongs on stderr: stdout carries a result, and a help request is the
+// one flag answer that is not a usage error (TestHelpNeedsNoEnvironment).
 func TestUsageErrors(t *testing.T) {
 	isolatedEnvironment(t)
 	cases := [][]string{
@@ -274,13 +303,17 @@ func TestUsageErrors(t *testing.T) {
 		{"inspect", "9f"},
 		{"inspect", "no-such-agent:whatever"},
 		{"inspect", "claude:"},
+		{"inspect", "claude:9f2c1d47", "--no-such-option"},
 		{"frobnicate"},
 		{},
 	}
 	for _, args := range cases {
-		code, _, stderr := runCLI(t, args...)
+		code, stdout, stderr := runCLI(t, args...)
 		if code != exitUsage {
 			t.Errorf("ccc %v: exit %d, want %d (stderr %q)", args, code, exitUsage, stderr)
+		}
+		if stdout != "" {
+			t.Errorf("ccc %v: a usage error wrote to stdout (%q)", args, stdout)
 		}
 	}
 }
@@ -298,7 +331,9 @@ func TestMissingSessionIsAFailureWithACandidateList(t *testing.T) {
 	}
 }
 
-// TestHelpNeedsNoEnvironment pins that a first-time user can read the usage without a data directory.
+// TestHelpNeedsNoEnvironment pins that a first-time user can read the usage without a data directory,
+// and that asking `inspect` for it is a help request rather than a command line that could not be
+// understood: the usage text is the answer, so it goes to stdout and the exit code is the success one.
 func TestHelpNeedsNoEnvironment(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("AGENTSVIEW_DATA_DIR", filepath.Join(t.TempDir(), "absent"))
@@ -309,6 +344,15 @@ func TestHelpNeedsNoEnvironment(t *testing.T) {
 	for _, want := range []string{"ccc inspect", "--json", "exit codes"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("help is missing %q", want)
+		}
+	}
+	for _, args := range [][]string{{"inspect", "-h"}, {"inspect", "--help"}} {
+		code, stdout, stderr := runCLI(t, args...)
+		if code != exitOK {
+			t.Fatalf("ccc %v: exit %d, want %d (stderr %q)", args, code, exitOK, stderr)
+		}
+		if !strings.Contains(stdout, "usage: ccc inspect") {
+			t.Errorf("ccc %v: stdout does not carry the usage line: %q", args, stdout)
 		}
 	}
 }

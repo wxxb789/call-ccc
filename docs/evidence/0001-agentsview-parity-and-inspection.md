@@ -74,13 +74,18 @@ claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10
 }
 ```
 
-Exit codes from the same binary: found `0`, session not found `1` (with the provider list on stderr),
-unknown provider `2`, `help` `0`.
+Exit codes from the same binary: found `0`, `help` `0`, and `inspect -h`/`inspect --help` `0` as well
+— the usage line is the answer to a question about the command line, so it goes to stdout and the exit
+code is the success one — session not found `1` (with the provider list on stderr), unknown provider
+`2`, unknown command `2`.
 
 The tests that hold this down: `internal/ccc/fixtures_test.go` (identity, counts, tool call, boundary,
 malformed-line count, tool names, time range, and that no fixture contains a home directory, this
-checkout or a credential shape), `cmd/ccc/main_test.go` (both output shapes, the usage errors, the
-not-found path, help without an environment, and that `inspect` never creates an archive).
+checkout or a credential shape), `cmd/ccc/main_test.go` (both output shapes, the usage errors and that
+they stay on stderr, the not-found path, help without an environment — including the `-h` forms — and
+that `inspect` never creates an archive), and `internal/ccc/archive_test.go` for the archive read's own
+report: `content_shown` as what the rows show (`tool-payloads`, `message-text`, `none`), the folded
+tool-result row, and the archive-only inspection that reports its comparison as not run.
 
 ## 2. A real source-to-archive parse and a subsequent archive read agree with the pinned implementation
 
@@ -93,17 +98,19 @@ separately copied fixture bytes and separately created archives.
 ```
 $ python3 scripts/upstream-compare.py                      # fetch mode: clones the pin itself
 pin 83195c8a6861b8c74a4b6cb87512817fed6f8584 (v0.47.0-181-g83195c8a) from https://github.com/kenn-io/agentsview
-fetched the pinned revision into <tmp>/upstream
+fetched the pinned revision into <tmp>/upstream (clean, at the pin)
 - restored internal/pricing/snapshot/litellm_snapshot.json.gz in the pristine tree from upstream's pinned artifact
 - copied internal/ccc (10 Go source file(s)) from this tree into the pristine checkout: the oracle and its call/ccc wrapper are identical on both sides, so the only variable is which tree the inherited packages come from
-oracle source: 10 file(s), sha256=294041862d332d7ae2c4078356cf8c4a40c3f6d832a98b32139f4fdb0ec41684 (identical on both sides)
-claude: fixture sha256=2bd510821d4abf83… ours=83a32277577fc32e… pristine=83a32277577fc32e… agreement=yes
-codex: fixture sha256=d9957a8d6f5731a3… ours=db0295aba8d0eec4… pristine=db0295aba8d0eec4… agreement=yes
-RESULT: PASS — 2 case(s) agree byte for byte with the pinned revision      # rc=0, 37 s
+oracle source: 10 file(s), sha256=904abaca96843257ab51b66a65c5eca8093f1dc8b80936298e0a95b88a8a209e (identical on both sides)
+claude: fixture sha256=2bd510821d4abf83… ours=32244340553137fd… pristine=32244340553137fd… agreement=yes
+codex: fixture sha256=d9957a8d6f5731a3… ours=cf11dde0fb883e59… pristine=cf11dde0fb883e59… agreement=yes
+RESULT: PASS — 2 case(s) agree byte for byte with the pinned revision      # rc=0, 38 s
 ```
 
 The same command against an existing clean checkout (`--upstream /path/to/agentsview`) reports the
-same two dump hashes and removes the copy it made (`git status` clean afterwards).
+same two dump hashes and removes the copy it made (`git status` clean afterwards); a checkout that is
+not clean at the pin is refused before anything runs, because the dumps — and, with `--record`, the
+committed oracle — are attributed to that revision.
 
 The two dumps the pristine side produced are committed and re-checked offline by
 `internal/ccc/parity/dump_test.go`, so the ordinary test suite — and so the gate — fails if this
@@ -111,15 +118,17 @@ tree's inherited code stops producing them:
 
 ```
 $ sha256sum internal/ccc/parity/testdata/oracle/*.json
-83a32277577fc32ee2c11cd4d5a900ae4945d14c2590bcaefb416d5f4a2f61f8  internal/ccc/parity/testdata/oracle/claude.json
-db0295aba8d0eec436d691944a9d2ecf309e9add33dfa78ee07103caa3053c23  internal/ccc/parity/testdata/oracle/codex.json
+32244340553137fd9af173c84eb9c17c94d655c055af5e536dee0cc8d2daa712  internal/ccc/parity/testdata/oracle/claude.json
+cf11dde0fb883e593575d18938a9ea4b1b1a0d923db2d822d89f89d99ef8666d  internal/ccc/parity/testdata/oracle/codex.json
 ```
 
 The dumps carry the archive round trip's shape: for the Claude fixture, parse reports 8 messages with
 1 tool call, 1 tool result and 1 compaction boundary; the archive read reports the same tool call and
 boundary at the same ordinals, the tool-result-only row the archive folds into its call (and the
 result's length, because the inherited default configuration blocks result *bodies* for the `Read`
-category), and one malformed line on both sides — the truncated tail is counted, never turned into a
+category), `"content_shown": "tool-payloads"` (what that read shows, in the dump's own vocabulary:
+`internal/ccc` derives it from the rows, since a read-only handle cannot see the writer's storage
+policy), and one malformed line on both sides — the truncated tail is counted, never turned into a
 message. For the Codex fixture the shell result body survives the round trip intact.
 
 ## 3. No project-owned modification of the inherited parser/sync/DB/schema code and tests
@@ -129,11 +138,12 @@ $ python3 scripts/upstream-parity.py        # rc=0
 pin 83195c8a6861b8c74a4b6cb87512817fed6f8584 (v0.47.0-181-g83195c8a)
 reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584
 carried: 5553 file(s) identical to the pinned revision (compared through git's own object store)
-deviations: 27 upstream path(s) not carried + 1 generated input(s), all present as declared
+deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared
 owned: 25 project-owned prefix(es); files seen by git: 5613
 inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go)
 symlinks hashed by their link target: 4
-declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md
+declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
 ```
 
 Every declaration, and nothing else:
@@ -146,10 +156,16 @@ Every declaration, and nothing else:
 | generated build input | 1 | upstream does not track the LiteLLM snapshot; its Makefile restores it before every Go build |
 
 The check reads git's own index (`git ls-files -s`) — the bytes a fresh clone receives, filters
-applied — and fails if a carried file is modified in the working tree relative to it, if a declaration
-has gone stale, if the generated input stops matching the SHA-256 the carried snapshot tool pins, if
-`docs/upstream.md` or `cmd/ccc/pin.go` disagrees about the revision, or if anything git would add is
-neither recorded nor inside a project-owned prefix. It needs no network and no upstream checkout.
+applied — and the working tree, and fails if a carried file is modified in the working tree relative
+to it, if a declaration has gone stale — a project-owned path that turned back into upstream's copy,
+staged or only written on disk, or a normalised path that stopped holding the bytes its record pins —
+if a probe (`git status`, ignore rules) cannot answer, if the generated input stops matching the
+SHA-256 the carried snapshot tool pins, if `docs/upstream.md` or `cmd/ccc/pin.go` disagrees about the
+revision, or if anything git would add is neither recorded nor inside a project-owned prefix. The
+line-ending path is the one carried path upstream's blob can never equal, so its record pins the
+stored digest beside upstream's and that digest is what the check verifies; a working-tree copy still
+holding the pre-normalisation bytes is reported rather than failed, because git reads that copy as
+clean and a checkout writes the declared bytes. It needs no network and no upstream checkout.
 
 ## 4. The continuation functionality is callable without CLI types, and the CLI is standalone
 
@@ -182,15 +198,22 @@ gate: go=<go>/bin/go targets=./cmd/ccc/... ./internal/ccc/...
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 69 tests in 4.967s (rc=0)
-  PASS     parity   pin 83195c8a6861b8c74a4b6cb87512817fed6f8584 (v0.47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) not carried + 1 generated input(s), all present as declared | owned: 25 project-owned prefix(es); files seen by git: 5613 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md frontend/src/lib/utils/__fix…
-  PASS     secrets  no leaks found in 58 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+  PASS     selftest Ran 100 tests in 5.192s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 25 project-owned prefix(es); files seen by git: 5613 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 60 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
 
-Wall clock for the whole gate on this host: 18 s with warm caches in this run (53 s cold, measured earlier
-in this increment). `gofmt` covers the carried tree as well (3574 Go files); `build`/`vet`/`test` cover
-the three call/ccc packages, which compile the inherited packages they depend on.
+The gate truncates the middle of a long step detail, which is why the `parity` line above opens with `…`;
+the same run's full summary is quoted in §3.
+
+Wall clock for the whole gate on this host: 19–21 s with warm caches across this stage's runs (53 s
+cold, measured earlier in this increment); the quoted `selftest` duration is the last run's, and moves
+by a second or so between runs. The `secrets` count is the files under the manifest's project-owned
+prefixes, which includes the harness's own `scripts/tests/__pycache__/*.pyc` once the suite has run
+here (58 without them, 60 with the two this run's selftest left behind). `gofmt` covers the carried
+tree as well (3574 Go files); `build`/`vet`/`test` cover the three call/ccc packages, which compile the
+inherited packages they depend on.
 
 ## 7. Measurements that shaped the harness
 

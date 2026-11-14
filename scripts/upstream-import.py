@@ -4,15 +4,19 @@
 The carried content comes from the upstream *git objects*, not from a working tree, so a checkout
 with an unusual ``core.autocrlf`` cannot smuggle a rewritten file into the tree. Everything upstream
 tracks is carried byte for byte except the paths listed in ``SKIP_REASONS`` (this repository owns
-them) and ``.github/**`` (Actions would run upstream's workflows here), and each generated build
-input is recorded with its hash instead of being copied from upstream's checkout.
+them) and ``.github/**`` (Actions would run upstream's workflows here) -- plus the paths in
+``NORMALISED``, which are carried with the bytes git stores for them after upstream's own attribute
+file rewrites their line endings, and whose record pins both digests. Each generated build input is
+recorded with its hash instead of being copied from upstream's checkout.
 
     python3 scripts/upstream-import.py --upstream /path/to/agentsview [--pin <rev>]
                                        [--restore-snapshot] [--prune] [--dry-run]
 
-The tree is left for review; this script never commits, pushes or deletes anything it did not write
-(``--prune`` removes only files a previous manifest recorded as carried, and refuses if one of them
-has been modified here).
+The tree is left for review; this script never commits, pushes or deletes anything it did not write.
+``--prune`` removes only files a previous manifest recorded as carried, refuses if one of them has been
+modified here, and runs *before* anything is written -- a path can change shape between revisions (a
+file becomes a directory), and writing first would stop half-way through the tree on a path the prune
+is about to remove. Every refusal names the path it stopped on instead of printing a traceback.
 """
 
 from __future__ import annotations
@@ -67,6 +71,15 @@ SKIP_REASONS = {
 SKIP_PREFIXES = {
     ".github/": "upstream CI definitions: Actions would run upstream's workflows on call/ccc pull requests",
 }
+
+#: Upstream paths this repository carries with a declared byte normalisation instead of upstream's own
+#: blob. Upstream's `.gitattributes` (`* text=auto eol=lf`) rewrites CRLF to LF when git stores a text
+#: file, so these paths can never be carried byte for byte; the write below applies the same rewrite,
+#: which keeps the working tree equal to what a clone checks out, and the manifest records both
+#: digests so the checker can verify the stored one. The reason is in SKIP_REASONS.
+NORMALISED = (
+    "frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json",
+)
 
 #: Paths this repository owns. A tracked file outside the manifest must match one of these; a
 #: trailing slash means "everything below".
@@ -169,6 +182,21 @@ def skip_reason(path: str) -> str:
     return ""
 
 
+def deviation_record(mode: str, sha: str, data: bytes, path: str) -> Record:
+    """One declared deviation, pinning the bytes this tree stores for it when it carries the path.
+
+    A project-owned path or an upstream CI definition is not carried at all, so upstream's digest alone
+    is the whole record. A declared normalisation *is* carried, in bytes upstream's blob can never
+    equal, so the record also holds the stored digest and size -- what the checker verifies, since
+    "still differs from upstream" is true of those bytes by construction.
+    """
+    if path in NORMALISED:
+        stored = stored_bytes(path, data)
+        return Record("skip", mode, sha, len(data), path, skip_reason(path),
+                      blob_sha1(stored), len(stored))
+    return Record("skip", mode, sha, len(data), path, skip_reason(path))
+
+
 def write_entry(target: Path, mode: str, data: bytes, dry_run: bool) -> None:
     """Write one carried blob, replacing whatever is there (file or link)."""
     if dry_run:
@@ -188,8 +216,83 @@ def write_entry(target: Path, mode: str, data: bytes, dry_run: bool) -> None:
         os.chmod(target, 0o755)
 
 
-def snapshot_sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def stored_bytes(path: str, data: bytes) -> bytes:
+    """The bytes git stores for one upstream blob: declared normalisations applied.
+
+    Only a path listed in ``NORMALISED`` is rewritten, and the rewrite is the one git's own carried
+    attribute file performs on it (``text=auto eol=lf``: CRLF becomes LF when the file is stored).
+    Everything else is carried byte for byte.
+    """
+    if path in NORMALISED:
+        return data.replace(b"\r\n", b"\n")
+    return data
+
+
+def write_collision(root: Path, path: str) -> str:
+    """Why writing ``path`` would have to replace something it must not, or "" when the way is clear.
+
+    A pin update can change a path's shape: the revision that carried ``sub`` as a file may carry
+    ``sub/alpha.txt``. Writing through a file, or over a directory, raises half-way through the tree,
+    so the collision is named before anything is written.
+    """
+    parts = path.split("/")
+    for depth in range(1, len(parts)):
+        ancestor = root.joinpath(*parts[:depth])
+        if ancestor.exists() and not ancestor.is_dir():
+            return (f"{'/'.join(parts[:depth])} is a file, and the pin carries "
+                    f"{'/'.join(parts[:depth + 1])} below it")
+    target = root.joinpath(*parts)
+    if target.is_dir() and not target.is_symlink():
+        return f"{path} is a directory, and the pin carries a file"
+    return ""
+
+
+def prune_previously_carried(root: Path, previous: Manifest, keep: set[str], dry_run: bool) -> None:
+    """Delete files a previous manifest carried that this revision no longer has.
+
+    A file modified here since the previous manifest was written is not deleted: the import stops and
+    names it, because that file is somebody's work and not this script's to remove.
+    """
+    for record in previous.files:
+        if record.path in keep:
+            continue
+        target = root / record.path
+        if not target.exists() and not target.is_symlink():
+            continue
+        digest, _, _ = hashed_path(root, record.path)
+        if digest != record.digest:
+            raise SystemExit(f"{record.path}: modified here; refusing to prune it")
+        if dry_run:
+            continue
+        target.unlink()
+
+
+def carry_entries(root: Path, entries, contents, previous: Manifest | None, prune: bool,
+                  dry_run: bool) -> None:
+    """Prune what this revision no longer carries, then write the pin's files.
+
+    The prune runs before any write because a path can change shape between revisions: writing first
+    would hit a path the prune is about to remove and stop half-way through the tree. Every refusal
+    here is a named ``SystemExit`` -- an import that stops must say which path stopped it, not print a
+    traceback with the tree already partly rewritten.
+    """
+    if prune and previous is not None:
+        prune_previously_carried(root, previous, {path for _, _, path in entries}, dry_run)
+    for mode, sha, path in entries:
+        upstream = contents[sha]
+        if blob_sha1(upstream) != sha:
+            raise SystemExit(f"{path}: content does not hash to {sha}")
+        if path in NORMALISED and stored_bytes(path, upstream) == upstream:
+            raise SystemExit(
+                f"{path} is declared carried with a normalisation, but nothing in the pin's bytes is "
+                f"rewritten; carry it as a file instead")
+        collision = write_collision(root, path)
+        if collision:
+            raise SystemExit(f"{collision}; remove it by hand or re-run with --prune")
+        try:
+            write_entry(root / path, mode, stored_bytes(path, upstream), dry_run)
+        except OSError as error:
+            raise SystemExit(f"{path}: writing it failed: {error}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -240,26 +343,10 @@ def main(argv: list[str] | None = None) -> int:
 
     previous = load_manifest(MANIFEST) if args.prune and MANIFEST.exists() else None
 
-    for mode, sha, path in carried:
-        data = contents[sha]
-        if blob_sha1(data) != sha:
-            raise SystemExit(f"{path}: content does not hash to {sha}")
-        write_entry(ROOT / path, mode, data, args.dry_run)
-
-    if args.prune and previous:
-        keep = {path for _, _, path in carried}
-        for record in previous.files:
-            if record.path in keep:
-                continue
-            target = ROOT / record.path
-            if not target.exists() and not target.is_symlink():
-                continue
-            digest, _, _ = hashed_path(ROOT, record.path)
-            if digest != record.digest:
-                raise SystemExit(f"{record.path}: modified here; refusing to prune it")
-            if args.dry_run:
-                continue
-            target.unlink()
+    # A declared normalisation is carried, so its path is written as well -- with the bytes git will
+    # store for it, not upstream's blob, so the working tree equals what a clone checks out.
+    written = carried + [entry for entry in skipped if entry[2] in NORMALISED]
+    carry_entries(ROOT, written, contents, previous, args.prune, args.dry_run)
 
     input_records: list[Record] = []
     for path in GENERATED_INPUTS:
@@ -289,7 +376,7 @@ def main(argv: list[str] | None = None) -> int:
         carried, key=lambda entry: entry[2]
     )]
     records += [
-        Record("skip", mode, sha, len(contents[sha]) if sha in contents else -1, path, skip_reason(path))
+        deviation_record(mode, sha, contents[sha], path)
         for mode, sha, path in sorted(skipped, key=lambda entry: entry[2])
     ]
     records += input_records
@@ -311,11 +398,14 @@ def main(argv: list[str] | None = None) -> int:
     if not args.dry_run:
         MANIFEST.write_text(manifest.render(), encoding="utf-8")
 
+    normalised = [path for _, _, path in skipped if path in NORMALISED]
     print(f"pin {pin} ({describe}, {commit_date})")
     print(f"upstream tracked files: {len(entries)}")
     print(f"carried byte for byte:  {len(carried)}")
     print(f"declared deviations:    {len(skipped) + len(input_records)}"
-          f" ({len(skipped)} upstream paths not carried, {len(input_records)} generated input)")
+          f" ({len(skipped) - len(normalised)} upstream paths not carried, "
+          f"{len(normalised)} carried with a declared normalisation, "
+          f"{len(input_records)} generated input)")
     print(f"project-owned prefixes: {len(OWNED)}")
     if args.dry_run:
         print("dry run: nothing written")

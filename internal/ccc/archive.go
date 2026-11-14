@@ -163,8 +163,9 @@ func (a *Archive) Status(ctx context.Context, ref Ref) (ArchiveStatus, bool, err
 	return status, true, nil
 }
 
-// Read returns the archived session as a Conversation. The read names the projection the stored rows
-// show (storageProjection), so a caller can tell a narrowed archive from a complete one.
+// Read returns the archived session as a Conversation. The read names what the stored rows show
+// (contentShown) -- an archive read cannot see the writer's storage policy -- so a caller can tell a
+// read that carries no tool payload from one that does.
 func (a *Archive) Read(ctx context.Context, ref Ref) (Conversation, error) {
 	id, found, err := a.resolveSessionID(ctx, ref)
 	if err != nil {
@@ -227,22 +228,21 @@ func conversationFromArchive(session db.Session, messages []db.Message) Conversa
 	for _, archived := range messages {
 		conversation.Messages = append(conversation.Messages, messageFromArchive(archived))
 	}
-	conversation.Fidelity.Projection = storageProjection(conversation.Messages)
+	conversation.Fidelity.ContentShown = contentShown(conversation.Messages)
 	return conversation
 }
 
-// storageProjection names the content policy an archive read shows for a session.
+// contentShown names what an archive read shows for a session, not the storage policy the writer
+// enforced.
 //
-// A read-only handle cannot know the writer's policy: the storage boundary belongs to the writer's
-// own handle and OpenReadOnly never tightens one, so the projection is derived from the rows the read
-// returns -- which is also what a reader needs, since it says what the archive kept and dropped. The
-// three policies leave distinguishable traces in the stored rows (internal/db's archive_content
-// projection): usage clears every message body and keeps only usage rows, transcripts keeps bodies
-// while dropping tool inputs and result content, and full keeps tool payloads. A read that shows a
-// tool payload is therefore full, one that shows a body but no payload is transcripts, and one that
-// shows neither is usage -- as is an archive whose source carried none of that text, which reads the
-// same way.
-func storageProjection(messages []Message) string {
+// A read-only handle cannot see the writer's policy: the storage boundary belongs to the writer's own
+// handle and OpenReadOnly never tightens one. What a read *can* see are the rows it returned, so the
+// value describes those and nothing more -- "tool-payloads" when at least one tool input or result
+// body came back, "message-text" when message text came back and no tool payload did, "none" when
+// neither did. The middle case is deliberately not called a policy: an archive written under the
+// transcripts projection and an archive of a session that recorded no tool payloads read the same way,
+// and a caller must not be told which of the two it holds.
+func contentShown(messages []Message) string {
 	var text, toolPayload bool
 	for _, message := range messages {
 		if message.Content != "" || message.Thinking != "" || message.Dialogue != "" {
@@ -261,11 +261,11 @@ func storageProjection(messages []Message) string {
 	}
 	switch {
 	case toolPayload:
-		return "full"
-	case len(messages) > 0 && text:
-		return "transcripts"
+		return "tool-payloads"
+	case text:
+		return "message-text"
 	default:
-		return "usage"
+		return "none"
 	}
 }
 

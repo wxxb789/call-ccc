@@ -31,7 +31,7 @@ import (
 
 // ToolID identifies the dump format. It changes when the dumped shape changes, so a stale committed
 // dump cannot be mistaken for an agreement.
-const ToolID = "call-ccc-parity-oracle/1"
+const ToolID = "call-ccc-parity-oracle/2"
 
 // ExcludedFields names what the dump leaves out and why, so a reader can tell a deliberate exclusion
 // from an omission that hides a difference.
@@ -65,7 +65,7 @@ type SessionDump struct {
 	GitBranch      string       `json:"git_branch,omitempty"`
 	SourceVersion  string       `json:"source_version,omitempty"`
 	ReadFrom       string       `json:"read_from"`
-	Projection     string       `json:"projection,omitempty"`
+	ContentShown   string       `json:"content_shown,omitempty"`
 	MalformedLines int          `json:"malformed_lines"`
 	Truncated      bool         `json:"truncated"`
 	Counts         ccc.Counts   `json:"counts"`
@@ -251,7 +251,7 @@ func dumpSession(conversation ccc.Conversation, root string) SessionDump {
 		GitBranch:      conversation.Source.GitBranch,
 		SourceVersion:  conversation.Source.SourceVersion,
 		ReadFrom:       conversation.Fidelity.ReadFrom,
-		Projection:     conversation.Fidelity.Projection,
+		ContentShown:   conversation.Fidelity.ContentShown,
 		MalformedLines: conversation.Fidelity.MalformedLines,
 		Truncated:      conversation.Fidelity.Truncated,
 		Counts:         counts,
