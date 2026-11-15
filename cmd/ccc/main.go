@@ -34,7 +34,9 @@ usage:
 
   <provider> is the provider identifier AgentsView uses for the agent that wrote the session
   (for example claude, codex). The identifier after it is the provider's own session id, or the
-  path to the session's source file.
+  path to the session's source file -- absolute, or relative to one of that provider's configured
+  source roots. An id may carry a host (host~<id>): that is a session synced from another
+  machine, which has no source file here, so only an archive can answer it.
 
   inspect reports the session's identity, agent, source and conversation shape. It reads the
   source session through the provider's own reader and, when an archive is present, says what the
@@ -135,6 +137,7 @@ func runInspect(args []string, stdout, stderr io.Writer) int {
 	reader := ccc.NewSourceReader(cfg)
 	inspection, err := ccc.Inspect(context.Background(), ccc.InspectOptions{
 		Ref:         ref,
+		Config:      cfg,
 		Reader:      reader,
 		ArchivePath: cfg.DBPath,
 	})

@@ -87,6 +87,13 @@ func (r *SourceReader) resolveFactory(provider string) (parser.AgentDef, parser.
 	return def, factory, nil
 }
 
+// ErrNoLocalSource reports a reference that names a host: a session synced from another machine has no
+// source file on this one, which is what the inherited engine says about one too (its FindSourceFile
+// answers "" for a `host~...` id). Callers report it as a source that is not readable here rather than
+// as a failure -- an archive can hold the session -- but they must never answer it with a local session
+// that merely shares the native id.
+var ErrNoLocalSource = errors.New("host-qualified session has no local source")
+
 // Resolve finds the source a reference names without parsing it.
 func (r *SourceReader) Resolve(ctx context.Context, ref Ref) (parser.SourceRef, bool, error) {
 	def, factory, err := r.resolveFactory(ref.Provider)
@@ -96,52 +103,123 @@ func (r *SourceReader) Resolve(ctx context.Context, ref Ref) (parser.SourceRef, 
 	if strings.TrimSpace(ref.ID) == "" {
 		return parser.SourceRef{}, false, fmt.Errorf("%s: empty session id", ref.Provider)
 	}
-	return resolveWith(ctx, r.provider(def, factory), def, ref)
+	return resolveWith(ctx, r.provider(def, factory), r.cfg.ResolveDirs(def.Type), def, ref)
 }
 
 // resolveWith asks one provider instance for the reference's source.
 //
-// A reference that names a filesystem path is offered as a stored path first, because providers
-// resolve a real path to its session identity; a path no provider claims is then classified as a
-// changed path, and a classification that yields several candidates is reported as ambiguous rather
-// than resolved to the first one.
+// A reference that names a filesystem path is offered as a stored path under every spelling it may
+// have (referencePaths: a relative one is relative to a configured root), because providers resolve a
+// real path to its session identity; a path no provider claims is then classified as a changed path,
+// and a classification that yields several candidates is reported as ambiguous rather than resolved to
+// the first one. A reference that names a host is refused: the inherited providers would strip the host
+// and answer with this machine's session of the same native id.
 func resolveWith(
-	ctx context.Context, provider parser.Provider, def parser.AgentDef, ref Ref,
+	ctx context.Context, provider parser.Provider, roots []string, def parser.AgentDef, ref Ref,
 ) (parser.SourceRef, bool, error) {
 	id := ref.ID
 	if strings.HasPrefix(id, ref.Provider+":") {
 		id = strings.TrimPrefix(id, ref.Provider+":")
 	}
 	if looksLikePath(id) {
-		if source, found, err := provider.FindSource(ctx, parser.FindSourceRequest{
-			StoredFilePath: filepath.Clean(id),
-		}); err != nil {
-			return parser.SourceRef{}, false, err
-		} else if found {
-			return source, true, nil
-		}
-		candidates, err := provider.SourcesForChangedPath(ctx, parser.ChangedPathRequest{
-			Path:      filepath.Clean(id),
-			EventKind: "write",
-		})
-		if err != nil {
-			return parser.SourceRef{}, false, err
-		}
-		switch len(candidates) {
-		case 0:
-			return parser.SourceRef{}, false, nil
-		case 1:
-			return candidates[0], true, nil
-		default:
-			names := make([]string, 0, len(candidates))
-			for _, candidate := range candidates {
-				names = append(names, candidate.DisplayPath)
-			}
-			return parser.SourceRef{}, false, &AmbiguousError{Ref: ref, Candidates: names}
-		}
+		return resolvePathReference(ctx, provider, referencePaths(roots, id), ref)
+	}
+	if host, _, ok := hostQualifiedReference(ref); ok {
+		// A remote session's identity is the one the reference named. The providers cannot read it from
+		// here (parser.ProviderNormalizeRawSessionID drops the host and searches this machine), so the
+		// reader says there is no local source instead of reporting a different conversation.
+		return parser.SourceRef{}, false, fmt.Errorf("%w: %s (host %s)", ErrNoLocalSource, ref.ID, host)
 	}
 	request := parser.ProviderFindRequestWithRawSessionID(def, parser.FindSourceRequest{RawSessionID: id})
 	return provider.FindSource(ctx, request)
+}
+
+// referencePaths returns the filesystem spellings a path reference may be stored under.
+//
+// An absolute reference is itself, cleaned, and a home-prefixed one is offered as it was written:
+// expanding `~` is the shell's job, nothing in the inherited providers does it, and joining it to a
+// root would invent a path under a directory named `~`. A relative one is resolved against each
+// configured provider root: the inherited providers compare a candidate with their own absolute roots
+// (the Claude provider resolves the pair with filepath.Rel) and reject a mixed absolute/relative pair,
+// and the archive stores the absolute path `sessions.file_path` was written with, so a relative spelling
+// matches neither. The roots a relative path is relative to are the ones the configuration gives the
+// provider -- the only reading that does not depend on the working directory of the process doing the
+// inspecting. A provider with no configured roots leaves the reference as it was written, which is all a
+// provider without roots could answer anyway, and a root listed twice is asked about once, since the
+// answer cannot differ.
+func referencePaths(roots []string, id string) []string {
+	cleaned := filepath.Clean(id)
+	if filepath.IsAbs(cleaned) || len(roots) == 0 || strings.HasPrefix(cleaned, "~") {
+		return []string{cleaned}
+	}
+	paths := make([]string, 0, len(roots))
+	seen := make(map[string]struct{}, len(roots))
+	for _, root := range roots {
+		joined := filepath.Clean(filepath.Join(root, cleaned))
+		if _, ok := seen[joined]; ok {
+			continue
+		}
+		seen[joined] = struct{}{}
+		paths = append(paths, joined)
+	}
+	return paths
+}
+
+// resolvePathReference asks one provider about every spelling a path reference may be stored under.
+//
+// Each spelling is put through the provider's own two questions in the same order: what a stored path
+// resolves to, and -- for a spelling no stored path claims -- what a changed path of that name
+// classifies as. A classification that yields several sources for one spelling is reported as it
+// stands, because the provider's answer is "these transcripts read this path" and the reference names
+// one session; when several spellings resolve, the caller is told which sessions the reference could
+// mean rather than being handed the first.
+func resolvePathReference(
+	ctx context.Context, provider parser.Provider, paths []string, ref Ref,
+) (parser.SourceRef, bool, error) {
+	sources := make([]parser.SourceRef, 0, len(paths))
+	for _, path := range paths {
+		source, found, err := provider.FindSource(ctx, parser.FindSourceRequest{StoredFilePath: path})
+		if err != nil {
+			return parser.SourceRef{}, false, err
+		}
+		if !found {
+			candidates, err := provider.SourcesForChangedPath(ctx, parser.ChangedPathRequest{
+				Path:      path,
+				EventKind: "write",
+			})
+			if err != nil {
+				return parser.SourceRef{}, false, err
+			}
+			switch len(candidates) {
+			case 0:
+				continue
+			case 1:
+				source = candidates[0]
+			default:
+				return parser.SourceRef{}, false, &AmbiguousError{
+					Ref: ref, Candidates: displayedPaths(candidates),
+				}
+			}
+		}
+		sources = append(sources, source)
+	}
+	switch len(sources) {
+	case 0:
+		return parser.SourceRef{}, false, nil
+	case 1:
+		return sources[0], true, nil
+	default:
+		return parser.SourceRef{}, false, &AmbiguousError{Ref: ref, Candidates: displayedPaths(sources)}
+	}
+}
+
+// displayedPaths names sources by the path a caller can act on, for an ambiguity report.
+func displayedPaths(sources []parser.SourceRef) []string {
+	names := make([]string, 0, len(sources))
+	for _, source := range sources {
+		names = append(names, source.DisplayPath)
+	}
+	return names
 }
 
 // looksLikePath reports whether an identifier is meant as a filesystem path rather than a native
@@ -168,7 +246,7 @@ func (r *SourceReader) Read(ctx context.Context, ref Ref) (Conversation, error) 
 		return Conversation{}, err
 	}
 	provider := r.provider(def, factory)
-	source, found, err := resolveWith(ctx, provider, def, ref)
+	source, found, err := resolveWith(ctx, provider, r.cfg.ResolveDirs(def.Type), def, ref)
 	if err != nil {
 		return Conversation{}, err
 	}
@@ -296,15 +374,25 @@ func conversationFromParse(
 	for _, parsed := range result.Messages {
 		messages = append(messages, messageFromParsed(parsed))
 	}
+	fidelity := Fidelity{
+		MalformedLines: session.MalformedLines,
+		Truncated:      session.IsTruncated,
+		SourceVersion:  session.SourceVersion,
+		ReadFrom:       "source",
+	}
+	// Counted from the messages this read produced rather than from the parse result, so the summary a
+	// caller reports and the flags it can see on each result cannot disagree.
+	for _, message := range messages {
+		for _, result := range message.ToolResults {
+			if result.PersistedOutputUnresolved {
+				fidelity.UnresolvedToolOutputs++
+			}
+		}
+	}
 	return Conversation{
 		Source:   identity,
 		Messages: messages,
-		Fidelity: Fidelity{
-			MalformedLines: session.MalformedLines,
-			Truncated:      session.IsTruncated,
-			SourceVersion:  session.SourceVersion,
-			ReadFrom:       "source",
-		},
+		Fidelity: fidelity,
 	}
 }
 
@@ -349,11 +437,12 @@ func messageFromParsed(parsed parser.ParsedMessage) Message {
 	}
 	for _, result := range parsed.ToolResults {
 		message.ToolResults = append(message.ToolResults, ToolResult{
-			ToolUseID:   result.ToolUseID,
-			Status:      result.Status,
-			Source:      result.Source,
-			ContentRaw:  result.ContentRaw,
-			ContentSize: result.ContentLength,
+			ToolUseID:                 result.ToolUseID,
+			Status:                    result.Status,
+			Source:                    result.Source,
+			ContentRaw:                result.ContentRaw,
+			ContentSize:               result.ContentLength,
+			PersistedOutputUnresolved: result.PersistedOutputUnresolved,
 		})
 	}
 	return message

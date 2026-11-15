@@ -27,11 +27,29 @@ var ErrNoArchive = errors.New("no archive at this path")
 type Archive struct {
 	database *db.DB
 	path     string
+	// roots is where each provider keeps its sessions, as the configuration answers it. One rule needs
+	// it: a *relative* filesystem reference is resolved against those roots (referencePaths) before it
+	// is looked up, because the archive stores the absolute path `sessions.file_path` was written with
+	// and a relative spelling cannot equal it. Nil means no configuration was supplied -- an absolute
+	// reference still resolves, a relative one is then only asked about as it was written.
+	roots map[parser.AgentType][]string
 }
 
 // OpenArchive opens the archive at path read-only. A missing or empty path yields ErrNoArchive so
 // callers can report "no archive" instead of a failure.
+//
+// The archive is opened without a configuration, so a relative filesystem reference cannot be
+// resolved against a provider root: the roots a relative path is relative *to* come from the
+// configuration, and a caller that has one passes it to openArchive through Inspect.
 func OpenArchive(ctx context.Context, path string) (*Archive, error) {
+	return openArchive(ctx, path, nil)
+}
+
+// openArchive opens the archive read-only with the provider roots a relative reference resolves
+// against.
+func openArchive(
+	ctx context.Context, path string, roots map[parser.AgentType][]string,
+) (*Archive, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, fmt.Errorf("%w: no path given", ErrNoArchive)
 	}
@@ -49,7 +67,16 @@ func OpenArchive(ctx context.Context, path string) (*Archive, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening archive %s read-only: %w", path, err)
 	}
-	return &Archive{database: database, path: path}, nil
+	return &Archive{database: database, path: path, roots: roots}, nil
+}
+
+// providerRoots answers where the referenced provider keeps its sessions, or nil when no configuration
+// was supplied.
+func (a *Archive) providerRoots(provider string) []string {
+	if a.roots == nil || provider == "" {
+		return nil
+	}
+	return a.roots[parser.AgentType(provider)]
 }
 
 // Close releases the archive handle.
@@ -89,14 +116,15 @@ type ArchiveStatus struct {
 // machine prefix; that answer is narrowed to the rows this provider recorded (sessionIDsForProvider),
 // because it has no agent predicate of its own. A reference that names a file resolves through the
 // file the session was read from (`sessions.file_path`, exact path and agent): the stored id is
-// `<agent>:<native id>`, so a path can never be one. More than one candidate is reported as ambiguous
-// instead of picking one.
+// `<agent>:<native id>`, so a path can never be one. A reference that names a host explicitly is
+// resolved against that host and nothing else (resolveHostQualified), and more than one candidate is
+// reported as ambiguous instead of picking one.
 func (a *Archive) resolveSessionID(ctx context.Context, ref Ref) (string, bool, error) {
 	if strings.TrimSpace(ref.ID) == "" {
 		return "", false, fmt.Errorf("%s: empty session id", ref.Provider)
 	}
 	if looksLikePath(ref.ID) {
-		ids, err := a.database.ListSessionIDsByFilePath(ctx, filepath.Clean(ref.ID), ref.Provider)
+		ids, err := a.sessionIDsForPaths(ctx, referencePaths(a.providerRoots(ref.Provider), ref.ID), ref.Provider)
 		if err != nil {
 			return "", false, err
 		}
@@ -108,6 +136,9 @@ func (a *Archive) resolveSessionID(ctx context.Context, ref Ref) (string, bool, 
 		default:
 			return "", false, &AmbiguousError{Ref: ref, Candidates: ids}
 		}
+	}
+	if host, hostID, ok := hostQualifiedReference(ref); ok {
+		return a.resolveHostQualified(ctx, ref, host, hostID)
 	}
 	session, err := a.database.GetSession(ctx, qualifiedID(ref))
 	if err != nil {
@@ -133,6 +164,82 @@ func (a *Archive) resolveSessionID(ctx context.Context, ref Ref) (string, bool, 
 	default:
 		return "", false, &AmbiguousError{Ref: ref, Candidates: matches}
 	}
+}
+
+// resolveHostQualified resolves a reference that names a host, without the raw-ID answer that would
+// substitute a local session.
+//
+// Upstream writes a session synced from another machine as `<host>~<the id it had there>`
+// (internal/remotesync/import.go rebuilds stored ids that way) and treats the host as part of the
+// session's identity (parser.StripHostPrefix). The archive's own spelling is therefore tried first,
+// exactly as given. A miss is then answered by the inherited suffix lookup narrowed to the rows that
+// carry the requested host -- and to the requested provider -- so a caller who writes `host~<native
+// id>` where the stored id is `host~<agent>:<native id>` still resolves, while a row from another
+// host, or a *local* row that happens to share the native id, is never reported as the session the
+// reference named. Both of those are different conversations, and an inspection that returned one
+// would be reading the wrong session rather than reporting an absent one.
+func (a *Archive) resolveHostQualified(
+	ctx context.Context, ref Ref, host, hostID string,
+) (string, bool, error) {
+	session, err := a.database.GetSession(ctx, hostID)
+	if err != nil {
+		return "", false, err
+	}
+	if session != nil {
+		return session.ID, true, nil
+	}
+	matches, err := a.database.FindSessionIDsByRawSuffix(ctx, rawSessionID(ref), 5)
+	if err != nil {
+		return "", false, err
+	}
+	matches, err = a.sessionIDsForProvider(ctx, matches, ref.Provider)
+	if err != nil {
+		return "", false, err
+	}
+	matches = sessionIDsForHost(matches, host)
+	switch len(matches) {
+	case 0:
+		return "", false, nil
+	case 1:
+		return matches[0], true, nil
+	default:
+		return "", false, &AmbiguousError{Ref: ref, Candidates: matches}
+	}
+}
+
+// sessionIDsForPaths keeps the ids of sessions stored under any of the spellings a filesystem
+// reference may have (see referencePaths). Order of discovery decides nothing: the caller reports more
+// than one as ambiguous.
+func (a *Archive) sessionIDsForPaths(
+	ctx context.Context, paths []string, provider string,
+) ([]string, error) {
+	ids := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		found, err := a.database.ListSessionIDsByFilePath(ctx, path, provider)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range found {
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
+// sessionIDsForHost keeps the candidates whose stored id names the requested host.
+func sessionIDsForHost(ids []string, host string) []string {
+	kept := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if candidateHost, _ := parser.StripHostPrefix(id); candidateHost == host {
+			kept = append(kept, id)
+		}
+	}
+	return kept
 }
 
 // sessionIDsForProvider keeps the candidates the requested provider recorded.
@@ -367,13 +474,35 @@ func parseArchiveTimestamp(value string) time.Time {
 // inherited direct-write path (cmd/agentsview/write_lock.go, which call/ccc cannot import).
 const writeOwnerLockFile = "db.write.lock"
 
-// qualifiedID is the archive's `<agent>:<native id>` spelling of a reference.
+// qualifiedID is the archive's `<agent>:<native id>` spelling of a *local* reference. It is never the
+// spelling of a host-qualified one: those are resolved by resolveHostQualified, because
+// `<agent>:<native id>` would name this machine's session of the same native id.
 func qualifiedID(ref Ref) string {
 	raw := rawSessionID(ref)
 	if ref.Provider == "" {
 		return raw
 	}
 	return ref.Provider + ":" + raw
+}
+
+// hostQualifiedReference splits a reference that names a host explicitly, answering the host and the
+// archive spelling that host-qualifies the reference.
+//
+// Remote-synced sessions are stored as `<host>~<native id>` and parser.StripHostPrefix calls the part
+// before the tilde part of the session's identity, so a reference carrying one names one specific
+// session rather than a native id that any number of hosts may also have. The provider prefix a caller
+// writes in front of it (`codex:host-a~codex:<id>`, the CLI's own form) belongs to the reference, not
+// to the identity, and is removed; what remains is the spelling the archive stores.
+func hostQualifiedReference(ref Ref) (host, id string, ok bool) {
+	id = ref.ID
+	if ref.Provider != "" {
+		id = strings.TrimPrefix(id, ref.Provider+":")
+	}
+	host, _ = parser.StripHostPrefix(id)
+	if host == "" {
+		return "", "", false
+	}
+	return host, id, true
 }
 
 // rawSessionID strips a provider prefix (and any host prefix) from a reference's identifier.

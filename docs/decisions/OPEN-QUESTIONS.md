@@ -198,3 +198,73 @@ supersede it with a newer one and say which it supersedes.
   "unverifiable" from "violated" changes.
 - **Settled by:** the owner's preference for a distinct incomplete verdict over a failure that also
   covers trees nobody inspected closely.
+
+## Q-0001-10 — What a relative filesystem reference means
+
+- **Status:** resolved (default taken)
+- **Question:** the round-3 review (finding 4) measured that `claude:./project/session.jsonl` reached
+  both lookups with only `filepath.Clean` applied: the inherited providers compare a candidate with
+  their own absolute roots (`claudeProjectHintFromPath` resolves the pair with `filepath.Rel`) and
+  reject the mixed form, and the archive stores the absolute path `sessions.file_path` was written
+  with, so an existing session was reported as missing. A relative path can be read as relative to the
+  provider's configured roots or as relative to the process's working directory — the shell's own
+  meaning — and the two differ whenever the command is not run from a root.
+- **Default taken:** the configured roots. A reference is offered to the provider and to the archive
+  under `filepath.Join(root, reference)` for each configured root (deduplicated), the source reader
+  reports two roots that both hold it as candidates rather than picking one, and an archive opened
+  without a configuration resolves only absolute references — because the roots are a fact of the
+  configuration, and a lookup whose answer depends on where the process happens to stand is a different
+  product than an inspection of "this provider's sessions". `reader.go`'s `referencePaths` is the one
+  place that spells it; `docs/evidence/…-parity-and-inspection.md` §1 and §8 state it as proven and as
+  a limit.
+- **Reversal:** resolve the relative reference against the process working directory instead (or in
+  addition, with the ambiguity path already there to report a reference both readings find), one
+  function in `internal/ccc/reader.go`; nothing persists a resolved path, so no data outlives the
+  choice.
+- **Settled by:** the operator's reading of `ccc inspect <provider>:<relative path>` — the roots it
+  lives under, or the directory it was typed in.
+
+## Q-0001-11 — How a host-qualified reference is resolved
+
+- **Status:** resolved (default taken)
+- **Question:** the round-3 review (finding 2) measured that `codex:host-a~codex:<native id>` had the
+  host stripped before the lookup, so it resolved `codex:<native id>` — this machine's session with the
+  same native id — and an inspection reported another conversation. The archive's id for a session
+  synced from another machine is `<host>~<the id it had there>` (`internal/remotesync` rebuilds ids that
+  way), and a caller may write the host qualifier around the stored id or around the bare native id.
+  The lookup could be exact-only, or exact with a narrowed fallback.
+- **Default taken:** exact first (`GetSession` on the spelling as given, i.e. the archive's own id),
+  then the inherited raw-suffix lookup filtered to rows whose id carries the requested host *and* the
+  requested agent — never the local row and never another host's, and two rows of the requested host are
+  reported as candidates rather than picked. The source side refuses the reference entirely with
+  `ErrNoLocalSource`: a remote session has no local file (upstream's own `FindSourceFile` answers `""`
+  for one), and answering from a local session that shares the native id is the defect the finding
+  named. An inspection therefore reports the archive's host-qualified row and says why the source is
+  unreadable.
+- **Reversal:** exact-only (drop the fallback, one helper in `internal/ccc/archive.go`) or let the
+  source side fall back to the local session again (delete the guard in `reader.go`) — the second is the
+  behaviour the finding rejected, so it would need the reviewer's agreement, not just a preference.
+- **Settled by:** whether a caller's `host~<native id>` spelling (no agent prefix, which is how upstream
+  documents remote ids) must resolve without the caller knowing the stored prefix; today it does.
+
+## Q-0001-12 — How a carried file's working tree is verified
+
+- **Status:** resolved (default taken)
+- **Question:** the round-3 review (finding 1) measured that the git-backed branch trusted `git status`
+  for the working tree, so a carried file marked `assume-unchanged` (or `skip-worktree`) could be edited
+  while the pinned blob stayed in the index and every predicate still agreed. The hole can be closed by
+  hashing the working tree independently, by rejecting the index flags that suppress git's answer, or by
+  both.
+- **Default taken:** hash it — `worktree_state` compares shape, bytes and (where the platform has POSIX
+  mode bits) the executable bit of the file this repository ships against the manifest record, in both
+  branches, with git and without it; git's index still answers what a stat cannot (what a fresh clone
+  receives) and a `git status` that reports the working tree as modified is still a failure. No index
+  flag inspection was added: the flags only silence `git status`, whose answer is no longer what the
+  bytes are checked through, so rejecting them would add a failure mode without adding verification.
+  The cost is one hash pass over the carried tree — 5 553 files, 63 MB, ~0.8 s on the import host,
+  measured — and `docs/harness.md`/`docs/upstream.md` state the rule.
+- **Reversal:** drop the `worktree_state` call in `check_files` (the git branch returns to git's own
+  answers, the bytes-only branch keeps them), or add the flag rejection beside it (`git ls-files -v`
+  output parsed for lowercase flags and `S`).
+- **Settled by:** whether a gate run's budget can afford the hash pass on the largest tree the project
+  ever carries; today it is under a second against a gate that takes ~23 s.

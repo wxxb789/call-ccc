@@ -87,6 +87,25 @@ that `inspect` never creates an archive), and `internal/ccc/archive_test.go` for
 report: `content_shown` as what the rows show (`tool-payloads`, `message-text`, `none`), the folded
 tool-result row, and the archive-only inspection that reports its comparison as not run.
 
+Three reference-shape rules join them in the round-3 fix pass, each pinned by a test that fails when
+its fix is reverted (one executed mutation per rule):
+
+- a **host-qualified** reference (`codex:host-a~codex:<native id>`) names the session that host
+  recorded, not this machine's session of the same native id: the archive resolves the host-qualified
+  row and reports another host's row (or the local one) as not found, two rows of the requested host as
+  candidates rather than a pick, and the source reader refuses with `ErrNoLocalSource` — the fixtures
+  hold a Codex session under the same native id, which a reader that dropped the host would report
+  from the source side (`fixtures_test.go`, `archive_test.go`);
+- a **relative filesystem reference** is resolved against the provider's configured roots, so the same
+  reference reaches the session through the source reader and through the archive, which stores the
+  absolute path the writer recorded; two roots that hold it are reported as candidates, the same root
+  listed twice is one root, and an archive opened without a configuration does not resolve the relative
+  spelling at all (`fixtures_test.go`, `archive_test.go`);
+- a tool result whose **persisted output could not be read** keeps the inherited parser's
+  parse-time answer: the result carries `PersistedOutputUnresolved`, its content stays the placeholder
+  that names the side file, `Fidelity.UnresolvedToolOutputs` counts it and an inspection warns — while
+  a result whose side file *is* readable carries the file's bytes and no flag (`fixtures_test.go`).
+
 ## 2. A real source-to-archive parse and a subsequent archive read agree with the pinned implementation
 
 The oracle (`internal/ccc/parity`) parses a fixture, writes it through the inherited sync engine into
@@ -168,16 +187,34 @@ Every declaration, and nothing else:
 | generated build input | 1 | upstream does not track the LiteLLM snapshot; its Makefile restores it before every Go build |
 
 The check reads git's own index (`git ls-files -s`) — the bytes a fresh clone receives, filters
-applied — and the working tree, and fails if a carried file is modified in the working tree relative
-to it, if a declaration has gone stale — a project-owned path that turned back into upstream's copy,
-staged or only written on disk, or a normalised path that stopped holding the bytes its record pins —
-if a probe (`git status`, ignore rules) cannot answer, if the generated input stops matching the
-SHA-256 the carried snapshot tool pins, if `docs/upstream.md` or `cmd/ccc/pin.go` disagrees about the
-revision, or if anything git would add is neither recorded nor inside a project-owned prefix. The
-line-ending path is the one carried path upstream's blob can never equal, so its record pins the
-stored digest beside upstream's and that digest is what the check verifies; a working-tree copy still
-holding the pre-normalisation bytes is reported rather than failed, because git reads that copy as
-clean and a checkout writes the declared bytes. It needs no network and no upstream checkout.
+applied — and hashes every carried path's **working-tree** copy against the manifest record in *both*
+branches, with git and without it, before git is asked anything: shape, bytes and executable bit are
+compared with the file this repository ships, and the index adds what a stat cannot answer (what a
+fresh clone receives). It fails if a carried file is missing, changed in shape, mode or bytes, if a
+`git status` answer says the working tree differs from the index, if a declaration has gone stale — a
+project-owned path that turned back into upstream's copy, staged or only written on disk, or a
+normalised path that stopped holding the bytes its record pins — if a probe (`git status`, ignore
+rules) cannot answer, if the generated input stops matching the SHA-256 the carried snapshot tool
+pins, if `docs/upstream.md` or `cmd/ccc/pin.go` disagrees about the revision, or if anything git would
+add is neither recorded nor inside a project-owned prefix. The line-ending path is the one carried path
+upstream's blob can never equal, so its record pins the stored digest beside upstream's and that digest
+is what the check verifies; a working-tree copy still holding the pre-normalisation bytes is reported
+rather than failed, because git reads that copy as clean and a checkout writes the declared bytes. It
+needs no network and no upstream checkout.
+
+The round-3 review (finding 1) measured that the git-backed branch trusted `git status` for the working
+tree, and `git status` is exactly the answer a path can be configured to suppress: with a carried file
+marked `assume-unchanged` (or `skip-worktree`), an edit stays out of git's report while the pinned blob
+stays in the index, so every predicate the check made could agree with modified carried source. The
+working-tree comparison above is that fix, and it costs about 0.8 s and ~63 MB of file reads over this
+tree's 5 553 carried files (measured by hashing every path in
+[`scripts/upstream-manifest.txt`](../../scripts/upstream-manifest.txt)); three cases in
+`scripts/tests/test_upstream_parity.py` script git's own answers with an empty `git status`, a pinned
+index blob and a modified working tree (bytes, shape and executable bit), and each fails when the
+working-tree comparison is removed from the shipped check. The same round pinned the rules that branch
+already claimed and nothing exercised: a carried path present on disk but absent from git's index
+(absent from a clone), a record whose pinned size is not its bytes' size, and a symlink record whose
+path became a directory.
 
 ## 4. The continuation functionality is callable without CLI types, and the CLI is standalone
 
@@ -210,26 +247,32 @@ gate: go=<go>/bin/go targets=./cmd/ccc/... ./internal/ccc/...
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 104 tests in 5.860s (rc=0)
-  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 25 project-owned prefix(es); files seen by git: 5613 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes ver…
+  PASS     selftest Ran 110 tests in 4.818s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 25 project-owned prefix(es); files seen by git: 5613 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     secrets  no leaks found in 60 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
 
 The gate truncates the middle of a long step detail, which is why the `parity` line above opens with `…`;
-the same run's full summary is quoted in §3. The `selftest` count is 104 in this run: the fix pass
-before it added the four carried-path cases for a declared line-ending normalisation (deleted from the
+the same run's full summary is quoted in §3. The `selftest` count is 110 in this run: the round-2 fix
+pass added the four carried-path cases for a declared line-ending normalisation (deleted from the
 working tree, modified in it, mode changed in git's index, matched by an ignore rule) and the case that
-pins the incomplete verdict for a tree git cannot enumerate.
+pins the incomplete verdict for a tree git cannot enumerate, bringing it to 104; the round-3 fix pass
+added six more in `scripts/tests/test_upstream_parity.py` — three for a working tree `git status`
+cannot report (bytes, shape and executable bit, each removed-fix-mutation-tested), one for a carried
+path present on disk but absent from git's index, one for a record whose pinned size is not its bytes'
+size, and one for a symlink record whose path became a directory (74 → 80 parity cases). The Go side
+moved with it: `internal/ccc` went from 17 to 24 test functions (`archive_test.go` 13 → 16,
+`fixtures_test.go` 4 → 8), and `cmd/ccc`'s tests are unchanged.
 
 Wall clock for the whole gate on this host: 19–21 s with warm caches across the increment's earlier
-runs, and 25 s to 156 s across this fix pass's runs — the 156 s run followed a cold Go build cache, so
-`build`/`vet`/`test` recompiled the inherited packages. Every post-fix run reported 104 tests, with the
-`selftest` step itself taking between 5.9 s and 8.9 s. The `secrets` count is the files under the
-manifest's project-owned prefixes, which includes the harness's own `scripts/tests/__pycache__/*.pyc`
-once the suite has run here (58 without them, 60 with the two this run's selftest left behind).
-`gofmt` covers the carried tree as well (3574 Go files); `build`/`vet`/`test` cover the three call/ccc
-packages, which compile the inherited packages they depend on.
+runs, 25 s to 156 s across the round-2 fix pass's runs (the 156 s run followed a cold Go build cache, so
+`build`/`vet`/`test` recompiled the inherited packages), and 21–23 s across the round-3 runs, whose
+`selftest` step took 4.3 s to 5.3 s. The `secrets` count is the files under the manifest's
+project-owned prefixes, which includes the harness's own `scripts/tests/__pycache__/*.pyc` once the
+suite has run here (58 without them, 60 with the two this run's selftest left behind). `gofmt` covers
+the carried tree as well (3574 Go files); `build`/`vet`/`test` cover the three call/ccc packages, which
+compile the inherited packages they depend on.
 
 ## 7. Measurements that shaped the harness
 
@@ -282,11 +325,31 @@ upstream's CI; `docs/harness.md` states this, and `parity` covers those files at
   print; the required-step machinery in `scripts/gate.py` rejects any non-zero outcome. A host that
   needs a full pass therefore needs git — CI has it on all three runners — and the report a run prints
   names the two rules it did not check.
-- **The ambiguity branch is not exercised by a fixture.** `AmbiguousError` and the CLI's "pass one of
-  those session ids instead of a guess" line are implemented — the source reader reports several
-  candidate sources for a changed path, and the archive reports every session row that names one
-  source file, instead of taking the first — but the committed fixtures hold one session each, so
-  nothing in this record makes an identifier match more than one source.
+- **The ambiguity branch is exercised, and what it still does not cover.** `AmbiguousError` and the
+  CLI's "pass one of those session ids instead of a guess" line are implemented and pinned by tests —
+  the source reader reports several candidates for a relative path two configured roots hold, and the
+  archive reports every row of the requested host whose id ends in the requested native id — but the
+  *committed fixtures* hold one session each, so nothing in this record makes an identifier match more
+  than one source through them; the ambiguity cases build their own second root or their own second
+  archive row.
+- **A relative filesystem reference is relative to the provider's configured roots, not to the working
+  directory.** `claude:-home-user-code-example-api/<id>.jsonl` means that path under a configured Claude
+  root; a process whose working directory happens to hold the same relative path is not what it names.
+  The alternative reading (the shell's own, relative to where the command was run) is a one-function
+  change in `internal/ccc/reader.go`, recorded in
+  [`docs/decisions/OPEN-QUESTIONS.md`](../decisions/OPEN-QUESTIONS.md), Q-0001-10.
+- **An archive opened without a configuration cannot resolve a relative reference.** The roots a
+  relative path is relative to come from `config.Config`; `OpenArchive(path)` has none, so a relative
+  spelling is only asked about as written and finds nothing, while `Inspect` (and the CLI) open the
+  archive with the configuration they gave the reader. Absolute paths and ids are unaffected, and a
+  test pins the refusal rather than leaving it to a comment.
+- **A host-qualified reference is resolved by an exact lookup, then by a host-filtered one.** The
+  archive's own spelling (`<host>~<the id it had there>`) answers first; a miss falls back to the
+  inherited raw-suffix lookup narrowed to rows that carry the requested host *and* the requested
+  provider, which is what lets `host~<native id>` reach a row stored as `host~<agent>:<native id>`. A
+  host the archive has nothing from resolves nothing — never another host's row and never the local
+  row of that native id — and two rows of the requested host are reported as candidates rather than
+  picked (decision recorded as Q-0001-11).
 
 ## 9. Re-deriving this record
 

@@ -23,19 +23,24 @@ authority; this file records the pin and every difference from it.
 manifest, through git's own index where git is available (`git ls-files -s`: what a fresh clone
 receives, `.gitattributes` filters applied) and by hashing bytes where it is not — so the answer is
 the same on every platform, and a file whose line endings git would normalise cannot pass in one
-checkout and fail in another. It then fails if a manifest path is missing or modified in the working
-tree, if a declared deviation has quietly turned back into upstream's copy — staged *or* only written
-on disk, since the gate reads the working tree — or stops holding the stored bytes its record pins
-(that path is a carried path for everything but the byte comparison: it must also be present in the
-working tree, unmodified relative to git's index, and matched by no ignore rule), if the generated
-input stops hashing to the value the carried snapshot tool pins, if `docs/upstream.md` or
-`cmd/ccc/pin.go` disagree with the manifest about the revision, or if anything git would add sits
-inside the tree without a manifest record or a project-owned prefix. A `git status` or ignore probe
-that cannot answer fails the check: "nothing is modified" is the one answer that would look like a
-pass. A tree git cannot enumerate at all — no `git` on the host, or a root that is a copy rather than
-a repository — is reported as `INCOMPLETE` and exits non-zero, naming the file-list and ignore rules
-that did not run, so the required gate step cannot print a full pass for a tree nobody verified. The
-check is offline; it needs no checkout of upstream to answer.
+checkout and fail in another. The working tree is *also* hashed in both branches, with git and without
+it: an `assume-unchanged` or `skip-worktree` index flag keeps an edited path out of `git status` while
+the pinned blob stays in the index, so a check that trusted git's own status for the working tree would
+pass for modified carried source; the record's shape, bytes and executable bit are compared directly
+with the file this repository ships, and git's index adds what a stat cannot answer — what a fresh
+clone receives. It then fails if a manifest path is missing or modified in the working tree, if a
+declared deviation has quietly turned back into upstream's copy — staged *or* only written on disk,
+since the gate reads the working tree — or stops holding the stored bytes its record pins (that path is
+a carried path for everything but the byte comparison: it must also be present in the working tree,
+unmodified relative to git's index, and matched by no ignore rule), if the generated input stops hashing
+to the value the carried snapshot tool pins, if `docs/upstream.md` or `cmd/ccc/pin.go` disagree with the
+manifest about the revision, or if anything git would add sits inside the tree without a manifest record
+or a project-owned prefix. A `git status` or ignore probe that cannot answer fails the check: "nothing
+is modified" is the one answer that would look like a pass. A tree git cannot enumerate at all — no
+`git` on the host, or a root that is a copy rather than a repository — is reported as `INCOMPLETE` and
+exits non-zero, naming the file-list and ignore rules that did not run, so the required gate step cannot
+print a full pass for a tree nobody verified. The check is offline; it needs no checkout of upstream to
+answer.
 
 Behaviour is a separate question from bytes, and it is answered by evidence rather than by this file:
 [`docs/evidence/0001-agentsview-parity-and-inspection.md`](evidence/0001-agentsview-parity-and-inspection.md)

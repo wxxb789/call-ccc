@@ -6,8 +6,12 @@ the manifest must belong to a path prefix this repository owns, and every declar
 still hold what the manifest declares: a project-owned path that has been replaced by upstream's copy
 is a stale declaration, and a path carried with a declared normalisation must still store the bytes
 its record pins -- both read from the working tree, and from git's index where git is available. The
-generated build input is checked against the SHA-256 pinned inside the carried snapshot tool, so the
-input is verified against upstream's own pin rather than a second hard-coded copy.
+working tree is hashed in both branches, with git and without it, so the one answer a carried path can
+be configured to suppress -- git's own ``status`` report, silenced by an ``assume-unchanged`` or
+``skip-worktree`` index flag -- is never the answer a carried file's content is checked through; git
+adds what a stat cannot answer, namely what a fresh clone receives. The generated build input is
+checked against the SHA-256 pinned inside the carried snapshot tool, so the input is verified against
+upstream's own pin rather than a second hard-coded copy.
 
 A tree git cannot enumerate -- no git on this host, or a root that is a copy rather than a repository
 -- is reported as ``INCOMPLETE`` and exits 2: the file-list and ignore rules cannot be asked, and the
@@ -37,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from upstream_manifest import (  # noqa: E402
     Manifest,
     ManifestError,
+    Record,
     hashed_path,
     load_manifest,
     pinned_snapshot_sha256,
@@ -212,17 +217,61 @@ def carried_paths(manifest: Manifest) -> list[str]:
     ]
 
 
+def worktree_state(root: Path, record: Record) -> tuple[str, bool]:
+    """How a carried file's *working tree* copy stands against the record the manifest keeps.
+
+    Answers ``(problem, mode_unverified)``: ``problem`` is ``""`` when the copy is the pinned bytes in
+    the shape and mode the record names, and otherwise the first rule it breaks -- ``"shape"`` for a
+    path that is a directory, or a link where the pin carries a file (or the reverse), ``"drifted"``
+    for other bytes than the pinned blob, ``"size"`` for another size, ``"mode"`` for another
+    executable bit. ``mode_unverified`` is True only when the copy is otherwise right and this
+    platform has no POSIX mode bits to answer with.
+
+    Every carried path is asked this with git as well as without it, because ``git status`` is the one
+    answer a path can be configured to suppress: an ``assume-unchanged`` or ``skip-worktree`` index
+    flag keeps the edit out of git's own report while the blob in the index stays pinned, and a check
+    that read "git reports nothing modified" as "the file is the pin's copy" would pass for modified
+    carried source. The comparison is the one the bytes-only branch always made, so both branches
+    answer alike; only the index adds what a stat cannot answer, namely what a fresh clone receives.
+    """
+    target = root / record.path
+    is_link = target.is_symlink()
+    if record.mode == "120000":
+        # git stores a link as its target text; a platform that checked it out as a regular file
+        # holding that text hashes to the same blob, which is why only a third shape is a mismatch.
+        if not is_link and not target.is_file():
+            return "shape", False
+    elif is_link or not target.is_file():
+        return "shape", False
+    digest, size, _ = hashed_path(root, record.path)
+    if digest != record.digest:
+        return "drifted", False
+    if size != record.size:
+        return "size", False
+    if record.mode == "120000":
+        return "", False
+    if not executable_bit_supported():
+        return "", True
+    # Only a platform with POSIX modes can answer this; git records the mode in the index too, so a
+    # mismatch here means the working tree disagrees with the pin about whether the file is executable.
+    if bool(target.stat().st_mode & 0o111) != (record.mode == "100755"):
+        return "mode", False
+    return "", False
+
+
 def check_files(
     root: Path, manifest: Manifest, index: dict[str, tuple[str, str]] | None,
     modified: set[str] | None,
 ) -> tuple[int, int, int]:
     """Verify every carried file against the pin.
 
-    With git available the check reads the *index* -- what a fresh clone would receive, filters and
-    all -- and asks git which paths differ from it in the working tree (``modified``, probed once by
-    the caller and shared with the deviation rule below). Without git it falls back to hashing the
-    working tree's bytes directly, which is the same answer for a tree whose files were written by the
-    importer.
+    The working tree is verified first and in both branches, by hashing the file this repository
+    ships (see :func:`worktree_state`), so an index flag that silences ``git status`` cannot hide a
+    modified carried file. With git available the check then reads the *index* -- what a fresh clone
+    would receive, filters and all -- and asks git which paths differ from it in the working tree
+    (``modified``, probed once by the caller and shared with the deviation rule below). Without git
+    the bytes already hashed are the whole answer, which is the same answer for a tree whose files
+    were written by the importer.
 
     Returns ``(checked, mode_unverified, symlinks_hashed)``.
     """
@@ -235,51 +284,38 @@ def check_files(
         if not present(root, record.path):
             missing.append(record.path)
             continue
-        target = root / record.path
-        if index is not None:
-            mode, blob = index.get(record.path, ("", ""))
-            if not mode:
-                # Present on disk but absent from the index: it would not exist in a fresh clone.
-                missing.append(record.path)
-                continue
-            if blob != record.digest:
-                drifted.append(record.path)
-                continue
-            if mode != record.mode:
-                wrong_mode.append(record.path)
-                continue
-            if modified is not None and record.path in modified:
-                dirty.append(record.path)
-                continue
-            if record.mode == "120000":
-                symlinks_hashed += 1
-            continue
-        is_link = target.is_symlink()
-        if record.mode == "120000" and not is_link and not target.is_file():
+        problem, mode_unverified_here = worktree_state(root, record)
+        if problem == "shape":
             wrong_shape.append(record.path)
             continue
-        if record.mode != "120000" and (is_link or not target.is_file()):
-            wrong_shape.append(record.path)
-            continue
-        digest, size, _ = hashed_path(root, record.path)
-        if digest != record.digest:
+        if problem == "drifted":
             drifted.append(record.path)
             continue
-        if size != record.size:
+        if problem == "size":
             size_mismatch.append(record.path)
             continue
+        if problem == "mode":
+            wrong_mode.append(record.path)
+            continue
+        if mode_unverified_here:
+            mode_unverified += 1
         if record.mode == "120000":
             symlinks_hashed += 1
+        if index is None:
             continue
-        if not executable_bit_supported():
-            mode_unverified += 1
+        mode, blob = index.get(record.path, ("", ""))
+        if not mode:
+            # Present on disk but absent from the index: it would not exist in a fresh clone.
+            missing.append(record.path)
             continue
-        # Only a platform with POSIX modes can answer this; the digest above already proves the
-        # committed *content*, and git records the mode in the index, so a mismatch here means the
-        # working tree disagrees with the pin about whether the file is executable.
-        executable = bool(target.stat().st_mode & 0o111)
-        if executable != (record.mode == "100755"):
+        if blob != record.digest:
+            drifted.append(record.path)
+            continue
+        if mode != record.mode:
             wrong_mode.append(record.path)
+            continue
+        if modified is not None and record.path in modified:
+            dirty.append(record.path)
     if missing:
         raise Failure(f"{len(missing)} carried file(s) are absent", missing)
     if wrong_shape:

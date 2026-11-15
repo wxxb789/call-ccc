@@ -81,6 +81,14 @@ type ToolResult struct {
 	Source      string `json:"source,omitempty"`
 	ContentRaw  string `json:"content_raw,omitempty"`
 	ContentSize int    `json:"content_size,omitempty"`
+	// PersistedOutputUnresolved carries the provider's own parse-time answer that this result's content
+	// is the *placeholder* naming a side file the parser could not read, not the output itself
+	// (parser.ParsedToolResult.PersistedOutputUnresolved). ContentRaw then holds the placeholder text,
+	// which is indistinguishable from genuine output unless this flag is read: a caller that presents
+	// such a result as the tool's output would report text the tool never produced. Only a source read
+	// can answer it -- the archive projection stores no such flag -- so it is always false on an
+	// archive read.
+	PersistedOutputUnresolved bool `json:"persisted_output_unresolved,omitempty"`
 }
 
 // Message is one ordered turn of a conversation. Thinking and dialogue text are the provider's
@@ -109,6 +117,11 @@ type Fidelity struct {
 	MalformedLines int    `json:"malformed_lines,omitempty"`
 	Truncated      bool   `json:"truncated,omitempty"`
 	SourceVersion  string `json:"source_version,omitempty"`
+	// UnresolvedToolOutputs counts the tool results whose persisted output the provider could not read,
+	// so their content is the placeholder that names it (ToolResult.PersistedOutputUnresolved). The
+	// source said so; the aggregate is here so a summary can report it without walking the messages.
+	// Zero on an archive read, which cannot answer the question at all.
+	UnresolvedToolOutputs int `json:"unresolved_tool_outputs,omitempty"`
 	// ReadFrom names where the bytes came from: "source" for the provider's own reader, "archive"
 	// for the AgentsView SQLite projection.
 	ReadFrom string `json:"read_from"`

@@ -57,9 +57,14 @@ It verifies, in this order:
    claims cannot drift from the revision the manifest describes;
 2. every carried path is what git stores for it (`git ls-files -s`, i.e. what a fresh clone receives,
    with `.gitattributes` filters applied) — or, in a tree without git, what its bytes hash to;
-3. no carried path is modified in the working tree relative to what git stores (`git status`
-   porcelain, worktree column only: a staged-but-uncommitted tree is the normal state here), and a
-   `git status` that cannot answer fails the step instead of dropping the rule;
+3. every carried path's **working tree copy** holds the pinned bytes, shape and executable bit — hashed
+   and compared to the manifest record in both branches, with git and without it, before git is asked
+   anything. `git status` is the one answer a path can be configured to suppress: an `assume-unchanged`
+   or `skip-worktree` index flag keeps an edited file out of git's report while the pinned blob stays in
+   the index, so a check that read "git reports nothing modified" as "the file is the pin's copy" would
+   pass for modified carried source. The record's *mode* is additionally compared with git's index
+   (what a fresh clone receives), and a `git status` answer saying the file differs from the index is
+   still a failure — a `git status` that cannot answer fails the step instead of dropping the rule;
 4. no carried path matches the tree's ignore rules, which would make `git add` skip it in a fresh
    clone;
 5. nothing git would add sits inside the tree unexplained: a tracked or untracked-but-not-ignored
@@ -75,6 +80,10 @@ It verifies, in this order:
    ignore rules — because the declaration is an allowance for its *bytes*, never for its absence;
 7. the generated build input hashes to the SHA-256 that the carried snapshot tool pins in its own
    source, so the input is verified against upstream's pin rather than a second hard-coded copy.
+
+Hashing every carried file's working-tree bytes costs about 0.8 s and reads ~63 MB on the import host
+(5 553 files), measured by running the check over this tree; the byte comparison is what makes the
+`assume-unchanged` and `skip-worktree` flags irrelevant to it, so no index flag inspection is needed.
 
 A tree git cannot enumerate — no `git` on `PATH`, or a `--root` that is a copy rather than a
 repository — is reported as **INCOMPLETE**, not as a pass: the unexplained-file rule and the ignore

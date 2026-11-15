@@ -11,6 +11,8 @@ import (
 	"github.com/gofrs/flock"
 
 	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/dbtest"
 	"go.kenn.io/agentsview/internal/parser"
 )
 
@@ -290,6 +292,138 @@ func TestPathReferenceResolvesTheSameSession(t *testing.T) {
 	}
 }
 
+// TestHostQualifiedReferenceResolvesThatHostsSession pins the identity rule for a session synced from
+// another machine.
+//
+// The archive stores one as `<host>~<the id it had there>` and the host is part of its identity
+// (parser.StripHostPrefix). A reference that names a host used to have the host stripped before the
+// lookup, so `codex:host-a~codex:<native id>` resolved `codex:<native id>` -- this machine's session
+// with the same native id -- whenever that row existed: an inspection of a remote session reported a
+// different conversation's identity, counts and messages, and exited successfully. Here the archive
+// holds a local row, two `host-a` rows and one `host-b` row of the same native id, seeded through the
+// inherited database API (which is how a remote sync writes them), and every way that lookup can answer
+// is pinned: the stored spelling, the host-qualified spelling without an agent prefix, a host this
+// archive has nothing from, and two rows of the requested host.
+func TestHostQualifiedReferenceResolvesThatHostsSession(t *testing.T) {
+	const native = "0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812"
+	dir := dbtest.MkdirTempWithCleanup(t)
+	archivePath := filepath.Join(dir, "sessions.db")
+	database := dbtest.OpenTestDBAt(t, archivePath)
+	seedCodex := func(id, machine, content string) {
+		t.Helper()
+		dbtest.SeedSessionWithMessages(t, database, id, "example-api",
+			[]db.Message{dbtest.UserMsg(id, 0, content)},
+			func(session *db.Session) { session.Agent = "codex"; session.Machine = machine })
+	}
+	localID := "codex:" + native
+	remoteID := "host-a~codex:" + native
+	bareHostB := "host-b~" + native
+	seedCodex(localID, "local", "the session recorded on this machine")
+	seedCodex(remoteID, "host-a", "the session recorded on host-a")
+	seedCodex("host-a~codex-fork:"+native, "host-a", "the fork recorded on host-a")
+	seedCodex("host-b~codex:"+native, "host-b", "the session recorded on host-b")
+	if err := database.Close(); err != nil {
+		t.Fatalf("closing the seeded archive: %v", err)
+	}
+
+	ctx := context.Background()
+	archive, err := OpenArchive(ctx, archivePath)
+	if err != nil {
+		t.Fatalf("opening the archive: %v", err)
+	}
+	defer archive.Close()
+
+	// The reference form the CLI takes: `<provider>:<host>~<native id>`, resolved exactly, so the row
+	// it names is the answer and neither the local row nor host-a's fork is.
+	qualified := Ref{Provider: "codex", ID: remoteID}
+	status, found, err := archive.Status(ctx, qualified)
+	if err != nil {
+		t.Fatalf("status of %s: %v", qualified.ID, err)
+	}
+	if !found {
+		t.Fatalf("the archive does not resolve %s", qualified.ID)
+	}
+	if status.SessionID != remoteID {
+		t.Errorf("%s resolved %q, want %q", qualified.ID, status.SessionID, remoteID)
+	}
+	conversation, err := archive.Read(ctx, qualified)
+	if err != nil {
+		t.Fatalf("reading %s: %v", qualified.ID, err)
+	}
+	if len(conversation.Messages) != 1 ||
+		!strings.Contains(conversation.Messages[0].Content, "host-a") {
+		t.Errorf("%s read the wrong conversation: %+v", qualified.ID, conversation.Messages)
+	}
+
+	// A host-qualified native id that is not stored in that spelling still names that host's session
+	// when that host has exactly one: the answer is narrowed to the requested host, so the local row --
+	// which shares the native id -- is not a candidate.
+	if status, found, err := archive.Status(ctx, Ref{Provider: "codex", ID: bareHostB}); err != nil ||
+		!found || status.SessionID != "host-b~codex:"+native {
+		t.Errorf("%s: found=%v err=%v status=%+v, want host-b's row", bareHostB, found, err, status)
+	}
+
+	// Two rows of the requested host are the candidates the reference could mean: reported, not picked.
+	_, _, err = archive.Status(ctx, Ref{Provider: "codex", ID: "host-a~" + native})
+	var ambiguous *AmbiguousError
+	if !errors.As(err, &ambiguous) {
+		t.Fatalf("two host-a rows resolved without a report: err=%v", err)
+	}
+	if len(ambiguous.Candidates) != 2 {
+		t.Errorf("ambiguous candidates = %v, want both host-a rows", ambiguous.Candidates)
+	}
+
+	// A host this archive has nothing from is not found: neither another host's row nor the local row
+	// of that native id is offered in its place.
+	for _, id := range []string{"host-c~codex:" + native, "host-a~codex:" + native + "x"} {
+		ref := Ref{Provider: "codex", ID: id}
+		if status, found, err := archive.Status(ctx, ref); err != nil || found {
+			t.Errorf("%s resolved %+v (found=%v err=%v), want not found", id, status, found, err)
+		}
+	}
+}
+
+// TestHostQualifiedReferenceIsReportedWithoutASource pins what an inspection does with a reference to a
+// session recorded on another machine: the archive answers it, and the source side says why it cannot
+// rather than reporting a local session of the same native id.
+func TestHostQualifiedReferenceIsReportedWithoutASource(t *testing.T) {
+	cfg := fixtureConfig(t)
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	database := dbtest.OpenTestDBAt(t, archivePath)
+	remoteID := "host-a~codex:" + codexFixtureRef.ID
+	dbtest.SeedSessionWithMessages(t, database, remoteID, "example-api",
+		[]db.Message{dbtest.UserMsg(remoteID, 0, "the session recorded on host-a")},
+		func(session *db.Session) { session.Agent = "codex"; session.Machine = "host-a" })
+	if err := database.Close(); err != nil {
+		t.Fatalf("closing the seeded archive: %v", err)
+	}
+
+	// The fixtures hold a Codex session under the same native id, so a reader that ignored the host
+	// would report *that* conversation from the source side.
+	reader := NewSourceReader(cfg)
+	ctx := context.Background()
+	ref := Ref{Provider: "codex", ID: remoteID}
+	inspection, err := Inspect(ctx, InspectOptions{
+		Ref: ref, Config: cfg, Reader: reader, ArchivePath: archivePath,
+	})
+	if err != nil {
+		t.Fatalf("inspecting %s: %v", ref.ID, err)
+	}
+	if inspection.Source != nil {
+		t.Errorf("a host-qualified reference read a local source: %+v", inspection.Source.Identity)
+	}
+	if inspection.Archive == nil {
+		t.Fatalf("the archived session was not reported: %v", inspection.Warnings)
+	}
+	if inspection.Archive.Status.SessionID != remoteID {
+		t.Errorf("the inspection reports %q, want %q", inspection.Archive.Status.SessionID, remoteID)
+	}
+	warnings := strings.Join(inspection.Warnings, "\n")
+	if !strings.Contains(warnings, "another machine") {
+		t.Errorf("the inspection does not say why the source is unreadable: %v", inspection.Warnings)
+	}
+}
+
 // TestPathReferenceFindsTheArchivedSession pins the reference form the README documents
 // (`ccc inspect codex:/path/to/<id>.jsonl`) against the archive: a path reference must resolve
 // through the file the session was read from, because the stored id is `<agent>:<native id>` and a
@@ -348,6 +482,75 @@ func TestPathReferenceFindsTheArchivedSession(t *testing.T) {
 	if inspection.Archive.Status.SessionID != status.SessionID {
 		t.Errorf("the inspection reports session %q, the status %q",
 			inspection.Archive.Status.SessionID, status.SessionID)
+	}
+}
+
+// TestRelativePathReferenceFindsTheArchivedSession pins the archive half of resolving a relative
+// filesystem reference.
+//
+// The archive stores the absolute path `sessions.file_path` was written with, so a relative spelling
+// cannot equal it and the lookup used to miss the session the source read had just found. The roots a
+// relative path is relative to come from the configuration, which is why an archive opened without one
+// cannot answer this question at all -- and says so by not finding it rather than by guessing a
+// directory.
+func TestRelativePathReferenceFindsTheArchivedSession(t *testing.T) {
+	cfg := fixtureConfig(t)
+	claudeFile := fixturePath(t, filepath.Join("claude", "-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"))
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(cfg, archivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	ctx := context.Background()
+	if err := ingestor.IngestPaths(ctx, claudeFile); err != nil {
+		t.Fatalf("ingesting the fixture: %v", err)
+	}
+	relative := Ref{Provider: "claude", ID: filepath.Join("-home-user-code-example-api", claudeFixtureRef.ID+".jsonl")}
+
+	archive, err := openArchive(ctx, archivePath, cfg.AgentDirs)
+	if err != nil {
+		t.Fatalf("opening the archive: %v", err)
+	}
+	defer archive.Close()
+	status, found, err := archive.Status(ctx, relative)
+	if err != nil {
+		t.Fatalf("status of %s: %v", relative.ID, err)
+	}
+	if !found {
+		t.Fatalf("the archive does not resolve the relative path %s", relative.ID)
+	}
+
+	// The inspection a caller takes (the CLI's own path) resolves the relative reference on both sides.
+	inspection, err := Inspect(ctx, InspectOptions{
+		Ref:         relative,
+		Config:      cfg,
+		Reader:      NewSourceReader(cfg),
+		ArchivePath: archivePath,
+	})
+	if err != nil {
+		t.Fatalf("inspecting %s: %v", relative.ID, err)
+	}
+	if inspection.Source == nil {
+		t.Fatalf("the inspection read no source for %s: %v", relative.ID, inspection.Warnings)
+	}
+	if inspection.Archive == nil {
+		t.Fatalf("the inspection found no archived session for %s: %v", relative.ID, inspection.Warnings)
+	}
+	if inspection.Archive.Status.SessionID != status.SessionID {
+		t.Errorf("the inspection reports %q, the direct lookup %q",
+			inspection.Archive.Status.SessionID, status.SessionID)
+	}
+
+	// An archive opened without a configuration has no root to resolve the reference against, and does
+	// not answer with a session it cannot be sure the reference names.
+	plain, err := OpenArchive(ctx, archivePath)
+	if err != nil {
+		t.Fatalf("opening the archive without a configuration: %v", err)
+	}
+	defer plain.Close()
+	if status, found, err := plain.Status(ctx, relative); err != nil || found {
+		t.Errorf("an archive with no roots resolved %s: found=%v err=%v status=%+v",
+			relative.ID, found, err, status)
 	}
 }
 

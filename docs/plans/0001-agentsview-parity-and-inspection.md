@@ -62,8 +62,11 @@ normalisation cannot turn a clean tree into a false failure.
 
 1. every carried path is what git stores for it (`git ls-files -s`: filters applied, i.e. what a
    fresh clone receives) — and, in a tree without git, what its bytes hash to — and no carried file is
-   modified in the working tree relative to that (`git status` worktree column only, because every
-   file reads `A` in the index column until the increment is committed);
+   modified in the working tree: the working-tree copy is hashed, shaped and mode-checked against the
+   manifest record in *both* branches, because `git status` is an answer a path can be configured to
+   suppress (`assume-unchanged`, `skip-worktree`) while the pinned blob stays in the index. git's own
+   status and index answers are still consulted (the index mode, and a worktree `git status` reports as
+   modified);
 2. each declared deviation still differs from upstream, so a project-owned file that quietly became
    upstream's copy is a stale declaration rather than a pass;
 3. the generated snapshot's SHA-256 equals the constant compiled into the carried snapshot tool, so

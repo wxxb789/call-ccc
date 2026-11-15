@@ -22,7 +22,9 @@ type InspectOptions struct {
 	Ref Ref
 
 	// Config supplies the provider roots and enabled agents. Zero value means "ask the environment":
-	// the reader falls back to the inherited default configuration.
+	// the reader falls back to the inherited default configuration. The same roots are what a *relative*
+	// filesystem reference is resolved against when an archive is consulted, so a caller that supplies
+	// only a Reader should supply the configuration it built that reader from.
 	Config config.Config
 
 	// Reader, when set, is used instead of building one from Config.
@@ -81,16 +83,23 @@ type Inspection struct {
 // agent, source, conversation shape, and — when an archive is given — whether that archive holds the
 // same session. It is the entry point the CLI calls, and it takes no CLI type.
 func Inspect(ctx context.Context, opts InspectOptions) (Inspection, error) {
+	// The configuration answers where each provider keeps its sessions. The reader resolves a relative
+	// filesystem reference against those roots and the archive is opened with the same answer, so both
+	// lookups normalize a reference the same way; a caller that supplied a reader has already answered
+	// it, and its answer is the one the source side is using.
+	cfg := opts.Config
 	reader := opts.Reader
-	if reader == nil {
-		cfg := opts.Config
-		if cfg.AgentDirs == nil {
-			loaded, err := config.LoadReadOnly()
-			if err != nil {
-				return Inspection{}, fmt.Errorf("reading the AgentsView configuration: %w", err)
-			}
-			cfg = loaded
+	switch {
+	case cfg.AgentDirs == nil && reader != nil:
+		cfg = reader.cfg
+	case cfg.AgentDirs == nil:
+		loaded, err := config.LoadReadOnly()
+		if err != nil {
+			return Inspection{}, fmt.Errorf("reading the AgentsView configuration: %w", err)
 		}
+		cfg = loaded
+	}
+	if reader == nil {
 		reader = NewSourceReader(cfg)
 	}
 
@@ -106,15 +115,25 @@ func Inspect(ctx context.Context, opts InspectOptions) (Inspection, error) {
 		report := reportFrom(conversation)
 		inspection.Source = &report
 		sourceMessages = conversation.Messages
+		if report.Fidelity.UnresolvedToolOutputs > 0 {
+			inspection.Warnings = append(inspection.Warnings, fmt.Sprintf(
+				"%d tool result(s) name persisted output this machine could not read; their content is "+
+					"the placeholder that says where it was saved, not the output",
+				report.Fidelity.UnresolvedToolOutputs))
+		}
 	case errors.Is(err, ErrNotFound):
 		inspection.Warnings = append(inspection.Warnings, fmt.Sprintf(
 			"no readable source session for %s:%s", opts.Ref.Provider, opts.Ref.ID))
+	case errors.Is(err, ErrNoLocalSource):
+		inspection.Warnings = append(inspection.Warnings, fmt.Sprintf(
+			"%s was recorded on another machine, so this one has no source file to read for it; "+
+				"an archive can still hold the session", opts.Ref.ID))
 	default:
 		return Inspection{}, err
 	}
 
 	if opts.ArchivePath != "" {
-		archive, err := OpenArchive(ctx, opts.ArchivePath)
+		archive, err := openArchive(ctx, opts.ArchivePath, cfg.AgentDirs)
 		switch {
 		case errors.Is(err, ErrNoArchive):
 			inspection.Warnings = append(inspection.Warnings,

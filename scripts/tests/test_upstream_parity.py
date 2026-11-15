@@ -274,6 +274,15 @@ class ParityCase(ParityTreeCase, unittest.TestCase):
         self.assert_clean(code, output)
         self.assertIn("symlinks hashed by their link target: 1", output)
 
+    def test_a_symlink_record_whose_path_is_a_directory_is_a_failure(self) -> None:
+        """A link's bytes are its target text, so a third shape at the path is not the pin's link."""
+        self.tree.carried["src/link"] = ("120000", b"a.txt")
+        (self.tree.root / "src/link").mkdir()
+        self.tree.write_manifest()
+        code, output = self.tree.run_parity()
+        self.assert_failed(code, output, "changed file type")
+        self.assertIn("src/link", output)
+
     def test_an_unowned_extra_file_is_named(self) -> None:
         code, output = self.tree.run_parity(
             tree_files=lambda root: (["src/a.txt", "src/b.sh", "docs/note.md", "stray/thing.txt"], []))
@@ -571,6 +580,50 @@ class GitBranchCase(ParityTreeCase, unittest.TestCase):
     def test_a_worktree_modified_carried_file_is_reported_through_git_status(self) -> None:
         code, output = self.run_with_git(porcelain=b" M docs/note.md\0")
         self.assert_failed(code, output, "differ from what git stores for them")
+
+    def test_a_worktree_edit_git_status_cannot_report_is_still_caught(self) -> None:
+        """The bytes are what a carried file *is*, and no index flag may stop that being checked.
+
+        ``git update-index --assume-unchanged`` (or ``skip-worktree``) keeps an edited path out of
+        ``git status`` while the pinned blob stays in the index, so every git-backed predicate here
+        still agrees: no porcelain entry to report it as dirty, the pinned digest in the index, the
+        record's mode. A check that trusted git's own status for the working tree therefore passed for
+        modified carried source. The working tree is hashed independently, so the scripted status
+        answering "nothing modified" is exactly the case this pins.
+        """
+        self.tree.break_carried("src/a.txt", b"alpha, locally rewritten\n")
+        code, output = self.run_with_git(porcelain=b"")
+        self.assert_failed(code, output, "src/a.txt")
+        self.assertIn("differ from the pinned revision", output)
+
+    def test_a_worktree_shape_change_git_status_cannot_report_is_still_caught(self) -> None:
+        path = self.tree.root / "docs/note.md"
+        path.unlink()
+        path.mkdir()
+        self.assert_failed(*self.run_with_git(porcelain=b""), "changed file type")
+
+    def test_a_worktree_executable_bit_git_status_cannot_report_is_still_caught(self) -> None:
+        """The mode is checked on the file itself, the way the bytes-only branch always checked it."""
+        if os.name == "nt":
+            self.assertEqual(self.tree.parity.executable_bit_supported(), False)
+            return
+        os.chmod(self.tree.root / "src/b.sh", 0o644)
+        code, output = self.run_with_git(porcelain=b"")
+        self.assert_failed(code, output, "src/b.sh")
+        self.assertIn("changed mode", output)
+
+    def test_a_carried_path_git_does_not_store_is_absent_from_a_clone(self) -> None:
+        """Present on disk is not carried: a fresh clone receives what git's index holds."""
+        del self.index["docs/note.md"]
+        self.assert_failed(*self.run_with_git(), "absent")
+
+    def test_a_record_whose_size_is_not_the_bytes_size_is_a_failure(self) -> None:
+        """The size is checked beside the digest, so a record whose two halves disagree is caught."""
+        manifest = self.tree.root / MANIFEST
+        text = manifest.read_text(encoding="utf-8")
+        line = next(line for line in text.splitlines() if line.endswith("\tsrc/a.txt"))
+        manifest.write_text(text.replace(line, line.replace("\t6\t", "\t5\t")), encoding="utf-8")
+        self.assert_failed(*self.tree.run_parity(), "changed size")
 
     def test_a_staged_but_uncommitted_tree_is_not_dirty(self) -> None:
         """The second porcelain column is the working tree; only that one means "modified on disk"."""
