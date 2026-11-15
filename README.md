@@ -30,7 +30,9 @@ by category), whether the session is installed, and whether **Codex itself** loa
 (`codex app-server`'s `thread/resume`) or continued from it (`codex exec resume`, with
 `--verify resume --resume-prompt TEXT`). It prints the target's own session id and the command that
 resumes it, and `--json` reports all of it as one object. `--dry-run` converts and verifies without
-writing anything, and `--target-home DIR` keeps a demo or a test away from a real Codex home.
+writing anything, `--target-home DIR` keeps a demo or a test away from a real Codex home, and
+`--target-binary PATH` names the harness executable when it is not `codex` on `PATH` (the name the
+printed resume commands use).
 
 The continuation engine itself lives in [`internal/ccc`](internal/ccc) and is callable without the
 CLI: `SourceReader` reads a native session into a typed, transient Conversation document,

@@ -30,8 +30,37 @@ const (
 	TargetCodex = "codex"
 )
 
+// Conversion and installation states, which a caller reads apart: the conversion is what the target
+// document holds, and the installation is whether the session is where the target harness keeps its
+// sessions. The verification states live with their verifications (codex_verify.go).
+const (
+	ConversionStateConverted      = "converted"
+	InstallationStateInstalled    = "installed"
+	InstallationStateNotInstalled = "not-installed"
+)
+
 // ErrUnsupportedTarget reports a target harness this build has no writer for.
 var ErrUnsupportedTarget = errors.New("unsupported target harness")
+
+// CheckVerifyOptions answers whether a verification request is one this build can honour, in the words
+// the CLI refuses a command line with as well: the level must be none, load (the default when it is
+// empty) or resume, and resume needs the turn's prompt, because the turn becomes part of the session.
+// Continue calls it too, so a caller embedding the core and one driving the CLI are told the same
+// thing about the same request.
+func CheckVerifyOptions(verify, resumePrompt string) error {
+	level := strings.ToLower(strings.TrimSpace(verify))
+	switch level {
+	case "", VerifyNone, VerifyLoad, VerifyResume:
+	default:
+		return fmt.Errorf("unknown verification level %q (none, load, resume)", verify)
+	}
+	if level == VerifyResume && strings.TrimSpace(resumePrompt) == "" {
+		return errors.New(
+			"a resume verification runs one turn in the installed session, so it needs --resume-prompt: " +
+				"call/ccc does not write a prompt of its own into the session")
+	}
+	return nil
+}
 
 // ContinueOptions configures one conversion: what to read, where to write it, and how far to verify.
 type ContinueOptions struct {
@@ -63,7 +92,9 @@ type ContinueOptions struct {
 	// turn becomes part of the session.
 	ResumePrompt string
 
-	// Timeout bounds one verification command. Zero means the per-level default.
+	// Timeout bounds one verification command: one app-server request for the provider probe and the
+	// load check, or one resume turn. Zero means the per-level default (60 seconds per app-server
+	// request, 5 minutes for a resume turn).
 	Timeout time.Duration
 	// Now is the conversion instant; zero means time.Now.
 	Now time.Time
@@ -164,18 +195,12 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 	if target != TargetCodex {
 		return ContinueResult{}, fmt.Errorf("%w: %q (this build writes %s)", ErrUnsupportedTarget, opts.Target, TargetCodex)
 	}
-	level := strings.ToLower(strings.TrimSpace(opts.Verify))
-	switch level {
-	case "":
-		level = VerifyLoad
-	case VerifyNone, VerifyLoad, VerifyResume:
-	default:
-		return ContinueResult{}, fmt.Errorf("unknown verification level %q (none, load, resume)", opts.Verify)
+	if err := CheckVerifyOptions(opts.Verify, opts.ResumePrompt); err != nil {
+		return ContinueResult{}, err
 	}
-	if level == VerifyResume && strings.TrimSpace(opts.ResumePrompt) == "" {
-		return ContinueResult{}, errors.New(
-			"a resume verification runs one turn in the installed session, so it needs --resume-prompt: " +
-				"call/ccc does not write a prompt of its own into the session")
+	level := strings.ToLower(strings.TrimSpace(opts.Verify))
+	if level == "" {
+		level = VerifyLoad
 	}
 
 	result := ContinueResult{Ref: opts.Ref, Target: target}
@@ -231,10 +256,11 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 		// different provider.
 		configProbe = ProbeCodexConfig(ctx, home, probe.Binary, conversation.Source.Cwd, opts.Timeout, opts.Stderr)
 	}
-	providerSource := "target-defaults"
-	if !configProbe.Found || strings.TrimSpace(configProbe.Provider) == "" {
-		providerSource = "unrecorded"
-	} else if configProbe.Source != "" {
+	// The provider source names where the target's own answer came from (Q-0002-01:
+	// target-thread-defaults, target-config, unrecorded); a probe that found no provider records none
+	// and says so.
+	providerSource := "unrecorded"
+	if configProbe.Found && strings.TrimSpace(configProbe.Provider) != "" {
 		providerSource = configProbe.Source
 	}
 	// The printed resume commands name the harness the way the caller asked for it (or "codex"), not the
@@ -253,7 +279,7 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 		return ContinueResult{}, err
 	}
 	result.Conversion = ConversionReport{
-		State:          "converted",
+		State:          ConversionStateConverted,
 		Format:         CodexTargetFormat,
 		ReadFrom:       readFrom,
 		DryRun:         opts.DryRun,
@@ -306,15 +332,37 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 		structure.Method = "the inherited AgentsView Codex reader over a throw-away copy (dry run)"
 		structure.TargetPath = ""
 		verification.Structure = structure
-		verification.Load.Detail = "a dry run installs nothing, so the target harness has nothing to load"
-		verification.Resume.Detail = "a dry run installs nothing, so no turn can continue from it"
-		result.Verification = verification
-		result.Installation = InstallationReport{
-			State:           "not-installed",
-			Created:         false,
-			SourceUnchanged: true,
-			Detail:          "dry run: the session was converted and verified against a throw-away copy, and nothing was written to " + home,
+		switch level {
+		case VerifyNone:
+			verification.Load.Detail = "verification was not requested (--verify none)"
+			verification.Resume.Detail = "verification was not requested (--verify none)"
+		default:
+			// The level was asked for, and a dry run installed nothing for the target harness to load:
+			// the state says the check did not verify rather than that nobody asked for it, and each
+			// detail carries the dry-run reason.
+			verification.Load.State = VerificationStateNotVerified
+			verification.Load.Detail = "a dry run installs nothing, so the target harness has nothing to load"
+			if level == VerifyResume {
+				verification.Resume.State = VerificationStateNotVerified
+				verification.Resume.Detail = "a dry run installs nothing, so no turn can continue from it"
+			} else {
+				verification.Resume.Detail = "not requested (--verify " + level + ")"
+			}
 		}
+		result.Verification = verification
+		// The dry run writes nothing, so the source file is compared exactly the way an installed run
+		// compares it: the report claims the check only when it ran.
+		sourceState, sourceDetail, err := sourceUnchangedAfter(conversation, readFrom, sourceDigest)
+		if err != nil {
+			return ContinueResult{}, err
+		}
+		result.Installation = InstallationReport{
+			State:           InstallationStateNotInstalled,
+			Created:         false,
+			SourceUnchanged: sourceState,
+			Detail:          sourceDetail,
+		}
+		result.Warnings = append(result.Warnings, sourceChangedWarnings(sourceState)...)
 		return result, nil
 	}
 
@@ -324,7 +372,7 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 	}
 	result.TargetSession.Path = path
 	result.Installation = InstallationReport{
-		State:           "installed",
+		State:           InstallationStateInstalled,
 		Path:            path,
 		Mechanism:       mechanism,
 		Created:         true,
@@ -336,6 +384,7 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 	}
 	result.Installation.SourceUnchanged = sourceState
 	result.Installation.Detail = sourceDetail
+	result.Warnings = append(result.Warnings, sourceChangedWarnings(sourceState)...)
 
 	structure, err := VerifyCodexRolloutStructure(ctx, filepath.Join(home, codexSessionsSubdir), rollout, cfg)
 	if err != nil {
@@ -501,6 +550,17 @@ func sourceUnchangedAfter(conversation Conversation, readFrom, before string) (b
 	return true, fmt.Sprintf("sha256 %s, taken before and after the conversion", after), nil
 }
 
+// sourceChangedWarnings is the report's warning for a source that moved while it was converted: the
+// conversion and the installation are real, but the file no longer holds the bytes they read, and a
+// caller that reads only the warnings must not miss it.
+func sourceChangedWarnings(sourceUnchanged bool) []string {
+	if sourceUnchanged {
+		return nil
+	}
+	return []string{"the source session changed while it was converted: the file no longer holds the " +
+		"bytes the conversion read"}
+}
+
 func fileDigest(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -521,9 +581,9 @@ func codexFormatLimits() []FormatLimit {
 		},
 		{
 			Category: "provider_and_model",
-			Detail: "the written session records no model_provider and no model: the target's own " +
-				"configuration supplies them at resume, and a converted session was not produced by a " +
-				"model of the target's",
+			Detail: "the source's provider and model binding cannot travel: the written session records " +
+				"the target's own configured model provider, which is what its loader checks, and no " +
+				"model, so the target keeps choosing the model it resumes with",
 		},
 		{
 			Category: "paginated_thread_store",

@@ -667,3 +667,42 @@ supersede it with a newer one and say which it supersedes.
   bytes are untouched.
 - **Settled by:** whether the operator considers a squash merge the acceptance, or wants to keep the
   contract under `docs/goals/` until they say so explicitly.
+
+## Q-0002-09 — What a dry run's requested verification level reports
+
+- **Status:** resolved (default taken)
+- **Question:** `--dry-run --verify resume --resume-prompt X` is accepted, and the run returns before the
+  level switch: nothing was installed, so no level could run, and the report used to call a level the
+  caller had asked for `not-requested` — while the help's exit-0 clause only had wording for "the target
+  harness is not installed", not for "asked, but a dry run installed nothing". A fourth state would say
+  the difference in one word; it would also add a wire value no document names yet.
+- **Default taken:** the requested level reports `not-verified` with the dry-run reason ("a dry run
+  installs nothing, so the target harness has nothing to load"), which is that state's documented
+  meaning — the target harness could not answer the question, and the detail says why; a level nobody
+  asked for stays `not-requested`; the exit code stays 0 (the conversion and its structural check are
+  what the run asked for), and the help's exit-0 clause now names the dry-run case too. The three states
+  stay exactly what the plan documents, so no consumer sees a new spelling.
+- **Reversal:** one arm of the dry-run switch in `Continue` plus the `result.Conversion.DryRun` return in
+  `continuationExit`: the states go back to `not-requested` everywhere.
+- **Settled by:** whether the operator wants a dry run to distinguish "asked, but nothing was installed"
+  from "the loader refused the session" in the state alone — a fourth state (for example `not-run`)
+  would say it in one word, at the price of a new wire value in `verification.*.state`.
+
+## Q-0002-10 — A source that changes while it is converted
+
+- **Status:** resolved (default taken)
+- **Question:** the conversion reads the source file, takes its digest and compares it again after
+  installing. When the file is edited in between, the conversion and the installation are real, but the
+  file no longer holds the bytes the conversion read. The report used to set
+  `installation.source_unchanged: false` with a detail and nothing else: no warning, nothing in the
+  human output, and exit 0 — so the fact was visible only inside `--json`.
+- **Default taken:** exit 0 stays (the conversion and the installation completed; failing would report
+  them as failed when they are not), and the fact is made loud instead: the run appends a warning, prints
+  `source file: changed while it was converted (…)` in the human block, and keeps the boolean and the
+  detail in the JSON. A dry run makes the same before/after comparison, so `source_unchanged: true` is
+  never reported without one having run.
+- **Reversal:** drop the two `sourceChangedWarnings` appends and the human `source file:` line — the
+  boolean and its detail stay in the JSON exactly as before.
+- **Settled by:** whether the operator wants a source that moved mid-conversion to fail the run (exit 1).
+  The race is one the conversion cannot prevent, and its consequence — the installed session holds the
+  earlier bytes — is now stated rather than implied.

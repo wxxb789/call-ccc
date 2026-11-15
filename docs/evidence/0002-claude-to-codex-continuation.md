@@ -41,11 +41,12 @@ claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 → codex
   carried-with-caveat: tool_name_vocabulary ×1
   carried-with-caveat: provider_binding ×1
   carried-with-caveat: pre_compaction_history ×3
-  installed:    <tmp>/home/sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1dfbf-9b69-7063-ae8e-9142650f1090.jsonl [hard-link]
-  target id:    01a1dfbf-9b69-7063-ae8e-9142650f1090
+  installed:    <tmp>/home/sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1dfd7-0d75-7e0e-b958-ddae5ef7fae5.jsonl [hard-link]
+  source file:  unchanged (sha256 2bd510821d4abf83235752eff81e0e9824d0c41b3d2d4b84956d1130992467b6, taken before and after the conversion)
+  target id:    01a1dfd7-0d75-7e0e-b958-ddae5ef7fae5
   working dir:  /home/user/code/example-api
-  resume:       codex resume 01a1dfbf-9b69-7063-ae8e-9142650f1090
-  non-interactive resume: codex exec resume 01a1dfbf-9b69-7063-ae8e-9142650f1090 "<prompt>"
+  resume:       codex resume 01a1dfd7-0d75-7e0e-b958-ddae5ef7fae5
+  non-interactive resume: codex exec resume 01a1dfd7-0d75-7e0e-b958-ddae5ef7fae5 "<prompt>"
   cli_version:  0.169.0 (probe)
   structure:    verified (the inherited AgentsView Codex reader over the installed session)
   native load:  verified (the target harness's own loader (codex app-server, thread/resume))
@@ -115,18 +116,19 @@ $ python3 scripts/codex-native-check.py --model-provider tencent-litellm --model
     --resume-prompt "Answer only from this conversation, one line each: which file did you read, and what was the attempt limit?"
 exit 0
 PASS: ccc builds with the flags upstream ships
-PASS: the conversion reports carried evidence and its limits — 5 message(s), 1 tool call(s), 12 loss categories
-PASS: the session is installed under the target's own sessions tree — sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1dfc1-6f68-710e-94fd-4ae29746c873.jsonl [hard-link]
-PASS: the target identity is new and is not the source's — 01a1dfc1-6f68-710e-94fd-4ae29746c873
-PASS: the installed file is JSONL the target reads — 3970 bytes
-PASS: the inherited reader reads the installed file back as what was written — {"session_id": "codex:01a1dfc1-6f68-…", "messages": 7,
-      "user_messages": 2, "assistant_messages": 5, "tool_calls": 1, "tool_results": 1, "compaction_boundaries": 1}
+PASS: the conversion reports carried evidence and a non-zero loss category — 5 message(s), 1 tool call(s), 12 loss categories
+PASS: the session is installed under the target's own sessions tree — sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1dfd7-8de2-74a0-8226-f1900c0d8f98.jsonl [hard-link]
+PASS: the target identity is new and is not the source's — 01a1dfd7-8de2-74a0-8226-f1900c0d8f98, not one of the 1 id(s) already in the home
+PASS: the installed file is one JSON object per line — 3970 bytes (the target's own read of it is the load check)
+PASS: the inherited reader reads the installed file back as what was written — {"session_id": "codex:01a1dfd7-8de2-74a0-8226-f1900c0d8f98",
+      "messages": 7, "user_messages": 2, "assistant_messages": 5, "tool_calls": 1, "tool_results": 1, "compaction_boundaries": 1}
 PASS: the source session is unchanged — sha256 2bd510821d4abf83… (fixture tree identical)
 PASS: the unrelated session in the target home is unchanged — sha256 59ff49ca30baf622…
-PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1dfc1-6f68-… [legacy] cwd=/home/user/code/example-api
-PASS: the target's own view lists the converted turns — 8 line(s)
-PASS: a real turn continues from the installed session — exit 0, session 3970 -> 69930 bytes
-11 check(s) passed, 0 failed, 0 skipped
+PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1dfd7-8de2-74a0-8226-f1900c0d8f98 [legacy] cwd=/home/user/code/example-api
+PASS: the target's own view lists the converted turns — 5 item(s) in the reply's own turn list
+PASS: a real turn continues from the installed session — exit 0, session 3970 -> 78298 bytes
+PASS: no pre-existing session in the target home changed — 0 pre-existing session file(s)
+12 check(s) passed, 0 failed, 0 skipped
 ```
 
 The target's own view of that installed session (`codex app-server` → `thread/read`, printed by the
@@ -134,7 +136,7 @@ harness) and the answer its own resume produced:
 
 ```
 the target harness's own view of the installed session:
-    thread 01a1dfc1-6f68-710e-94fd-4ae29746c873 [legacy] provider=tencent-litellm
+    thread 01a1dfd7-8de2-74a0-8226-f1900c0d8f98 [legacy] provider=tencent-litellm
       turn rollout-2
         userMessage: Summarize the retry policy in internal/retry/policy.go.
         agentMessage: I will read the retry policy first.
@@ -144,43 +146,45 @@ the target harness's own view of the installed session:
         agentMessage: The cap is configured in internal/retry/config.go as maxBackoffSeconds.
 
 the turn's own output (the target's answer, as the harness printed it):
-    - File read: none — I made no tool calls in this conversation, so no file was actually read.
-    - Attempt limit: four was stated, but that came from an unverified claim, not from any file I read.
+    File read: internal/retry/policy.go
+    Attempt limit: four
 ```
 
-Why "no file was actually read" is the right answer *for this session*: the fixture compacts after its
-tool call, the conversion carries that boundary as the target's `compacted` record, and Codex applies
-that record to its own model-visible history — so the resumed turn continues from the source's own active
-context (the summary plus the turns after the boundary), exactly as the source's own session would, while
-the file keeps the turns before it. An earlier run of this same check, over a rollout written without the
-target's `event_msg` message records, could not see even the post-boundary turns and answered "no tool
-call exists in this conversation"; that is what writing both record kinds buys. The second fixture has no
-boundary, and there the tool evidence reaches the resumed turn:
+Why the first fixture's answer has this shape (its own wording varies run to run): the fixture compacts
+after its tool call, the conversion carries that boundary as the target's `compacted` record, and Codex
+applies that record to its own model-visible history — so the resumed turn continues from the source's
+own active context (the summary plus the turns after the boundary), exactly as the source's own session
+would, while the file keeps the turns before it. An earlier run of this same check, over a rollout
+written without the target's `event_msg` message records, could not see even the post-boundary turns and
+answered that no tool call exists in this conversation; that is what writing both record kinds buys. The
+second fixture has no boundary, and there the tool evidence reaches the resumed turn:
 
 ```
 $ python3 scripts/codex-native-check.py --session b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef \
     --model-provider tencent-litellm --model deepseek-v4.1-flash-fast \
     --resume-prompt "Answer only from this conversation, one line each: which two tools appear, what did the first return, and what did the second result say?"
 exit 0
-PASS: the conversion reports carried evidence and its limits — 5 message(s), 2 tool call(s), 12 loss categories
-PASS: the session is installed under the target's own sessions tree — sessions/2026/05/05/rollout-2026-05-05T10-00-00-01a1dfc1-9291-7e59-a462-9da4523dead7.jsonl [hard-link]
-PASS: the target identity is new and is not the source's — 01a1dfc1-9291-7e59-a462-9da4523dead7
-PASS: the installed file is JSONL the target reads — 4113 bytes
-PASS: the inherited reader reads the installed file back as what was written — {"session_id": "codex:01a1dfc1-9291-…", "messages": 7,
-      "user_messages": 2, "assistant_messages": 5, "tool_calls": 2, "tool_results": 2, "compaction_boundaries": 0}
+PASS: ccc builds with the flags upstream ships
+PASS: the conversion reports carried evidence and a non-zero loss category — 5 message(s), 2 tool call(s), 12 loss categories
+PASS: the session is installed under the target's own sessions tree — sessions/2026/05/05/rollout-2026-05-05T10-00-00-01a1dfd7-e31a-7732-bbc3-878d89632f03.jsonl [hard-link]
+PASS: the target identity is new and is not the source's — 01a1dfd7-e31a-7732-bbc3-878d89632f03, not one of the 1 id(s) already in the home
+PASS: the installed file is one JSON object per line — 4113 bytes (the target's own read of it is the load check)
+PASS: the inherited reader reads the installed file back as what was written — {"session_id": "codex:01a1dfd7-e31a-7732-bbc3-878d89632f03",
+      "messages": 7, "user_messages": 2, "assistant_messages": 5, "tool_calls": 2, "tool_results": 2, "compaction_boundaries": 0}
 PASS: the source session is unchanged — sha256 39e11668cc1cf73a… (fixture tree identical)
 PASS: the unrelated session in the target home is unchanged — sha256 59ff49ca30baf622…
-PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1dfc1-9291-… [legacy] cwd=/home/user/code/tooling
-PASS: the target's own view lists the converted turns — 8 line(s)
-PASS: a real turn continues from the installed session — exit 0, session 4113 -> 69597 bytes
-11 check(s) passed, 0 failed, 0 skipped
+PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1dfd7-e31a-7732-bbc3-878d89632f03 [legacy] cwd=/home/user/code/tooling
+PASS: the target's own view lists the converted turns — 5 item(s) in the reply's own turn list
+PASS: a real turn continues from the installed session — exit 0, session 4113 -> 74154 bytes
+PASS: no pre-existing session in the target home changed — 0 pre-existing session file(s)
+12 check(s) passed, 0 failed, 0 skipped
 ```
 
 ```
 the turn's own output (the target's answer, as the harness printed it):
     - Tools: `Read` and `Bash`.
-    - First returned: `package retry` / `const MaxAttempts = 4` from `/home/user/code/tooling/internal/retry/policy.go`.
-    - Second said: `Error: no such file or directory` (the `grep -rn maxBackoffSeconds internal/retry` command failed).
+    - First return: `package retry` / `const MaxAttempts = 4` — the full contents of `/home/user/code/tooling/internal/retry/policy.go`.
+    - Second result: `Error: no such file or directory` — no mention of `internal/retry/config.go` or `maxBackoffSeconds` appears anywhere in this conversation.
 ```
 
 Both tool calls, the first result's content and the second result's recorded *failure* reached the
@@ -210,9 +214,12 @@ valid to the inherited reader (it is an `event_msg` whose payload is the harness
 ## 4. The source is unchanged, the identity is new, no other session moves
 
 - The two halves of each run above: `the source session is unchanged — … (fixture tree identical)` and
-  `the unrelated session in the target home is unchanged`, plus `source_unchanged: true` in the JSON.
-  The harness digests every file below the fixture root and the unrelated session it plants in the
-  target home before the conversion and compares them after it; `TestContinueKeepsTheSourceAndItsDirectoryIntactForBothFixtures`
+  `the unrelated session in the target home is unchanged`, plus `no pre-existing session in the target
+  home changed` and `source_unchanged: true` in the JSON.
+  The harness digests every file below the fixture root, the unrelated session it plants in the
+  target home and every session file the home already held, before the conversion, and compares them
+  after it (the planted file is removed again when the run ends);
+  `TestContinueKeepsTheSourceAndItsDirectoryIntactForBothFixtures`
   does the same in-process over the whole fixture tree.
 - New identity: the target id is a UUID v7 that is neither the source's session id nor any id already in
   the home (`TestCodexRolloutGeneratesAFreshIdentity`,
@@ -239,7 +246,7 @@ half:
 
 ```
 the target harness's own view of the installed session:
-    thread 01a1dfc1-9291-7e59-a462-9da4523dead7 [legacy] provider=tencent-litellm
+    thread 01a1dfd7-e31a-7732-bbc3-878d89632f03 [legacy] provider=tencent-litellm
       turn rollout-2
         userMessage: Check the retry policy and tell me the attempt limit.
         agentMessage: I will read the policy file first.
@@ -253,8 +260,8 @@ the target harness's own view of the installed session:
 | --- | --- | --- |
 | user "Check the retry policy and tell me the attempt limit." | `userMessage: Check the retry policy and tell me the attempt limit.` | carried |
 | assistant "I will read the policy file first." (with a persisted reasoning trace) | `agentMessage: I will read the policy file first.` | carried; the reasoning trace omitted (`reasoning_text ×1`) |
-| `Read` call + its result ("package retry … MaxAttempts = 4") | reached the resumed turn ("First returned: `package retry` / `const MaxAttempts = 4` from `/home/user/code/tooling/internal/retry/policy.go`") and the file holds the pair | carried (`tool_calls ×2`, `tool_results ×2`) |
-| `Bash` call whose result the source marked `is_error` | reached the resumed turn ("Second said: `Error: no such file or directory` (the `grep -rn maxBackoffSeconds internal/retry` command failed)") | carried; the recorded outcome has no target field (`tool_result_outcomes ×1`) |
+| `Read` call + its result ("package retry … MaxAttempts = 4") | reached the resumed turn ("First return: `package retry` / `const MaxAttempts = 4` — the full contents of `/home/user/code/tooling/internal/retry/policy.go`") and the file holds the pair | carried (`tool_calls ×2`, `tool_results ×2`) |
+| `Bash` call whose result the source marked `is_error` | reached the resumed turn ("Second result: `Error: no such file or directory` — no mention of `internal/retry/config.go` or `maxBackoffSeconds` appears anywhere in this conversation") | carried; the recorded outcome has no target field (`tool_result_outcomes ×1`) |
 | assistant "The attempt limit is four." | `agentMessage: The attempt limit is four.` | carried |
 | a subagent turn marked `isSidechain` | absent | omitted (`sidechain_messages ×1`) |
 | the provider's `system` record | absent (the inherited reader drops it before the document, too) | `system_records ×0` |
@@ -271,9 +278,11 @@ also says the evidence came from a projection).
 
 ```
 $ CGO_ENABLED=1 go test -tags fts5 -count=1 ./cmd/ccc/... ./internal/ccc/...     # rc=0
-ok      go.kenn.io/agentsview/cmd/ccc              2.656s
-ok      go.kenn.io/agentsview/internal/ccc         10.364s
-ok      go.kenn.io/agentsview/internal/ccc/parity  2.222s
+ok  	go.kenn.io/agentsview/cmd/ccc	4.567s
+ok  	go.kenn.io/agentsview/internal/ccc	9.927s
+?   	go.kenn.io/agentsview/internal/ccc/fixturegen	[no test files]
+ok  	go.kenn.io/agentsview/internal/ccc/parity	1.153s
+?   	go.kenn.io/agentsview/internal/ccc/parity/oracle	[no test files]
 ```
 
 | Rule | Test |
@@ -286,24 +295,22 @@ ok      go.kenn.io/agentsview/internal/ccc/parity  2.222s
 | fresh UUID v7 identity, one ordered timestamp run | `TestCodexRolloutGeneratesAFreshIdentity`, `TestCodexRolloutStampsRecordsInOneOrderedRun` |
 | end-to-end: convert, install, read back through the inherited reader, source and neighbours unchanged | `TestContinueConvertsInstallsAndReadsBackTheFixture` |
 | the archive fallback is used and disclosed | `TestContinueFallsBackToTheArchiveWhenTheSourceIsGone` |
-| exclusive install, dry run writes nothing, prompt required, target/level validation, home resolution | `TestInstallCodexRolloutNeverReplacesASession`, `TestContinueDryRunWritesNothing`, `TestContinueRequiresAPromptBeforeItRunsATurn`, `TestContinueRefusesAnUnsupportedTargetOrLevel`, `TestContinueTargetHomeResolution` |
+| exclusive install, dry run writes nothing, dry run reports its own states, prompt required, target/level validation, home resolution | `TestInstallCodexRolloutNeverReplacesASession`, `TestContinueDryRunWritesNothing`, `TestContinueDryRunReportsWhatItVerified`, `TestContinueRequiresAPromptBeforeItRunsATurn`, `TestContinueRefusesAnUnsupportedTargetOrLevel`, `TestContinueTargetHomeResolution` |
 | the round-trip check compares rather than agrees | `TestStructureVerificationNamesWhatTheFileDoesNotHold` |
-| the source's own digest is taken before the conversion and compared after it; a projection says no file was compared | `TestSourceUnchangedComparesTheFileBeforeAndAfter`, `TestSourceUnchangedSaysWhenThereWasNoFileToCompare` |
-| the CLI's three states, human shape, exit codes, help | `TestContinueJSONDistinguishesConversionInstallationAndVerification`, `TestContinueHumanOutputNamesTheResumeCommand`, `TestContinueUsageErrors`, `TestContinueRefusesAMissingDataDirectoryNobodyNamed`, `TestContinueHelpIsARequestNotAFailure` |
+| the source's own digest is taken before the conversion and compared after it; a moved source is warned about; a projection says no file was compared | `TestSourceUnchangedComparesTheFileBeforeAndAfter`, `TestSourceChangedWarningsNameTheMove`, `TestSourceUnchangedSaysWhenThereWasNoFileToCompare` |
+| the CLI's three states, human shape, source check, exit codes, help | `TestContinueJSONDistinguishesConversionInstallationAndVerification`, `TestContinueHumanOutputNamesTheResumeCommand`, `TestContinueHumanOutputReportsTheSourceCheck`, `TestContinueUsageErrors`, `TestContinueReportsAFailedVerificationAsAFailure`, `TestContinueRefusesAMissingDataDirectoryNobodyNamed`, `TestContinueHelpIsARequestNotAFailure` |
 
 Gate, run on this tree after the last change (`python3 scripts/gate.py`, exit 0):
 
 ```
 gate: <repo>
 gate: go=<home>/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
-  PASS     gofmt    3574 file(s) gofmt-clean
+  PASS     gofmt    3580 file(s) gofmt-clean
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 135 tests in 5.486s (rc=0)
-  PASS     parity   AgentsView 83195c8a… | carried: 5553 file(s) identical to the pinned revision (compared through git's own
-                    object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree
-                    stores) + 1 generated input(s) | owned: 26 project-owned prefix(es); files seen by git: 5623
+  PASS     selftest Ran 135 tests in 5.210s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 26 project-owned prefix(es); files seen by git: 5623 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     secrets  no leaks found in 70 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
@@ -313,9 +320,10 @@ prefix the carry manifest calls project-owned (added to `scripts/upstream-import
 generated manifest, which `scripts/tests/test_upstream_parity.py` requires to agree; the Go files are
 under the already-owned `internal/ccc/`). The oracle comparison's cases now name the
 fixture each one reads (`internal/ccc/parity`'s `Cases`, mirrored by `scripts/upstream-compare.py`), so
-the second Claude fixture is a *new case file* rather than a change to an existing record: the
-committed dumps were not re-recorded and `internal/ccc/parity`'s offline test still compares them byte
-for byte. `scripts/upstream-compare.py` itself was **not** re-run here (it needs network and a pristine
+adding a transcript shape cannot silently change what a recorded dump describes. The second Claude
+fixture is a new file rather than a change to an existing record, and it is not one of the oracle's
+cases: the committed dumps still describe the same two fixtures, they were not re-recorded, and
+`internal/ccc/parity`'s offline test still compares them byte for byte. `scripts/upstream-compare.py` itself was **not** re-run here (it needs network and a pristine
 checkout of the pin); its next run is the operator's, and the offline half of the same comparison passes.
 
 ## 7. Limits and residual risks
@@ -324,7 +332,9 @@ checkout of the pin); its next run is the operator's, and the offline half of th
   (`thread/resume`) is verified, the picker is not.
 - **The app-server protocol is experimental and version-bound.** The verified version is recorded on
   every run and in `CodexFormatVersion`; a protocol change turns `load` into `not-verified` with the
-  harness's own message rather than a pass.
+  harness's own message rather than a pass, and a server that accepts a request and then stops
+  answering is bounded by `ContinueOptions.Timeout` (60 s per app-server request by default) instead of
+  blocking the report.
 - **The recorded provider binds the session** to the target's configuration at conversion time; a later
   provider change makes the harness refuse to resume it (its own message names both values). Recorded as
   `Q-0002-01`; the alternative — recording none — is refused outright by a home that has migrated to
@@ -334,6 +344,9 @@ checkout of the pin); its next run is the operator's, and the offline half of th
   target migrates on its own when it needs to, and the report claims no migration.
 - **Tool evidence in the target's own item view**: `thread/read` lists a turn's messages; the calls and
   results are in the session file and in the model-visible history (proved by the resumed turn in §3)
-  but not in that view. Stated as a format limit of the pair (`target_session.format_limits`).
+  but not in that view. It is not one of `target_session.format_limits`' categories (those are the
+  pair's unrepresentable limits — attachments, the provider and model binding, the paginated thread
+  store and replay); the view block in §3, printed from the reply's own item list, is where the limit
+  is shown.
 - **Attachments are not counted**: the source read carries no attachment bytes, so a per-conversion
   count would be a claim the read cannot support; the limit is stated instead.

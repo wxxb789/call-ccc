@@ -11,6 +11,7 @@ import (
 
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/stringutil"
 )
 
 // codexSessionsSubdir is the subdirectory of a Codex data directory that holds its rollout sessions.
@@ -175,7 +176,7 @@ func VerifyCodexRolloutStructure(
 		verification.Detail = "the inherited Codex reader could not read the installed session back: " + err.Error()
 		return verification, nil
 	}
-	verification.ReadBack = codexReadBack(conversation, rollout.SessionID)
+	verification.ReadBack = codexReadBack(conversation)
 	differences := compareCodexRoundTrip(rollout, conversation)
 	if len(differences) > 0 {
 		verification.Detail = "the installed session does not hold the evidence in the target document: " +
@@ -186,7 +187,7 @@ func VerifyCodexRolloutStructure(
 	return verification, nil
 }
 
-func codexReadBack(conversation Conversation, sessionID string) CodexReadBack {
+func codexReadBack(conversation Conversation) CodexReadBack {
 	counts := Summarize(conversation.Messages)
 	return CodexReadBack{
 		SessionID:            conversation.Source.SessionID,
@@ -250,10 +251,10 @@ func compareCodexRoundTrip(rollout CodexRollout, readBack Conversation) []string
 		}
 	}
 
-	differences = append(differences, compareSequences("dialogue", intendedDialogue, readDialogue)...)
-	differences = append(differences, compareSequences("tool call", intendedCalls, readCalls)...)
-	differences = append(differences, compareSequences("tool result", intendedResults, readResults)...)
-	differences = append(differences, compareSequences("compaction boundary", intendedBoundaries, readBoundaries)...)
+	differences = append(differences, compareSequences("dialogue", compareInOrder, intendedDialogue, readDialogue)...)
+	differences = append(differences, compareSequences("tool call", compareAsMultiset, intendedCalls, readCalls)...)
+	differences = append(differences, compareSequences("tool result", compareAsMultiset, intendedResults, readResults)...)
+	differences = append(differences, compareSequences("compaction boundary", compareInOrder, intendedBoundaries, readBoundaries)...)
 	return differences
 }
 
@@ -274,12 +275,21 @@ func roundTripResultKey(callID, text string) string {
 	return callID + "\x00" + strings.TrimSpace(text)
 }
 
-// compareSequences names the items one side holds and the other does not, in order. Dialogue and
-// compaction boundaries are compared in the conversation's order, while calls and results are compared
-// as multisets: the target's reader attaches a call's output to the call's own message, so their
-// position in the read-back is the reader's arrangement rather than the file's.
-func compareSequences(category string, intended, read []string) []string {
-	if len(intended) > 0 && (category == "tool call" || category == "tool result") {
+// sequenceComparison says how a comparison treats item order: dialogue and compaction boundaries are
+// compared in the conversation's order, while calls and results are compared as multisets, because the
+// target's reader attaches a call's output to the call's own message, so their position in the read-back
+// is the reader's arrangement rather than the file's.
+type sequenceComparison int
+
+const (
+	compareInOrder    sequenceComparison = iota // the two sides must hold the items in the same order
+	compareAsMultiset                           // the two sides must hold the same items, order free
+)
+
+// compareSequences names the items one side holds and the other does not, in the order the comparison
+// asks for.
+func compareSequences(category string, order sequenceComparison, intended, read []string) []string {
+	if len(intended) > 0 && order == compareAsMultiset {
 		intended = sortedCopy(intended)
 		read = sortedCopy(read)
 	}
@@ -315,5 +325,5 @@ func summariseItem(item string) string {
 	if len(joined) <= limit {
 		return fmt.Sprintf("%q", joined)
 	}
-	return fmt.Sprintf("%q…", joined[:limit])
+	return fmt.Sprintf("%q…", stringutil.SafeTruncate(joined, limit))
 }

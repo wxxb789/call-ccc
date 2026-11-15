@@ -37,12 +37,18 @@ with their exit codes and counts).
 - **A conversion writes a fresh native identity and replaces nothing.** The install is exclusive, the
   source is never opened for writing, no credential or login store is copied, and a target data
   directory nobody named is an error rather than a directory invented here. Tests and demos use
-  isolated data directories.
+  isolated data directories. A written session records the target harness's own configured model
+  provider — asked of the harness itself — and no model, never the source's: recording nothing is
+  refused by a home that has migrated to paginated threads, and recording the source's provider would
+  be false.
 - Out of scope by design: Git/worktree management, process or environment migration, credentials,
   fleet orchestration, and any second session index for the existing archive.
 
 ## How to work here
 
+- The continuation core and its per-harness target writers live in `internal/ccc`; `cmd/ccc` adds
+  argument handling and presentation only, and a target-side native harness (`scripts/*-native-check.py`)
+  is registered in `docs/harness.md`, re-runnable, and deliberately not a gate step.
 - Gate: `python3 scripts/gate.py`, which must print `GATE: PASS`; it runs `parity` and `selftest` as
   required steps, and its Go steps are narrowed to `./cmd/ccc/... ./internal/ccc/...` with the measured
   reasons in [`docs/harness.md`](docs/harness.md#why-the-go-steps-target-a-subset) — that narrowing is

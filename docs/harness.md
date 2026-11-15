@@ -179,7 +179,8 @@ says so.
   `config.toml` — settings, never credentials or sessions), plants an unrelated session there, runs
   `ccc continue … --json`, checks the installed file back through the inherited reader, asks Codex's
   own app server to load the session (`thread/resume`) and prints Codex's own view of it
-  (`thread/read`), hashes the source and the unrelated session before and after, and — with
+  (`thread/read`), hashes the source, the planted session and every session the home already held
+  before and after (removing the planted one again when the run ends), and — with
   `--resume-prompt` — runs one real turn through `codex exec resume` and prints the target's answer.
   Every check prints its own verdict and the script exits non-zero when one fails, so a run that
   could not do the native half says so instead of reporting a pass.

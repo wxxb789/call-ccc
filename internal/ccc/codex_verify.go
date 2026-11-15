@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"go.kenn.io/agentsview/internal/stringutil"
 )
 
 // CodexBinaryDefault is the executable name a conversion probes for the target harness. The probe is
@@ -118,22 +120,16 @@ func ProbeCodexConfig(
 		probe.Detail = fmt.Sprintf("%s is not on PATH, so its configuration could not be asked for", binary)
 		return probe
 	}
-	if timeout <= 0 {
-		timeout = 60 * time.Second
-	}
 	session, err := startCodexAppServer(ctx, path, home, timeout, stderr)
 	if err != nil {
 		probe.Detail = err.Error()
 		return probe
 	}
 	defer session.Close()
-	if _, err := session.call("initialize", map[string]any{
-		"clientInfo": map[string]any{"name": "ccc", "version": cccClientVersion},
-	}); err != nil {
+	if err := session.handshake(); err != nil {
 		probe.Detail = "the target's app server did not answer initialize: " + err.Error()
 		return probe
 	}
-	session.notify("initialized", map[string]any{})
 
 	params := map[string]any{"ephemeral": true}
 	if dir := strings.TrimSpace(cwd); dir != "" {
@@ -213,8 +209,8 @@ type CodexLoadOptions struct {
 
 // VerifyCodexLoad asks the target harness to load the installed session through its own app server
 // ("thread/resume", the request the interactive resume path uses), and requires the loaded thread to be
-// the one this conversion wrote: a different id is not an answer, and an error is reported with the
-// server's own message.
+// the one this conversion wrote: a different id is not an answer, a loader that names no path is not an
+// answer either, and an error is reported with the server's own message.
 //
 // The app-server protocol is version-bound and experimental, which is why the tested target version is
 // recorded in every report and why a protocol failure is "not-verified" with its reason rather than a
@@ -222,7 +218,7 @@ type CodexLoadOptions struct {
 func VerifyCodexLoad(ctx context.Context, opts CodexLoadOptions) LoadVerification {
 	verification := LoadVerification{
 		State:  VerificationStateNotVerified,
-		Method: "the target harness's own loader (codex app-server, thread/resume)",
+		Method: loadMethod,
 	}
 	binary := opts.Binary
 	if strings.TrimSpace(binary) == "" {
@@ -234,25 +230,18 @@ func VerifyCodexLoad(ctx context.Context, opts CodexLoadOptions) LoadVerificatio
 		return verification
 	}
 	verification.Binary = path
-	timeout := opts.Timeout
-	if timeout <= 0 {
-		timeout = 60 * time.Second
-	}
 
-	session, err := startCodexAppServer(ctx, path, opts.Home, timeout, opts.Stderr)
+	session, err := startCodexAppServer(ctx, path, opts.Home, opts.Timeout, opts.Stderr)
 	if err != nil {
 		verification.Detail = err.Error()
 		return verification
 	}
 	defer session.Close()
 
-	if _, err := session.call("initialize", map[string]any{
-		"clientInfo": map[string]any{"name": "ccc", "version": cccClientVersion},
-	}); err != nil {
+	if err := session.handshake(); err != nil {
 		verification.Detail = "the target's app server did not answer initialize: " + err.Error() + session.stderrExcerpt()
 		return verification
 	}
-	session.notify("initialized", map[string]any{})
 	response, err := session.call("thread/resume", map[string]any{"threadId": opts.SessionID})
 	if err != nil {
 		verification.Detail = "the target harness could not load the installed session: " + err.Error() + session.stderrExcerpt()
@@ -270,13 +259,18 @@ func VerifyCodexLoad(ctx context.Context, opts CodexLoadOptions) LoadVerificatio
 			loadedID, opts.SessionID)
 		return verification
 	}
+	// The loader must name the file it opened: the id alone is an identity the harness chose to echo,
+	// while the path is what says the session came from this conversion's file.
 	loadedPath := stringField(thread, "path")
-	if opts.ExpectedPath != "" && loadedPath != "" {
-		if same, err := sameFile(loadedPath, opts.ExpectedPath); err != nil || !same {
-			verification.Detail = fmt.Sprintf(
-				"the target harness loaded %q, not the installed file %q", loadedPath, opts.ExpectedPath)
-			return verification
-		}
+	if loadedPath == "" {
+		verification.Detail = "the target harness's loader answered without the loaded session's path, " +
+			"so the file it opened could not be confirmed as the installed one"
+		return verification
+	}
+	if opts.ExpectedPath != "" && !sameFile(loadedPath, opts.ExpectedPath) {
+		verification.Detail = fmt.Sprintf(
+			"the target harness loaded %q, not the installed file %q", loadedPath, opts.ExpectedPath)
+		return verification
 	}
 	verification.State = VerificationStateVerified
 	verification.ThreadID = loadedID
@@ -320,7 +314,7 @@ type CodexResumeOptions struct {
 func VerifyCodexResume(ctx context.Context, opts CodexResumeOptions) ResumeVerification {
 	verification := ResumeVerification{
 		State:  VerificationStateNotVerified,
-		Method: "one turn in the installed session through the target harness's non-interactive resume",
+		Method: resumeMethod,
 	}
 	binary := opts.Binary
 	if strings.TrimSpace(binary) == "" {
@@ -421,13 +415,22 @@ type codexAppServer struct {
 	stdin   io.WriteCloser
 	lines   chan []byte
 	stderr  *boundedBuffer
+	// timeout bounds one request: the protocol is experimental, and a server that accepts a request and
+	// then stops answering must not block a report forever. Each call gets its own bound; the process
+	// itself dies with the context it was started under.
+	timeout time.Duration
 	nextID  int
 	mu      sync.Mutex
 	done    chan struct{}
 }
 
+// startCodexAppServer starts the target's app server with the harness's own data directory. A timeout
+// of zero or less means the per-request default.
 func startCodexAppServer(ctx context.Context, binary, home string, timeout time.Duration, stderr io.Writer) (*codexAppServer, error) {
-	command := exec.Command(binary, "app-server", "--listen", "stdio://")
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	command := exec.CommandContext(ctx, binary, "app-server", "--listen", "stdio://")
 	command.Env = append(os.Environ(), "CODEX_HOME="+home)
 	stdin, err := command.StdinPipe()
 	if err != nil {
@@ -442,6 +445,7 @@ func startCodexAppServer(ctx context.Context, binary, home string, timeout time.
 		stdin:   stdin,
 		lines:   make(chan []byte, 64),
 		stderr:  newBoundedBuffer(4096),
+		timeout: timeout,
 		done:    make(chan struct{}),
 	}
 	if stderr != nil {
@@ -494,6 +498,19 @@ func (s *codexAppServer) notify(method string, params map[string]any) {
 	s.stdin.Write(append(payload, '\n'))
 }
 
+// handshake performs the app-server handshake every verification opens with: initialize, whose answer
+// names this client, then the initialized notification the protocol expects.
+func (s *codexAppServer) handshake() error {
+	if _, err := s.call("initialize", map[string]any{
+		"clientInfo": map[string]any{"name": "ccc", "version": cccClientVersion},
+	}); err != nil {
+		return err
+	}
+	s.notify("initialized", map[string]any{})
+	return nil
+}
+
+// call sends one request and waits for its answer, bounded by the session's per-request timeout.
 func (s *codexAppServer) call(method string, params map[string]any) (map[string]any, error) {
 	s.mu.Lock()
 	s.nextID++
@@ -510,6 +527,8 @@ func (s *codexAppServer) call(method string, params map[string]any) (map[string]
 	}
 	s.mu.Unlock()
 
+	deadline := time.NewTimer(s.timeout)
+	defer deadline.Stop()
 	for {
 		select {
 		case raw, ok := <-s.lines:
@@ -543,6 +562,8 @@ func (s *codexAppServer) call(method string, params map[string]any) (map[string]
 			return result, nil
 		case <-s.done:
 			return nil, fmt.Errorf("the app server exited while answering %s", method)
+		case <-deadline.C:
+			return nil, fmt.Errorf("the app server did not answer %s within %s", method, s.timeout)
 		}
 	}
 }
@@ -587,13 +608,13 @@ func stringField(object map[string]any, key string) string {
 
 // sameFile reports whether two paths name the same file, following symlinks where the filesystem has
 // them and falling back to a cleaned path comparison where it does not.
-func sameFile(a, b string) (bool, error) {
+func sameFile(a, b string) bool {
 	resolvedA, errA := filepath.EvalSymlinks(a)
 	resolvedB, errB := filepath.EvalSymlinks(b)
 	if errA != nil || errB != nil {
-		return filepath.Clean(a) == filepath.Clean(b), nil
+		return filepath.Clean(a) == filepath.Clean(b)
 	}
-	return resolvedA == resolvedB, nil
+	return resolvedA == resolvedB
 }
 
 func fileSize(path string) (int64, error) {
@@ -608,6 +629,8 @@ func fileSize(path string) (int64, error) {
 }
 
 // boundedText trims a command's output to a size a report can hold, reporting whether it cut anything.
+// The cut respects the text's own rune boundaries: the output is provider content, and half a rune
+// would make the report invalid wherever it is copied.
 func boundedText(text string, max int) (string, bool) {
 	text = strings.TrimSpace(text)
 	if max <= 0 {
@@ -616,7 +639,7 @@ func boundedText(text string, max int) (string, bool) {
 	if len(text) <= max {
 		return text, false
 	}
-	return text[:max], true
+	return stringutil.SafeTruncate(text, max), true
 }
 
 // summariseText collapses a text onto one bounded line, for a warning or a detail field.
@@ -625,5 +648,5 @@ func summariseText(text string, max int) string {
 	if len(collapsed) <= max {
 		return collapsed
 	}
-	return collapsed[:max] + "…"
+	return stringutil.SafeTruncate(collapsed, max) + "…"
 }

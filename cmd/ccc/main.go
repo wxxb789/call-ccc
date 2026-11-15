@@ -58,6 +58,8 @@ continuation options:
   --json             write the result as one JSON object on stdout (diagnostics stay on stderr)
   --dry-run          convert and verify without writing anything into the target's data directory
   --target-home DIR  that harness's data directory (default: $CODEX_HOME, else ~/.codex)
+  --target-binary P  that harness's executable (default: codex on PATH); the printed resume commands
+                     name it the way it is given here
   --data-dir DIR     read the AgentsView archive in DIR (%s/sessions.db) when the source file itself
                      cannot answer the reference
   --verify LEVEL     none, load (default) or resume: load asks the target harness's own loader to
@@ -72,7 +74,8 @@ inspection options:
 
 exit codes:
   0  the session was found and reported, the conversion was written and the verification that was
-     asked for either passed or could not run because the target harness is not installed
+     asked for either passed or could not run: the target harness is not installed, or a dry run
+     installed nothing for it to load
   1  nothing was found, the reference was ambiguous, the conversion or installation failed, or a
      requested verification ran and failed
   2  the command line could not be understood
@@ -115,31 +118,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 func runInspect(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("inspect", flag.ContinueOnError)
-	// The flag package writes both its errors and a requested help text to one stream. They are not
-	// the same thing to a caller -- a usage request is not a command line that could not be understood
-	// -- so its output is buffered here and routed once the parse has answered.
-	var flagOutput bytes.Buffer
-	flags.SetOutput(&flagOutput)
 	asJSON := flags.Bool("json", false, "write the inspection as JSON")
 	dataDir := flags.String("data-dir", "", "data directory whose sessions.db is consulted")
-	flags.Usage = func() {
-		fmt.Fprint(flags.Output(), inspectUsage)
-	}
-	flagArgs, operands, err := splitFlags(args)
-	if err != nil {
-		fmt.Fprintf(stderr, "ccc: %v\n", err)
-		return exitUsage
-	}
-	if err := flags.Parse(flagArgs); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprint(stdout, flagOutput.String())
-			return exitOK
-		}
-		fmt.Fprint(stderr, flagOutput.String())
-		return exitUsage
-	}
-	if rest := flags.Args(); len(rest) > 0 {
-		operands = append(operands, rest...)
+	operands, code, handled := parseCommandLine(flags, inspectUsage, args, stdout, stderr)
+	if handled {
+		return code
 	}
 	if len(operands) != 1 {
 		fmt.Fprint(stderr, inspectUsage)
@@ -151,14 +134,10 @@ func runInspect(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
-	cfg, err := config.LoadReadOnly()
+	cfg, err := readConfiguration(*dataDir)
 	if err != nil {
-		fmt.Fprintf(stderr, "ccc: reading the AgentsView configuration: %v\n", err)
+		fmt.Fprintf(stderr, "ccc: %v\n", err)
 		return exitFailure
-	}
-	if *dataDir != "" {
-		cfg.DataDir = *dataDir
-		cfg.DBPath = filepath.Join(*dataDir, "sessions.db")
 	}
 
 	reader := ccc.NewSourceReader(cfg)
@@ -192,13 +171,10 @@ func runInspect(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *asJSON {
-		encoder := json.NewEncoder(stdout)
-		encoder.SetIndent("", "  ")
-		if err := encoder.Encode(inspectDocument{
+		if !writeJSONDocument(stdout, stderr, inspectDocument{
 			UpstreamRevision: upstreamRevision,
 			Inspection:       inspection,
-		}); err != nil {
-			fmt.Fprintf(stderr, "ccc: writing the inspection: %v\n", err)
+		}, "inspection") {
 			return exitFailure
 		}
 		return exitOK
@@ -213,6 +189,70 @@ func runInspect(args []string, stdout, stderr io.Writer) int {
 type inspectDocument struct {
 	UpstreamRevision string `json:"upstream_revision"`
 	ccc.Inspection
+}
+
+// parseCommandLine fills a command's flag set from args and answers its operands.
+//
+// The flag package writes both its errors and a requested help text to one stream. They are not the
+// same thing to a caller -- a usage request is not a command line that could not be understood -- so
+// its output is buffered here and routed once the parse has answered. handled is false when the command
+// line was answered while parsing (the help text printed to stdout for a request, or the flag error to
+// stderr) and the caller returns exitCode; otherwise the operands are splitFlags' answer, and the flag
+// set holds what was parsed.
+func parseCommandLine(
+	flags *flag.FlagSet, usage string, args []string, stdout, stderr io.Writer,
+) (operands []string, exitCode int, handled bool) {
+	var flagOutput bytes.Buffer
+	flags.SetOutput(&flagOutput)
+	flags.Usage = func() {
+		fmt.Fprint(flags.Output(), usage)
+	}
+	flagArgs, operands, err := splitFlags(args)
+	if err != nil {
+		fmt.Fprintf(stderr, "ccc: %v\n", err)
+		return nil, exitUsage, true
+	}
+	if err := flags.Parse(flagArgs); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fmt.Fprint(stdout, flagOutput.String())
+			return nil, exitOK, true
+		}
+		fmt.Fprint(stderr, flagOutput.String())
+		return nil, exitUsage, true
+	}
+	return operands, exitOK, false
+}
+
+// readConfiguration answers the inherited configuration, with the command's --data-dir override
+// applied: an override points both the data directory and the archive path at it.
+func readConfiguration(dataDir string) (config.Config, error) {
+	cfg, err := config.LoadReadOnly()
+	if err != nil {
+		return config.Config{}, fmt.Errorf("reading the AgentsView configuration: %w", err)
+	}
+	if dataDir != "" {
+		cfg.DataDir = dataDir
+		cfg.DBPath = filepath.Join(dataDir, "sessions.db")
+	}
+	return cfg, nil
+}
+
+// writeJSONDocument writes one command's result: one indented JSON object on stdout, with a write
+// failure reported on stderr, because the result that failed to write is not a result.
+func writeJSONDocument(stdout, stderr io.Writer, document any, what string) bool {
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(document); err != nil {
+		fmt.Fprintf(stderr, "ccc: writing the %s: %v\n", what, err)
+		return false
+	}
+	return true
+}
+
+// writeCarried is the footer both commands' human output ends with: the AgentsView revision this binary
+// carries unmodified.
+func writeCarried(out io.Writer) {
+	fmt.Fprintf(out, "  carried:      AgentsView %s, unmodified (scripts/upstream-parity.py)\n", upstreamRevision)
 }
 
 // splitFlags separates options from operands wherever they appear.
@@ -253,7 +293,7 @@ func splitFlags(args []string) (optionArgs, operands []string, err error) {
 // misspelled option is refused by the flag set instead of swallowing the reference.
 func takesValue(name string) bool {
 	switch name {
-	case "data-dir", "to", "target-home", "target-binary", "verify", "resume-prompt", "timeout":
+	case "data-dir", "to", "target-home", "target-binary", "verify", "resume-prompt":
 		return true
 	default:
 		return false
@@ -336,19 +376,17 @@ func writeHuman(out io.Writer, inspection ccc.Inspection) {
 	for _, warning := range inspection.Warnings {
 		fmt.Fprintf(out, "  warning:      %s\n", oneLine(warning))
 	}
-	fmt.Fprintf(out, "  carried:      AgentsView %s, unmodified (scripts/upstream-parity.py)\n", upstreamRevision)
+	writeCarried(out)
 }
 
 // continueUsage is the one-line usage `ccc continue` prints for `-h`, for a usage error and for a
 // missing operand.
 const continueUsage = "usage: ccc continue <provider>:<session-id-or-path> --to codex [--json] [--dry-run]\n" +
-	"                         [--target-home DIR] [--data-dir DIR] [--verify none|load|resume]\n" +
-	"                         [--resume-prompt TEXT]\n"
+	"                         [--target-home DIR] [--target-binary PATH] [--data-dir DIR]\n" +
+	"                         [--verify none|load|resume] [--resume-prompt TEXT]\n"
 
 func runContinue(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("continue", flag.ContinueOnError)
-	var flagOutput bytes.Buffer
-	flags.SetOutput(&flagOutput)
 	asJSON := flags.Bool("json", false, "write the result as JSON")
 	dryRun := flags.Bool("dry-run", false, "convert without installing")
 	target := flags.String("to", "", "target harness to write")
@@ -357,24 +395,9 @@ func runContinue(args []string, stdout, stderr io.Writer) int {
 	dataDir := flags.String("data-dir", "", "data directory whose sessions.db is consulted")
 	verify := flags.String("verify", ccc.VerifyLoad, "verification level: none, load or resume")
 	resumePrompt := flags.String("resume-prompt", "", "the turn a resume verification runs")
-	flags.Usage = func() {
-		fmt.Fprint(flags.Output(), continueUsage)
-	}
-	flagArgs, operands, err := splitFlags(args)
-	if err != nil {
-		fmt.Fprintf(stderr, "ccc: %v\n", err)
-		return exitUsage
-	}
-	if err := flags.Parse(flagArgs); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprint(stdout, flagOutput.String())
-			return exitOK
-		}
-		fmt.Fprint(stderr, flagOutput.String())
-		return exitUsage
-	}
-	if rest := flags.Args(); len(rest) > 0 {
-		operands = append(operands, rest...)
+	operands, code, handled := parseCommandLine(flags, continueUsage, args, stdout, stderr)
+	if handled {
+		return code
 	}
 	if len(operands) != 1 {
 		fmt.Fprint(stderr, continueUsage)
@@ -389,16 +412,11 @@ func runContinue(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "ccc: this build writes %s, not %q\n", ccc.TargetCodex, *target)
 		return exitUsage
 	}
-	switch strings.ToLower(strings.TrimSpace(*verify)) {
-	case ccc.VerifyNone, ccc.VerifyLoad:
-	case ccc.VerifyResume:
-		if strings.TrimSpace(*resumePrompt) == "" {
-			fmt.Fprintf(stderr, "ccc: --verify resume runs one turn in the installed session, so it needs "+
-				"--resume-prompt: call/ccc does not write a prompt of its own into a session\n")
-			return exitUsage
-		}
-	default:
-		fmt.Fprintf(stderr, "ccc: unknown verification level %q (none, load, resume)\n", *verify)
+	// The core owns the wording of a refused verification request, so a caller driving the CLI and one
+	// embedding the core get the same sentence for the same mistake; the level itself is passed on as
+	// it was written (the core normalizes it when it resolves the level).
+	if err := ccc.CheckVerifyOptions(*verify, *resumePrompt); err != nil {
+		fmt.Fprintf(stderr, "ccc: %v\n", err)
 		return exitUsage
 	}
 	ref, err := parseRef(operands[0])
@@ -407,14 +425,10 @@ func runContinue(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
-	cfg, err := config.LoadReadOnly()
+	cfg, err := readConfiguration(*dataDir)
 	if err != nil {
-		fmt.Fprintf(stderr, "ccc: reading the AgentsView configuration: %v\n", err)
+		fmt.Fprintf(stderr, "ccc: %v\n", err)
 		return exitFailure
-	}
-	if *dataDir != "" {
-		cfg.DataDir = *dataDir
-		cfg.DBPath = filepath.Join(*dataDir, "sessions.db")
 	}
 
 	result, err := ccc.Continue(context.Background(), ccc.ContinueOptions{
@@ -436,13 +450,10 @@ func runContinue(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *asJSON {
-		encoder := json.NewEncoder(stdout)
-		encoder.SetIndent("", "  ")
-		if err := encoder.Encode(continueDocument{
+		if !writeJSONDocument(stdout, stderr, continueDocument{
 			UpstreamRevision: upstreamRevision,
 			ContinueResult:   result,
-		}); err != nil {
-			fmt.Fprintf(stderr, "ccc: writing the result: %v\n", err)
+		}, "result") {
 			return exitFailure
 		}
 	} else {
@@ -459,14 +470,20 @@ func runContinue(args []string, stdout, stderr io.Writer) int {
 }
 
 // continuationExit decides the run's exit code from the three states. A verification that could not run
-// because the target harness is not installed is reported, not failed: the conversation really was
-// converted and installed. A verification the caller asked for that ran and did not pass is a failure,
-// because the caller asked precisely that question.
+// because the target harness is not installed — or because a dry run installed nothing — is reported,
+// not failed: the conversation really was converted. A verification the caller asked for that ran and
+// did not pass is a failure, because the caller asked precisely that question.
 func continuationExit(result ccc.ContinueResult) int {
-	if result.Conversion.State != "converted" || result.Verification.Structure.State != ccc.VerificationStateVerified {
+	if result.Conversion.State != ccc.ConversionStateConverted ||
+		result.Verification.Structure.State != ccc.VerificationStateVerified {
 		return exitFailure
 	}
-	if result.Installation.State != "installed" && !result.Conversion.DryRun {
+	if result.Conversion.DryRun {
+		// A dry run installs nothing, so the levels that could not run are reported not verified with
+		// the dry-run reason; the conversion and its structural check are what this run asked for.
+		return exitOK
+	}
+	if result.Installation.State != ccc.InstallationStateInstalled {
 		return exitFailure
 	}
 	if !result.TargetSession.BinaryFound {
@@ -509,6 +526,7 @@ func writeContinuation(out io.Writer, result ccc.ContinueResult) {
 	} else {
 		fmt.Fprintf(out, "  installed:    %s [%s]\n", result.Installation.Path, result.Installation.Mechanism)
 	}
+	fmt.Fprintf(out, "  source file:  %s\n", sourceCheckLine(result.Installation))
 	fmt.Fprintf(out, "  target id:    %s\n", result.TargetSession.SessionID)
 	if result.TargetSession.Cwd != "" {
 		fmt.Fprintf(out, "  working dir:  %s\n", result.TargetSession.Cwd)
@@ -533,7 +551,21 @@ func writeContinuation(out io.Writer, result ccc.ContinueResult) {
 	for _, warning := range result.Warnings {
 		fmt.Fprintf(out, "  warning:      %s\n", oneLine(warning))
 	}
-	fmt.Fprintf(out, "  carried:      AgentsView %s, unmodified (scripts/upstream-parity.py)\n", upstreamRevision)
+	writeCarried(out)
+}
+
+// sourceCheckLine is the human spelling of the installation's source check: the goal asks the run to
+// show that the transcript the conversation came from is its same file afterwards, so the boolean and
+// the detail that says how it was compared are printed rather than left to the JSON.
+func sourceCheckLine(installation ccc.InstallationReport) string {
+	state := "unchanged"
+	if !installation.SourceUnchanged {
+		state = "changed while it was converted"
+	}
+	if detail := oneLine(installation.Detail); detail != "" {
+		return state + " (" + detail + ")"
+	}
+	return state
 }
 
 func describeCounts(counts ccc.Counts) string {

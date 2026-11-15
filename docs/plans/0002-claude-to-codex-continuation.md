@@ -69,8 +69,8 @@ Consequences taken as the increment's defaults:
   to resume it). No model is recorded, so the target keeps choosing its own.
 - **`cli_version` is required by the reader**, so the writer always records one: the version the
   installed `codex --version` reports when it can be probed, otherwise the pinned constant
-  `codexFormatVersion = "0.169.0"`, the version this writer's format was verified against. Which one
-  was used is stated in the output (`target.cli_version_source`: `probe` or `writer-pin`).
+  `CodexFormatVersion = "0.169.0"`, the version this writer's format was verified against. Which one
+  was used is stated in the output (`target_session.cli_version_source`: `probe` or `writer-pin`).
 - **`originator: "ccc"`, `source: "cli"`, `thread_source: "user"`.** The originator names the program
   that wrote the file (call/ccc) instead of impersonating `codex_cli_rs`; `source: "cli"` is what
   keeps the session in the interactive resume picker rather than behind `--include-non-interactive`.
@@ -127,11 +127,15 @@ disposition, so a consumer never has to infer what was left out.
   never invents a Codex data directory, and never writes outside the home it was given.
 - Install path: `<home>/sessions/<YYYY>/<MM>/<DD>/rollout-<stamp>-<new uuid v7>.jsonl`, the layout the
   target's own discovery walks.
-- Creation is exclusive (`O_CREATE|O_EXCL`, 0o600) after writing to a sibling temporary file and
-  renaming, so an existing session can never be replaced and a reader never sees a partial file. A
-  collision is reported, never retried into a different identity silently.
-- The source is re-fingerprinted after installation and the result reported
-  (`installation.source_unchanged`); nothing in the pipeline opens the source for writing.
+- Creation is exclusive and never replaces anything: the bytes are written to a sibling temporary file
+  (0o600) first, and the final name is taken either with a hard link (atomic and exclusive where the
+  filesystem has them) or, on a filesystem without them, by checking that the name is free and renaming.
+  A reader never sees a partial file, and a collision is reported, never retried into a different
+  identity silently.
+- The source file's own digest (sha256, taken before the conversion and compared after installation) is
+  reported (`installation.source_unchanged`); it compares the file's own bytes deliberately, not a
+  provider's fingerprint — a provider may fingerprint a parse or a store member, and comparing those
+  would report a change that did not happen. Nothing in the pipeline opens the source for writing.
 
 ## 4. Verification: converted ≠ installed ≠ natively resumable
 
@@ -155,10 +159,10 @@ anything when the writer emits the `event_msg` message records, which is one of 
 they are written.
 
 `--verify` defaults to `load`. Exit codes: conversion/installation failure, or a *requested*
-verification that ran and failed, exit 1; a verification that could not run because the target binary
-is absent is reported as not verified and does not fail the run (the conversation really was converted
-and installed); `--verify resume` requires `--resume-prompt` (the turn it runs becomes part of the
-user's session, so its text is the caller's, not an invented default).
+verification that ran and failed, exit 1; a verification that could not run — the target binary is
+absent, or a dry run installed nothing — is reported as not verified and does not fail the run (the
+conversation really was converted and installed); `--verify resume` requires `--resume-prompt` (the
+turn it runs becomes part of the user's session, so its text is the caller's, not an invented default).
 
 ## 5. CLI and machine-readable output
 
@@ -171,11 +175,12 @@ ccc help
 
 Shape discipline is unchanged from 0001: stdout carries the result (one object with `--json`),
 diagnostics and progress go to stderr, `--json` output is stable, the human output is a short block,
-and `--dry-run` converts and reports without touching any directory (the target file is built in
-memory and never written).
+and `--dry-run` converts and reports without touching the target's data directory: the conversion is
+verified against a throw-away copy in the system temporary directory, and nothing is written into the
+home.
 
 The JSON document (one object) carries: `upstream_revision`, `source` (identity, counts, fidelity,
-`read_from`: `source`/`archive`), `target` (`provider`, `format`, `format_limits`, `home`, `binary`,
+`read_from`: `source`/`archive`), `target_session` (`provider`, `format`, `format_limits`, `home`, `binary`,
 `binary_found`, `binary_version`, `session_id`, `file_name`, `path`, `cwd`, `started_at`, `cli_version`,
 `cli_version_source`, `model_provider`, `model_provider_source`, `model`, `resume_command`,
 `exec_resume_command`), `conversion` (`state`, `format`, `read_from`, `dry_run`, `carried`, `losses[]`,
@@ -189,7 +194,7 @@ The JSON document (one object) carries: `upstream_revision`, `source` (identity,
 | --- | --- |
 | one documented non-interactive command, with the native resume identity/command shown | `ccc continue claude:9f2c1d47-… --to codex --target-home <isolated> --json` output in the evidence record, plus the same run without `--json`; `ccc help` / `ccc continue -h` text; `internal/ccc/continue_test.go` and `cmd/ccc/main_test.go` |
 | Codex loads the **installed** session and continues with a new turn | `scripts/codex-native-check.py` run on this host: `thread/resume` output (codex's own loader, isolated `CODEX_HOME`) and a real `codex exec resume <id> "<question>"` turn whose answer quotes converted facts; the session file's growth after the turn |
-| a representative transcript keeps supported semantics, unsupported content reported | the `claude` fixture round-trip test (write → parse with the inherited Codex reader → compare), a second fixture/throwaway transcript carrying thinking, a sidechain message, a system record, an unpaired result and an errored result (`continue_test.go`), the `losses[]` block in the run's JSON, and the source↔target table in the evidence record |
+| a representative transcript keeps supported semantics, unsupported content reported | the `claude` fixture round-trip test (write → parse with the inherited Codex reader → compare), a second fixture/throwaway transcript carrying thinking, a sidechain message, a system record and an errored result — its two tool calls both keep their result, and the unpaired-result case is synthetic in `codex_target_test.go` — (`continue_test.go`), the `losses[]` block in the run's JSON, and the source↔target table in the evidence record |
 | source unchanged, target identity new, no unrelated session replaced | the harness hashes the source fixture, a pre-existing unrelated Codex session and the target home's session tree before/after; `continue_test.go` asserts the same in-process (`hashTree`, existing-file hash), and the writer's exclusive create is pinned by a test |
 | machine-readable output distinguishes conversion/installation/native-resume; help explains the common invocation | the three JSON blocks above, one test per state (`cmd/ccc/main_test.go`), and the `--help` text in the evidence record |
 
@@ -262,11 +267,11 @@ it already runs.
    vocabulary as a caveat, and the measured target behaviour (a resumed turn answered from a foreign
    call/output pair) is stated rather than hidden. Reversal: a name mapping table, which would rewrite
    recorded evidence.
-7. **The second fixture is a new parity-reserved file, not a replacement**: the oracle's cases now name
-   the fixture they read (`internal/ccc/parity`'s `Cases`, mirrored by `scripts/upstream-compare.py`),
-   so adding a transcript shape cannot silently change what a recorded upstream dump describes. The
-   recorded dumps were not re-recorded: the cases still read the same bytes, and the offline test
-   compares them byte for byte.
+7. **The second fixture is a new file, not a replacement, and it is not one of the oracle's cases**: the
+   oracle's cases now name the fixture they read (`internal/ccc/parity`'s `Cases`, mirrored by
+   `scripts/upstream-compare.py`), so adding a transcript shape cannot silently change what a recorded
+   upstream dump describes. The second Claude fixture is read by the conversion tests only, not by the
+   oracle; the recorded dumps were not re-recorded, and the offline test compares them byte for byte.
 8. **No TTY on this host** means `codex resume` (the interactive TUI) cannot be driven here; the load
    verification uses the same `thread/resume` request, and the limit is stated in the evidence record
    rather than papered over.

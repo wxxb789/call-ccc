@@ -5,9 +5,11 @@ This harness answers the half of the goal that the gate cannot: whether the inst
 readable by **Codex itself** and whether a **real turn** continues from it. It builds `ccc`, converts a
 committed fixture into an isolated Codex data directory, asks that directory's own app server to load
 the session (`thread/resume`), reads the harness's own view of the conversation (`thread/read`), checks
-that the source session and every other session in the target home are untouched, and — when
-`--resume-prompt` is given — runs one real turn through `codex exec resume` and reports what the target
-answered.
+that the source session and every other session in the target home — the session it plants there and any
+the home already held — are untouched, and — when `--resume-prompt` is given — runs one real turn
+through `codex exec resume` and reports what the target answered. The planted session is removed again
+when the run ends, so a `--codex-home` the caller named is left as it was found apart from the converted
+session.
 
 It is **not** a gate step: it needs the Codex binary, and a turn needs model access. `scripts/gate.py`
 decides the offline half (round-trip through the inherited reader, install rules, reported losses, CLI
@@ -178,21 +180,28 @@ class AppServer:
         self.notify("initialized", {})
 
 
-def thread_view(server: AppServer, thread_id: str) -> list[str]:
-    """The target harness's own view of a thread: one line per item it shows for it."""
+def thread_view(server: AppServer, thread_id: str) -> tuple[list[str], list[str]]:
+    """The target harness's own view of a thread: the lines it shows, and the item types it lists.
+
+    The item types come from the reply's own ``thread.turns[].items[].type`` fields, so the check that
+    the converted turns are listed reads the structured answer rather than the lines this script
+    rendered from it (a message body could contain the word the lines are searched for).
+    """
     result = server.call("thread/read", {"threadId": thread_id, "includeTurns": True})
     thread = result.get("thread") or {}
     lines = [f"thread {thread.get('id')} [{thread.get('historyMode')}] provider={thread.get('modelProvider')}"]
+    kinds: list[str] = []
     for turn in thread.get("turns") or []:
         lines.append(f"  turn {turn.get('id')}")
         for item in turn.get("items") or []:
-            kind = item.get("type")
+            kind = str(item.get("type"))
+            kinds.append(kind)
             if kind == "userMessage":
                 text = "".join(part.get("text", "") for part in item.get("content") or [])
             else:
                 text = item.get("text") or ""
             lines.append(f"    {kind}: {text}")
-    return lines
+    return lines, kinds
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -225,6 +234,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{args.codex} is not on PATH: this harness verifies native behaviour, which needs the "
               f"target harness installed", file=sys.stderr)
         return 2
+    go = shutil.which("go")
+    if go is None:
+        print("go is not on PATH: this harness builds ccc with the Go toolchain", file=sys.stderr)
+        return 2
 
     scratch = Path(tempfile.mkdtemp(prefix="ccc-native-check-"))
     home = args.codex_home.resolve() if args.codex_home else scratch / "codex-home"
@@ -254,6 +267,10 @@ def main(argv: list[str] | None = None) -> int:
     sessions = home / "sessions" / "2026" / "01" / "01"
     sessions.mkdir(parents=True, exist_ok=True)
     unrelated = sessions / UNRELATED_NAME
+    if unrelated.exists():
+        print(f"{unrelated} already exists: this harness plants its own fabricated session under that "
+              f"name and will not overwrite one that is there", file=sys.stderr)
+        return 2
     unrelated.write_text(json.dumps({"timestamp": "2026-01-01T00:00:00Z", "type": "session_meta",
                                      "payload": {"id": "unrelated", "cwd": "/tmp"}}) + "\n")
 
@@ -268,9 +285,13 @@ def main(argv: list[str] | None = None) -> int:
 
     fixture_before = tree_digest(fixture_root)
     unrelated_before = sha256(unrelated)
-    existing_ids = [path.stem.rsplit("-", 5)[-5:] for path in home.rglob("rollout-*.jsonl")]
+    # Every session the home already held — the planted one and the caller's own, when --codex-home
+    # names a real home — as the dashed id its file name ends with, and its bytes: a conversion must
+    # not reuse an id and must not touch a file it did not write.
+    existing_ids = ["-".join(path.stem.rsplit("-", 5)[-5:]) for path in home.rglob("rollout-*.jsonl")]
+    existing_sessions = {path: sha256(path) for path in home.rglob("rollout-*.jsonl") if path != unrelated}
     try:
-        build = run(["go", "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY), "./cmd/ccc"], cwd=repo)
+        build = run([go, "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY), "./cmd/ccc"], cwd=repo)
         if build.returncode != 0:
             record("ccc builds with the flags upstream ships", False, build.stderr.strip()[:400])
             return 2
@@ -302,7 +323,7 @@ def main(argv: list[str] | None = None) -> int:
         thread_id = target["session_id"]
         installed = Path(target["path"])
 
-        record("the conversion reports carried evidence and its limits",
+        record("the conversion reports carried evidence and a non-zero loss category",
                conversion["state"] == "converted" and conversion["carried"]["messages"] > 0
                and any(loss["count"] > 0 for loss in conversion["losses"]),
                f"{conversion['carried']['messages']} message(s), {conversion['carried']['tool_calls']} "
@@ -313,11 +334,11 @@ def main(argv: list[str] | None = None) -> int:
                and len(day_directory.parts) == 3 and all(part.isdigit() for part in day_directory.parts),
                f"{installed.relative_to(home)} [{installation['mechanism']}]")
         record("the target identity is new and is not the source's",
-               thread_id != args.session and all(thread_id not in str(entry) for entry in existing_ids),
-               thread_id)
-        record("the installed file is JSONL the target reads",
+               thread_id != args.session and thread_id not in existing_ids,
+               f"{thread_id}, not one of the {len(existing_ids)} id(s) already in the home")
+        record("the installed file is one JSON object per line",
                all(json.loads(line) for line in installed.read_text().splitlines() if line.strip()),
-               f"{installed.stat().st_size} bytes")
+               f"{installed.stat().st_size} bytes (the target's own read of it is the load check)")
         record("the inherited reader reads the installed file back as what was written",
                verification["structure"]["state"] == "verified",
                json.dumps(verification["structure"].get("read_back", {})))
@@ -337,7 +358,7 @@ def main(argv: list[str] | None = None) -> int:
                    loaded_thread.get("id") == thread_id and str(loaded_thread.get("path")) == str(installed),
                    f"thread/resume -> {loaded_thread.get('id')} [{loaded_thread.get('historyMode')}] "
                    f"cwd={loaded_thread.get('cwd')}")
-            view = thread_view(server, thread_id)
+            view, item_kinds = thread_view(server, thread_id)
         finally:
             server.close()
         print()
@@ -345,8 +366,8 @@ def main(argv: list[str] | None = None) -> int:
         for line in view:
             print("   ", line)
         record("the target's own view lists the converted turns",
-               any("userMessage" in line for line in view) and any("agentMessage" in line for line in view),
-               f"{len(view)} line(s)")
+               "userMessage" in item_kinds and "agentMessage" in item_kinds,
+               f"{len(item_kinds)} item(s) in the reply's own turn list")
 
         if args.resume_prompt:
             print()
@@ -367,6 +388,15 @@ def main(argv: list[str] | None = None) -> int:
             record("a real turn continues from the installed session", False,
                    "not attempted: pass --resume-prompt to run one", skipped=True)
 
+        # Every session file the home held before the conversion, compared again now: the planted
+        # unrelated one is checked above, and this covers a real --codex-home's own sessions too.
+        changed = [str(path.relative_to(home)) for path, digest in existing_sessions.items()
+                   if not path.is_file() or sha256(path) != digest]
+        record("no pre-existing session in the target home changed",
+               not changed,
+               f"{len(existing_sessions)} pre-existing session file(s)"
+               + (f"; changed: {', '.join(sorted(changed))}" if changed else ""))
+
         failures = [name for name, state, _ in RESULTS if state == "FAIL"]
         print()
         print(f"{len([r for r in RESULTS if r[1] == 'PASS'])} check(s) passed, "
@@ -378,6 +408,10 @@ def main(argv: list[str] | None = None) -> int:
                               "codex": codex, "codex_home": str(home)}, indent=2))
         return 1 if failures else 0
     finally:
+        # The fabricated unrelated session belongs to this harness and no one else: it is removed even
+        # from a home the caller named, so --codex-home is left as it was found apart from the
+        # converted session this run installed.
+        unrelated.unlink(missing_ok=True)
         if args.keep:
             print(f"kept {scratch} and {home}")
         else:

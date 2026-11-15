@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/parser"
 )
 
@@ -17,30 +16,19 @@ import (
 // verification paths are exercised deterministically.
 const missingTargetBinary = "ccc-no-such-target-harness"
 
-// continueFixtureTarget is the fixture the pipeline tests convert: the committed Claude session whose
-// transcript carries dialogue, a tool call with its result and a compaction boundary.
-var continueFixtureTarget = Ref{Provider: "claude", ID: "9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10"}
-
-// continueConfig points the reader at the committed fixtures, like fixtureConfig, and gives the archive
-// a path of its own.
-func continueConfig(t *testing.T) config.Config {
-	t.Helper()
-	return fixtureConfig(t)
-}
-
 // hashFile is one file's content digest, for the before/after comparisons a conversion has to satisfy.
 func hashFile(t *testing.T, path string) string {
 	t.Helper()
-	data, err := os.ReadFile(path)
+	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("reading %s: %v", path, err)
+	}
+	if info.Size() == 0 {
+		t.Fatalf("%s is empty", path)
 	}
 	digest, err := fileDigest(path)
 	if err != nil {
 		t.Fatalf("digesting %s: %v", path, err)
-	}
-	if len(data) == 0 {
-		t.Fatalf("%s is empty", path)
 	}
 	return digest
 }
@@ -50,9 +38,9 @@ func hashFile(t *testing.T, path string) string {
 // leaves the source and everything else in the target home untouched, and reads the installed file back
 // through the inherited reader as exactly what it wrote.
 func TestContinueConvertsInstallsAndReadsBackTheFixture(t *testing.T) {
-	cfg := continueConfig(t)
+	cfg := fixtureConfig(t)
 	sourcePath := fixturePath(t, filepath.Join("claude", "-home-user-code-example-api",
-		continueFixtureTarget.ID+".jsonl"))
+		claudeFixtureRef.ID+".jsonl"))
 	sourceBefore := hashFile(t, sourcePath)
 
 	targetHome := t.TempDir()
@@ -67,7 +55,7 @@ func TestContinueConvertsInstallsAndReadsBackTheFixture(t *testing.T) {
 	unrelatedBefore := hashFile(t, unrelated)
 
 	result, err := Continue(context.Background(), ContinueOptions{
-		Ref:          continueFixtureTarget,
+		Ref:          claudeFixtureRef,
 		Target:       TargetCodex,
 		Config:       cfg,
 		TargetHome:   targetHome,
@@ -77,7 +65,7 @@ func TestContinueConvertsInstallsAndReadsBackTheFixture(t *testing.T) {
 		t.Fatalf("continuing: %v", err)
 	}
 
-	if result.Conversion.State != "converted" || result.Conversion.ReadFrom != "source" {
+	if result.Conversion.State != ConversionStateConverted || result.Conversion.ReadFrom != "source" {
 		t.Errorf("conversion = %+v, want a conversion read from the source", result.Conversion)
 	}
 	if want := (Carried{Messages: 5, UserMessages: 2, AssistantMessages: 3, ToolCalls: 1, ToolResults: 1, CompactionBoundaries: 1, Turns: 2}); result.Conversion.Carried.Messages != want.Messages ||
@@ -93,7 +81,7 @@ func TestContinueConvertsInstallsAndReadsBackTheFixture(t *testing.T) {
 		t.Error("the conversion reports no bytes")
 	}
 
-	if result.Installation.State != "installed" || !result.Installation.Created {
+	if result.Installation.State != InstallationStateInstalled || !result.Installation.Created {
 		t.Errorf("installation = %+v, want an installed session", result.Installation)
 	}
 	if !result.Installation.SourceUnchanged {
@@ -118,7 +106,7 @@ func TestContinueConvertsInstallsAndReadsBackTheFixture(t *testing.T) {
 		t.Error("the report states no format limits, so a consumer cannot tell what the pair cannot express")
 	}
 
-	if result.TargetSession.SessionID == continueFixtureTarget.ID {
+	if result.TargetSession.SessionID == claudeFixtureRef.ID {
 		t.Error("the target identity is the source session's id")
 	}
 	if !strings.Contains(result.TargetSession.ResumeCommand, result.TargetSession.SessionID) {
@@ -176,7 +164,7 @@ func TestContinueConvertsInstallsAndReadsBackTheFixture(t *testing.T) {
 // transcript shape as well: a conversion of a session with thinking, a sidechain turn and an errored
 // tool result must leave the whole fixture tree byte-for-byte as it found it.
 func TestContinueKeepsTheSourceAndItsDirectoryIntactForBothFixtures(t *testing.T) {
-	cfg := continueConfig(t)
+	cfg := fixtureConfig(t)
 	before := hashTree(t, fixtureRoot(t))
 	result, err := Continue(context.Background(), ContinueOptions{
 		Ref:          Ref{Provider: "claude", ID: "b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef"},
@@ -219,11 +207,11 @@ func TestContinueKeepsTheSourceAndItsDirectoryIntactForBothFixtures(t *testing.T
 // TestContinueDryRunWritesNothing pins the dry run: the whole conversion and its structural check
 // happen, and the target home is not touched at all.
 func TestContinueDryRunWritesNothing(t *testing.T) {
-	cfg := continueConfig(t)
+	cfg := fixtureConfig(t)
 	targetHome := t.TempDir()
 	before := hashTree(t, targetHome)
 	result, err := Continue(context.Background(), ContinueOptions{
-		Ref:          continueFixtureTarget,
+		Ref:          claudeFixtureRef,
 		Target:       TargetCodex,
 		Config:       cfg,
 		TargetHome:   targetHome,
@@ -234,7 +222,7 @@ func TestContinueDryRunWritesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("continuing: %v", err)
 	}
-	if result.Installation.State != "not-installed" {
+	if result.Installation.State != InstallationStateNotInstalled {
 		t.Errorf("installation = %+v, want not-installed", result.Installation)
 	}
 	if result.TargetSession.Path != "" {
@@ -248,11 +236,78 @@ func TestContinueDryRunWritesNothing(t *testing.T) {
 	}
 }
 
+// TestContinueDryRunReportsWhatItVerified pins the dry run's verification block: the structure check
+// runs against the throw-away copy, a level the caller asked for comes back not verified with the
+// dry-run reason (a dry run installs nothing for the harness to load, so "not requested" would be
+// false), a level nobody asked for stays not requested, and the source comparison an installed run
+// makes is made here too.
+func TestContinueDryRunReportsWhatItVerified(t *testing.T) {
+	cfg := fixtureConfig(t)
+	for _, testCase := range []struct {
+		level       string
+		loadState   string
+		resumeState string
+	}{
+		{VerifyNone, VerificationStateNotRequested, VerificationStateNotRequested},
+		{VerifyLoad, VerificationStateNotVerified, VerificationStateNotRequested},
+		{VerifyResume, VerificationStateNotVerified, VerificationStateNotVerified},
+	} {
+		t.Run(testCase.level, func(t *testing.T) {
+			result, err := Continue(context.Background(), ContinueOptions{
+				Ref:          claudeFixtureRef,
+				Target:       TargetCodex,
+				Config:       cfg,
+				TargetHome:   t.TempDir(),
+				TargetBinary: missingTargetBinary,
+				DryRun:       true,
+				Verify:       testCase.level,
+				ResumePrompt: "a dry run must not run this turn",
+			})
+			if err != nil {
+				t.Fatalf("continuing: %v", err)
+			}
+			if result.Verification.Structure.State != VerificationStateVerified {
+				t.Errorf("structure = %+v, want the throw-away copy verified", result.Verification.Structure)
+			}
+			if result.Verification.Load.State != testCase.loadState {
+				t.Errorf("load state = %q, want %q (detail %q)",
+					result.Verification.Load.State, testCase.loadState, result.Verification.Load.Detail)
+			}
+			if result.Verification.Resume.State != testCase.resumeState {
+				t.Errorf("resume state = %q, want %q (detail %q)",
+					result.Verification.Resume.State, testCase.resumeState, result.Verification.Resume.Detail)
+			}
+			for _, block := range []struct {
+				name   string
+				state  string
+				detail string
+			}{
+				{"load", result.Verification.Load.State, result.Verification.Load.Detail},
+				{"resume", result.Verification.Resume.State, result.Verification.Resume.Detail},
+			} {
+				if strings.TrimSpace(block.detail) == "" {
+					t.Errorf("%s state %q is reported without a reason", block.name, block.state)
+				}
+				if block.state == VerificationStateNotVerified && !strings.Contains(block.detail, "dry run") {
+					t.Errorf("%s not-verified detail does not say the dry run is why: %q", block.name, block.detail)
+				}
+			}
+			if !result.Installation.SourceUnchanged {
+				t.Errorf("installation = %+v, want the dry run's comparison to report the source unchanged",
+					result.Installation)
+			}
+			if !strings.Contains(result.Installation.Detail, "sha256") {
+				t.Errorf("the dry run does not name the digest it compared: %q", result.Installation.Detail)
+			}
+		})
+	}
+}
+
 // TestInstallCodexRolloutNeverReplacesASession pins the exclusive creation: the second install at the
 // same identity is refused, and the file still holds the first conversion's bytes.
 func TestInstallCodexRolloutNeverReplacesASession(t *testing.T) {
-	cfg := continueConfig(t)
-	conversation, err := cfgReader(t, cfg).Read(context.Background(), continueFixtureTarget)
+	cfg := fixtureConfig(t)
+	conversation, err := NewSourceReader(cfg).Read(context.Background(), claudeFixtureRef)
 	if err != nil {
 		t.Fatalf("reading the fixture: %v", err)
 	}
@@ -283,10 +338,10 @@ func TestInstallCodexRolloutNeverReplacesASession(t *testing.T) {
 // TestContinueRequiresAPromptBeforeItRunsATurn pins the rule the CLI also enforces: a resume
 // verification writes a real turn into the session, so its text comes from the caller.
 func TestContinueRequiresAPromptBeforeItRunsATurn(t *testing.T) {
-	cfg := continueConfig(t)
+	cfg := fixtureConfig(t)
 	home := t.TempDir()
 	_, err := Continue(context.Background(), ContinueOptions{
-		Ref:          continueFixtureTarget,
+		Ref:          claudeFixtureRef,
 		Target:       TargetCodex,
 		Config:       cfg,
 		TargetHome:   home,
@@ -303,17 +358,17 @@ func TestContinueRequiresAPromptBeforeItRunsATurn(t *testing.T) {
 
 // TestContinueRefusesAnUnsupportedTargetOrLevel pins the two names a caller can get wrong.
 func TestContinueRefusesAnUnsupportedTargetOrLevel(t *testing.T) {
-	cfg := continueConfig(t)
+	cfg := fixtureConfig(t)
 	for _, testCase := range []struct {
 		name   string
 		opts   ContinueOptions
 		expect error
 	}{
-		{"no target", ContinueOptions{Ref: continueFixtureTarget, Config: cfg, TargetHome: t.TempDir()},
+		{"no target", ContinueOptions{Ref: claudeFixtureRef, Config: cfg, TargetHome: t.TempDir()},
 			ErrUnsupportedTarget},
-		{"unknown target", ContinueOptions{Ref: continueFixtureTarget, Target: "claude", Config: cfg,
+		{"unknown target", ContinueOptions{Ref: claudeFixtureRef, Target: "claude", Config: cfg,
 			TargetHome: t.TempDir()}, ErrUnsupportedTarget},
-		{"unknown level", ContinueOptions{Ref: continueFixtureTarget, Target: TargetCodex, Config: cfg,
+		{"unknown level", ContinueOptions{Ref: claudeFixtureRef, Target: TargetCodex, Config: cfg,
 			TargetHome: t.TempDir(), Verify: "perhaps", TargetBinary: missingTargetBinary}, nil},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -334,10 +389,10 @@ func TestContinueRefusesAnUnsupportedTargetOrLevel(t *testing.T) {
 // created and used, a missing directory nobody named is refused rather than invented, and $CODEX_HOME is
 // the answer when the caller names nothing.
 func TestContinueTargetHomeResolution(t *testing.T) {
-	cfg := continueConfig(t)
+	cfg := fixtureConfig(t)
 	explicit := filepath.Join(t.TempDir(), "fresh")
 	result, err := Continue(context.Background(), ContinueOptions{
-		Ref: continueFixtureTarget, Target: TargetCodex, Config: cfg,
+		Ref: claudeFixtureRef, Target: TargetCodex, Config: cfg,
 		TargetHome: explicit, TargetBinary: missingTargetBinary, Verify: VerifyNone,
 	})
 	if err != nil {
@@ -350,7 +405,7 @@ func TestContinueTargetHomeResolution(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 	t.Setenv("CODEX_HOME", missing)
 	if _, err := Continue(context.Background(), ContinueOptions{
-		Ref: continueFixtureTarget, Target: TargetCodex, Config: cfg,
+		Ref: claudeFixtureRef, Target: TargetCodex, Config: cfg,
 		TargetBinary: missingTargetBinary, Verify: VerifyNone,
 	}); !errors.Is(err, ErrTargetHomeMissing) {
 		t.Fatalf("error = %v, want ErrTargetHomeMissing for a data directory nobody named", err)
@@ -362,7 +417,7 @@ func TestContinueTargetHomeResolution(t *testing.T) {
 	fromEnv := t.TempDir()
 	t.Setenv("CODEX_HOME", fromEnv)
 	result, err = Continue(context.Background(), ContinueOptions{
-		Ref: continueFixtureTarget, Target: TargetCodex, Config: cfg,
+		Ref: claudeFixtureRef, Target: TargetCodex, Config: cfg,
 		TargetBinary: missingTargetBinary, Verify: VerifyNone,
 	})
 	if err != nil {
@@ -377,14 +432,14 @@ func TestContinueTargetHomeResolution(t *testing.T) {
 // the source reader cannot answer is read from the archive instead, and the report says so rather than
 // presenting the projection as the file.
 func TestContinueFallsBackToTheArchiveWhenTheSourceIsGone(t *testing.T) {
-	cfg := continueConfig(t)
+	cfg := fixtureConfig(t)
 	sourcePath := fixturePath(t, filepath.Join("claude", "-home-user-code-example-api",
-		continueFixtureTarget.ID+".jsonl"))
+		claudeFixtureRef.ID+".jsonl"))
 
 	// A copy of the session, in its own provider root, so the archive can be written from it and the
 	// committed fixture never moves.
 	root := t.TempDir()
-	copyPath := filepath.Join(root, "-home-user-code-example-api", continueFixtureTarget.ID+".jsonl")
+	copyPath := filepath.Join(root, "-home-user-code-example-api", claudeFixtureRef.ID+".jsonl")
 	if err := os.MkdirAll(filepath.Dir(copyPath), 0o700); err != nil {
 		t.Fatalf("creating the copied project directory: %v", err)
 	}
@@ -408,7 +463,7 @@ func TestContinueFallsBackToTheArchiveWhenTheSourceIsGone(t *testing.T) {
 	}
 
 	result, err := Continue(context.Background(), ContinueOptions{
-		Ref:          continueFixtureTarget,
+		Ref:          claudeFixtureRef,
 		Target:       TargetCodex,
 		Config:       cfg,
 		ArchivePath:  cfg.DBPath,
@@ -442,8 +497,8 @@ func TestContinueFallsBackToTheArchiveWhenTheSourceIsGone(t *testing.T) {
 // than agrees: a rollout whose report claims evidence the file does not hold must come back unverified
 // with the difference named.
 func TestStructureVerificationNamesWhatTheFileDoesNotHold(t *testing.T) {
-	cfg := continueConfig(t)
-	conversation, err := cfgReader(t, cfg).Read(context.Background(), continueFixtureTarget)
+	cfg := fixtureConfig(t)
+	conversation, err := NewSourceReader(cfg).Read(context.Background(), claudeFixtureRef)
 	if err != nil {
 		t.Fatalf("reading the fixture: %v", err)
 	}
@@ -479,12 +534,6 @@ func TestStructureVerificationNamesWhatTheFileDoesNotHold(t *testing.T) {
 	if !strings.Contains(verification.Detail, "dialogue") {
 		t.Errorf("the difference report does not name the category: %q", verification.Detail)
 	}
-}
-
-// cfgReader builds the reader a continuation reads with, the way Continue does.
-func cfgReader(t *testing.T, cfg config.Config) *SourceReader {
-	t.Helper()
-	return NewSourceReader(cfg)
 }
 
 // TestSourceUnchangedComparesTheFileBeforeAndAfter pins the property the installation reports: the
@@ -541,5 +590,17 @@ func TestSourceUnchangedSaysWhenThereWasNoFileToCompare(t *testing.T) {
 	}
 	if !strings.Contains(detail, "archive") {
 		t.Errorf("the report does not say why no file was compared: %q", detail)
+	}
+}
+
+// TestSourceChangedWarningsNameTheMove pins the report's warning half: a source that moved while it was
+// converted is warned about, not only described in a detail field a reader may never open.
+func TestSourceChangedWarningsNameTheMove(t *testing.T) {
+	if warnings := sourceChangedWarnings(true); len(warnings) != 0 {
+		t.Errorf("an unchanged source produced warnings: %v", warnings)
+	}
+	warnings := sourceChangedWarnings(false)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "changed while it was converted") {
+		t.Errorf("warnings = %v, want one naming the source that moved", warnings)
 	}
 }

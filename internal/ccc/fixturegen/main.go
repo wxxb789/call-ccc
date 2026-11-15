@@ -106,7 +106,7 @@ func claudeSession() string {
 			"aaaaaaaa-0000-4000-8000-000000000001",
 			"",
 		).
-		AddRaw(claudeToolUse(toolCall, "2026-05-04T09:15:06.000Z")).
+		AddRaw(claudeToolUse(toolCall, "2026-05-04T09:15:06.000Z", "")).
 		AddRaw(testjsonl.ClaudeToolResultUserJSON(
 			"toolu_01Example0000000000000000",
 			"package retry\n\nconst MaxAttempts = 4\n",
@@ -311,9 +311,10 @@ func codexCompacted() string {
 	})
 }
 
-// claudeToolUse is a Claude assistant line whose content is a tool_use block. The inherited builder
-// covers text and usage turns; a tool_use turn is written here with the same native shape.
-func claudeToolUse(content any, timestamp string, uuid ...string) string {
+// claudeToolUse is a Claude assistant line whose content is a tool_use block, with its own uuid when
+// the transcript records one. The inherited builder covers text and usage turns; a tool_use turn is
+// written here with the same native shape.
+func claudeToolUse(content any, timestamp, uuid string) string {
 	line := map[string]any{
 		"type":      "assistant",
 		"timestamp": timestamp,
@@ -323,8 +324,8 @@ func claudeToolUse(content any, timestamp string, uuid ...string) string {
 			"model":   "claude-sonnet-4-5",
 		},
 	}
-	if len(uuid) > 0 && uuid[0] != "" {
-		line["uuid"] = uuid[0]
+	if uuid != "" {
+		line["uuid"] = uuid
 	}
 	return marshal(line)
 }

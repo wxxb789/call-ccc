@@ -218,6 +218,7 @@ const (
 	codexSourceCLI           = "cli"
 	codexThreadSourceUser    = "user"
 	codexGeneratedCallPrefix = "call_ccc_"
+	codexGeneratedTurnPrefix = "turn_ccc_"
 )
 
 // defaultMaxToolNames bounds how many distinct tool names a report spells out by default.
@@ -356,13 +357,9 @@ type codexRolloutBuilder struct {
 	foreignToolNames    map[string]struct{}
 	toolNameOrder       []string
 
-	// lastGeneratedCall is the call id a source that recorded none most recently produced, so a result
-	// that recorded no id either can be paired with it instead of being dropped. A second id-less call
-	// clears it: two id-less calls make the pairing a guess, and a guess is not carried.
-	lastGeneratedCall string
-	pendingCallID     string
-	sawBoundary       bool
-	turnOpen          bool
+	pendingCallID string
+	sawBoundary   bool
+	turnOpen      bool
 }
 
 func (b *codexRolloutBuilder) write(record codexEnvelope) {
@@ -454,7 +451,7 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 	text := dialogueText(message)
 	if text != "" {
 		if role == parser.RoleUser {
-			b.startTurnIfNeeded(message)
+			b.startTurn(message.Timestamp)
 			b.messageItem(ItemUser, codexRoleUser, codexContentInputText, text, message.Timestamp)
 		} else {
 			b.messageItem(ItemAssistant, codexRoleAssistant, codexContentOutputText, text, message.Timestamp)
@@ -469,7 +466,7 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 		b.toolCall(message.Ordinal, index, call, message.Timestamp)
 	}
 	for _, result := range message.ToolResults {
-		b.toolResult(result, message.Content, message.Timestamp)
+		b.toolResult(result, message.Timestamp)
 	}
 	// An archive read folds a call's outcome onto the call itself; a source read carries it as the
 	// message's own result. Both are the same evidence and both are written.
@@ -481,23 +478,19 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 			ToolUseID:   call.ToolUseID,
 			ContentRaw:  call.ResultContent,
 			ContentSize: call.ResultContentSize,
-		}, "", message.Timestamp)
+		}, message.Timestamp)
 	}
 }
 
-// startTurnIfNeeded opens a turn before a user message that begins one: the target groups records into
-// turns, and a user message is where a turn begins.
-func (b *codexRolloutBuilder) startTurnIfNeeded(message Message) {
-	b.startTurn(message.Timestamp)
-}
-
+// startTurn opens a turn: the target groups records into turns, and a user message is where a turn
+// begins. A caller that may already have one open checks b.turnOpen itself.
 func (b *codexRolloutBuilder) startTurn(at time.Time) {
 	id, err := uuid.NewV7()
 	turnID := ""
 	if err == nil {
 		turnID = id.String()
 	} else {
-		turnID = fmt.Sprintf("%s%08x", codexGeneratedCallPrefix, b.carried.Turns)
+		turnID = fmt.Sprintf("%s%08x", codexGeneratedTurnPrefix, b.carried.Turns)
 	}
 	b.write(codexEnvelope{
 		Timestamp: b.clock.next(at),
@@ -568,9 +561,6 @@ func (b *codexRolloutBuilder) toolCall(ordinal, index int, call ToolCall, at tim
 	if callID == "" {
 		callID = fmt.Sprintf("%s%d_%d", codexGeneratedCallPrefix, ordinal, index)
 		b.lossGeneratedIDs++
-		b.lastGeneratedCall = callID
-	} else {
-		b.lastGeneratedCall = ""
 	}
 	input := strings.TrimSpace(call.InputJSON)
 	if input == "" {
@@ -601,18 +591,19 @@ func (b *codexRolloutBuilder) toolCall(ordinal, index int, call ToolCall, at tim
 	b.items = append(b.items, TargetItem{Kind: ItemToolCall, CallID: callID, ToolName: name, InputJSON: input})
 }
 
-// notePendingCall remembers the call a later id-less result may belong to.
+// notePendingCall remembers the call a later id-less result may belong to. The pairing lasts only until
+// another call arrives: two calls without a recorded result id make the pairing a guess — the result
+// could belong to either one — and dropping the pairing is the only answer that cannot attribute one
+// call's output to another.
 func (b *codexRolloutBuilder) notePendingCall(callID string) {
 	if b.pendingCallID != "" {
-		// Two calls without a recorded result id make the pairing a guess; dropping the pairing is the
-		// only answer that cannot attribute one call's output to another.
 		b.pendingCallID = ""
 		return
 	}
 	b.pendingCallID = callID
 }
 
-func (b *codexRolloutBuilder) toolResult(result ToolResult, messageContent string, at time.Time) {
+func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time) {
 	if result.PersistedOutputUnresolved {
 		// The source's own parse-time answer that the content is the placeholder naming a side file it
 		// could not read, not the tool's output. The text travels as recorded and the report says what
@@ -681,7 +672,6 @@ func (b *codexRolloutBuilder) losses() []Loss {
 		shown = shown[:b.opts.MaxToolNames]
 	}
 	toolDetail := "no tool call was carried"
-	toolDisposition := DispositionCarriedWithCaveat
 	if len(names) > 0 {
 		toolDetail = fmt.Sprintf(
 			"tool calls keep the source's own tool names and recorded arguments (%s%s); the target's "+
@@ -767,7 +757,7 @@ func (b *codexRolloutBuilder) losses() []Loss {
 		},
 		{
 			Category:    "tool_name_vocabulary",
-			Disposition: toolDisposition,
+			Disposition: DispositionCarriedWithCaveat,
 			Count:       len(names),
 			Detail:      toolDetail,
 		},

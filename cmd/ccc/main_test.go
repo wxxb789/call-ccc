@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,6 +101,77 @@ func runCLI(t *testing.T, args ...string) (int, string, string) {
 	var stdout, stderr bytes.Buffer
 	code := run(args, &stdout, &stderr)
 	return code, stdout.String(), stderr.String()
+}
+
+// stubCodexEnv makes a child of this test binary behave as the target harness.
+const stubCodexEnv = "CCC_TEST_STUB_CODEX"
+
+// TestMain lets this test binary act as a target harness when a child of it is asked to. One case needs
+// a harness whose verification runs and fails, and the stub is this binary itself, so the test needs no
+// host tooling and no platform-specific script.
+func TestMain(m *testing.M) {
+	if os.Getenv(stubCodexEnv) != "" {
+		os.Exit(stubCodex(os.Args[1:]))
+	}
+	os.Exit(m.Run())
+}
+
+// stubTargetBinary answers the path of a harness whose app server refuses to load a session: this test
+// binary, which TestMain routes into stubCodex.
+func stubTargetBinary(t *testing.T) string {
+	t.Helper()
+	t.Setenv(stubCodexEnv, "1")
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolving the test binary: %v", err)
+	}
+	return executable
+}
+
+// stubCodex is the stub harness: it answers --version and serves the app-server handshake, so a
+// verification really runs, and refuses every other request, so every verification it serves fails.
+func stubCodex(args []string) int {
+	if len(args) == 0 {
+		return 2
+	}
+	switch args[0] {
+	case "--version":
+		fmt.Println("codex-cli 0.0.0-stub")
+		return 0
+	case "app-server":
+		return serveStubAppServer()
+	default:
+		fmt.Fprintln(os.Stderr, "the stub harness does not implement "+args[0])
+		return 2
+	}
+}
+
+// serveStubAppServer answers the two-line handshake a verification opens with and refuses every request
+// after it, which is what makes a load check run and come back not verified.
+func serveStubAppServer() int {
+	decoder := json.NewDecoder(os.Stdin)
+	encoder := json.NewEncoder(os.Stdout)
+	for {
+		var message struct {
+			ID     *int   `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := decoder.Decode(&message); err != nil {
+			return 0
+		}
+		if message.ID == nil {
+			continue // the initialized notification carries no id
+		}
+		answer := map[string]any{"jsonrpc": "2.0", "id": *message.ID}
+		if message.Method == "initialize" {
+			answer["result"] = map[string]any{}
+		} else {
+			answer["error"] = map[string]any{"code": -32601, "message": "the stub harness refuses " + message.Method}
+		}
+		if err := encoder.Encode(answer); err != nil {
+			return 1
+		}
+	}
 }
 
 // TestInspectJSONReportsIdentityAndConversation is the CLI half of the goal's first clause: a
@@ -562,10 +634,17 @@ func TestContinueJSONDistinguishesConversionInstallationAndVerification(t *testi
 	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
 		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
 	}
+	// The parsed assertions below use the exported state constants; the document's own spellings are the
+	// wire contract the plan records, so they are pinned literally here.
+	for _, spelling := range []string{`"state": "converted"`, `"state": "installed"`} {
+		if !strings.Contains(stdout, spelling) {
+			t.Errorf("the JSON does not spell a state as documented (%s):\n%s", spelling, stdout)
+		}
+	}
 	if document.UpstreamRevision != upstreamRevision {
 		t.Errorf("upstream_revision = %q, want %q", document.UpstreamRevision, upstreamRevision)
 	}
-	if document.Target != "codex" || document.Conversion.State != "converted" ||
+	if document.Target != "codex" || document.Conversion.State != ccc.ConversionStateConverted ||
 		document.Conversion.ReadFrom != "source" || document.Conversion.DryRun {
 		t.Errorf("conversion block = %+v", document.Conversion)
 	}
@@ -580,7 +659,7 @@ func TestContinueJSONDistinguishesConversionInstallationAndVerification(t *testi
 			t.Errorf("a loss entry is not readable: %+v", loss)
 		}
 	}
-	if document.Installation.State != "installed" || !document.Installation.Created ||
+	if document.Installation.State != ccc.InstallationStateInstalled || !document.Installation.Created ||
 		!document.Installation.SourceUnchanged || document.Installation.Mechanism == "" {
 		t.Errorf("installation block = %+v", document.Installation)
 	}
@@ -643,6 +722,42 @@ func TestContinueHumanOutputNamesTheResumeCommand(t *testing.T) {
 	}
 }
 
+// TestContinueHumanOutputReportsTheSourceCheck pins the human half of the goal's source clause: the
+// block shows whether the transcript the conversation came from is its same file afterwards, and a
+// source that moved while it was converted is named rather than left to the JSON.
+func TestContinueHumanOutputReportsTheSourceCheck(t *testing.T) {
+	_, targetHome := continueEnvironment(t)
+	sessionID, _ := claudeFixture(t)
+	code, stdout, stderr := runCLI(t, continueArgs(sessionID)...)
+	if code != exitOK {
+		t.Fatalf("exit %d, stderr: %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "source file:  unchanged (sha256 ") {
+		t.Errorf("the human output does not show the source check:\n%s", stdout)
+	}
+
+	var moved bytes.Buffer
+	writeContinuation(&moved, ccc.ContinueResult{
+		Ref:        ccc.Ref{Provider: "claude", ID: sessionID},
+		Target:     ccc.TargetCodex,
+		Conversion: ccc.ConversionReport{State: ccc.ConversionStateConverted, Format: ccc.CodexTargetFormat},
+		TargetSession: ccc.TargetReport{
+			Home:          targetHome,
+			SessionID:     "01a1e000-0000-7000-8000-000000000001",
+			ResumeCommand: "codex resume 01a1e000-0000-7000-8000-000000000001",
+		},
+		Installation: ccc.InstallationReport{
+			State:           ccc.InstallationStateInstalled,
+			Path:            filepath.Join(targetHome, "session.jsonl"),
+			SourceUnchanged: false,
+			Detail:          "the source session changed while it was converted (sha256 aa before, bb after)",
+		},
+	})
+	if !strings.Contains(moved.String(), "source file:  changed while it was converted (the source session changed") {
+		t.Errorf("a moved source is not named in the human output:\n%s", moved.String())
+	}
+}
+
 // TestContinueDryRunInstallsNothingThroughTheCLI pins the flag's promise at the CLI boundary.
 func TestContinueDryRunInstallsNothingThroughTheCLI(t *testing.T) {
 	_, targetHome := continueEnvironment(t)
@@ -660,6 +775,22 @@ func TestContinueDryRunInstallsNothingThroughTheCLI(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("a dry run wrote into the target home: %v", entries)
+	}
+
+	// The same dry run with a harness that is present: the level was asked for and cannot run (nothing
+	// is installed), which is reported as not verified with the dry-run reason — not as a failure.
+	code, stdout, stderr = runCLI(t,
+		"continue", "claude:"+sessionID, "--to", "codex", "--target-binary", stubTargetBinary(t),
+		"--dry-run", "--json")
+	if code != exitOK {
+		t.Fatalf("exit %d for a dry run whose requested level could not run (stderr %q)", code, stderr)
+	}
+	if !strings.Contains(stdout, `"state": "not-verified"`) ||
+		!strings.Contains(stdout, "a dry run installs nothing") {
+		t.Errorf("the dry run does not report the requested level as not verified with its reason:\n%s", stdout)
+	}
+	if entries, err := os.ReadDir(targetHome); err != nil || len(entries) != 0 {
+		t.Errorf("the dry run with a harness wrote into the target home: %v (err %v)", entries, err)
 	}
 }
 
@@ -723,8 +854,8 @@ func TestContinueRefusesAMissingDataDirectoryNobodyNamed(t *testing.T) {
 }
 
 // TestContinueReportsAFailedVerificationAsAFailure pins the exit code rule: a verification the caller
-// asked for, that ran and did not pass, fails the run — while the same command with the level nobody
-// asked for keeps the conversion's success.
+// asked for, that ran and did not pass, fails the run — while a verification that could not run for
+// lack of a harness keeps the conversion's success.
 func TestContinueReportsAFailedVerificationAsAFailure(t *testing.T) {
 	continueEnvironment(t)
 	sessionID, _ := claudeFixture(t)
@@ -734,6 +865,38 @@ func TestContinueReportsAFailedVerificationAsAFailure(t *testing.T) {
 	}
 	if code, _, _ := runCLI(t, continueArgs(sessionID)...); code != exitOK {
 		t.Fatalf("exit %d: a verification that could not run because the harness is absent must not fail the conversion", code)
+	}
+
+	// The stub harness answers the handshake and refuses the load, so the verification runs and fails:
+	// that is the case the exit-1 rule names.
+	code, stdout, stderr := runCLI(t,
+		"continue", "claude:"+sessionID, "--to", "codex", "--target-binary", stubTargetBinary(t), "--json")
+	if code != exitFailure {
+		t.Fatalf("exit %d, want %d for a verification that ran and failed (stderr %q)", code, exitFailure, stderr)
+	}
+	var document struct {
+		TargetSession struct {
+			BinaryFound bool `json:"binary_found"`
+		} `json:"target_session"`
+		Verification struct {
+			Load struct {
+				State  string `json:"state"`
+				Detail string `json:"detail"`
+			} `json:"load"`
+		} `json:"verification"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
+	}
+	if !document.TargetSession.BinaryFound {
+		t.Errorf("the report does not claim the harness that ran: %+v", document.TargetSession)
+	}
+	if document.Verification.Load.State != ccc.VerificationStateNotVerified {
+		t.Errorf("load = %+v, want an explicit not-verified from the harness's own refusal",
+			document.Verification.Load)
+	}
+	if !strings.Contains(document.Verification.Load.Detail, "the stub harness refuses thread/resume") {
+		t.Errorf("the refusal does not carry the harness's own message: %q", document.Verification.Load.Detail)
 	}
 }
 

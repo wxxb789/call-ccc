@@ -66,15 +66,6 @@ func lossCount(t *testing.T, losses []Loss, category string) Loss {
 	return Loss{}
 }
 
-// itemKinds lists the kinds of evidence a conversion wrote, in order.
-func itemKinds(rollout CodexRollout) []string {
-	kinds := make([]string, 0, len(rollout.Items))
-	for _, item := range rollout.Items {
-		kinds = append(kinds, string(item.Kind))
-	}
-	return kinds
-}
-
 // testConversation builds a Conversation directly: the writer's rules are about the document it is
 // given, so a test of them needs no provider and no source file.
 func testConversation(messages ...Message) Conversation {
@@ -147,13 +138,12 @@ func TestCodexRolloutRecordShape(t *testing.T) {
 
 	meta := lines[0]
 	for field, value := range map[string]string{
-		"id":             rollout.SessionID,
-		"cwd":            "/work/project",
-		"originator":     codexOriginator,
-		"source":         codexSourceCLI,
-		"thread_source":  codexThreadSourceUser,
-		"cli_version":    CodexFormatVersion,
-		"model_provider": "",
+		"id":            rollout.SessionID,
+		"cwd":           "/work/project",
+		"originator":    codexOriginator,
+		"source":        codexSourceCLI,
+		"thread_source": codexThreadSourceUser,
+		"cli_version":   CodexFormatVersion,
 	} {
 		if got := payloadField(t, meta, field); got != value {
 			t.Errorf("session_meta.%s = %q, want %q", field, got, value)
@@ -400,15 +390,20 @@ func TestCodexRolloutRecordsTheProviderBindingItIsGiven(t *testing.T) {
 		t.Fatalf("converting: %v", err)
 	}
 	lines := decodeRollout(t, rollout.Data)
-	if got := payloadField(t, lines[0], "model_provider"); got != "target-provider" {
-		t.Errorf("model_provider = %q, want the caller's binding", got)
+	var metaPayload map[string]any
+	if err := json.Unmarshal(lines[0].Payload, &metaPayload); err != nil {
+		t.Fatalf("decoding session_meta: %v", err)
+	}
+	if got, ok := metaPayload["model_provider"]; !ok || got != "target-provider" {
+		t.Errorf("session_meta.model_provider = %v (present: %v), want the caller's binding", got, ok)
 	}
 	if binding := lossCount(t, rollout.Losses, "provider_binding"); binding.Count != 1 {
 		t.Errorf("provider_binding = %+v, want the binding reported", binding)
 	}
-	if cliVersion := payloadField(t, lines[0], "cli_version"); cliVersion != options.CLIVersion &&
-		options.CLIVersion != "" {
-		t.Errorf("cli_version = %q", cliVersion)
+	// With no version pinned by the caller, the writer records the version whose reader it was verified
+	// against: the target requires the field, so a silent empty value would produce a file it refuses.
+	if cliVersion := payloadField(t, lines[0], "cli_version"); cliVersion != CodexFormatVersion {
+		t.Errorf("cli_version = %q, want the writer's verified format version %q", cliVersion, CodexFormatVersion)
 	}
 }
 
