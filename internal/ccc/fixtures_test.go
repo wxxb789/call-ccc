@@ -416,6 +416,38 @@ func TestRelativePathReferenceIsAmbiguousOnlyAcrossDistinctRoots(t *testing.T) {
 	}
 }
 
+// TestRelativePathReferenceIgnoresARootThatDoesNotHoldIt pins the other half of the same rule: a root
+// that does *not* hold the session is not a candidate for the reference.
+//
+// A provider's changed-path classifier answers for a path that is absent as well as for one that is
+// there -- jsonlMissingPathFallbackAllowed exists so a watcher does not drop a deletion -- so asking a
+// second root about a spelling it does not hold used to add a source for a file nothing has: the
+// reference became ambiguous between the session the first root holds and a path no root can read, and
+// a read of that second candidate failed while fingerprinting instead of reaching the session. A
+// classification with no file behind it is not a source this reader can read, so it is dropped and the
+// root that does hold the session answers.
+func TestRelativePathReferenceIgnoresARootThatDoesNotHoldIt(t *testing.T) {
+	cfg := fixtureConfig(t)
+	claudeRoot := filepath.Join(fixtureRoot(t), "claude")
+	relativeName := filepath.Join("-home-user-code-example-api", claudeFixtureRef.ID+".jsonl")
+	relative := Ref{Provider: "claude", ID: relativeName}
+	cfg.AgentDirs[parser.AgentClaude] = []string{claudeRoot, t.TempDir()}
+
+	conversation, err := NewSourceReader(cfg).Read(context.Background(), relative)
+	if err != nil {
+		t.Fatalf("a root that does not hold the session made %s unreadable: %v", relative.ID, err)
+	}
+	if conversation.Source.SessionID != claudeFixtureRef.ID {
+		t.Errorf("the relative reference read session %q, want %q",
+			conversation.Source.SessionID, claudeFixtureRef.ID)
+	}
+	want := filepath.Join(claudeRoot, relativeName)
+	if conversation.Source.SourcePath != want {
+		t.Errorf("the relative reference reports source %q, want the root that holds it (%s)",
+			conversation.Source.SourcePath, want)
+	}
+}
+
 // TestFixturesCarryNoHostPathsOrSecrets pins the sanitization rule for committed fixtures: they are
 // invented content, so the tree's own root, a home directory, and credential shapes stay out of them.
 func TestFixturesCarryNoHostPathsOrSecrets(t *testing.T) {
@@ -443,6 +475,81 @@ func TestFixturesCarryNoHostPathsOrSecrets(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatal("no fixtures were checked")
+	}
+}
+
+// changedPathProvider is a parser.Provider stand-in for the reader's own rules: it answers the two
+// questions resolvePathReference asks -- the stored-path lookup, and what a changed path classifies as
+// -- and nothing else, so a case can hand the reader a classification no provider's fixtures can
+// produce. The embedded interface is nil, and a case that reached another method would panic rather
+// than be answered quietly.
+type changedPathProvider struct {
+	parser.Provider
+	sources []parser.SourceRef
+}
+
+func (p changedPathProvider) FindSource(
+	context.Context, parser.FindSourceRequest,
+) (parser.SourceRef, bool, error) {
+	return parser.SourceRef{}, false, nil
+}
+
+func (p changedPathProvider) SourcesForChangedPath(
+	context.Context, parser.ChangedPathRequest,
+) ([]parser.SourceRef, error) {
+	return p.sources, nil
+}
+
+// TestChangedPathClassificationWithSeveralSourcesIsAmbiguous pins the reader's rule for one spelling
+// whose provider answer names more than one source: the candidates are reported, never resolved to the
+// first. It is pinned on the reader itself, because what it protects is the reader's refusal to pick --
+// the provider's answer is "these transcripts read this path" while a reference names one session.
+func TestChangedPathClassificationWithSeveralSourcesIsAmbiguous(t *testing.T) {
+	candidates := make([]parser.SourceRef, 0, 2)
+	for _, name := range []string{"one.jsonl", "two.jsonl"} {
+		path := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+			t.Fatalf("writing %s: %v", path, err)
+		}
+		candidates = append(candidates, parser.SourceRef{
+			Provider: parser.AgentClaude, Key: path, DisplayPath: path, FingerprintKey: path})
+	}
+	// The spelling itself is absent, so only the classification below can answer -- which is the shape
+	// a reference takes when the provider maps a path (a sidecar, a store member) onto its sources.
+	spelling := filepath.Join(t.TempDir(), "unrelated.jsonl")
+	_, found, err := resolvePathReference(context.Background(), changedPathProvider{sources: candidates},
+		[]string{spelling}, Ref{Provider: "claude", ID: spelling})
+	var ambiguous *AmbiguousError
+	if !errors.As(err, &ambiguous) {
+		t.Fatalf("a spelling two sources read answered found=%v err=%v, want an ambiguity report",
+			found, err)
+	}
+	if len(ambiguous.Candidates) != len(candidates) {
+		t.Errorf("ambiguous candidates = %v, want both sources", ambiguous.Candidates)
+	}
+}
+
+// TestChangedPathClassificationWithAVirtualIdentityIsKept pins the other acceptance route of the same
+// rule: a candidate whose identity is not a local file (a provider's store member, which it records as
+// `<container>#<session>`) is kept when the path the reference named is there, because that path is
+// what the classification was made from. Requiring every candidate's identity to be a file would drop
+// a source such a provider can read simply because it is not stored as one file per session.
+func TestChangedPathClassificationWithAVirtualIdentityIsKept(t *testing.T) {
+	container := filepath.Join(t.TempDir(), "state.db")
+	if err := os.WriteFile(container, []byte("a store, not a session file\n"), 0o600); err != nil {
+		t.Fatalf("writing %s: %v", container, err)
+	}
+	virtual := container + "#0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812"
+	provider := changedPathProvider{sources: []parser.SourceRef{{
+		Provider: parser.AgentHermes, Key: virtual, DisplayPath: virtual, FingerprintKey: virtual}}}
+
+	source, found, err := resolvePathReference(context.Background(), provider, []string{container},
+		Ref{Provider: "hermes", ID: container})
+	if err != nil || !found {
+		t.Fatalf("a store member behind a present path answered found=%v err=%v", found, err)
+	}
+	if source.FingerprintKey != virtual {
+		t.Errorf("the reference resolved %q, want the store member %q", source.FingerprintKey, virtual)
 	}
 }
 

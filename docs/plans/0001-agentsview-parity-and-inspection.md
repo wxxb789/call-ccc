@@ -68,7 +68,13 @@ normalisation cannot turn a clean tree into a false failure.
    status and index answers are still consulted (the index mode, and a worktree `git status` reports as
    modified);
 2. each declared deviation still differs from upstream, so a project-owned file that quietly became
-   upstream's copy is a stale declaration rather than a pass;
+   upstream's copy is a stale declaration rather than a pass. A declared *line-ending normalisation* is
+   the one path upstream's own blob can never be, so its record pins the bytes this tree stores: that
+   digest is what the check verifies (through git's index, or the file's own bytes without git), and
+   the path is a carried path for every rule but its bytes — present in the working tree, unmodified
+   relative to git's index, matched by no ignore rule, and its *working-tree executable bit* compared
+   with the file the repository ships, in both branches, because a checkout with `core.filemode=false`
+   records no mode edit for git to report;
 3. the generated snapshot's SHA-256 equals the constant compiled into the carried snapshot tool, so
    the build input is verified against upstream's own pin instead of a second hard-coded copy;
 4. `docs/upstream.md` records the pin and `cmd/ccc/pin.go` reports it, so the revision the binary

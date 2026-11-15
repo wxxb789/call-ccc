@@ -3,6 +3,7 @@ package ccc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -607,6 +608,215 @@ func TestArchiveReferenceDoesNotCrossProviders(t *testing.T) {
 	}
 }
 
+// TestDeletedSourcePathFallsBackToTheArchive pins what an inspection does when the source file an
+// archive was written from is gone: the archived session is reported, and the unreadable source is a
+// warning rather than the loss of the whole inspection.
+//
+// The provider's changed-path classifier answers for an absent path -- that is what keeps a watcher
+// from dropping a deletion -- so a deleted source used to be reported as a *source* the reference
+// names, and the read then failed while fingerprinting. The archive, which holds the session, was
+// never consulted: the error escaped `Inspect` before the archive was opened. A classification with no
+// file behind it is not a local source, so the reference resolves to nothing readable and the archive
+// answers.
+func TestDeletedSourcePathFallsBackToTheArchive(t *testing.T) {
+	// A throw-away provider root: deleting the transcript must not touch the committed fixture.
+	root := t.TempDir()
+	cfg := fixtureConfig(t)
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentClaude: {filepath.Join(root, "claude")}}
+	relative := filepath.Join("-home-user-code-example-api", claudeFixtureRef.ID+".jsonl")
+	source := filepath.Join(root, "claude", relative)
+	data, err := os.ReadFile(fixturePath(t, filepath.Join("claude", relative)))
+	if err != nil {
+		t.Fatalf("reading the committed fixture: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(source), 0o755); err != nil {
+		t.Fatalf("preparing the provider root: %v", err)
+	}
+	if err := os.WriteFile(source, data, 0o600); err != nil {
+		t.Fatalf("writing the transcript copy: %v", err)
+	}
+
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(cfg, archivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	ctx := context.Background()
+	if err := ingestor.IngestPaths(ctx, source); err != nil {
+		t.Fatalf("ingesting the transcript: %v", err)
+	}
+
+	// The session is archived; now its source file is gone, which is the state an archive exists for.
+	if err := os.Remove(source); err != nil {
+		t.Fatalf("removing the source transcript: %v", err)
+	}
+
+	inspection, err := Inspect(ctx, InspectOptions{
+		Ref:         Ref{Provider: "claude", ID: source},
+		Config:      cfg,
+		Reader:      NewSourceReader(cfg),
+		ArchivePath: archivePath,
+	})
+	if err != nil {
+		t.Fatalf("inspecting a deleted source path: %v", err)
+	}
+	if inspection.Source != nil {
+		t.Errorf("the inspection reported a source for a deleted path: %+v", inspection.Source.Identity)
+	}
+	if inspection.Archive == nil {
+		t.Fatalf("the archived session was not reported: %v", inspection.Warnings)
+	}
+	// Claude's stored ids carry no agent prefix, so the row the archive answers with is the fixture's
+	// own native id -- the same spelling the recorded oracle dump shows for this fixture.
+	if want := claudeFixtureRef.ID; inspection.Archive.Status.SessionID != want {
+		t.Errorf("the inspection reports %q, want %q", inspection.Archive.Status.SessionID, want)
+	}
+	warnings := strings.Join(inspection.Warnings, "\n")
+	if !strings.Contains(warnings, "no readable source session for claude:"+source) {
+		t.Errorf("the inspection does not say the source was unreadable: %v", inspection.Warnings)
+	}
+}
+
+// TestArchiveDoesNotAnswerACrossProviderHostQualifiedReference pins the provider half of the
+// host-qualified rule: the exact spelling a reference names is answered only by a row the requested
+// provider recorded.
+//
+// A remote row's id is `<host>~<the id it had there>` and Claude's stored ids carry no agent prefix,
+// so `codex:host-a~<a claude native id>` *is* the archive's spelling of a Claude row. An exact
+// `GetSession` answer returned without asking whose conversation it is made an inspection report the
+// Claude session under the Codex label and exit successfully, although no Codex session exists there.
+func TestArchiveDoesNotAnswerACrossProviderHostQualifiedReference(t *testing.T) {
+	dir := dbtest.MkdirTempWithCleanup(t)
+	archivePath := filepath.Join(dir, "sessions.db")
+	database := dbtest.OpenTestDBAt(t, archivePath)
+	remoteID := "host-a~" + claudeFixtureRef.ID
+	dbtest.SeedSessionWithMessages(t, database, remoteID, "example-api",
+		[]db.Message{dbtest.UserMsg(remoteID, 0, "the claude session recorded on host-a")},
+		func(session *db.Session) { session.Agent = "claude"; session.Machine = "host-a" })
+	if err := database.Close(); err != nil {
+		t.Fatalf("closing the seeded archive: %v", err)
+	}
+
+	ctx := context.Background()
+	archive, err := OpenArchive(ctx, archivePath)
+	if err != nil {
+		t.Fatalf("opening the archive: %v", err)
+	}
+	defer archive.Close()
+
+	crossed := Ref{Provider: "codex", ID: remoteID}
+	if status, found, err := archive.Status(ctx, crossed); err != nil || found {
+		t.Errorf("a codex reference resolved the claude row: found=%v err=%v status=%+v",
+			found, err, status)
+	}
+	if _, err := archive.Read(ctx, crossed); !errors.Is(err, ErrNotFound) {
+		t.Errorf("reading a codex reference answered %v, want a not-found answer", err)
+	}
+
+	// The row is answered for the provider that recorded it, so the rule is the provider and not the
+	// host: a reader that refused host-qualified references wholesale would pass the checks above.
+	status, found, err := archive.Status(ctx, Ref{Provider: "claude", ID: remoteID})
+	if err != nil || !found {
+		t.Fatalf("claude:%s answered found=%v err=%v, want the stored row", remoteID, found, err)
+	}
+	if status.SessionID != remoteID || status.Agent != "claude" {
+		t.Errorf("claude:%s resolved %+v, want the claude row it names", remoteID, status)
+	}
+}
+
+// TestArchiveFindsAHostQualifiedRowBeyondTheFirstCandidates pins that a filtered lookup does not
+// establish absence from a candidate list it truncated before filtering.
+//
+// The inherited suffix lookup answers "up to limit" rows, most recently active first, and this
+// package filters that answer by provider and host. With more rows ending in the native id than the
+// first limit, a row of the requested host that is older than all of them used to be filtered out of a
+// truncated answer: `codex:host-a~<native id>` misses the exact lookup (the stored spelling carries the
+// agent prefix) and then received only the newer hosts' rows, so the session it names was reported as
+// absent although it is in the archive. The lookup now grows its answer until the inherited query
+// reports it complete.
+func TestArchiveFindsAHostQualifiedRowBeyondTheFirstCandidates(t *testing.T) {
+	const native = "3f7a0c14-2b6d-4e59-8c1a-5d2f9e0b7a41"
+	dir := dbtest.MkdirTempWithCleanup(t)
+	archivePath := filepath.Join(dir, "sessions.db")
+	database := dbtest.OpenTestDBAt(t, archivePath)
+	seed := func(id, host, started, content string) {
+		t.Helper()
+		dbtest.SeedSessionWithMessages(t, database, id, "example-api",
+			[]db.Message{dbtest.UserMsg(id, 0, content)},
+			func(session *db.Session) {
+				session.Agent = "codex"
+				session.Machine = host
+				session.StartedAt = &started
+			})
+	}
+	// Six copies of the same native id from other hosts, every one more recently active than the row
+	// the reference names: the first page the inherited lookup answers is entirely theirs.
+	for index := range 6 {
+		host := fmt.Sprintf("host-z%d", index)
+		seed(host+"~codex:"+native, host, fmt.Sprintf("2026-10-%02dT10:00:00Z", index+8),
+			"a copy recorded on "+host)
+	}
+	requestedID := "host-a~codex:" + native
+	seed(requestedID, "host-a", "2026-10-01T10:00:00Z", "the session the reference names")
+	if err := database.Close(); err != nil {
+		t.Fatalf("closing the seeded archive: %v", err)
+	}
+
+	ctx := context.Background()
+	archive, err := OpenArchive(ctx, archivePath)
+	if err != nil {
+		t.Fatalf("opening the archive: %v", err)
+	}
+	defer archive.Close()
+
+	qualified := Ref{Provider: "codex", ID: "host-a~" + native}
+	status, found, err := archive.Status(ctx, qualified)
+	if err != nil {
+		t.Fatalf("status of %s: %v", qualified.ID, err)
+	}
+	if !found {
+		t.Fatalf("%s was reported absent although the archive holds %s", qualified.ID, requestedID)
+	}
+	if status.SessionID != requestedID {
+		t.Errorf("%s resolved %q, want %q", qualified.ID, status.SessionID, requestedID)
+	}
+}
+
+// TestArchiveDisclosesACandidateListItCannotComplete pins the other end of that lookup: when the
+// archive holds more rows ending in the requested native id than it reads, neither "not found" nor one
+// row is an answer the lookup can support, and it says so instead of asserting one.
+func TestArchiveDisclosesACandidateListItCannotComplete(t *testing.T) {
+	const native = "b41d9e37-0f5c-4a2b-8d63-1e7c9f0a2b58"
+	dir := dbtest.MkdirTempWithCleanup(t)
+	archivePath := filepath.Join(dir, "sessions.db")
+	database := dbtest.OpenTestDBAt(t, archivePath)
+	for index := range rawSuffixCandidateCap + 1 {
+		id := fmt.Sprintf("flood-%d~codex:%s", index, native)
+		dbtest.SeedSession(t, database, id, "example-api", func(session *db.Session) {
+			session.Agent = "codex"
+			session.Machine = fmt.Sprintf("flood-%d", index)
+		})
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("closing the seeded archive: %v", err)
+	}
+
+	ctx := context.Background()
+	archive, err := OpenArchive(ctx, archivePath)
+	if err != nil {
+		t.Fatalf("opening the archive: %v", err)
+	}
+	defer archive.Close()
+
+	_, found, err := archive.Status(ctx, Ref{Provider: "codex", ID: "host-a~" + native})
+	if found || err == nil {
+		t.Fatalf("a candidate list the lookup cannot complete answered found=%v err=%v", found, err)
+	}
+	if !errors.Is(err, ErrTruncatedCandidates) {
+		t.Errorf("the refusal is %v, want %v", err, ErrTruncatedCandidates)
+	}
+}
+
 // TestInspectReportsAnArchiveOnlySession pins the rule the plan states for a session that exists only
 // in an archive (an inspection of a provider root that no longer holds the source): the archived
 // session is reported, and the unreadable source is a warning rather than a silent absence.
@@ -643,6 +853,177 @@ func TestInspectReportsAnArchiveOnlySession(t *testing.T) {
 	if !strings.Contains(warnings, "no readable source session for claude:"+claudeFixtureRef.ID) {
 		t.Errorf("the inspection does not say the source was unreadable: %v", inspection.Warnings)
 	}
+}
+
+// TestInspectDoesNotCallAStaleArchiveFolded pins the comparison's folded-row rule: a tool-result-only
+// source row is counted as folded only when the archive actually holds that result.
+//
+// The archive here was written from the same session before its tool result arrived, so it keeps the
+// call and no outcome, and every message it holds also appears in the source read. The source's extra
+// row is a tool-result-only message -- the shape the comparison counts as folded -- so the row used to
+// be counted as stored inside its call: the two reads were reported as agreeing, and the inspection
+// said the result "is stored in the archive folded into their tool call" although the archive holds no
+// result event at all. The archived pairing decides now: the archived rows are searched for the result
+// the source row carries (its tool-use id and content size) before it is counted, and a result the
+// archive does not hold is a difference, named.
+func TestInspectDoesNotCallAStaleArchiveFolded(t *testing.T) {
+	cfgStale, staleFile := claudeTranscript(t, false)
+	cfgFull, _ := claudeTranscript(t, true)
+
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(cfgStale, archivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	ctx := context.Background()
+	if err := ingestor.IngestPaths(ctx, staleFile); err != nil {
+		t.Fatalf("ingesting the session without its result: %v", err)
+	}
+
+	inspection, err := Inspect(ctx, InspectOptions{
+		Ref:         claudeFixtureRef,
+		Config:      cfgFull,
+		Reader:      NewSourceReader(cfgFull),
+		ArchivePath: archivePath,
+	})
+	if err != nil {
+		t.Fatalf("inspecting the grown session against the stale archive: %v", err)
+	}
+	if inspection.Source == nil {
+		t.Fatalf("the grown source was not read: %v", inspection.Warnings)
+	}
+	if inspection.Archive == nil {
+		t.Fatalf("the archived session was not reported: %v", inspection.Warnings)
+	}
+	archived := inspection.Archive
+	if archived.SameMessagesAsSource == nil || *archived.SameMessagesAsSource {
+		t.Errorf("a stale archive was reported as holding every source message: same=%v warnings=%v",
+			archived.SameMessagesAsSource != nil && *archived.SameMessagesAsSource, archived.Warnings)
+	}
+	if archived.FoldedToolResults != 0 {
+		t.Errorf("the stale archive was credited with %d folded tool result(s)",
+			archived.FoldedToolResults)
+	}
+	warnings := strings.Join(inspection.Warnings, "\n")
+	if strings.Contains(warnings, "folded into their tool call") {
+		t.Errorf("the inspection claims a result the archive does not hold is stored in it: %v",
+			inspection.Warnings)
+	}
+	if !strings.Contains(warnings, "the archive does not hold") {
+		t.Errorf("the difference the comparison found is not named: %v", inspection.Warnings)
+	}
+}
+
+// TestCompareMessagesNamesEveryDifference pins the comparison's verdicts directly, on the message
+// lists rather than through a parsed session: a row only one read has is a difference, a row both have
+// that disagrees about role or content is a difference, and a tool-result-only source row is counted as
+// folded only when the archive holds that result somewhere -- as a result row of its own or as the
+// event the archive folded onto the call.
+//
+// The comparison is what the `agreement` line and every warning an inspection prints about an archive
+// come from, so each of those answers is pinned here rather than only through a fixture whose shape
+// happens to exercise one of them.
+func TestCompareMessagesNamesEveryDifference(t *testing.T) {
+	const toolUseID = "toolu_01Compared000000000000001"
+	base := []Message{
+		{Ordinal: 0, Role: "user", Content: "summarize the retry policy"},
+		{Ordinal: 1, Role: "assistant", Content: "I will read it first.",
+			ToolCalls: []ToolCall{{ToolUseID: toolUseID, Name: "Read"}}},
+	}
+	resultOnly := Message{Ordinal: 2, Role: "user",
+		ToolResults: []ToolResult{{ToolUseID: toolUseID, Source: "tool_result", ContentSize: 37}}}
+
+	t.Run("a message only the archive has", func(t *testing.T) {
+		archived := append(append([]Message{}, base...),
+			Message{Ordinal: 2, Role: "assistant", Content: "a row the source lost"})
+		same, folded, warnings := compareMessages(base, archived)
+		if same || folded != 0 {
+			t.Errorf("same=%v folded=%d, want a difference and nothing folded", same, folded)
+		}
+		if len(warnings) != 1 || !strings.Contains(warnings[0], "archive message #2 is not in the source read") {
+			t.Errorf("warnings = %v, want the archive-only row named", warnings)
+		}
+	})
+
+	t.Run("a message both reads have but disagree about", func(t *testing.T) {
+		archived := append([]Message{}, base...)
+		archived[0].Content = "summarize the retry policy, briefly"
+		same, folded, warnings := compareMessages(base, archived)
+		if same || folded != 0 {
+			t.Errorf("same=%v folded=%d, want a difference and nothing folded", same, folded)
+		}
+		if len(warnings) != 1 || !strings.Contains(warnings[0], "archive message #0 differs from the source") {
+			t.Errorf("warnings = %v, want the disagreeing row named", warnings)
+		}
+	})
+
+	t.Run("a text message only the source has", func(t *testing.T) {
+		source := append(append([]Message{}, base...), Message{Ordinal: 2, Role: "assistant", Content: "later"})
+		same, folded, warnings := compareMessages(source, base)
+		if same || folded != 0 {
+			t.Errorf("same=%v folded=%d, want a difference and nothing folded", same, folded)
+		}
+		if len(warnings) != 1 || !strings.Contains(warnings[0], "source message #2 is not in the archive") {
+			t.Errorf("warnings = %v, want the source-only row named", warnings)
+		}
+	})
+
+	t.Run("a result row the archive folded onto its call", func(t *testing.T) {
+		archived := append([]Message{}, base...)
+		archived[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "tool_result", ContentSize: 37}}
+		source := append(append([]Message{}, base...), resultOnly)
+		same, folded, warnings := compareMessages(source, archived)
+		if !same || folded != 1 || len(warnings) != 0 {
+			t.Errorf("same=%v folded=%d warnings=%v, want the row counted as folded and no warning",
+				same, folded, warnings)
+		}
+	})
+
+	t.Run("a result row the archive never received", func(t *testing.T) {
+		source := append(append([]Message{}, base...), resultOnly)
+		same, folded, warnings := compareMessages(source, base)
+		if same || folded != 0 {
+			t.Errorf("same=%v folded=%d, want the missing result to be a difference", same, folded)
+		}
+		if len(warnings) != 1 || !strings.Contains(warnings[0], toolUseID) {
+			t.Errorf("warnings = %v, want the unheld result named by its tool-use id", warnings)
+		}
+	})
+}
+
+// claudeTranscript writes one small Claude session -- a user turn and a `Read` tool call, and with
+// includeResult the result the call produced -- under a throw-away provider root, and returns that
+// root's configuration with the file's path. The two shapes are the same session at two moments, which
+// is what a test needs to hold a source read against an archive written before its latest row arrived.
+func claudeTranscript(t *testing.T, includeResult bool) (config.Config, string) {
+	t.Helper()
+	const toolUseID = "toolu_01Stale0000000000000001"
+	root := t.TempDir()
+	relative := filepath.Join("-home-user-code-example-api", claudeFixtureRef.ID+".jsonl")
+	path := filepath.Join(root, "claude", relative)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("preparing the provider root: %v", err)
+	}
+	lines := []string{
+		`{"cwd":"/home/user/code/example-api","message":{"content":"Summarize the retry policy."},` +
+			`"sessionId":"` + claudeFixtureRef.ID + `","timestamp":"2026-05-04T09:15:00.000Z",` +
+			`"type":"user","version":"1.0.30"}`,
+		`{"message":{"content":[{"id":"` + toolUseID + `","input":{"file_path":` +
+			`"/home/user/code/example-api/internal/retry/policy.go"},"name":"Read","type":"tool_use"}],` +
+			`"model":"claude-sonnet-4-5"},"timestamp":"2026-05-04T09:15:04.000Z",` +
+			`"type":"assistant","version":"1.0.30"}`,
+	}
+	if includeResult {
+		lines = append(lines, `{"message":{"content":[{"content":"package retry\n","tool_use_id":"`+
+			toolUseID+`","type":"tool_result"}]},"timestamp":"2026-05-04T09:15:06.000Z","type":"user"}`)
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("writing the transcript: %v", err)
+	}
+	cfg := fixtureConfig(t)
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentClaude: {filepath.Join(root, "claude")}}
+	return cfg, path
 }
 
 // TestArchiveReadNamesWhatItShows pins that an archive read reports what its rows show. The storage

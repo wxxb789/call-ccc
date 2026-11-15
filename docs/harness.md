@@ -76,8 +76,13 @@ It verifies, in this order:
    record pins, since upstream's own blob can never be what that path holds. A working-tree copy that
    still holds upstream's pre-normalisation bytes is *reported*, not failed: git reads that copy as
    clean and a checkout writes the declared bytes. Such a path is a carried path for the rules above
-   as well — present in the working tree, unmodified relative to git's index, and not matched by the
-   ignore rules — because the declaration is an allowance for its *bytes*, never for its absence;
+   as well — present in the working tree, unmodified relative to git's index, not matched by the
+   ignore rules, and its *working-tree executable bit* compared with the file this repository ships
+   (`worktree_mode`, the same check a carried file's mode gets, in both branches) — because the
+   declaration is an allowance for its *bytes*, never for its absence or its mode. The file's own bits
+   are what answers it: a checkout with `core.filemode=false` records no mode change for `git status`
+   or the index to report, so an executable bit flipped on that one path would leave every git-backed
+   predicate agreeing with a modified tree;
 7. the generated build input hashes to the SHA-256 that the carried snapshot tool pins in its own
    source, so the input is verified against upstream's pin rather than a second hard-coded copy.
 
@@ -161,9 +166,10 @@ suite answers it from the case's own stub bin and exercises the boundary itself 
 platform probe to its Windows answer (see the `selftest` section): no verdict in the suite depends on
 which platform is running it.
 
-Windows has no POSIX mode bits, so `parity` declines to check a carried file's executable bit there
-and says so in its output instead of failing every executable file; the *stored* mode still comes
-from git's own index, which records it on every platform.
+Windows has no POSIX mode bits, so `parity` declines to check a carried file's — or a stored-byte
+deviation's — working-tree executable bit there and says so in its output instead of failing every
+executable file; the *stored* mode still comes from git's own index, which records it on every
+platform.
 
 ## CI
 

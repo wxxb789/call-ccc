@@ -106,6 +106,52 @@ its fix is reverted (one executed mutation per rule):
   that names the side file, `Fidelity.UnresolvedToolOutputs` counts it and an inspection warns — while
   a result whose side file *is* readable carries the file's bytes and no flag (`fixtures_test.go`).
 
+Four more rules join them in the round-4 fix pass, on the same surface and with the same evidence shape
+(one executed mutation per rule, recorded in the stage report):
+
+- a **path reference whose provider answer is a classification of an absent path** is not a source. The
+  inherited classifier answers for a path that is not there on purpose — a watcher must not drop a
+  deletion — and taking that answer for a readable source made a relative reference ambiguous between
+  the root that holds the session and one that does not, and turned a source deleted after its archive
+  was written into a fingerprint error that lost the whole inspection. A candidate is kept when a file
+  stands behind it: the spelling the reference named, or the identity the provider maps that spelling to
+  (`fixtures_test.go`: an absent second root next to the one that holds the session, and a
+  `tool-results/` sidecar spelling that names no file resolving to its owning transcript;
+  `archive_test.go`: the deleted-source inspection reports the archived session and warns about the
+  source);
+- an **archive that stopped before a tool result arrived** is not reported as holding it. The comparison
+  counted every tool-result-only source row as folded into its call, so a stale archive was "agreeing
+  with the source read" and an inspection claimed the result *is stored in the archive folded into their
+  tool call* while the archive held only the call. The archived rows are searched for the result the
+  source row carries — its tool-use id and content size, the two fields both reads spell the same way —
+  before it is counted; a result the archive does not hold is a named difference
+  (`archive_test.go`: `TestInspectDoesNotCallAStaleArchiveFolded`, over an archive written from the same
+  session before the result arrived, and `TestCompareMessagesNamesEveryDifference`, which pins each
+  verdict of the comparison directly);
+- a **host-qualified reference is answered only by the provider it names**: the archive's own spelling
+  `<host>~<the id it had there>` was returned for any provider, and Claude's stored ids carry no agent
+  prefix, so `codex:host-a~<a claude native id>` resolved the Claude row and an inspection labelled
+  another product's conversation "Codex". The exact answer is now filtered by the row's own `agent`
+  column, and a row of another provider falls through to the provider-and-host-filtered lookup
+  (`archive_test.go`: the cross-provider case, with the same row still answered for `claude:`);
+- a **candidate list the inherited lookup cannot complete is refused, not read as an answer**: the
+  suffix lookup answers a limited number of rows before this code filters them by provider and host, so
+  a requested host's row older than the first page was reported absent although the archive held it. The
+  lookup now grows its page until the inherited query reports it complete, and a list that is still full
+  at the cap is answered with `ErrTruncatedCandidates` — neither "not found" nor one row is supportable
+  from a subset (`archive_test.go`: the row beyond six other hosts' copies, and the saturated list;
+  decision recorded as Q-0001-13, and Q-0001-14 for the absent-candidate rule above).
+
+That pass was run as a systematic close-out of the functions it touched: every rule those functions state
+was mutated (the rule's line disabled, the test that names it run, the line restored) to see whether the
+test actually fails without it. Four rules survived their mutation and are now pinned by a case each —
+the per-spelling ambiguity report, the acceptance route that keeps a store member behind a present
+container path, the working-tree digest (a same-size edit), and a stored deviation git's index does not
+hold — and one rule was found redundant rather than unpinned: in the bytes-only branch a hash that is
+neither the stored nor upstream's bytes is caught twice, by the rule that names it there and by the one
+that follows, so disabling either alone changes the failure's wording and nothing else (the stage report
+carries the sweep and each observed failure).
+
 ## 2. A real source-to-archive parse and a subsequent archive read agree with the pinned implementation
 
 The oracle (`internal/ccc/parity`) parses a fixture, writes it through the inherited sync engine into
@@ -216,6 +262,21 @@ already claimed and nothing exercised: a carried path present on disk but absent
 (absent from a clone), a record whose pinned size is not its bytes' size, and a symlink record whose
 path became a directory.
 
+The round-4 fix pass closed the one gap that rule left: the path carried with a declared line-ending
+normalisation was checked for its stored bytes (the index where git answers, its own bytes where it
+does not) and for its index mode, but not for the executable bit of the file this repository ships. On a
+POSIX checkout with `core.filemode=false` — and on any filesystem that keeps no mode bits — flipping
+that bit leaves the declared digest, git's index mode and `git status` all saying "unchanged", so the
+check accepted a modified carried path while its own documentation named it covered. The bit is now
+asked of the file itself by the same helper a carried file's mode goes through (`worktree_mode`,
+`scripts/upstream-parity.py`), in both branches; a run on a platform without mode bits counts that path
+in its disclosure too. Three cases in `scripts/tests/test_upstream_parity.py` pin the rule — the
+bytes-only branch, the git-backed branch with a pinned index mode and a clean status (the finding's own
+scenario), and the disclosure — and each fails when the mode check is removed. The same pass pinned the
+working-tree *digest* rule with a same-size edit (`test_a_same_size_worktree_edit_is_caught_by_its_bytes`):
+every earlier edited-file case changed the file's length, so the size rule alone failed them and the
+hash could be removed without a case noticing.
+
 ## 4. The continuation functionality is callable without CLI types, and the CLI is standalone
 
 Engine packages: `internal/ccc` (Conversation document, `SourceReader`, `Archive`/`Ingestor`,
@@ -247,30 +308,38 @@ gate: go=<go>/bin/go targets=./cmd/ccc/... ./internal/ccc/...
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 110 tests in 4.818s (rc=0)
+  PASS     selftest Ran 115 tests in 5.153s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 25 project-owned prefix(es); files seen by git: 5613 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     secrets  no leaks found in 60 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
 
 The gate truncates the middle of a long step detail, which is why the `parity` line above opens with `…`;
-the same run's full summary is quoted in §3. The `selftest` count is 110 in this run: the round-2 fix
+the same run's full summary is quoted in §3. The `selftest` count is 115 in this run: the round-2 fix
 pass added the four carried-path cases for a declared line-ending normalisation (deleted from the
 working tree, modified in it, mode changed in git's index, matched by an ignore rule) and the case that
 pins the incomplete verdict for a tree git cannot enumerate, bringing it to 104; the round-3 fix pass
 added six more in `scripts/tests/test_upstream_parity.py` — three for a working tree `git status`
 cannot report (bytes, shape and executable bit, each removed-fix-mutation-tested), one for a carried
 path present on disk but absent from git's index, one for a record whose pinned size is not its bytes'
-size, and one for a symlink record whose path became a directory (74 → 80 parity cases). The Go side
-moved with it: `internal/ccc` went from 17 to 24 test functions (`archive_test.go` 13 → 16,
-`fixtures_test.go` 4 → 8), and `cmd/ccc`'s tests are unchanged.
+size, and one for a symlink record whose path became a directory (74 → 80 parity cases); the round-4 fix
+pass added five — the stored-byte deviation's working-tree executable bit in the bytes-only branch, the
+same rule through the git-backed branch with a pinned index mode and a clean status, the no-mode-bits
+disclosure counting that path, a same-size working-tree edit that only the digest can catch, and a
+stored deviation the index does not hold (80 → 85 parity cases). The Go side moved with each pass:
+`internal/ccc` went from 17 to 24 test functions in round 3 (`archive_test.go` 13 → 16,
+`fixtures_test.go` 4 → 8) and to 33 in round 4 (`archive_test.go` 16 → 22, `fixtures_test.go` 8 → 11),
+and `cmd/ccc`'s tests are unchanged.
 
 Wall clock for the whole gate on this host: 19–21 s with warm caches across the increment's earlier
 runs, 25 s to 156 s across the round-2 fix pass's runs (the 156 s run followed a cold Go build cache, so
-`build`/`vet`/`test` recompiled the inherited packages), and 21–23 s across the round-3 runs, whose
-`selftest` step took 4.3 s to 5.3 s. The `secrets` count is the files under the manifest's
-project-owned prefixes, which includes the harness's own `scripts/tests/__pycache__/*.pyc` once the
-suite has run here (58 without them, 60 with the two this run's selftest left behind). `gofmt` covers
+`build`/`vet`/`test` recompiled the inherited packages), 21–23 s across the round-3 runs, and 22 s, 26 s
+and 53 s across the three round-4 runs. The 53 s one ran while the host was busy, which is visible in
+its `selftest` step (23.6 s against 5.1 s and 5.2 s), while the suite on its own measures 5.4–6.4 s over
+two consecutive runs, so the difference is load and not a test that grew slow. The `secrets` count is
+the files under the manifest's project-owned prefixes, which includes the harness's own
+`scripts/tests/__pycache__/*.pyc` once the suite has run here (58 without them, 60 with the two this
+run's selftest left behind). `gofmt` covers
 the carried tree as well (3574 Go files); `build`/`vet`/`test` cover the three call/ccc packages, which
 compile the inherited packages they depend on.
 
@@ -349,7 +418,25 @@ upstream's CI; `docs/harness.md` states this, and `parity` covers those files at
   provider, which is what lets `host~<native id>` reach a row stored as `host~<agent>:<native id>`. A
   host the archive has nothing from resolves nothing — never another host's row and never the local
   row of that native id — and two rows of the requested host are reported as candidates rather than
-  picked (decision recorded as Q-0001-11).
+  picked (decision recorded as Q-0001-11). The exact answer is answered only for the provider the
+  reference names, and the fallback reads its candidate list in full before filtering it: a list that is
+  still full at 500 rows is refused with `ErrTruncatedCandidates` instead of being read as absence or
+  uniqueness (Q-0001-13), so an archive holding more than 500 rows that end in one native id has no
+  answer for such a reference — a shape a real archive would only reach by syncing hundreds of copies of
+  one session.
+- **A source path this process cannot stat is treated as a source that is not there.** The changed-path
+  classification is kept only when a file stands behind it (the spelling the reference named, or the
+  identity the provider maps it to — Q-0001-14), so a path whose permissions hide it from this process
+  answers "no readable source session" and the archive, if it holds the session, is reported instead of
+  a read failing part-way. The predicate is `parser.IsRegularFile`, the same one the inherited providers
+  apply to a stored path.
+- **A tool result the archive stores only as a call row with neither content nor length cannot be
+  recognized as held.** The comparison looks for the result the source row carries by tool-use id and
+  content size, in the message's result rows, in the events the archive folded onto the call, and in the
+  call row's own result content; a result stored as a call with an empty body *and* a zero length is
+  indistinguishable from a call with no result at all, so an inspection reports that row as a
+  difference. Every fixture and every provider route measured here records a length, which is what makes
+  the answer exact for them.
 
 ## 9. Re-deriving this record
 

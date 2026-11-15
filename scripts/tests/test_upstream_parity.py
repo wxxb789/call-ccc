@@ -498,6 +498,39 @@ class StoredDeviationCase(ParityTreeCase, unittest.TestCase):
         self.assert_failed(code, output, "README.md")
         self.assertIn("ignore rules", output)
 
+    def test_a_stored_deviation_whose_executable_bit_changed_fails(self) -> None:
+        """The bytes it stores are verified, but the copy this tree ships is checked for its mode too.
+
+        A declared normalisation is a carried path for every rule but the byte comparison, and the
+        bytes cannot answer this: the file holds exactly the declared digest while its mode has been
+        changed, and no git-backed answer has to disagree for that to be a difference (a checkout with
+        ``core.filemode=false`` never records one). The case below reaches the same rule through the
+        git-backed branch, where the index mode and a clean status would both pass it.
+        """
+        if os.name == "nt":
+            self.assertEqual(self.tree.parity.executable_bit_supported(), False)
+            return
+        self.tree.add_stored_deviation("README.md", self.upstream, self.stored)
+        path = self.tree.root / "README.md"
+        path.chmod(path.stat().st_mode | 0o111)
+        code, output = self.tree.run_parity(executable_bit_supported=lambda: True)
+        self.assert_failed(code, output, "README.md")
+        self.assertIn("changed mode", output)
+        self.assertIn("executable bit", output)
+
+    def test_a_platform_without_mode_bits_discloses_a_stored_deviations_mode_too(self) -> None:
+        """The disclosure covers every carried path, not only the ones ``check_files`` iterates.
+
+        The tree carries three files and one stored deviation; a run that only counted the files would
+        report three here, and the deviated path's own bit would be silently unchecked rather than
+        disclosed as unverifiable.
+        """
+        self.tree.add_stored_deviation("README.md", self.upstream, self.stored)
+        code, output = self.tree.run_parity(executable_bit_supported=lambda: False)
+        self.assert_clean(code, output)
+        expected = len(self.tree.carried) + len(self.tree.deviations)
+        self.assertIn(f"executable bits not verified for {expected} file(s)", output)
+
 
 class ScriptedGit:
     """The git queries the checker makes, answered from a scripted repository state.
@@ -592,6 +625,18 @@ class GitBranchCase(ParityTreeCase, unittest.TestCase):
         answering "nothing modified" is exactly the case this pins.
         """
         self.tree.break_carried("src/a.txt", b"alpha, locally rewritten\n")
+        code, output = self.run_with_git(porcelain=b"")
+        self.assert_failed(code, output, "src/a.txt")
+        self.assertIn("differ from the pinned revision", output)
+
+    def test_a_same_size_worktree_edit_is_caught_by_its_bytes(self) -> None:
+        """The digest decides, not the size: an edit that keeps the length has to be caught too.
+
+        An edited file usually changes length, so a check that compared sizes (and trusted git) would
+        still fail those cases. This one is the same size as the pinned bytes and is visible only to
+        the hash of the copy this repository ships, with git's index and status both scripted clean.
+        """
+        self.tree.break_carried("src/a.txt", b"omega\n")  # six bytes, like the pinned b"alpha\n"
         code, output = self.run_with_git(porcelain=b"")
         self.assert_failed(code, output, "src/a.txt")
         self.assertIn("differ from the pinned revision", output)
@@ -696,6 +741,44 @@ class GitBranchCase(ParityTreeCase, unittest.TestCase):
                                        StoredDeviationCase.stored)
         self.stage("README.md", StoredDeviationCase.stored, mode="100755")
         self.assert_failed(*self.run_with_git(), "git stores mode 100755")
+
+    def test_a_carried_normalisation_absent_from_the_index_fails(self) -> None:
+        """A path this tree carries has to be what git stores, or a fresh clone does not receive it.
+
+        The working tree holds the declared bytes and the record pins them, but the path is not in the
+        index -- an unstaged addition, or one removed from it -- so the clone that receives this tree
+        would receive no file there at all.
+        """
+        self.tree.add_stored_deviation("README.md", StoredDeviationCase.upstream,
+                                       StoredDeviationCase.stored)
+        self.stage("README.md", StoredDeviationCase.stored)
+        del self.index["README.md"]
+        self.assert_failed(*self.run_with_git(), "absent from git's index")
+
+    def test_a_carried_normalisation_whose_worktree_mode_changed_is_still_caught(self) -> None:
+        """The finding's scenario: git's index and status both keep answering as if nothing changed.
+
+        On a POSIX checkout with ``core.filemode=false`` -- and wherever the filesystem keeps no mode
+        bits -- flipping the executable bit on the normalised carried path leaves every git-backed
+        predicate agreeing: the file hashes to the declared stored digest, the index still records the
+        record's mode, and ``git status`` reports nothing. The working tree's own mode is therefore
+        asked of the file itself for that path too, which is what makes the declared allowance cover
+        its bytes and nothing else.
+        """
+        if os.name == "nt":
+            self.assertEqual(self.tree.parity.executable_bit_supported(), False)
+            return
+        self.tree.add_stored_deviation("README.md", StoredDeviationCase.upstream,
+                                       StoredDeviationCase.stored)
+        self.stage("README.md", StoredDeviationCase.stored)
+        path = self.tree.root / "README.md"
+        path.chmod(path.stat().st_mode | 0o111)
+        # The mode check is forced on, like the other mode cases: the rule under test is the
+        # comparison, not what this host's filesystem reports.
+        git = ScriptedGit(tracked=self.tracked, index=self.index, porcelain=b"")
+        code, output = self.tree.run_parity(subprocess=git, executable_bit_supported=lambda: True)
+        self.assert_failed(code, output, "README.md")
+        self.assertIn("changed mode", output)
 
 
 class ImportCase(unittest.TestCase):

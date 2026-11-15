@@ -32,7 +32,9 @@ clone receives. It then fails if a manifest path is missing or modified in the w
 declared deviation has quietly turned back into upstream's copy — staged *or* only written on disk,
 since the gate reads the working tree — or stops holding the stored bytes its record pins (that path is
 a carried path for everything but the byte comparison: it must also be present in the working tree,
-unmodified relative to git's index, and matched by no ignore rule), if the generated input stops hashing
+unmodified relative to git's index, its working-tree executable bit must be the record's — checked on
+the file itself, because a checkout with `core.filemode=false` leaves that edit out of git's index and
+status — and it must be matched by no ignore rule), if the generated input stops hashing
 to the value the carried snapshot tool pins, if `docs/upstream.md` or `cmd/ccc/pin.go` disagree with the
 manifest about the revision, or if anything git would add sits inside the tree without a manifest record
 or a project-owned prefix. A `git status` or ignore probe that cannot answer fails the check: "nothing

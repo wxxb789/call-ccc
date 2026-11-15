@@ -21,6 +21,28 @@ import (
 // error condition for a source-side inspection: a session can be inspected before it is ever synced.
 var ErrNoArchive = errors.New("no archive at this path")
 
+// ErrTruncatedCandidates reports a reference whose candidate list the inherited suffix lookup could
+// not complete: the archive holds more rows whose id ends in the requested native id than this lookup
+// reads. Neither "not found" nor a single row is an answer such a list can support -- more rows may
+// carry the requested provider and host beyond it -- so the lookup refuses instead of guessing.
+var ErrTruncatedCandidates = errors.New("more sessions end in this identity than a lookup can read")
+
+// How the inherited raw-suffix lookup is asked for candidates. It answers "up to limit" rows, most
+// recently active first (db.FindSessionIDsByRawSuffix), and every rule here *filters* that answer by
+// provider and host: a filtered answer is an answer only when the unfiltered one is complete. The
+// lookup is therefore first asked for a handful of rows and then asked again, four times wider each
+// time, until the inherited query answers fewer rows than it was allowed -- which is its own way of
+// saying it had nothing more to give -- or until the cap, where the caller is told the list is
+// truncated rather than handed a subset it cannot tell apart from the whole.
+const (
+	// rawSuffixCandidateLimit is the first page size asked for.
+	rawSuffixCandidateLimit = 5
+	// rawSuffixCandidateCap bounds the growth: an archive holding more rows than this that end in one
+	// native id (each of them a separate remote copy or fork of one session) is not a shape a
+	// reference can be resolved against by reading a subset of them.
+	rawSuffixCandidateCap = 500
+)
+
 // Archive is a read-only view of an AgentsView SQLite archive. It never migrates, writes or fences
 // the archive: the inherited read-only open needs no writer lock, so an inspection cannot disturb a
 // running AgentsView daemon or the archive itself.
@@ -114,11 +136,12 @@ type ArchiveStatus struct {
 // An identifier is looked up as the archive's `<agent>:<native id>` spelling first and then by the
 // inherited raw-suffix answer, so a native id resolves even when the stored one carries an agent or
 // machine prefix; that answer is narrowed to the rows this provider recorded (sessionIDsForProvider),
-// because it has no agent predicate of its own. A reference that names a file resolves through the
-// file the session was read from (`sessions.file_path`, exact path and agent): the stored id is
-// `<agent>:<native id>`, so a path can never be one. A reference that names a host explicitly is
-// resolved against that host and nothing else (resolveHostQualified), and more than one candidate is
-// reported as ambiguous instead of picking one.
+// because it has no agent predicate of its own, and it is read in full before those filters decide
+// anything (sessionIDsByRawSuffix: a truncated candidate list establishes nothing). A reference that
+// names a file resolves through the file the session was read from (`sessions.file_path`, exact path
+// and agent): the stored id is `<agent>:<native id>`, so a path can never be one. A reference that
+// names a host explicitly is resolved against that host and nothing else (resolveHostQualified), and
+// more than one candidate is reported as ambiguous instead of picking one.
 func (a *Archive) resolveSessionID(ctx context.Context, ref Ref) (string, bool, error) {
 	if strings.TrimSpace(ref.ID) == "" {
 		return "", false, fmt.Errorf("%s: empty session id", ref.Provider)
@@ -148,7 +171,7 @@ func (a *Archive) resolveSessionID(ctx context.Context, ref Ref) (string, bool, 
 		return session.ID, true, nil
 	}
 	raw := rawSessionID(ref)
-	matches, err := a.database.FindSessionIDsByRawSuffix(ctx, raw, 5)
+	matches, err := a.sessionIDsByRawSuffix(ctx, ref, raw)
 	if err != nil {
 		return "", false, err
 	}
@@ -172,12 +195,18 @@ func (a *Archive) resolveSessionID(ctx context.Context, ref Ref) (string, bool, 
 // Upstream writes a session synced from another machine as `<host>~<the id it had there>`
 // (internal/remotesync/import.go rebuilds stored ids that way) and treats the host as part of the
 // session's identity (parser.StripHostPrefix). The archive's own spelling is therefore tried first,
-// exactly as given. A miss is then answered by the inherited suffix lookup narrowed to the rows that
-// carry the requested host -- and to the requested provider -- so a caller who writes `host~<native
-// id>` where the stored id is `host~<agent>:<native id>` still resolves, while a row from another
-// host, or a *local* row that happens to share the native id, is never reported as the session the
-// reference named. Both of those are different conversations, and an inspection that returned one
-// would be reading the wrong session rather than reporting an absent one.
+// exactly as given -- and answered only when the row it names was recorded by the provider the
+// reference asks for. A stored id is `<agent>:<native id>`, and a provider that stores its ids without
+// that prefix (Claude does) makes the host-qualified spelling one that *every* provider's reference
+// can name: an exact answer returned without asking whose conversation it is told an inspection that
+// `codex:host-a~<a claude id>` was a Codex session. A miss, or a row of another agent, is then
+// answered by the inherited suffix lookup -- read in full before anything is filtered out of it, so
+// an answer is never established from a truncated candidate list (sessionIDsByRawSuffix) -- narrowed
+// to the rows that carry the requested host *and* the requested provider, so a caller who writes
+// `host~<native id>` where the stored id is `host~<agent>:<native id>` still resolves, while a row
+// from another host, or a *local* row that happens to share the native id, is never reported as the
+// session the reference named. All of those are different conversations, and an inspection that
+// returned one would be reading the wrong session rather than reporting an absent one.
 func (a *Archive) resolveHostQualified(
 	ctx context.Context, ref Ref, host, hostID string,
 ) (string, bool, error) {
@@ -185,10 +214,16 @@ func (a *Archive) resolveHostQualified(
 	if err != nil {
 		return "", false, err
 	}
-	if session != nil {
+	// The archive's own spelling answers for the provider it was recorded under and no other: a
+	// remote row's id is `<host>~<the id it had there>`, and a provider whose stored ids carry no
+	// agent prefix (Claude's do not) makes this exact spelling one that *any* provider's reference can
+	// name. Returning it unasked is how `codex:host-a~<a claude id>` resolved the Claude row and an
+	// inspection reported another provider's conversation under the requested label; a row of another
+	// agent falls through to the filtered lookup below, which is where the provider predicate lives.
+	if session != nil && session.Agent == ref.Provider {
 		return session.ID, true, nil
 	}
-	matches, err := a.database.FindSessionIDsByRawSuffix(ctx, rawSessionID(ref), 5)
+	matches, err := a.sessionIDsByRawSuffix(ctx, ref, rawSessionID(ref))
 	if err != nil {
 		return "", false, err
 	}
@@ -204,6 +239,35 @@ func (a *Archive) resolveHostQualified(
 		return matches[0], true, nil
 	default:
 		return "", false, &AmbiguousError{Ref: ref, Candidates: matches}
+	}
+}
+
+// sessionIDsByRawSuffix answers the stored ids ending in a reference's native id, or reports that the
+// inherited lookup could not answer them completely.
+//
+// The inherited query takes a limit and answers the most recently active rows up to it; the caller's
+// provider and host filters are applied afterwards, so a limit that cut the answer short would let
+// those filters establish an absence out of a subset. The query is therefore re-asked with a wider
+// limit until it returns fewer rows than it was allowed, and a list that is still full at the cap is
+// reported as ErrTruncatedCandidates rather than passed on as if it were the whole answer.
+func (a *Archive) sessionIDsByRawSuffix(ctx context.Context, ref Ref, raw string) ([]string, error) {
+	limit := rawSuffixCandidateLimit
+	for {
+		asked := min(limit, rawSuffixCandidateCap)
+		ids, err := a.database.FindSessionIDsByRawSuffix(ctx, raw, asked)
+		if err != nil {
+			return nil, err
+		}
+		if len(ids) < asked {
+			return ids, nil
+		}
+		if asked == rawSuffixCandidateCap {
+			return nil, fmt.Errorf(
+				"%w: %s matches %d stored id(s) ending in %q, which is as many as this lookup reads; "+
+					"name the session's stored id, with its agent and host prefix, to resolve it",
+				ErrTruncatedCandidates, ref.Provider+":"+ref.ID, len(ids), raw)
+		}
+		limit = asked * 4
 	}
 }
 

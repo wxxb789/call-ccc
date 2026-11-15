@@ -169,10 +169,16 @@ func referencePaths(roots []string, id string) []string {
 //
 // Each spelling is put through the provider's own two questions in the same order: what a stored path
 // resolves to, and -- for a spelling no stored path claims -- what a changed path of that name
-// classifies as. A classification that yields several sources for one spelling is reported as it
-// stands, because the provider's answer is "these transcripts read this path" and the reference names
-// one session; when several spellings resolve, the caller is told which sessions the reference could
-// mean rather than being handed the first.
+// classifies as. A classification is not a readable source on its own: the inherited classifiers
+// answer for a path that is *absent* as well as for one that is there (jsonlMissingPathFallbackAllowed
+// exists so a watcher does not drop a deletion), so a candidate no file stands behind is dropped
+// (readableSources) -- otherwise a relative reference would be ambiguous between the root that holds
+// the session and one that does not, and a source deleted after its archive was written would be
+// reported as readable and then fail while fingerprinting instead of falling back to the archive. A
+// classification that yields several readable sources for one spelling is reported as it stands,
+// because the provider's answer is "these transcripts read this path" and the reference names one
+// session; when several spellings resolve, the caller is told which sessions the reference could mean
+// rather than being handed the first.
 func resolvePathReference(
 	ctx context.Context, provider parser.Provider, paths []string, ref Ref,
 ) (parser.SourceRef, bool, error) {
@@ -190,6 +196,7 @@ func resolvePathReference(
 			if err != nil {
 				return parser.SourceRef{}, false, err
 			}
+			candidates = readableSources(path, candidates)
 			switch len(candidates) {
 			case 0:
 				continue
@@ -211,6 +218,29 @@ func resolvePathReference(
 	default:
 		return parser.SourceRef{}, false, &AmbiguousError{Ref: ref, Candidates: displayedPaths(sources)}
 	}
+}
+
+// readableSources keeps the changed-path classifications a file actually stands behind.
+//
+// The inherited providers classify a path that does not exist -- deliberately, so a deletion is not
+// dropped by the watcher -- and construct a source from the path's own layout to do it. Such a
+// classification is not a source this reader can read: `Fingerprint` stats the file and fails, so the
+// reference would be answered with a source that cannot be read, and a caller would lose the archive
+// that holds the session to that error. A candidate is therefore kept when a regular file stands
+// behind it -- the spelling that was asked about, or the path the provider says that spelling is (a
+// companion file's owning transcript, a store member's container file) -- and the same predicate the
+// providers' own stored-path lookup applies is what decides (parser.IsRegularFile, which is what
+// keeps a changed *present* path's classification): a reference no file stands behind resolves
+// nothing here, which is what lets an inspection report the archive instead.
+func readableSources(spelling string, candidates []parser.SourceRef) []parser.SourceRef {
+	spellingPresent := parser.IsRegularFile(spelling)
+	kept := make([]parser.SourceRef, 0, len(candidates))
+	for _, candidate := range candidates {
+		if spellingPresent || parser.IsRegularFile(candidate.FingerprintKey) {
+			kept = append(kept, candidate)
+		}
+	}
+	return kept
 }
 
 // displayedPaths names sources by the path a caller can act on, for an ambiguity report.

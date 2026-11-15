@@ -193,13 +193,17 @@ func archiveReport(
 
 // compareMessages reports whether every archived message also appears in the source at the same
 // ordinal, and names each message that does not. Messages whose content the archive stores elsewhere
-// (a tool-result-only row, folded into its call) are counted, not treated as a mismatch.
+// (a tool-result-only row, folded into its call) are counted, not treated as a mismatch -- but only
+// when the archive really holds that result: a stale archive that stopped before the result arrived
+// keeps its call and no outcome, and counting the source's row as folded would report evidence the
+// archive does not have.
 func compareMessages(source, archived []Message) (bool, int, []string) {
 	byOrdinal := make(map[int]Message, len(source))
 	for _, message := range source {
 		byOrdinal[message.Ordinal] = message
 	}
 	archivedOrdinals := make(map[int]struct{}, len(archived))
+	results := archivedResultKeys(archived)
 	same, folded := true, 0
 	var warnings []string
 	for _, message := range archived {
@@ -223,7 +227,15 @@ func compareMessages(source, archived []Message) (bool, int, []string) {
 			continue
 		}
 		if len(message.ToolResults) > 0 && strings.TrimSpace(message.Content) == "" {
-			folded++
+			missing := unheldResults(message.ToolResults, results)
+			if len(missing) == 0 {
+				folded++
+				continue
+			}
+			same = false
+			warnings = append(warnings, fmt.Sprintf(
+				"source message #%d carries tool result(s) the archive does not hold: %s",
+				message.Ordinal, strings.Join(missing, ", ")))
 			continue
 		}
 		same = false
@@ -231,6 +243,51 @@ func compareMessages(source, archived []Message) (bool, int, []string) {
 			"source message #%d is not in the archive", message.Ordinal))
 	}
 	return same, folded, warnings
+}
+
+// resultKey identifies a tool result the way both reads spell it: the call it answers and the size of
+// the content that came back. The body is deliberately not part of it -- an archive read may show a
+// result whose body its writer did not store (a blocked category keeps the length and a digest) while
+// the source read has the body -- and the size is what tells two rows of one id apart.
+type resultKey struct {
+	toolUseID string
+	size      int
+}
+
+// archivedResultKeys collects every tool result the archived messages hold, wherever the archive keeps
+// it: as a result row of its own, as an event folded onto its call, or as the content a call row
+// carries directly (a call whose outcome the archive stored on the call and nowhere else).
+func archivedResultKeys(messages []Message) map[resultKey]struct{} {
+	keys := make(map[resultKey]struct{})
+	for _, message := range messages {
+		for _, result := range message.ToolResults {
+			keys[resultKey{toolUseID: result.ToolUseID, size: result.ContentSize}] = struct{}{}
+		}
+		for _, call := range message.ToolCalls {
+			if call.ResultContent != "" || call.ResultContentSize > 0 {
+				keys[resultKey{toolUseID: call.ToolUseID, size: call.ResultContentSize}] = struct{}{}
+			}
+		}
+	}
+	return keys
+}
+
+// unheldResults names the tool results of a source message the archived messages do not hold, so a
+// row whose content is stored elsewhere can be told from one the archive never received.
+func unheldResults(results []ToolResult, archived map[resultKey]struct{}) []string {
+	var missing []string
+	for _, result := range results {
+		if _, ok := archived[resultKey{toolUseID: result.ToolUseID, size: result.ContentSize}]; ok {
+			continue
+		}
+		if result.ToolUseID != "" {
+			missing = append(missing, result.ToolUseID)
+			continue
+		}
+		missing = append(missing,
+			fmt.Sprintf("a %d-byte result with no tool-use id", result.ContentSize))
+	}
+	return missing
 }
 
 // contentWarnings names what an archive read could not show, because a caller that treats a narrowed

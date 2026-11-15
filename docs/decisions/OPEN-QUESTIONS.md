@@ -268,3 +268,53 @@ supersede it with a newer one and say which it supersedes.
   output parsed for lowercase flags and `S`).
 - **Settled by:** whether a gate run's budget can afford the hash pass on the largest tree the project
   ever carries; today it is under a second against a gate that takes ~23 s.
+
+## Q-0001-13 — What the archive answers when a native id has more candidate rows than one lookup reads
+
+- **Status:** resolved (default taken)
+- **Question:** the round-4 review (finding 4) measured that the inherited raw-suffix lookup is asked
+  with `LIMIT 5` and *then* filtered by provider and host, so `codex:host-a~<native id>` — a reference
+  the archive can answer — was reported as absent whenever the requested row was older than five other
+  hosts' copies of that native id. The answer can be established by reading more of the query's answer,
+  by reporting the truncated list as candidates, or by refusing to answer.
+- **Default taken:** read more, then refuse if that is not enough. The lookup starts at the previous
+  page size and re-asks four times wider until the inherited query returns fewer rows than it was
+  allowed — the query's own way of saying it had nothing more — or reaches a cap of 500 rows, where the
+  reference is answered with `ErrTruncatedCandidates` instead of "not found" or a single row. Any
+  filtered answer is only an answer when the unfiltered one is complete: "not found" asserts absence and
+  a single candidate asserts uniqueness, and a truncated list supports neither. Both call sites (the
+  local suffix fallback and the host-qualified one) share the helper, and 500 duplicates of one native
+  id in one archive is not a shape a reference is resolved against by reading a subset of them.
+- **Reversal:** return the truncated rows as an `AmbiguousError`'s candidates with a note that the list
+  is not complete (one `switch` at the two call sites), or drop the cap and read until the query is
+  exhausted (one constant), which trades a bounded read for an answer on absurd archives.
+- **Settled by:** whether the operator prefers a refusal on a >500-duplicate archive over a bounded read
+  of it; the reference form the finding names (`codex:host-a~<native id>`) works either way for the
+  realistic case of a handful of hosts.
+
+## Q-0001-14 — Which provider answers count as a local source a reference can read
+
+- **Status:** resolved (default taken)
+- **Question:** the round-4 review (finding 2) measured that `SourcesForChangedPath` deliberately
+  classifies a path that is *absent* (so the watcher does not drop a deletion), and that this reader
+  took that classification for a source: a relative reference became ambiguous between the root that
+  holds the session and one that does not, and a source deleted after its archive was written failed
+  while fingerprinting instead of reporting the archive. The alternatives are to accept a
+  classification as a source (today), to require the path the reference named to exist, or to require a
+  file to stand behind the source the provider names.
+- **Default taken:** require a file, either way round — a candidate is kept when the spelling the
+  reference named is a regular file (`parser.IsRegularFile`, the same predicate the providers' own
+  stored-path lookup applies) or when the candidate's own identity is one. The second route is what
+  keeps a provider's mapping from a sidecar or container path to an existing transcript, and a
+  provider's store member whose identity is virtual (`<container>#<session>`) is kept through the first,
+  because the container file the reference names is there. An absent path therefore resolves to no local
+  source, which is what lets an inspection warn and report the archive instead of losing it to a
+  fingerprint error. `docs/evidence/0001-…md` §8 states the limit this leaves for a source that exists
+  but cannot be stat'ed at all.
+- **Reversal:** delete the `readableSources` call in `resolvePathReference` (one line: the provider's
+  classification is taken as the source again, with the two measured consequences above), or tighten it
+  to the candidate's identity alone (`spellingPresent ||` removed), which would drop a store member
+  reference to a container file.
+- **Settled by:** whether the operator wants `ccc inspect <provider>:<path>` to answer "not found" (and
+  consult the archive) for a path that is not on this machine, or to keep reporting the provider's
+  claim that such a path names a session.
