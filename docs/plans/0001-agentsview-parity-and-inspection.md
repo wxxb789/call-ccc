@@ -1,6 +1,6 @@
 # Plan — 0001 Inherit AgentsView and inspect real sessions
 
-Contract: [`docs/goals/0001-agentsview-parity-and-inspection.md`](../goals/0001-agentsview-parity-and-inspection.md).
+Contract: [`docs/goals/archive/0001-agentsview-parity-and-inspection.md`](../goals/archive/0001-agentsview-parity-and-inspection.md).
 Governing design: [`docs/core-design/README.md`](../core-design/README.md).
 Written before implementation; the numbers below were measured first (see `docs/evidence/`).
 

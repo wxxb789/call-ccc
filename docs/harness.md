@@ -136,11 +136,13 @@ pin), so real drift in that tree is reported as `FAIL` with its offenders rather
 step, because it needs network and a second checkout: it fetches the pinned revision into a scratch
 directory, copies `internal/ccc` into it so both sides run the *same* oracle program over the *same*
 fixture bytes, runs parse → sync → archive read on both sides in their own throw-away archives, and
-diffs the two canonical dumps. A checkout it did not fetch itself (`--upstream`) must be *clean* at
-the pin, exactly as the importer requires: the dumps are attributed to that revision, and `--record`
-rewrites the committed oracle with them. `internal/ccc/parity/testdata/oracle/*.json` holds the dumps
-a pristine checkout produced; the ordinary test suite re-checks this tree against them offline. The
-increment's evidence record holds a run of it with its hashes.
+diffs the two canonical dumps. Each case **names the fixture it reads** (`internal/ccc/parity`'s
+`Cases`, mirrored by the script's `CASES`), so a provider that grows a second transcript shape cannot
+silently change what a recorded dump describes. A checkout it did not fetch itself (`--upstream`) must
+be *clean* at the pin, exactly as the importer requires: the dumps are attributed to that revision, and
+`--record` rewrites the committed oracle with them. `internal/ccc/parity/testdata/oracle/*.json` holds
+the dumps a pristine checkout produced; the ordinary test suite re-checks this tree against them
+offline. The increment's evidence record holds a run of it with its hashes.
 
 ## `secrets`: what it scans, and what it does not
 
@@ -170,6 +172,17 @@ says so.
   `selftest` step.
 - `CALLCCC_GATE_ROOT` — run the gate against another tree. Most cases in `scripts/tests/` pin a rule
   against a throw-away tree instead of trusting the reader.
+- `scripts/codex-native-check.py` — the target-side native verification for the Claude Code → Codex
+  route, and **deliberately not a gate step** for the same reason `scripts/upstream-compare.py` is
+  not: it needs the Codex binary installed and, for a real turn, model access. It builds `ccc`,
+  converts a committed fixture into an isolated Codex data directory (seeded with the host's own
+  `config.toml` — settings, never credentials or sessions), plants an unrelated session there, runs
+  `ccc continue … --json`, checks the installed file back through the inherited reader, asks Codex's
+  own app server to load the session (`thread/resume`) and prints Codex's own view of it
+  (`thread/read`), hashes the source and the unrelated session before and after, and — with
+  `--resume-prompt` — runs one real turn through `codex exec resume` and prints the target's answer.
+  Every check prints its own verdict and the script exits non-zero when one fails, so a run that
+  could not do the native half says so instead of reporting a pass.
 
 ## Why the Go steps target a subset
 

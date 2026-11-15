@@ -6,8 +6,8 @@ The normal feedback window is approximately 12 hours of agent work. If a goal pr
 
 | File | Outcome | Prerequisite | Status |
 | --- | --- | --- | --- |
-| [0001](0001-agentsview-parity-and-inspection.md) | Unmodified upstream source/archive, usable session inspection | None | Implemented on `feat/0001-agentsview-parity-and-inspection`; awaiting operator acceptance |
-| [0002](0002-claude-to-codex-continuation.md) | Claude Code history continues in Codex | 0001 | Ready |
+| [0001](archive/0001-agentsview-parity-and-inspection.md) | Unmodified upstream source/archive, usable session inspection | None | Accepted: merged onto `main` as `ef6a61c`; archived |
+| [0002](0002-claude-to-codex-continuation.md) | Claude Code history continues in Codex | 0001 | Implemented on `feat/0002-claude-to-codex-continuation`; awaiting operator acceptance |
 | [0003](0003-codex-to-claude-continuation.md) | Codex history continues in Claude Code | 0002 | Ready |
 | [0004](0004-repeatable-evolving-session-handoffs.md) | Repeat conversion as a source session grows | 0002 | Ready; independent of 0003 |
 | [0005](0005-pi-continuation.md) | Native two-way Pi continuation | 0003 | Ready |

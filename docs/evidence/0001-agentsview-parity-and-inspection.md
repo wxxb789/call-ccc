@@ -1,6 +1,6 @@
 # Evidence — 0001 Inherit AgentsView and inspect real sessions
 
-Contract: [`docs/goals/0001-agentsview-parity-and-inspection.md`](../goals/0001-agentsview-parity-and-inspection.md).
+Contract: [`docs/goals/archive/0001-agentsview-parity-and-inspection.md`](../goals/archive/0001-agentsview-parity-and-inspection.md).
 Plan: [`docs/plans/0001-agentsview-parity-and-inspection.md`](../plans/0001-agentsview-parity-and-inspection.md).
 Every command below was run on the branch, and every block is its real output, with the repository
 root rewritten to `<repo>` so no host path is committed.

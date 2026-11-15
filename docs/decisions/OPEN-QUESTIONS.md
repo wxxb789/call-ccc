@@ -534,3 +534,136 @@ supersede it with a newer one and say which it supersedes.
 - **Settled by:** whether the operator wants the exact identifier an inspection prints (`archived id:
   freebuff:…`) to be usable as the next reference, or a grammar in which only registry provider names
   appear.
+
+## Q-0002-01 — What a converted Codex session records as its model provider
+
+- **Status:** resolved (default taken)
+- **Question:** a converted session must say *something* about its provider, and every choice binds it.
+  Measured on Codex 0.169.0: a rollout that records no provider loads under `thread/resume` in a home
+  that has never migrated, and is refused (`This chat uses model provider "", which is no longer
+  configured`) in a home whose state already holds migrated threads — which is what a real user's home
+  looks like. Recording the *source's* provider would be false (Codex has no such provider
+  configured). Recording the configuration's explicit `model_provider` alone is null on a host that
+  relies on Codex's default. Recording the effective provider binds the session to it, so a later
+  change of that configuration makes the harness refuse to resume with `Cannot change this thread's
+  model provider from X to Y on resume`.
+- **Default taken:** record the provider the harness itself says a **new** session of it would use,
+  asked over its own protocol (`thread/start` on an *ephemeral* thread, which reports the effective
+  provider including the harness's own default; `config/read` as the fallback when that leaves no
+  answer), as seen from the source session's working directory. No model is recorded, so the target
+  keeps choosing that. The run reports the value, where it came from
+  (`model_provider_source`: `target-thread-defaults`/`target-config`/`unrecorded`) and the binding as a
+  reported caveat (`provider_binding`).
+- **Reversal:** stop passing `Provider` in `CodexTargetOptions` (one field, empty means "record none"),
+  which restores the provider-less file and the refusal in a migrated home.
+- **Settled by:** whether the operator prefers a session that resumes under the harness's defaults but
+  is refused in a migrated home, or one that resumes now and is pinned to the provider that was
+  configured when it was converted.
+
+## Q-0002-02 — The provenance a converted rollout records for itself
+
+- **Status:** resolved (default taken)
+- **Question:** the rollout's `session_meta` carries `originator`, `source` and `thread_source`, and
+  the target's UI and pickers read them. Writing `codex_cli_rs`/`exec` would be false provenance and
+  would hide the session behind the picker's "non-interactive" filter; writing an originator the target
+  has never seen risks a version that validates it.
+- **Default taken:** `originator: "ccc"` (the program that wrote the file), `source: "cli"` (the session
+  is meant to be resumed interactively), `thread_source: "user"`; measured to be accepted and reported
+  as such by `thread/read`/`thread/resume`. The user-facing identity of the conversion lives in the
+  CLI's output, not in a fabricated field.
+- **Reversal:** one constant in `internal/ccc/codex_target.go`; nothing else reads the value.
+- **Settled by:** whether the operator wants the target's own names there or call/ccc's, and whether a
+  future Codex version rejects an unknown originator (the native check would fail loudly).
+
+## Q-0002-03 — Which `cli_version` a converted rollout records
+
+- **Status:** resolved (default taken)
+- **Question:** the target's reader requires `session_meta.cli_version` (measured: without it,
+  `thread/resume` says `rollout … does not start with session metadata`), but call/ccc did not write
+  the conversation, so the value is a claim about the file's format rather than about its author.
+- **Default taken:** the version the installed `codex --version` reports when it can be probed
+  (`cli_version_source: "probe"`), otherwise the pinned constant `CodexFormatVersion = "0.169.0"` — the
+  version whose reader this writer's output was verified against (`"writer-pin"`). Both are reported.
+- **Reversal:** always write the constant, or refuse to convert when the target binary is absent.
+- **Settled by:** whether an older Codex refuses a rollout whose `cli_version` is newer than itself; if
+  it does, the probe should be replaced by the *oldest* verified version.
+
+## Q-0002-04 — Pre-compaction history, and what the boundary means in the target
+
+- **Status:** resolved (default taken)
+- **Question:** the goal says both "preserve available history by default" and "do not revive
+  deliberately inactive history as though it were active". A transcript that compacted holds both the
+  summary and the turns it replaced.
+- **Default taken:** carry the turns **and** the boundary, as the target's own `compacted` record.
+  Measured: Codex applies that record to its model-visible history (a resumed turn answers from the
+  summary and the post-boundary turns only), while the file keeps the recorded turns for readers, so
+  the target continues from the source's *active* context without call/ccc having made a selection the
+  goal does not authorize. The report counts the pre-boundary messages and states what the boundary
+  does (`pre_compaction_history`, carried-with-caveat).
+- **Reversal:** one branch in the writer that stops at the first boundary (then the pre-boundary turns
+  are a reported omission instead of a reported caveat).
+- **Settled by:** goal 0009 (selective context), which is where selection belongs if the operator wants
+  it.
+
+## Q-0002-05 — Omitting reasoning traces, sidechain turns and system records
+
+- **Status:** resolved (default taken)
+- **Question:** a target writer can carry a persisted reasoning trace as plaintext, a subagent's turn as
+  an ordinary message, and a provider's system record as a `developer` message — or omit each and say
+  so.
+- **Default taken:** omit all three by default and report each with its count and reason. Codex records
+  reasoning as its provider's own encrypted artifact (writing plaintext in its place would present
+  source-private reasoning as a target-native trace); a sidechain turn has no subagent attribution in a
+  flat message (so carrying it as an ordinary turn would state that the conversation's own agent said
+  it); the target's `developer` channel carries the target's own instructions (so a provider's
+  bookkeeping does not belong there).
+- **Reversal:** one branch each in the writer's message loop; each category's count is already in the
+  report, so the change is visible rather than silent.
+- **Settled by:** goals 0009/0013, which own selection and persisted reasoning traces.
+
+## Q-0002-06 — Verification levels, their default, and the exit codes
+
+- **Status:** resolved (default taken)
+- **Question:** `ccc continue` can verify nothing, ask the target's loader, or run a real turn — and a
+  failure of each means something different for the caller's pipeline.
+- **Default taken:** `--verify load` (the target's own loader over `thread/resume`, offline); `resume`
+  on request and only with `--resume-prompt` (the turn becomes part of the user's session, so its text
+  is the caller's); `none` writes no claim. A verification that could not run because the target binary
+  is absent is reported as not-verified and does **not** fail the run (the conversion and installation
+  really happened); a verification that ran and failed exits 1. The three states are separate fields in
+  `--json`, and the human output prints one line each.
+- **Reversal:** make `load` required (refuse to convert without the target binary), or make an absent
+  binary a failure — one branch in `continuationExit` plus one in `Continue`.
+- **Settled by:** whether the operator wants an unattended pipeline to fail when the target harness is
+  not installed, or to convert, install and say the native half is unverified.
+
+## Q-0002-07 — The parity oracle's cases now name their fixture
+
+- **Status:** resolved (default taken)
+- **Question:** the comparison cases (`internal/ccc/parity`, `scripts/upstream-compare.py`) discovered
+  "the single fixture below the provider root". This increment adds a second Claude transcript (the
+  tool-heavy shape a conversion reports), so that discovery would fail — or, worse, silently read a
+  different file if it had been written to pick the first.
+- **Default taken:** every case names the session file it reads (`parity.Cases`, mirrored by the
+  script's `CASES`), a name that is not there is an error, and the previous "exactly one" rule remains
+  only as a convenience for a caller with a tree of its own. The recorded dumps were **not**
+  re-recorded: the cases still read the same bytes, and the offline test compares them byte for byte
+  (it passes unchanged). The new fixture is a new file, not a replacement.
+- **Reversal:** delete the second fixture and the fixture field, restoring discovery by convention.
+- **Settled by:** whether the operator wants the oracle to keep discovering fixtures or to name them;
+  naming is what makes an added shape unable to change an existing record.
+
+## Q-0002-08 — Archiving goal 0001 in this increment
+
+- **Status:** resolved (default taken)
+- **Question:** the index's rule says a goal moves to `docs/goals/archive/` once it is merged, while its
+  row still read "awaiting operator acceptance". Goal 0001's implementation is on `main` (squash-merged
+  as `ef6a61c`, PR #3), so is it accepted?
+- **Default taken:** read "merged onto `main`" as the acceptance its own rule names: the goal file moved
+  to `docs/goals/archive/`, its index row now reads "Accepted: merged onto `main` as `ef6a61c`;
+  archived", and the links in `docs/evidence/0001-…`, `docs/plans/0001-…` and the goal series index were
+  moved with it. Nothing in the goal's content changed.
+- **Reversal:** `git mv docs/goals/archive/0001-… docs/goals/` and restore the index row — the file's
+  bytes are untouched.
+- **Settled by:** whether the operator considers a squash merge the acceptance, or wants to keep the
+  contract under `docs/goals/` until they say so explicitly.

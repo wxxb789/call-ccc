@@ -44,9 +44,14 @@ ORACLE_RECORD_DIR = Path("internal", "ccc", "parity", "testdata", "oracle")
 PRICING_SNAPSHOT = Path("internal", "pricing", "snapshot", "litellm_snapshot.json.gz")
 PRICING_TOOL_PACKAGE = "./internal/pricing/cmd/litellm-snapshot"
 
-#: The cases both sides run. Each name is a provider directory under the fixture root; the oracle
-#: discovers the single fixture below it.
-CASES = ("claude", "codex")
+#: The cases both sides run: the provider directory under the fixture root, and the session file the
+#: case reads, relative to that directory. A provider may hold more than one fixture (a second
+#: transcript shape), so every case names its file; this table mirrors internal/ccc/parity's Cases,
+#: which is what decides what a case reads.
+CASES = (
+    ("claude", "-home-user-code-example-api/9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10.jsonl"),
+    ("codex", "2026/05/04/rollout-2026-05-04T09-15-00-0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812.jsonl"),
+)
 
 #: Build tags upstream ships with: without fts5 the inherited schema cannot load an archive that has
 #: one, so both sides are built exactly the way an /AgentsView binary is built.
@@ -167,16 +172,18 @@ def unstage_pristine_tree(clone: Path, digest_before: str) -> str:
     return f"removed {target} from the checkout again"
 
 
-def run_oracle(tree: Path, fixtures: Path, work_dir: Path, case: str, out: Path) -> None:
+def run_oracle(tree: Path, fixtures: Path, work_dir: Path, case: tuple[str, str], out: Path) -> None:
+    provider, fixture = case
     work_dir.mkdir(parents=True, exist_ok=True)
     proc = run(
         ["go", "run", f"-tags={GO_TAGS}", "./" + ORACLE_DIR.as_posix(),
-         "-fixtures", str(fixtures), "-work-dir", str(work_dir), "-provider", case, "-out", str(out)],
+         "-fixtures", str(fixtures), "-work-dir", str(work_dir),
+         "-provider", provider, "-fixture", fixture, "-out", str(out)],
         cwd=tree,
     )
     if proc.returncode != 0:
         raise SystemExit(
-            f"the oracle failed in {tree} for {case} (rc={proc.returncode}):\n"
+            f"the oracle failed in {tree} for {provider} (rc={proc.returncode}):\n"
             f"{proc.stdout.strip()}\n{proc.stderr.strip()}")
 
 
@@ -224,22 +231,24 @@ def main(argv: list[str] | None = None) -> int:
 
         failures = 0
         for case in CASES:
-            our_fixtures = isolated_fixtures(scratch / case / "our-fixtures")
-            their_fixtures = isolated_fixtures(scratch / case / "their-fixtures")
-            our_dump = scratch / case / "our.json"
-            their_dump = scratch / case / "their.json"
-            run_oracle(ROOT, our_fixtures, scratch / case / "our-work", case, our_dump)
-            run_oracle(clone, their_fixtures, scratch / case / "their-work", case, their_dump)
+            provider, fixture = case
+            our_fixtures = isolated_fixtures(scratch / provider / "our-fixtures")
+            their_fixtures = isolated_fixtures(scratch / provider / "their-fixtures")
+            our_dump = scratch / provider / "our.json"
+            their_dump = scratch / provider / "their.json"
+            run_oracle(ROOT, our_fixtures, scratch / provider / "our-work", case, our_dump)
+            run_oracle(clone, their_fixtures, scratch / provider / "their-work", case, their_dump)
 
             ours, theirs = our_dump.read_bytes(), their_dump.read_bytes()
             same = ours == theirs
-            print(f"{case}: fixture sha256={digest(our_fixtures / _fixture_relative(our_fixtures, case))[:16]}… "
+            print(f"{provider}: fixture sha256="
+                  f"{digest(our_fixtures / provider / Path(fixture))[:16]}… "
                   f"ours={hashlib.sha256(ours).hexdigest()[:16]}… "
                   f"pristine={hashlib.sha256(theirs).hexdigest()[:16]}… "
                   f"agreement={'yes' if same else 'NO'}")
             if same:
                 if args.record:
-                    target = ROOT / ORACLE_RECORD_DIR / f"{case}.json"
+                    target = ROOT / ORACLE_RECORD_DIR / f"{provider}.json"
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_bytes(theirs)
                     print(f"  recorded {target.relative_to(ROOT)}")
@@ -263,15 +272,6 @@ def main(argv: list[str] | None = None) -> int:
             print(f"- {staged_clone} is {'clean' if not residue.stdout.strip() else 'dirty: ' + residue.stdout.strip()}")
         if not args.keep and scratch.exists():
             shutil.rmtree(scratch, ignore_errors=True)
-
-
-def _fixture_relative(fixtures: Path, case: str) -> Path:
-    """The single fixture file below a provider root, relative to that root."""
-    root = fixtures / case
-    found = [path for path in root.rglob("*.jsonl")]
-    if len(found) != 1:
-        raise SystemExit(f"expected exactly one fixture under {root}, found {len(found)}")
-    return found[0].relative_to(fixtures)
 
 
 if __name__ == "__main__":

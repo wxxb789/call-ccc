@@ -1,0 +1,845 @@
+package ccc
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"path"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+
+	"go.kenn.io/agentsview/internal/parser"
+)
+
+// CodexFormatVersion is the Codex CLI version whose rollout reader this writer's output was verified
+// against (docs/evidence/0002-claude-to-codex-continuation.md). The reader requires the rollout's
+// session_meta to carry a cli_version; when the target binary cannot be probed, this is the value
+// written, and the report says so ("writer-pin") instead of pretending the host's version was read.
+const CodexFormatVersion = "0.169.0"
+
+// CodexTargetFormat names the on-disk format a Codex target session is written in: the "portable"
+// rollout JSONL the target still discovers, reads, resumes and migrates, not its paginated SQLite
+// store, which belongs to the target harness (a second writer of it would be a competing writer to a
+// live Codex home).
+const CodexTargetFormat = "codex-rollout-jsonl"
+
+// Conversion dispositions. A disposition states what happened to a category of source evidence, so a
+// caller can never read "converted" as "everything travelled".
+const (
+	// DispositionOmitted means the evidence is not in the target at all.
+	DispositionOmitted = "omitted"
+	// DispositionCarriedWithCaveat means the evidence is in the target but its meaning is narrower or
+	// different there, and the entry's detail says how.
+	DispositionCarriedWithCaveat = "carried-with-caveat"
+)
+
+// Loss is one category of source evidence a conversion did not carry unchanged. Every category the
+// writer knows is reported on every run, including the ones whose count is zero, so a consumer never
+// has to infer what was left out.
+type Loss struct {
+	Category    string `json:"category"`
+	Disposition string `json:"disposition"`
+	Count       int    `json:"count"`
+	Detail      string `json:"detail"`
+}
+
+// Carried counts the evidence the writer put into the target.
+type Carried struct {
+	Messages             int `json:"messages"`
+	UserMessages         int `json:"user_messages"`
+	AssistantMessages    int `json:"assistant_messages"`
+	ToolCalls            int `json:"tool_calls"`
+	ToolResults          int `json:"tool_results"`
+	CompactionBoundaries int `json:"compaction_boundaries"`
+	Turns                int `json:"turns"`
+	Bytes                int `json:"bytes"`
+}
+
+// TargetItemKind names one piece of evidence as it was written into the target. The round-trip check
+// compares this list with what the inherited reader makes of the installed file, which is the only
+// way to tell "the writer meant to carry this" from "the file really holds it".
+type TargetItemKind string
+
+const (
+	ItemUser               TargetItemKind = "user_message"
+	ItemAssistant          TargetItemKind = "assistant_message"
+	ItemToolCall           TargetItemKind = "tool_call"
+	ItemToolResult         TargetItemKind = "tool_result"
+	ItemCompactionBoundary TargetItemKind = "compaction_boundary"
+)
+
+// TargetItem is one written piece of evidence.
+type TargetItem struct {
+	Kind TargetItemKind `json:"kind"`
+	// Text is the dialogue or summary text of a message item.
+	Text string `json:"text,omitempty"`
+	// CallID, ToolName and InputJSON describe a tool call; CallID and Text the result of one.
+	CallID    string `json:"call_id,omitempty"`
+	ToolName  string `json:"tool_name,omitempty"`
+	InputJSON string `json:"input_json,omitempty"`
+}
+
+// CodexRollout is one converted target session, in memory and ready to install. Data is the exact
+// byte string the target harness reads; Items is what the writer placed in it, for the round-trip
+// check, and is never serialized into a CLI document.
+type CodexRollout struct {
+	SessionID  string       `json:"session_id"`
+	CLIVersion string       `json:"cli_version"`
+	FileName   string       `json:"file_name"`
+	Directory  string       `json:"directory"`
+	Cwd        string       `json:"cwd,omitempty"`
+	StartedAt  time.Time    `json:"started_at,omitempty"`
+	Data       []byte       `json:"-"`
+	Items      []TargetItem `json:"-"`
+	Carried    Carried      `json:"carried"`
+	Losses     []Loss       `json:"losses"`
+}
+
+// CodexTargetOptions configures one conversion. SessionID and CLIVersion are normally left empty: the
+// identity must be fresh and the version is probed or pinned by the caller.
+type CodexTargetOptions struct {
+	// SessionID is the target session's identity. Empty means "generate a fresh one" (UUID v7), which
+	// is what a conversion wants; tests and repeat runs pass an explicit value.
+	SessionID string
+	// CLIVersion is the value written to session_meta.cli_version, which the target's reader requires.
+	CLIVersion string
+	// Now is the conversion instant, used for identities and for a source that recorded no times.
+	Now time.Time
+	// Provider is the target harness's own configured model provider, recorded as the session's
+	// provider binding. The target's loader refuses a session whose recorded provider (or lack of one)
+	// does not match the configuration it is resumed with, and a home that has already migrated to
+	// paginated threads refuses one that records none at all; the value therefore comes from the
+	// target's own configuration answer, never from the source session.
+	Provider string
+	// MaxToolNames bounds how many distinct tool names the report spells out, so converting a session
+	// with hundreds of tools cannot produce an unbounded document.
+	MaxToolNames int
+}
+
+// codexEnvelope is one rollout line: an envelope with a timestamp and a payload. The target's reader
+// requires the envelope's timestamp to parse, and the payload's own shape identifies the record.
+type codexEnvelope struct {
+	Timestamp string `json:"timestamp"`
+	Type      string `json:"type"`
+	Payload   any    `json:"payload"`
+}
+
+type codexSessionMetaPayload struct {
+	ID            string    `json:"id"`
+	Timestamp     string    `json:"timestamp"`
+	Cwd           string    `json:"cwd,omitempty"`
+	Originator    string    `json:"originator"`
+	CLIVersion    string    `json:"cli_version"`
+	Source        string    `json:"source"`
+	ThreadSource  string    `json:"thread_source,omitempty"`
+	ModelProvider string    `json:"model_provider,omitempty"`
+	Git           *codexGit `json:"git,omitempty"`
+}
+
+// codexGit carries the source session's repository provenance. commit_hash is deliberately absent:
+// the source document records no commit, and inventing one would state which revision the
+// conversation happened at.
+type codexGit struct {
+	Branch        string `json:"branch,omitempty"`
+	RepositoryURL string `json:"repository_url,omitempty"`
+}
+
+type codexTurnContextPayload struct {
+	TurnID string `json:"turn_id"`
+	Cwd    string `json:"cwd,omitempty"`
+}
+
+type codexMessagePayload struct {
+	Type    string         `json:"type"`
+	Role    string         `json:"role"`
+	Content []codexContent `json:"content"`
+}
+
+type codexContent struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type codexFunctionCallPayload struct {
+	Type      string `json:"type"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+	CallID    string `json:"call_id"`
+}
+
+type codexFunctionCallOutputPayload struct {
+	Type   string `json:"type"`
+	CallID string `json:"call_id"`
+	Output string `json:"output"`
+}
+
+type codexCompactedPayload struct {
+	Message string `json:"message"`
+}
+
+// codexUserMessagePayload and codexAgentMessagePayload are the target's own UI events for a turn's
+// messages. The target writes both a response_item (the record its model history is built from) and one
+// of these (the record its own view of the conversation is built from), and its view shows nothing for
+// a rollout that holds only the response_item — measured: a written session without these events loads
+// and resumes, but the harness's own thread view of it is empty.
+type codexUserMessagePayload struct {
+	Type         string `json:"type"`
+	Message      string `json:"message"`
+	Images       []any  `json:"images"`
+	LocalImages  []any  `json:"local_images"`
+	TextElements []any  `json:"text_elements"`
+}
+
+type codexAgentMessagePayload struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+// Record type names, as the target writes them.
+const (
+	codexRecordSessionMeta   = "session_meta"
+	codexRecordTurnContext   = "turn_context"
+	codexRecordResponseItem  = "response_item"
+	codexRecordEventMsg      = "event_msg"
+	codexRecordCompacted     = "compacted"
+	codexEventUserMessage    = "user_message"
+	codexEventAgentMessage   = "agent_message"
+	codexItemMessage         = "message"
+	codexItemFunctionCall    = "function_call"
+	codexItemFunctionOutput  = "function_call_output"
+	codexRoleUser            = "user"
+	codexRoleAssistant       = "assistant"
+	codexContentInputText    = "input_text"
+	codexContentOutputText   = "output_text"
+	codexOriginator          = "ccc"
+	codexSourceCLI           = "cli"
+	codexThreadSourceUser    = "user"
+	codexGeneratedCallPrefix = "call_ccc_"
+)
+
+// defaultMaxToolNames bounds how many distinct tool names a report spells out by default.
+const defaultMaxToolNames = 12
+
+// ConvertToCodexRollout turns a Conversation into a Codex rollout JSONL session: a fresh identity, one
+// envelope per record, and the report of what could not be carried. It writes no file; installation is
+// the caller's step (InstallCodexRollout).
+func ConvertToCodexRollout(conv Conversation, opts CodexTargetOptions) (CodexRollout, error) {
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	now = now.UTC()
+	if opts.MaxToolNames <= 0 {
+		opts.MaxToolNames = defaultMaxToolNames
+	}
+
+	sessionID := opts.SessionID
+	if sessionID == "" {
+		generated, err := uuid.NewV7()
+		if err != nil {
+			return CodexRollout{}, fmt.Errorf("generating a target session id: %w", err)
+		}
+		sessionID = generated.String()
+	}
+	cliVersion := strings.TrimSpace(opts.CLIVersion)
+	if cliVersion == "" {
+		cliVersion = CodexFormatVersion
+	}
+
+	source := conv.Source
+	startedAt := source.FileModified.UTC()
+	if startedAt.IsZero() {
+		startedAt = now
+	}
+	if first := firstRecordedTime(conv.Messages); !first.IsZero() && first.Before(startedAt) {
+		startedAt = first
+	}
+
+	builder := &codexRolloutBuilder{
+		sessionID:  sessionID,
+		cwd:        source.Cwd,
+		cliVersion: cliVersion,
+		clock:      newCodexClock(startedAt),
+		callOwners: map[string]struct{}{},
+		gitBranch:  source.GitBranch,
+		gitRemote:  source.GitRemote,
+		opts:       opts,
+	}
+	// One encoder writes every line: JSONL is one object per line, and the encoder's own newline is
+	// what separates them. HTML escaping is off because the target stores the conversation's text as it
+	// was recorded, not as JSON would quote it for a browser.
+	builder.encoder = json.NewEncoder(&builder.buffer)
+	builder.encoder.SetEscapeHTML(false)
+	builder.sessionMeta(startedAt)
+	builder.writeConversation(conv)
+	carried := builder.carried
+	carried.Bytes = builder.buffer.Len()
+	rollout := CodexRollout{
+		SessionID:  sessionID,
+		CLIVersion: cliVersion,
+		FileName:   codexRolloutFileName(sessionID, startedAt),
+		Directory:  codexRolloutDirectory(startedAt),
+		Cwd:        source.Cwd,
+		StartedAt:  startedAt,
+		Data:       bytes.Clone(builder.buffer.Bytes()),
+		Items:      builder.items,
+		Carried:    carried,
+		Losses:     builder.losses(),
+	}
+	return rollout, nil
+}
+
+// firstRecordedTime is the earliest timestamp the source recorded, so a session whose file has no
+// mtime still starts where its conversation does.
+func firstRecordedTime(messages []Message) time.Time {
+	var first time.Time
+	for _, message := range messages {
+		if message.Timestamp.IsZero() {
+			continue
+		}
+		if first.IsZero() || message.Timestamp.Before(first) {
+			first = message.Timestamp
+		}
+	}
+	return first.UTC()
+}
+
+// codexClock hands out envelope timestamps that never go backwards: the target orders records by the
+// envelope's timestamp, and a source whose messages are unordered (a DAG, a replayed fork) would
+// otherwise write a file whose order contradicts its own times.
+type codexClock struct {
+	last time.Time
+}
+
+func newCodexClock(start time.Time) *codexClock {
+	return &codexClock{last: start.UTC()}
+}
+
+func (c *codexClock) next(at time.Time) string {
+	at = at.UTC()
+	if at.IsZero() || at.Before(c.last) {
+		at = c.last
+	}
+	c.last = at
+	return at.Format(time.RFC3339Nano)
+}
+
+// codexRolloutBuilder accumulates the rollout's lines and the report while it walks the document.
+type codexRolloutBuilder struct {
+	buffer     bytes.Buffer
+	encoder    *json.Encoder
+	sessionID  string
+	cwd        string
+	cliVersion string
+	clock      *codexClock
+	opts       CodexTargetOptions
+	gitBranch  string
+	gitRemote  string
+
+	items      []TargetItem
+	carried    Carried
+	callOwners map[string]struct{}
+
+	lossReasoning       int
+	lossSidechain       int
+	lossSystemRecords   int
+	lossUnpairedResults int
+	lossUnresolved      int
+	lossOutcomes        int
+	lossPreBoundary     int
+	lossEmptyInputs     int
+	lossGeneratedIDs    int
+	lossEmptyResults    int
+	foreignToolNames    map[string]struct{}
+	toolNameOrder       []string
+
+	// lastGeneratedCall is the call id a source that recorded none most recently produced, so a result
+	// that recorded no id either can be paired with it instead of being dropped. A second id-less call
+	// clears it: two id-less calls make the pairing a guess, and a guess is not carried.
+	lastGeneratedCall string
+	pendingCallID     string
+	sawBoundary       bool
+	turnOpen          bool
+}
+
+func (b *codexRolloutBuilder) write(record codexEnvelope) {
+	b.encoder.Encode(record)
+}
+
+func (b *codexRolloutBuilder) sessionMeta(startedAt time.Time) {
+	payload := codexSessionMetaPayload{
+		ID:            b.sessionID,
+		Timestamp:     startedAt.Format(time.RFC3339Nano),
+		Cwd:           b.cwd,
+		Originator:    codexOriginator,
+		CLIVersion:    b.cliVersion,
+		Source:        codexSourceCLI,
+		ThreadSource:  codexThreadSourceUser,
+		ModelProvider: strings.TrimSpace(b.opts.Provider),
+	}
+	// The source's own repository provenance travels with the session; the commit hash does not,
+	// because the source document records none.
+	if branch := strings.TrimSpace(b.gitBranch); branch != "" || strings.TrimSpace(b.gitRemote) != "" {
+		payload.Git = &codexGit{Branch: branch, RepositoryURL: b.gitRemote}
+	}
+	b.write(codexEnvelope{
+		Timestamp: b.clock.next(startedAt),
+		Type:      codexRecordSessionMeta,
+		Payload:   payload,
+	})
+}
+
+// writeConversation walks the document once and writes every record it can express.
+func (b *codexRolloutBuilder) writeConversation(conv Conversation) {
+	for _, message := range conv.Messages {
+		b.writeMessage(message)
+	}
+}
+
+func (b *codexRolloutBuilder) writeMessage(message Message) {
+	if message.IsCompactBoundary {
+		// A compaction boundary is the target's own record for the same event: the summary the source
+		// kept in place of the history before it. The target applies it to its model-visible history,
+		// and the turns before it stay in the file (counted as carried, with the caveat reported).
+		b.lossPreBoundary = b.carried.Messages
+		b.sawBoundary = true
+		b.write(codexEnvelope{
+			Timestamp: b.clock.next(message.Timestamp),
+			Type:      codexRecordCompacted,
+			Payload:   codexCompactedPayload{Message: message.Content},
+		})
+		b.carried.CompactionBoundaries++
+		b.items = append(b.items, TargetItem{Kind: ItemCompactionBoundary, Text: message.Content})
+		return
+	}
+	if message.IsSidechain {
+		// A subagent's turn, recorded in the same transcript. The target has no subagent attribution
+		// for a flat message, so carrying it as an ordinary turn would state that the conversation's
+		// own agent said it.
+		b.lossSidechain++
+		return
+	}
+	if message.IsSystem {
+		b.lossSystemRecords++
+		return
+	}
+	if len(message.ToolResults) == 0 && len(message.ToolCalls) == 0 && strings.TrimSpace(message.Thinking) != "" &&
+		strings.TrimSpace(message.Content) == "" {
+		// Nothing but a reasoning trace: the target has no record for a persisted reasoning trace that
+		// is not the target's own encrypted artifact (goal 0013 owns that), so it is counted, not
+		// written as a message with empty text.
+		b.lossReasoning++
+		return
+	}
+	if strings.TrimSpace(message.Thinking) != "" {
+		b.lossReasoning++
+	}
+
+	role := parser.RoleType(message.Role)
+	switch role {
+	case parser.RoleUser, parser.RoleAssistant, parser.RoleTool:
+	default:
+		// A record the source wrote with a role the target has no message for (a system notice that
+		// was not flagged as one). Counting it as a system record keeps it out of both the dialogue and
+		// the target's developer channel.
+		if len(message.ToolResults) == 0 {
+			b.lossSystemRecords++
+			return
+		}
+	}
+
+	text := dialogueText(message)
+	if text != "" {
+		if role == parser.RoleUser {
+			b.startTurnIfNeeded(message)
+			b.messageItem(ItemUser, codexRoleUser, codexContentInputText, text, message.Timestamp)
+		} else {
+			b.messageItem(ItemAssistant, codexRoleAssistant, codexContentOutputText, text, message.Timestamp)
+		}
+	} else if role == parser.RoleUser && len(message.ToolResults) == 0 && len(message.ToolCalls) == 0 {
+		// A user record with no dialogue and no tool evidence carries nothing the target can show.
+		b.lossSystemRecords++
+		return
+	}
+
+	for index, call := range message.ToolCalls {
+		b.toolCall(message.Ordinal, index, call, message.Timestamp)
+	}
+	for _, result := range message.ToolResults {
+		b.toolResult(result, message.Content, message.Timestamp)
+	}
+	// An archive read folds a call's outcome onto the call itself; a source read carries it as the
+	// message's own result. Both are the same evidence and both are written.
+	for _, call := range message.ToolCalls {
+		if strings.TrimSpace(call.ResultContent) == "" && call.ResultContentSize == 0 {
+			continue
+		}
+		b.toolResult(ToolResult{
+			ToolUseID:   call.ToolUseID,
+			ContentRaw:  call.ResultContent,
+			ContentSize: call.ResultContentSize,
+		}, "", message.Timestamp)
+	}
+}
+
+// startTurnIfNeeded opens a turn before a user message that begins one: the target groups records into
+// turns, and a user message is where a turn begins.
+func (b *codexRolloutBuilder) startTurnIfNeeded(message Message) {
+	b.startTurn(message.Timestamp)
+}
+
+func (b *codexRolloutBuilder) startTurn(at time.Time) {
+	id, err := uuid.NewV7()
+	turnID := ""
+	if err == nil {
+		turnID = id.String()
+	} else {
+		turnID = fmt.Sprintf("%s%08x", codexGeneratedCallPrefix, b.carried.Turns)
+	}
+	b.write(codexEnvelope{
+		Timestamp: b.clock.next(at),
+		Type:      codexRecordTurnContext,
+		Payload:   codexTurnContextPayload{TurnID: turnID, Cwd: b.cwd},
+	})
+	b.carried.Turns++
+	b.turnOpen = true
+}
+
+func (b *codexRolloutBuilder) messageItem(kind TargetItemKind, role, contentType, text string, at time.Time) {
+	if !b.turnOpen {
+		b.startTurn(at)
+	}
+	if role == codexRoleUser {
+		b.write(codexEnvelope{
+			Timestamp: b.clock.next(at),
+			Type:      codexRecordResponseItem,
+			Payload: codexMessagePayload{
+				Type:    codexItemMessage,
+				Role:    role,
+				Content: []codexContent{{Type: contentType, Text: text}},
+			},
+		})
+		b.write(codexEnvelope{
+			Timestamp: b.clock.next(at),
+			Type:      codexRecordEventMsg,
+			Payload: codexUserMessagePayload{
+				Type:         codexEventUserMessage,
+				Message:      text,
+				Images:       []any{},
+				LocalImages:  []any{},
+				TextElements: []any{},
+			},
+		})
+	} else {
+		// The target writes the agent's event before its response item; the order is its own, and
+		// following it keeps a converted session shaped like one the target wrote itself.
+		b.write(codexEnvelope{
+			Timestamp: b.clock.next(at),
+			Type:      codexRecordEventMsg,
+			Payload:   codexAgentMessagePayload{Type: codexEventAgentMessage, Message: text},
+		})
+		b.write(codexEnvelope{
+			Timestamp: b.clock.next(at),
+			Type:      codexRecordResponseItem,
+			Payload: codexMessagePayload{
+				Type:    codexItemMessage,
+				Role:    role,
+				Content: []codexContent{{Type: contentType, Text: text}},
+			},
+		})
+	}
+	b.carried.Messages++
+	if kind == ItemUser {
+		b.carried.UserMessages++
+	} else {
+		b.carried.AssistantMessages++
+	}
+	b.items = append(b.items, TargetItem{Kind: kind, Text: text})
+}
+
+func (b *codexRolloutBuilder) toolCall(ordinal, index int, call ToolCall, at time.Time) {
+	if !b.turnOpen {
+		b.startTurn(at)
+	}
+	callID := strings.TrimSpace(call.ToolUseID)
+	if callID == "" {
+		callID = fmt.Sprintf("%s%d_%d", codexGeneratedCallPrefix, ordinal, index)
+		b.lossGeneratedIDs++
+		b.lastGeneratedCall = callID
+	} else {
+		b.lastGeneratedCall = ""
+	}
+	input := strings.TrimSpace(call.InputJSON)
+	if input == "" {
+		// The target's call record carries an arguments string, and the source recorded no input
+		// object for this call: an empty object keeps the call's identity and its output paired, and
+		// the report says the input was empty rather than leaving a reader to read "" as JSON.
+		input = "{}"
+		b.lossEmptyInputs++
+	}
+	name := strings.TrimSpace(call.Name)
+	if name == "" {
+		name = "unknown_tool"
+	}
+	b.noteToolName(name)
+	b.write(codexEnvelope{
+		Timestamp: b.clock.next(at),
+		Type:      codexRecordResponseItem,
+		Payload: codexFunctionCallPayload{
+			Type:      codexItemFunctionCall,
+			Name:      name,
+			Arguments: input,
+			CallID:    callID,
+		},
+	})
+	b.callOwners[callID] = struct{}{}
+	b.notePendingCall(callID)
+	b.carried.ToolCalls++
+	b.items = append(b.items, TargetItem{Kind: ItemToolCall, CallID: callID, ToolName: name, InputJSON: input})
+}
+
+// notePendingCall remembers the call a later id-less result may belong to.
+func (b *codexRolloutBuilder) notePendingCall(callID string) {
+	if b.pendingCallID != "" {
+		// Two calls without a recorded result id make the pairing a guess; dropping the pairing is the
+		// only answer that cannot attribute one call's output to another.
+		b.pendingCallID = ""
+		return
+	}
+	b.pendingCallID = callID
+}
+
+func (b *codexRolloutBuilder) toolResult(result ToolResult, messageContent string, at time.Time) {
+	if result.PersistedOutputUnresolved {
+		// The source's own parse-time answer that the content is the placeholder naming a side file it
+		// could not read, not the tool's output. The text travels as recorded and the report says what
+		// it is.
+		b.lossUnresolved++
+	}
+	if strings.TrimSpace(result.Status) != "" {
+		b.lossOutcomes++
+	}
+	callID := strings.TrimSpace(result.ToolUseID)
+	if callID == "" {
+		callID = b.pendingCallID
+		if callID == "" {
+			b.lossUnpairedResults++
+			return
+		}
+		b.lossGeneratedIDs++
+	} else if _, ok := b.callOwners[callID]; !ok {
+		// The result names a call this conversion did not write (the call preceded the source's
+		// boundary, or the provider recorded a result whose call is not in the read). A
+		// function_call_output without its call is not a pair, and inventing the call would fabricate
+		// a tool invocation.
+		b.lossUnpairedResults++
+		return
+	}
+	text := decodeResultText(result)
+	if text == "" {
+		// The target's output field carries text; a result with none leaves nothing to write, and an
+		// empty string would read as "the tool returned nothing" rather than "the source recorded no
+		// output text".
+		b.lossEmptyResults++
+		return
+	}
+	b.pendingCallID = ""
+	b.write(codexEnvelope{
+		Timestamp: b.clock.next(at),
+		Type:      codexRecordResponseItem,
+		Payload: codexFunctionCallOutputPayload{
+			Type:   codexItemFunctionOutput,
+			CallID: callID,
+			Output: text,
+		},
+	})
+	b.carried.ToolResults++
+	b.items = append(b.items, TargetItem{Kind: ItemToolResult, CallID: callID, Text: text})
+}
+
+func (b *codexRolloutBuilder) noteToolName(name string) {
+	if b.foreignToolNames == nil {
+		b.foreignToolNames = map[string]struct{}{}
+	}
+	if _, ok := b.foreignToolNames[name]; ok {
+		return
+	}
+	b.foreignToolNames[name] = struct{}{}
+	b.toolNameOrder = append(b.toolNameOrder, name)
+}
+
+// losses reports every category the writer knows about, in a fixed order, so a caller can read the
+// report without knowing which categories this run happened to produce.
+func (b *codexRolloutBuilder) losses() []Loss {
+	names := b.toolNameOrder
+	sort.Strings(names)
+	shown := names
+	if len(shown) > b.opts.MaxToolNames {
+		shown = shown[:b.opts.MaxToolNames]
+	}
+	toolDetail := "no tool call was carried"
+	toolDisposition := DispositionCarriedWithCaveat
+	if len(names) > 0 {
+		toolDetail = fmt.Sprintf(
+			"tool calls keep the source's own tool names and recorded arguments (%s%s); the target's "+
+				"own tool set may not include them, and a resumed turn answers from them as history "+
+				"rather than replaying them",
+			strings.Join(shown, ", "), moreNames(len(names)-len(shown)))
+	}
+	emptyResultsDetail := "every carried tool result had recorded output text"
+	if b.lossEmptyResults > 0 {
+		emptyResultsDetail = "the target's function_call_output carries output text only; a result " +
+			"whose source record holds no output text is not written, because an empty string would " +
+			"read as an empty tool output"
+	}
+	preBoundaryDetail := "no compaction boundary was carried"
+	if b.sawBoundary {
+		preBoundaryDetail = "the turns before a compaction boundary stay in the file and are counted " +
+			"here: the target applies the boundary to its model-visible history, so those turns are " +
+			"recorded history the target does not continue from"
+	}
+	return []Loss{
+		{
+			Category:    "reasoning_text",
+			Disposition: DispositionOmitted,
+			Count:       b.lossReasoning,
+			Detail: "the target records reasoning as its provider's own encrypted artifact; writing the " +
+				"source's plaintext reasoning in its place would present it as a target-native trace",
+		},
+		{
+			Category:    "sidechain_messages",
+			Disposition: DispositionOmitted,
+			Count:       b.lossSidechain,
+			Detail: "a sidechain message is a subagent's turn recorded in the same transcript; the " +
+				"target has no subagent attribution for a flat message, so carrying it as an ordinary " +
+				"turn would state that the conversation's own agent said it",
+		},
+		{
+			Category:    "system_records",
+			Disposition: DispositionOmitted,
+			Count:       b.lossSystemRecords,
+			Detail: "the target has no system role: its developer channel carries the target's own " +
+				"instructions, and a provider's bookkeeping does not belong there",
+		},
+		{
+			Category:    "unpaired_tool_results",
+			Disposition: DispositionOmitted,
+			Count:       b.lossUnpairedResults,
+			Detail: "a tool result whose call this conversion did not carry has no pair in the target, " +
+				"and fabricating the call would state a tool invocation the source never recorded",
+		},
+		{
+			Category:    "empty_tool_results",
+			Disposition: DispositionOmitted,
+			Count:       b.lossEmptyResults,
+			Detail:      emptyResultsDetail,
+		},
+		{
+			Category:    "unresolved_tool_outputs",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.lossUnresolved,
+			Detail: "the source's own parse said these results are the placeholder naming a side file " +
+				"it could not read, not the tool's output; that text is what was carried",
+		},
+		{
+			Category:    "tool_result_outcomes",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.lossOutcomes,
+			Detail: "the target's function_call_output has no outcome field; the result's recorded " +
+				"output text is carried as it was, and its recorded status is not",
+		},
+		{
+			Category:    "empty_tool_inputs",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.lossEmptyInputs,
+			Detail: "the source recorded no input object for these calls; the target's call record needs " +
+				"an arguments string, so an empty object was written",
+		},
+		{
+			Category:    "generated_call_ids",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.lossGeneratedIDs,
+			Detail: "the source recorded no tool-use id for these calls or results; the target pairs a " +
+				"call and its output by id, so one was generated from the message's own position",
+		},
+		{
+			Category:    "tool_name_vocabulary",
+			Disposition: toolDisposition,
+			Count:       len(names),
+			Detail:      toolDetail,
+		},
+		{
+			Category:    "provider_binding",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       providerBindingCount(b.opts.Provider),
+			Detail: "the session records the target's own configured model provider, which is what its " +
+				"loader checks when the session is resumed; the value is a binding to the target's " +
+				"configuration, not a claim that a target model produced the conversation, and changing " +
+				"that configuration later makes the target refuse to resume it",
+		},
+		{
+			Category:    "pre_compaction_history",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.lossPreBoundary,
+			Detail:      preBoundaryDetail,
+		},
+	}
+}
+
+// providerBindingCount reports whether this conversion recorded a provider binding.
+func providerBindingCount(provider string) int {
+	if strings.TrimSpace(provider) == "" {
+		return 0
+	}
+	return 1
+}
+
+func moreNames(more int) string {
+	if more <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(", +%d more", more)
+}
+
+// dialogueText is the message text the target receives.
+//
+// The source reader's Content is the provider's rendered transcript, which for a message that carries
+// tool calls includes a rendering of the calls themselves (`[Read: <path>]`); the Dialogue projection
+// is the same message without those structured payloads. A message that carries no calls has nothing
+// to duplicate, so its Content is the text, and a message that carries calls contributes only what the
+// provider recorded as dialogue.
+func dialogueText(message Message) string {
+	if text := strings.TrimSpace(message.Dialogue); text != "" {
+		return message.Dialogue
+	}
+	if len(message.ToolCalls) > 0 {
+		return ""
+	}
+	return message.Content
+}
+
+// decodeResultText is the text a tool result's recorded content holds. A provider may record the
+// content field as an encoded JSON string (the shape the inherited reader keeps raw and decodes where
+// it presents it), so the decoded text is what the tool produced.
+func decodeResultText(result ToolResult) string {
+	raw := result.ContentRaw
+	if decoded := parser.DecodeContent(raw); decoded != "" {
+		return decoded
+	}
+	return raw
+}
+
+// codexRolloutFileName is the name the target's own discovery reads: the date and a uuid, under the
+// year/month/day directories that follow the same instant.
+func codexRolloutFileName(sessionID string, at time.Time) string {
+	return fmt.Sprintf("rollout-%s-%s.jsonl", at.UTC().Format("2006-01-02T15-04-05"), sessionID)
+}
+
+// codexRolloutDirectory is the sessions subdirectory a rollout for at lives in.
+func codexRolloutDirectory(at time.Time) string {
+	utc := at.UTC()
+	return path.Join(utc.Format("2006"), utc.Format("01"), utc.Format("02"))
+}

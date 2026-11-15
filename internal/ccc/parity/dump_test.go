@@ -36,16 +36,17 @@ func recordPath(t *testing.T, name string) string {
 // which runs this very program in both trees and refuses to record unless the two agree byte for
 // byte, so this test re-checks that agreement on every run of the ordinary test suite.
 func TestDumpMatchesTheRecordedUpstreamAgreement(t *testing.T) {
-	for _, provider := range []string{"claude", "codex"} {
-		t.Run(provider, func(t *testing.T) {
-			recorded, err := os.ReadFile(recordPath(t, provider))
+	for _, testCase := range Cases {
+		t.Run(testCase.Provider, func(t *testing.T) {
+			recorded, err := os.ReadFile(recordPath(t, testCase.Provider))
 			if err != nil {
 				t.Fatalf("reading the recorded dump: %v", err)
 			}
 			dump, err := Run(context.Background(), Options{
 				Fixtures: fixtureRoot(t),
 				WorkDir:  t.TempDir(),
-				Provider: provider,
+				Provider: testCase.Provider,
+				Fixture:  testCase.Fixture,
 			})
 			if err != nil {
 				t.Fatalf("running the oracle: %v", err)
@@ -58,7 +59,7 @@ func TestDumpMatchesTheRecordedUpstreamAgreement(t *testing.T) {
 				t.Errorf("the dump for %s differs from the recorded upstream dump; the trees disagree "+
 					"or the record is stale (re-run scripts/upstream-compare.py --record with the "+
 					"pinned checkout)\n--- recorded: %d bytes\n--- now:      %d bytes",
-					provider, len(recorded), len(encoded))
+					testCase.Provider, len(recorded), len(encoded))
 				reportFirstDifference(t, string(recorded), string(encoded))
 			}
 			if dump.Tool != ToolID {
@@ -72,10 +73,12 @@ func TestDumpMatchesTheRecordedUpstreamAgreement(t *testing.T) {
 // edit cannot leave a record that silently describes different bytes.
 func TestDumpNamesTheFixtureBytesItRead(t *testing.T) {
 	root := fixtureRoot(t)
+	testCase := Cases[0]
 	dump, err := Run(context.Background(), Options{
 		Fixtures: root,
 		WorkDir:  t.TempDir(),
-		Provider: "claude",
+		Provider: testCase.Provider,
+		Fixture:  testCase.Fixture,
 	})
 	if err != nil {
 		t.Fatalf("running the oracle: %v", err)
@@ -104,7 +107,8 @@ func TestDumpCarriesNoHostSpecificValues(t *testing.T) {
 	dump, err := Run(context.Background(), Options{
 		Fixtures: fixtureRoot(t),
 		WorkDir:  workDir,
-		Provider: "codex",
+		Provider: Cases[1].Provider,
+		Fixture:  Cases[1].Fixture,
 	})
 	if err != nil {
 		t.Fatalf("running the oracle: %v", err)

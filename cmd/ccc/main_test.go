@@ -27,29 +27,58 @@ func fixtureRoot(t *testing.T) string {
 	return root
 }
 
-// claudeFixture returns the committed Claude fixture's session id (its file name) and path. The id is
-// read from the tree rather than written into this file: the fixture's identity is its file name, and
-// a test that repeats it would have to be edited whenever the fixture is renewed.
+// claudeFixtureFile is one committed Claude fixture: the id the provider reports (the file's stem) and
+// its path.
+type claudeFixtureFile struct {
+	sessionID string
+	path      string
+}
+
+// claudeFixtures returns every committed Claude fixture, keyed by its project directory: each provider
+// subdirectory is that provider's source root, and each project directory below it is one session.
+func claudeFixtures(t *testing.T) map[string]claudeFixtureFile {
+	t.Helper()
+	root := filepath.Join(fixtureRoot(t), "claude")
+	projects, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("reading the Claude fixture root: %v", err)
+	}
+	fixtures := map[string]claudeFixtureFile{}
+	for _, project := range projects {
+		if !project.IsDir() {
+			continue
+		}
+		files, err := os.ReadDir(filepath.Join(root, project.Name()))
+		if err != nil {
+			t.Fatalf("reading %s: %v", project.Name(), err)
+		}
+		for _, file := range files {
+			if file.IsDir() || !strings.HasSuffix(file.Name(), ".jsonl") {
+				continue
+			}
+			fixtures[project.Name()] = claudeFixtureFile{
+				sessionID: strings.TrimSuffix(file.Name(), ".jsonl"),
+				path:      filepath.Join(root, project.Name(), file.Name()),
+			}
+		}
+	}
+	if len(fixtures) == 0 {
+		t.Fatalf("no Claude fixture below %s", root)
+	}
+	return fixtures
+}
+
+// claudeFixture returns the committed Claude fixture for the example-api project: its session id (its
+// file name) and path. The id is read from the tree rather than written into this file: the fixture's
+// identity is its file name, and a test that repeated it would have to be edited whenever the fixture
+// is renewed.
 func claudeFixture(t *testing.T) (sessionID, path string) {
 	t.Helper()
-	var found []string
-	err := filepath.WalkDir(filepath.Join(fixtureRoot(t), "claude"),
-		func(path string, entry os.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".jsonl") {
-				found = append(found, path)
-			}
-			return nil
-		})
-	if err != nil {
-		t.Fatalf("finding the Claude fixture: %v", err)
+	fixture, ok := claudeFixtures(t)["-home-user-code-example-api"]
+	if !ok {
+		t.Fatalf("the example-api Claude fixture is not below the fixture root")
 	}
-	if len(found) != 1 {
-		t.Fatalf("expected exactly one Claude fixture, found %d", len(found))
-	}
-	return strings.TrimSuffix(filepath.Base(found[0]), ".jsonl"), found[0]
+	return fixture.sessionID, fixture.path
 }
 
 // isolatedEnvironment points the CLI at throw-away directories: no test may read the developer's
@@ -446,6 +475,291 @@ func TestHelpNeedsNoEnvironment(t *testing.T) {
 		}
 		if !strings.Contains(stdout, "usage: ccc inspect") {
 			t.Errorf("ccc %v: stdout does not carry the usage line: %q", args, stdout)
+		}
+	}
+}
+
+// continueEnvironment points the CLI at throw-away directories for a continuation: the committed
+// fixture tree as the source, an empty directory as the target harness's data directory, and a target
+// binary name no host has, so the native half is exercised deterministically instead of probing
+// whatever the machine running the test happens to have installed.
+func continueEnvironment(t *testing.T) (dataDir, targetHome string) {
+	t.Helper()
+	dataDir = isolatedEnvironment(t)
+	targetHome = t.TempDir()
+	t.Setenv("CODEX_HOME", targetHome)
+	return dataDir, targetHome
+}
+
+// continueArgs is the common invocation every continuation test starts from.
+func continueArgs(sessionID string, extra ...string) []string {
+	args := []string{"continue", "claude:" + sessionID, "--to", "codex", "--target-binary", missingTargetBinary}
+	return append(args, extra...)
+}
+
+// missingTargetBinary is a name no host has: the CLI tests must not depend on the machine's tooling.
+const missingTargetBinary = "ccc-no-such-target-harness"
+
+// TestContinueJSONDistinguishesConversionInstallationAndVerification is the CLI half of the goal's
+// machine-readable clause: one JSON object on stdout reports what was converted, where it was
+// installed, and which verification actually ran — three states a reader can tell apart.
+func TestContinueJSONDistinguishesConversionInstallationAndVerification(t *testing.T) {
+	_, targetHome := continueEnvironment(t)
+	sessionID, _ := claudeFixture(t)
+	code, stdout, stderr := runCLI(t, continueArgs(sessionID, "--json")...)
+	if code != exitOK {
+		t.Fatalf("exit %d, stderr: %s", code, stderr)
+	}
+	var document struct {
+		UpstreamRevision string `json:"upstream_revision"`
+		Target           string `json:"target"`
+		Conversion       struct {
+			State    string `json:"state"`
+			ReadFrom string `json:"read_from"`
+			DryRun   bool   `json:"dry_run"`
+			Carried  struct {
+				Messages  int `json:"messages"`
+				ToolCalls int `json:"tool_calls"`
+			} `json:"carried"`
+			Losses []struct {
+				Category    string `json:"category"`
+				Disposition string `json:"disposition"`
+				Count       int    `json:"count"`
+				Detail      string `json:"detail"`
+			} `json:"losses"`
+		} `json:"conversion"`
+		TargetSession struct {
+			SessionID        string `json:"session_id"`
+			Path             string `json:"path"`
+			ResumeCommand    string `json:"resume_command"`
+			BinaryFound      bool   `json:"binary_found"`
+			CLIVersion       string `json:"cli_version"`
+			CLIVersionSource string `json:"cli_version_source"`
+			FormatLimits     []struct {
+				Category string `json:"category"`
+				Detail   string `json:"detail"`
+			} `json:"format_limits"`
+		} `json:"target_session"`
+		Installation struct {
+			State           string `json:"state"`
+			Created         bool   `json:"created"`
+			SourceUnchanged bool   `json:"source_unchanged"`
+			Mechanism       string `json:"mechanism"`
+		} `json:"installation"`
+		Verification struct {
+			Structure struct {
+				State string `json:"state"`
+			} `json:"structure"`
+			Load struct {
+				State  string `json:"state"`
+				Detail string `json:"detail"`
+			} `json:"load"`
+			Resume struct {
+				State string `json:"state"`
+			} `json:"resume"`
+		} `json:"verification"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
+	}
+	if document.UpstreamRevision != upstreamRevision {
+		t.Errorf("upstream_revision = %q, want %q", document.UpstreamRevision, upstreamRevision)
+	}
+	if document.Target != "codex" || document.Conversion.State != "converted" ||
+		document.Conversion.ReadFrom != "source" || document.Conversion.DryRun {
+		t.Errorf("conversion block = %+v", document.Conversion)
+	}
+	if document.Conversion.Carried.Messages != 5 || document.Conversion.Carried.ToolCalls != 1 {
+		t.Errorf("carried = %+v", document.Conversion.Carried)
+	}
+	if len(document.Conversion.Losses) == 0 {
+		t.Error("the JSON reports no loss categories at all")
+	}
+	for _, loss := range document.Conversion.Losses {
+		if loss.Category == "" || loss.Detail == "" || loss.Disposition == "" {
+			t.Errorf("a loss entry is not readable: %+v", loss)
+		}
+	}
+	if document.Installation.State != "installed" || !document.Installation.Created ||
+		!document.Installation.SourceUnchanged || document.Installation.Mechanism == "" {
+		t.Errorf("installation block = %+v", document.Installation)
+	}
+	if !strings.HasPrefix(document.TargetSession.Path, targetHome) {
+		t.Errorf("the session was installed at %q, outside %q", document.TargetSession.Path, targetHome)
+	}
+	if document.TargetSession.SessionID == "" ||
+		!strings.Contains(document.TargetSession.ResumeCommand, document.TargetSession.SessionID) {
+		t.Errorf("the report does not name a resumable identity: %+v", document.TargetSession)
+	}
+	if document.TargetSession.BinaryFound {
+		t.Errorf("the report claims to have found %q", missingTargetBinary)
+	}
+	if document.TargetSession.CLIVersion == "" || document.TargetSession.CLIVersionSource != "writer-pin" {
+		t.Errorf("cli version report = %+v", document.TargetSession)
+	}
+	if len(document.TargetSession.FormatLimits) == 0 {
+		t.Error("the JSON states no format limits")
+	}
+	if document.Verification.Structure.State != "verified" {
+		t.Errorf("structure verification = %+v", document.Verification.Structure)
+	}
+	if document.Verification.Load.State != "not-verified" ||
+		!strings.Contains(document.Verification.Load.Detail, missingTargetBinary) {
+		t.Errorf("load verification = %+v, want an explicit not-verified naming the absent harness",
+			document.Verification.Load)
+	}
+	if document.Verification.Resume.State != "not-verified" {
+		t.Errorf("resume verification = %+v, want it not verified when nothing was asked for", document.Verification.Resume)
+	}
+	if strings.Contains(stdout, "ccc:") {
+		t.Errorf("stdout carries a diagnostic: %s", stdout)
+	}
+}
+
+// TestContinueHumanOutputNamesTheResumeCommand pins the human block: an operator reads the target
+// identity, where it was installed and the command that resumes it without opening the JSON.
+func TestContinueHumanOutputNamesTheResumeCommand(t *testing.T) {
+	_, targetHome := continueEnvironment(t)
+	sessionID, _ := claudeFixture(t)
+	code, stdout, stderr := runCLI(t, continueArgs(sessionID)...)
+	if code != exitOK {
+		t.Fatalf("exit %d, stderr: %s", code, stderr)
+	}
+	for _, want := range []string{
+		"claude:" + sessionID + " → codex",
+		"converted:    codex-rollout-jsonl",
+		"installed:    " + targetHome,
+		// The printed command names the harness the caller named (here, the test's own absent one),
+		// so a caller that runs a binary from an unusual path gets that path back.
+		"resume:       " + missingTargetBinary + " resume ",
+		"structure:    verified",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("human output is missing %q:\n%s", want, stdout)
+		}
+	}
+	if strings.Contains(stdout, "{") {
+		t.Errorf("the human output carries JSON:\n%s", stdout)
+	}
+}
+
+// TestContinueDryRunInstallsNothingThroughTheCLI pins the flag's promise at the CLI boundary.
+func TestContinueDryRunInstallsNothingThroughTheCLI(t *testing.T) {
+	_, targetHome := continueEnvironment(t)
+	sessionID, _ := claudeFixture(t)
+	code, stdout, stderr := runCLI(t, continueArgs(sessionID, "--dry-run", "--json")...)
+	if code != exitOK {
+		t.Fatalf("exit %d, stderr: %s", code, stderr)
+	}
+	if !strings.Contains(stdout, `"state": "not-installed"`) || !strings.Contains(stdout, `"dry_run": true`) {
+		t.Errorf("the dry run does not say what it did:\n%s", stdout)
+	}
+	entries, err := os.ReadDir(targetHome)
+	if err != nil {
+		t.Fatalf("reading the target home: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("a dry run wrote into the target home: %v", entries)
+	}
+}
+
+// TestContinueUsageErrors pins what a caller gets wrong: no target, no reference, a level that does not
+// exist, and a resume verification with no prompt of its own.
+func TestContinueUsageErrors(t *testing.T) {
+	continueEnvironment(t)
+	sessionID, _ := claudeFixture(t)
+	for _, testCase := range []struct {
+		name string
+		args []string
+		code int
+		want string
+	}{
+		{"no target", []string{"continue", "claude:" + sessionID}, exitUsage, "--to"},
+		{"unknown target", []string{"continue", "claude:" + sessionID, "--to", "gemini"}, exitUsage, "gemini"},
+		{"unknown level", []string{"continue", "claude:" + sessionID, "--to", "codex",
+			"--target-binary", missingTargetBinary, "--verify", "perhaps"}, exitUsage, "perhaps"},
+		{"resume without a prompt", []string{"continue", "claude:" + sessionID, "--to", "codex",
+			"--target-binary", missingTargetBinary, "--verify", "resume"}, exitUsage, "--resume-prompt"},
+		{"no reference", []string{"continue", "--to", "codex"}, exitUsage, "usage: ccc continue"},
+		{"unknown provider", []string{"continue", "nope:" + sessionID, "--to", "codex"}, exitUsage, "nope"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			code, stdout, stderr := runCLI(t, testCase.args...)
+			if code != testCase.code {
+				t.Fatalf("exit %d, want %d (stderr %q)", code, testCase.code, stderr)
+			}
+			if !strings.Contains(stderr, testCase.want) {
+				t.Errorf("stderr %q does not name %q", stderr, testCase.want)
+			}
+			if strings.TrimSpace(stdout) != "" {
+				t.Errorf("a refused command wrote to stdout: %q", stdout)
+			}
+		})
+	}
+}
+
+// TestContinueRefusesAMissingDataDirectoryNobodyNamed pins the one path a continuation will not invent:
+// $CODEX_HOME that is not there is an error naming the flag that would say where to write, and the
+// directory is not created.
+func TestContinueRefusesAMissingDataDirectoryNobodyNamed(t *testing.T) {
+	isolatedEnvironment(t)
+	sessionID, _ := claudeFixture(t)
+	missing := filepath.Join(t.TempDir(), "absent")
+	t.Setenv("CODEX_HOME", missing)
+	code, stdout, stderr := runCLI(t, "continue", "claude:"+sessionID, "--to", "codex",
+		"--target-binary", missingTargetBinary)
+	if code != exitFailure {
+		t.Fatalf("exit %d, want %d (stderr %q)", code, exitFailure, stderr)
+	}
+	if !strings.Contains(stderr, "--target-home") {
+		t.Errorf("stderr %q does not name the flag that would say where to write", stderr)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Errorf("a refused command wrote to stdout: %q", stdout)
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Errorf("the refused run created %s", missing)
+	}
+}
+
+// TestContinueReportsAFailedVerificationAsAFailure pins the exit code rule: a verification the caller
+// asked for, that ran and did not pass, fails the run — while the same command with the level nobody
+// asked for keeps the conversion's success.
+func TestContinueReportsAFailedVerificationAsAFailure(t *testing.T) {
+	continueEnvironment(t)
+	sessionID, _ := claudeFixture(t)
+	code, _, stderr := runCLI(t, continueArgs(sessionID, "--verify", "none")...)
+	if code != exitOK {
+		t.Fatalf("exit %d with --verify none, stderr: %s", code, stderr)
+	}
+	if code, _, _ := runCLI(t, continueArgs(sessionID)...); code != exitOK {
+		t.Fatalf("exit %d: a verification that could not run because the harness is absent must not fail the conversion", code)
+	}
+}
+
+// TestContinueHelpIsARequestNotAFailure pins the help path for the new command, and that the help page
+// explains the common invocation on its own.
+func TestContinueHelpIsARequestNotAFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	code, stdout, stderr := runCLI(t, "continue", "-h")
+	if code != exitOK {
+		t.Fatalf("exit %d, want %d (stderr %q)", code, exitOK, stderr)
+	}
+	if !strings.Contains(stdout, "usage: ccc continue") {
+		t.Errorf("stdout does not carry the usage line: %q", stdout)
+	}
+	code, stdout, _ = runCLI(t, "help")
+	if code != exitOK {
+		t.Fatalf("help exit %d", code)
+	}
+	for _, want := range []string{
+		"ccc continue <provider>:<session-id-or-path> --to codex",
+		"ccc continue claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to codex",
+		"codex resume <session-id>",
+		"--verify LEVEL",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("help is missing %q", want)
 		}
 	}
 }
