@@ -28,6 +28,19 @@ var ErrNotFound = errors.New("session not found")
 // report the failure as if nothing were there.
 var ErrProviderFailed = errors.New("provider could not read the source")
 
+// ErrPartialSource reports a source a provider read only in part: the parse produced at least one
+// session and said its result set is incomplete (ParseOutcome.ResultSetComplete false), because one or
+// more other members of the same source failed -- the inherited shape internal/parser's
+// TestOpenClawSQLiteStoreMalformedMemberIsolation pins, one readable member of a container and two
+// malformed ones. It is not absence (the sessions the parse returned exist) and not a session either:
+// which conversation a *path* names is exactly what an incomplete read cannot say, so the reader
+// refuses to answer a path reference with the members it happened to read and reports the provider's
+// diagnostics instead. A reference that names a session id is unaffected: the identity it asked for is
+// in the outcome or not, whatever else the source holds. An inspection can still consult an archive
+// that holds the session, and the identities the parse did read travel in the error so the caller can
+// name one of them explicitly.
+var ErrPartialSource = errors.New("provider could not read every session in the source")
+
 // ErrSourceDisabled reports a provider the configuration disables for local ingestion
 // (config.Config.DisabledAgents, "Disabling Session Providers" in docs/configuration.md): the provider
 // exists and its ids still resolve, but the inherited setting keeps it out of local discovery, so this
@@ -68,23 +81,102 @@ func NewSourceReader(cfg config.Config) *SourceReader {
 	return &SourceReader{cfg: cfg, factories: factories}
 }
 
-// Providers lists the provider identifiers this reader can resolve, sorted.
+// Providers lists the provider identifiers this reader can resolve, sorted: the enabled registry
+// providers together with the stored agent labels that have no registry entry of their own.
+//
+// The second half is where Freebuff lives. It is not a provider (it has no registry entry, no config
+// key and no factory), but it *is* a label the Codebuff provider writes -- parser.ProviderStoredAgents
+// records exactly that -- and a label this reader resolves a reference through (resolveFactory, via
+// storedAgentOwner) is one a caller may name, so the list a "known:" message prints has to hold it.
 func (r *SourceReader) Providers() []string {
-	providers := make([]string, 0, len(r.factories))
+	labels := make(map[string]struct{}, len(r.factories))
 	for agent := range r.factories {
-		providers = append(providers, string(agent))
+		for _, stored := range parser.ProviderStoredAgents(agent) {
+			labels[string(stored)] = struct{}{}
+		}
+	}
+	providers := make([]string, 0, len(labels))
+	for label := range labels {
+		providers = append(providers, label)
 	}
 	sort.Strings(providers)
 	return providers
 }
 
 // AgentLabel returns the provider's display name, and whether the provider exists at all.
+//
+// A stored agent label that has no registry entry of its own (Freebuff) therefore has no display name
+// here: the registry is the only place a display name comes from, and inventing a second one is what
+// this increment must not do. A session's own agent label still travels with the read -- the parsed
+// session and the archive row both carry it -- so a reference written with such a label is reported by
+// what its session recorded rather than by a name this lookup made up.
 func (r *SourceReader) AgentLabel(provider string) (string, bool) {
 	def, ok := parser.AgentByType(parser.AgentType(provider))
 	if !ok {
 		return "", false
 	}
 	return def.DisplayName, true
+}
+
+// KnownProvider reports whether a provider name is one this engine resolves: a registry provider, or a
+// stored agent label of one that has no registry entry of its own.
+//
+// The Codebuff provider does not label all of its sessions with its own name -- it writes free-tier
+// sessions under the Freebuff label (parser.ProviderStoredAgents records exactly that, and
+// internal/parser's own capability helpers map AgentFreebuff onto the Codebuff def for the same reason)
+// -- so `freebuff:<project>:<timestamp>` is a session identity an archive reports and a caller may
+// write. It is a name check only: whether that provider is *enabled* in this configuration is a
+// separate answer the reader gives (ErrSourceDisabled), and one a caller with no configuration in hand
+// should not be given here.
+func KnownProvider(provider string) bool {
+	_, ok := storedAgentOwner(parser.AgentType(provider))
+	return ok
+}
+
+// storedAgentOwner answers the registry provider whose stored session labels include agent.
+//
+// A name that is such a label names that provider's sessions; it is not a provider of its own and not an
+// unknown one. The registry is asked first, so a registered provider is always its own owner.
+func storedAgentOwner(agent parser.AgentType) (parser.AgentType, bool) {
+	if _, ok := parser.AgentByType(agent); ok {
+		return agent, true
+	}
+	for _, def := range parser.Registry {
+		for _, stored := range parser.ProviderStoredAgents(def.Type) {
+			if stored == agent {
+				return def.Type, true
+			}
+		}
+	}
+	return "", false
+}
+
+// providerStoredAgentNames answers the archive's `agent` column spellings of the labels a provider's
+// rows may carry, for a query that takes agent names.
+func providerStoredAgentNames(provider string) []string {
+	stored := parser.ProviderStoredAgents(parser.AgentType(provider))
+	names := make([]string, 0, len(stored))
+	for _, agent := range stored {
+		names = append(names, string(agent))
+	}
+	return names
+}
+
+// providerStoresAgent reports whether a session an archive row records under the agent label agent is
+// one the provider provider wrote.
+//
+// Every archive lookup that decides "is this row the provider's session?" goes through this predicate
+// rather than comparing the label with the provider's name, because the inherited mapping
+// (parser.ProviderStoredAgents) makes those the same question only for providers that have one label:
+// an exact-name comparison drops the Codebuff provider's Freebuff rows, which is how a session that was
+// read from its source stopped being findable in the archive once that source was gone.
+func providerStoresAgent(provider, agent string) bool {
+	for _, stored := range parser.ProviderStoredAgents(parser.AgentType(provider)) {
+		if string(stored) == agent {
+			return true
+		}
+	}
+	return false
 }
 
 // provider builds one provider instance bound to the configured roots.
@@ -158,8 +250,25 @@ func pathWithinRoot(path, root string) bool {
 func (r *SourceReader) resolveFactory(provider string) (parser.AgentDef, parser.ProviderFactory, error) {
 	def, ok := parser.AgentByType(parser.AgentType(provider))
 	if !ok {
-		return parser.AgentDef{}, nil, fmt.Errorf("unknown provider %q (known: %s)",
-			provider, strings.Join(r.Providers(), ", "))
+		// A name that is not a registry entry of its own but is a stored agent label of a registered
+		// provider is resolved through the provider that writes it (storedAgentOwner): a Freebuff
+		// session was read by the Codebuff provider, whose rooted filesystem layout and parse are what
+		// its label needs, and the archive reports `freebuff:<project>:<timestamp>` as such a session's
+		// identity -- so refusing the label as unknown would leave the identifier an archive hands back
+		// unusable. The enabled-factory check below still decides whether that provider may be read at
+		// all, so a disabled Codebuff refuses `freebuff:<id>` with the same ErrSourceDisabled the
+		// setting's own docs describe.
+		owner, stored := storedAgentOwner(parser.AgentType(provider))
+		if !stored {
+			return parser.AgentDef{}, nil, fmt.Errorf("unknown provider %q (known: %s)",
+				provider, strings.Join(r.Providers(), ", "))
+		}
+		def, ok = parser.AgentByType(owner)
+		if !ok {
+			// Unreachable while storedAgentOwner answers registry types only; refused rather than
+			// carried as a zero def, which would be read from the wrong roots.
+			return parser.AgentDef{}, nil, fmt.Errorf("provider %q has no registry definition", owner)
+		}
 	}
 	factory, ok := r.factories[def.Type]
 	if !ok {
@@ -385,6 +494,12 @@ func (r *SourceReader) Read(ctx context.Context, ref Ref) (Conversation, error) 
 		if ambiguous := ambiguousPathResults(outcome, ref); ambiguous != nil {
 			return Conversation{}, ambiguous
 		}
+		// A path whose parse could not read every session the source holds names none of them: the
+		// sole result is not the source's only conversation (partialPathParse), so the answer is the
+		// provider's own diagnostics plus the identities it did read, never a pick.
+		if partial := partialPathParse(outcome, ref); partial != nil {
+			return Conversation{}, partial
+		}
 		// An outcome that carries operational source errors is a failure the provider classified,
 		// never an answer that the session does not exist: the inherited Cursor provider reports a
 		// retryable enrichment failure this way, and a caller that read it as absence would tell the
@@ -403,9 +518,14 @@ func (r *SourceReader) Read(ctx context.Context, ref Ref) (Conversation, error) 
 //
 // A reference that names a filesystem path names a *source*, not one of the sessions a parse of it may
 // produce: the provider resolved the path to the session it belongs to, so a single result is that
-// session whatever id the provider reports, and a parse that produced several (a transcript holding a
-// DAG fork) is not one session a path can single out -- the caller reports those candidates instead
-// (ambiguousPathResults) rather than answering the reference as absent.
+// session whatever id the provider reports -- provided the parse read the source in full
+// (ParseOutcome.ResultSetComplete). A path whose parse returned some members and said its result set is
+// incomplete has no single session to return either: the members it missed may be the one the caller
+// meant, and which conversation a path names would then be decided by whether a malformed sibling
+// parses (partialPathParse reports the provider's diagnostics for that shape). A parse that produced
+// several sessions (a transcript holding a DAG fork) is likewise not one session a path can single out
+// -- the caller reports those candidates instead (ambiguousPathResults) rather than answering the
+// reference as absent.
 //
 // Every other reference names a *session*, and the parse has to produce that identity. Taking the sole
 // result as-is was wrong the moment a provider resolves a reference by normalising it: the Piebald
@@ -413,7 +533,8 @@ func (r *SourceReader) Read(ctx context.Context, ref Ref) (Conversation, error) 
 // parses to the one result `piebald:42` and an inspection reported the base conversation as the fork
 // that was asked for. The sync engine makes the same check for the same reason (internal/sync's
 // providerSessionSourceMtime parses the base source and requires the requested session id to appear in
-// the outcome).
+// the outcome). An incomplete result set does not weaken this rule in either direction: the session a
+// reference *names* is in the outcome or it is not, whatever else the source holds.
 //
 // The whole outcome is returned rather than only its result: a result carries the provider's own retry
 // and data-version state beside its messages (parser.ParseResultOutcome), and dropping it would report
@@ -424,7 +545,7 @@ func pickResult(outcome parser.ParseOutcome, ref Ref) (parser.ParseResultOutcome
 		return parser.ParseResultOutcome{}, false
 	}
 	if looksLikePath(ref.ID) {
-		if len(outcome.Results) == 1 {
+		if len(outcome.Results) == 1 && outcome.ResultSetComplete {
 			return outcome.Results[0], true
 		}
 		return parser.ParseResultOutcome{}, false
@@ -436,6 +557,40 @@ func pickResult(outcome parser.ParseOutcome, ref Ref) (parser.ParseResultOutcome
 		}
 	}
 	return parser.ParseResultOutcome{}, false
+}
+
+// partialPathParse reports a path reference whose parse could not read every session the source holds,
+// or nil when the reference is not a path, the parse returned nothing, or the parse read the source in
+// full.
+//
+// The inherited shape is a multi-session container that returns the members it could read and records
+// the rest as source errors with ResultSetComplete false (internal/parser's
+// TestOpenClawSQLiteStoreMalformedMemberIsolation: one readable member, two malformed ones, one
+// result). A path names the *source*, so "the one result" is not the source's only conversation: the
+// reference would silently resolve to the readable member, and the same reference would become an
+// ambiguity error as soon as a malformed sibling parses -- parse failure deciding which conversation
+// the caller meant. Two things travel with this refusal instead: the provider's own diagnostics (its
+// source errors, through describeOutcome) and the identities the parse *did* read, so a caller can pass
+// one of them back as the explicit session identity the incomplete read could not infer.
+func partialPathParse(outcome parser.ParseOutcome, ref Ref) error {
+	if !looksLikePath(ref.ID) || len(outcome.Results) == 0 || outcome.ResultSetComplete {
+		return nil
+	}
+	read := make([]string, 0, len(outcome.Results))
+	for _, candidate := range outcome.Results {
+		read = append(read, parsedSessionName(candidate.Result.Session))
+	}
+	// The provider's diagnostics are appended only when it recorded any: a container whose snapshot
+	// marks an entry malformed without isolating it to a session id (Trae's shape) reports the
+	// incompleteness and nothing else, and "source error: none" would be noise.
+	diagnostics := ""
+	if len(outcome.SourceErrors) > 0 {
+		diagnostics = " (" + describeOutcome(outcome) + ")"
+	}
+	return fmt.Errorf(
+		"%w: parsing %s read %s but the provider reported the source's result set incomplete%s; "+
+			"name one of those session ids instead of the path",
+		ErrPartialSource, ref.ID, strings.Join(read, ", "), diagnostics)
 }
 
 // ambiguousPathResults reports the sessions a path reference's parse failed to single out, or nil when
@@ -548,6 +703,12 @@ func conversationFromParse(
 	}
 	if def, ok := parser.AgentByType(parser.AgentType(identity.Provider)); ok {
 		identity.Agent = def.DisplayName
+	} else if session.AgentLabel != "" {
+		// The provider the parse reports has no registry def of its own (a stored agent label such as
+		// Freebuff), so there is no registered display name to look up -- and the parse recorded the
+		// session's own label, which is the name it belongs to. Dropping it would report a read of a
+		// session whose parser named its agent with no agent at all.
+		identity.Agent = session.AgentLabel
 	}
 	if identity.Fingerprint == "" {
 		identity.Fingerprint = fingerprint.Key

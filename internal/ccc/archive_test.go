@@ -2889,3 +2889,367 @@ func toolFreeFixture(t *testing.T) (string, config.Config) {
 	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentClaude: {filepath.Join(root, "claude")}}
 	return source, cfg
 }
+
+// TestFreebuffSessionResolvesThroughItsCodebuffProvider pins the inherited provider-to-stored-agent
+// mapping across the archive's whole resolution surface.
+//
+// The Codebuff provider also writes free-tier sessions, under the Freebuff label
+// (parser.ProviderStoredAgents records exactly that, and internal/parser's
+// TestParseCodebuffSession_FreebuffClassification pins the parser's own output), so an archive row of
+// such a session carries `agent = freebuff` while its id carries the `freebuff:` prefix. Every archive
+// lookup compared the row's `agent` column with the provider's own name, so a session read from its
+// source by a `codebuff:<project>:<timestamp>` reference stopped being findable -- by id, by
+// provider-prefixed id, by stored agent label and by path -- the moment that source was gone: an
+// inspection reported no session for a conversation the archive holds. The case walks one written
+// archive through every spelling with the source present, with it gone, and after the disappearance is
+// reconciled (the watcher's own state, where the path lookup's retained tier answers), and it holds a
+// cross-provider reference to not-found so the mapping cannot pass by widening the answers.
+func TestFreebuffSessionResolvesThroughItsCodebuffProvider(t *testing.T) {
+	ctx := context.Background()
+	cfg := fixtureConfig(t)
+	root, chatPath, project, timestamp := freebuffSession(t)
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentCodebuff: {root}}
+	nativeID := project + ":" + timestamp
+	freebuffID := string(parser.AgentFreebuff) + ":" + nativeID
+
+	// The source side reads it through the Codebuff provider, which reports the Freebuff identity for
+	// it; the stored label is a reference too, because it is the identity an archive row records.
+	reader := NewSourceReader(cfg)
+	source, err := reader.Read(ctx, Ref{Provider: "codebuff", ID: nativeID})
+	if err != nil {
+		t.Fatalf("reading the Freebuff source through its Codebuff provider: %v", err)
+	}
+	if source.Source.SessionID != freebuffID {
+		t.Fatalf("the source read reports %q, want the parser's own %q", source.Source.SessionID, freebuffID)
+	}
+	byLabel, err := reader.Read(ctx, Ref{Provider: string(parser.AgentFreebuff), ID: nativeID})
+	if err != nil {
+		t.Fatalf("reading the source under its stored agent label: %v", err)
+	}
+	if byLabel.Source.SessionID != freebuffID {
+		t.Errorf("the by-label source read reports %q, want %q", byLabel.Source.SessionID, freebuffID)
+	}
+	// The label is the parser's own for this session (internal/parser's
+	// TestParseCodebuffSession_FreebuffClassification pins it), and the read has to carry it: the
+	// registry has no def for the label, so a read that dropped the recorded one would name no agent.
+	sourceLabel := byLabel.Source.Agent
+	if sourceLabel == "" {
+		t.Errorf("the by-label source read reports no agent label, want the one the parser recorded")
+	}
+
+	ingestor, archivePath := ingestFile(t, cfg, chatPath)
+	archive, err := OpenArchive(ctx, archivePath)
+	if err != nil {
+		t.Fatalf("opening the archive: %v", err)
+	}
+	defer archive.Close()
+
+	// Every spelling a caller can write for this session: the provider's own name with the native id
+	// (the suffix lookup), the provider's name with the stored id's own prefix, the stored agent label
+	// (which is a whole provider name to a caller, the archive reports it), and the path the session was
+	// read from.
+	spellings := []Ref{
+		{Provider: "codebuff", ID: nativeID},
+		{Provider: "codebuff", ID: freebuffID},
+		{Provider: string(parser.AgentFreebuff), ID: nativeID},
+		{Provider: "codebuff", ID: chatPath},
+	}
+	assertFreebuffArchiveAnswer := func(state string) {
+		t.Helper()
+		for _, ref := range spellings {
+			status, found, err := archive.Status(ctx, ref)
+			if err != nil {
+				t.Fatalf("%s: status of %s:%s: %v", state, ref.Provider, ref.ID, err)
+			}
+			if !found {
+				t.Fatalf("%s: the archive does not resolve %s:%s", state, ref.Provider, ref.ID)
+			}
+			if status.SessionID != freebuffID {
+				t.Errorf("%s: %s:%s resolved %q, want %q",
+					state, ref.Provider, ref.ID, status.SessionID, freebuffID)
+			}
+			if status.Agent != string(parser.AgentFreebuff) {
+				t.Errorf("%s: %s:%s reports agent %q, want the row's own label %q",
+					state, ref.Provider, ref.ID, status.Agent, parser.AgentFreebuff)
+			}
+			if status.AgentLabel != sourceLabel {
+				t.Errorf("%s: %s:%s reports agent label %q, want the label the parse recorded %q",
+					state, ref.Provider, ref.ID, status.AgentLabel, sourceLabel)
+			}
+			conversation, err := archive.Read(ctx, ref)
+			if err != nil {
+				t.Fatalf("%s: reading %s:%s: %v", state, ref.Provider, ref.ID, err)
+			}
+			if len(conversation.Messages) != 2 {
+				t.Errorf("%s: %s:%s read %d message(s), want the session's two",
+					state, ref.Provider, ref.ID, len(conversation.Messages))
+			}
+		}
+	}
+	assertFreebuffArchiveAnswer("while the source is there")
+
+	// A *relative* reference to the same transcript. The roots a relative path is relative to come from
+	// the configuration, and for a stored agent label they are the roots of the provider that writes it
+	// (providerRoots) -- so a relative Freebuff reference resolves the same way an absolute one does,
+	// through the reader and through an archive opened with the configuration, exactly as an inspection
+	// opens it.
+	relative := filepath.Join(project, "chats", timestamp, "chat-messages.json")
+	if _, err := reader.Read(ctx, Ref{Provider: string(parser.AgentFreebuff), ID: relative}); err != nil {
+		t.Errorf("reading a relative Freebuff path through its provider: %v", err)
+	}
+	rooted, err := openArchive(ctx, archivePath, cfg.AgentDirs)
+	if err != nil {
+		t.Fatalf("opening the archive with the configured roots: %v", err)
+	}
+	defer rooted.Close()
+	for _, provider := range []string{"codebuff", string(parser.AgentFreebuff)} {
+		ref := Ref{Provider: provider, ID: relative}
+		status, found, err := rooted.Status(ctx, ref)
+		if err != nil {
+			t.Fatalf("status of the relative %s reference: %v", provider, err)
+		}
+		if !found || status.SessionID != freebuffID {
+			t.Errorf("the relative %s path resolved found=%v id=%q, want %q",
+				provider, found, status.SessionID, freebuffID)
+		}
+	}
+
+	// A provider whose rows do not carry the label is not answered by the alias: the mapping widens a
+	// lookup to the labels one provider writes, not to another agent's rows.
+	if status, found, err := archive.Status(ctx, Ref{Provider: "codex", ID: nativeID}); err != nil || found {
+		t.Errorf("codex:%s resolved %+v (found=%v err=%v), want not found", nativeID, status, found, err)
+	}
+
+	// The source is gone: every spelling must still answer, which is the state an archive exists for and
+	// the state the exact-label comparison broke.
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatalf("removing the source: %v", err)
+	}
+	assertFreebuffArchiveAnswer("after the source is gone")
+
+	// And after the disappearance is reconciled -- the state a watcher pass leaves, where a path
+	// reference is answered from the archive's retained rows rather than its current members.
+	reconcileVanishedSource(t, ingestor, chatPath)
+	requireSourceMissing(t, archivePath, freebuffID)
+	assertFreebuffArchiveAnswer("after the vanished source is reconciled")
+
+	// An inspection of the label with the source gone reports the archived session *and* the label its
+	// row recorded, because the provider name has no registry display name to answer with: the label the
+	// writer stored is the agent an operator reads this inspection for.
+	inspection, err := Inspect(ctx, InspectOptions{
+		Ref:         Ref{Provider: string(parser.AgentFreebuff), ID: nativeID},
+		Config:      cfg,
+		Reader:      NewSourceReader(cfg),
+		ArchivePath: archivePath,
+	})
+	if err != nil {
+		t.Fatalf("inspecting the archived Freebuff session: %v", err)
+	}
+	if inspection.Archive == nil {
+		t.Fatalf("the archived session was not reported: %v", inspection.Warnings)
+	}
+	if inspection.Agent == "" || inspection.Agent != inspection.Archive.Status.AgentLabel {
+		t.Errorf("the inspection reports agent %q, want the archived row's label %q",
+			inspection.Agent, inspection.Archive.Status.AgentLabel)
+	}
+}
+
+// TestHostQualifiedFreebuffRowResolvesThroughItsCodebuffProvider pins the host-qualified half of the
+// same mapping: a session synced from another machine is stored as `<host>~<the id it had there>`, and a
+// Freebuff session's id there starts with its own prefix (`host-a~freebuff:<project>:<timestamp>`). A
+// `codebuff:` reference must resolve that stored spelling and the host-qualified native spelling the CLI
+// takes -- while the *local* Codebuff row of the same project and timestamp, which shares the native id,
+// is never offered in place of the remote one.
+func TestHostQualifiedFreebuffRowResolvesThroughItsCodebuffProvider(t *testing.T) {
+	const native = "example-project:2026-07-15T20-01-32.065Z"
+	dir := dbtest.MkdirTempWithCleanup(t)
+	archivePath := filepath.Join(dir, "sessions.db")
+	database := dbtest.OpenTestDBAt(t, archivePath)
+	localID := "codebuff:" + native
+	remoteID := "host-a~freebuff:" + native
+	seed := func(id, machine, agent, content string) {
+		t.Helper()
+		dbtest.SeedSessionWithMessages(t, database, id, "example-project",
+			[]db.Message{dbtest.UserMsg(id, 0, content)},
+			func(session *db.Session) { session.Agent = agent; session.Machine = machine })
+	}
+	seed(localID, "local", string(parser.AgentCodebuff), "the Codebuff session recorded here")
+	seed(remoteID, "host-a", string(parser.AgentFreebuff), "the Freebuff session recorded on host-a")
+	if err := database.Close(); err != nil {
+		t.Fatalf("closing the seeded archive: %v", err)
+	}
+
+	ctx := context.Background()
+	archive, err := OpenArchive(ctx, archivePath)
+	if err != nil {
+		t.Fatalf("opening the archive: %v", err)
+	}
+	defer archive.Close()
+
+	// The stored spelling, exactly as a remote sync wrote it, and the host-qualified native spelling a
+	// caller writes without knowing the stored prefix: both name host-a's Freebuff session.
+	for _, ref := range []Ref{
+		{Provider: "codebuff", ID: remoteID},
+		{Provider: "codebuff", ID: "host-a~" + native},
+	} {
+		status, found, err := archive.Status(ctx, ref)
+		if err != nil {
+			t.Fatalf("status of %s:%s: %v", ref.Provider, ref.ID, err)
+		}
+		if !found {
+			t.Fatalf("the archive does not resolve %s:%s", ref.Provider, ref.ID)
+		}
+		if status.SessionID != remoteID {
+			t.Errorf("%s:%s resolved %q, want the remote row %q", ref.Provider, ref.ID, status.SessionID, remoteID)
+		}
+		conversation, err := archive.Read(ctx, ref)
+		if err != nil {
+			t.Fatalf("reading %s:%s: %v", ref.Provider, ref.ID, err)
+		}
+		if len(conversation.Messages) != 1 ||
+			!strings.Contains(conversation.Messages[0].Content, "host-a") {
+			t.Errorf("%s:%s read the wrong conversation: %+v", ref.Provider, ref.ID, conversation.Messages)
+		}
+	}
+
+	// The same native id without a host is this machine's Codebuff row -- the host narrowing is what
+	// keeps the two apart in both directions.
+	if status, found, err := archive.Status(ctx, Ref{Provider: "codebuff", ID: native}); err != nil ||
+		!found || status.SessionID != localID {
+		t.Errorf("codebuff:%s: found=%v err=%v status=%+v, want the local row %q",
+			native, found, err, status, localID)
+	}
+	// A provider whose rows do not carry the label is not answered by the alias.
+	if status, found, err := archive.Status(ctx, Ref{Provider: "codex", ID: "host-a~" + native}); err != nil || found {
+		t.Errorf("codex:host-a~%s resolved %+v (found=%v err=%v), want not found", native, status, found, err)
+	}
+}
+
+// TestInspectNamesTheIdentityOfAPartialContainer pins what an inspection does with a container whose
+// parse could not read every member: the provider's verdict and the identity it *did* read are the
+// warning, no session is claimed for the container path (the archive stores members under their virtual
+// paths, not the container, so that path has no row there), and the named identity is what a follow-up
+// reference reads from the archive once the source is gone. The refusal is therefore actionable rather
+// than a dead end.
+//
+// The write path agrees with the read path here, which is worth pinning too: the inherited sync engine
+// reports this source as an incomplete sync while it writes the member it read, so an ingest of it is
+// not a silent success either.
+func TestInspectNamesTheIdentityOfAPartialContainer(t *testing.T) {
+	ctx := context.Background()
+	const sessionID = "5c1d2f30-9b47-4a2c-8f0e-1d2b3c4a5e60"
+	root, dbPath := traeContainer(t, traeSessionEntry(sessionID)+","+traeMalformedEntry)
+	cfg := fixtureConfig(t)
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentTrae: {root}}
+
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(cfg, archivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	if err := ingestor.IngestPaths(ctx, dbPath); err == nil {
+		t.Errorf("the inherited sync engine reported a partial container as a complete sync")
+	} else if !strings.Contains(err.Error(), "incomplete") {
+		t.Fatalf("ingesting the container: %v", err)
+	}
+
+	inspection, err := Inspect(ctx, InspectOptions{
+		Ref:         Ref{Provider: "trae", ID: dbPath},
+		Config:      cfg,
+		Reader:      NewSourceReader(cfg),
+		ArchivePath: archivePath,
+	})
+	if err != nil {
+		t.Fatalf("inspecting the container path: %v", err)
+	}
+	if inspection.Source != nil {
+		t.Errorf("a partial container parse was reported as a source read: %+v", inspection.Source.Identity)
+	}
+	if inspection.Archive != nil {
+		t.Errorf("the container path was claimed as an archived session: %+v", inspection.Archive.Status)
+	}
+	warnings := strings.Join(inspection.Warnings, "\n")
+	if !strings.Contains(warnings, "trae:"+sessionID) {
+		t.Errorf("the warning does not name the identity the parse read: %v", inspection.Warnings)
+	}
+	if !strings.Contains(warnings, "an archive can still hold the session") {
+		t.Errorf("the warning does not say why the archive is consulted: %v", inspection.Warnings)
+	}
+
+	// The identity from that warning is the explicit reference that answers: the source is gone by then,
+	// and the archive still holds the member the container parse read.
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatalf("removing the source: %v", err)
+	}
+	inspection, err = Inspect(ctx, InspectOptions{
+		Ref:         Ref{Provider: "trae", ID: "trae:" + sessionID},
+		Config:      cfg,
+		Reader:      NewSourceReader(cfg),
+		ArchivePath: archivePath,
+	})
+	if err != nil {
+		t.Fatalf("inspecting the identity the refusal named: %v", err)
+	}
+	if inspection.Archive == nil {
+		t.Fatalf("the archived member was not reported: %v", inspection.Warnings)
+	}
+	if inspection.Archive.Status.SessionID != "trae:"+sessionID {
+		t.Errorf("the archive reports session %q, want %q", inspection.Archive.Status.SessionID, "trae:"+sessionID)
+	}
+}
+
+// TestHostQualifiedFreebuffRowAnswersBeyondTheCandidateRead pins the narrow half of the host-qualified
+// rule: the archive's own spelling of a row is answered *directly*, without the inherited suffix lookup,
+// so a reference that spells that row exactly still resolves when the candidate list for the native id
+// is one the lookup cannot complete (the archive shape
+// TestArchiveDisclosesACandidateListItCannotComplete seeds).
+//
+// Which row the exact spelling answers is decided by the provider predicate, and that predicate is the
+// inherited stored-label mapping: a row the Codebuff provider recorded as Freebuff is this reference's
+// session, where an exact-name comparison would fall through to the truncated candidate read and refuse
+// a row the caller had spelled out in full.
+func TestHostQualifiedFreebuffRowAnswersBeyondTheCandidateRead(t *testing.T) {
+	const native = "example-project:2026-07-15T20-01-32.065Z"
+	remoteID := "host-a~freebuff:" + native
+	dir := dbtest.MkdirTempWithCleanup(t)
+	archivePath := filepath.Join(dir, "sessions.db")
+	database := dbtest.OpenTestDBAt(t, archivePath)
+	dbtest.SeedSessionWithMessages(t, database, remoteID, "example-project",
+		[]db.Message{dbtest.UserMsg(remoteID, 0, "the Freebuff session recorded on host-a")},
+		func(session *db.Session) {
+			session.Agent = string(parser.AgentFreebuff)
+			session.Machine = "host-a"
+		})
+	for index := range rawSuffixCandidateCap + 1 {
+		id := fmt.Sprintf("flood-%d~freebuff:%s", index, native)
+		dbtest.SeedSession(t, database, id, "example-project", func(session *db.Session) {
+			session.Agent = string(parser.AgentFreebuff)
+			session.Machine = fmt.Sprintf("flood-%d", index)
+		})
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("closing the seeded archive: %v", err)
+	}
+
+	ctx := context.Background()
+	archive, err := OpenArchive(ctx, archivePath)
+	if err != nil {
+		t.Fatalf("opening the archive: %v", err)
+	}
+	defer archive.Close()
+
+	// The candidate read cannot be completed, which is what makes the exact spelling the only way to
+	// this row.
+	if status, found, err := archive.Status(ctx, Ref{Provider: "codebuff", ID: "host-a~" + native}); found ||
+		!errors.Is(err, ErrTruncatedCandidates) {
+		t.Fatalf("the candidate read answered found=%v err=%v status=%+v, want %v",
+			found, err, status, ErrTruncatedCandidates)
+	}
+	status, found, err := archive.Status(ctx, Ref{Provider: "codebuff", ID: remoteID})
+	if err != nil {
+		t.Fatalf("status of the spelled-out Freebuff row: %v", err)
+	}
+	if !found || status.SessionID != remoteID {
+		t.Errorf("the spelled-out row resolved found=%v id=%q, want %q", found, status.SessionID, remoteID)
+	}
+}

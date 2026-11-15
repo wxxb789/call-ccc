@@ -3,6 +3,7 @@ package ccc
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -766,7 +768,10 @@ func TestReadRejectsASingleResultThatIsNotTheReference(t *testing.T) {
 // TestReadAcceptsTheOnlyResultOfAPathReference pins the other half of the same rule: a reference that
 // names a filesystem path names a *source*, and the provider's own resolution of that path is the
 // session's identity -- so the single result is the answer even though the path is not a session id and
-// an identity comparison could never match it.
+// an identity comparison could never match it. The parse states that it read the source in full
+// (`ResultSetComplete`), which is what a real single-file provider always states
+// (internal/parser's singleFileSourceSet.Parse) and what makes the sole result the source's only
+// conversation; the incomplete half of this pair is TestReadRefusesAPartialContainer.
 func TestReadAcceptsTheOnlyResultOfAPathReference(t *testing.T) {
 	cfg := fixtureConfig(t)
 	reader, provider := readerOverFixedProvider(t, cfg, parser.AgentClaude)
@@ -778,9 +783,12 @@ func TestReadAcceptsTheOnlyResultOfAPathReference(t *testing.T) {
 		DisplayPath:    path,
 		FingerprintKey: path,
 	}
-	provider.outcome = parser.ParseOutcome{Results: []parser.ParseResultOutcome{
-		{Result: parsedSessionFor(parser.AgentClaude, "claude:"+claudeFixtureRef.ID, claudeFixtureRef.ID)},
-	}}
+	provider.outcome = parser.ParseOutcome{
+		ResultSetComplete: true,
+		Results: []parser.ParseResultOutcome{
+			{Result: parsedSessionFor(parser.AgentClaude, "claude:"+claudeFixtureRef.ID, claudeFixtureRef.ID)},
+		},
+	}
 	conversation, err := reader.Read(context.Background(), Ref{Provider: "claude", ID: path})
 	if err != nil {
 		t.Fatalf("reading by path: %v", err)
@@ -897,6 +905,367 @@ func TestReadReportsAForkedPathAsAmbiguous(t *testing.T) {
 	}
 }
 
+// TestProvidersNamesStoredAgentLabels pins the names this engine resolves, which is what a caller is
+// told to choose from and what the CLI's reference parsing asks for (ccc.KnownProvider).
+//
+// A provider's name is not the only name its sessions carry: the Codebuff provider writes free-tier
+// sessions under the Freebuff label, so `freebuff:<project>:<timestamp>` is a reference a caller can
+// write and has to see in the list. The list is not a free-for-all either: a name no provider writes is
+// absent, so "known provider" cannot pass by accepting anything.
+func TestProvidersNamesStoredAgentLabels(t *testing.T) {
+	providers := NewSourceReader(fixtureConfig(t)).Providers()
+	for _, want := range []string{"codebuff", "claude", "codex", "freebuff"} {
+		if !slices.Contains(providers, want) {
+			t.Errorf("the provider list is missing %q: %v", want, providers)
+		}
+	}
+	if slices.Contains(providers, "no-such-agent") || slices.Contains(providers, "") {
+		t.Errorf("the provider list names something no provider writes: %v", providers)
+	}
+	for provider, want := range map[string]bool{
+		"claude": true, "codebuff": true, "freebuff": true,
+		"no-such-agent": false, "": false, "unknown": false,
+	} {
+		if got := KnownProvider(provider); got != want {
+			t.Errorf("KnownProvider(%q) = %v, want %v", provider, got, want)
+		}
+	}
+}
+
+// TestReadRefusesAPathWhoseParseIsIncomplete pins the path rule for a source the provider could not read
+// in full: a sole parse result is the source's session *only when the parse read the source in full*.
+//
+// The shape is the inherited partial-container outcome, reproduced field for field from
+// internal/parser's TestOpenClawSQLiteStoreMalformedMemberIsolation: one readable member, two members
+// the provider recorded as source errors, and ResultSetComplete false. A path names the *source*, so
+// that one result is not the source's only conversation -- the reference used to resolve to the readable
+// member, and the same reference turns into an ambiguity error as soon as a malformed sibling parses,
+// which means the parse's own failure decided which conversation the caller meant. The refusal carries
+// the provider's diagnostics and the identity it did read, so a caller has an explicit identity to pass
+// back, and a reference that names a session id is unaffected: it asks for one identity, and another
+// member's failure says nothing about that identity.
+func TestReadRefusesAPathWhoseParseIsIncomplete(t *testing.T) {
+	ctx := context.Background()
+	cfg := fixtureConfig(t)
+	reader, provider := readerOverFixedProvider(t, cfg, parser.AgentOpenClaw)
+	const path = "/sessions/main/agent/openclaw-agent.sqlite"
+	provider.source = parser.SourceRef{
+		Provider:       parser.AgentOpenClaw,
+		DisplayPath:    path,
+		FingerprintKey: path,
+	}
+	partial := parser.ParseOutcome{
+		Results: []parser.ParseResultOutcome{
+			{Result: parsedSessionFor(parser.AgentOpenClaw, "openclaw:main:good", "main:good")},
+		},
+		SourceErrors: []parser.SourceError{
+			{SessionID: "openclaw:main:bad", Err: errors.New("openclaw SQLite: malformed member: wrong header")},
+			{SessionID: "openclaw:main:bad-json", Err: errors.New("openclaw SQLite: malformed member: invalid JSON")},
+		},
+	}
+	provider.outcome = partial
+
+	_, err := reader.Read(ctx, Ref{Provider: "openclaw", ID: path})
+	if err == nil {
+		t.Fatal("a path whose parse was incomplete was read as the member the parse happened to return")
+	}
+	if !errors.Is(err, ErrPartialSource) {
+		t.Errorf("err = %v, want %v", err, ErrPartialSource)
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Errorf("an incomplete parse is reported as absence: %v", err)
+	}
+	for _, want := range []string{
+		"openclaw:main:good", "openclaw:main:bad", "openclaw:main:bad-json",
+		"name one of those session ids instead of the path",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not carry %q: %v", want, err)
+		}
+	}
+
+	// An outcome with *no* result is not this classification: nothing was read, so the answer stays the
+	// classification that shape already has (a provider failure, because it carries source errors), and
+	// the incompleteness of an empty result set must not turn "the provider could not read this source"
+	// into "one of the members it read is not the one you meant".
+	provider.outcome = parser.ParseOutcome{SourceErrors: partial.SourceErrors}
+	if _, err := reader.Read(ctx, Ref{Provider: "openclaw", ID: path}); !errors.Is(err, ErrProviderFailed) {
+		t.Errorf("a path whose parse produced no result: err = %v, want %v", err, ErrProviderFailed)
+	}
+	provider.outcome = partial
+
+	// The identity the incomplete parse did read is the answer to a reference that names it: the
+	// refusal is about what a *path* cannot establish, not about the members the parse returned.
+	conversation, err := reader.Read(ctx, Ref{Provider: "openclaw", ID: "openclaw:main:good"})
+	if err != nil {
+		t.Fatalf("reading the identity the incomplete parse returned: %v", err)
+	}
+	if conversation.Source.SessionID != "openclaw:main:good" {
+		t.Errorf("the by-id read reported session %q", conversation.Source.SessionID)
+	}
+	if len(conversation.Messages) != 0 {
+		t.Errorf("the by-id read returned %d message(s), want the member's own", len(conversation.Messages))
+	}
+}
+
+// TestReadRefusesAPartialTraeContainer pins the same rule on a real container through the inherited
+// provider, not on a stand-in.
+//
+// Trae stores its sessions as a list inside one VS Code state database, and its container parse answers
+// with the members that list holds while reporting the result set incomplete when an entry it cannot
+// read sits beside them (internal/parser's decodeTraeSessionSnapshot marks the snapshot incomplete and
+// keeps the records it could read). A reference to that container path names the *source*, so the one
+// parseable member must not become its answer -- the caller gets the provider's verdict plus the
+// identity to name instead, and that identity is readable by id. The control is the same container shape
+// with only the readable entry: the path reference still answers its one session, so the refusal is
+// about the unreadable entry rather than about containers.
+func TestReadRefusesAPartialTraeContainer(t *testing.T) {
+	ctx := context.Background()
+	const sessionID = "5c1d2f30-9b47-4a2c-8f0e-1d2b3c4a5e60"
+	valid := traeSessionEntry(sessionID)
+
+	root, dbPath := traeContainer(t, valid+","+traeMalformedEntry)
+	cfg := fixtureConfig(t)
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentTrae: {root}}
+
+	_, err := NewSourceReader(cfg).Read(ctx, Ref{Provider: "trae", ID: dbPath})
+	if err == nil {
+		t.Fatal("a container whose stored list holds an unreadable entry was read as the member that parses")
+	}
+	if !errors.Is(err, ErrPartialSource) {
+		t.Errorf("err = %v, want %v", err, ErrPartialSource)
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Errorf("a partial container parse is reported as absence: %v", err)
+	}
+	if !strings.Contains(err.Error(), "trae:"+sessionID) {
+		t.Errorf("the refusal does not name the member it read: %v", err)
+	}
+
+	// The identity the refusal names is what a caller passes back, and the provider reads it: a member
+	// reference goes through the container's member parse.
+	conversation, err := NewSourceReader(cfg).Read(ctx, Ref{Provider: "trae", ID: "trae:" + sessionID})
+	if err != nil {
+		t.Fatalf("reading the member the partial container parse named: %v", err)
+	}
+	if conversation.Source.SessionID != "trae:"+sessionID {
+		t.Errorf("the by-id read reported session %q", conversation.Source.SessionID)
+	}
+	if len(conversation.Messages) != 2 {
+		t.Errorf("the by-id read returned %d message(s), want the member's two", len(conversation.Messages))
+	}
+
+	// The control: only the readable entry is in the list, and the path reference answers that one
+	// session.
+	cleanRoot, cleanPath := traeContainer(t, valid)
+	cleanCfg := fixtureConfig(t)
+	cleanCfg.AgentDirs = map[parser.AgentType][]string{parser.AgentTrae: {cleanRoot}}
+	byPath, err := NewSourceReader(cleanCfg).Read(ctx, Ref{Provider: "trae", ID: cleanPath})
+	if err != nil {
+		t.Fatalf("reading a container whose list holds one readable entry: %v", err)
+	}
+	if byPath.Source.SessionID != "trae:"+sessionID {
+		t.Errorf("the complete container read reported session %q", byPath.Source.SessionID)
+	}
+}
+
+// TestReadReportsAnOpenClawContainersMembersInsteadOfPickingOne pins what a path reference to the other
+// kind of partial container actually answers, measured on the inherited provider the partial-container
+// case was written for.
+//
+// OpenClaw's own stored-path lookup resolves a *member* path and refuses the container path, so a
+// reference to the container goes to the changed-path classifier, which enumerates the container's
+// session ids -- the malformed ones included -- as member sources. Several of those are several
+// candidates, so the reference is reported as ambiguous rather than resolved to the one member that
+// parses; the caller is handed the member identities (the `#<agent>:<session>` spellings the archive
+// stores) and one of them names a single session. That is why the incomplete-sole-result branch is
+// pinned on Trae and on the inherited outcome as a stand-in: this provider never hands this reader a
+// container source with results to choose from.
+func TestReadReportsAnOpenClawContainersMembersInsteadOfPickingOne(t *testing.T) {
+	ctx := context.Background()
+	root, dbPath := openClawContainer(t, map[string][]string{
+		"good": openClawContainerEvents("good"),
+		"bad": {
+			`{"type":"session","id":"wrong-header","timestamp":"2026-09-22T10:00:00Z"}`,
+			`{"type":"message","message":{"role":"user","content":"bad"}}`,
+		},
+		"bad-json": {`{"type":"session"`},
+	})
+	cfg := fixtureConfig(t)
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentOpenClaw: {root}}
+
+	_, err := NewSourceReader(cfg).Read(ctx, Ref{Provider: "openclaw", ID: dbPath})
+	var ambiguous *AmbiguousError
+	if !errors.As(err, &ambiguous) {
+		t.Fatalf("a container path resolved without naming its members: err = %v", err)
+	}
+	if len(ambiguous.Candidates) != 3 {
+		t.Fatalf("candidates = %v, want the container's three members", ambiguous.Candidates)
+	}
+	for _, want := range []string{"#main:good", "#main:bad", "#main:bad-json"} {
+		found := false
+		for _, candidate := range ambiguous.Candidates {
+			found = found || strings.HasSuffix(candidate, want)
+		}
+		if !found {
+			t.Errorf("candidates %v are missing %q", ambiguous.Candidates, want)
+		}
+	}
+
+	// The member identity is the answer to a reference that names it, and a member that cannot be read
+	// reports the provider's own diagnostics instead of a session.
+	conversation, err := NewSourceReader(cfg).Read(ctx, Ref{Provider: "openclaw", ID: "openclaw:main:good"})
+	if err != nil {
+		t.Fatalf("reading the container member by id: %v", err)
+	}
+	if conversation.Source.SessionID != "openclaw:main:good" {
+		t.Errorf("the by-id read reported session %q", conversation.Source.SessionID)
+	}
+	if _, err := NewSourceReader(cfg).Read(ctx, Ref{Provider: "openclaw", ID: "openclaw:main:bad-json"}); err == nil {
+		t.Error("a malformed member was read as a session")
+	} else if !strings.Contains(err.Error(), "malformed member") {
+		t.Errorf("the malformed member's failure lost the provider's diagnostics: %v", err)
+	}
+}
+
+// openClawContainer writes one OpenClaw SQLite container -- the inherited multi-session source whose
+// container parse returns the members it could read and records the others as source errors -- under a
+// throw-away provider root with the layout the provider discovers (`<root>/<agentID>/agent/<db>`, the
+// shape internal/parser's own container cases write), and returns the root and the container path.
+func openClawContainer(t *testing.T, sessions map[string][]string) (root, dbPath string) {
+	t.Helper()
+	root = t.TempDir()
+	dbPath = filepath.Join(root, "main", "agent", "openclaw-agent.sqlite")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("preparing the OpenClaw container directory: %v", err)
+	}
+	database, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("creating %s: %v", dbPath, err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if _, err := database.Exec(`
+		CREATE TABLE transcript_events (
+			session_id TEXT NOT NULL,
+			seq INTEGER NOT NULL,
+			event_json TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			PRIMARY KEY (session_id, seq)
+		) STRICT
+	`); err != nil {
+		t.Fatalf("creating the container's schema: %v", err)
+	}
+	for sessionID, events := range sessions {
+		for seq, event := range events {
+			if _, err := database.Exec(
+				`INSERT INTO transcript_events(session_id, seq, event_json, created_at) VALUES (?, ?, ?, ?)`,
+				sessionID, seq, event, 1_700_000_000_000+seq,
+			); err != nil {
+				t.Fatalf("writing member %s of the container: %v", sessionID, err)
+			}
+		}
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("closing the container: %v", err)
+	}
+	return root, dbPath
+}
+
+// openClawContainerEvents is one readable container member: the session header and one user turn, in
+// the shape internal/parser's OpenClaw SQLite cases use.
+func openClawContainerEvents(sessionID string) []string {
+	return []string{
+		`{"type":"session","version":3,"id":"` + sessionID + `","timestamp":"2026-09-22T10:00:00Z","cwd":"/workspace/example"}`,
+		`{"type":"message","id":"m1","timestamp":"2026-09-22T10:00:01Z","message":{"role":"user","content":"hello from the container","timestamp":"2026-09-22T10:00:01Z"}}`,
+	}
+}
+
+// traeContainer writes one Trae state database -- a VS Code `state.vscdb` holding the provider's
+// `memento/icube-ai-agent-storage` value -- under a throw-away provider root with the layout the
+// provider discovers (`<root>/workspaceStorage/<workspace>/state.vscdb`), and returns the root and the
+// container path. `list` becomes the stored session list verbatim, which is where an entry the provider
+// cannot read lives: its loader marks the snapshot incomplete and keeps the records it could read.
+func traeContainer(t *testing.T, list string) (root, dbPath string) {
+	t.Helper()
+	root = t.TempDir()
+	dbPath = filepath.Join(root, "workspaceStorage", "example-workspace", "state.vscdb")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("preparing the Trae container directory: %v", err)
+	}
+	database, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("creating %s: %v", dbPath, err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if _, err := database.Exec(
+		`CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+	); err != nil {
+		t.Fatalf("creating the container's schema: %v", err)
+	}
+	if _, err := database.Exec(
+		`INSERT INTO ItemTable(key, value) VALUES (?, ?)`,
+		"memento/icube-ai-agent-storage", `{"list":[`+list+`]}`,
+	); err != nil {
+		t.Fatalf("writing the container's session list: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("closing the container: %v", err)
+	}
+	return root, dbPath
+}
+
+// freebuffSession writes one Codebuff-layout session whose run-state classifies it as Freebuff -- the
+// shape internal/parser's own TestParseCodebuffSession_FreebuffClassification pins: the same on-disk
+// layout, with an agent type containing "free" -- under a throw-away provider root, and returns that
+// root, the transcript's path, and the project and timestamp that make up the session's native id. The
+// parser records it as `freebuff:<project>:<timestamp>` under the Codebuff provider, which is the
+// identity pair the alias cases exercise.
+func freebuffSession(t *testing.T) (root, chatPath, project, timestamp string) {
+	t.Helper()
+	project, timestamp = "example-project", "2026-07-15T20-01-32.065Z"
+	root = t.TempDir()
+	directory := filepath.Join(root, project, "chats", timestamp)
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatalf("preparing the Freebuff session directory: %v", err)
+	}
+	transcript := `[
+		{"id": "user-1", "variant": "user", "content": "Where is the retry cap configured?",
+		 "timestamp": "2026-07-15T20:01:33Z"},
+		{"id": "ai-1", "variant": "ai", "content": "", "timestamp": "2026-07-15T20:01:34Z",
+		 "blocks": [{"type": "text", "textType": "text",
+		             "content": "It is set in internal/retry/config.go."}]}
+	]`
+	runState := `{"sessionState": {"mainAgentState": {"agentType": "base2-free-minimax-m3"},` +
+		` "fileContext": {"cwd": "/workspace/example"}}}`
+	chatPath = filepath.Join(directory, "chat-messages.json")
+	for path, body := range map[string]string{
+		chatPath: transcript,
+		filepath.Join(directory, "run-state.json"): runState,
+	} {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatalf("writing %s: %v", path, err)
+		}
+	}
+	return root, chatPath, project, timestamp
+}
+
+// traeSessionEntry is one readable Trae session list entry, and traeMalformedEntry is one its loader
+// cannot read (no session id, so no record and no identity): the pair a partial container holds. The
+// shape is the provider's own stored list (`internal/parser`'s decodeTraeSessionSnapshot reads
+// `sessionId`, `messages` and an optional `agentTaskContent`).
+func traeSessionEntry(sessionID string) string {
+	return `{"sessionId":"` + sessionID + `","createdAt":"2026-09-22T10:00:00Z",` +
+		`"updatedAt":"2026-09-22T10:05:00Z","model":"trae-model","messages":[` +
+		`{"role":"user","content":"Where is the retry cap configured?",` +
+		`"timestamp":"2026-09-22T10:00:01Z","turnIndex":0},` +
+		`{"role":"assistant","content":"It is set in internal/retry/config.go.",` +
+		`"timestamp":"2026-09-22T10:00:02Z","turnIndex":1}]}`
+}
+
+// traeMalformedEntry is the entry that makes a Trae container's snapshot incomplete: a record the
+// loader skips (no `sessionId`), which is the shape internal/parser's snapshot rule marks malformed.
+const traeMalformedEntry = `{"createdAt":"2026-09-22T11:00:00Z"}`
+
 // TestReadReportsAProviderFailureInsteadOfAbsence pins the classification of the one outcome shape the
 // inherited Cursor provider uses for an operational failure: the parse returns a nil Go error and
 // carries the failure in ParseOutcome.SourceErrors with no result. That is not the answer "no such
@@ -944,20 +1313,27 @@ func TestReadReportsAProviderFailureInsteadOfAbsence(t *testing.T) {
 // cannot produce for every spelling: which results count as the reference (its raw id, the provider's
 // prefixed id, the native id the stored id ends in), that a lone result is not the answer unless it is
 // the reference, that several results are filtered by identity rather than picked, and that a path
-// reference is answered by the source's own single result -- while several results for a path name no
-// single session for the helper to return, and Read reports them as candidates instead
-// (TestReadReportsAForkedPathAsAmbiguous).
+// reference is answered by the source's own single result *only when the parse read the source in full*
+// -- while several results for a path, and one result for a path whose parse reported its result set
+// incomplete, name no single session for the helper to return. Read reports each of those as its own
+// answer instead (TestReadReportsAForkedPathAsAmbiguous, TestReadRefusesAPartialContainer).
 func TestPickResultRequiresTheReferenceIdentity(t *testing.T) {
 	one := func(id, raw string) parser.ParseOutcome {
-		return parser.ParseOutcome{Results: []parser.ParseResultOutcome{
-			{Result: parsedSessionFor(parser.AgentPiebald, id, raw)},
-		}}
+		return parser.ParseOutcome{
+			ResultSetComplete: true,
+			Results: []parser.ParseResultOutcome{
+				{Result: parsedSessionFor(parser.AgentPiebald, id, raw)},
+			},
+		}
 	}
 	base := parsedSessionFor(parser.AgentPiebald, "piebald:42", "42")
 	fork := parsedSessionFor(parser.AgentPiebald, "piebald:42-7", "42-7")
-	both := parser.ParseOutcome{Results: []parser.ParseResultOutcome{
-		{Result: base}, {Result: fork},
-	}}
+	both := parser.ParseOutcome{
+		ResultSetComplete: true,
+		Results: []parser.ParseResultOutcome{
+			{Result: base}, {Result: fork},
+		},
+	}
 	pathRef := Ref{Provider: "claude", ID: "/tmp/sessions/" + claudeFixtureRef.ID + ".jsonl"}
 	cases := []struct {
 		name    string
@@ -976,11 +1352,22 @@ func TestPickResultRequiresTheReferenceIdentity(t *testing.T) {
 		{"several results, none is the reference", both,
 			Ref{Provider: "piebald", ID: "42-9"}, false},
 		{"no results", parser.ParseOutcome{}, Ref{Provider: "piebald", ID: "42"}, false},
-		{"path reference, one result", one("claude:"+claudeFixtureRef.ID, claudeFixtureRef.ID),
-			pathRef, true},
-		{"path reference, several results (no single session to return)", parser.ParseOutcome{Results: []parser.ParseResultOutcome{
-			{Result: parsedSessionFor(parser.AgentClaude, "claude:a", "a")},
-			{Result: parsedSessionFor(parser.AgentClaude, "claude:b", "b")}}}, pathRef, false},
+		{"path reference, one result, complete result set",
+			one("claude:"+claudeFixtureRef.ID, claudeFixtureRef.ID), pathRef, true},
+		{"path reference, one result, incomplete result set", parser.ParseOutcome{
+			Results: []parser.ParseResultOutcome{
+				{Result: parsedSessionFor(parser.AgentClaude, "claude:"+claudeFixtureRef.ID, claudeFixtureRef.ID)},
+			}}, pathRef, false},
+		{"path reference, several results (no single session to return)", parser.ParseOutcome{
+			ResultSetComplete: true,
+			Results: []parser.ParseResultOutcome{
+				{Result: parsedSessionFor(parser.AgentClaude, "claude:a", "a")},
+				{Result: parsedSessionFor(parser.AgentClaude, "claude:b", "b")}}}, pathRef, false},
+		{"session reference, one result, incomplete result set (the identity is what a session reference asks for)",
+			parser.ParseOutcome{Results: []parser.ParseResultOutcome{
+				{Result: parsedSessionFor(parser.AgentClaude, "claude:"+claudeFixtureRef.ID, claudeFixtureRef.ID)},
+				{Result: parsedSessionFor(parser.AgentClaude, "claude:other", "other")},
+			}}, Ref{Provider: "claude", ID: claudeFixtureRef.ID}, true},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {

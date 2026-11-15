@@ -95,11 +95,24 @@ func openArchive(
 
 // providerRoots answers where the referenced provider keeps its sessions, or nil when no configuration
 // was supplied.
+//
+// A reference written with a stored agent label that has no registry entry of its own (Freebuff) reads
+// its sessions from where the provider that writes them keeps them: FREEBUFF_CONFIG_DIR re-roots the
+// same projects path the Codebuff provider discovers (docs/configuration.md), so the owner's configured
+// roots answer for the label too (storedAgentOwner). Without that, a *relative* Freebuff path reference
+// would be resolved against no root at all and looked up only as it was written.
 func (a *Archive) providerRoots(provider string) []string {
 	if a.roots == nil || provider == "" {
 		return nil
 	}
-	return a.roots[parser.AgentType(provider)]
+	if roots := a.roots[parser.AgentType(provider)]; len(roots) > 0 {
+		return roots
+	}
+	owner, ok := storedAgentOwner(parser.AgentType(provider))
+	if !ok {
+		return nil
+	}
+	return a.roots[owner]
 }
 
 // Close releases the archive handle.
@@ -142,7 +155,10 @@ type ArchiveStatus struct {
 // inherited raw-suffix answer, so a native id resolves even when the stored one carries an agent or
 // machine prefix; that answer is narrowed to the rows this provider recorded (sessionIDsForProvider),
 // because it has no agent predicate of its own, and it is read in full before those filters decide
-// anything (sessionIDsByRawSuffix: a truncated candidate list establishes nothing). A reference that
+// anything (sessionIDsByRawSuffix: a truncated candidate list establishes nothing). "The rows this
+// provider recorded" means every label the provider writes, from the inherited mapping
+// (providerStoresAgent) -- the Codebuff provider records free-tier sessions as Freebuff -- so a
+// reference and the row it names do not have to carry the provider's own name. A reference that
 // names a file resolves through the file the session was read from (`sessions.file_path`, exact path
 // and agent): the stored id is `<agent>:<native id>`, so a path can never be one. A reference that
 // names a host explicitly is resolved against that host and nothing else (resolveHostQualified), and
@@ -207,9 +223,10 @@ func (a *Archive) resolveSessionID(ctx context.Context, ref Ref) (string, bool, 
 // `codex:host-a~<a claude id>` was a Codex session. A miss, or a row of another agent, is then
 // answered by the inherited suffix lookup -- read in full before anything is filtered out of it, so
 // an answer is never established from a truncated candidate list (sessionIDsByRawSuffix) -- narrowed
-// to the rows that carry the requested host *and* the requested provider, so a caller who writes
-// `host~<native id>` where the stored id is `host~<agent>:<native id>` still resolves, while a row
-// from another host, or a *local* row that happens to share the native id, is never reported as the
+// to the rows that carry the requested host *and* a label the requested provider writes
+// (providerStoresAgent: the Codebuff provider stores free-tier sessions as Freebuff), so a caller who
+// writes `host~<native id>` where the stored id is `host~<agent>:<native id>` still resolves, while a
+// row from another host, or a *local* row that happens to share the native id, is never reported as the
 // session the reference named. All of those are different conversations, and an inspection that
 // returned one would be reading the wrong session rather than reporting an absent one.
 func (a *Archive) resolveHostQualified(
@@ -225,7 +242,9 @@ func (a *Archive) resolveHostQualified(
 	// name. Returning it unasked is how `codex:host-a~<a claude id>` resolved the Claude row and an
 	// inspection reported another provider's conversation under the requested label; a row of another
 	// agent falls through to the filtered lookup below, which is where the provider predicate lives.
-	if session != nil && session.Agent == ref.Provider {
+	// The predicate is the inherited provider-to-stored-label mapping (providerStoresAgent), so a
+	// remote row the Codebuff provider recorded as Freebuff is answered for a `codebuff:` reference.
+	if session != nil && providerStoresAgent(ref.Provider, session.Agent) {
 		return session.ID, true, nil
 	}
 	matches, err := a.sessionIDsByRawSuffix(ctx, ref, rawSessionID(ref))
@@ -293,38 +312,49 @@ func (a *Archive) sessionIDsByRawSuffix(ctx context.Context, ref Ref, raw string
 // indexed: with 20 000 rows for one provider the listing measures ~27 ms against ~21 µs for the
 // indexed query (docs/evidence/0001-agentsview-parity-and-inspection.md, section 7), and a path
 // reference to a source that is there -- the ordinary case -- has no reason to pay that.
+//
+// Both queries take agent names, and both are asked for *every* stored label the provider may have
+// written (providerStoredAgentNames), not only for the provider's own name: a row the Codebuff provider
+// recorded as Freebuff is that provider's session under this path, and asking about `codebuff` alone
+// would drop it.
 func (a *Archive) sessionIDsForPaths(
 	ctx context.Context, paths []string, provider string,
 ) ([]string, error) {
-	current, err := a.currentSessionIDsForPaths(ctx, paths, provider)
+	agents := providerStoredAgentNames(provider)
+	current, err := a.currentSessionIDsForPaths(ctx, paths, agents)
 	if err != nil {
 		return nil, err
 	}
 	if len(current) > 0 {
 		return current, nil
 	}
-	records, err := a.database.ListSessionPathRecordsForAgents(ctx, []string{provider})
+	records, err := a.database.ListSessionPathRecordsForAgents(ctx, agents)
 	if err != nil {
 		return nil, err
 	}
 	return pathRecordIDs(records, paths), nil
 }
 
-// currentSessionIDsForPaths asks the archive's path-keyed lookup about every spelling. Each answer is
-// the ids recorded as that source's current members, already ordered by id (the inherited query orders
-// them); a spelling no row records contributes nothing, and the rows of one provider cannot collide
-// because `sessions.id` is the table's primary key and a row matches one stored path at most.
+// currentSessionIDsForPaths asks the archive's path-keyed lookup about every spelling and every stored
+// agent label. Each answer is the ids recorded as that source's current members; a spelling-no-row and a
+// label-no-row contribute nothing, and the rows of one provider cannot collide because `sessions.id` is
+// the table's primary key and a row matches one stored path and one agent at most. The merged answer is
+// sorted by id here: each inherited query orders its own rows, and which candidate list an ambiguous
+// reference reports must not depend on the order the labels were asked in.
 func (a *Archive) currentSessionIDsForPaths(
-	ctx context.Context, paths []string, provider string,
+	ctx context.Context, paths []string, agents []string,
 ) ([]string, error) {
 	var ids []string
-	for _, path := range paths {
-		found, err := a.database.ListSessionIDsByFilePath(ctx, path, provider)
-		if err != nil {
-			return nil, err
+	for _, agent := range agents {
+		for _, path := range paths {
+			found, err := a.database.ListSessionIDsByFilePath(ctx, path, agent)
+			if err != nil {
+				return nil, err
+			}
+			ids = append(ids, found...)
 		}
-		ids = append(ids, found...)
 	}
+	sort.Strings(ids)
 	return ids, nil
 }
 
@@ -372,7 +402,12 @@ func sessionIDsForHost(ids []string, host string) []string {
 // predicate, while a native id can belong to any agent: without this narrowing, `codex:<a claude
 // session's id>` would resolve the Claude row and an inspection would report another agent's
 // conversation under this reference. The archive's own `agent` column decides, exactly as it does for
-// a reference that names a file (ListSessionIDsByFilePath takes the agent with the path).
+// a reference that names a file (ListSessionIDsByFilePath takes the agent with the path) -- and it
+// decides through the inherited provider-to-stored-label mapping (providerStoresAgent), because a
+// provider may write more than one label: the Codebuff provider records free-tier sessions as Freebuff,
+// so `codebuff:<project>:<timestamp>` names a row whose `agent` column reads `freebuff`, and comparing
+// that column with the provider's own name drops exactly those rows -- a Freebuff session read from its
+// source then disappeared from the archive the moment that source was gone.
 func (a *Archive) sessionIDsForProvider(
 	ctx context.Context, ids []string, provider string,
 ) ([]string, error) {
@@ -382,7 +417,7 @@ func (a *Archive) sessionIDsForProvider(
 		if err != nil {
 			return nil, err
 		}
-		if session == nil || session.Agent != provider {
+		if session == nil || !providerStoresAgent(provider, session.Agent) {
 			continue
 		}
 		kept = append(kept, id)

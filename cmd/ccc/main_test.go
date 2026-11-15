@@ -318,6 +318,34 @@ func TestUsageErrors(t *testing.T) {
 	}
 }
 
+// TestInspectAcceptsAStoredAgentLabel pins that the CLI understands a provider name that is a stored
+// agent label rather than a registry provider of its own.
+//
+// The Codebuff provider records its free-tier sessions under the Freebuff label, and the identity the
+// archive reports for one (`freebuff:<project>:<timestamp>`) is exactly what a caller passes back to
+// inspect it. The CLI refused that name as an unknown provider before the core saw it -- exit 2, with
+// no lookup at all -- so a session the archive holds could not be named. The answer here is a missing
+// session (the isolated environment holds no such archive), not a usage error, and the failure names
+// the label and the providers that were tried.
+func TestInspectAcceptsAStoredAgentLabel(t *testing.T) {
+	isolatedEnvironment(t)
+	code, stdout, stderr := runCLI(t, "inspect", "freebuff:example-project:2026-07-15T20-01-32.065Z")
+	if code != exitFailure {
+		t.Fatalf("exit %d, want %d (stderr %q)", code, exitFailure, stderr)
+	}
+	if stdout != "" {
+		t.Errorf("a failed run wrote a result to stdout (%q)", stdout)
+	}
+	if strings.Contains(stderr, "unknown provider") {
+		t.Errorf("the stored agent label was refused as an unknown provider: %s", stderr)
+	}
+	for _, want := range []string{"freebuff:example-project:2026-07-15T20-01-32.065Z", "freebuff"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("the failure does not name %q: %s", want, stderr)
+		}
+	}
+}
+
 // TestMissingSessionIsAFailureWithACandidateList pins the not-found path: the message names the
 // providers that were tried, so an agent can correct the reference instead of re-reading --help.
 func TestMissingSessionIsAFailureWithACandidateList(t *testing.T) {

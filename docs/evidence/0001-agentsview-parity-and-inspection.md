@@ -409,6 +409,99 @@ configuration` on stderr and no archive report: the inspection returned the read
 archive branch (the sweep's `inspect-disabled-clause` mutation reproduces that state, and the case
 fails on it).
 
+The round-11 fix pass closed two review findings — the archive's stored-agent aliases, and a path whose
+parse is incomplete — and was run as a close-out of both surfaces, like rounds 9 and 10: every rule the
+touched code states was enumerated and mutated (twenty mutations, the test that names each one run,
+the line restored, each file's bytes verified back before the next), and all twenty failed their named
+test (§6 quotes them, including the two entries the first sweep could not use and the rule it had not yet
+covered). The round-9 review and this one both named a `pickResult` line (round 9 the
+retry state its result carries, round 11 the path branch), so this pass enumerated that helper's rules
+in full rather than patching one branch again.
+
+- the **inherited provider-to-stored-agent mapping decides which archive rows a reference names**. The
+  Codebuff provider also writes free-tier sessions: the parser reports `AgentFreebuff` and a
+  `freebuff:<project>:<timestamp>` id for one, while discovery, caches and `provider_freshness` stay
+  keyed on Codebuff — `parser.ProviderStoredAgents` is where upstream records that both labels belong to
+  it, and `internal/parser`'s `TestParseCodebuffSession_FreebuffClassification` pins the parser's own
+  output. Every archive lookup compared the row's `agent` column with the provider's own name, so a
+  Freebuff session read from its source by a `codebuff:<project>:<timestamp>` reference stopped being
+  findable — by id, by host-qualified spelling and by path — the moment that source was gone. The
+  comparison is the mapping now, in all three shapes (`providerStoresAgent` for the id and
+  host-qualified filters, `providerStoredAgentNames` where a query takes agent names; `providerRoots`
+  answers a stored label with the roots of the provider that writes it, since
+  `FREEBUFF_CONFIG_DIR` re-roots the same projects path). The label is also a *name* a reference may use
+  — `storedAgentOwner` resolves one that has no registry entry through the provider whose mapping
+  includes it, the CLI asks the core (`ccc.KnownProvider`) instead of doing its own registry lookup, and
+  a session's own recorded label travels into the source report and a missing top-level one falls back
+  to it — so the identity an inspection prints is the identity that resolves next (Q-0001-23).
+  `TestFreebuffSessionResolvesThroughItsCodebuffProvider` is the round trip: a real Freebuff session is
+  written into an archive, then read back through four spellings (the provider's native id, the stored
+  `freebuff:` id, the stored label, the transcript path — absolute, relative and after the source is
+  deleted and reconciled), each with the row's own label, and a `codex:` reference against the same
+  native id stays not found;
+  `TestHostQualifiedFreebuffRowResolvesThroughItsCodebuffProvider` seeds host-qualified rows through the
+  inherited database API — the local Codebuff row of the same project and timestamp is never offered for
+  `host-a` — and `TestHostQualifiedFreebuffRowAnswersBeyondTheCandidateRead` shows the exact spelling
+  answering where the candidate read cannot be completed at all.
+- a **path whose parse is incomplete names no session**. `pickResult` took the sole successful parse
+  result of a *path* reference without looking at `ParseOutcome.ResultSetComplete` or the outcome's
+  source errors, and `Read` then discarded the outcome's diagnostics: a multi-session source that
+  returns one readable member beside members it could not read — the inherited shape
+  `TestOpenClawSQLiteStoreMalformedMemberIsolation` pins — resolved that path to the readable member, so
+  whether a malformed sibling parses decided which conversation the caller meant. A sole path result is
+  that source's session only when the parse read the source in full now; otherwise the reader answers
+  `ErrPartialSource` carrying the provider's diagnostics and the identities it did read, an inspection
+  reports them as a warning beside the archive, and the identity in the warning is what reads next. The
+  pass also measured which container shapes are reachable: Trae's stored-path lookup answers the
+  container itself and its snapshot marks an unreadable entry without isolating it to a session
+  (`TestReadRefusesAPartialTraeContainer` drives exactly that through the inherited provider on a real
+  `state.vscdb`), while OpenClaw's stored-path lookup resolves *members*, so its container path reaches
+  the changed-path enumeration instead and its members — malformed ones included — are the candidates
+  (`TestReadReportsAnOpenClawContainersMembersInsteadOfPickingOne`);
+  `TestReadRefusesAPathWhoseParseIsIncomplete` reproduces the inherited outcome field for field as a
+  stand-in, including the control that an outcome with *no* result keeps its own classification and that
+  a reference naming an identity is unaffected by incompleteness elsewhere in the source.
+
+Observed through the built binary, with a Freebuff source under a throw-away `CODEBUFF_DIR` and an
+archive the inherited ingestor wrote from it (`--data-dir` naming that archive):
+
+```
+$ /tmp/ccc-r11 inspect codebuff:example-project:2026-07-15T20-01-32.065Z --data-dir <dir>     # rc=0
+codebuff:example-project:2026-07-15T20-01-32.065Z
+  agent:        Codebuff
+  session id:   freebuff:example-project:2026-07-15T20-01-32.065Z
+  source:       <root>/example-project/chats/2026-07-15T20-01-32.065Z/chat-messages.json
+  conversation: 2 message(s), 1 user, 1 assistant
+  archive:      <dir>/sessions.db [message-text]
+  archived id:  freebuff:example-project:2026-07-15T20-01-32.065Z
+  agreement:    every archived message matches the source read
+
+$ rm -rf <root>            # the finding's state: the source is gone, the archive still holds it
+$ /tmp/ccc-r11 inspect codebuff:example-project:2026-07-15T20-01-32.065Z --data-dir <dir>     # rc=0
+codebuff:example-project:2026-07-15T20-01-32.065Z
+  agent:        Codebuff
+  source:       not readable here (see warnings)
+  archive:      <dir>/sessions.db [message-text]
+  archived id:  freebuff:example-project:2026-07-15T20-01-32.065Z
+  archived:     2 message(s), 1 user, 1 assistant
+  agreement:    not compared (the source was not readable)
+  warning:      no readable source session for codebuff:example-project:2026-07-15T20-01-32.065Z
+
+$ /tmp/ccc-r11 inspect freebuff:example-project:2026-07-15T20-01-32.065Z --data-dir <dir> --json
+{ … "agent": "Freebuff", "archive": { "status": { "session_id":
+  "freebuff:example-project:2026-07-15T20-01-32.065Z", "agent": "freebuff", "agent_label": "Freebuff", … } } }
+
+$ /tmp/ccc-r11 inspect no-such-agent:whatever --data-dir <dir>                               # rc=2
+ccc: unknown provider "no-such-agent"
+```
+
+Before this pass the second command reported no session at all (the row was filtered out by the
+exact-name comparison), the third exited 2 as an unknown provider before any lookup, and the fourth was
+the only outcome the CLI could give for it. The sweep's `archive-provider-filter`,
+`host-exact-predicate`, `path-current-labels`, `path-retained-labels`, `provider-roots-owner`,
+`known-provider-mapping` and `resolve-factory-alias` each break a different part of that round trip, and
+each failed a named test (§6 quotes all twenty observed failures).
+
 ## 2. A real source-to-archive parse and a subsequent archive read agree with the pinned implementation
 
 The oracle (`internal/ccc/parity`) parses a fixture, writes it through the inherited sync engine into
@@ -418,16 +511,16 @@ harness runs the *same* oracle source in this tree and in a pristine checkout of
 separately copied fixture bytes and separately created archives.
 
 ```
-$ python3 scripts/upstream-compare.py --upstream /tmp/agentsview-probe --record --scratch /tmp/ccc-compare-0001-r10
+$ python3 scripts/upstream-compare.py --upstream /tmp/agentsview-probe --record --scratch /tmp/ccc-compare-0001-r11
 pin 83195c8a6861b8c74a4b6cb87512817fed6f8584 (v0.47.0-181-g83195c8a) from https://github.com/kenn-io/agentsview
 using the existing checkout at /tmp/agentsview-probe (clean, at the pin)
 - copied internal/ccc (10 Go source file(s)) from this tree into the pristine checkout: the oracle and its call/ccc wrapper are identical on both sides, so the only variable is which tree the inherited packages come from
-oracle source: 10 file(s), sha256=aa8e8f4abde2f594e8bd70383ce04665de42bbcb42e9beeddf9d260d697fe601 (identical on both sides)
+oracle source: 10 file(s), sha256=68d5a5796b74f0ae252b4979033e5bb0428b41e7843af9b93ac5d2dd1d940f3b (identical on both sides)
 claude: fixture sha256=2bd510821d4abf83… ours=6409a23c502469a3… pristine=6409a23c502469a3… agreement=yes
   recorded internal/ccc/parity/testdata/oracle/claude.json
 codex: fixture sha256=d9957a8d6f5731a3… ours=531e5c0fb19fc51a… pristine=531e5c0fb19fc51a… agreement=yes
   recorded internal/ccc/parity/testdata/oracle/codex.json
-RESULT: PASS — 2 case(s) agree byte for byte with the pinned revision      # rc=0, 5 s
+RESULT: PASS — 2 case(s) agree byte for byte with the pinned revision      # rc=0, 1.5 s warm
 - removed /tmp/agentsview-probe/internal/ccc from the checkout again
 - /tmp/agentsview-probe is clean
 ```
@@ -437,6 +530,12 @@ are the four call/ccc files, and the fields that pass added to `Fidelity` and `A
 part of the dumped shape, so `--record` re-derived both committed dumps byte for byte
 (`git status` shows no change under `internal/ccc/parity/testdata/oracle/`) — the adapters' *dumped*
 behaviour is unmoved by a pass that only stops them dropping state.
+
+The round-11 pass is the same shape of evidence: the digest moved again (`aa8e8f4a…` → `68d5a579…`,
+three adapters touched) and both dumps did not — `--record` from the pristine side rewrote the two
+committed files with the same bytes, and `git status` reports nothing under the oracle directory. That
+run was taken warm (the first run of the same command on this host took 136 s building the pristine
+checkout's packages; the recorded one re-ran the two cases against the already-built checkout).
 
 The round-10 pass did move the dumps, because it moved the dumped *shape*: the counts object gained the
 tool-role count, so each of the four counts blocks in each dump gained one line (`"tool_messages": 0`)
@@ -645,14 +744,14 @@ index is required: the archive is the inherited `sessions.db`, opened read-only.
 ## 6. The gate
 
 ```
-$ python3 scripts/gate.py        # rc=0, 27.4 s wall clock, taken on the final tree
+$ python3 scripts/gate.py        # rc=0, 34.5 s wall clock, taken on the final tree
 gate: <repo>
 gate: go=<go>/bin/go targets=./cmd/ccc/... ./internal/ccc/...
   PASS     gofmt    3574 file(s) gofmt-clean
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 135 tests in 5.358s (rc=0)
+  PASS     selftest Ran 135 tests in 5.138s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 25 project-owned prefix(es); files seen by git: 5613 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
   PASS     secrets  no leaks found in 60 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
@@ -700,7 +799,15 @@ round-9 comparison verdicts added as subtests of the comparison case that alread
 changed). The round-10 fix pass moved `internal/ccc` 55 → 58 test functions (`archive_test.go`
 36 → 38: the disabled-provider archive-only inspection and the unclassified-read-error case;
 `fixtures_test.go` 19 → 20: the role-count case), `cmd/ccc` unchanged at 10, and the harness's own count
-unchanged at 135.
+unchanged at 135. The round-11 fix pass moved `internal/ccc` 58 → 66 test functions (`archive_test.go`
+38 → 42: the Freebuff round trip through its Codebuff provider, the host-qualified alias case, the
+exact-spelling case against an uncompletable candidate read, and the partial container the inspection
+names an identity for; `fixtures_test.go` 20 → 24: the provider-name list and `KnownProvider`, the
+inherited partial-container outcome on a stand-in, the same rule on a real Trae container, and the
+OpenClaw container's members-as-candidates measurement), `cmd/ccc` 10 → 11 (the stored agent label the
+CLI now accepts), and the harness's own count unchanged at 135 (`scripts/tests/` untouched: no
+`scripts/` file changed this round, so the `selftest` count is the same and the gate's own numbers below
+are directly comparable).
 
 Wall clock for the whole gate on this host: 19–21 s with warm caches across the increment's earlier
 runs, 25 s to 156 s across the round-2 fix pass's runs (the 156 s run followed a cold Go build cache, so
@@ -709,9 +816,17 @@ runs, 25 s to 156 s across the round-2 fix pass's runs (the 156 s run followed a
 measured 26.5 s, 25.2 s, 45.8 s, 28.3 s, 33.9 s and 31.1 s, the round-7 runs 26.1 s, 28.8 s, 25.2 s and
 55 s, the round-8 runs 33.3 s, 22.7 s, 23.4 s and 24.4 s, the round-9 runs 27.6 s and 26.1 s, and the
 round-10 runs 26.9 s, 25.5 s and 27.4 s (the quoted one is the last, whose `selftest` step took 5.358 s,
-inside the 4.76–6.18 s band this paragraph closes on).
-The block above quotes the round-10 run taken after every code, test and document edit this round made,
-and the only writes after it are this paragraph and the sentence that fixes its own wall clock. The round-7 runs' 55 s one was taken last on that round's finished tree — the only write
+inside the 4.76–6.18 s band this paragraph closes on), and the round-11 runs 102.5 s, 36.3 s, 89.4 s and
+34.5 s (the first three ran beside this round's own work — a test-fixture refactor, a mutation sweep —
+and the quoted one is the last, taken on the finished tree with the host otherwise idle; all four printed
+the same verdict, and their `selftest` steps took 5.266 s, 5.490 s, 7.525 s and 5.138 s). The round-11
+runs are slower than round 10's because this round's cases do more work — three containers are created on disk with the sqlite driver, and one
+case seeds 502 archive rows — not because a step became slow: `test` reports the same three packages and
+`selftest` stays inside the band.
+The block above quotes the round-11 run taken after every code and test edit this round made; the only
+writes after it are the documentation this round added about the run — the block itself, this paragraph,
+and one count in §1's paragraph that the sweep's twentieth entry corrected. The code and test bytes it
+gated are the ones shipped. The round-7 runs' 55 s one was taken last on that round's finished tree — the only write
 after it is the sentence that quotes its own number, and its `selftest` step took 12.0 s against
 5.5–6.1 s in the three runs before it, so that wall clock is host load and not a slower gate. With
 `selftest` steps between 4.76 s and 6.18 s across them, the wall-clock spread is host load rather than a
@@ -899,6 +1014,63 @@ count, and the focused case above now separates them. The sweep was then re-run 
 tree, where all 22 fail their named test; the driver verifies each file's bytes are back to what they
 were before every next mutation, and every recorded failure came from a tree that built.
 
+The round-11 pass closed two findings with the same rule, one rule at a time: **every rule the touched
+code states was mutated, and every mutation failed the test that names it** (20 mutations). The first
+complete sweep found two of them unusable — one rule survived it and one mutation did not compile — both
+were addressed and the whole sweep was re-run, where all 20 failed their named test. Driver:
+`/tmp/mutate-r11.py` (throwaway; hashes each file before and after, restores in a `finally`, refuses to
+continue on a restore that is not byte-exact). The observed failures, in the order they were run, each
+line restored before the next:
+
+| Mutation | Where | Test that caught it | Observed failure |
+| --- | --- | --- | --- |
+| `archive-provider-filter` | `archive.go` `sessionIDsForProvider` | `TestFreebuffSessionResolvesThroughItsCodebuffProvider`, `TestHostQualifiedFreebuffRow…` | `while the source is there: the archive does not resolve codebuff:…` |
+| `host-exact-predicate` | `archive.go` `resolveHostQualified` | `TestHostQualifiedFreebuffRowAnswersBeyondTheCandidateRead` | `status of the spelled-out Freebuff row: more sessions end in this identity than a lookup can read` |
+| `path-current-labels` | `archive.go` `sessionIDsForPaths` | `TestFreebuffSessionResolvesThroughItsCodebuffProvider` | `the archive does not resolve codebuff:<the transcript path>` |
+| `path-retained-labels` | `archive.go` `sessionIDsForPaths` (retained listing) | same | `after the vanished source is reconciled: the archive does not resolve codebuff:<path>` |
+| `provider-roots-owner` | `archive.go` `providerRoots` | same | `the relative freebuff path resolved found=false id="", want "freebuff:…"` |
+| `providers-list-labels` | `reader.go` `Providers` | `TestProvidersNamesStoredAgentLabels` | `the provider list is missing "freebuff": [aider amp …]` |
+| `known-provider-mapping` | `reader.go` `KnownProvider` | same | `KnownProvider("freebuff") = false, want true` |
+| `known-provider-in-cli` | `reader.go` `KnownProvider` | `TestInspectAcceptsAStoredAgentLabel` | `exit 2, want 1 (stderr "ccc: unknown provider \"freebuff\"\n")` |
+| `resolve-factory-alias` | `reader.go` `resolveFactory` | `TestFreebuffSessionResolvesThroughItsCodebuffProvider` | `reading the source under its stored agent label: unknown provider "freebuff" (known: aider, amp, …)` |
+| `parse-label-carry-through` | `reader.go` `conversationFromParse` | same | `the by-label source read reports no agent label, want the one the parser recorded` |
+| `inspect-agent-fallback` | `inspect.go` `Inspect` | same | `the inspection reports agent "", want the archived row's label "Freebuff"` |
+| `path-pick-requires-complete` | `reader.go` `pickResult` | `TestReadRefusesAPathWhoseParseIsIncomplete`, `TestReadRefusesAPartialTraeContainer`, `TestPickResultRequiresTheReferenceIdentity/path_reference,_one_result,_incomplete_result_set` | the pick is back, so the sole result answers the path again |
+| `read-reports-partial` | `reader.go` `Read` | `TestReadRefusesAPartialTraeContainer`, `TestReadRefusesAPathWhoseParseIsIncomplete` | `err = provider could not read the source: … produced no session` (absence again) |
+| `partial-only-for-paths` | `reader.go` `partialPathParse` | `TestReadRejectsASingleResultThatIsNotTheReference` | `reading a fork that does not exist: err = provider could not read every session in the source: parsing 42-7 …` |
+| `partial-keeps-empty-outcome` | `reader.go` `partialPathParse` | `TestReadRefusesAPathWhoseParseIsIncomplete` | `a path whose parse produced no result: err = provider could not read every session …` |
+| `partial-names-identities` | `reader.go` `partialPathParse` | `TestReadRefusesAPartialTraeContainer`, `TestReadRefusesAPathWhoseParseIsIncomplete` | `the refusal does not carry "openclaw:main:good"` |
+| `partial-carries-diagnostics` | `reader.go` `partialPathParse` | `TestReadRefusesAPathWhoseParseIsIncomplete` | `the refusal does not carry "openclaw:main:bad"` |
+| `inspect-partial-clause` | `inspect.go` `Inspect` | `TestInspectNamesTheIdentityOfAPartialContainer` | `inspecting the container path: provider could not read every session in the source: …` (returned as an error) |
+| `path-pick-still-answers` | `reader.go` `pickResult` (the positive half) | `TestReadAcceptsTheOnlyResultOfAPathReference`, `TestPickResultRequiresTheReferenceIdentity/path_reference,_one_result,_complete_result_set` | `reading by path: session not found: … produced no session` |
+| `parse-ref-rejects-unknown` | `cmd/ccc/main.go` `parseRef` | `TestUsageErrors` | `ccc [inspect no-such-agent:whatever]: exit 1, want 2` |
+
+Two mutations the first sweep could not use, one rule it did not cover, and what this round did about
+that:
+
+- `host-exact-predicate` survived its first form (reverting the predicate to a name comparison) because
+  the suffix fallback reaches the same row whenever the reference spells the stored id — so the *rule*
+  ("the archive's own spelling of a row is answered directly, and the provider predicate is what decides
+  whether it answers") had no machine check. It is pinned now by
+  `TestHostQualifiedFreebuffRowAnswersBeyondTheCandidateRead`: 502 rows end in the same native id, so the
+  candidate read cannot be completed at all and only the exact spelling can answer — the mutation makes
+  that reference refuse with `ErrTruncatedCandidates` (the failure quoted above).
+- the first form of `partial-names-identities` (`read = append(read, "?")`) did not compile — the loop
+  variable became unused, so the run was a `[build failed]` rather than a verdict — and was re-run as
+  `candidate.Result.Session.SourceSessionID` (the native id instead of the stored one), which is the
+  rule's real alternative and fails the case.
+- the sweep's first run had nineteen entries because its twentieth was added afterwards, when the pass
+  noticed it had edited two existing cases' outcomes to state the completeness their stand-in provider
+  must report: the *original* rule those cases pin — a complete sole result is the path's session — had
+  to be shown pinned too (`path-pick-still-answers`), and dropping it fails both of them (the failure
+  quoted in the table). The addition ran from the same driver with no other change, so the table above
+  is one sweep's twenty entries, not two sweeps' results.
+- one mutation attempt was a no-op *state*, not a mutation: the first run of the driver crashed midway
+  (a missing `go` on the `PATH` it was given) leaving `archive-provider-filter` applied, so the restored
+  file was the mutated one and the next sweep's first entry matched nothing. The driver now restores in a
+  `finally`, and the sweep quoted above is the run taken from the corrected file (`git diff` shows the
+  shipped predicate in place).
+
 ## 7. Measurements that shaped the harness
 
 Run in a byte-identical tree (the pin, in a scratch clone) before the gate's targets were narrowed:
@@ -1058,7 +1230,8 @@ indexed query while a source is there.
   change to that resolution has to be mirrored here deliberately; the alternative — exporting the helper —
   is an upstream contribution, not a local edit to carried code.
 - **A path reference that parses to more than one session reports the parsed sessions, not the path's
-  first.** A transcript holding a DAG fork parses to several sessions; a path names a source rather than
+  first — and a path whose parse could not read the source in full reports neither.** A transcript
+  holding a DAG fork parses to several sessions; a path names a source rather than
   one of them, so the reader reports their identities as candidates (`AmbiguousError`, the design's
   answer for an ambiguous identifier) instead of reporting the reference as absent. The alternative
   reading, "the file's main branch", is a choice this increment does not make — a caller passes one of
@@ -1066,6 +1239,17 @@ indexed query while a source is there.
   archive stores, but names no file: the inherited source lookup resolves an id to `<id>.jsonl`, so an
   inspection of that identity reaches the archive instead of a source file (`TestReadReportsAForkedPathAsAmbiguous`
   pins the ambiguity, the candidate identities, and the not-found answer an id-only reference gets).
+  A source a provider read only in part — some members returned, others recorded as source errors with
+  `ParseOutcome.ResultSetComplete` false, the inherited container shape — names no single session
+  either: the reader refuses to answer a *path* with the members it happened to read and reports
+  `ErrPartialSource` with the provider's diagnostics plus the identities it did read
+  (`TestReadRefusesAPathWhoseParseIsIncomplete` reproduces the inherited outcome field for field,
+  `TestReadRefusesAPartialTraeContainer` drives it through the inherited Trae provider on a real
+  container, and `TestReadReportsAnOpenClawContainersMembersInsteadOfPickingOne` records what the other
+  container shape answers — OpenClaw's own stored-path lookup resolves members, so a container path
+  reaches the changed-path enumeration and its members are the candidates). A reference that names a
+  session id is unaffected by incompleteness elsewhere in the source: the identity it asked for is in
+  the outcome or it is not.
 - **A provider operation failure is reported as a failure, not as a missing session.** The reader
   classifies an outcome that carries operational `SourceErrors` and no result as `ErrProviderFailed` (the
   inherited Cursor provider's retryable store-enrichment shape) and keeps the provider's own diagnostics
@@ -1080,7 +1264,32 @@ indexed query while a source is there.
   `provider "claude" is disabled in this configuration`) and an inspection reports the archive with a
   warning rather than the error, while reading or resolving that provider still fails — the setting
   restricts local discovery, and `docs/configuration.md` keeps previously archived sessions available
-  (`TestInspectArchiveOnlyWhenTheProviderIsDisabled`).
+  (`TestInspectArchiveOnlyWhenTheProviderIsDisabled`). A source the provider could not read **in full**
+  is the fifth: `ErrPartialSource` (Q-0001-22), refused for a path reference as the bullet above
+  describes, reported as a warning beside the archive like the others.
+- **The inherited provider-to-stored-agent mapping decides which archive rows a reference names, and a
+  stored label is a name a reference may use.** The Codebuff provider also writes free-tier sessions:
+  the parser reports `AgentFreebuff` and a `freebuff:<project>:<timestamp>` id for them, while
+  discovery, caches and freshness stay keyed on Codebuff, and `parser.ProviderStoredAgents` is where
+  upstream records that both labels belong to it. Every archive lookup that asks "is this row the
+  requested provider's session" answers through that mapping (`providerStoresAgent` in `internal/ccc`
+  for the id, host-qualified and path shapes, and `providerStoredAgentNames` where a query takes agent
+  names) instead of comparing the row's `agent` column with the provider's own name — the comparison
+  that dropped exactly those rows, so a Freebuff session read from its source disappeared from the
+  archive once that source was gone. The label is also a *name* a caller can write: the reader resolves
+  a name that is not a registry entry through the provider whose mapping includes it
+  (`storedAgentOwner`), the CLI asks the core for that answer (`ccc.KnownProvider`) rather than doing
+  its own registry lookup, and a relative path under such a name resolves against that provider's
+  configured roots (Q-0001-23). The identity the read reports for such a session is the one its parser
+  or archive row recorded, so an inspection of `freebuff:…` names the agent it belongs to instead of
+  inventing a display name for a label the registry does not know
+  (`TestFreebuffSessionResolvesThroughItsCodebuffProvider`,
+  `TestHostQualifiedFreebuffRowResolvesThroughItsCodebuffProvider`,
+  `TestHostQualifiedFreebuffRowAnswersBeyondTheCandidateRead`, `TestProvidersNamesStoredAgentLabels`,
+  `TestInspectAcceptsAStoredAgentLabel`). The cost of a second label is the shape §7 measured, not a new
+  one: one more *indexed* query (`ListSessionIDsByFilePath`, ~21 µs) in the current tier, and a listing
+  whose `agent IN (…)` covers the same rows the provider ever wrote, which is the ~27 ms query the
+  listing always was.
 - **The generated input's index check compares git's blob with the one the file's bytes hash to.** That is
   exact for the snapshot (a binary `.gz`, which git stores as it is) and would report a false difference
   for a future input that the tree's attribute file rewrites on `git add`: such an input would need the

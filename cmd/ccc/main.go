@@ -23,7 +23,6 @@ import (
 
 	"go.kenn.io/agentsview/internal/ccc"
 	"go.kenn.io/agentsview/internal/config"
-	"go.kenn.io/agentsview/internal/parser"
 )
 
 const usage = `ccc — inspect an agent session through AgentsView's own reader
@@ -33,10 +32,12 @@ usage:
   ccc help
 
   <provider> is the provider identifier AgentsView uses for the agent that wrote the session
-  (for example claude, codex). The identifier after it is the provider's own session id, or the
-  path to the session's source file -- absolute, or relative to one of that provider's configured
-  source roots. An id may carry a host (host~<id>): that is a session synced from another
-  machine, which has no source file here, so only an archive can answer it.
+  (for example claude, codex), or a stored agent label such a provider writes when it has no
+  identifier of its own (freebuff, which the Codebuff provider records). The identifier after it is
+  the provider's own session id, or the path to the session's source file -- absolute, or relative to
+  one of that provider's configured source roots. An id may carry a host (host~<id>): that is a
+  session synced from another machine, which has no source file here, so only an archive can answer
+  it.
 
   inspect reports the session's identity, agent, source and conversation shape. It reads the
   source session through the provider's own reader and, when an archive is present, says what the
@@ -224,14 +225,18 @@ func splitFlags(args []string) (optionArgs, operands []string, err error) {
 }
 
 // parseRef splits a `<provider>:<id-or-path>` reference. The provider is required: guessing one from
-// an id or a path would silently pick a reader for the wrong format.
+// an id or a path would silently pick a reader for the wrong format. What counts as a provider name is
+// the core's answer (ccc.KnownProvider), not a registry lookup here: a stored agent label such as
+// `freebuff` -- the identity the Codebuff provider records and the archive reports for its free-tier
+// sessions -- is one a caller may write, and refusing it here would leave the CLI unable to name the
+// session an archive hands back.
 func parseRef(operand string) (ccc.Ref, error) {
 	provider, id, found := strings.Cut(operand, ":")
 	if !found || provider == "" || id == "" {
 		return ccc.Ref{}, fmt.Errorf(
 			"reference %q is not <provider>:<session-id-or-path> (for example claude:9f2c1d47-...)", operand)
 	}
-	if _, ok := parser.AgentByType(parser.AgentType(provider)); !ok {
+	if !ccc.KnownProvider(provider) {
 		return ccc.Ref{}, fmt.Errorf("unknown provider %q", provider)
 	}
 	return ccc.Ref{Provider: provider, ID: id}, nil

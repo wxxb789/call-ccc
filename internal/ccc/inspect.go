@@ -91,10 +91,11 @@ type Inspection struct {
 //
 // A source the reader cannot read is a warning rather than an error whenever an archive could still
 // answer the reference: a session recorded on another machine (ErrNoLocalSource), a provider that
-// failed operationally (ErrProviderFailed) and a provider the configuration disables for local
-// ingestion (ErrSourceDisabled) all leave the archive in reach, and each warning carries the reader's
-// own answer so the three are distinguishable. A reference no provider knows, or a failure none of
-// those classifications covers, is returned as an error.
+// failed operationally (ErrProviderFailed), a provider the configuration disables for local
+// ingestion (ErrSourceDisabled) and a source the provider could not read in full (ErrPartialSource)
+// all leave the archive in reach, and each warning carries the reader's own answer so the four are
+// distinguishable. A reference no provider knows, or a failure none of those classifications covers,
+// is returned as an error.
 func Inspect(ctx context.Context, opts InspectOptions) (Inspection, error) {
 	// The configuration answers where each provider keeps its sessions. The reader resolves a relative
 	// filesystem reference against those roots and the archive is opened with the same answer, so both
@@ -167,6 +168,15 @@ func Inspect(ctx context.Context, opts InspectOptions) (Inspection, error) {
 		// a session the source side cannot read may well be one an archive holds.
 		inspection.Warnings = append(inspection.Warnings, fmt.Sprintf(
 			"%v; an archive can still hold the session", err))
+	case errors.Is(err, ErrPartialSource):
+		// The provider read the source but not in full. That is neither absence nor a session: the
+		// members it did read exist, and which conversation a *path* names is exactly what an
+		// incomplete read cannot say (the reader refuses to pick one, reader.go's partialPathParse).
+		// The warning carries the provider's diagnostics and the identities it did read, so a caller
+		// can name one of them, and the archive is still consulted for the session the reference
+		// could name.
+		inspection.Warnings = append(inspection.Warnings, fmt.Sprintf(
+			"%v; an archive can still hold the session", err))
 	case errors.Is(err, ErrSourceDisabled):
 		// The configuration disables this provider for local ingestion. That is the provider's own
 		// state, not the session's: the inherited setting ("Disabling Session Providers",
@@ -202,6 +212,19 @@ func Inspect(ctx context.Context, opts InspectOptions) (Inspection, error) {
 				inspection.Warnings = append(inspection.Warnings,
 					fmt.Sprintf("the source session is not in %s yet", archive.Path()))
 			}
+		}
+	}
+	if inspection.Agent == "" {
+		// The provider name this reference used has no registry def of its own (a stored agent label such
+		// as Freebuff), so the provider lookup above had no display name to answer with. The session the
+		// inspection did read recorded one for itself -- the parse's own label, or the label the writer
+		// stored on the archived row -- and that is the agent an operator reads this inspection for. A
+		// name this lookup made up would be a second source of truth for an inherited label.
+		switch {
+		case inspection.Source != nil:
+			inspection.Agent = inspection.Source.Identity.Agent
+		case inspection.Archive != nil:
+			inspection.Agent = inspection.Archive.Status.AgentLabel
 		}
 	}
 	return inspection, nil

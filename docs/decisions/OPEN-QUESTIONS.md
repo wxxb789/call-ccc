@@ -489,3 +489,48 @@ supersede it with a newer one and say which it supersedes.
 - **Settled by:** whether the operator wants a source-only call reported too — it would make every
   usage-projection archive differ from its source read — and whether the name comparison should be as
   strict as the input one; today both name and input serve the same question ("is this the same call?").
+
+## Q-0001-22 — What an incomplete parse of a path does to an inspection
+
+- **Status:** resolved (default taken)
+- **Question:** the round-11 review (finding 2) measured that a path reference accepted the sole
+  successful parse result without looking at `ParseOutcome.ResultSetComplete` or the outcome's source
+  errors: a multi-session source that returns one readable member beside members it could not read
+  (internal/parser's `TestOpenClawSQLiteStoreMalformedMemberIsolation`) resolved that path to the
+  readable member, so whether a malformed sibling parses decided which conversation a path named. The
+  refusal is what the finding asks for; open is whether an inspection treats it as a failure or as one
+  more source-side state whose archive is still consulted.
+- **Default taken:** the same shape `ErrProviderFailed` has (Q-0001-16): the reader classifies it as
+  its own answer (`ErrPartialSource`) carrying the provider's diagnostics and the identities the parse
+  *did* read, and an inspection reports it as a warning, consults the archive, and exits 0 when the
+  archive holds a session. A hard failure would take away the archived session a caller can still read,
+  and the warning names the identity to pass back (`ccc inspect <provider>:<that id>`), which is what
+  makes the refusal actionable; `--json` carries both in `warnings`.
+- **Reversal:** one `case` in `Inspect`'s switch (return the error instead of warning), which makes a
+  partial source override an archive read that succeeded.
+- **Settled by:** whether the operator wants an unattended pipeline to fail when a source is only
+  partly readable while an archive answers, or to succeed with the partial read named in the report.
+
+## Q-0001-23 — Whether a stored agent label is a provider name a reference may use
+
+- **Status:** resolved (default taken)
+- **Question:** the round-11 review (finding 1) measured that a Freebuff session's archive row carries
+  `agent = freebuff` and the id `freebuff:<project>:<timestamp>`, while the CLI's reference grammar
+  accepted only registry providers: `ccc inspect freebuff:…` exited 2 as an "unknown provider" before
+  the core looked anything up. Freebuff is deliberately not a provider in AgentsView (no registry
+  entry, no config key, no factory -- `parser.AgentByPrefix` maps its ids onto the Codebuff def and
+  `parser.ProviderStoredAgents` records that the Codebuff provider writes both labels). The alternatives
+  are to accept the label as a name for the provider that writes it, or to require callers to respell it
+  as `codebuff:<native id>`.
+- **Default taken:** accept it, from the inherited mapping only. `internal/ccc` resolves a name that is
+  not a registry entry through the provider whose `parser.ProviderStoredAgents` includes it
+  (`storedAgentOwner`), the CLI asks the core (`ccc.KnownProvider`) instead of doing its own registry
+  lookup, and the archive answers the `freebuff:` spelling of every lookup shape. Nothing is registered
+  locally: the label list a caller sees is still upstream's, and a session's own recorded label is what
+  the read reports for it.
+- **Reversal:** drop the `storedAgentOwner` branch in `resolveFactory` and the `ccc.KnownProvider` call
+  in `cmd/ccc`'s `parseRef` (two small edits): `freebuff:…` becomes an unknown provider again, and a
+  caller has to respell the identity the archive reports before it resolves.
+- **Settled by:** whether the operator wants the exact identifier an inspection prints (`archived id:
+  freebuff:…`) to be usable as the next reference, or a grammar in which only registry provider names
+  appear.
