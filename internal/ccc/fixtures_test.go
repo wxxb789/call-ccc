@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -743,11 +744,163 @@ func TestReadAcceptsTheOnlyResultOfAPathReference(t *testing.T) {
 	}
 }
 
+// forkedClaudeTranscript writes one Claude Code transcript whose DAG forks -- a main branch with more
+// than three user turns after the fork point and a second branch leaving an early assistant entry, the
+// shape internal/parser's TestParseClaudeSession_MetadataOnForkSessions parses into a main session and a
+// fork -- under a throw-away provider root, and returns that root's configuration with the file's path.
+func forkedClaudeTranscript(t *testing.T) (config.Config, string) {
+	t.Helper()
+	root := t.TempDir()
+	// A real Claude transcript is named after the session it records.
+	path := filepath.Join(root, "-workspace", "sess-orig.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("preparing the provider root: %v", err)
+	}
+	entry := func(role, uuid, parent string, content any, second int) map[string]any {
+		line := map[string]any{
+			"type": role, "timestamp": fmt.Sprintf("2024-01-01T10:00:%02dZ", second),
+			"sessionId": "sess-orig", "version": "3.5.0", "cwd": "/workspace",
+			"gitBranch": "feat/forks", "uuid": uuid,
+			"message": map[string]any{"content": content},
+		}
+		if parent != "" {
+			line["parentUuid"] = parent
+		}
+		return line
+	}
+	say := func(text string) any { return []map[string]any{{"type": "text", "text": text}} }
+	entries := []map[string]any{
+		entry("user", "a", "", "start", 0),
+		entry("assistant", "b", "a", say("ok"), 1),
+		entry("user", "c", "b", "q1", 2),
+		entry("assistant", "d", "c", say("a1"), 3),
+		entry("user", "e", "d", "q2", 4),
+		entry("assistant", "f", "e", say("a2"), 5),
+		entry("user", "g", "f", "q3", 6),
+		entry("assistant", "h", "g", say("a3"), 7),
+		entry("user", "k", "h", "q4", 8),
+		entry("assistant", "l", "k", say("a4"), 9),
+		// The fork leaves the early assistant entry, so one file holds two sessions.
+		entry("user", "fork-u1", "b", "forked question", 10),
+		entry("assistant", "fork-a1", "fork-u1", say("forked answer"), 11),
+	}
+	lines := make([]string, 0, len(entries))
+	for _, line := range entries {
+		encoded, err := json.Marshal(line)
+		if err != nil {
+			t.Fatalf("encoding a transcript line: %v", err)
+		}
+		lines = append(lines, string(encoded))
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("writing the transcript: %v", err)
+	}
+	cfg := fixtureConfig(t)
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentClaude: {root}}
+	return cfg, path
+}
+
+// TestReadReportsAForkedPathAsAmbiguous pins how a path reference answers a parse that produced more
+// than one session.
+//
+// A Claude Code transcript whose DAG forks parses to the main branch and the fork -- two sessions from
+// one file, the shape the inherited parser's own fork test pins -- and a path names a source rather
+// than one of the sessions a parse of it produces. The read used to answer that path as *absent*: the
+// CLI said "no session found" for a transcript that is there, and the two sessions it holds were
+// thrown away. The design's rule for an ambiguous identifier -- return the candidates instead of
+// guessing -- applies, and the parse's own session identities are what a caller can pass back.
+func TestReadReportsAForkedPathAsAmbiguous(t *testing.T) {
+	cfg, path := forkedClaudeTranscript(t)
+	reader := NewSourceReader(cfg)
+	conversation, err := reader.Read(context.Background(), Ref{Provider: "claude", ID: path})
+	if err == nil {
+		t.Fatalf("a forked transcript read as one session: %+v", conversation.Source)
+	}
+	var ambiguous *AmbiguousError
+	if !errors.As(err, &ambiguous) {
+		t.Fatalf("reading a forked transcript by path answered %v, want an ambiguity report", err)
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Errorf("the ambiguity is also reported as absence: %v", err)
+	}
+	if len(ambiguous.Candidates) != 2 {
+		t.Fatalf("ambiguous candidates = %v, want the two sessions the file holds", ambiguous.Candidates)
+	}
+	// The identities are the parser's own for this fixture (internal/parser names the main session
+	// after the file and the branch after the entry it left), which is what the archive stores and what
+	// conversationFromParse reports: a caller passes one back instead of guessing.
+	got := map[string]bool{}
+	for _, candidate := range ambiguous.Candidates {
+		got[candidate] = true
+	}
+	for _, want := range []string{"sess-orig", "sess-orig-fork-u1"} {
+		if !got[want] {
+			t.Errorf("candidates %v are missing the parsed session %q", ambiguous.Candidates, want)
+		}
+	}
+	if len(got) != 2 {
+		t.Errorf("both candidates are the same session: %v", ambiguous.Candidates)
+	}
+
+	// A fork identity names the session but no file of its own: the inherited source lookup resolves a
+	// session id to `<id>.jsonl` under a configured root, so an id-only reference to the fork answers
+	// "not found" at the source (an archive can still hold it) instead of quietly returning the main
+	// session the file is named after.
+	if _, err := reader.Read(context.Background(), Ref{Provider: "claude", ID: "sess-orig-fork-u1"}); !errors.Is(err, ErrNotFound) {
+		t.Errorf("reading the fork identity as a session answered %v, want ErrNotFound", err)
+	}
+}
+
+// TestReadReportsAProviderFailureInsteadOfAbsence pins the classification of the one outcome shape the
+// inherited Cursor provider uses for an operational failure: the parse returns a nil Go error and
+// carries the failure in ParseOutcome.SourceErrors with no result. That is not the answer "no such
+// session" -- the session may well exist and the provider could not read it -- and a caller that
+// reported it as absence would send the user looking for a session that is there. The provider's own
+// diagnostics travel with the error, because the outcome is the only place they exist.
+func TestReadReportsAProviderFailureInsteadOfAbsence(t *testing.T) {
+	cfg := fixtureConfig(t)
+	reader, provider := readerOverFixedProvider(t, cfg, parser.AgentCursor)
+	const sessionID = "3f9c8f3a-7b12-4e4a-8a19-2f0b6c5d7e01"
+	provider.source = parser.SourceRef{
+		Provider:       parser.AgentCursor,
+		DisplayPath:    "/home/user/.cursor/projects/example/session.jsonl",
+		FingerprintKey: "/home/user/.cursor/projects/example/session.jsonl",
+	}
+	provider.outcome = parser.ParseOutcome{
+		ResultSetComplete: true,
+		SourceErrors: []parser.SourceError{{
+			SourceKey:   "cursor-state-store",
+			DisplayPath: "/home/user/.cursor/state.db",
+			SessionID:   sessionID,
+			Err:         errors.New("the store is locked by another reader"),
+			Retryable:   true,
+		}},
+	}
+
+	_, err := reader.Read(context.Background(), Ref{Provider: "cursor", ID: sessionID})
+	if err == nil {
+		t.Fatal("a provider that produced no result was read as a session")
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Errorf("an operational provider failure is reported as absence: %v", err)
+	}
+	if !errors.Is(err, ErrProviderFailed) {
+		t.Errorf("err = %v, want %v", err, ErrProviderFailed)
+	}
+	for _, want := range []string{"the store is locked by another reader", "/home/user/.cursor/state.db"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the failure does not carry the provider's diagnostics (%q): %v", want, err)
+		}
+	}
+}
+
 // TestPickResultRequiresTheReferenceIdentity pins the selection helper's own answers, the ones a fixture
 // cannot produce for every spelling: which results count as the reference (its raw id, the provider's
 // prefixed id, the native id the stored id ends in), that a lone result is not the answer unless it is
 // the reference, that several results are filtered by identity rather than picked, and that a path
-// reference is answered by the source's own single result.
+// reference is answered by the source's own single result -- while several results for a path name no
+// single session for the helper to return, and Read reports them as candidates instead
+// (TestReadReportsAForkedPathAsAmbiguous).
 func TestPickResultRequiresTheReferenceIdentity(t *testing.T) {
 	one := func(id, raw string) parser.ParseOutcome {
 		return parser.ParseOutcome{Results: []parser.ParseResultOutcome{
@@ -779,7 +932,7 @@ func TestPickResultRequiresTheReferenceIdentity(t *testing.T) {
 		{"no results", parser.ParseOutcome{}, Ref{Provider: "piebald", ID: "42"}, false},
 		{"path reference, one result", one("claude:"+claudeFixtureRef.ID, claudeFixtureRef.ID),
 			pathRef, true},
-		{"path reference, several results", parser.ParseOutcome{Results: []parser.ParseResultOutcome{
+		{"path reference, several results (no single session to return)", parser.ParseOutcome{Results: []parser.ParseResultOutcome{
 			{Result: parsedSessionFor(parser.AgentClaude, "claude:a", "a")},
 			{Result: parsedSessionFor(parser.AgentClaude, "claude:b", "b")}}}, pathRef, false},
 	}

@@ -1060,6 +1060,277 @@ func TestCompareMessagesNamesEveryDifference(t *testing.T) {
 			t.Errorf("same=%v folded=%d warnings=%v, want no difference", same, folded, warnings)
 		}
 	})
+
+	t.Run("two archived bodies under one key, one of them the source's", func(t *testing.T) {
+		// One call can have more than one archived body under one key (the call's own content and the
+		// event it was restored from, or an event delivered twice). A difference is reported only when
+		// none of them is the source's body, so a stale duplicate cannot turn agreement into a mismatch.
+		source := append([]Message{}, base...)
+		source[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "function_call_output", ContentRaw: "30\n", ContentSize: 3}}
+		archived := append([]Message{}, base...)
+		archived[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "tool_result", ContentRaw: "30\n", ContentSize: 3},
+			{ToolUseID: toolUseID, Source: "tool_result", ContentRaw: "31\n", ContentSize: 3}}
+		same, folded, warnings := compareMessages(source, archived)
+		if !same || folded != 0 || len(warnings) != 0 {
+			t.Errorf("same=%v folded=%d warnings=%v, want the matching body accepted",
+				same, folded, warnings)
+		}
+	})
+
+	t.Run("an attached result the archive stores in the decoded spelling", func(t *testing.T) {
+		// The source's content field is the provider's raw JSON (`"30\n"`, quotes included); the archive
+		// stores the text that JSON decodes to. The two are the same body, and a comparison that
+		// demanded the raw bytes would report every result as differing.
+		source := append([]Message{}, base...)
+		source[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "function_call_output", ContentRaw: `"30\n"`, ContentSize: 3}}
+		archived := append([]Message{}, base...)
+		archived[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "tool_result", ContentRaw: "30\n", ContentSize: 3}}
+		same, folded, warnings := compareMessages(source, archived)
+		if !same || folded != 0 || len(warnings) != 0 {
+			t.Errorf("same=%v folded=%d warnings=%v, want the decoded body accepted",
+				same, folded, warnings)
+		}
+	})
+
+	t.Run("a summarized call body on a row both reads have is not compared", func(t *testing.T) {
+		// The archive can store a *summary* on the call -- several agents' outputs merged, or a
+		// narrowed policy's text -- that the source row's own body was never equal to. Only the
+		// message's own result rows are in scope for a row both reads have; a comparison that read the
+		// summary would report a difference the archive's own read cannot support.
+		source := append([]Message{}, base...)
+		source[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "function_call_output", ContentRaw: "30\n", ContentSize: 3}}
+		archived := append([]Message{}, base...)
+		archived[1].ToolCalls = []ToolCall{{ToolUseID: toolUseID, Name: "shell",
+			ResultContent: "agent-1:\n30\n\nagent-2:\n40\n", ResultContentSize: 3}}
+		same, folded, warnings := compareMessages(source, archived)
+		if !same || folded != 0 || len(warnings) != 0 {
+			t.Errorf("same=%v folded=%d warnings=%v, want the call's summary out of scope",
+				same, folded, warnings)
+		}
+	})
+
+	t.Run("a folded result whose body the two reads disagree about", func(t *testing.T) {
+		// Claude's shape: the source's result row is folded into the call, so nothing shares its
+		// ordinal. Same call, same content length, different outcome -- the key alone cannot tell them
+		// apart, and the archive holds the body on the call row.
+		source := append(append([]Message{}, base...), Message{Ordinal: 2, Role: "user",
+			ToolResults: []ToolResult{{ToolUseID: toolUseID, Source: "tool_result",
+				ContentRaw: `"PASS"`, ContentSize: 4}}})
+		archived := append([]Message{}, base...)
+		archived[1].ToolCalls = []ToolCall{{ToolUseID: toolUseID, Name: "Bash",
+			ResultContent: "FAIL", ResultContentSize: 4}}
+		same, folded, warnings := compareMessages(source, archived)
+		if same || folded != 1 {
+			t.Errorf("same=%v folded=%d, want the row counted as folded and its body compared",
+				same, folded)
+		}
+		if len(warnings) != 1 || !strings.Contains(warnings[0], "different body") ||
+			!strings.Contains(warnings[0], toolUseID) {
+			t.Errorf("warnings = %v, want the differing body named", warnings)
+		}
+	})
+
+	t.Run("a folded result whose archive body is an event on the call", func(t *testing.T) {
+		// The archive read materializes a call's result events as the message's own result rows, so a
+		// folded result's body can be found there too -- the comparison asks for the body wherever the
+		// archive keeps it, not only on the call row.
+		source := append(append([]Message{}, base...), Message{Ordinal: 2, Role: "user",
+			ToolResults: []ToolResult{{ToolUseID: toolUseID, Source: "tool_result",
+				ContentRaw: `"PASS"`, ContentSize: 4}}})
+		archived := append([]Message{}, base...)
+		archived[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "tool_result", ContentRaw: "FAIL", ContentSize: 4}}
+		same, folded, warnings := compareMessages(source, archived)
+		if same || folded != 1 || len(warnings) != 1 {
+			t.Errorf("same=%v folded=%d warnings=%v, want the event's body compared",
+				same, folded, warnings)
+		}
+	})
+
+	t.Run("a folded result whose body the archive narrowed away", func(t *testing.T) {
+		// The blocked-category shape: the key is held and the body is not, so there is nothing to
+		// compare and the row stays agreement -- an inspection must not report a difference its own
+		// archive read cannot support.
+		source := append(append([]Message{}, base...), Message{Ordinal: 2, Role: "user",
+			ToolResults: []ToolResult{{ToolUseID: toolUseID, Source: "tool_result",
+				ContentRaw: `"PASS"`, ContentSize: 4}}})
+		archived := append([]Message{}, base...)
+		archived[1].ToolCalls = []ToolCall{{ToolUseID: toolUseID, Name: "Read",
+			ResultContentSize: 4}}
+		same, folded, warnings := compareMessages(source, archived)
+		if !same || folded != 1 || len(warnings) != 0 {
+			t.Errorf("same=%v folded=%d warnings=%v, want the narrowed body accepted",
+				same, folded, warnings)
+		}
+	})
+}
+
+// claudeBashTranscript writes one small Claude session -- a user turn and a `Bash` call whose result the
+// transcript records verbatim -- under a throw-away provider root, and returns that root's configuration
+// with the file's path. Bash is not one of the inherited default configuration's blocked result
+// categories, so an archive of the file keeps the body: two same-length outputs are what a case needs to
+// hold an archive's recorded outcome against a later transcript of the same session.
+func claudeBashTranscript(t *testing.T, output string) (config.Config, string) {
+	t.Helper()
+	const toolUseID = "toolu_01Folded0000000000000001"
+	root := t.TempDir()
+	relative := filepath.Join("-home-user-code-example-api", claudeFixtureRef.ID+".jsonl")
+	path := filepath.Join(root, "claude", relative)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("preparing the provider root: %v", err)
+	}
+	lines := []string{
+		`{"cwd":"/home/user/code/example-api","message":{"content":"Check the retry policy."},` +
+			`"sessionId":"` + claudeFixtureRef.ID + `","timestamp":"2026-05-04T09:15:00.000Z",` +
+			`"type":"user","version":"1.0.30"}`,
+		`{"message":{"content":[{"id":"` + toolUseID + `","input":{"command":"make check"},` +
+			`"name":"Bash","type":"tool_use"}],"model":"claude-sonnet-4-5"},` +
+			`"timestamp":"2026-05-04T09:15:04.000Z","type":"assistant","version":"1.0.30"}`,
+		`{"message":{"content":[{"content":` + jsonString(t, output) + `,"tool_use_id":"` +
+			toolUseID + `","type":"tool_result"}]},"timestamp":"2026-05-04T09:15:06.000Z","type":"user"}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("writing the transcript: %v", err)
+	}
+	cfg := fixtureConfig(t)
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentClaude: {filepath.Join(root, "claude")}}
+	return cfg, path
+}
+
+// TestInspectReportsADifferentFoldedResultBody pins the comparison end to end for a folded tool result:
+// the source row that carried the outcome has no ordinal in the archive, because the writer stored the
+// result on the call, and the key it is held under -- the call and the content length -- cannot tell two
+// same-length outcomes apart. An archive recording PASS for a session whose transcript now says FAIL was
+// reported as holding every source message. The comparison reads the body wherever the archive keeps it
+// and decodes the source's raw content field the way the writer did.
+//
+// The second half is the control: the same archive read against a transcript that recorded the same
+// output must still agree, so the new answer cannot pass by reporting every folded result as differing.
+func TestInspectReportsADifferentFoldedResultBody(t *testing.T) {
+	ctx := context.Background()
+	archiveCfg, archiveFile := claudeBashTranscript(t, "PASS\n")
+	changedCfg, changedFile := claudeBashTranscript(t, "FAIL\n")
+	if archiveFile == changedFile {
+		t.Fatal("the two transcripts are the same file")
+	}
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(archiveCfg, archivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	if err := ingestor.IngestPaths(ctx, archiveFile); err != nil {
+		t.Fatalf("ingesting the transcript: %v", err)
+	}
+
+	for name, testCase := range map[string]struct {
+		cfg  config.Config
+		same bool
+	}{
+		"unchanged transcript": {cfg: archiveCfg, same: true},
+		"changed outcome":      {cfg: changedCfg, same: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			inspection, err := Inspect(ctx, InspectOptions{
+				Ref:         claudeFixtureRef,
+				Config:      testCase.cfg,
+				Reader:      NewSourceReader(testCase.cfg),
+				ArchivePath: archivePath,
+			})
+			if err != nil {
+				t.Fatalf("inspecting: %v", err)
+			}
+			if inspection.Source == nil {
+				t.Fatalf("the source was not read: %v", inspection.Warnings)
+			}
+			if inspection.Archive == nil {
+				t.Fatalf("the archived session was not reported: %v", inspection.Warnings)
+			}
+			archived := inspection.Archive
+			if archived.SameMessagesAsSource == nil {
+				t.Fatal("the comparison did not run")
+			}
+			if *archived.SameMessagesAsSource != testCase.same {
+				t.Errorf("same_messages_as_source = %v, want %v (warnings: %v)",
+					*archived.SameMessagesAsSource, testCase.same, archived.Warnings)
+			}
+			if archived.FoldedToolResults != 1 {
+				t.Errorf("folded tool results = %d, want 1", archived.FoldedToolResults)
+			}
+			warnings := strings.Join(inspection.Warnings, "\n")
+			if testCase.same {
+				if strings.Contains(warnings, "different body") {
+					t.Errorf("the unchanged outcome was reported as a different body: %v",
+						inspection.Warnings)
+				}
+				return
+			}
+			if !strings.Contains(warnings, "different body") ||
+				!strings.Contains(warnings, "toolu_01Folded") {
+				t.Errorf("the differing outcome is not named: %v", inspection.Warnings)
+			}
+		})
+	}
+}
+
+// TestInspectExposesAProviderFailureAndFallsBackToTheArchive pins the inspection's end of the reader's
+// classification: when the selected session's provider fails operationally -- the inherited Cursor
+// shape, an outcome carrying a SourceError and no result -- the inspection reports the provider's own
+// diagnostics *and* still reports the archived session, instead of reducing the failure to "no readable
+// source session", which says nothing an operator can act on and hides a retryable failure.
+func TestInspectExposesAProviderFailureAndFallsBackToTheArchive(t *testing.T) {
+	ctx := context.Background()
+	cfg := fixtureConfig(t)
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(cfg, archivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	claudeFile := fixturePath(t, filepath.Join("claude", "-home-user-code-example-api",
+		claudeFixtureRef.ID+".jsonl"))
+	if err := ingestor.IngestPaths(ctx, claudeFile); err != nil {
+		t.Fatalf("ingesting the fixture: %v", err)
+	}
+
+	reader, provider := readerOverFixedProvider(t, cfg, parser.AgentClaude)
+	provider.source = parser.SourceRef{
+		Provider:       parser.AgentClaude,
+		DisplayPath:    claudeFile,
+		FingerprintKey: claudeFile,
+	}
+	provider.outcome = parser.ParseOutcome{
+		ResultSetComplete: true,
+		SourceErrors: []parser.SourceError{{
+			SourceKey:   "cursor-state-store",
+			DisplayPath: "/home/user/.cursor/state.db",
+			Err:         errors.New("the store is locked by another reader"),
+			Retryable:   true,
+		}},
+	}
+
+	inspection, err := Inspect(ctx, InspectOptions{
+		Ref: claudeFixtureRef, Config: cfg, Reader: reader, ArchivePath: archivePath,
+	})
+	if err != nil {
+		t.Fatalf("inspecting: %v", err)
+	}
+	if inspection.Source != nil {
+		t.Errorf("the failed source read was reported as a source: %+v", inspection.Source)
+	}
+	if inspection.Archive == nil {
+		t.Fatalf("the archived session was not reported: %v", inspection.Warnings)
+	}
+	warnings := strings.Join(inspection.Warnings, "\n")
+	if !strings.Contains(warnings, "the store is locked by another reader") {
+		t.Errorf("the provider's diagnostics are not exposed: %v", inspection.Warnings)
+	}
+	if strings.Contains(warnings, "no readable source session") {
+		t.Errorf("a provider failure is reported as absence: %v", inspection.Warnings)
+	}
 }
 
 // TestInspectDoesNotCallAStaleArchiveCompleteAfterACallOutcomeArrived pins the comparison's other

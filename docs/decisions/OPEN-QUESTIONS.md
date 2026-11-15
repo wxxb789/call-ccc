@@ -318,3 +318,48 @@ supersede it with a newer one and say which it supersedes.
 - **Settled by:** whether the operator wants `ccc inspect <provider>:<path>` to answer "not found" (and
   consult the archive) for a path that is not on this machine, or to keep reporting the provider's
   claim that such a path names a session.
+
+## Q-0001-15 — How a caller reads one branch of a forked transcript
+
+- **Status:** resolved (default taken)
+- **Question:** the round-6 review (finding 3) measured that a Claude Code transcript holding a DAG fork
+  parses to several sessions while the reader answered a reference to that path as *absent*. Reporting
+  the candidates is what the design asks for; the open choice is what a caller then does with one. The
+  parse's identity for a fork is `<stem>-<entry-uuid>`, which is the identity an archive stores, but the
+  inherited source lookup resolves a session id to `<id>.jsonl` under a configured root, so no file
+  exists for that identity: reading it by id reports "not found" at the source and reaches an archive if
+  one holds the session. The alternatives are to teach the source lookup to scan transcripts for the
+  fork identity, to report the path's main branch as *the* session (the reading this increment
+  rejected), or to leave the candidates as the answer and let the archive carry the fork.
+- **Default taken:** report the candidates and leave the source lookup alone. A path reference to a
+  forked transcript returns the parsed identities (`AmbiguousError`); an id-only reference to a fork
+  reaches the archive or reports "no readable source session", never the main branch. Resolving a fork
+  id to a file is a change to inherited parser code (a DAG-metadata scan), which this increment may not
+  make locally — it is an upstream contribution, not a call/ccc patch.
+- **Reversal:** one function in the inherited provider (resolve a raw id the file-name lookup misses by
+  scanning sibling transcripts' DAG metadata for it), which changes carried code and needs an upstream
+  route; or map the fork identity onto the file in the reader, which would have to hand the provider a
+  path and then still choose among the parse's sessions.
+- **Settled by:** whether the operator wants `ccc inspect` to read a forked branch from the source tree —
+  the archive route already reads it, so the cost of waiting for an upstream scan is a source read that
+  answers only through the archive.
+
+## Q-0001-16 — What a provider operation failure does to an inspection's exit status
+
+- **Status:** resolved (default taken)
+- **Question:** the round-6 review (finding 2) measured that an outcome carrying operational
+  `SourceErrors` and no result was reported as absence, with the provider's diagnostics discarded. The
+  classification is now its own answer (`ErrProviderFailed`); the open choice is whether an inspection
+  whose source read failed that way is a success when an archive holds the session, or a failure the
+  operator sees on the exit status.
+- **Default taken:** the inspection reports the provider's diagnostics as a warning and, when an archive
+  holds the session, returns it with exit status 0 — the shape `ErrNotFound` and `ErrNoLocalSource`
+  already have, and what finding 2 asked for ("expose their diagnostics even if archive fallback remains
+  available"). `--json` carries the warning in `warnings`, so a script can see it without reading the
+  exit status; a hard error is reserved for outcomes whose read could not be attempted at all (a parse
+  returning a Go error, an unreadable archive).
+- **Reversal:** treat `ErrProviderFailed` as fatal in `Inspect` (one `case` in its switch: return the
+  error instead of warning), which would make a retryable failure override an archive read that
+  succeeded.
+- **Settled by:** whether the operator wants an unattended pipeline to fail when the source side fails
+  while an archive answers, or to succeed with the failure named in the report.

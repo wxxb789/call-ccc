@@ -194,6 +194,57 @@ test when reverted):
   requires the Claude fixture under a labelled root to report that label, and the unlabelled and
   locally-labelled cases to report the installation's own.
 
+The round-6 fix pass closed four review findings, three of them on the read path's and the comparison's
+own claims (same evidence shape: one executed mutation per rule, the rule's line disabled, the test that
+names it run, the line restored — eleven rules were mutated in this pass and every one of them failed
+its named test when reverted; the stage report carries each observed failure):
+
+- a **folded tool result's body** is compared, not only its key. The archive holds a result the source
+  recorded as its own row by folding it onto the call, and the key — the call and the content length —
+  cannot tell two same-length outcomes apart, so an archive recording `PASS` for a session whose
+  transcript now says `FAIL` was reported as holding every source message. The comparison now reads the
+  body wherever the archive keeps it for a folded row (a result row of its own, an event folded onto the
+  call, or the call row's own result content), accepts either representation of the source's body (the
+  raw JSON content field, and the decoded text `parser.DecodeContent` produces — the step both inherited
+  write paths apply), treats one matching body among several under one key as agreement, and reports
+  nothing when the archive shows no body at all (a blocked category keeps the length and no text)
+  (`TestInspectReportsADifferentFoldedResultBody` holds an archive of a `Bash` result against a later
+  transcript of the same session, once with the recorded outcome and once with a same-length different
+  one, whose second half is the control that the unchanged outcome still reads as agreement;
+  `TestCompareMessagesNamesEveryDifference` pins the verdicts directly: the differing body on the call,
+  the differing body on an event, the narrowed body, the decoded spelling, two bodies under one key with
+  one match, and the call's *summary* on a row both reads have — deliberately out of scope, because the
+  source read never showed that text);
+- a provider **operation failure is not absence**. The inherited Cursor provider reports a retryable
+  store-enrichment failure as `ParseOutcome.SourceErrors` with a nil Go error and no result; the reader
+  wrapped every result-less outcome in `ErrNotFound`, and an inspection then said "no readable source
+  session" while discarding the only copy of the provider's diagnostics. The outcome's `SourceErrors`
+  now classify the failure as its own answer (`ErrProviderFailed`, distinct from `ErrNotFound`) with the
+  provider's diagnostics in the error, and an inspection reports them and still consults the archive
+  (`TestReadReportsAProviderFailureInsteadOfAbsence` for the classification and the diagnostics;
+  `TestInspectExposesAProviderFailureAndFallsBackToTheArchive` for the inspection's end — the failed
+  source read, the archived session, and the provider's own message in the warnings, with the "no
+  readable source session" wording absent);
+- a **path whose parse produced several sessions returns them**. A Claude Code transcript whose DAG forks
+  parses to the main branch and the fork — two sessions from one file, the shape the inherited parser's
+  own `TestParseClaudeSession_MetadataOnForkSessions` pins — and the reader answered that path as
+  *absent*: the CLI said "no session found" for a transcript that is there, with both parsed sessions
+  discarded. The design's rule for an ambiguous identifier applies — return the candidates instead of
+  guessing — and the candidates are the parse's own session identities, the identities the archive
+  stores (`TestReadReportsAForkedPathAsAmbiguous` writes the forked transcript and requires the two
+  identities; `TestPickResultRequiresTheReferenceIdentity` keeps the helper's own answer that several
+  results name no single session for it, and `Read` turns that answer into the candidates);
+- the documented **build output** lives under the ignored `bin/`. `README.md` wrote the executable to
+  root-level `ccc`, which no ignore rule and no manifest record covers, so a checkout that followed the
+  quickstart then failed the required `parity` step as an unexplained file. The command now writes
+  `bin/ccc`, which `.gitignore`'s `/bin/` covers (`go build -o bin/ccc` creates the directory itself on
+  this tree's Go; `go.mod` requires 1.27.4). Executed verification of both ends: the old spelling
+  reproduces the finding — `go build -tags fts5 -o ccc ./cmd/ccc` then `python3 scripts/upstream-parity.py`
+  prints `parity: FAIL — 1 file(s) are neither carried nor project-owned` naming `ccc`, rc=1 — while with
+  the documented `bin/ccc` in place `parity` prints rc=0, and one of the round-6 gate runs below was
+  taken with that artifact present (the 33.9 s one; the quoted run has no artifact, since only the built
+  tree was removed).
+
 ## 2. A real source-to-archive parse and a subsequent archive read agree with the pinned implementation
 
 The oracle (`internal/ccc/parity`) parses a fixture, writes it through the inherited sync engine into
@@ -364,14 +415,14 @@ index is required: the archive is the inherited `sessions.db`, opened read-only.
 ## 6. The gate
 
 ```
-$ python3 scripts/gate.py        # rc=0, 21.8 s wall clock
+$ python3 scripts/gate.py        # rc=0, 31.1 s wall clock, taken on the final tree
 gate: <repo>
 gate: go=<go>/bin/go targets=./cmd/ccc/... ./internal/ccc/...
   PASS     gofmt    3574 file(s) gofmt-clean
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 127 tests in 4.672s (rc=0)
+  PASS     selftest Ran 127 tests in 5.384s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 25 project-owned prefix(es); files seen by git: 5613 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
   PASS     secrets  no leaks found in 60 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
@@ -397,13 +448,21 @@ functions in round 3 (`archive_test.go` 13 → 16, `fixtures_test.go` 4 → 8), 
 (`archive_test.go` 16 → 22, `fixtures_test.go` 8 → 11), and to 39 in round 5 (`archive_test.go` 22 → 23,
 `fixtures_test.go` 11 → 16: the reader's identity rule for identifiers and the path-reference
 distinction, the picker's own verdicts, the configured source machine, and the foreign-root rule with a
-real Antigravity transcript), and `cmd/ccc`'s tests are unchanged.
+real Antigravity transcript), and to 43 in round 6 (`archive_test.go` 23 → 25, `fixtures_test.go`
+16 → 18: the forked-path ambiguity, the provider-failure classification, the folded-body comparison
+end to end, and the inspection's provider-failure fallback), while `cmd/ccc`'s tests are unchanged and
+the harness's own count stays 127.
 
 Wall clock for the whole gate on this host: 19–21 s with warm caches across the increment's earlier
 runs, 25 s to 156 s across the round-2 fix pass's runs (the 156 s run followed a cold Go build cache, so
 `build`/`vet`/`test` recompiled the inherited packages), 21–23 s across the round-3 runs, 22 s, 26 s and
-53 s across the three round-4 runs, and 21.8–25.0 s across the round-5 runs (the block above quotes one of
-them). The 53 s round-4 run
+53 s across the three round-4 runs, and 21.8–25.0 s across the round-5 runs. The six round-6 runs
+measured 26.5 s, 25.2 s, 45.8 s, 28.3 s, 33.9 s and 31.1 s (the block above quotes the last, taken on the
+final tree: every code, test, comment and record edit preceded it — nothing was written afterwards —
+and it ran without the built `bin/ccc`, whose own gate run is the 33.9 s one); with `selftest` steps
+between 4.76 s and 6.18 s across them, the wall-clock spread is host load rather than a slower gate (the
+28.3 s run's step was the slowest at 6.18 s, the 45.8 s run's among the fastest at 4.96 s).
+The 53 s round-4 run
 ran while the host was busy, which is visible in its `selftest` step (23.6 s against 5.1 s and 5.2 s);
 the suite on its own measures 5.4–6.4 s over these runs, so the difference is load and not a test that
 grew slow. The `secrets` count is the files under the manifest's project-owned prefixes, which includes
@@ -417,6 +476,17 @@ rule those functions state was mutated (the rule's line disabled, the test that 
 restored — 15 mutations) and every one of them failed its named test. One rule's first mutation displaced
 the wrong occurrence of a two-line pattern shared with `check_files`, so it was re-run pinned to the
 `check_inputs` call site; the recorded failure is from that run.
+
+The round-6 pass did the same for the read path's and the comparison's surfaces (11 mutations: the
+provider-failure sentinel, the inspection's branch for it, the forked-path candidates and the identity
+each candidate names, the folded-body comparison as such, the decoded spelling it accepts, the rule that
+one matching body among several under a key is agreement, the call-row bodies it reads, the result rows
+it reads, "no body shown is not a difference", and the same-row scope that keeps a call's summary out of
+the comparison). Every mutation failed its named test; the fold-body sweep's observed failures include
+the real fixture path (`TestIngestThenArchiveRead`, whose Claude `Read` result is blocked and must not
+be reported as a different body). Two intermediate edit states were corrected before their mutation ran
+(one left an unused import, one restore dropped a brace); no recorded failure comes from a state that
+did not compile.
 
 ## 7. Measurements that shaped the harness
 
@@ -471,11 +541,11 @@ upstream's CI; `docs/harness.md` states this, and `parity` covers those files at
   prints names the rules it did not check.
 - **The ambiguity branch is exercised, and what it still does not cover.** `AmbiguousError` and the
   CLI's "pass one of those session ids instead of a guess" line are implemented and pinned by tests —
-  the source reader reports several candidates for a relative path two configured roots hold, and the
-  archive reports every row of the requested host whose id ends in the requested native id — but the
-  *committed fixtures* hold one session each, so nothing in this record makes an identifier match more
-  than one source through them; the ambiguity cases build their own second root or their own second
-  archive row.
+  the source reader reports several candidates for a relative path two configured roots hold and for a
+  transcript whose parse produced several sessions, and the archive reports every row of the requested
+  host whose id ends in the requested native id — but the *committed fixtures* hold one session each, so
+  nothing in this record makes an identifier match more than one source through them; the ambiguity cases
+  build their own second root, their own second archive row, or their own forked transcript.
 - **A relative filesystem reference is relative to the provider's configured roots, not to the working
   directory.** `claude:-home-user-code-example-api/<id>.jsonl` means that path under a configured Claude
   root; a process whose working directory happens to hold the same relative path is not what it names.
@@ -513,23 +583,39 @@ upstream's CI; `docs/harness.md` states this, and `parity` covers those files at
   difference. Every fixture and every provider route measured here records a length, which is what makes
   the answer exact for them.
 
-- **The attached-result comparison matches by call id and content length, and compares bodies only where
-  both reads show one.** A result whose archive body sits on the *call* (a summarized call row) is held
-  for the key and not compared byte-wise, because the source read exposes no body for it: the alternative
-  would report a difference the archive's own read cannot support. A call stored with neither content nor
-  a length stays indistinguishable from a call with no result at all (the bullet above), so the
-  comparison reports that row as a difference.
+- **The comparison matches by call id and content length, and compares bodies only where both reads show
+  one.** For a row both reads have, the archived bodies come from that message's own result rows: a
+  *summarized* call row holds text the source read never showed, so comparing the two would report a
+  difference the archive's own read cannot support. For a **folded** row — the source's result-only
+  message the archive stores on the call — the body is compared wherever the archive shows it, because
+  the write path stored that very result there; either representation of the source's body (its raw
+  content field, or the decoded text `parser.DecodeContent` produces) is accepted, one matching body
+  among several under one key is agreement, and a body the archive does not show (a blocked category
+  keeps the length and no text) is not a difference. A call stored with neither content nor a length
+  stays indistinguishable from a call with no result at all (the bullet above), so the comparison
+  reports that row as a difference by its key.
 - **The reader mirrors the inherited machine lookup instead of importing it.** `internal/sync` resolves a
   source's machine with an unexported `configuredMachineForPath` plus `pathWithinRoot`, so
   `internal/ccc/reader.go` carries its own copy of those two rules (longest configured root containing the
   path, both sides through `pathutil.LocalComparisonKey`) and names the original in a comment. An upstream
   change to that resolution has to be mirrored here deliberately; the alternative — exporting the helper —
   is an upstream contribution, not a local edit to carried code.
-- **A path reference that parses to more than one session reports none.** A transcript holding a DAG fork
-  parses to several sessions, and a path names a source rather than one of them, so the reader refuses
-  instead of picking (the identity rule that now governs identifier references cannot decide it either —
-  a path is not an id). The alternative reading, "the file's main branch", is a choice this increment did
-  not need to make.
+- **A path reference that parses to more than one session reports the parsed sessions, not the path's
+  first.** A transcript holding a DAG fork parses to several sessions; a path names a source rather than
+  one of them, so the reader reports their identities as candidates (`AmbiguousError`, the design's
+  answer for an ambiguous identifier) instead of reporting the reference as absent. The alternative
+  reading, "the file's main branch", is a choice this increment does not make — a caller passes one of
+  the identities back. A fork identity the parse produced (`<stem>-<entry-uuid>`) names the session the
+  archive stores, but names no file: the inherited source lookup resolves an id to `<id>.jsonl`, so an
+  inspection of that identity reaches the archive instead of a source file (`TestReadReportsAForkedPathAsAmbiguous`
+  pins the ambiguity, the candidate identities, and the not-found answer an id-only reference gets).
+- **A provider operation failure is reported as a failure, not as a missing session.** The reader
+  classifies an outcome that carries operational `SourceErrors` and no result as `ErrProviderFailed` (the
+  inherited Cursor provider's retryable store-enrichment shape) and keeps the provider's own diagnostics
+  in the error; an inspection reports them as a warning and still offers an archived session. A reference
+  that resolves to no source at all, and a parse that produced no session without source errors, remain
+  `ErrNotFound`. The classification covers the selected session's provider on the read path; a write-side
+  retry policy is not part of this increment.
 - **The generated input's index check compares git's blob with the one the file's bytes hash to.** That is
   exact for the snapshot (a binary `.gz`, which git stores as it is) and would report a false difference
   for a future input that the tree's attribute file rewrites on `git add`: such an input would need the

@@ -18,6 +18,16 @@ import (
 // it from a provider failure so an inspection can say "not found" instead of "broken".
 var ErrNotFound = errors.New("session not found")
 
+// ErrProviderFailed reports that a provider resolved a source but could not produce a session from it:
+// the parse outcome carries operational source errors and no result. It is not absence -- the session
+// may well exist; the provider failed to read it -- so a caller reports the provider's own diagnostics
+// instead of "not found". The inherited Cursor provider reports a retryable store-enrichment failure
+// this way (internal/parser's cursor_provider.go carries the operational error in
+// ParseOutcome.SourceErrors with a nil Go error for retry classification, so only the outcome says it
+// happened). An inspection can still fall back to an archive that holds the session, but it must not
+// report the failure as if nothing were there.
+var ErrProviderFailed = errors.New("provider could not read the source")
+
 // AmbiguousError reports a reference that matches more than one source. The candidates are returned
 // instead of a guess, which is what the design asks for when an identifier is ambiguous.
 type AmbiguousError struct {
@@ -358,8 +368,19 @@ func (r *SourceReader) Read(ctx context.Context, ref Ref) (Conversation, error) 
 	}
 	result, ok := pickResult(outcome, ref)
 	if !ok {
+		if ambiguous := ambiguousPathResults(outcome, ref); ambiguous != nil {
+			return Conversation{}, ambiguous
+		}
+		// An outcome that carries operational source errors is a failure the provider classified,
+		// never an answer that the session does not exist: the inherited Cursor provider reports a
+		// retryable enrichment failure this way, and a caller that read it as absence would tell the
+		// user to check for a session that is there.
+		failure := ErrNotFound
+		if len(outcome.SourceErrors) > 0 {
+			failure = ErrProviderFailed
+		}
 		return Conversation{}, fmt.Errorf("%w: %s:%s produced no session (%s)",
-			ErrNotFound, ref.Provider, ref.ID, describeOutcome(outcome))
+			failure, ref.Provider, ref.ID, describeOutcome(outcome))
 	}
 	return conversationFromParse(result, source, fingerprint), nil
 }
@@ -369,7 +390,8 @@ func (r *SourceReader) Read(ctx context.Context, ref Ref) (Conversation, error) 
 // A reference that names a filesystem path names a *source*, not one of the sessions a parse of it may
 // produce: the provider resolved the path to the session it belongs to, so a single result is that
 // session whatever id the provider reports, and a parse that produced several (a transcript holding a
-// DAG fork) is not one session a path can single out.
+// DAG fork) is not one session a path can single out -- the caller reports those candidates instead
+// (ambiguousPathResults) rather than answering the reference as absent.
 //
 // Every other reference names a *session*, and the parse has to produce that identity. Taking the sole
 // result as-is was wrong the moment a provider resolves a reference by normalising it: the Piebald
@@ -395,6 +417,35 @@ func pickResult(outcome parser.ParseOutcome, ref Ref) (parser.ParseResult, bool)
 		}
 	}
 	return parser.ParseResult{}, false
+}
+
+// ambiguousPathResults reports the sessions a path reference's parse failed to single out, or nil when
+// the reference is not a path or the parse named at most one session.
+//
+// One transcript can legitimately hold several sessions: a Claude Code transcript whose DAG forks
+// parses to the main branch and the fork (internal/parser's TestParseClaudeSession_MetadataOnForkSessions
+// shows the shape), and the Archive reports the same file path's several stored rows the same way. A
+// path names a source rather than one of the sessions a parse of it produces, so the design's rule for
+// an ambiguous identifier applies -- return the candidates instead of guessing -- and the parse's own
+// session identities are the ones a caller can pass back.
+func ambiguousPathResults(outcome parser.ParseOutcome, ref Ref) *AmbiguousError {
+	if !looksLikePath(ref.ID) || len(outcome.Results) < 2 {
+		return nil
+	}
+	candidates := make([]string, 0, len(outcome.Results))
+	for _, candidate := range outcome.Results {
+		candidates = append(candidates, parsedSessionName(candidate.Result.Session))
+	}
+	return &AmbiguousError{Ref: ref, Candidates: candidates}
+}
+
+// parsedSessionName names a parsed session for an ambiguity report: the stored identity the provider
+// reports, or its native id when the parse recorded no stored one.
+func parsedSessionName(session parser.ParsedSession) string {
+	if session.ID != "" {
+		return session.ID
+	}
+	return session.SourceSessionID
 }
 
 // sessionIsRef reports whether a parsed session is the one a reference's identifier names: the id the

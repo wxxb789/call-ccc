@@ -9,10 +9,10 @@ Today the repository carries the **actual AgentsView source tree** at a pinned r
 existing agent session through AgentsView's own discovery, parsers and archive read path.
 
 ```bash
-go build -tags fts5 -o ccc ./cmd/ccc      # CGO_ENABLED=1; -tags fts5 is what upstream ships
+go build -tags fts5 -o bin/ccc ./cmd/ccc   # CGO_ENABLED=1; -tags fts5 is what upstream ships
 
-ccc inspect claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10
-ccc inspect codex:/path/to/rollout-2026-05-04T09-15-00-0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812.jsonl --json
+bin/ccc inspect claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10
+bin/ccc inspect codex:/path/to/rollout-2026-05-04T09-15-00-0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812.jsonl --json
 ```
 
 `ccc inspect` locates a session with the provider's own reader, parses it, and reports its identity,
