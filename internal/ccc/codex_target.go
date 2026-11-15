@@ -344,18 +344,21 @@ type codexRolloutBuilder struct {
 	carried    Carried
 	callOwners map[string]struct{}
 
-	lossReasoning       int
-	lossSidechain       int
-	lossSystemRecords   int
-	lossUnpairedResults int
-	lossUnresolved      int
-	lossOutcomes        int
-	lossPreBoundary     int
-	lossEmptyInputs     int
-	lossGeneratedIDs    int
-	lossEmptyResults    int
-	foreignToolNames    map[string]struct{}
-	toolNameOrder       []string
+	lossReasoning         int
+	lossSidechain         int
+	lossSystemRecords     int
+	lossToolRoleMessages  int
+	lossUnclassifiedRoles int
+	lossEmptyUserMessages int
+	lossUnpairedResults   int
+	lossUnresolved        int
+	lossOutcomes          int
+	lossPreBoundary       int
+	lossEmptyInputs       int
+	lossGeneratedIDs      int
+	lossEmptyResults      int
+	foreignToolNames      map[string]struct{}
+	toolNameOrder         []string
 
 	pendingCallID string
 	sawBoundary   bool
@@ -436,30 +439,38 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 	}
 
 	role := parser.RoleType(message.Role)
-	switch role {
-	case parser.RoleUser, parser.RoleAssistant, parser.RoleTool:
-	default:
-		// A record the source wrote with a role the target has no message for (a system notice that
-		// was not flagged as one). Counting it as a system record keeps it out of both the dialogue and
-		// the target's developer channel.
-		if len(message.ToolResults) == 0 {
+	if role != parser.RoleUser && role != parser.RoleAssistant {
+		// Only a user or assistant record is dialogue. A record the source wrote with any other role --
+		// a tool's own output (the native tool role several providers keep), a system notice that was
+		// not flagged as one, or a role this build does not classify -- must not be written as either:
+		// presenting it as the conversation's user or agent would state a role the source never
+		// recorded. It is counted under its own category instead. Its tool calls and results are still
+		// written below, because a call and its output carry no role of their own in the target, and
+		// dropping real evidence silently is what the report exists to prevent.
+		switch role {
+		case parser.RoleTool:
+			b.lossToolRoleMessages++
+		case parser.RoleSystem:
 			b.lossSystemRecords++
+		default:
+			b.lossUnclassifiedRoles++
+		}
+		if len(message.ToolCalls) == 0 && len(message.ToolResults) == 0 {
+			// Nothing but the role itself: the count above is the whole of what the target does not have.
 			return
 		}
-	}
-
-	text := dialogueText(message)
-	if text != "" {
-		if role == parser.RoleUser {
+	} else {
+		switch text := dialogueText(message); {
+		case text != "" && role == parser.RoleUser:
 			b.startTurn(message.Timestamp)
 			b.messageItem(ItemUser, codexRoleUser, codexContentInputText, text, message.Timestamp)
-		} else {
+		case text != "":
 			b.messageItem(ItemAssistant, codexRoleAssistant, codexContentOutputText, text, message.Timestamp)
+		case role == parser.RoleUser && len(message.ToolResults) == 0 && len(message.ToolCalls) == 0:
+			// A user record with no dialogue and no tool evidence carries nothing the target can show.
+			b.lossEmptyUserMessages++
+			return
 		}
-	} else if role == parser.RoleUser && len(message.ToolResults) == 0 && len(message.ToolCalls) == 0 {
-		// A user record with no dialogue and no tool evidence carries nothing the target can show.
-		b.lossSystemRecords++
-		return
 	}
 
 	for index, call := range message.ToolCalls {
@@ -715,6 +726,29 @@ func (b *codexRolloutBuilder) losses() []Loss {
 				"instructions, and a provider's bookkeeping does not belong there",
 		},
 		{
+			Category:    "tool_role_messages",
+			Disposition: DispositionOmitted,
+			Count:       b.lossToolRoleMessages,
+			Detail: "a message the source recorded with the tool role is the tool's own output, and the " +
+				"target's function_call_output is where a tool's words belong: the text is carried only " +
+				"there, paired with the call it belongs to, and never as a user or agent message, which " +
+				"would state that the conversation's own user or agent said the tool's words",
+		},
+		{
+			Category:    "unclassified_role_messages",
+			Disposition: DispositionOmitted,
+			Count:       b.lossUnclassifiedRoles,
+			Detail: "a record whose role this build does not classify has no message in the target to go " +
+				"to; writing it as a user or agent message would state a role the source never recorded",
+		},
+		{
+			Category:    "empty_user_messages",
+			Disposition: DispositionOmitted,
+			Count:       b.lossEmptyUserMessages,
+			Detail: "a user record with neither dialogue text nor tool evidence carries nothing the " +
+				"target can show, so no message is written for it",
+		},
+		{
 			Category:    "unpaired_tool_results",
 			Disposition: DispositionOmitted,
 			Count:       b.lossUnpairedResults,
@@ -794,7 +828,9 @@ func moreNames(more int) string {
 	return fmt.Sprintf(", +%d more", more)
 }
 
-// dialogueText is the message text the target receives.
+// dialogueText is the message text the target receives. It is only ever asked for a record whose role
+// is the user's or the assistant's: a message with any other role is not dialogue at all, and writeMessage
+// counts it instead of writing it (see the role gate there).
 //
 // The source reader's Content is the provider's rendered transcript, which for a message that carries
 // tool calls includes a rendering of the calls themselves (`[Read: <path>]`); the Dialogue projection

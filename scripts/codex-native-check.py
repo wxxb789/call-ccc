@@ -3,13 +3,14 @@
 
 This harness answers the half of the goal that the gate cannot: whether the installed target session is
 readable by **Codex itself** and whether a **real turn** continues from it. It builds `ccc`, converts a
-committed fixture into an isolated Codex data directory, asks that directory's own app server to load
-the session (`thread/resume`), reads the harness's own view of the conversation (`thread/read`), checks
-that the source session and every other session in the target home — the session it plants there and any
-the home already held — are untouched, and — when `--resume-prompt` is given — runs one real turn
-through `codex exec resume` and reports what the target answered. The planted session is removed again
-when the run ends, so a `--codex-home` the caller named is left as it was found apart from the converted
-session.
+committed fixture into an isolated Codex data directory, re-reads the installed file with its own second
+`ccc` invocation (the inherited reader, so the conversion's own verdict about itself decides nothing
+here), asks that directory's own app server to load the session (`thread/resume`), reads the harness's
+own view of the conversation (`thread/read`), checks that the source session and every other session in
+the target home — the session it plants there and any the home already held — are untouched, and — when
+`--resume-prompt` is given — runs one real turn through `codex exec resume` and reports what the target
+answered. The planted session is removed again when the run ends, so a `--codex-home` the caller named is
+left as it was found apart from the converted session.
 
 It is **not** a gate step: it needs the Codex binary, and a turn needs model access. `scripts/gate.py`
 decides the offline half (round-trip through the inherited reader, install rules, reported losses, CLI
@@ -339,9 +340,32 @@ def main(argv: list[str] | None = None) -> int:
         record("the installed file is one JSON object per line",
                all(json.loads(line) for line in installed.read_text().splitlines() if line.strip()),
                f"{installed.stat().st_size} bytes (the target's own read of it is the load check)")
-        record("the inherited reader reads the installed file back as what was written",
-               verification["structure"]["state"] == "verified",
-               json.dumps(verification["structure"].get("read_back", {})))
+        # The installed file is read back by this script's own invocation of the inherited reader, not by
+        # the conversion's own structure block: `ccc inspect` is a second process reading the same
+        # isolated Codex root, and the counts it reports are compared with what the conversion says it
+        # carried. A broken round-trip check inside ccc -- or a CLI that mapped it to "verified" -- cannot
+        # make this check green.
+        readback = run([str(repo / BINARY), "inspect", f"codex:{thread_id}", "--json"],
+                       cwd=repo, env={"CODEX_HOME": str(home)})
+        try:
+            read_back = json.loads(readback.stdout).get("source", {}).get("counts", {})
+        except json.JSONDecodeError:
+            read_back = {}
+        carried = conversion["carried"]
+        # The comparison is over the counts that name evidence, because the reader normalises records it
+        # reads (a standalone function_call becomes an assistant message of its own, for one), so a
+        # comparison of whole message counts would compare the writer's shape with the reader's.
+        agreed = (read_back.get("user_messages") == carried["user_messages"]
+                  and read_back.get("tool_calls") == carried["tool_calls"]
+                  and read_back.get("tool_results") == carried["tool_results"]
+                  and read_back.get("compact_boundaries") == carried["compaction_boundaries"])
+        detail = (f"ccc inspect codex:{thread_id}: {json.dumps(read_back)}; conversion carried: "
+                  f"{carried['user_messages']} user message(s), {carried['tool_calls']} tool call(s), "
+                  f"{carried['tool_results']} tool result(s), "
+                  f"{carried['compaction_boundaries']} boundary(ies)")
+        if readback.returncode != 0:
+            detail += f"; inspect rc={readback.returncode}: {last_meaningful_line(readback.stderr)}"
+        record("the inherited reader reads the installed file back as what was written", agreed, detail)
         record("the source session is unchanged",
                tree_digest(fixture_root) == fixture_before,
                f"sha256 {sha256(source)[:16]}… (fixture tree identical)")

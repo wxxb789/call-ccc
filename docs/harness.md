@@ -177,9 +177,11 @@ says so.
   not: it needs the Codex binary installed and, for a real turn, model access. It builds `ccc`,
   converts a committed fixture into an isolated Codex data directory (seeded with the host's own
   `config.toml` — settings, never credentials or sessions), plants an unrelated session there, runs
-  `ccc continue … --json`, checks the installed file back through the inherited reader, asks Codex's
-  own app server to load the session (`thread/resume`) and prints Codex's own view of it
-  (`thread/read`), hashes the source, the planted session and every session the home already held
+  `ccc continue … --json`, re-reads the installed file with its own `ccc inspect` invocation and compares
+  what the inherited reader made of it with what the conversion says it carried (a second process, so the
+  conversion's own round-trip verdict cannot stand in for that read), asks Codex's own app server to load
+  the session (`thread/resume`) and prints Codex's own view of it (`thread/read`), hashes the source, the
+  planted session and every session the home already held
   before and after (removing the planted one again when the run ends), and — with
   `--resume-prompt` — runs one real turn through `codex exec resume` and prints the target's answer.
   Every check prints its own verdict and the script exits non-zero when one fails, so a run that

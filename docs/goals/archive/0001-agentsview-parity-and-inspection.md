@@ -1,6 +1,6 @@
 # 0001 — Inherit AgentsView and inspect real sessions
 
-**Status:** Ready  
+**Status:** Accepted: merged onto `main` as `ef6a61c`; archived  
 **Prerequisite:** None.
 
 ## Intended advance

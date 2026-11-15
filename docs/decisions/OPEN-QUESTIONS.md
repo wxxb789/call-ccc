@@ -706,3 +706,26 @@ supersede it with a newer one and say which it supersedes.
 - **Settled by:** whether the operator wants a source that moved mid-conversion to fail the run (exit 1).
   The race is one the conversion cannot prevent, and its consequence — the installed session holds the
   earlier bytes — is now stated rather than implied.
+
+## Q-0002-11 — What a dry run records as the session's model provider
+
+- **Status:** resolved (default taken)
+- **Question:** the written session's provider binding comes from the target harness's own answer, which
+  `Continue` asks for by starting the harness's app server against the target data directory
+  (`ProbeCodexConfig`, Q-0002-01). Measured: a started Codex 0.169.0 writes its own state into that home
+  (databases, logs, skills), even for the ephemeral `thread/start` the probe uses. A dry run promises it
+  writes nothing into that directory, and it also used to create a home the caller named before
+  returning, so the probe and the directory creation both made the flag's own printed line false.
+- **Default taken:** a dry run neither creates the home nor starts the harness against it, so it records
+  no provider: the probe is skipped, `model_provider` is absent from the dry run's conversion,
+  `model_provider_source` is `unrecorded` with the reason in `model_provider_detail`, and — when there is
+  a harness to ask, whose answer an installed run would record — the run appends a warning saying so. An
+  installed run is unchanged: it asks the harness (the home is its own, and the harness's own bookkeeping
+  belongs there) and records the answer. Home creation moved to the installation step, so a run that ends
+  earlier — a refused reference, an unreadable source, a dry run — leaves the filesystem as it found it.
+- **Reversal:** run the probe in a dry run again (one branch in `Continue`) and drop the warning, or move
+  the `os.MkdirAll` back above the dry-run branch — the first restores the write into a live home, the
+  second restores the false line, so either needs the reviewer's agreement, not just a preference.
+- **Settled by:** whether the operator prefers a dry run whose reported conversion is byte-for-byte what an
+  installed run would write (at the cost of touching the home it says it does not touch), or a dry run
+  that touches nothing and says which one field differs.

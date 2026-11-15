@@ -209,15 +209,16 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 	if err != nil {
 		return ContinueResult{}, err
 	}
+	// The home is resolved, and checked for shape, before anything else happens; it is *created* only by
+	// the installation that would write into it. A missing directory nobody named is still refused.
+	homeMissing := false
 	if info, err := os.Stat(home); err != nil {
 		if !explicitHome {
 			return ContinueResult{}, fmt.Errorf(
 				"%w at %s: pass --target-home (or set CODEX_HOME) to say where that harness keeps its "+
 					"sessions", ErrTargetHomeMissing, home)
 		}
-		if err := os.MkdirAll(home, 0o700); err != nil {
-			return ContinueResult{}, fmt.Errorf("creating %s: %w", home, err)
-		}
+		homeMissing = true
 	} else if !info.IsDir() {
 		return ContinueResult{}, fmt.Errorf("%w: %s is not a directory", ErrTargetHomeMissing, home)
 	}
@@ -248,9 +249,17 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 		cliVersionSource = "writer-pin"
 	}
 	// The target's own configuration answer supplies the provider binding the written session records.
-	// Without a harness to ask, the session records none, and the report says so.
+	// Without a harness to ask, the session records none, and the report says so. A dry run does not
+	// start the harness against its data directory at all: a harness fixes up its own state in the home
+	// it runs with (measured on Codex 0.169.0, whose app server writes its databases, logs and skills
+	// there), and a dry run's promise is that it touches that directory nowhere -- so the provider goes
+	// unrecorded, with the reason reported, and an installed run records the answer (Q-0002-11).
 	configProbe := CodexConfigProbe{}
-	if probe.Found {
+	if opts.DryRun {
+		configProbe.Detail = "a dry run does not start the target harness against its data directory, " +
+			"so which model provider a new session of it would use was not asked and none is recorded; " +
+			"an installed run records the harness's own answer"
+	} else if probe.Found {
 		// The provider is asked for as seen from the session's own working directory: the harness
 		// resolves project configuration layers from there, and a different directory can answer with a
 		// different provider.
@@ -316,7 +325,8 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 
 	if opts.DryRun {
 		// A dry run touches no target directory: the conversion is verified against a throw-away copy of
-		// the same bytes, which is what makes the check comparable with an installed run.
+		// the same bytes, which is what makes the check comparable with an installed run. The home it
+		// would install into is named but not created, and the report says which state that is.
 		scratch, err := os.MkdirTemp("", "ccc-dry-run-")
 		if err != nil {
 			return ContinueResult{}, fmt.Errorf("creating a scratch directory: %w", err)
@@ -363,9 +373,31 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 			Detail:          sourceDetail,
 		}
 		result.Warnings = append(result.Warnings, sourceChangedWarnings(sourceState)...)
+		// A dry run's conversion records no provider because the harness was never started against the
+		// home. When there is a harness to ask, an installed run's file differs from this one in that
+		// field, and a caller reading only the human block must not read the dry run's file as the one an
+		// installed run would write.
+		if probe.Found {
+			result.Warnings = append(result.Warnings, "a dry run does not start the target harness, so "+
+				"the conversion records no model provider; a run that installs asks the harness for its "+
+				"own answer")
+		}
+		if homeMissing {
+			result.Warnings = append(result.Warnings, fmt.Sprintf(
+				"the target data directory %s does not exist and a dry run did not create it; an installed "+
+					"run would", home))
+		}
 		return result, nil
 	}
 
+	if homeMissing {
+		// The installation creates the directory it writes into, and only then: a run that ends before
+		// this point (a refused reference, an unreadable source, a dry run) leaves the filesystem as it
+		// found it.
+		if err := os.MkdirAll(home, 0o700); err != nil {
+			return ContinueResult{}, fmt.Errorf("creating %s: %w", home, err)
+		}
+	}
 	path, mechanism, err := InstallCodexRollout(rollout, home)
 	if err != nil {
 		return ContinueResult{}, err
@@ -401,8 +433,15 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 			verification.Load.Detail = fmt.Sprintf(
 				"%s is not on PATH, so the installed session's native load could not be verified%s",
 				resumeName, probeDetailSuffix(probe))
-			verification.Resume.State = VerificationStateNotVerified
-			verification.Resume.Detail = verification.Load.Detail
+			// A resume verification nobody asked for stays not-requested even here: the three states
+			// exist to keep "could not run" apart from "nobody asked", and the load check's own failure
+			// is what the block above already reports.
+			if level == VerifyResume {
+				verification.Resume.State = VerificationStateNotVerified
+				verification.Resume.Detail = verification.Load.Detail
+			} else {
+				verification.Resume.Detail = "not requested (--verify " + level + ")"
+			}
 			result.Warnings = append(result.Warnings, fmt.Sprintf(
 				"the target harness was not found on PATH: the conversation is converted and installed at %s, "+
 					"and its native load is unverified", path))
@@ -561,13 +600,20 @@ func sourceChangedWarnings(sourceUnchanged bool) []string {
 		"bytes the conversion read"}
 }
 
+// fileDigest is one file's SHA-256, streamed rather than read into memory: a source transcript can be
+// hundreds of megabytes, and the comparison needs its digest, not a copy of it. The io.Copy buffer is
+// what keeps the read bounded (32 KiB at a time), so the caller's cost is the file's size, not twice it.
 func fileDigest(path string) (string, error) {
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
+	defer file.Close()
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 // codexFormatLimits states what the target format cannot express at all, so a consumer reads them as

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -106,6 +107,11 @@ func runCLI(t *testing.T, args ...string) (int, string, string) {
 // stubCodexEnv makes a child of this test binary behave as the target harness.
 const stubCodexEnv = "CCC_TEST_STUB_CODEX"
 
+// stubMarkerEnv names a file the stub harness writes when it is started in app-server mode. A run that
+// leaves the target harness unstarted (a dry run) is pinned by the file's absence, and a run that starts
+// it is pinned by its presence, so the absence is an assertion rather than a stub that never writes.
+const stubMarkerEnv = "CCC_TEST_STUB_MARKER"
+
 // TestMain lets this test binary act as a target harness when a child of it is asked to. One case needs
 // a harness whose verification runs and fails, and the stub is this binary itself, so the test needs no
 // host tooling and no platform-specific script.
@@ -139,6 +145,14 @@ func stubCodex(args []string) int {
 		fmt.Println("codex-cli 0.0.0-stub")
 		return 0
 	case "app-server":
+		// The marker is written before the handshake so that a started harness leaves it even when the
+		// caller stops reading: the dry-run case reads its absence, and the installed case its presence.
+		if marker := os.Getenv(stubMarkerEnv); marker != "" {
+			if err := os.WriteFile(marker, []byte("started\n"), 0o600); err != nil {
+				fmt.Fprintln(os.Stderr, "the stub harness could not write its marker:", err)
+				return 1
+			}
+		}
 		return serveStubAppServer()
 	default:
 		fmt.Fprintln(os.Stderr, "the stub harness does not implement "+args[0])
@@ -687,8 +701,10 @@ func TestContinueJSONDistinguishesConversionInstallationAndVerification(t *testi
 		t.Errorf("load verification = %+v, want an explicit not-verified naming the absent harness",
 			document.Verification.Load)
 	}
-	if document.Verification.Resume.State != "not-verified" {
-		t.Errorf("resume verification = %+v, want it not verified when nothing was asked for", document.Verification.Resume)
+	if document.Verification.Resume.State != ccc.VerificationStateNotRequested {
+		t.Errorf("resume verification = %+v, want %s: this run asked for the load level only, and resume "+
+			"is the one state a real turn earns", document.Verification.Resume,
+			ccc.VerificationStateNotRequested)
 	}
 	if strings.Contains(stdout, "ccc:") {
 		t.Errorf("stdout carries a diagnostic: %s", stdout)
@@ -778,10 +794,15 @@ func TestContinueDryRunInstallsNothingThroughTheCLI(t *testing.T) {
 	}
 
 	// The same dry run with a harness that is present: the level was asked for and cannot run (nothing
-	// is installed), which is reported as not verified with the dry-run reason — not as a failure.
+	// is installed), which is reported as not verified with the dry-run reason — not as a failure. The
+	// harness itself is never started: it leaves a mark when it is (a harness fixes up its own state in
+	// the home it runs with), and the home — which does not exist yet here — is left absent.
+	marker := filepath.Join(t.TempDir(), "harness-started")
+	t.Setenv(stubMarkerEnv, marker)
+	freshHome := filepath.Join(t.TempDir(), "fresh-home")
 	code, stdout, stderr = runCLI(t,
 		"continue", "claude:"+sessionID, "--to", "codex", "--target-binary", stubTargetBinary(t),
-		"--dry-run", "--json")
+		"--target-home", freshHome, "--dry-run", "--json")
 	if code != exitOK {
 		t.Fatalf("exit %d for a dry run whose requested level could not run (stderr %q)", code, stderr)
 	}
@@ -791,6 +812,26 @@ func TestContinueDryRunInstallsNothingThroughTheCLI(t *testing.T) {
 	}
 	if entries, err := os.ReadDir(targetHome); err != nil || len(entries) != 0 {
 		t.Errorf("the dry run with a harness wrote into the target home: %v (err %v)", entries, err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Error("a dry run started the target harness, which writes into the data directory it runs with")
+	}
+	if _, err := os.Stat(freshHome); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a dry run created the target home %s it was told it would not touch", freshHome)
+	}
+
+	// The same stub in a run that installs is started: without this half, the mark's absence above could
+	// be a stub that never writes one. The load verification then fails (the stub refuses every request),
+	// which is what an installed run with a refusing harness reports.
+	marker = filepath.Join(t.TempDir(), "harness-started-installed")
+	t.Setenv(stubMarkerEnv, marker)
+	code, _, stderr = runCLI(t, "continue", "claude:"+sessionID, "--to", "codex",
+		"--target-binary", stubTargetBinary(t), "--json")
+	if code != exitFailure {
+		t.Fatalf("exit %d for an installed run whose verification the stub refuses (stderr %q)", code, stderr)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("an installed run did not start the target harness: %v", err)
 	}
 }
 

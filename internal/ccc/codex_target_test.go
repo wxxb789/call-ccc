@@ -278,6 +278,13 @@ func TestCodexRolloutReportsEveryCategoryItKnows(t *testing.T) {
 		Message{Ordinal: 9, Role: string(parser.RoleUser),
 			ToolResults: []ToolResult{{ToolUseID: "toolu_3", ContentRaw: "placeholder for a side file",
 				PersistedOutputUnresolved: true}}},
+		// The shape the inherited Omnigent reader keeps for an orphan function_call_output: a record
+		// with the native tool role, the tool's own words as its content, and a result whose call this
+		// conversation does not hold.
+		Message{Ordinal: 10, Role: string(parser.RoleTool), Content: "the tool's own output",
+			ToolResults: []ToolResult{{ToolUseID: "toolu_gone", ContentRaw: "the tool's own output"}}},
+		Message{Ordinal: 11, Role: "unrecognised", Content: "a role this build does not classify"},
+		Message{Ordinal: 12, Role: string(parser.RoleUser)},
 	)
 	rollout, err := ConvertToCodexRollout(conversation, testOptions())
 	if err != nil {
@@ -287,18 +294,21 @@ func TestCodexRolloutReportsEveryCategoryItKnows(t *testing.T) {
 		count       int
 		disposition string
 	}{
-		"reasoning_text":          {2, DispositionOmitted},
-		"sidechain_messages":      {1, DispositionOmitted},
-		"system_records":          {1, DispositionOmitted},
-		"unpaired_tool_results":   {1, DispositionOmitted},
-		"empty_tool_results":      {0, DispositionOmitted},
-		"unresolved_tool_outputs": {1, DispositionCarriedWithCaveat},
-		"tool_result_outcomes":    {1, DispositionCarriedWithCaveat},
-		"empty_tool_inputs":       {1, DispositionCarriedWithCaveat},
-		"generated_call_ids":      {0, DispositionCarriedWithCaveat},
-		"tool_name_vocabulary":    {2, DispositionCarriedWithCaveat},
-		"provider_binding":        {0, DispositionCarriedWithCaveat},
-		"pre_compaction_history":  {0, DispositionCarriedWithCaveat},
+		"reasoning_text":             {2, DispositionOmitted},
+		"sidechain_messages":         {1, DispositionOmitted},
+		"system_records":             {1, DispositionOmitted},
+		"tool_role_messages":         {1, DispositionOmitted},
+		"unclassified_role_messages": {1, DispositionOmitted},
+		"empty_user_messages":        {1, DispositionOmitted},
+		"unpaired_tool_results":      {2, DispositionOmitted},
+		"empty_tool_results":         {0, DispositionOmitted},
+		"unresolved_tool_outputs":    {1, DispositionCarriedWithCaveat},
+		"tool_result_outcomes":       {1, DispositionCarriedWithCaveat},
+		"empty_tool_inputs":          {1, DispositionCarriedWithCaveat},
+		"generated_call_ids":         {0, DispositionCarriedWithCaveat},
+		"tool_name_vocabulary":       {2, DispositionCarriedWithCaveat},
+		"provider_binding":           {0, DispositionCarriedWithCaveat},
+		"pre_compaction_history":     {0, DispositionCarriedWithCaveat},
 	} {
 		loss := lossCount(t, rollout.Losses, category)
 		if loss.Count != want.count || loss.Disposition != want.disposition {
@@ -314,10 +324,78 @@ func TestCodexRolloutReportsEveryCategoryItKnows(t *testing.T) {
 	// The omitted evidence is not in the file: a report that says "omitted" and a file that holds it
 	// would be two different answers to the same question.
 	data := string(rollout.Data)
-	for _, absent := range []string{"Private reasoning", "Subagent said this", "System notice", "no call for this"} {
+	for _, absent := range []string{
+		"Private reasoning", "Subagent said this", "System notice", "no call for this",
+		// The tool role is not a dialogue role, and its result here has no call to pair with: the words
+		// belong to neither the source's agent nor its user, so the file must hold them nowhere.
+		"the tool's own output", "a role this build does not classify",
+	} {
 		if strings.Contains(data, absent) {
 			t.Errorf("the rollout holds %q, which the report says was omitted", absent)
 		}
+	}
+}
+
+// TestCodexRolloutCarriesAToolRoleMessageOnlyThroughItsResult pins the role rule for the native tool
+// role: a tool-role message is the tool's own output, so its text is never written as a dialogue
+// message. A paired output travels as the target's own function_call_output and nowhere else -- not
+// twice, and never as an assistant turn the source never recorded -- and an output whose call this
+// conversion did not carry travels nowhere, named by its own category and by the unpaired-result one.
+func TestCodexRolloutCarriesAToolRoleMessageOnlyThroughItsResult(t *testing.T) {
+	// The shape the inherited Devin reader keeps for a tool node: the role is tool, the dialogue
+	// projection is empty, and the tool's output is both the record's content and its result's content.
+	paired := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask"},
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "[Read: /x]",
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_1", Name: "Read", InputJSON: `{"file_path":"/x"}`}}},
+		Message{Ordinal: 2, Role: string(parser.RoleTool), Content: "the tool's own output",
+			ToolResults: []ToolResult{{ToolUseID: "toolu_1", ContentRaw: "the tool's own output"}}},
+	)
+	rollout, err := ConvertToCodexRollout(paired, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if rollout.Carried.ToolResults != 1 || rollout.Carried.Messages != 1 || rollout.Carried.AssistantMessages != 0 {
+		t.Errorf("carried = %+v, want the output carried once and the tool record counted as no message",
+			rollout.Carried)
+	}
+	if loss := lossCount(t, rollout.Losses, "tool_role_messages"); loss.Count != 1 ||
+		loss.Disposition != DispositionOmitted {
+		t.Errorf("tool_role_messages = %+v, want the tool record omitted as dialogue", loss)
+	}
+	data := string(rollout.Data)
+	if got := strings.Count(data, "the tool's own output"); got != 1 {
+		t.Errorf("the tool's own output appears %d time(s) in the rollout, want once, in its function_call_output", got)
+	}
+	for _, line := range decodeRollout(t, rollout.Data) {
+		if !strings.Contains(string(line.Payload), "the tool's own output") {
+			continue
+		}
+		if payloadField(t, line, "type") != codexItemFunctionOutput {
+			t.Errorf("a %s record carries the tool's own words outside its function_call_output: %s",
+				line.Type, line.Payload)
+		}
+	}
+
+	// The orphan shape: the call this output belongs to is not in the conversation, so there is no pair
+	// to carry it with -- and the record's text must not be written as a message either.
+	orphan := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask"},
+		Message{Ordinal: 1, Role: string(parser.RoleTool), Content: "ORPHAN-TOOL-OUTPUT",
+			ToolResults: []ToolResult{{ToolUseID: "toolu_missing", ContentRaw: "ORPHAN-TOOL-OUTPUT"}}},
+	)
+	rollout, err = ConvertToCodexRollout(orphan, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if strings.Contains(string(rollout.Data), "ORPHAN-TOOL-OUTPUT") {
+		t.Error("the rollout holds a tool record's words although neither its message nor its result was carried")
+	}
+	if loss := lossCount(t, rollout.Losses, "unpaired_tool_results"); loss.Count != 1 {
+		t.Errorf("unpaired_tool_results = %+v, want the orphan result counted", loss)
+	}
+	if loss := lossCount(t, rollout.Losses, "tool_role_messages"); loss.Count != 1 {
+		t.Errorf("tool_role_messages = %+v, want the orphan tool record counted", loss)
 	}
 }
 

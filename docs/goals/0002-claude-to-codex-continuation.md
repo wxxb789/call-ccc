@@ -1,6 +1,6 @@
 # 0002 — Continue a Claude Code session in Codex
 
-**Status:** Ready  
+**Status:** Implemented on `feat/0002-claude-to-codex-continuation`; awaiting operator acceptance  
 **Prerequisite:** [0001 — Inherit AgentsView and inspect real sessions](archive/0001-agentsview-parity-and-inspection.md).
 
 ## Intended advance

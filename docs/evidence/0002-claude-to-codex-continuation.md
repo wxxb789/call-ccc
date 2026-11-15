@@ -58,7 +58,9 @@ claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 → codex
 
 `ccc help` explains that invocation without any other documentation (`ccc continue` is its first usage
 line and the example above is spelled out in it), and `ccc continue -h` prints the one-line usage
-(`exit 0`, stdout). The written file itself starts with the record the target's reader requires:
+(`exit 0`, stdout). The written file itself starts with the record the target's reader requires — the
+block below is a first line from another run of the same conversion against the same fixture, because
+every run mints its own session id:
 
 ```
 {"timestamp":"2026-05-04T09:15:00Z","type":"session_meta","payload":{"id":"01a1dfbf-9b69-7063-ae8e-9142650f1090","timestamp":"2026-05-04T09:15:00Z","cwd":"/home/user/code/example-api","originator":"ccc","cli_version":"0.169.0","source":"cli","thread_source":"user","model_provider":"openai"}}
@@ -99,7 +101,7 @@ answer:                 - File: `internal/retry/policy.go`
 The three blocks a consumer reads apart: `conversion.state` (`converted`), `installation.state`
 (`installed`), `verification.load`/`verification.resume` (`verified` / `not-verified` /
 `not-requested`), each with its own `method` and `detail`, and `conversion.losses[]` naming every
-omitted or narrowed category with its count and reason (twelve categories, always present, including the
+omitted or narrowed category with its count and reason (fifteen categories, always present, including the
 zero ones). The CLI's own tests pin each state's wording, the `--json` document's shape and that
 diagnostics stay on stderr (`cmd/ccc/main_test.go`).
 
@@ -109,24 +111,26 @@ diagnostics stay on stderr (`cmd/ccc/main_test.go`).
 (target-harness diagnostics that are not verdicts — its sandbox probe and PATH-alias warnings — are
 dropped here, and the script's own `NOISE` filter keeps them out of its summaries). Every run mints its
 own session identity, and the resumed turn's own words and byte counts differ per run, so the ids and
-numbers below are that one run's. Both fixtures, with a real turn each:
+numbers below are that one run's. The read-back line in each block is the script's own `ccc inspect`
+invocation reading the installed file, not the conversion's verdict about itself (the gate holds the
+core's round-trip comparison down separately, in `TestStructureVerificationNamesWhatTheFileDoesNotHold`).
+Both fixtures, with a real turn each:
 
 ```
 $ python3 scripts/codex-native-check.py --model-provider tencent-litellm --model deepseek-v4.1-flash-fast \
     --resume-prompt "Answer only from this conversation, one line each: which file did you read, and what was the attempt limit?"
 exit 0
 PASS: ccc builds with the flags upstream ships
-PASS: the conversion reports carried evidence and a non-zero loss category — 5 message(s), 1 tool call(s), 12 loss categories
-PASS: the session is installed under the target's own sessions tree — sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1dfd7-8de2-74a0-8226-f1900c0d8f98.jsonl [hard-link]
-PASS: the target identity is new and is not the source's — 01a1dfd7-8de2-74a0-8226-f1900c0d8f98, not one of the 1 id(s) already in the home
+PASS: the conversion reports carried evidence and a non-zero loss category — 5 message(s), 1 tool call(s), 15 loss categories
+PASS: the session is installed under the target's own sessions tree — sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1dff5-3744-7023-a356-2d72185a596e.jsonl [hard-link]
+PASS: the target identity is new and is not the source's — 01a1dff5-3744-7023-a356-2d72185a596e, not one of the 1 id(s) already in the home
 PASS: the installed file is one JSON object per line — 3970 bytes (the target's own read of it is the load check)
-PASS: the inherited reader reads the installed file back as what was written — {"session_id": "codex:01a1dfd7-8de2-74a0-8226-f1900c0d8f98",
-      "messages": 7, "user_messages": 2, "assistant_messages": 5, "tool_calls": 1, "tool_results": 1, "compaction_boundaries": 1}
+PASS: the inherited reader reads the installed file back as what was written — ccc inspect codex:01a1dff5-3744-7023-a356-2d72185a596e: {"messages": 7, "user_messages": 2, "assistant_messages": 5, "system_messages": 0, "tool_messages": 0, "system_records": 1, "sidechain_messages": 0, "compact_boundaries": 1, "tool_calls": 1, "tool_results": 1}; conversion carried: 2 user message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies)
 PASS: the source session is unchanged — sha256 2bd510821d4abf83… (fixture tree identical)
 PASS: the unrelated session in the target home is unchanged — sha256 59ff49ca30baf622…
-PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1dfd7-8de2-74a0-8226-f1900c0d8f98 [legacy] cwd=/home/user/code/example-api
+PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1dff5-3744-7023-a356-2d72185a596e [legacy] cwd=/home/user/code/example-api
 PASS: the target's own view lists the converted turns — 5 item(s) in the reply's own turn list
-PASS: a real turn continues from the installed session — exit 0, session 3970 -> 78298 bytes
+PASS: a real turn continues from the installed session — exit 0, session 3970 -> 70578 bytes
 PASS: no pre-existing session in the target home changed — 0 pre-existing session file(s)
 12 check(s) passed, 0 failed, 0 skipped
 ```
@@ -136,7 +140,7 @@ harness) and the answer its own resume produced:
 
 ```
 the target harness's own view of the installed session:
-    thread 01a1dfd7-8de2-74a0-8226-f1900c0d8f98 [legacy] provider=tencent-litellm
+    thread 01a1dff5-3744-7023-a356-2d72185a596e [legacy] provider=tencent-litellm
       turn rollout-2
         userMessage: Summarize the retry policy in internal/retry/policy.go.
         agentMessage: I will read the retry policy first.
@@ -146,18 +150,19 @@ the target harness's own view of the installed session:
         agentMessage: The cap is configured in internal/retry/config.go as maxBackoffSeconds.
 
 the turn's own output (the target's answer, as the harness printed it):
-    File read: internal/retry/policy.go
-    Attempt limit: four
+    - File read: `internal/retry/config.go` (backoff cap, `maxBackoffSeconds`).
+    - Attempt limit: four.
 ```
 
 Why the first fixture's answer has this shape (its own wording varies run to run): the fixture compacts
 after its tool call, the conversion carries that boundary as the target's `compacted` record, and Codex
 applies that record to its own model-visible history — so the resumed turn continues from the source's
-own active context (the summary plus the turns after the boundary), exactly as the source's own session
-would, while the file keeps the turns before it. An earlier run of this same check, over a rollout
-written without the target's `event_msg` message records, could not see even the post-boundary turns and
-answered that no tool call exists in this conversation; that is what writing both record kinds buys. The
-second fixture has no boundary, and there the tool evidence reaches the resumed turn:
+own active context (the summary and the turns after the boundary), which is why this run could name the
+config file from the post-boundary turn and the attempt limit from the summary, while the file keeps the
+turns before the boundary. An earlier run of this same check, over a rollout written without the target's
+`event_msg` message records, could not see even the post-boundary turns and answered that no tool call
+exists in this conversation; that is what writing both record kinds buys. The second fixture has no
+boundary, and there the tool evidence reaches the resumed turn:
 
 ```
 $ python3 scripts/codex-native-check.py --session b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef \
@@ -165,26 +170,35 @@ $ python3 scripts/codex-native-check.py --session b6d93f07-2f5c-4a11-8e0d-3c7a91
     --resume-prompt "Answer only from this conversation, one line each: which two tools appear, what did the first return, and what did the second result say?"
 exit 0
 PASS: ccc builds with the flags upstream ships
-PASS: the conversion reports carried evidence and a non-zero loss category — 5 message(s), 2 tool call(s), 12 loss categories
-PASS: the session is installed under the target's own sessions tree — sessions/2026/05/05/rollout-2026-05-05T10-00-00-01a1dfd7-e31a-7732-bbc3-878d89632f03.jsonl [hard-link]
-PASS: the target identity is new and is not the source's — 01a1dfd7-e31a-7732-bbc3-878d89632f03, not one of the 1 id(s) already in the home
+PASS: the conversion reports carried evidence and a non-zero loss category — 5 message(s), 2 tool call(s), 15 loss categories
+PASS: the session is installed under the target's own sessions tree — sessions/2026/05/05/rollout-2026-05-05T10-00-00-01a1dff5-4d69-70a1-b779-d53d94dfd233.jsonl [hard-link]
+PASS: the target identity is new and is not the source's — 01a1dff5-4d69-70a1-b779-d53d94dfd233, not one of the 1 id(s) already in the home
 PASS: the installed file is one JSON object per line — 4113 bytes (the target's own read of it is the load check)
-PASS: the inherited reader reads the installed file back as what was written — {"session_id": "codex:01a1dfd7-e31a-7732-bbc3-878d89632f03",
-      "messages": 7, "user_messages": 2, "assistant_messages": 5, "tool_calls": 2, "tool_results": 2, "compaction_boundaries": 0}
+PASS: the inherited reader reads the installed file back as what was written — ccc inspect codex:01a1dff5-4d69-70a1-b779-d53d94dfd233: {"messages": 7, "user_messages": 2, "assistant_messages": 5, "system_messages": 0, "tool_messages": 0, "system_records": 0, "sidechain_messages": 0, "compact_boundaries": 0, "tool_calls": 2, "tool_results": 2}; conversion carried: 2 user message(s), 2 tool call(s), 2 tool result(s), 0 boundary(ies)
 PASS: the source session is unchanged — sha256 39e11668cc1cf73a… (fixture tree identical)
 PASS: the unrelated session in the target home is unchanged — sha256 59ff49ca30baf622…
-PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1dfd7-e31a-7732-bbc3-878d89632f03 [legacy] cwd=/home/user/code/tooling
+PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1dff5-4d69-70a1-b779-d53d94dfd233 [legacy] cwd=/home/user/code/tooling
 PASS: the target's own view lists the converted turns — 5 item(s) in the reply's own turn list
-PASS: a real turn continues from the installed session — exit 0, session 4113 -> 74154 bytes
+PASS: a real turn continues from the installed session — exit 0, session 4113 -> 165911 bytes
 PASS: no pre-existing session in the target home changed — 0 pre-existing session file(s)
 12 check(s) passed, 0 failed, 0 skipped
 ```
 
 ```
+the target harness's own view of the installed session:
+    thread 01a1dff5-4d69-70a1-b779-d53d94dfd233 [legacy] provider=tencent-litellm
+      turn rollout-2
+        userMessage: Check the retry policy and tell me the attempt limit.
+        agentMessage: I will read the policy file first.
+        agentMessage: The attempt limit is four.
+      turn rollout-12
+        userMessage: Then name the file that holds the cap.
+        agentMessage: internal/retry/config.go, as maxBackoffSeconds.
+
 the turn's own output (the target's answer, as the harness printed it):
-    - Tools: `Read` and `Bash`.
-    - First return: `package retry` / `const MaxAttempts = 4` — the full contents of `/home/user/code/tooling/internal/retry/policy.go`.
-    - Second result: `Error: no such file or directory` — no mention of `internal/retry/config.go` or `maxBackoffSeconds` appears anywhere in this conversation.
+    - The two tools: `Read` (file read) and `Bash` (shell).
+    - First: `Read` of `/home/user/code/tooling/internal/retry/policy.go` returned `package retry` / `const MaxAttempts = 4`.
+    - Second: `Bash` running `grep -rn maxBackoffSeconds internal/retry` returned `Error: no such file or directory`, so this conversation never actually confirmed the cap file name.
 ```
 
 Both tool calls, the first result's content and the second result's recorded *failure* reached the
@@ -246,7 +260,7 @@ half:
 
 ```
 the target harness's own view of the installed session:
-    thread 01a1dfd7-e31a-7732-bbc3-878d89632f03 [legacy] provider=tencent-litellm
+    thread 01a1dff5-4d69-70a1-b779-d53d94dfd233 [legacy] provider=tencent-litellm
       turn rollout-2
         userMessage: Check the retry policy and tell me the attempt limit.
         agentMessage: I will read the policy file first.
@@ -260,8 +274,8 @@ the target harness's own view of the installed session:
 | --- | --- | --- |
 | user "Check the retry policy and tell me the attempt limit." | `userMessage: Check the retry policy and tell me the attempt limit.` | carried |
 | assistant "I will read the policy file first." (with a persisted reasoning trace) | `agentMessage: I will read the policy file first.` | carried; the reasoning trace omitted (`reasoning_text ×1`) |
-| `Read` call + its result ("package retry … MaxAttempts = 4") | reached the resumed turn ("First return: `package retry` / `const MaxAttempts = 4` — the full contents of `/home/user/code/tooling/internal/retry/policy.go`") and the file holds the pair | carried (`tool_calls ×2`, `tool_results ×2`) |
-| `Bash` call whose result the source marked `is_error` | reached the resumed turn ("Second result: `Error: no such file or directory` — no mention of `internal/retry/config.go` or `maxBackoffSeconds` appears anywhere in this conversation") | carried; the recorded outcome has no target field (`tool_result_outcomes ×1`) |
+| `Read` call + its result ("package retry … MaxAttempts = 4") | reached the resumed turn ("First: `Read` of `/home/user/code/tooling/internal/retry/policy.go` returned `package retry` / `const MaxAttempts = 4`.") and the file holds the pair | carried (`tool_calls ×2`, `tool_results ×2`) |
+| `Bash` call whose result the source marked `is_error` | reached the resumed turn ("Second: `Bash` running `grep -rn maxBackoffSeconds internal/retry` returned `Error: no such file or directory`, so this conversation never actually confirmed the cap file name.") | carried; the recorded outcome has no target field (`tool_result_outcomes ×1`) |
 | assistant "The attempt limit is four." | `agentMessage: The attempt limit is four.` | carried |
 | a subagent turn marked `isSidechain` | absent | omitted (`sidechain_messages ×1`) |
 | the provider's `system` record | absent (the inherited reader drops it before the document, too) | `system_records ×0` |
@@ -269,7 +283,7 @@ the target harness's own view of the installed session:
 | the session's provider | recorded as the target's own effective provider | carried with caveat (`provider_binding ×1`) |
 
 Everything a conversion cannot carry is named by category with a count and a reason on *every* run
-(`internal/ccc/codex_target_test.go`'s `TestCodexRolloutReportsEveryCategoryItKnows` requires all twelve
+(`internal/ccc/codex_target_test.go`'s `TestCodexRolloutReportsEveryCategoryItKnows` requires all fifteen
 categories to be present and to be truthful — the omitted text is not in the file — and
 `TestContinueFallsBackToTheArchiveWhenTheSourceIsGone` covers the archive-read path, where the report
 also says the evidence came from a projection).
@@ -278,10 +292,10 @@ also says the evidence came from a projection).
 
 ```
 $ CGO_ENABLED=1 go test -tags fts5 -count=1 ./cmd/ccc/... ./internal/ccc/...     # rc=0
-ok  	go.kenn.io/agentsview/cmd/ccc	4.567s
-ok  	go.kenn.io/agentsview/internal/ccc	9.927s
+ok  	go.kenn.io/agentsview/cmd/ccc	4.166s
+ok  	go.kenn.io/agentsview/internal/ccc	13.235s
 ?   	go.kenn.io/agentsview/internal/ccc/fixturegen	[no test files]
-ok  	go.kenn.io/agentsview/internal/ccc/parity	1.153s
+ok  	go.kenn.io/agentsview/internal/ccc/parity	2.915s
 ?   	go.kenn.io/agentsview/internal/ccc/parity/oracle	[no test files]
 ```
 
@@ -290,12 +304,13 @@ ok  	go.kenn.io/agentsview/internal/ccc/parity	1.153s
 | the written record shape, order and fields (session_meta, turn_context, response_item, event_msg, function_call/output, compacted) | `TestCodexRolloutRecordShape` |
 | dialogue only (no rendering of calls), calls/results paired by id, boundaries kept with the turns before them | `TestCodexRolloutKeepsTheDialogueProjection`, `TestCodexRolloutCarriesACompactionBoundaryAndKeepsTheHistoryBeforeIt` |
 | every loss category reported, and truly absent from the file | `TestCodexRolloutReportsEveryCategoryItKnows` |
+| the tool role is never written as dialogue: a paired output travels as `function_call_output` alone, an orphan one travels nowhere | `TestCodexRolloutCarriesAToolRoleMessageOnlyThroughItsResult` |
 | id-less calls and results get paired deterministically, or are reported unpaired | `TestCodexRolloutPairsAnIdLessResultWithItsCall` |
 | the provider binding comes from the caller and is reported | `TestCodexRolloutRecordsTheProviderBindingItIsGiven` |
 | fresh UUID v7 identity, one ordered timestamp run | `TestCodexRolloutGeneratesAFreshIdentity`, `TestCodexRolloutStampsRecordsInOneOrderedRun` |
 | end-to-end: convert, install, read back through the inherited reader, source and neighbours unchanged | `TestContinueConvertsInstallsAndReadsBackTheFixture` |
 | the archive fallback is used and disclosed | `TestContinueFallsBackToTheArchiveWhenTheSourceIsGone` |
-| exclusive install, dry run writes nothing, dry run reports its own states, prompt required, target/level validation, home resolution | `TestInstallCodexRolloutNeverReplacesASession`, `TestContinueDryRunWritesNothing`, `TestContinueDryRunReportsWhatItVerified`, `TestContinueRequiresAPromptBeforeItRunsATurn`, `TestContinueRefusesAnUnsupportedTargetOrLevel`, `TestContinueTargetHomeResolution` |
+| exclusive install, dry run writes nothing (no directory for a home the caller named that is not there yet, and the target harness is never started), dry run reports its own states, prompt required, target/level validation, home resolution | `TestInstallCodexRolloutNeverReplacesASession`, `TestContinueDryRunWritesNothing`, `TestContinueDryRunReportsWhatItVerified`, `TestContinueDryRunInstallsNothingThroughTheCLI`, `TestContinueRequiresAPromptBeforeItRunsATurn`, `TestContinueRefusesAnUnsupportedTargetOrLevel`, `TestContinueTargetHomeResolution` |
 | the round-trip check compares rather than agrees | `TestStructureVerificationNamesWhatTheFileDoesNotHold` |
 | the source's own digest is taken before the conversion and compared after it; a moved source is warned about; a projection says no file was compared | `TestSourceUnchangedComparesTheFileBeforeAndAfter`, `TestSourceChangedWarningsNameTheMove`, `TestSourceUnchangedSaysWhenThereWasNoFileToCompare` |
 | the CLI's three states, human shape, source check, exit codes, help | `TestContinueJSONDistinguishesConversionInstallationAndVerification`, `TestContinueHumanOutputNamesTheResumeCommand`, `TestContinueHumanOutputReportsTheSourceCheck`, `TestContinueUsageErrors`, `TestContinueReportsAFailedVerificationAsAFailure`, `TestContinueRefusesAMissingDataDirectoryNobodyNamed`, `TestContinueHelpIsARequestNotAFailure` |
@@ -309,7 +324,7 @@ gate: go=<home>/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/..
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 135 tests in 5.210s (rc=0)
+  PASS     selftest Ran 135 tests in 5.354s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 26 project-owned prefix(es); files seen by git: 5623 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     secrets  no leaks found in 70 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
@@ -350,3 +365,9 @@ checkout of the pin); its next run is the operator's, and the offline half of th
   is shown.
 - **Attachments are not counted**: the source read carries no attachment bytes, so a per-conversion
   count would be a claim the read cannot support; the limit is stated instead.
+- **A dry run records no model provider**: a dry run must not write into the target's data directory, so
+  it does not start the harness against it (measured: a started Codex writes its databases, logs and
+  skills into the home it runs with) — and starting the harness there is the only way to ask which
+  provider a new session of it would use. The dry run's conversion therefore carries no
+  `model_provider`, its `model_provider_source` is `unrecorded` with that reason, and the run warns about
+  it; `Q-0002-11` records the choice.

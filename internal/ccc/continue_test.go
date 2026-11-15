@@ -205,7 +205,8 @@ func TestContinueKeepsTheSourceAndItsDirectoryIntactForBothFixtures(t *testing.T
 }
 
 // TestContinueDryRunWritesNothing pins the dry run: the whole conversion and its structural check
-// happen, and the target home is not touched at all.
+// happen, and the target home is not touched at all — neither a home that exists, nor a directory the
+// caller named that is not there yet (which is not created, and is reported as still absent).
 func TestContinueDryRunWritesNothing(t *testing.T) {
 	cfg := fixtureConfig(t)
 	targetHome := t.TempDir()
@@ -233,6 +234,36 @@ func TestContinueDryRunWritesNothing(t *testing.T) {
 	}
 	if got := hashTree(t, targetHome); len(got) != len(before) {
 		t.Errorf("a dry run wrote into the target home: %d entries before, %d after", len(before), len(got))
+	}
+
+	// The one input the promise is checkable on: a home the caller named that is not there yet. The dry
+	// run resolves and reports it, and leaves the filesystem alone -- no directory, and no target harness
+	// started against it either (a harness writes its own state into the home it runs with).
+	missingHome := filepath.Join(t.TempDir(), "fresh-home")
+	result, err = Continue(context.Background(), ContinueOptions{
+		Ref:          claudeFixtureRef,
+		Target:       TargetCodex,
+		Config:       cfg,
+		TargetHome:   missingHome,
+		TargetBinary: missingTargetBinary,
+		DryRun:       true,
+		Verify:       VerifyNone,
+	})
+	if err != nil {
+		t.Fatalf("continuing into a home that is not there yet: %v", err)
+	}
+	if _, err := os.Stat(missingHome); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a dry run created the target home %s", missingHome)
+	}
+	if result.TargetSession.Home != missingHome {
+		t.Errorf("home = %q, want the directory the caller named (%q)", result.TargetSession.Home, missingHome)
+	}
+	if result.Installation.Created {
+		t.Errorf("installation = %+v, want created false: a dry run installs nothing", result.Installation)
+	}
+	warnings := strings.Join(result.Warnings, "\n")
+	if !strings.Contains(warnings, missingHome) || !strings.Contains(warnings, "does not exist") {
+		t.Errorf("the dry run does not report the home as not there yet: %v", result.Warnings)
 	}
 }
 
