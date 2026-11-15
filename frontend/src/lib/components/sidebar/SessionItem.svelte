@@ -1,0 +1,1209 @@
+<script lang="ts">
+  import { m } from "../../i18n/index.js";
+  import { getSessionStatus } from "../../stores/sessionStatus.svelte.js";
+  import { sessions } from "../../stores/sessions.svelte.js";
+  import { ui } from "../../stores/ui.svelte.js";
+  import type { SessionGroupInput } from "../../stores/sessionGroups.js";
+  import {
+    buildReadProgressToken,
+    readProgress,
+  } from "../../stores/read-progress.svelte.js";
+  import { starred } from "../../stores/starred.svelte.js";
+  import { formatCount, formatRelativeTime, formatTimestamp } from "../../utils/format.js";
+  import { sessionMachineDisplay } from "../../utils/machines.js";
+  import { agentInk as getAgentInk, agentLabel, entrypointBadge } from "../../utils/agents.js";
+  import {
+    normalizeMessagePreview,
+    previewMessage,
+  } from "../../utils/messages.js";
+  import {
+    ChevronDownIcon,
+    ChevronRightIcon,
+    StarIcon,
+    UserRoundIcon,
+    UsersRoundIcon,
+    XIcon,
+  } from "../../icons.js";
+  import { Button, IconButton, showFlash, StatusDot } from "@kenn-io/kit-ui";
+  import { sessionStatusLabel } from "../../utils/sessionStatus.js";
+  import { router } from "../../stores/router.svelte.js";
+  import { sync } from "../../stores/sync.svelte.js";
+  import ProjectTypeahead from "../layout/ProjectTypeahead.svelte";
+
+  interface Props {
+    session: SessionGroupInput;
+    continuationCount?: number;
+    groupSessionIds?: string[];
+    /** Optional full session objects in this row's group. When
+     * provided, the status dot uses the group's freshest activity
+     * for the time-based tier — so a parent in tool_call_pending
+     * with a subagent currently writing stays green/working
+     * instead of decaying to stale. The parent's parser status
+     * still wins over freshness for awaiting_user (a fork running
+     * in parallel doesn't change that the parent is waiting). */
+    groupSessions?: SessionGroupInput[];
+    hideAgent?: boolean;
+    hideProject?: boolean;
+    /** Render in compact mode (smaller, used for child sessions). */
+    compact?: boolean;
+    /** Whether this item's continuation chain is expanded. */
+    expanded?: boolean;
+    /** Callback to toggle continuation chain expand/collapse. */
+    onToggleExpand?: () => void;
+    /** Nesting depth: 0 = root, 1 = child, 2 = grandchild. */
+    depth?: number;
+    /** Whether this is the last sibling at its depth level. */
+    isLastChild?: boolean;
+    /** Whether the group contains subagent children. */
+    hasSubagents?: boolean;
+    /** Whether the group contains teammate children. */
+    hasTeammates?: boolean;
+    /** Whether multi-select mode is active in the sidebar. */
+    selectMode?: boolean;
+    /** Whether this item is currently selected in multi-select mode. */
+    selected?: boolean;
+  }
+
+  let {
+    session,
+    continuationCount = 1,
+    groupSessionIds,
+    groupSessions,
+    hideAgent = false,
+    hideProject = false,
+    compact = false,
+    expanded = false,
+    onToggleExpand,
+    depth = 0,
+    isLastChild = false,
+    hasSubagents = false,
+    hasTeammates = false,
+    selectMode = false,
+    selected = false,
+  }: Props = $props();
+
+  let sessionStatus = $derived(getSessionStatus(session, groupSessions));
+
+  let isActive = $derived.by(() => {
+    const aid = sessions.activeSessionId;
+    if (!aid) return false;
+    // Direct match (child rows, or root with no group).
+    if (aid === session.id) return true;
+    // Parent row: only highlight when the chain is collapsed
+    // (i.e. the child is not visible as its own row).
+    if (groupSessionIds && !expanded) {
+      return groupSessionIds.includes(aid);
+    }
+    return false;
+  });
+
+  let agentInk = $derived(getAgentInk(session.agent));
+
+  const machineDisplay = $derived(sessionMachineDisplay(session, sessions.machineLabels));
+  let showMachine = $derived(!compact && machineDisplay.ids.some((id) => id !== "local"));
+
+  let hasUnread = $derived.by(() => {
+    const candidates = groupSessions && !expanded
+      ? groupSessions
+      : [session];
+    return candidates.some((candidate) => {
+      const token = buildReadProgressToken(candidate);
+      return token !== null &&
+        readProgress.hasUnread(candidate.id, token);
+    });
+  });
+
+  /** Whether this session is a team member (received a <teammate-message>). */
+  let isTeamSession = $derived(
+    session.is_teammate
+      ?? sessions.view(session).first_message?.includes("<teammate-message")
+      ?? false,
+  );
+
+  /**
+   * Clean display name: for teammate sessions, extract the unique task
+   * description (e.g. "Task #2: Align ROADMAP.md...") instead of the
+   * repetitive "You are a teammate on..." boilerplate.
+   */
+  let displayLabel = $derived.by((): { text: string; isShell: boolean } => {
+    const name = session.display_name ?? null;
+    if (name) {
+      return { text: name, isShell: false };
+    }
+    let msg = sessions.view(session).first_message ?? "";
+    if (msg.includes("<teammate-message")) {
+      msg = msg
+        .replace(/<teammate-message[^>]*>/g, "")
+        .replace(/<\/teammate-message>/g, "")
+        .trim();
+      // Extract "Task #N: description" from the boilerplate.
+      const taskMatch = msg.match(/Task\s*#?\d+[:\s]+(.+?)(?:\s+\d+\.|$)/s);
+      if (taskMatch) {
+        return { text: taskMatch[1]!.trim(), isShell: false };
+      }
+      // Fallback: skip the "You are a teammate on ..." boilerplate.
+      const afterTeam = msg.match(/team[."]\s*[^.]*?[.]\s+(.+)/s)
+        ?? msg.match(/You are a teammate[^.]*\.\s+(.+)/s);
+      if (afterTeam) {
+        return { text: afterTeam[1]!.trim(), isShell: false };
+      }
+    }
+    const p = previewMessage(msg);
+    if (p.text) return { text: p.text, isShell: p.isShell };
+    return { text: session.project, isShell: false };
+  });
+
+  const userMessageCount = $derived(session.user_message_count ?? 0);
+  let fullTime = $derived(formatTimestamp(session.ended_at ?? session.started_at, true));
+
+  let timeStr = $derived(
+    formatRelativeTime(session.ended_at ?? session.started_at, ui.alwaysShowYear),
+  );
+
+  let isStarred = $derived(starred.isStarred(session.id));
+
+  let childCount = $derived(
+    continuationCount > 1 ? continuationCount - 1 : 0,
+  );
+
+  let hasChildren = $derived(childCount > 0 && !!onToggleExpand);
+
+  const sessionHref = $derived.by(() =>
+    router.buildSessionHref(session.id),
+  );
+
+  /** Whether this is an orphaned teammate showing at root level. */
+  let isOrphanedTeammate = $derived(
+    depth === 0 && isTeamSession,
+  );
+
+  function handleStar(e: MouseEvent) {
+    e.stopPropagation();
+    starred.toggle(session.id);
+  }
+
+  function handleToggle(e: MouseEvent) {
+    e.stopPropagation();
+    onToggleExpand?.();
+  }
+
+  // Context menu state
+  let contextMenu: { x: number; y: number } | null = $state(null);
+  let projectEditor: { x: number; y: number } | null = $state(null);
+  let targetProject = $state("");
+  let projectSaving = $state(false);
+  let projectError = $state("");
+
+  // Rename state
+  let renaming = $state(false);
+  let renameValue = $state("");
+  let renameInput: HTMLInputElement | undefined = $state(undefined);
+
+  function mountOverlay(node: HTMLElement) {
+    document.body.appendChild(node);
+    return {
+      destroy() {
+        node.remove();
+      },
+    };
+  }
+
+  function handleContextMenu(e: MouseEvent) {
+    e.preventDefault();
+    contextMenu = { x: e.clientX, y: e.clientY };
+  }
+
+  function closeContextMenu() {
+    contextMenu = null;
+  }
+
+  function startProjectEditor(e: MouseEvent) {
+    e.stopPropagation();
+    const origin = contextMenu;
+    if (!origin) return;
+    projectEditor = {
+      x: Math.max(8, Math.min(origin.x, window.innerWidth - 316)),
+      y: Math.max(8, Math.min(origin.y, window.innerHeight - 220)),
+    };
+    targetProject = "";
+    projectError = "";
+    closeContextMenu();
+    void sessions.loadProjects();
+  }
+
+  async function assignProject() {
+    const target = targetProject.trim();
+    if (!target || projectSaving) return;
+    projectSaving = true;
+    projectError = "";
+    try {
+      const project = await sessions.assignSessionProject(session.id, target);
+      projectEditor = null;
+      showFlash(m.data_session_assignment_saved({ project }), { tone: "success" });
+    } catch (error) {
+      projectError = error instanceof Error
+        ? error.message
+        : m.data_session_assignment_failed();
+    } finally {
+      projectSaving = false;
+    }
+  }
+
+  async function clearProjectAssignment() {
+    if (projectSaving) return;
+    projectSaving = true;
+    projectError = "";
+    try {
+      const project = await sessions.clearSessionProjectAssignment(session.id);
+      projectEditor = null;
+      showFlash(m.data_session_assignment_cleared({ project }), { tone: "success" });
+    } catch (error) {
+      projectError = error instanceof Error
+        ? error.message
+        : m.data_session_assignment_clear_failed();
+    } finally {
+      projectSaving = false;
+    }
+  }
+
+  function startRename() {
+    renameValue =
+      session.display_name
+      ?? normalizeMessagePreview(sessions.view(session).first_message)
+      ?? "";
+    renaming = true;
+    closeContextMenu();
+    requestAnimationFrame(() => renameInput?.select());
+  }
+
+  async function submitRename() {
+    if (!renaming) return;
+    renaming = false;
+    const name = renameValue.trim() || null;
+    try {
+      await sessions.renameSession(session.id, name);
+    } catch {
+      // silently fail
+    }
+  }
+
+  async function handleDelete() {
+    closeContextMenu();
+    try {
+      await sessions.deleteSession(session.id);
+    } catch {
+      // silently fail
+    }
+  }
+
+  function handleDblClick(e: MouseEvent) {
+    e.preventDefault();
+    startRename();
+  }
+
+  function handleSessionClick(e: MouseEvent) {
+    if (
+      e.metaKey ||
+      e.ctrlKey ||
+      e.shiftKey ||
+      e.altKey ||
+      e.button !== 0
+    ) {
+      return;
+    }
+    e.preventDefault();
+    if (selectMode) {
+      sessions.toggleSelection(session.id);
+    } else {
+      sessions.selectSession(session.id);
+    }
+  }
+
+  function handleRowClick(e: MouseEvent) {
+    if (
+      e.metaKey ||
+      e.ctrlKey ||
+      e.shiftKey ||
+      e.altKey ||
+      e.button !== 0
+    ) {
+      return;
+    }
+    const target = e.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    if (target.closest("a, button, input")) {
+      return;
+    }
+    if (selectMode) {
+      sessions.toggleSelection(session.id);
+    } else {
+      sessions.selectSession(session.id);
+    }
+  }
+
+  function handleSelectClick(e: MouseEvent) {
+    e.stopPropagation();
+    e.preventDefault();
+    sessions.toggleSelection(session.id);
+  }
+
+  $effect(() => {
+    if (!contextMenu) return;
+    function handler() {
+      contextMenu = null;
+    }
+    const id = setTimeout(() => {
+      document.addEventListener("click", handler, { once: true });
+      document.addEventListener("contextmenu", handler, {
+        once: true,
+      });
+    }, 0);
+    return () => {
+      clearTimeout(id);
+      document.removeEventListener("click", handler);
+      document.removeEventListener("contextmenu", handler);
+    };
+  });
+
+  $effect(() => {
+    if (!contextMenu && !projectEditor) return;
+    function handler(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        contextMenu = null;
+        projectEditor = null;
+      }
+    }
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  });
+</script>
+
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<div
+  class="session-item"
+  class:active={isActive}
+  class:compact class:years={ui.alwaysShowYear}
+  class:depth-1={depth === 1}
+  class:depth-2={depth >= 2}
+  class:orphaned-teammate={isOrphanedTeammate}
+  data-session-id={session.id}
+  role="button"
+  aria-current={isActive ? "page" : undefined}
+  tabindex="0"
+  style:padding-left="{8 + depth * 16}px"
+  onclick={handleRowClick}
+  onkeydown={(e) => {
+    if (e.target !== e.currentTarget) {
+      return;
+    }
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      if (selectMode) {
+        sessions.toggleSelection(session.id);
+      } else {
+        sessions.selectSession(session.id);
+      }
+    }
+  }}
+  oncontextmenu={handleContextMenu}
+>
+  <!-- Tree expand/collapse or connector -->
+  {#if hasChildren}
+    <button
+      type="button"
+      class="tree-toggle"
+      onclick={handleToggle}
+      tabindex="-1"
+      aria-label={expanded ? m.sidebar_row_collapse() : m.sidebar_row_expand()}
+    >
+      {#if expanded}
+        <ChevronDownIcon class="tree-arrow" size="14" strokeWidth="2.25" aria-hidden="true" />
+      {:else}
+        <ChevronRightIcon class="tree-arrow" size="14" strokeWidth="2.25" aria-hidden="true" />
+      {/if}
+    </button>
+  {:else if depth > 0}
+    <span class="tree-dash"></span>
+  {:else}
+    <span class="tree-spacer"></span>
+  {/if}
+
+  {#if selectMode}
+    <button
+      type="button"
+      class="select-checkbox"
+      class:checked={selected}
+      onclick={handleSelectClick}
+      tabindex="-1"
+      aria-label={selected
+        ? m.sidebar_row_deselect_session()
+        : m.sidebar_row_select_session()}
+    >
+      {#if selected}
+        <svg width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+          <path d="M2.5 6L5 8.5L9.5 3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      {/if}
+    </button>
+  {/if}
+
+  <StatusDot status={sessionStatus} label={sessionStatusLabel(sessionStatus)} size={6} />
+
+
+  <div class="session-info">
+    {#if renaming}
+      <!-- svelte-ignore a11y_autofocus -->
+      <input
+        bind:this={renameInput}
+        bind:value={renameValue}
+        class="rename-input"
+        autofocus
+        onclick={(e) => e.stopPropagation()}
+        onblur={submitRename}
+        onkeydown={(e) => {
+          if (e.key === "Enter") {
+            e.stopPropagation();
+            submitRename();
+          }
+          if (e.key === "Escape") {
+            e.stopPropagation();
+            renaming = false;
+          }
+        }}
+      />
+    {:else}
+      <a
+        class="session-info-link"
+        href={sessionHref}
+        onclick={handleSessionClick}
+      >
+        <!-- Two lines: the title with its time, then project, message count,
+             machine, and agent. Compact child rows put the time on the meta line;
+             a row showing years, compact or not, moves it to a third line. -->
+        <div class="session-name-row">
+          <div
+            class="session-name"
+            class:shell={displayLabel.isShell}
+            title={displayLabel.text}
+            ondblclick={handleDblClick}
+          >
+            {#if displayLabel.isShell}
+              <code>{displayLabel.text}</code>
+            {:else}
+              {displayLabel.text}
+            {/if}
+          </div>
+          {#if !compact || ui.alwaysShowYear}
+            <span class="session-time" title={fullTime}>{timeStr}</span>
+          {/if}
+        </div>
+        {#if starred.errors[session.id]}<p role="alert">{starred.errors[session.id]}</p>{/if}
+        <div class="session-meta">
+          {#if !hideProject}
+            <span class="session-project" title={session.project}>{session.project}</span>
+          {/if}
+          {#if compact && !ui.alwaysShowYear}
+            <span class="session-time" title={fullTime}>{timeStr}</span>
+          {/if}
+          {#if hasUnread}
+            <span
+              class="session-unread-indicator"
+              role="status"
+              aria-label={m.read_progress_unread_messages()}
+              title={m.read_progress_unread_messages()}
+            ></span>
+          {/if}
+          <span
+            class="session-count"
+            title={m.sidebar_row_user_message_count({
+              count: userMessageCount,
+              countLabel: formatCount(userMessageCount),
+            })}
+          >{formatCount(userMessageCount)}</span>
+          {#if hasSubagents}
+            <UserRoundIcon class="group-hint-icon" size="9" strokeWidth="2" aria-hidden="true" />
+          {/if}
+          {#if hasTeammates}
+            <UsersRoundIcon class="group-hint-icon" size="11" strokeWidth="2" aria-hidden="true" />
+          {/if}
+          {#if childCount > 0 && !onToggleExpand}
+            <span class="continuation-badge">x{continuationCount}</span>
+          {/if}
+          {#if !compact && (!hideAgent || showMachine)}
+            <span class="meta-end">
+              {#if showMachine}
+                <span class="machine-tag" title={machineDisplay.title}>{machineDisplay.label}</span>
+              {/if}
+              {#if !hideAgent}
+                <!-- The entrypoint (for example sdk-ts) is detail, so it lives in
+                     the tooltip rather than on the row. -->
+                <span
+                  class="agent-tag"
+                  style:--agent-ink={agentInk}
+                  title={entrypointBadge(session.entrypoint)
+                    ? `${agentLabel(session.agent, session.agent_label)} · ${entrypointBadge(session.entrypoint)}`
+                    : agentLabel(session.agent, session.agent_label)}
+                >{agentLabel(session.agent, session.agent_label)}</span>
+              {/if}
+            </span>
+          {/if}
+        </div>
+      </a>
+    {/if}
+  </div>
+
+  <!-- The star floats over the gutter, so it steps aside while the rename
+       input has the row. -->
+  {#if !compact && !renaming}
+    <button
+      class="star-btn"
+      class:starred={isStarred}
+      onclick={handleStar}
+      title={isStarred ? m.sidebar_row_unstar_session() : m.sidebar_row_star_session()}
+      aria-label={isStarred ? m.sidebar_row_unstar_session() : m.sidebar_row_star_session()}
+    >
+      {#if isStarred}
+        <StarIcon size="12" fill="currentColor" strokeWidth="0" aria-hidden="true" />
+      {:else}
+        <StarIcon size="12" strokeWidth="1.4" aria-hidden="true" />
+      {/if}
+    </button>
+  {/if}
+</div>
+
+{#if contextMenu}
+  <div
+    class="context-menu"
+    use:mountOverlay
+    style="left: {contextMenu.x}px; top: {contextMenu.y}px;"
+  >
+    <button class="context-menu-item" onclick={startRename}>
+      {m.sidebar_row_rename()}
+    </button>
+    {#if !sync.readOnly}
+      <button class="context-menu-item" onclick={startProjectEditor}>
+        {m.sidebar_row_change_project()}
+      </button>
+    {/if}
+    <button
+      class="context-menu-item"
+      onclick={() => {
+        window.open(sessionHref, "_blank", "noopener");
+        closeContextMenu();
+      }}
+    >
+      {m.sidebar_row_open_in_new_tab()}
+    </button>
+    <button class="context-menu-item danger" onclick={handleDelete}>
+      {m.sidebar_row_delete()}
+    </button>
+  </div>
+{/if}
+
+{#if projectEditor}
+  <div
+    class="project-editor kit-popover-card"
+    use:mountOverlay
+    style="left: {projectEditor.x}px; top: {projectEditor.y}px;"
+  >
+    <div class="project-editor-header">
+      <div>
+        <strong>{m.data_session_assignment_heading()}</strong>
+        <span class:manual={session.project_assigned} class="project-assignment-status">
+          {session.project_assigned
+            ? m.data_session_assignment_manual()
+            : m.data_session_assignment_automatic()}
+        </span>
+      </div>
+      <IconButton
+        size="sm"
+        ariaLabel={m.data_workspace_close()}
+        onclick={() => (projectEditor = null)}
+      >
+        <XIcon size="13" aria-hidden="true" />
+      </IconButton>
+    </div>
+    <div class="project-editor-current">{session.project}</div>
+    <ProjectTypeahead
+      projects={sessions.projects}
+      value={targetProject}
+      onselect={(value) => (targetProject = value)}
+      onquery={() => (projectError = "")}
+      includeAll={false}
+      allowCustom={true}
+      customLabel={m.data_reclassify_use_custom_project({ query: "{query}" })}
+      placeholder={m.data_session_assignment_target()}
+      title={m.data_session_assignment_target()}
+    />
+    <div class="project-editor-actions">
+      <Button
+        size="sm"
+        label={projectSaving
+          ? m.data_session_assignment_saving()
+          : m.data_session_assignment_save()}
+        disabled={!targetProject.trim() || projectSaving}
+        onclick={() => void assignProject()}
+      />
+      {#if session.project_assigned}
+        <Button
+          size="sm"
+          label={projectSaving
+            ? m.data_session_assignment_clearing()
+            : m.data_session_assignment_use_automatic()}
+          disabled={projectSaving}
+          onclick={() => void clearProjectAssignment()}
+        />
+      {/if}
+    </div>
+    <p class:error-text={projectError} class="project-editor-feedback" role="status">
+      {projectError}
+    </p>
+  </div>
+{/if}
+
+<style>
+  .session-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    width: 100%;
+    height: 42px;
+    padding: 0 10px;
+    padding-right: 10px;
+    text-align: left;
+    transition: background 0.1s, box-shadow 0.1s;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: pointer;
+    position: relative;
+  }
+
+  .session-item.compact {
+    height: 34px;
+    gap: 4px;
+  }
+
+  .session-item.depth-1,
+  .session-item.depth-2 {
+    background: transparent;
+  }
+
+  .session-item:hover {
+    background: var(--bg-surface-hover);
+  }
+
+  .session-item.active {
+    background: color-mix(in srgb, var(--accent-blue) 11%, var(--bg-surface-hover));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-blue) 28%, transparent);
+  }
+
+  .session-item.active::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 5px;
+    bottom: 3px;
+    width: 3px;
+    border-radius: 0 2px 2px 0;
+    background: var(--accent-blue);
+  }
+
+  .session-item.active .session-name {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+  .session-item.active .session-meta {
+    color: var(--text-secondary);
+  }
+
+  /* Orphaned teammate at root level — dim it slightly */
+  .session-item.orphaned-teammate {
+    opacity: 0.6;
+  }
+
+  /* Tree toggle */
+  /* A real button on the title line: a visible chevron with a hover
+     surface, so it reads as "expand" rather than a stray mark. */
+  .tree-toggle {
+    all: unset;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    align-self: flex-start;
+    margin-top: 4px;
+    border-radius: var(--radius-sm);
+    flex-shrink: 0;
+    cursor: pointer;
+    color: var(--text-muted);
+    transition: color 0.1s, background 0.1s;
+  }
+
+  .tree-toggle:hover {
+    color: var(--text-primary);
+    background: var(--bg-surface-hover);
+  }
+
+  .tree-toggle:focus-visible {
+    outline: 2px solid var(--accent-blue);
+    outline-offset: 1px;
+  }
+
+  .compact .tree-toggle {
+    margin-top: 0;
+    align-self: center;
+  }
+
+  :global(.tree-arrow) {
+    flex-shrink: 0;
+  }
+
+  /* Spacer for leaf nodes — same width as toggle to align text */
+  .tree-dash {
+    width: 18px;
+    flex-shrink: 0;
+  }
+
+  /* Empty spacer for root items without children */
+  .tree-spacer {
+    width: 18px;
+    flex-shrink: 0;
+  }
+
+  .session-info {
+    min-width: 0;
+    flex: 1;
+  }
+
+  /* Two lines with a small, even gap: the title with its time, then the
+     project, count, machine, and agent. */
+  .session-item:not(.compact) .session-info-link {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  /* With years shown the full timestamp takes a third line, so the title
+     and the meta line keep the row's whole width. */
+  .session-item.years:not(.compact) {
+    height: 56px;
+  }
+
+  .session-item.years.compact {
+    height: 50px;
+  }
+
+  /* The title line's extra leading already separates it from the meta
+     line; this gives the time line the same visual gap. */
+  .session-item.years.compact .session-time {
+    margin-top: 2px;
+  }
+
+  /* The dot stays on the title line rather than centering on the meta line. */
+  .session-item.years.compact > :global(.kit-status-dot) {
+    align-self: flex-start;
+    margin-top: 8px;
+  }
+
+  .session-item.years.compact > :global(.kit-status-bubble) {
+    align-self: flex-start;
+    margin-top: 6px;
+  }
+
+  /* A child's tree dash shrinks and its checkbox moves into the space, so
+     the checkbox, dot, and title keep the parent's order and the full date
+     still fits when a wide fallback font draws the Hangul. */
+  .session-item.years.compact > .tree-dash {
+    width: 8px;
+  }
+
+  .session-item.years.compact > .tree-dash ~ .select-checkbox {
+    margin-left: -10px;
+  }
+
+  /* The waiting bubble takes the dot's width so the title doesn't move. */
+  .session-item.years.compact > .tree-dash ~ :global(.kit-status-bubble) {
+    margin-left: -2px;
+    margin-right: -2px;
+  }
+
+  .session-item.years .session-info-link {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .session-item.years .session-name-row {
+    display: contents;
+  }
+
+  /* The line starts under the title, so it reads as part of its own row.
+     One step below the meta line, the longest full date (Korean) fits a
+     220px sidebar in multi-select. */
+  .session-item.years .session-time {
+    order: 1;
+    font-size: 10px;
+    line-height: 13px;
+  }
+
+  /* A child row's time matches its meta line, below its smaller title. */
+  .session-item.years.compact .session-time {
+    font-size: 9px;
+  }
+
+  .session-info-link {
+    display: block;
+    color: inherit;
+    text-decoration: none;
+    min-width: 0;
+  }
+
+  .session-name-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .session-name {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    /* Regular weight; only the selected row's title goes semibold. */
+    font-weight: 400;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 16px;
+    letter-spacing: -0.005em;
+  }
+
+  .session-name.shell > code {
+    font-family: var(--font-mono);
+    font-size: 0.95em;
+    background: transparent;
+    border: none;
+    padding: 0;
+    color: var(--text-secondary);
+    letter-spacing: 0;
+  }
+
+  .compact .session-name {
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+
+  .rename-input {
+    font-size: 12px;
+    font-weight: 450;
+    color: var(--text-primary);
+    background: var(--bg-surface-hover);
+    border: 1px solid var(--accent-blue);
+    border-radius: 3px;
+    padding: 1px 4px;
+    width: 100%;
+    outline: none;
+    line-height: 1.3;
+  }
+
+  .session-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    font-size: 11px;
+    line-height: 13px;
+    color: var(--text-muted);
+  }
+
+  .compact .session-meta {
+    font-size: 9px;
+  }
+
+  /* The project truncates first, so counts, machine, and agent stay whole.
+     Its large shrink weight makes it absorb almost all of the shortfall
+     before the agent and machine group starts to give way. */
+  .session-project {
+    min-width: 0;
+    flex: 0 100 auto;
+    /* The project leads line two, one step above the other metadata; it
+       tells apart rows that share a title. */
+    color: var(--text-secondary);
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .meta-end {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    justify-content: flex-end;
+    margin-left: auto;
+    /* The project gives way first. Under real pressure this group shrinks
+       too, but keeps room for a readable agent prefix. */
+    flex: 0 1 auto;
+    min-width: 3.5em;
+    max-width: 60%;
+  }
+
+  /* The machine gives way first, then the agent label keeps a readable
+     prefix with an ellipsis; the full text is in each tooltip. */
+  .machine-tag {
+    min-width: 0;
+    flex-shrink: 1000;
+    font-size: 10.5px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* The agent in its color, as on main; normal case and medium weight so
+     it doesn't outrank the titles. */
+  .agent-tag {
+    min-width: 0;
+    flex-shrink: 1;
+    font-size: 10.5px;
+    font-weight: 500;
+    /* A touch of the text color keeps small colored capitals legible on
+       both light and dark surfaces without adding color; the ink token
+       darkens light accents too faint for text. */
+    color: color-mix(in srgb, var(--agent-ink, var(--text-muted)) 82%, var(--text-primary));
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .session-time {
+    white-space: nowrap;
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+
+
+  /* The running dot sits on the title line, like the expand chevron. */
+  .session-item:not(.compact) > :global(.kit-status-dot) {
+    align-self: flex-start;
+    margin-top: 11px;
+  }
+
+  /* The waiting bubble is 10px, so it sits 2px higher to share the dot's
+     center on the title line. */
+  .session-item:not(.compact) > :global(.kit-status-bubble) {
+    align-self: flex-start;
+    margin-top: 9px;
+  }
+
+  :global(.group-hint-icon) {
+    flex-shrink: 0;
+    color: var(--text-muted);
+    opacity: 0.85;
+  }
+
+  .session-count {
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .session-unread-indicator {
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: var(--accent-blue);
+    box-shadow: 0 0 0 1px color-mix(
+      in srgb, var(--accent-blue) 24%, transparent
+    );
+    flex-shrink: 0;
+  }
+
+  /* A middle dot separates the count from the project before it. */
+  .session-project + .session-count::before {
+    content: "\00b7";
+    margin-right: 6px;
+  }
+
+  .continuation-badge {
+    font-size: 9px;
+    font-weight: 600;
+    color: var(--accent-blue);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* The star lives in the left gutter on line two, under the chevron and
+     status dot, so it never takes the title's width or hides the time. */
+  .star-btn {
+    position: absolute;
+    /* Below the 18px expand button (4px to 22px) with a 2px gap, and
+       inside the 42px row. */
+    top: 24px;
+    /* Over the 18px tree gutter that starts after the row padding. */
+    left: 10px;
+    width: 18px;
+    height: 16px;
+    /* Takes the row's own surface (rest, hover, or selected) so it covers
+       the time cleanly. */
+    background: inherit;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    flex-shrink: 0;
+    opacity: 0;
+    transition: opacity 0.12s, color 0.12s, background 0.12s;
+  }
+
+  .session-item:hover .star-btn,
+  .session-item:focus-within .star-btn,
+  .star-btn:focus-visible,
+  .star-btn.starred {
+    opacity: 1;
+  }
+
+  .star-btn:hover {
+    background: var(--bg-surface-hover);
+    color: var(--text-secondary);
+  }
+
+  .star-btn.starred {
+    color: var(--accent-amber);
+  }
+
+  .star-btn.starred:hover {
+    color: var(--accent-amber);
+    background: var(--bg-surface-hover);
+  }
+
+  :global(.context-menu) {
+    position: fixed;
+    z-index: var(--z-popover);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-default);
+    border-radius: 6px;
+    box-shadow: var(--shadow-lg);
+    padding: 4px 0;
+    min-width: 120px;
+  }
+
+  :global(.context-menu .context-menu-item) {
+    display: block;
+    width: 100%;
+    padding: 6px 14px;
+    font-size: 12px;
+    color: var(--text-primary);
+    text-align: left;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-family: var(--font-sans);
+  }
+
+  :global(.context-menu .context-menu-item:hover) {
+    background: var(--bg-surface-hover);
+  }
+
+  :global(.context-menu .context-menu-item.danger) {
+    color: var(--accent-red, #e55);
+  }
+
+  :global(.context-menu .context-menu-item.danger:hover) {
+    background: color-mix(in srgb, var(--accent-red, #e55) 10%, transparent);
+  }
+
+  :global(.project-editor) {
+    position: fixed;
+    z-index: var(--z-popover);
+    display: flex;
+    width: 300px;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px;
+  }
+
+  :global(.project-editor-header),
+  :global(.project-editor-header > div),
+  :global(.project-editor-actions) {
+    display: flex;
+    align-items: center;
+  }
+
+  :global(.project-editor-header) {
+    justify-content: space-between;
+  }
+
+  :global(.project-editor-header > div) {
+    gap: var(--space-4);
+  }
+
+  :global(.project-editor-header strong) {
+    color: var(--text-primary);
+    font-size: 12px;
+  }
+
+  :global(.project-assignment-status) {
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 550;
+  }
+
+  :global(.project-assignment-status.manual) {
+    color: var(--accent-blue);
+  }
+
+  :global(.project-editor-current) {
+    color: var(--text-secondary);
+    font-size: 11px;
+    overflow-wrap: anywhere;
+  }
+
+  :global(.project-editor-actions) {
+    justify-content: flex-end;
+    gap: 6px;
+  }
+
+  :global(.project-editor-feedback) {
+    min-height: 16px;
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 10px;
+  }
+
+  :global(.project-editor-feedback.error-text) {
+    color: var(--accent-red);
+  }
+
+  .select-checkbox {
+    all: unset;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    border: 1.5px solid var(--border-default);
+    border-radius: 3px;
+    cursor: pointer;
+    color: white;
+    transition: background 0.1s, border-color 0.1s;
+  }
+
+  .select-checkbox:hover {
+    border-color: var(--accent-blue);
+  }
+
+  .select-checkbox.checked {
+    background: var(--accent-blue);
+    border-color: var(--accent-blue);
+  }
+</style>

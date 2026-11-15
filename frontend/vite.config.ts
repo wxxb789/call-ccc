@@ -1,0 +1,220 @@
+import { execSync } from "node:child_process";
+import { cpSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { defineConfig } from "vite-plus";
+import { svelte } from "@sveltejs/vite-plugin-svelte";
+import { paraglideVitePlugin } from "@inlang/paraglide-js";
+
+function gitCommit(): string {
+  try {
+    return execSync("git rev-parse --short HEAD", {
+      encoding: "utf-8",
+    }).trim();
+  } catch {
+    return "unknown";
+  }
+}
+
+// Inlined verbatim: the Go server's CSP allows this script by the SHA-256
+// of the file's bytes (holdFirstPaintScriptHash in internal/server).
+const holdFirstPaint = readFileSync(new URL("./src/hold-first-paint.js", import.meta.url), "utf-8");
+const charsetTag = '<meta charset="UTF-8" />';
+
+const apiTarget = process.env.VITE_API_TARGET ?? "http://127.0.0.1:8080";
+const apiTargetOrigin = new URL(apiTarget).origin;
+
+function isIPv4LoopbackLiteral(hostname: string): boolean {
+  const parts = hostname.split(".");
+  if (parts.length !== 4 || parts[0] !== "127") return false;
+  return parts.every((part) => {
+    if (!/^\d+$/.test(part)) return false;
+    const value = Number(part);
+    return value >= 0 && value <= 255;
+  });
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const lower = hostname.toLowerCase();
+  const unbracketed = lower.startsWith("[") && lower.endsWith("]") ? lower.slice(1, -1) : lower;
+  return lower === "localhost" || isIPv4LoopbackLiteral(unbracketed) || unbracketed === "::1";
+}
+
+function requestOriginMatchesLoopbackDevServer(
+  origin: string | undefined,
+  host: string | undefined,
+): boolean {
+  if (!origin || !host) return false;
+  try {
+    const originURL = new URL(origin);
+    const hostURL = new URL(`${originURL.protocol}//${host}`);
+    return originURL.host === hostURL.host && isLoopbackHostname(originURL.hostname);
+  } catch {
+    return false;
+  }
+}
+
+export default defineConfig(({ command }) => {
+  // Builds and checks also compile translations. Keep their generated output
+  // separate from the runtime watched by an open development page.
+  const liveDevelopment = command === "serve" && !process.env.VITEST;
+  const devTranslations = fileURLToPath(new URL("./.paraglide/dev/", import.meta.url));
+  return {
+    fmt: {
+      ignorePatterns: [
+        // The repository's mdformat hook owns Markdown; oxfmt's list
+        // indentation disagrees with it.
+        "**/*.md",
+        // Tests assert this captured payload's exact bytes.
+        "src/lib/utils/__fixtures__/retained-tool-image-1735.json",
+        // Copied verbatim from kenn-io/actions; the CSP pins its hash.
+        "src/hold-first-paint.js",
+      ],
+    },
+    lint: {
+      // Copied verbatim from kenn-io/actions, and the CSP pins its hash, so
+      // findings belong upstream.
+      ignorePatterns: ["src/hold-first-paint.js"],
+      jsPlugins: [{ name: "vite-plus", specifier: "vite-plus/oxlint-plugin" }],
+      rules: {
+        "vite-plus/prefer-vite-plus-imports": "error",
+        "typescript/no-floating-promises": [
+          "warn",
+          {
+            // Svelte's unmount() returns a promise that only waits when the
+            // caller asks for outro transitions; otherwise it resolves at once.
+            allowForKnownSafeCalls: [{ from: "package", name: "unmount", package: "svelte" }],
+          },
+        ],
+      },
+      overrides: [
+        {
+          // Tests pass mocked methods to expect() and vi.mocked(), which never
+          // call them, so this rule reports only false positives there.
+          // typescript-eslint's fix is a Vitest-aware variant that oxlint
+          // does not have.
+          files: ["**/*.test.ts"],
+          rules: { "typescript/unbound-method": "off" },
+        },
+      ],
+      options: {
+        typeAware: true,
+        typeCheck: true,
+      },
+    },
+    base: "/",
+    experimental: {
+      renderBuiltUrl(filename, { hostType }) {
+        // Keep the worker URL relative to its JS chunk under a server base path.
+        if (hostType === "js" && filename.includes("syntax-highlight.worker"))
+          return { relative: true };
+      },
+    },
+    optimizeDeps: {
+      exclude: ["@kenn-io/kit-ui"],
+    },
+    plugins: [
+      {
+        // Hide the page until its stylesheets and fonts load. The script must
+        // run before any stylesheet, and the charset must stay first.
+        name: "hold-first-paint",
+        transformIndexHtml(html) {
+          const at = html.indexOf(charsetTag);
+          if (at === -1 || html.indexOf(charsetTag, at + 1) !== -1) {
+            throw new Error(`index.html must contain ${charsetTag} exactly once`);
+          }
+          return html.replace(
+            charsetTag,
+            () => `${charsetTag}\n    <script>${holdFirstPaint}</script>`,
+          );
+        },
+      },
+      {
+        name: "chrome-extension",
+        apply: "build",
+        closeBundle() {
+          cpSync(
+            fileURLToPath(new URL("./chrome-extension/", import.meta.url)),
+            fileURLToPath(new URL("./dist/chrome-extension/", import.meta.url)),
+            {
+              recursive: true,
+              filter: (source) => !source.endsWith(".test.ts"),
+            },
+          );
+          cpSync(
+            fileURLToPath(new URL("../internal/importer/claude_ai_requests.txt", import.meta.url)),
+            fileURLToPath(
+              new URL("./dist/chrome-extension/claude_ai_requests.txt", import.meta.url),
+            ),
+          );
+        },
+      },
+      svelte(),
+      paraglideVitePlugin({
+        project: "./project.inlang",
+        outdir: liveDevelopment ? devTranslations : "./src/lib/paraglide",
+        emitTsDeclarations: true,
+        strategy: ["localStorage", "preferredLanguage", "baseLocale"],
+        localStorageKey: "agentsview-locale",
+      }),
+    ],
+    define: {
+      "import.meta.env.VITE_BUILD_COMMIT": JSON.stringify(gitCommit()),
+    },
+    resolve: {
+      conditions: ["browser"],
+      alias: liveDevelopment
+        ? [{ find: /^(\.\.\/)+paraglide\//, replacement: devTranslations }]
+        : [],
+    },
+    server: {
+      proxy: {
+        "/api": {
+          target: apiTarget,
+          changeOrigin: true,
+          configure(proxy) {
+            proxy.on("proxyReq", (proxyReq, req) => {
+              const origin = req.headers.origin;
+              if (
+                requestOriginMatchesLoopbackDevServer(
+                  typeof origin === "string" ? origin : undefined,
+                  req.headers.host,
+                )
+              ) {
+                proxyReq.setHeader("Origin", apiTargetOrigin);
+              }
+            });
+          },
+        },
+      },
+    },
+    build: {
+      outDir: "dist",
+      emptyOutDir: true,
+      // The SPA is served from the local embedded Go binary, so chunk size
+      // carries no network cost. Heavy libraries (mermaid, shiki, katex,
+      // cytoscape) are already lazy chunks; the main entry sits just above
+      // the default 500 kB threshold.
+      chunkSizeWarningLimit: 1200,
+      // Embed the woff2 faces in the render-blocking stylesheet so text
+      // first paints in its final typeface instead of a fallback face.
+      assetsInlineLimit: (file: string) => (file.endsWith(".woff2") ? true : undefined),
+      rolldownOptions: {
+        checks: {
+          // Plugin time is dominated by vite-plus's internal vitest-resolver
+          // plugin, which we cannot act on from this config.
+          pluginTimings: false,
+        },
+      },
+    },
+    test: {
+      environment: "jsdom",
+      exclude: ["e2e/**", "node_modules/**"],
+      setupFiles: ["./src/vitest-setup.ts"],
+      server: {
+        deps: {
+          inline: ["svelte"],
+        },
+      },
+    },
+  };
+});

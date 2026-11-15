@@ -1,0 +1,265 @@
+package sync
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"go.kenn.io/agentsview/internal/parser"
+)
+
+// validateProviderOutcome rejects a provider parse outcome whose sessions,
+// excluded IDs, or diagnostics do not belong to the source's agent. The engine
+// runs this before applying a provider outcome so a misrouted or cross-provider
+// result cannot corrupt the archive.
+func validateProviderOutcome(
+	def parser.AgentDef,
+	source parser.SourceRef,
+	fingerprint parser.SourceFingerprint,
+	outcome parser.ParseOutcome,
+) error {
+	for _, result := range outcome.Results {
+		session := result.Result.Session
+		if session.Agent != def.Type {
+			// The Codebuff provider may emit Freebuff sessions based on
+			// the agentType field in run-state.json. Both agents share
+			// the same on-disk layout and are discovered by one provider.
+			if def.Type != parser.AgentCodebuff ||
+				session.Agent != parser.AgentFreebuff {
+				return fmt.Errorf(
+					"%s: provider result session agent mismatch for %q: got %s",
+					def.Type,
+					session.ID,
+					session.Agent,
+				)
+			}
+		}
+		if err := validateProviderParseResultSessionIDs(def, result.Result); err != nil {
+			return err
+		}
+	}
+	for _, sessionID := range outcome.ExcludedSessionIDs {
+		if err := validateProviderSessionID(def, sessionID, "excluded session id"); err != nil {
+			return err
+		}
+	}
+	for _, sourceErr := range outcome.SourceErrors {
+		if err := validateProviderSessionID(def, sourceErr.SessionID, "diagnostic session id"); err != nil {
+			return err
+		}
+		if sourceErr.SourceKey == "" {
+			return fmt.Errorf(
+				"%s: provider diagnostic source key is required for source %q",
+				def.Type,
+				source.Key,
+			)
+		}
+		if !providerSourceKeyMatches(source, fingerprint, sourceErr.SourceKey) {
+			return fmt.Errorf(
+				"%s: provider diagnostic source key %q is unrelated to source %q",
+				def.Type,
+				sourceErr.SourceKey,
+				source.Key,
+			)
+		}
+	}
+	return nil
+}
+
+// providerResultAdmission is where a parse result becomes the engine's to
+// hold: admit runs the per-result publication gates as each result arrives,
+// keeping only members it will write plus every member's identity.
+type providerResultAdmission struct {
+	engine          *Engine
+	ctx             context.Context
+	def             parser.AgentDef
+	file            parser.DiscoveredFile
+	source          parser.SourceRef
+	fingerprint     parser.SourceFingerprint
+	policy          parser.UnchangedResultPolicy
+	codexIdentities bool
+
+	kept []parser.ParseResult
+	// emitted holds only Session.ID and Session.File.Path of every admitted result.
+	emitted                []parser.ParseResult
+	retries                []retryCause
+	firstHash              string
+	truncationVerifyFailed bool
+	validationErr          error
+}
+
+func (a *providerResultAdmission) admit(r parser.ParseResultOutcome) error {
+	if err := validateProviderOutcome(
+		a.def, a.source, a.fingerprint,
+		parser.ParseOutcome{Results: []parser.ParseResultOutcome{r}},
+	); err != nil {
+		a.validationErr = err
+		return err
+	}
+	if a.codexIdentities {
+		prepareCodexResultIdentities(r.Result.Messages, nil)
+	}
+	one := []parser.ParseResultOutcome{r}
+	applyProviderFingerprintFileInfo(a.file.Agent, a.fingerprint, one)
+	r = one[0]
+	if a.firstHash == "" {
+		a.firstHash = r.Result.Session.File.Hash
+	}
+	a.emitted = append(a.emitted, parser.ParseResult{Session: parser.ParsedSession{
+		ID:   r.Result.Session.ID,
+		File: parser.FileInfo{Path: r.Result.Session.File.Path},
+	}})
+	if r.DataVersion == parser.DataVersionNeedsRetry {
+		a.retries = append(a.retries, retryCause{
+			sessionID: r.Result.Session.ID,
+			path:      a.file.Path,
+			reason:    r.RetryReason,
+		})
+	}
+	kept := a.engine.dropUnchangedSharedSQLiteResults(
+		a.ctx, a.file, []parser.ParseResult{r.Result}, a.policy,
+	)
+	kept, verifyFailed := a.engine.dropShrinkingTruncatedCursorIDEResults(a.ctx, a.file, kept)
+	a.truncationVerifyFailed = a.truncationVerifyFailed || verifyFailed
+	a.kept = append(a.kept, kept...)
+	if a.engine.parseAdmissionObserver != nil {
+		a.engine.parseAdmissionObserver(len(a.emitted), len(a.kept))
+	}
+	return nil
+}
+
+// admitAll admits every result of an already collected outcome in order.
+func (a *providerResultAdmission) admitAll(outcome parser.ParseOutcome) (parser.ParseOutcome, error) {
+	for _, r := range outcome.Results {
+		if err := a.admit(r); err != nil {
+			return parser.ParseOutcome{}, err
+		}
+	}
+	outcome.Results = nil
+	return outcome, nil
+}
+
+func validateProviderParseResultSessionIDs(def parser.AgentDef, result parser.ParseResult) error {
+	sessionIDs := []struct {
+		field string
+		id    string
+	}{
+		{field: "result session id", id: result.Session.ID},
+		{field: "parent session id", id: result.Session.ParentSessionID},
+	}
+	for _, sessionID := range sessionIDs {
+		if err := validateProviderSessionID(def, sessionID.id, sessionID.field); err != nil {
+			return err
+		}
+	}
+	if plan := result.Session.PlanUsage; plan != nil {
+		if err := validateProviderSessionID(def, plan.CountedUnder, "plan usage counted-under session id"); err != nil {
+			return err
+		}
+	}
+	for _, usage := range result.Session.UsageEvents {
+		if err := validateProviderSessionID(def, usage.SessionID, "session usage event session id"); err != nil {
+			return err
+		}
+	}
+	for _, usage := range result.UsageEvents {
+		if err := validateProviderSessionID(def, usage.SessionID, "usage event session id"); err != nil {
+			return err
+		}
+	}
+	for _, message := range result.Messages {
+		for _, toolCall := range message.ToolCalls {
+			if err := validateProviderSessionID(def, toolCall.SubagentSessionID, "tool call subagent session id"); err != nil {
+				return err
+			}
+			for _, event := range toolCall.ResultEvents {
+				if err := validateProviderSessionID(def, event.SubagentSessionID, "tool result event subagent session id"); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func validateProviderSessionID(def parser.AgentDef, sessionID, field string) error {
+	if sessionID == "" || def.IDPrefix == "" {
+		return nil
+	}
+	if strings.HasPrefix(sessionID, def.IDPrefix) {
+		return nil
+	}
+	// The Codebuff provider may emit Freebuff sessions whose IDs use
+	// the "freebuff:" prefix rather than the provider's "codebuff:" prefix.
+	if def.Type == parser.AgentCodebuff &&
+		strings.HasPrefix(sessionID, string(parser.AgentFreebuff)+":") {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s: provider %s %q must use prefix %q",
+		def.Type,
+		field,
+		sessionID,
+		def.IDPrefix,
+	)
+}
+
+func providerSourceKeyMatches(
+	source parser.SourceRef,
+	fingerprint parser.SourceFingerprint,
+	sourceKey string,
+) bool {
+	if sourceKey == "" {
+		return true
+	}
+	for _, candidate := range []string{fingerprint.Key, source.FingerprintKey, source.Key} {
+		if candidate == "" {
+			continue
+		}
+		if sourceKey == candidate || strings.HasPrefix(sourceKey, candidate+"#") ||
+			strings.HasPrefix(sourceKey, candidate+"::") ||
+			strings.HasPrefix(sourceKey, candidate+"|") {
+			return true
+		}
+	}
+	return false
+}
+
+// parseOutcomeResults flattens a provider parse outcome's per-result wrappers
+// into the bare ParseResults the engine writes.
+func parseOutcomeResults(outcomes []parser.ParseResultOutcome) []parser.ParseResult {
+	results := make([]parser.ParseResult, 0, len(outcomes))
+	for _, outcome := range outcomes {
+		results = append(results, outcome.Result)
+	}
+	return results
+}
+
+// plannedSourceKey is the stable identity the engine uses for a provider source
+// when recording source-level state. It prefers the fingerprint key, then the
+// source's own keys.
+func plannedSourceKey(
+	source parser.SourceRef,
+	fingerprint parser.SourceFingerprint,
+) string {
+	if fingerprint.Key != "" {
+		return fingerprint.Key
+	}
+	if source.FingerprintKey != "" {
+		return source.FingerprintKey
+	}
+	return source.Key
+}
+
+// plannedSkipKey is the skip-cache key the engine stores for a provider source
+// that parsed to no work. It prefers the source fingerprint key so the skip
+// entry keys off the same identity used elsewhere.
+func plannedSkipKey(
+	source parser.SourceRef,
+	fingerprint parser.SourceFingerprint,
+) string {
+	if source.FingerprintKey != "" {
+		return source.FingerprintKey
+	}
+	return plannedSourceKey(source, fingerprint)
+}

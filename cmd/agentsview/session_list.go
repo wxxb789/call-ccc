@@ -1,0 +1,362 @@
+// ABOUTME: `session list` subcommand — lists sessions with the
+// ABOUTME: full set of HTTP query-param equivalents as CLI flags.
+package main
+
+import (
+	"context"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+	"text/tabwriter"
+	"time"
+
+	"github.com/spf13/cobra"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/service"
+)
+
+type sessionListDocument struct {
+	service.SessionList
+	MachineLabels service.MachineLabelCatalog `json:"machine_labels"`
+}
+
+const machineFilterHelp = "Exact machine IDs or aliases (comma-separated), or one unique whole display name. IDs and aliases take precedence over matching names; unknown or ambiguous values return an error"
+
+func newSessionListCommand() *cobra.Command {
+	var (
+		project, excludeProject, machine, agent string
+		date, dateFrom, dateTo, activeSince     string
+		since                                   string
+		minMessages, maxMessages                int
+		minUserMessages                         int
+		includeOneShot                          bool
+		includeAutomated, includeChildren       bool
+		includeSource                           bool
+		outcome, healthGrade                    string
+		minToolFailures                         int
+		hasSecret                               bool
+		labels                                  []string
+		pr                                      string
+		cursor                                  string
+		limit                                   int
+		sort                                    string
+		reverse                                 bool
+		resume, active                          bool
+	)
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List sessions with filters",
+		Long: "Find sessions with metadata filters and stable cursor pagination. " +
+			"JSON includes full session IDs and a next_cursor. " +
+			"The cursor does not retain filters: repeat the same backend, filters, and sort (including --reverse) on every page. " +
+			"Changing the sort rejects the cursor; changing filters changes the selection.",
+		Example: "  agentsview session list --since 2026-10-01 --project example-project --sort recent --limit 20 --json\n" +
+			"  agentsview session list --since 2026-10-01 --project example-project --sort recent --limit 20 --cursor <cursor> --json\n" +
+			"  agentsview session list --agent codex --sort messages:desc --limit 20 --json\n" +
+			"  agentsview session list --agent codex --sort messages:desc --limit 20 --cursor <cursor> --json",
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolvedActiveSince, err := resolveSinceFlag(since, activeSince)
+			if err != nil {
+				return err
+			}
+			activeSince = resolvedActiveSince
+
+			f := service.ListFilter{
+				Project:            project,
+				ExcludeProject:     excludeProject,
+				Machine:            machine,
+				Agent:              agent,
+				Date:               date,
+				DateFrom:           dateFrom,
+				DateTo:             dateTo,
+				ActiveSince:        activeSince,
+				MinMessages:        minMessages,
+				MaxMessages:        maxMessages,
+				MinUserMessages:    minUserMessages,
+				IncludeOneShot:     includeOneShot,
+				OneShotFilterSet:   cmd.Flags().Changed("include-one-shot"),
+				AutomatedFilterSet: cmd.Flags().Changed("include-automated"),
+				IncludeAutomated:   includeAutomated,
+				IncludeChildren:    includeChildren,
+				IncludeSource:      includeSource,
+				Outcome:            outcome,
+				HealthGrade:        healthGrade,
+				HasSecret:          hasSecret,
+				Labels:             labels,
+				PR:                 pr,
+				Cursor:             cursor,
+				Limit:              limit,
+			}
+			if cmd.Flags().Changed("min-tool-failures") {
+				f.MinToolFailures = &minToolFailures
+			}
+			// --resume / --active surface only recently-active sessions for
+			// quick relaunch: push a now-15m active_since window to the
+			// service so the limit is applied after the filter, and let the
+			// default recent sort keep newest-first ordering. An explicit
+			// --active-since or --since takes precedence so callers can
+			// widen or narrow the window.
+			now := time.Now()
+			if (resume || active) &&
+				!cmd.Flags().Changed("active-since") &&
+				!cmd.Flags().Changed("since") {
+				f.ActiveSince = now.Add(-resumeActiveWindow).
+					UTC().Format(time.RFC3339)
+			}
+			// Parse the multi-key sort spec; --reverse flips the natural
+			// direction of any term left without an explicit :asc/:desc, which
+			// is folded into the canonical spec string so the wire form fully
+			// captures the ordering.
+			keys, err := db.ParseSortSpec(sort)
+			if err != nil {
+				return cliValidationError(fmt.Errorf("invalid sort %q: %w", sort, err), "choose --sort keys listed by `agentsview session list --help` (each accepts :asc or :desc)")
+			}
+			// An empty spec means the implicit default; materialize it so
+			// --reverse has a term to flip instead of silently no-opping.
+			if len(keys) == 0 {
+				keys = []db.SortKey{{Key: db.DefaultSortKey()}}
+			}
+			if reverse {
+				for i := range keys {
+					if keys[i].Descending == nil {
+						d := !db.SortDefaultDescending(keys[i].Key)
+						keys[i].Descending = &d
+					}
+				}
+			}
+			f.OrderBy = db.FormatSortSpec(keys)
+
+			svc, cleanup, err := resolveService(cmd)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			f.ExclusionCounts = new(false)
+			if len(f.Labels) == 0 && f.PR == "" && (!f.IncludeChildren || !f.IncludeOneShot && !f.IncludeAutomated) {
+				f.ExclusionCounts = new(true)
+			}
+			list, err := svc.List(cmd.Context(), f)
+			if err != nil {
+				return err
+			}
+			notice := sessionListDefaultExclusionNotice(
+				f, list.ExclusionCounts)
+			list.ExclusionCounts = nil
+			if notice != "" {
+				fmt.Fprintln(cmd.ErrOrStderr(), notice)
+			}
+			if outputFormat(cmd) == "json" {
+				keys := make(map[string]struct{}, len(list.Sessions))
+				for _, session := range list.Sessions {
+					keys[session.Machine] = struct{}{}
+				}
+				machineLabels := machineLabelsForKeys(machineLabelCatalog(
+					cmd.Context(), cmd.ErrOrStderr(),
+					func(ctx context.Context) (service.MachineLabelCatalog, error) {
+						return service.MachineLabels(ctx, svc)
+					},
+				), keys)
+				document := sessionListDocument{
+					SessionList:   *list,
+					MachineLabels: machineLabels,
+				}
+				return json.MarshalEncode(
+					jsontext.NewEncoder(cmd.OutOrStdout()), document,
+				)
+			}
+			home, _ := os.UserHomeDir()
+			return printSessionListHuman(
+				cmd.OutOrStdout(), list, now, home)
+		},
+	}
+
+	flags := cmd.Flags()
+	flags.StringVar(&project, "project", "",
+		"Filter by project name")
+	flags.StringVar(&excludeProject, "exclude-project", "",
+		"Exclude sessions from the given project")
+	flags.StringVar(&machine, "machine", "",
+		machineFilterHelp)
+	flags.StringVar(&agent, "agent", "",
+		"Filter by agent (claude, codex, cursor, ...)")
+	flags.StringVar(&date, "date", "",
+		"Filter sessions active on YYYY-MM-DD")
+	flags.StringVar(&dateFrom, "date-from", "",
+		"Filter sessions active on or after YYYY-MM-DD")
+	flags.StringVar(&dateTo, "date-to", "",
+		"Filter sessions active on or before YYYY-MM-DD")
+	flags.StringVar(&activeSince, "active-since", "",
+		"Filter sessions active since RFC3339 timestamp")
+	flags.StringVar(&since, "since", "",
+		"Only sessions active since a relative duration (12h, 14d, 2w, 3m = 3 months, 1y) or YYYY-MM-DD")
+	flags.IntVar(&minMessages, "min-messages", 0,
+		"Minimum total message count")
+	flags.IntVar(&maxMessages, "max-messages", 0,
+		"Maximum total message count")
+	flags.IntVar(&minUserMessages, "min-user-messages", 0,
+		"Minimum user message count")
+	flags.BoolVar(&includeOneShot, "include-one-shot", false,
+		"Include one-shot sessions (excluded by default)")
+	flags.BoolVar(&includeAutomated, "include-automated", false,
+		"Include automated sessions (excluded by default)")
+	flags.BoolVar(&includeChildren, "include-children", false,
+		"Include subagent/child sessions")
+	flags.BoolVar(&includeSource, "include-source", false,
+		"Include source file paths in JSON output")
+	flags.StringVar(&outcome, "outcome", "",
+		"Filter by outcome (comma-separated: success,failure,...)")
+	flags.StringVar(&healthGrade, "health-grade", "",
+		"Filter by health grade (comma-separated: A,B,C,D,F)")
+	flags.IntVar(&minToolFailures, "min-tool-failures", 0,
+		"Minimum tool-failure signal count (0 is a valid filter)")
+	flags.BoolVar(&hasSecret, "has-secret", false,
+		"Only sessions with detected secret leaks")
+	flags.StringArrayVar(&labels, "label", nil,
+		"Only sessions carrying this exact label (repeat to require several)")
+	flags.StringVar(&pr, "pr", "",
+		"Only sessions linked to a pull request: owner/repo, owner/repo#123, or github.com::owner/repo#123")
+	flags.StringVar(&cursor, "cursor", "",
+		"Pagination cursor from a previous response")
+	flags.IntVar(&limit, "limit", 0,
+		fmt.Sprintf(
+			"Maximum sessions to return (default %d, max %d)",
+			db.DefaultSessionLimit, db.MaxSessionLimit,
+		))
+	flags.StringVar(&sort, "sort", "recent",
+		"Sort by a comma-separated list of keys, each optionally key:asc or "+
+			"key:desc (e.g. messages:desc,started:asc). Keys: "+
+			strings.Join(db.SortKeys(), ", "))
+	flags.BoolVarP(&reverse, "reverse", "r", false,
+		"Reverse the natural direction of sort keys that have no explicit "+
+			":asc/:desc suffix")
+	flags.BoolVar(&resume, "resume", false,
+		fmt.Sprintf("Show only sessions active within the last %d minutes, "+
+			"newest first, for quick resume",
+			int(resumeActiveWindow.Minutes())))
+	flags.BoolVar(&active, "active", false,
+		"Alias for --resume")
+
+	return cmd
+}
+
+func sessionListDefaultExclusionNotice(f service.ListFilter, counts *db.SessionExclusionCounts) string {
+	if counts == nil {
+		return ""
+	}
+	hiddenOneShot, hiddenAutomated, hiddenChildren := counts.OneShot, counts.Automated, counts.Children
+	lowerBound := ""
+	if counts.ChildrenLowerBound {
+		lowerBound = "at least "
+	}
+	hiddenTotal := hiddenOneShot + hiddenAutomated + hiddenChildren
+	if hiddenTotal == 0 {
+		return ""
+	}
+
+	var hiddenParts []string
+	var flagParts []string
+	var flatClasses []string
+	if hiddenOneShot > 0 {
+		hiddenParts = append(hiddenParts,
+			fmt.Sprintf("%d one-shot", hiddenOneShot))
+		flagParts = append(flagParts, "--include-one-shot")
+		flatClasses = append(flatClasses, "one-shot")
+	}
+	if hiddenAutomated > 0 {
+		hiddenParts = append(hiddenParts,
+			fmt.Sprintf("%d automated", hiddenAutomated))
+		flagParts = append(flagParts, "--include-automated")
+		flatClasses = append(flatClasses, "automated")
+	}
+
+	separator := " and/or "
+	flatFlags := strings.Join(flagParts, separator)
+	if hiddenChildren > 0 {
+		hiddenParts = append(hiddenParts, fmt.Sprintf("%s%d child", lowerBound, hiddenChildren))
+		flagParts = nil
+		if !f.IncludeOneShot {
+			flagParts = append(flagParts, "--include-one-shot")
+		}
+		if !f.IncludeAutomated {
+			flagParts = append(flagParts, "--include-automated")
+		}
+		if !f.IncludeChildren {
+			flagParts = append(flagParts, "--include-children")
+		}
+		separator = " "
+	}
+	summary := fmt.Sprintf("%s%d %s by default: %s", lowerBound, hiddenTotal, pluralSession(hiddenTotal), strings.Join(hiddenParts, ", "))
+	if hiddenOneShot == 0 && hiddenAutomated == 0 {
+		summary = fmt.Sprintf("%s%d child %s by default", lowerBound, hiddenChildren, pluralSession(hiddenChildren))
+	}
+	guidance := fmt.Sprintf("Use %s to include them.", strings.Join(flagParts, separator))
+	if hiddenChildren > 0 && flatFlags != "" && !f.IncludeChildren {
+		guidance = fmt.Sprintf("For %s sessions, use %s. For child sessions, use %s.", strings.Join(flatClasses, " or "), flatFlags, strings.Join(flagParts, separator))
+	}
+	return fmt.Sprintf("Excluded %s. %s", summary, guidance)
+}
+
+func pluralSession(n int) string {
+	if n == 1 {
+		return "session"
+	}
+	return "sessions"
+}
+
+// sessionNameWidth caps the NAME column so a long first message can't
+// push the trailing CWD column off the right edge of the terminal.
+const sessionNameWidth = 44
+
+// printSessionListHuman writes a resume-oriented table of the session
+// list: an in-flight marker for recently-active sessions, the full session
+// ID (the copyable handle for `session get`/`messages`/`usage`), the
+// humanized AGE since last activity, AGENT, PROJECT, BRANCH, MSGS, NAME,
+// and a ~-collapsed CWD. now and home are passed in so output is
+// deterministic under test. A trailing hint is printed when another page is
+// available. Prints "(no sessions)" for empty lists. Every session-derived
+// string is run through sanitizeTerminal so untrusted DB rows cannot drive
+// terminal escape sequences.
+func printSessionListHuman(
+	w io.Writer, list *service.SessionList, now time.Time, home string,
+) error {
+	if len(list.Sessions) == 0 {
+		fmt.Fprintln(w, "(no sessions)")
+		return nil
+	}
+	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(tw, "\tID\tAGE\tAGENT\tPROJECT\tBRANCH\tMSGS\tNAME\tCWD")
+	for _, s := range list.Sessions {
+		marker := ""
+		if isSessionRecentlyActive(s, now) {
+			marker = activeMarker
+		}
+		name := truncName(sessionDisplayName(s), sessionNameWidth)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
+			marker,
+			sanitizeTerminal(s.ID),
+			humanizeSessionAge(s, now),
+			sanitizeTerminal(orEmDash(s.Agent)),
+			sanitizeTerminal(orEmDash(s.Project)),
+			sanitizeTerminal(orEmDash(s.GitBranch)),
+			s.MessageCount,
+			sanitizeTerminal(name),
+			sanitizeTerminal(collapseHome(s.Cwd, home)),
+		)
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	if list.NextCursor != "" {
+		// Cursor is an opaque server-minted string. Sanitize too
+		// so a malicious DB row can't feed escapes through a hint.
+		fmt.Fprintf(w, "\nMore results: --cursor %s\n",
+			sanitizeTerminal(list.NextCursor))
+	}
+	return nil
+}

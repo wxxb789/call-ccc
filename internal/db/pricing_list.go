@@ -1,0 +1,139 @@
+package db
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+
+	"github.com/ccoveille/go-safecast/v2"
+
+	"go.kenn.io/agentsview/internal/money"
+	"go.kenn.io/agentsview/internal/pricing"
+)
+
+// ListModelPricing returns every pricing row with its bands.
+func (db *DB) ListModelPricing(
+	ctx context.Context,
+) ([]ModelPricing, error) {
+	return db.listModelPricing(ctx)
+}
+
+// ListModelPricingWithOpenRouter returns every pricing row and the
+// OpenRouter ownership list from one read transaction. A refresh writes
+// both together, so separate reads could pair the old rows with the new
+// list, and a push would then drop ownership of a row it still sends.
+func (db *DB) ListModelPricingWithOpenRouter(
+	ctx context.Context,
+) ([]ModelPricing, string, error) {
+	tx, err := db.getReader().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, "", fmt.Errorf("starting pricing read: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	prices, err := listModelPricingFrom(ctx, tx)
+	if err != nil {
+		return nil, "", err
+	}
+	var owned string
+	err = tx.QueryRowContext(ctx,
+		`SELECT value FROM pricing_meta WHERE key = ?`,
+		pricing.OpenRouterModelsMetaKey,
+	).Scan(&owned)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, "", fmt.Errorf("reading OpenRouter models: %w", err)
+	}
+	return prices, owned, nil
+}
+
+func (db *DB) listModelPricing(
+	ctx context.Context,
+) ([]ModelPricing, error) {
+	return listModelPricingFrom(ctx, db.getReader())
+}
+
+func listModelPricingFrom(
+	ctx context.Context, q messageRowsQuerier,
+) ([]ModelPricing, error) {
+	rows, err := q.QueryContext(
+		ctx,
+		`SELECT p.model_pattern, p.input_microdollars_per_mtok,
+			p.output_microdollars_per_mtok,
+			p.cache_creation_microdollars_per_mtok,
+			p.cache_creation_1h_microdollars_per_mtok,
+			p.cache_read_microdollars_per_mtok, p.updated_at,
+			b.above_input_tokens, b.input_microdollars_per_mtok,
+			b.output_microdollars_per_mtok,
+			b.cache_creation_microdollars_per_mtok,
+			b.cache_creation_1h_microdollars_per_mtok,
+			b.cache_read_microdollars_per_mtok, b.updated_at
+		 FROM model_pricing p
+		 LEFT JOIN model_pricing_bands b ON b.model_pattern = p.model_pattern
+		 ORDER BY p.model_pattern, b.above_input_tokens`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"listing model pricing: %w", err,
+		)
+	}
+	defer rows.Close()
+
+	out := make([]ModelPricing, 0)
+	byPattern := make(map[string]int)
+	for rows.Next() {
+		var p ModelPricing
+		var threshold, input, output, cacheCreation, cacheCreation1h,
+			cacheRead sql.NullInt64
+		var bandUpdatedAt sql.NullString
+		if err := rows.Scan(
+			&p.ModelPattern,
+			&p.InputPerMTok,
+			&p.OutputPerMTok,
+			&p.CacheCreationPerMTok,
+			&p.CacheCreation1hPerMTok,
+			&p.CacheReadPerMTok,
+			&p.UpdatedAt,
+			&threshold,
+			&input,
+			&output,
+			&cacheCreation,
+			&cacheCreation1h,
+			&cacheRead,
+			&bandUpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf(
+				"scanning model pricing: %w", err,
+			)
+		}
+		i, exists := byPattern[p.ModelPattern]
+		if !exists {
+			i = len(out)
+			byPattern[p.ModelPattern] = i
+			out = append(out, p)
+		}
+		if threshold.Valid {
+			aboveInputTokens, err := safecast.Convert[int](threshold.Int64)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"converting model pricing threshold for %q: %w",
+					p.ModelPattern, err,
+				)
+			}
+			out[i].Bands = append(out[i].Bands, PricingBand{
+				AboveInputTokens:       aboveInputTokens,
+				InputPerMTok:           money.Money{Microdollars: input.Int64},
+				OutputPerMTok:          money.Money{Microdollars: output.Int64},
+				CacheCreationPerMTok:   money.Money{Microdollars: cacheCreation.Int64},
+				CacheCreation1hPerMTok: money.Money{Microdollars: cacheCreation1h.Int64},
+				CacheReadPerMTok:       money.Money{Microdollars: cacheRead.Int64},
+				UpdatedAt:              bandUpdatedAt.String,
+			})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf(
+			"iterating model pricing: %w", err,
+		)
+	}
+	return out, nil
+}

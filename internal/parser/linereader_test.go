@@ -1,0 +1,199 @@
+package parser
+
+import (
+	"bytes"
+	"errors"
+	"io"
+	"strings"
+	"testing"
+	"testing/iotest"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestLineReader(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		maxLen      int
+		want        []string
+		wantSkipped int
+	}{
+		{
+			"normal lines",
+			"aaa\nbbb\nccc\n",
+			100,
+			[]string{"aaa", "bbb", "ccc"},
+			0,
+		},
+		{
+			"skips oversized line",
+			"short\n" + strings.Repeat("x", 50) + "\nafter\n",
+			30,
+			[]string{"short", "after"},
+			1,
+		},
+		{
+			"all lines oversized",
+			strings.Repeat("a", 50) + "\n" +
+				strings.Repeat("b", 50) + "\n",
+			30,
+			nil,
+			2,
+		},
+		{
+			"empty input",
+			"",
+			100,
+			nil,
+			0,
+		},
+		{
+			"blank lines skipped",
+			"aaa\n\n\nbbb\n",
+			100,
+			[]string{"aaa", "bbb"},
+			0,
+		},
+		{
+			"line without trailing newline",
+			"aaa\nbbb",
+			100,
+			[]string{"aaa", "bbb"},
+			0,
+		},
+		{
+			"exact limit kept",
+			strings.Repeat("x", 30) + "\n",
+			30,
+			[]string{strings.Repeat("x", 30)},
+			0,
+		},
+		{
+			"one over limit skipped",
+			strings.Repeat("x", 31) + "\n",
+			30,
+			nil,
+			1,
+		},
+		{
+			"counts each oversized line spanning buffers",
+			strings.Repeat("a", initialScanBufSize*2) + "\nkept\n" +
+				strings.Repeat("b", initialScanBufSize*3) + "\n\n" +
+				strings.Repeat("c", 31) + "\nlast",
+			30,
+			[]string{"kept", "last"},
+			3,
+		},
+		{
+			"oversized across buffers without trailing newline",
+			strings.Repeat("x", initialScanBufSize*2),
+			30,
+			nil,
+			1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lr := newLineReader(
+				strings.NewReader(tt.input), tt.maxLen,
+			)
+			defer releaseLineReader(lr)
+			var got []string
+			for {
+				line, ok := lr.next()
+				if !ok {
+					break
+				}
+				got = append(got, line)
+			}
+			require.NoError(t, lr.Err())
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.wantSkipped, lr.SkippedLines())
+		})
+	}
+}
+
+func TestLineReaderBytesRead(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  int64
+	}{
+		{
+			"complete lines",
+			"aaa\nbbb\n",
+			8, // 3+1+3+1
+		},
+		{
+			"no trailing newline",
+			"aaa\nbbb",
+			7, // 3+1+3 (no newline after bbb)
+		},
+		{
+			"empty",
+			"",
+			0,
+		},
+		{
+			"single line with newline",
+			"hello\n",
+			6,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lr := newLineReader(
+				strings.NewReader(tt.input), 100,
+			)
+			defer releaseLineReader(lr)
+			for {
+				_, ok := lr.next()
+				if !ok {
+					break
+				}
+			}
+			assert.Equal(t, tt.want, lr.bytesRead)
+		})
+	}
+}
+
+func TestLineReaderIOError(t *testing.T) {
+	ioErr := errors.New("disk read failed")
+	r := io.MultiReader(
+		strings.NewReader("aaa\nbbb\n"),
+		iotest.ErrReader(ioErr),
+	)
+
+	lr := newLineReader(r, 100)
+	defer releaseLineReader(lr)
+	var got []string
+	for {
+		line, ok := lr.next()
+		if !ok {
+			break
+		}
+		got = append(got, line)
+	}
+
+	require.Len(t, got, 2)
+	require.Error(t, lr.Err(), "expected non-nil Err() after I/O failure")
+	require.ErrorIs(t, lr.Err(), ioErr)
+}
+
+func TestReadCodexJSONLReaderReusesWorkspace(t *testing.T) {
+	if raceEnabled {
+		t.Skip("allocation counts are unreliable under the race detector")
+	}
+
+	var readErr error
+	allocs := testing.AllocsPerRun(100, func() {
+		r := bytes.NewReader(nil)
+		_, readErr = readCodexJSONLReader(r, func(string) {})
+	})
+
+	require.NoError(t, readErr)
+	assert.LessOrEqual(t, allocs, 1.0)
+}

@@ -1,0 +1,1621 @@
+import { SvelteMap } from "svelte/reactivity";
+import type { DataChangedEvent } from "../api/client.js";
+import {
+  DataService,
+  MetadataService,
+  SessionsService,
+  SettingsService,
+} from "../api/generated/index";
+import { ApiError, isAbortError, isNotFoundError } from "../api/runtime.js";
+import type { Session } from "../api/types.js";
+import type {
+  DbProjectInfo as ProjectInfo,
+  DbAgentInfo as AgentInfo,
+} from "../api/generated/index.js";
+import { sync } from "./sync.svelte.js";
+import { events } from "./events.svelte.js";
+import { starred } from "./starred.svelte.js";
+import { yokedDates } from "./yokedDates.svelte.js";
+import {
+  SESSION_ANALYTICS_WINDOW_PARAM,
+  normalizeLabelFilters,
+  parseWindowDaysParam,
+} from "./sessionRouteParams.js";
+import {
+  defaultFilters,
+  filtersToParams,
+  hasDateFilters,
+  loadSavedFilters,
+  parseFiltersFromParams,
+  saveFilters,
+  type Filters,
+} from "./sessionFilters.js";
+import {
+  groupSessions,
+  orderSessionGroups,
+  statusTiers,
+  type SessionGroupInput,
+} from "./sessionGroups.js";
+import {
+  indexFields,
+  sameField,
+  sameSessionFields,
+  sidebarIndexRowToSession,
+} from "./sessionRows.js";
+import { router } from "./router.svelte.js";
+import { UUID_PATTERN, resolveSessionId, sessionLookupPartial } from "../utils/go-to-session.js";
+import { LatestRead } from "../utils/latest-read.js";
+
+type SidebarIndexParams = NonNullable<
+  Parameters<typeof SessionsService.getApiV1SessionsSidebarIndex>[0]
+>;
+type MetadataParams = NonNullable<Parameters<typeof MetadataService.getApiV1Projects>[0]>;
+type ClearSessionFiltersOptions = {
+  clearDateYoke?: boolean;
+  preserveLabelsAndPR?: boolean;
+};
+type LoadOptions = {
+  force?: boolean;
+};
+
+type MachineResolution = {
+  selector: string;
+  status: "pending" | "resolved" | "invalid" | "unavailable";
+  error?: string;
+};
+
+const SESSION_PAGE_SIZE = 500;
+const SIDEBAR_HYDRATION_CONCURRENCY = 6;
+const LIVE_REFRESH_DEBOUNCE_MS = 300;
+const SAFETY_NET_REFRESH_MS = 5 * 60 * 1000;
+const RECENTLY_DELETED_TTL_MS = 10_000;
+
+export interface RecentlyDeletedSessions {
+  key: number;
+  ids: string[];
+  timer: ReturnType<typeof setTimeout>;
+}
+
+class SessionsStore {
+  sessions: Session[] = $state.raw([]);
+  details = new SvelteMap<string, Session>();
+  byId = $derived(new Map(this.sessions.map((row) => [row.id, row])));
+  projects: ProjectInfo[] = $state([]);
+  agents: AgentInfo[] = $state([]);
+  machines: string[] = $state([]);
+  machineLabels: Record<string, string> = $state({});
+  activeSessionId: string | null = $state(null);
+  // Lets the message pane explain a 404 instead of rendering blank.
+  activeSessionNotFound: boolean = $state(false);
+  // Bumped when a not-found session recovers; per-session loaders
+  // keyed on (activeSessionId, activeSessionLoadVersion) re-run
+  // without the id changing.
+  activeSessionLoadVersion: number = $state(0);
+  activeSessionUsageVersion: number = $state(0);
+  childSessions: Map<string, Session> = $state(new Map());
+  nextCursor: string | null = $state(null);
+  total: number = $state(0);
+  archiveEmpty: boolean = $state(false);
+  loading: boolean = $state(false);
+  /** Why the server rejected the current sidebar filters, or null. */
+  sidebarLoadError: string | null = $state(null);
+  #savedFilters = loadSavedFilters();
+  private filterPersistenceHeld = false;
+  filters: Filters = $state(this.#savedFilters.filters);
+  /** Rolling window (in days) behind the current date bounds, or null when
+   *  the bounds were chosen explicitly. Persisted as intent and
+   *  rematerialized on load so the window keeps rolling forward (#1086). */
+  dateFiltersWindowDays: number | null = $state(this.#savedFilters.windowDays);
+
+  private signalDetailCache = new Map<
+    string,
+    {
+      basis: string[] | null;
+      penalties: Record<string, number> | null;
+    }
+  >();
+  private signalDetailInflight = new Map<string, Promise<void>>();
+  signalDetailLoading = $state(false);
+
+  private loadVersion: number = 0;
+  private projectsLoaded: boolean = false;
+  private projectsPromise: Promise<void> | null = null;
+  private projectsVersion: number = 0;
+  private agentsLoaded: boolean = false;
+  private agentsPromise: Promise<void> | null = null;
+  private agentsVersion: number = 0;
+  private refreshVersion: number = 0;
+  private childSessionsVersion: number = 0;
+  private machinesLoaded: boolean = false;
+  private machinesPromise: Promise<void> | null = null;
+  private machineRead = new LatestRead();
+  private machineResolution = $state<MachineResolution | null>(null);
+  private sidebarHydrationInflightByVersion = new Map<number, Map<string, Promise<void>>>();
+  private sidebarHydrationEpochByVersion = new Map<number, number>();
+  private sidebarHydrationQueue: Array<() => void> = [];
+  private sidebarHydrationActive = 0;
+  private sidebarConsumers = 0;
+  private sidebarLoadPromise: Promise<void> | null = null;
+  private sidebarLoadSignature: string | null = null;
+  private sidebarRefreshQueued = false;
+  private sidebarAbort: AbortController | null = null;
+  private routeAbort: AbortController | null = null;
+  private navigateRead = new LatestRead();
+  private refreshRead = new LatestRead();
+  private childSessionsRead = new LatestRead();
+
+  private liveRefreshStarted = false;
+  private unsubEvents: (() => void) | null = null;
+  private liveRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private safetyNetTimer: ReturnType<typeof setInterval> | null = null;
+
+  activeSession = $derived.by(() => {
+    const id = this.activeSessionId;
+    if (!id) return undefined;
+    const row = this.byId.get(id);
+    const detail = this.details.get(id);
+    return row && (detail ? !detail.is_index_only : !row.is_index_only)
+      ? this.view(row)
+      : undefined;
+  });
+
+  private groups = $derived(groupSessions(this.sessions));
+  private tiers = $derived(statusTiers(this.groups));
+  groupedSessions = $derived(orderSessionGroups(this.groups, this.tiers));
+
+  view(row: SessionGroupInput): Session {
+    const detail = this.details.get(row.id);
+    if (!detail) return row as Session;
+    return { ...row, ...detail, ...indexFields(row), is_index_only: detail.is_index_only ?? false };
+  }
+
+  private reconcileRows(rows: Session[]) {
+    const next = rows.map((row) => {
+      const previous = this.byId.get(row.id);
+      if (!previous) return row;
+      return sameSessionFields(previous, row) ? previous : row;
+    });
+    if (next.length !== this.sessions.length || next.some((row, i) => row !== this.sessions[i])) {
+      this.sessions = next;
+    }
+  }
+
+  private replaceAt(index: number, row: Session) {
+    this.sessions = this.sessions.map((current, i) => (i === index ? row : current));
+  }
+
+  private updateActiveIndex(session: Session) {
+    const index = this.sessions.findIndex((row) => row.id === session.id);
+    if (index < 0) return;
+    const current = this.sessions[index]!;
+    const row = {
+      ...current,
+      ...indexFields({
+        ...current,
+        ...session,
+        parent_session_id: session.parent_session_id,
+        parent_session_ids: session.parent_session_ids,
+        relationship_type: session.relationship_type,
+        display_name: session.display_name ?? current.display_name,
+        is_teammate: session.is_teammate ?? current.is_teammate,
+      }),
+    };
+    if (!sameSessionFields(current, row)) this.replaceAt(index, row);
+  }
+
+  private get apiParams(): SidebarIndexParams {
+    const f = this.filters;
+    // Don't exclude "unknown" when explicitly viewing it.
+    const exclude = f.hideUnknownProject && f.project !== "unknown" ? "unknown" : undefined;
+    return {
+      project: f.project || undefined,
+      exclude_project: exclude,
+      machine: f.machine || undefined,
+      agent: f.agent || undefined,
+      termination: f.termination || undefined,
+      date: f.date || undefined,
+      date_from: f.dateFrom || undefined,
+      date_to: f.dateTo || undefined,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      active_since: f.recentlyActive
+        ? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+        : undefined,
+      min_messages: f.minMessages > 0 ? f.minMessages : undefined,
+      max_messages: f.maxMessages > 0 ? f.maxMessages : undefined,
+      min_user_messages: f.minUserMessages > 0 ? f.minUserMessages : undefined,
+      include_one_shot: f.includeOneShot,
+      include_automated:
+        f.includeAutomated || f.automatedFilterSet ? f.includeAutomated : undefined,
+      starred: starred.filterOnly || undefined,
+      label: f.labels.length > 0 ? [...f.labels] : undefined,
+      pr: f.pr || undefined,
+    };
+  }
+
+  private resetPagination() {
+    this.sessions = [];
+    this.sidebarIndexIds = new Set();
+    this.invalidateHydratedSessionDetails();
+    this.details.clear();
+    this.nextCursor = null;
+    this.total = 0;
+  }
+
+  attachSidebar(): () => void {
+    this.sidebarConsumers++;
+    this.startLiveRefresh();
+    let detached = false;
+    return () => {
+      if (detached) return;
+      detached = true;
+      this.sidebarConsumers = Math.max(0, this.sidebarConsumers - 1);
+      if (this.sidebarConsumers === 0) {
+        this.dispose();
+      }
+    };
+  }
+
+  private hasDefaultSessionFilters(): boolean {
+    return (
+      Object.keys(filtersToParams(this.filters)).length === 0 &&
+      this.dateFiltersWindowDays === null &&
+      !starred.filterOnly
+    );
+  }
+
+  private persistFiltersIfAllowed(): void {
+    if (this.filterPersistenceHeld && !this.hasDefaultSessionFilters()) {
+      this.filterPersistenceHeld = false;
+    }
+    if (!this.filterPersistenceHeld) {
+      saveFilters(this.filters, this.dateFiltersWindowDays);
+    }
+  }
+
+  resetFiltersForRoot(): void {
+    const previous = this.filters;
+    this.resetMachineResolution();
+    this.filters = defaultFilters();
+    this.dateFiltersWindowDays = null;
+    starred.filterOnly = false;
+    this.filterPersistenceHeld = true;
+    if (
+      previous.includeOneShot !== this.filters.includeOneShot ||
+      previous.includeAutomated !== this.filters.includeAutomated ||
+      previous.automatedFilterSet !== this.filters.automatedFilterSet
+    ) {
+      this.invalidateFilterCaches();
+    }
+    this.setActiveSession(null);
+  }
+
+  restoreSavedFilters(): void {
+    const previous = this.filters;
+    this.#savedFilters = loadSavedFilters();
+    this.replaceFilters(this.#savedFilters.filters);
+    this.dateFiltersWindowDays = this.#savedFilters.windowDays;
+    this.filterPersistenceHeld = false;
+    if (
+      previous.includeOneShot !== this.filters.includeOneShot ||
+      previous.includeAutomated !== this.filters.includeAutomated ||
+      previous.automatedFilterSet !== this.filters.automatedFilterSet
+    ) {
+      this.invalidateFilterCaches();
+    }
+    void this.loadMachines();
+    this.setActiveSession(null);
+  }
+
+  /** Set date filters materialized from a panel date state. `windowDays`
+   *  carries the rolling intent behind the bounds (null for explicitly
+   *  chosen fixed ranges). */
+  applyPanelDateFilters(dateParams: Record<string, string>, windowDays: number | null): void {
+    this.filters.date = dateParams["date"] ?? "";
+    this.filters.dateFrom = dateParams["date_from"] ?? "";
+    this.filters.dateTo = dateParams["date_to"] ?? "";
+    this.dateFiltersWindowDays = windowDays;
+    // Persist immediately: a provenance flip with identical bounds does
+    // not register as a filter change, so callers that diff serialized
+    // filters may never trigger a load() and its save.
+    this.persistFiltersIfAllowed();
+  }
+
+  initFromParams(params: Record<string, string>) {
+    const prevOneShot = this.filters.includeOneShot;
+    const prevAutomated = this.filters.includeAutomated;
+    const prevAutomatedSet = this.filters.automatedFilterSet;
+    const next = parseFiltersFromParams(params);
+    this.replaceFilters(next);
+    this.dateFiltersWindowDays = parseWindowDaysParam(params[SESSION_ANALYTICS_WINDOW_PARAM]);
+    starred.filterOnly = params["starred"] === "true";
+    this.filterPersistenceHeld = false;
+    if (
+      prevOneShot !== next.includeOneShot ||
+      prevAutomated !== next.includeAutomated ||
+      prevAutomatedSet !== next.automatedFilterSet
+    ) {
+      this.invalidateFilterCaches();
+    }
+    void this.loadMachines();
+    this.setActiveSession(null);
+  }
+
+  async load(options: LoadOptions = {}) {
+    this.persistFiltersIfAllowed();
+
+    const params = {
+      ...this.apiParams,
+      limit: SESSION_PAGE_SIZE,
+    };
+    const signature = JSON.stringify(params);
+    if (
+      !options.force &&
+      this.sidebarLoadPromise !== null &&
+      this.sidebarLoadSignature === signature
+    ) {
+      return this.sidebarLoadPromise;
+    }
+
+    this.sidebarRefreshQueued = false;
+    this.sidebarAbort?.abort();
+    const controller = new AbortController();
+    this.sidebarAbort = controller;
+    const promise = this.loadSidebarPage(params, controller.signal);
+    this.sidebarLoadPromise = promise;
+    this.sidebarLoadSignature = signature;
+    try {
+      await promise;
+    } finally {
+      if (this.sidebarLoadPromise === promise) {
+        this.sidebarLoadPromise = null;
+        this.sidebarLoadSignature = null;
+        if (this.sidebarAbort === controller) {
+          this.sidebarAbort = null;
+        }
+        if (this.sidebarRefreshQueued) {
+          this.sidebarRefreshQueued = false;
+          this.refreshSidebarIfAttached();
+        }
+      }
+    }
+  }
+
+  refreshSidebarIfAttached() {
+    if (this.sidebarConsumers === 0) return;
+    void this.load();
+  }
+
+  private firstReadWaiting = false;
+
+  private async loadSidebarPage(params: SidebarIndexParams, signal: AbortSignal) {
+    const version = ++this.loadVersion;
+    const indexVersion = this.sidebarIndexVersion + 1;
+    // Keep the existing list visible during reloads, but mark
+    // loading=true so large filter expansions expose that more
+    // pages are still being fetched after page 1 is published.
+    this.loading = true;
+    try {
+      if (this.sidebarIndexVersion === 0) {
+        this.firstReadWaiting = true;
+        await events.whenReady(1000);
+        this.firstReadWaiting = false;
+      }
+      const index = await SessionsService.getApiV1SessionsSidebarIndex(params, { signal });
+      if (this.loadVersion !== version) return;
+
+      this.sidebarIndexVersion = indexVersion;
+      this.hydratedSessionsByVersion.set(indexVersion, new Map());
+      this.sidebarHydrationEpochByVersion.set(indexVersion, 0);
+      this.pruneSidebarHydrationVersions(indexVersion);
+      const rows = index.sessions.map((row) => sidebarIndexRowToSession(row));
+      this.sidebarIndexIds = new Set(index.sessions.map((row) => row.id));
+      const activeId = this.activeSessionId;
+      const kept = activeId ? this.byId.get(activeId) : undefined;
+      if (kept && !this.sidebarIndexIds.has(kept.id) && this.activeSession) rows.push(kept);
+      this.reconcileRows(rows);
+      for (const id of this.details.keys()) {
+        if (!this.sidebarIndexIds.has(id) && id !== activeId) this.details.delete(id);
+      }
+      this.nextCursor = index.next_cursor ?? null;
+      this.total = index.total;
+      void this.refreshArchiveEmpty(version);
+      this.sidebarLoadError = null;
+    } catch (error) {
+      if (this.loadVersion !== version) return;
+      // A rejected filter has no matching rows; showing the previous
+      // filter's rows under it would mislabel them.
+      if (error instanceof ApiError && error.status >= 400 && error.status < 500) {
+        this.resetPagination();
+        this.sidebarLoadError = error.message;
+        return;
+      }
+    } finally {
+      if (this.loadVersion === version) {
+        this.loading = false;
+      }
+    }
+  }
+
+  private async refreshArchiveEmpty(version: number) {
+    let empty = false;
+    if (this.total === 0) {
+      try {
+        empty = (await DataService.getApiV1DataProjects()).total_sessions === 0;
+      } catch {
+        // Keep the dashboard when inventory is unavailable.
+      }
+    }
+    if (this.loadVersion === version) this.archiveEmpty = empty;
+  }
+
+  sidebarIndexVersion: number = $state(0);
+  // Session ids supplied by the loaded sidebar index pages; rows in
+  // this.sessions outside this set were appended out of position
+  // (see loadSidebarPage / loadMore).
+  private sidebarIndexIds: Set<string> = new Set();
+  hydratedSessionsByVersion: Map<number, Map<string, Session>> = $state(new Map());
+
+  private pruneSidebarHydrationVersions(retainVersion: number) {
+    for (const version of this.hydratedSessionsByVersion.keys()) {
+      if (version !== retainVersion) {
+        this.hydratedSessionsByVersion.delete(version);
+      }
+    }
+    for (const version of this.sidebarHydrationInflightByVersion.keys()) {
+      if (version !== retainVersion) {
+        this.sidebarHydrationInflightByVersion.delete(version);
+      }
+    }
+    for (const version of this.sidebarHydrationEpochByVersion.keys()) {
+      if (version !== retainVersion) {
+        this.sidebarHydrationEpochByVersion.delete(version);
+      }
+    }
+  }
+
+  async hydrateVisibleSessions(ids: string[], version: number = this.sidebarIndexVersion) {
+    const uniqueIds = [...new Set(ids)];
+    const cache = this.hydratedSessionsByVersion.get(version) ?? new Map<string, Session>();
+    this.hydratedSessionsByVersion.set(version, cache);
+    const inflight =
+      this.sidebarHydrationInflightByVersion.get(version) ?? new Map<string, Promise<void>>();
+    this.sidebarHydrationInflightByVersion.set(version, inflight);
+    const epoch = this.sidebarHydrationEpochByVersion.get(version) ?? 0;
+    const signal = this.routeSignal();
+
+    const uncached = uniqueIds.filter((id) => !cache.has(id));
+    await Promise.all(
+      uncached.map((id) => {
+        const existing = inflight.get(id);
+        if (existing) return existing;
+
+        const promise = this.runSidebarHydration(async () => {
+          if (signal.aborted) return;
+          try {
+            const hydrated = await SessionsService.getApiV1SessionsById({ id }, { signal });
+            if (
+              version !== this.sidebarIndexVersion ||
+              epoch !== (this.sidebarHydrationEpochByVersion.get(version) ?? 0)
+            ) {
+              return;
+            }
+            cache.set(id, hydrated);
+            this.details.set(id, { ...this.details.get(id), ...hydrated });
+            this.mergeDetailIntoList(id);
+            this.markActiveSessionFound(id);
+          } catch (err) {
+            // Visible hydration is best-effort; the skinny row remains usable.
+            // Except a 404 for the selected row: without the not-found
+            // flag the message pane would render blank. Version and
+            // epoch guards keep a stale 404 from flagging a session a
+            // newer fetch already resolved.
+            if (
+              version === this.sidebarIndexVersion &&
+              epoch === (this.sidebarHydrationEpochByVersion.get(version) ?? 0)
+            ) {
+              this.markActiveSessionMissing(id, err);
+            }
+          } finally {
+            inflight.delete(id);
+          }
+        });
+        inflight.set(id, promise);
+        return promise;
+      }),
+    );
+  }
+
+  private async runSidebarHydration(task: () => Promise<void>): Promise<void> {
+    if (this.sidebarHydrationActive >= SIDEBAR_HYDRATION_CONCURRENCY) {
+      await new Promise<void>((resolve) => {
+        this.sidebarHydrationQueue.push(resolve);
+      });
+    }
+
+    this.sidebarHydrationActive++;
+    try {
+      await task();
+    } finally {
+      this.sidebarHydrationActive--;
+      this.sidebarHydrationQueue.shift()?.();
+    }
+  }
+
+  private invalidateHydratedSessionDetails() {
+    const version = this.sidebarIndexVersion;
+    this.hydratedSessionsByVersion.set(version, new Map());
+    this.sidebarHydrationInflightByVersion.delete(version);
+    this.sidebarHydrationEpochByVersion.set(
+      version,
+      (this.sidebarHydrationEpochByVersion.get(version) ?? 0) + 1,
+    );
+    this.signalDetailCache.clear();
+    this.signalDetailInflight.clear();
+    this.signalDetailLoading = false;
+  }
+
+  async loadMore() {
+    if (!this.nextCursor || this.loading) return;
+    const version = ++this.loadVersion;
+    const signal = this.routeSignal();
+    this.loading = true;
+    try {
+      const index = await SessionsService.getApiV1SessionsSidebarIndex(
+        {
+          ...this.apiParams,
+          cursor: this.nextCursor!,
+          limit: SESSION_PAGE_SIZE,
+        },
+        { signal },
+      );
+      if (this.loadVersion !== version) return;
+      // Merge index-page order first, appended rows last. Rows outside
+      // sidebarIndexIds were appended out of position (the active
+      // session kept by loadSidebarPage, navigateToSession targets);
+      // they stay at the tail until pagination reaches their real
+      // position, then move to the position supplied by the index.
+      const pageIds = new Set(index.sessions.map((row) => row.id));
+      for (const row of index.sessions) {
+        this.sidebarIndexIds.add(row.id);
+      }
+      const paged = this.sessions.filter(
+        (s) => this.sidebarIndexIds.has(s.id) && !pageIds.has(s.id),
+      );
+      const appended = this.sessions.filter((s) => !this.sidebarIndexIds.has(s.id));
+      this.reconcileRows([
+        ...paged,
+        ...index.sessions.map((row) => sidebarIndexRowToSession(row)),
+        ...appended,
+      ]);
+      this.nextCursor = index.next_cursor ?? null;
+      this.total = index.total;
+    } catch (error) {
+      if (signal.aborted || isAbortError(error) || this.loadVersion !== version) return;
+      if (error instanceof ApiError && error.code === "invalid_machine_filter") {
+        this.resetPagination();
+        this.sidebarLoadError = error.message;
+        return;
+      }
+      if (error instanceof ApiError && error.status === 400 && error.message === "invalid cursor") {
+        this.nextCursor = null;
+        await this.load({ force: true });
+        return;
+      }
+      throw error;
+    } finally {
+      if (this.loadVersion === version) {
+        this.loading = false;
+      }
+    }
+  }
+
+  /**
+   * Load additional pages until the target index is backed by
+   * loaded sessions, or until we hit maxPages / end-of-list.
+   * Keeps scrollbar jumps from showing placeholders for too long.
+   */
+  async loadMoreUntil(targetIndex: number, maxPages: number = 5) {
+    if (targetIndex < 0) return;
+    let pages = 0;
+    while (
+      this.nextCursor &&
+      !this.loading &&
+      this.sessions.length <= targetIndex &&
+      pages < maxPages
+    ) {
+      const before = this.sessions.length;
+      await this.loadMore();
+      pages++;
+      if (this.sessions.length <= before) {
+        // Defensive: stop if no forward progress.
+        break;
+      }
+    }
+  }
+
+  async loadProjects() {
+    if (this.projectsLoaded) return;
+    if (this.projectsPromise) return this.projectsPromise;
+    const ver = this.projectsVersion;
+    this.projectsPromise = (async () => {
+      try {
+        const res = await MetadataService.getApiV1Projects(this.metadataParams);
+        if (ver === this.projectsVersion) {
+          this.projects = res.projects;
+          this.projectsLoaded = true;
+        }
+      } catch {
+        // Non-fatal; projects list stays stale.
+      } finally {
+        if (ver === this.projectsVersion) {
+          this.projectsPromise = null;
+        }
+      }
+    })();
+    return this.projectsPromise;
+  }
+
+  async loadAgents() {
+    if (this.agentsLoaded) return;
+    if (this.agentsPromise) return this.agentsPromise;
+    const ver = this.agentsVersion;
+    this.agentsPromise = (async () => {
+      try {
+        const res = await MetadataService.getApiV1Agents(this.metadataParams);
+        if (ver === this.agentsVersion) {
+          this.agents = res.agents;
+          this.agentsLoaded = true;
+        }
+      } catch {
+        // Non-fatal; agents list stays stale.
+      } finally {
+        if (ver === this.agentsVersion) {
+          this.agentsPromise = null;
+        }
+      }
+    })();
+    return this.agentsPromise;
+  }
+
+  async loadMachines() {
+    if (this.filters.machine && !this.filters.machine.trim()) {
+      this.filters.machine = "";
+      this.persistFiltersIfAllowed();
+    }
+    const selector = this.filters.machine;
+    if (this.machineResolution?.selector !== selector) this.resetMachineResolution();
+    if (this.machinesPromise) return this.machinesPromise;
+    if (
+      this.machineResolution?.status === "invalid" ||
+      (this.machineResolution?.status === "resolved" && this.machinesLoaded)
+    )
+      return;
+    const signal = this.machineRead.begin();
+    this.machineResolution = { selector, status: "pending" };
+    this.machinesPromise = this.readMachines(selector, signal);
+    return this.machinesPromise;
+  }
+
+  private async readMachines(selector: string, signal: AbortSignal) {
+    const params = this.metadataParams;
+    try {
+      const res = await MetadataService.getApiV1Machines({
+        ...params,
+        machine: selector || undefined,
+      });
+      if (!this.machineRead.isCurrent(signal) || this.filters.machine !== selector) return;
+      this.applyMachineCatalog(res);
+      if (selector && !res.resolved_machines?.length) {
+        this.machineResolution = { selector, status: "unavailable" };
+        return;
+      }
+      this.filters.machine = selector ? [...new Set(res.resolved_machines)].join(",") : "";
+      this.machineResolution = { selector: this.filters.machine, status: "resolved" };
+      this.persistFiltersIfAllowed();
+    } catch (error) {
+      if (!this.machineRead.isCurrent(signal) || this.filters.machine !== selector) return;
+      const invalid = error instanceof ApiError && error.code === "invalid_machine_filter";
+      this.machineResolution = {
+        selector,
+        status: invalid ? "invalid" : "unavailable",
+        error: error instanceof Error ? error.message : undefined,
+      };
+      if (invalid) {
+        const catalog = await MetadataService.getApiV1Machines(params).catch(() => null);
+        if (catalog && this.machineRead.isCurrent(signal)) this.applyMachineCatalog(catalog);
+      }
+    } finally {
+      if (this.machineRead.finish(signal)) this.machinesPromise = null;
+    }
+  }
+
+  private applyMachineCatalog(res: Awaited<ReturnType<typeof MetadataService.getApiV1Machines>>) {
+    this.machines = res.machines;
+    this.machineLabels = res.machine_labels ?? {};
+    this.machinesLoaded = true;
+  }
+
+  // URL write-back re-applies unchanged filters; keep their machine resolution.
+  private replaceFilters(next: Filters) {
+    if (next.machine !== this.filters.machine) this.resetMachineResolution();
+    this.filters = next;
+  }
+
+  private resetMachineResolution() {
+    this.machineRead.cancel();
+    this.machinesPromise = null;
+    this.machineResolution = null;
+  }
+
+  get machineFilterPending(): boolean {
+    return !!this.filters.machine && this.machineResolution?.status === "pending";
+  }
+  get machineFilterUpdateFailed(): boolean {
+    return this.machineResolution?.status === "unavailable";
+  }
+  get machineFilterError(): string | null {
+    return this.machineResolution?.status === "invalid"
+      ? (this.machineResolution.error ?? null)
+      : null;
+  }
+  get machineRowsDisabled(): boolean {
+    return (
+      !!this.filters.machine &&
+      (this.machineFilterPending ||
+        this.machineFilterUpdateFailed ||
+        this.machineResolution?.selector !== this.filters.machine)
+    );
+  }
+
+  machineLabel(machine: string): string {
+    return this.machineLabels[machine] ?? machine;
+  }
+
+  private setActiveSession(id: string | null) {
+    if (id === this.activeSessionId) return;
+    this.navigateRead.cancel();
+    this.refreshRead.cancel();
+    this.childSessionsRead.cancel();
+    this.activeSessionId = id;
+    this.activeSessionNotFound = false;
+    this.activeSessionUsageVersion = 0;
+    this.refreshVersion++;
+    this.childSessionsVersion++;
+  }
+
+  selectSession(id: string) {
+    this.setActiveSession(id);
+    void this.hydrateSelectedIndexOnlySession(id);
+  }
+
+  private navigateInFlight: { id: string; promise: Promise<void> } | null = null;
+
+  /**
+   * Navigate to a session by ID, loading it into the sessions list if
+   * not already present (e.g. subagent sessions filtered from groups).
+   * Re-invocations for the same still-active session join the in-flight
+   * fetch instead of restarting it, so reactive callers can re-request
+   * hydration without duplicating requests.
+   */
+  async navigateToSession(id: string) {
+    if (this.navigateInFlight?.id === id && this.activeSessionId === id) {
+      return this.navigateInFlight.promise;
+    }
+    this.setActiveSession(id);
+    const existing = this.byId.get(id);
+    if (existing) {
+      await this.hydrateSelectedIndexOnlySession(id);
+      return;
+    }
+    const signal = this.navigateRead.begin();
+    const entry = { id, promise: Promise.resolve() };
+    entry.promise = (async () => {
+      try {
+        const session = await SessionsService.getApiV1SessionsById({ id }, { signal });
+        if (this.activeSessionId === id && this.navigateRead.isCurrent(signal)) {
+          this.details.set(id, session);
+          if (!this.byId.has(id)) {
+            this.sessions = [...this.sessions, sidebarIndexRowToSession(session)];
+          } else {
+            this.updateActiveIndex(session);
+          }
+          this.markActiveSessionFound(id);
+        }
+      } catch (err) {
+        if (isNotFoundError(err) && UUID_PATTERN.test(id)) {
+          try {
+            const { ids } = await SessionsService.getApiV1SessionIdsResolve(
+              { partial: sessionLookupPartial(id), raw_suffix: true, limit: 2 },
+              { signal },
+            );
+            const result = resolveSessionId(id, ids, ids.length >= 2);
+            if (
+              result.kind === "resolved" &&
+              result.id !== id &&
+              this.activeSessionId === id &&
+              this.navigateRead.isCurrent(signal)
+            ) {
+              if (router.sessionId === id) router.replaceSession(result.id);
+              await this.navigateToSession(result.id);
+              return;
+            }
+          } catch {}
+        }
+        // Selection stands without metadata; flag a not-found
+        // response so the message pane can say so.
+        if (this.navigateRead.isCurrent(signal)) {
+          this.markActiveSessionMissing(id, err);
+        }
+      } finally {
+        this.navigateRead.finish(signal);
+        if (this.navigateInFlight === entry) {
+          this.navigateInFlight = null;
+        }
+      }
+    })();
+    this.navigateInFlight = entry;
+    return entry.promise;
+  }
+
+  /**
+   * Record a failed session-detail fetch: a 404 while the session
+   * is still selected marks it not-found so the message pane can
+   * offer a retry.
+   */
+  markActiveSessionMissing(id: string, err: unknown) {
+    if (this.activeSessionId === id && isNotFoundError(err)) {
+      this.activeSessionNotFound = true;
+    }
+  }
+
+  private markActiveSessionFound(id: string) {
+    if (this.activeSessionId !== id || !this.activeSessionNotFound) return;
+    this.activeSessionNotFound = false;
+    this.activeSessionLoadVersion++;
+  }
+
+  /**
+   * Re-attempt loading the active session after a not-found. The
+   * flag stays set until a detail fetch succeeds, so a retry that
+   * still fails keeps the retryable pane instead of blanking it;
+   * a success recovers through markActiveSessionFound.
+   */
+  async retryActiveSession() {
+    const id = this.activeSessionId;
+    if (!id) return;
+    const existing = this.byId.get(id);
+    if (!existing) {
+      await this.navigateToSession(id);
+    } else if (existing.is_index_only && !this.details.has(id)) {
+      await this.hydrateSelectedIndexOnlySession(id);
+    } else {
+      await this.refreshActiveSession();
+    }
+  }
+
+  private async hydrateSelectedIndexOnlySession(id: string) {
+    const existing = this.byId.get(id);
+    if (!existing?.is_index_only || this.details.has(id)) return;
+    await this.hydrateVisibleSessions([id]);
+    const detail = this.details.get(id);
+    const current = this.byId.get(id);
+    if (!detail || !current || this.activeSessionId !== id) return;
+    // Keep index edits made while the detail request was in flight.
+    const previousFields = indexFields(existing);
+    const changedFields = Object.entries(indexFields(current)).filter(
+      ([key, value]) => !sameField(previousFields[key as keyof typeof previousFields], value),
+    );
+    this.updateActiveIndex({ ...detail, ...Object.fromEntries(changedFields) });
+  }
+
+  deselectSession() {
+    this.setActiveSession(null);
+    this.childSessions = new Map();
+  }
+
+  async refreshActiveSession() {
+    const id = this.activeSessionId;
+    if (!id) return;
+    const version = ++this.refreshVersion;
+    const signal = this.refreshRead.begin();
+    try {
+      const session = await SessionsService.getApiV1SessionsById({ id }, { signal });
+      if (
+        this.refreshVersion !== version ||
+        this.activeSessionId !== id ||
+        !this.refreshRead.isCurrent(signal)
+      ) {
+        return;
+      }
+      if (this.byId.has(id)) {
+        this.details.set(id, { ...this.details.get(id), ...session });
+        this.updateActiveIndex(session);
+      }
+      this.markActiveSessionFound(id);
+    } catch (err) {
+      // Session may have been deleted
+      if (this.refreshVersion === version && this.refreshRead.isCurrent(signal)) {
+        this.markActiveSessionMissing(id, err);
+      }
+    } finally {
+      this.refreshRead.finish(signal);
+    }
+  }
+
+  async loadChildSessions(parentId: string) {
+    const version = ++this.childSessionsVersion;
+    const signal = this.childSessionsRead.begin();
+    try {
+      const children = await SessionsService.getApiV1SessionsByIdChildren(
+        { id: parentId },
+        { signal },
+      );
+      if (
+        this.childSessionsVersion !== version ||
+        this.activeSessionId !== parentId ||
+        !this.childSessionsRead.isCurrent(signal)
+      ) {
+        return;
+      }
+      const map = new Map<string, Session>();
+      for (const child of children) {
+        map.set(child.id, child);
+      }
+      this.childSessions = map;
+    } catch {
+      if (this.childSessionsVersion !== version || this.activeSessionId !== parentId) {
+        return;
+      }
+      this.childSessions = new Map();
+    } finally {
+      this.childSessionsRead.finish(signal);
+    }
+  }
+
+  getSignalDetail(id: string) {
+    return this.signalDetailCache.get(id) ?? null;
+  }
+
+  async fetchSignalDetail(id: string) {
+    if (this.signalDetailCache.has(id)) {
+      this.mergeDetailIntoList(id);
+      return;
+    }
+    const inflight = this.signalDetailInflight.get(id);
+    if (inflight) return inflight;
+    const promise = this.doFetchSignalDetail(id);
+    this.signalDetailInflight.set(id, promise);
+    try {
+      await promise;
+    } finally {
+      if (this.signalDetailInflight.get(id) === promise) {
+        this.signalDetailInflight.delete(id);
+      }
+      this.signalDetailLoading = this.signalDetailInflight.size > 0;
+    }
+  }
+
+  private async doFetchSignalDetail(id: string) {
+    const signal = this.routeSignal();
+    this.signalDetailLoading = true;
+    try {
+      const session = await SessionsService.getApiV1SessionsById({ id }, { signal });
+      if (signal.aborted) return;
+      this.signalDetailCache.set(id, {
+        basis: session.health_score_basis ?? null,
+        penalties: session.health_penalties ?? null,
+      });
+      this.mergeDetailIntoList(id);
+    } catch {
+      // Signal detail is non-critical
+    }
+  }
+
+  private mergeDetailIntoList(id: string) {
+    const detail = this.signalDetailCache.get(id);
+    if (!detail) return;
+    const s = this.byId.has(id) ? this.details.get(id) : undefined;
+    if (s && s.health_score_basis === undefined && detail.basis != null) {
+      this.details.set(id, {
+        ...s,
+        health_score_basis: detail.basis,
+        health_penalties: detail.penalties ?? undefined,
+      });
+    }
+  }
+
+  navigateSession(delta: number, filter?: (s: Session) => boolean) {
+    const list = filter ? this.sessions.filter(filter) : this.sessions;
+    if (list.length === 0) return;
+    const idx = list.findIndex((s) => s.id === this.activeSessionId);
+    if (idx === -1) {
+      // No active session at all — do nothing (preserve no-op behavior).
+      if (this.activeSessionId === null) return;
+      // Active session exists but isn't in the filtered list (e.g. viewing
+      // an unstarred session while starred-only filter is on) — jump to
+      // an edge so the keyboard shortcut doesn't silently fail.
+      const edge = delta > 0 ? 0 : list.length - 1;
+      const id = list[edge]!.id;
+      this.setActiveSession(id);
+      void this.hydrateSelectedIndexOnlySession(id);
+      return;
+    }
+    const next = idx + delta;
+    if (next >= 0 && next < list.length) {
+      const id = list[next]!.id;
+      this.setActiveSession(id);
+      void this.hydrateSelectedIndexOnlySession(id);
+    }
+  }
+
+  setProjectFilter(project: string) {
+    const prev = this.filters;
+    this.resetMachineResolution();
+    this.filters = { ...defaultFilters(), project, agent: prev.agent };
+    this.dateFiltersWindowDays = null;
+    this.setActiveSession(null);
+    if (
+      prev.includeOneShot !== this.filters.includeOneShot ||
+      prev.includeAutomated !== this.filters.includeAutomated ||
+      prev.automatedFilterSet !== this.filters.automatedFilterSet
+    ) {
+      this.invalidateFilterCaches();
+    }
+    void this.load();
+  }
+
+  setMachineFilter(machine: string) {
+    this.resetMachineResolution();
+    this.filters.machine = this.filters.machine === machine ? "" : machine;
+    this.activeSessionId = null;
+    void this.load();
+  }
+
+  setSelectedMachines(machines: string[]) {
+    this.resetMachineResolution();
+    this.filters.machine = machines.join(",");
+    this.machineResolution = { selector: this.filters.machine, status: "resolved" };
+  }
+
+  toggleMachineFilter(machine: string) {
+    if (this.machineRowsDisabled) return;
+    const current =
+      this.machineResolution?.status === "resolved" && this.filters.machine
+        ? this.filters.machine.split(",")
+        : [];
+    const idx = current.indexOf(machine);
+    if (idx >= 0) current.splice(idx, 1);
+    else current.push(machine);
+    this.setSelectedMachines(current);
+    this.setActiveSession(null);
+    void this.load();
+  }
+
+  isMachineSelected(machine: string): boolean {
+    return (
+      this.machineResolution?.status === "resolved" &&
+      this.machineResolution.selector === this.filters.machine &&
+      this.filters.machine.split(",").includes(machine)
+    );
+  }
+
+  get selectedMachines(): string[] {
+    if (!this.filters.machine) return [];
+    return this.machineResolution?.status === "resolved" &&
+      this.machineResolution.selector === this.filters.machine
+      ? this.filters.machine.split(",")
+      : [this.filters.machine];
+  }
+
+  setAgentFilter(agent: string) {
+    if (this.filters.agent === agent) {
+      this.filters.agent = "";
+    } else {
+      this.filters.agent = agent;
+    }
+    this.setActiveSession(null);
+    void this.load();
+  }
+
+  toggleAgentFilter(agent: string) {
+    const current = this.filters.agent ? this.filters.agent.split(",") : [];
+    const idx = current.indexOf(agent);
+    if (idx >= 0) {
+      current.splice(idx, 1);
+    } else {
+      current.push(agent);
+    }
+    this.filters.agent = current.join(",");
+    this.setActiveSession(null);
+    void this.load();
+  }
+
+  isAgentSelected(agent: string): boolean {
+    if (!this.filters.agent) return false;
+    return this.filters.agent.split(",").includes(agent);
+  }
+
+  get selectedAgents(): string[] {
+    if (!this.filters.agent) return [];
+    return this.filters.agent.split(",");
+  }
+
+  setRecentlyActiveFilter(active: boolean) {
+    this.filters.recentlyActive = active;
+    this.setActiveSession(null);
+    void this.load();
+  }
+
+  setMinUserMessagesFilter(n: number) {
+    this.filters.minUserMessages = n;
+    this.setActiveSession(null);
+    void this.load();
+  }
+
+  setHideUnknownProjectFilter(hide: boolean) {
+    this.filters.hideUnknownProject = hide;
+    if (hide && this.filters.project === "unknown") {
+      this.filters.project = "";
+    }
+    this.setActiveSession(null);
+    void this.load();
+  }
+
+  setIncludeOneShotFilter(include: boolean) {
+    this.filters.includeOneShot = include;
+    this.setActiveSession(null);
+    this.invalidateFilterCaches();
+    void this.load();
+  }
+
+  setIncludeAutomatedFilter(include: boolean) {
+    this.filters.includeAutomated = include;
+    this.filters.automatedFilterSet = true;
+    this.setActiveSession(null);
+    this.invalidateFilterCaches();
+    void this.load();
+  }
+
+  setTerminationFilter(termination: string) {
+    this.filters.termination = termination;
+    this.setActiveSession(null);
+    void this.load();
+  }
+
+  /** Add or remove a status from the comma-separated termination
+   * filter. Empty list means "no filter". */
+  toggleTerminationStatus(status: string) {
+    const set = new Set(this.filters.termination.split(",").filter((s) => s.length > 0));
+    if (set.has(status)) set.delete(status);
+    else set.add(status);
+    this.setTerminationFilter([...set].join(","));
+  }
+
+  /** Whether the comma-separated termination filter contains
+   * the given status. Used by the multi-select pill UI. */
+  hasTerminationStatus(status: string): boolean {
+    if (!this.filters.termination) return false;
+    return this.filters.termination.split(",").includes(status);
+  }
+
+  /** Adds an exact-match label filter. Sessions must carry every label. */
+  addLabelFilter(label: string) {
+    const next = normalizeLabelFilters([...this.filters.labels, label]);
+    if (next.length === this.filters.labels.length) return;
+    this.filters.labels = next;
+    this.setActiveSession(null);
+    void this.load();
+  }
+
+  removeLabelFilter(label: string) {
+    const next = this.filters.labels.filter((l) => l !== label);
+    if (next.length === this.filters.labels.length) return;
+    this.filters.labels = next;
+    this.setActiveSession(null);
+    void this.load();
+  }
+
+  /** Sets the pull request filter; an empty value clears it. */
+  setPRFilter(pr: string) {
+    const next = pr.trim();
+    if (next === this.filters.pr) return;
+    this.filters.pr = next;
+    this.setActiveSession(null);
+    void this.load();
+  }
+
+  /** Label and pull request filters narrow only the session list; the
+   *  usage and analytics pages do not apply them. */
+  get hasSessionListOnlyFilters(): boolean {
+    return this.filters.labels.length > 0 || !!this.filters.pr;
+  }
+
+  get hasActiveFilters(): boolean {
+    return this.hasSharedFilters || this.hasSessionListOnlyFilters;
+  }
+
+  /** Filters the session list shares with the usage and analytics pages. */
+  get hasSharedFilters(): boolean {
+    const f = this.filters;
+    return !!(
+      f.machine ||
+      f.agent ||
+      f.termination ||
+      f.recentlyActive ||
+      f.hideUnknownProject ||
+      f.dateFrom ||
+      f.dateTo ||
+      f.date ||
+      f.minUserMessages > 0 ||
+      !f.includeOneShot ||
+      f.includeAutomated ||
+      f.automatedFilterSet
+    );
+  }
+
+  clearSessionFilters(options: ClearSessionFiltersOptions = {}) {
+    const project = this.filters.project;
+    const wasOneShot = this.filters.includeOneShot;
+    const wasAutomated = this.filters.includeAutomated || this.filters.automatedFilterSet;
+    if (options.clearDateYoke || hasDateFilters(this.filters)) {
+      yokedDates.clear();
+    }
+    const filters = { ...defaultFilters(), project };
+    if (options.preserveLabelsAndPR) {
+      filters.labels = this.filters.labels;
+      filters.pr = this.filters.pr;
+    }
+    this.resetMachineResolution();
+    this.filters = filters;
+    this.dateFiltersWindowDays = null;
+    this.setActiveSession(null);
+    if (wasOneShot !== this.filters.includeOneShot || wasAutomated) {
+      this.invalidateFilterCaches();
+    }
+    void this.load();
+  }
+
+  /** Recently deleted session batches for undo toast. */
+  recentlyDeleted: RecentlyDeletedSessions[] = $state([]);
+  private recentlyDeletedNextKey = 0;
+
+  private newRecentlyDeletedTimer(key: number) {
+    return setTimeout(() => {
+      this.recentlyDeleted = this.recentlyDeleted.filter((d) => d.key !== key);
+    }, RECENTLY_DELETED_TTL_MS);
+  }
+
+  private addRecentlyDeleted(ids: string[]) {
+    if (ids.length === 0) return;
+    const key = this.recentlyDeletedNextKey++;
+    const timer = this.newRecentlyDeletedTimer(key);
+    this.recentlyDeleted = [...this.recentlyDeleted, { key, ids: [...ids], timer }];
+  }
+
+  /** Multi-select state for batch operations. */
+  selectedIds: Set<string> = $state(new Set());
+  selectMode: boolean = $state(false);
+
+  toggleSelectMode() {
+    this.selectMode = !this.selectMode;
+    if (!this.selectMode) {
+      this.selectedIds = new Set();
+    }
+  }
+
+  toggleSelection(id: string) {
+    const next = new Set(this.selectedIds);
+    if (next.has(id)) {
+      next.delete(id);
+    } else {
+      next.add(id);
+    }
+    this.selectedIds = next;
+  }
+
+  selectAll(ids: string[]) {
+    this.selectedIds = new Set(ids);
+  }
+
+  clearSelection() {
+    this.selectedIds = new Set();
+  }
+
+  async deleteSession(id: string) {
+    await SessionsService.deleteApiV1SessionsById({ id });
+    if (this.activeSessionId === id) {
+      this.setActiveSession(null);
+    }
+    this.addRecentlyDeleted([id]);
+    this.invalidateFilterCaches();
+    await this.load({ force: true });
+  }
+
+  async batchDeleteSessions(ids: string[]) {
+    if (ids.length === 0) return;
+    await SessionsService.postApiV1SessionsBatchDelete({ session_ids: ids });
+    const idSet = new Set(ids);
+    if (this.activeSessionId && idSet.has(this.activeSessionId)) {
+      this.setActiveSession(null);
+    }
+    this.addRecentlyDeleted(ids);
+    this.selectedIds = new Set();
+    this.selectMode = false;
+    this.invalidateFilterCaches();
+    await this.load({ force: true });
+  }
+
+  async restoreSession(id: string) {
+    await SessionsService.postApiV1SessionsByIdRestore({ id });
+    this.clearRecentlyDeleted(id);
+    this.invalidateFilterCaches();
+    await this.load();
+  }
+
+  async restoreRecentlyDeleted(deleted: RecentlyDeletedSessions) {
+    const ids = [...deleted.ids];
+    if (ids.length === 0) return;
+    clearTimeout(deleted.timer);
+    // Each restore is independent, so they run concurrently.
+    const results = await Promise.allSettled(
+      ids.map((id) => SessionsService.postApiV1SessionsByIdRestore({ id })),
+    );
+    const failed = ids.filter((_, i) => results[i]!.status === "rejected");
+    this.updateRecentlyDeletedBatch(deleted, failed);
+    this.invalidateFilterCaches();
+    await this.load({ force: true });
+    if (failed.length > 0) {
+      const noun = failed.length === 1 ? "session" : "sessions";
+      throw new Error(`Failed to restore ${failed.length} ${noun}`);
+    }
+  }
+
+  private get metadataParams(): MetadataParams {
+    return {
+      include_one_shot: this.filters.includeOneShot || undefined,
+      include_automated: this.filters.includeAutomated || undefined,
+    };
+  }
+
+  invalidateFilterCaches() {
+    this.invalidateProjectCache();
+    this.agentsVersion++;
+    this.agentsLoaded = false;
+    this.agentsPromise = null;
+    this.resetMachineCatalog();
+    void this.loadAgents();
+    void this.loadMachines();
+    void sync.loadStats(this.metadataParams);
+  }
+
+  // Newer metadata can make a previously resolved display name ambiguous.
+  private resetMachineCatalog() {
+    this.resetMachineResolution();
+    this.machinesLoaded = false;
+    this.machinesPromise = null;
+  }
+
+  invalidateProjectCache() {
+    this.projectsVersion++;
+    this.projectsLoaded = false;
+    this.projectsPromise = null;
+    void this.loadProjects();
+  }
+
+  /** Remove one or all entries from the undo toast list. */
+  clearRecentlyDeleted(id?: string) {
+    if (id) {
+      this.recentlyDeleted = this.recentlyDeleted.flatMap((d) => {
+        if (!d.ids.includes(id)) return [d];
+        const ids = d.ids.filter((deletedId) => deletedId !== id);
+        if (ids.length === 0) {
+          clearTimeout(d.timer);
+          return [];
+        }
+        return [{ ...d, ids }];
+      });
+    } else {
+      for (const d of this.recentlyDeleted) clearTimeout(d.timer);
+      this.recentlyDeleted = [];
+    }
+  }
+
+  private updateRecentlyDeletedBatch(deleted: RecentlyDeletedSessions, ids: string[]) {
+    this.recentlyDeleted = this.recentlyDeleted.flatMap((d) => {
+      if (d.key !== deleted.key) return [d];
+      if (ids.length === 0) {
+        clearTimeout(d.timer);
+        return [];
+      }
+      return [
+        {
+          ...d,
+          ids: [...ids],
+          timer: this.newRecentlyDeletedTimer(d.key),
+        },
+      ];
+    });
+  }
+
+  async renameSession(id: string, displayName: string | null) {
+    const updated = await SessionsService.patchApiV1SessionsByIdRename(
+      { id },
+      { display_name: displayName },
+    );
+    const detail = this.details.get(id);
+    if (detail) this.details.set(id, { ...detail, ...updated });
+    const idx = this.sessions.findIndex((s) => s.id === id);
+    if (idx !== -1) {
+      const merged = {
+        ...this.sessions[idx]!,
+        ...indexFields({ ...this.sessions[idx]!, ...updated }),
+      };
+      // When the caller cleared the rename and the backend found no agent name
+      // to restore, display_name is absent from the response (omitempty on nil).
+      // Explicitly null it out so the store reflects the cleared state rather
+      // than keeping the stale value until the next SSE-triggered refresh.
+      if (displayName === null && updated.display_name === undefined) {
+        merged.display_name = undefined;
+      }
+      this.replaceAt(idx, merged);
+    }
+  }
+
+  async assignSessionProject(id: string, project: string) {
+    const assignment = await SettingsService.putApiV1SettingsSessionProjectAssignmentsBySessionId(
+      {
+        sessionId: id,
+      },
+      { project },
+    );
+    const idx = this.sessions.findIndex((session) => session.id === id);
+    if (idx !== -1) {
+      this.replaceAt(idx, {
+        ...this.sessions[idx]!,
+        project: assignment.project,
+        project_assigned: true,
+      });
+    }
+    this.invalidateProjectCache();
+    await this.load({ force: true });
+    return assignment.project;
+  }
+
+  async clearSessionProjectAssignment(id: string) {
+    const cleared = await SettingsService.deleteApiV1SettingsSessionProjectAssignmentsBySessionId({
+      sessionId: id,
+    });
+    const idx = this.sessions.findIndex((session) => session.id === id);
+    if (idx !== -1) {
+      this.replaceAt(idx, {
+        ...this.sessions[idx]!,
+        project: cleared.project,
+        project_assigned: false,
+      });
+    }
+    this.invalidateProjectCache();
+    await this.load({ force: true });
+    return cleared.project;
+  }
+
+  private startLiveRefresh() {
+    if (this.liveRefreshStarted) return;
+    this.liveRefreshStarted = true;
+    this.unsubEvents = events.subscribe((event) => {
+      this.handleLiveRefreshEvent(event);
+    });
+    this.safetyNetTimer = setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      void this.load();
+      this.refreshActiveChildSessions();
+      this.bumpActiveSessionUsageVersion();
+    }, SAFETY_NET_REFRESH_MS);
+  }
+
+  private handleLiveRefreshEvent(event: DataChangedEvent) {
+    if (event.scope === "sync") this.invalidateHydratedSessionDetails();
+    if (event.scope === "messages") {
+      this.invalidateHydratedSessionDetails();
+      this.bumpActiveSessionUsageVersion();
+      this.refreshActiveChildSessions();
+      return;
+    }
+    if (event.scope === "sessions" || event.scope === "sync") {
+      if (event.scope === "sessions") void this.refreshActiveSession();
+      this.invalidateProjectCache();
+      this.scheduleIndexRefresh();
+      this.bumpActiveSessionUsageVersion();
+      this.refreshActiveChildSessions();
+    }
+  }
+
+  private scheduleIndexRefresh() {
+    // The read waiting on events_ready starts after this event and covers it.
+    if (this.sidebarConsumers === 0 || this.firstReadWaiting) return;
+    if (this.liveRefreshTimer !== null) {
+      clearTimeout(this.liveRefreshTimer);
+    }
+    this.liveRefreshTimer = setTimeout(() => {
+      this.liveRefreshTimer = null;
+      if (this.sidebarLoadPromise !== null) {
+        this.sidebarRefreshQueued = true;
+      } else {
+        void this.load();
+      }
+    }, LIVE_REFRESH_DEBOUNCE_MS);
+  }
+
+  private refreshActiveChildSessions() {
+    const id = this.activeSessionId;
+    if (!id) return;
+    void this.loadChildSessions(id);
+  }
+
+  private bumpActiveSessionUsageVersion() {
+    if (!this.activeSessionId) return;
+    this.activeSessionUsageVersion++;
+  }
+
+  private routeSignal(): AbortSignal {
+    if (!this.routeAbort || this.routeAbort.signal.aborted) {
+      this.routeAbort = new AbortController();
+    }
+    return this.routeAbort.signal;
+  }
+
+  cancelRouteReads(): void {
+    this.sidebarRefreshQueued = false;
+    this.sidebarAbort?.abort();
+    this.sidebarAbort = null;
+    this.sidebarLoadPromise = null;
+    this.sidebarLoadSignature = null;
+    this.routeAbort?.abort();
+    this.routeAbort = null;
+    this.navigateRead.cancel();
+    this.refreshRead.cancel();
+    this.childSessionsRead.cancel();
+    this.loadVersion++;
+    this.refreshVersion++;
+    this.childSessionsVersion++;
+    this.loading = false;
+    this.signalDetailInflight.clear();
+    this.signalDetailLoading = false;
+    for (const version of this.sidebarHydrationEpochByVersion.keys()) {
+      this.sidebarHydrationEpochByVersion.set(
+        version,
+        (this.sidebarHydrationEpochByVersion.get(version) ?? 0) + 1,
+      );
+    }
+    for (const resume of this.sidebarHydrationQueue.splice(0)) resume();
+  }
+
+  dispose() {
+    if (this.unsubEvents) {
+      this.unsubEvents();
+      this.unsubEvents = null;
+    }
+    if (this.liveRefreshTimer !== null) {
+      clearTimeout(this.liveRefreshTimer);
+      this.liveRefreshTimer = null;
+    }
+    if (this.safetyNetTimer !== null) {
+      clearInterval(this.safetyNetTimer);
+      this.safetyNetTimer = null;
+    }
+    this.cancelRouteReads();
+    this.liveRefreshStarted = false;
+  }
+}
+
+export function createSessionsStore(): SessionsStore {
+  return new SessionsStore();
+}
+
+export const sessions = createSessionsStore();
+
+// Refresh project/agent dropdowns whenever a sync completes
+// (local trigger or detected via status polling).
+sync.onSyncComplete(() => {
+  sessions.invalidateFilterCaches();
+  sessions.refreshSidebarIfAttached();
+});

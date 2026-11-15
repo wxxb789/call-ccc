@@ -1,0 +1,1163 @@
+// @vitest-environment jsdom
+import { describe, it, expect, vi, beforeEach } from "vite-plus/test";
+import { mount, unmount, tick } from "svelte";
+import { ApiError } from "../../api/runtime.js";
+import { registerShortcuts } from "../../utils/keyboard.js";
+
+const {
+  mockUi,
+  mockSessions,
+  mockSearchStore,
+  mockRouter,
+  mockCopyToClipboard,
+  mockEmbeddingsService,
+} = vi.hoisted(() => ({
+  mockUi: {
+    activeModal: "commandPalette" as "commandPalette" | null,
+    alwaysShowYear: false,
+    scrollToOrdinal: vi.fn(),
+    clearSelection: vi.fn(),
+    clearScrollState: vi.fn(),
+  },
+  mockSessions: {
+    activeSessionId: null as string | null,
+    view: (row: unknown) => row,
+    sessions: [] as Array<{
+      id: string;
+      project: string;
+      machine: string;
+      agent: string;
+      first_message: string | null;
+      started_at: string | null;
+      ended_at: string | null;
+      message_count: number;
+      user_message_count: number;
+      created_at: string;
+    }>,
+    filters: { project: "" },
+    projects: [{ name: "proj-a", session_count: 2 }],
+    deselectSession: vi.fn(),
+  },
+  mockSearchStore: {
+    results: [] as Array<unknown>,
+    isSearching: false,
+    error: null as {
+      detail: string | null;
+      kind: "generic" | "timeout" | "semantic-unavailable";
+    } | null,
+    mode: "fulltext" as "fulltext" | "semantic" | "hybrid",
+    sort: "relevance" as "relevance" | "recency",
+    search: vi.fn(),
+    clear: vi.fn(),
+    resetSort: vi.fn(),
+    retry: vi.fn(),
+    setMode: vi.fn(),
+    setSort: vi.fn(),
+    range: { mode: "relative" as const, days: 0 },
+    setRange: vi.fn(),
+    resetRange: vi.fn(),
+    endSession: vi.fn(),
+    retain: vi.fn(),
+    restore: vi.fn((): { query: string; project: string; selectedIndex: number } | null => null),
+  },
+  mockRouter: {
+    navigateToSession: vi.fn(),
+  },
+  mockCopyToClipboard: vi.fn(),
+  mockEmbeddingsService: {
+    getApiV1EmbeddingsStatus: vi.fn(),
+    postApiV1EmbeddingsBuild: vi.fn(),
+  },
+}));
+
+vi.mock("../../stores/ui.svelte.js", () => ({
+  ui: mockUi,
+}));
+
+vi.mock("../../stores/sessions.svelte.js", () => ({
+  sessions: mockSessions,
+}));
+
+vi.mock("../../stores/search.svelte.js", () => ({
+  searchStore: mockSearchStore,
+}));
+
+vi.mock("../../stores/router.svelte.js", () => ({
+  router: mockRouter,
+}));
+
+vi.mock("../../stores/messages.svelte.js", () => ({
+  messages: {},
+}));
+
+vi.mock("../../utils/clipboard.js", () => ({
+  copyToClipboard: mockCopyToClipboard,
+}));
+
+// SemanticSetupHelp (mounted for the semantic-unavailable error kind) probes
+// the embeddings status on mount; keep the probe pending so palette tests
+// exercise the wiring without embeddings API behavior (covered in
+// SemanticSetupHelp.test.ts).
+vi.mock("../../api/generated/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../api/generated/index.js")>();
+  return {
+    ...actual,
+    EmbeddingsService: mockEmbeddingsService,
+  };
+});
+
+// @ts-ignore
+import CommandPalette from "./CommandPalette.svelte";
+
+/**
+ * Polls via tick() until the selector matches or the iteration limit is hit.
+ * Svelte 5's microtask scheduler requires explicit tick() calls to flush DOM
+ * updates in jsdom — setTimeout-based waitFor() retries don't drive it.
+ */
+async function tickUntil(selector: string, maxTicks = 20): Promise<HTMLElement> {
+  for (let i = 0; i < maxTicks; i++) {
+    await tick();
+    const el = document.querySelector<HTMLElement>(selector);
+    if (el) return el;
+  }
+  throw new Error(`"${selector}" not found after ${maxTicks} tick() calls`);
+}
+
+function makeSession(id: string, agent: string) {
+  return {
+    compaction_count: 0,
+    consecutive_failure_max: 0,
+    edit_churn_count: 0,
+    ended_with_role: "",
+    final_failure_streak: 0,
+    has_peak_context_tokens: false,
+    has_total_output_tokens: false,
+    mid_task_compaction_count: 0,
+    outcome: "",
+    outcome_confidence: "",
+    secret_leak_count: 0,
+    tool_failure_signal_count: 0,
+    tool_retry_count: 0,
+    id,
+    project: "proj-a",
+    machine: "mac",
+    agent,
+    first_message: "hello",
+    started_at: "2026-02-20T12:30:00Z",
+    ended_at: "2026-02-20T12:31:00Z",
+    message_count: 2,
+    user_message_count: 1,
+    total_output_tokens: 0,
+    peak_context_tokens: 0,
+    created_at: "2026-02-20T12:30:00Z",
+  };
+}
+
+function makeSearchResult(overrides: Record<string, unknown> = {}) {
+  return {
+    session_id: "codex:search123",
+    project: "proj-a",
+    agent: "codex",
+    ordinal: 7,
+    timestamp: "2026-01-01T00:00:00Z",
+    snippet: "matching content",
+    rank: 0,
+    snippetFormat: "highlighted-html",
+    ...overrides,
+  };
+}
+
+async function enterSearchQuery(value = "match") {
+  const input = document.querySelector<HTMLInputElement>(".palette-input")!;
+  input.value = value;
+  input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+  await tick();
+}
+
+describe("CommandPalette", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    document.body.replaceChildren();
+    // jsdom does not implement scrollIntoView
+    Element.prototype.scrollIntoView = vi.fn();
+    mockSearchStore.results = [];
+    mockSearchStore.isSearching = false;
+    mockSearchStore.error = null;
+    mockSearchStore.mode = "fulltext";
+    mockSearchStore.sort = "relevance";
+    mockEmbeddingsService.getApiV1EmbeddingsStatus.mockReset();
+    mockEmbeddingsService.getApiV1EmbeddingsStatus.mockImplementation(() => new Promise(() => {}));
+    mockEmbeddingsService.postApiV1EmbeddingsBuild.mockReset();
+    mockSessions.activeSessionId = null;
+    mockSessions.deselectSession.mockImplementation(() => {
+      mockSessions.activeSessionId = null;
+    });
+    mockUi.activeModal = "commandPalette";
+    mockUi.alwaysShowYear = false;
+    mockSessions.filters.project = "";
+    mockSessions.sessions = [makeSession("s1", "cursor"), makeSession("s2", "unknown")];
+  });
+
+  it.each([false, true])(
+    "formats recent sessions and search results with year=%s",
+    async (showYear) => {
+      const clock = vi
+        .spyOn(Date, "now")
+        .mockReturnValue(new Date("2026-06-01T12:02:00Z").getTime());
+      mockUi.alwaysShowYear = showYear;
+      mockSessions.sessions = [
+        { ...makeSession("recent", "cursor"), ended_at: "2026-06-01T12:00:00Z" },
+      ];
+      mockSearchStore.results = [makeSearchResult({ timestamp: "2026-06-01T12:00:00Z" })];
+      const component = mount(CommandPalette, { target: document.body });
+      try {
+        await tick();
+        expect(document.querySelector(".item-meta")?.textContent).toContain(
+          showYear ? "2026" : "2m ago",
+        );
+        await enterSearchQuery();
+        expect(document.querySelector(".item-meta")?.textContent).toContain(
+          showYear ? "2026" : "2m ago",
+        );
+      } finally {
+        unmount(component);
+        clock.mockRestore();
+      }
+    },
+  );
+
+  it("names each recent session's agent in its agent ink, including fallback", async () => {
+    const component = mount(CommandPalette, {
+      target: document.body,
+    });
+
+    await tick();
+
+    const agents = Array.from(document.querySelectorAll<HTMLElement>(".item-agent"));
+    expect(agents).toHaveLength(2);
+    expect(agents[0]?.textContent).toBe("Cursor");
+    expect(agents[0]?.getAttribute("style")).toContain(
+      "--agent-ink: var(--accent-black-ink, var(--accent-black))",
+    );
+    expect(agents[1]?.textContent).toBe("Unknown");
+    expect(agents[1]?.getAttribute("style")).toContain(
+      "--agent-ink: var(--accent-blue-ink, var(--accent-blue))",
+    );
+
+    unmount(component);
+  });
+
+  it("dismisses on an overlay press released on the overlay", async () => {
+    const component = mount(CommandPalette, { target: document.body });
+    await tick();
+
+    const overlay = document.querySelector<HTMLElement>(".palette-overlay")!;
+    overlay.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    overlay.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+
+    expect(mockUi.activeModal).toBeNull();
+
+    unmount(component);
+  });
+
+  it("stays open when a drag starts in the palette and ends on the overlay", async () => {
+    const component = mount(CommandPalette, { target: document.body });
+    await tick();
+
+    const input = document.querySelector<HTMLInputElement>(".palette-input")!;
+    const overlay = document.querySelector<HTMLElement>(".palette-overlay")!;
+    input.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    overlay.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+
+    expect(mockUi.activeModal).toBe("commandPalette");
+
+    unmount(component);
+  });
+
+  it("stays open when a drag starts on the overlay and ends in the palette", async () => {
+    const component = mount(CommandPalette, { target: document.body });
+    await tick();
+
+    const input = document.querySelector<HTMLInputElement>(".palette-input")!;
+    const overlay = document.querySelector<HTMLElement>(".palette-overlay")!;
+    overlay.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    input.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+
+    expect(mockUi.activeModal).toBe("commandPalette");
+
+    unmount(component);
+  });
+
+  it("ends the search session before clearing on unmount", async () => {
+    const component = mount(CommandPalette, {
+      target: document.body,
+    });
+
+    await tick();
+
+    unmount(component);
+
+    expect(mockSearchStore.endSession).toHaveBeenCalledOnce();
+    expect(mockSearchStore.endSession).toHaveBeenCalledBefore(mockSearchStore.clear);
+    expect(mockSearchStore.clear).toHaveBeenCalledOnce();
+    expect(mockSearchStore.resetSort).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the search for the next open when a result is picked", async () => {
+    mockSessions.filters.project = "proj-a";
+    mockSearchStore.results = [
+      makeSearchResult({ session_id: "codex:first" }),
+      makeSearchResult({ session_id: "codex:second" }),
+    ];
+    const component = mount(CommandPalette, { target: document.body });
+    await tick();
+    await enterSearchQuery("configuration");
+
+    const items = document.querySelectorAll<HTMLElement>(".palette-item");
+    items[1]!.click();
+    await tick();
+    unmount(component);
+
+    expect(mockRouter.navigateToSession).toHaveBeenCalledWith("codex:second");
+    expect(mockSearchStore.endSession).toHaveBeenCalledBefore(mockSearchStore.retain);
+    expect(mockSearchStore.retain).toHaveBeenCalledWith({
+      query: "configuration",
+      project: "proj-a",
+      selectedIndex: 1,
+    });
+    expect(mockSearchStore.clear).not.toHaveBeenCalled();
+    expect(mockSearchStore.resetSort).not.toHaveBeenCalled();
+    expect(mockSearchStore.resetRange).not.toHaveBeenCalled();
+  });
+
+  it("discards the search when the palette closes without a pick", async () => {
+    const component = mount(CommandPalette, { target: document.body });
+    await tick();
+    await enterSearchQuery("configuration");
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", cancelable: true }));
+    await tick();
+    unmount(component);
+
+    expect(mockUi.activeModal).toBeNull();
+    expect(mockSearchStore.retain).not.toHaveBeenCalled();
+    expect(mockSearchStore.clear).toHaveBeenCalledOnce();
+  });
+
+  it("reopens a retained search with its query selected and its pick highlighted", async () => {
+    mockSessions.filters.project = "";
+    mockSearchStore.restore.mockReturnValueOnce({
+      query: "configuration",
+      project: "proj-a",
+      selectedIndex: 1,
+    });
+    mockSearchStore.results = [
+      makeSearchResult({ session_id: "codex:first" }),
+      makeSearchResult({ session_id: "codex:second" }),
+    ];
+    const component = mount(CommandPalette, { target: document.body });
+    try {
+      await tick();
+      const input = document.querySelector<HTMLInputElement>(".palette-input")!;
+      expect(input.value).toBe("configuration");
+      expect([input.selectionStart, input.selectionEnd]).toEqual([0, "configuration".length]);
+      const items = document.querySelectorAll<HTMLElement>(".palette-item");
+      expect(items[1]!.classList.contains("selected")).toBe(true);
+      expect(document.querySelector(".palette-controls")?.textContent).toContain("proj-a");
+      expect(mockSearchStore.search).not.toHaveBeenCalled();
+
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      expect(mockRouter.navigateToSession).toHaveBeenCalledWith("codex:second");
+    } finally {
+      unmount(component);
+    }
+  });
+
+  it("offers the clear button only while there is a query", async () => {
+    const component = mount(CommandPalette, { target: document.body });
+    try {
+      await tick();
+      const clearButton = () =>
+        document.querySelector<HTMLButtonElement>('button[aria-label="Clear search"]');
+      expect(clearButton()).toBeNull();
+
+      await enterSearchQuery("co");
+      expect(clearButton()).not.toBeNull();
+
+      await enterSearchQuery("");
+      expect(clearButton()).toBeNull();
+    } finally {
+      unmount(component);
+    }
+  });
+
+  it("clears a reopened search back to a fresh palette", async () => {
+    mockSessions.filters.project = "";
+    mockSearchStore.restore.mockReturnValueOnce({
+      query: "configuration",
+      project: "proj-a",
+      selectedIndex: 1,
+    });
+    mockSearchStore.results = [
+      makeSearchResult({ session_id: "codex:first" }),
+      makeSearchResult({ session_id: "codex:second" }),
+    ];
+    const component = mount(CommandPalette, { target: document.body });
+    try {
+      await tick();
+      const input = document.querySelector<HTMLInputElement>(".palette-input")!;
+      document.querySelector<HTMLButtonElement>('button[aria-label="Clear search"]')!.click();
+      await tick();
+
+      expect(input.value).toBe("");
+      expect(document.activeElement).toBe(input);
+      expect(mockUi.activeModal).toBe("commandPalette");
+      expect(mockSearchStore.clear).toHaveBeenCalledOnce();
+      expect(mockSearchStore.resetSort).toHaveBeenCalledOnce();
+      expect(mockSearchStore.resetRange).toHaveBeenCalledOnce();
+      // Recent sessions replace the results, with the first one highlighted.
+      const items = document.querySelectorAll<HTMLElement>(".palette-item");
+      expect(items).toHaveLength(mockSessions.sessions.length);
+      expect(items[0]!.classList.contains("selected")).toBe(true);
+      expect(document.querySelector('button[aria-label="Clear search"]')).toBeNull();
+
+      // The retained project is gone: the next query searches the sidebar's.
+      await enterSearchQuery("another");
+      expect(mockSearchStore.search).toHaveBeenLastCalledWith("another", "");
+    } finally {
+      unmount(component);
+    }
+  });
+
+  it("copies canonical session_id to clipboard, not stripped display ID", async () => {
+    // Prefixed ID: stripIdPrefix("codex:abc123def456", "codex") → "abc123def456"
+    // Display shows first 8 chars: "abc123de"
+    // Copy must use the full canonical "codex:abc123def456"
+    mockSearchStore.results = [
+      makeSearchResult({
+        session_id: "codex:abc123def456",
+        project: "test-proj",
+        ordinal: 0,
+        snippet: "some matching text",
+      }),
+    ];
+
+    const component = mount(CommandPalette, { target: document.body });
+    await tick();
+
+    await enterSearchQuery("abc");
+
+    const badge = await tickUntil(".item-id");
+    expect(badge.textContent?.trim()).toBe("abc123de");
+
+    badge.click();
+    await tick();
+
+    expect(mockCopyToClipboard).toHaveBeenCalledWith("codex:abc123def456");
+
+    unmount(component);
+  });
+
+  it("omits relative-time segment when timestamp is empty", async () => {
+    mockSearchStore.results = [
+      makeSearchResult({
+        session_id: "codex:emptytime123",
+        project: "my-proj",
+        ordinal: 0,
+        timestamp: "",
+        snippet: "some text",
+      }),
+    ];
+
+    const component = mount(CommandPalette, { target: document.body });
+    await tick();
+
+    await enterSearchQuery("abc");
+
+    const meta = await tickUntil(".item-meta");
+    // Should show project but no " · <time>" segment.
+    expect(meta.textContent?.trim()).toBe("my-proj");
+
+    unmount(component);
+  });
+
+  it("name-only result (ordinal === -1) routes and clears selection without scrolling", async () => {
+    mockSearchStore.results = [
+      makeSearchResult({
+        session_id: "claude:nameonly123",
+        project: "proj-a",
+        agent: "claude",
+        name: "nameonly match",
+        ordinal: -1,
+        snippet: "",
+      }),
+    ];
+
+    const component = mount(CommandPalette, { target: document.body });
+    await tick();
+
+    await enterSearchQuery("nameonly");
+
+    const item = await tickUntil(".palette-item");
+    item.click();
+    await tick();
+
+    expect(mockRouter.navigateToSession).toHaveBeenCalledWith("claude:nameonly123");
+    expect(mockUi.scrollToOrdinal).not.toHaveBeenCalled();
+    expect(mockUi.clearScrollState).toHaveBeenCalled();
+
+    unmount(component);
+  });
+
+  it("does not reselect typed text after each keystroke (#795)", async () => {
+    const component = mount(CommandPalette, { target: document.body });
+    await tick();
+
+    const input = document.querySelector<HTMLInputElement>(".palette-input")!;
+
+    function typeChar(char: string) {
+      const start = input.selectionStart ?? input.value.length;
+      const end = input.selectionEnd ?? input.value.length;
+      input.value = input.value.slice(0, start) + char + input.value.slice(end);
+      input.setSelectionRange(start + 1, start + 1);
+      input.dispatchEvent(
+        new InputEvent("input", { bubbles: true, inputType: "insertText", data: char }),
+      );
+    }
+
+    typeChar("a");
+    await tick();
+
+    expect(input.value).toBe("a");
+    expect(input.selectionStart).toBe(1);
+    expect(input.selectionEnd).toBe(1);
+
+    typeChar("b");
+    await tick();
+
+    expect(input.value).toBe("ab");
+    expect(input.selectionStart).toBe(2);
+    expect(input.selectionEnd).toBe(2);
+
+    unmount(component);
+  });
+
+  it.each([
+    { query: "消融", searches: true },
+    { query: "検索", searches: true },
+    { query: "검색", searches: true },
+    { query: "a消", searches: true },
+    { query: "abc", searches: true },
+    { query: "消", searches: false },
+    { query: "ab", searches: false },
+  ])("sends $query to the server: $searches", async ({ query, searches }) => {
+    mockSearchStore.results = [makeSearchResult({ snippet: "server hit" })];
+    const component = mount(CommandPalette, { target: document.body });
+    await tick();
+
+    await enterSearchQuery(query);
+
+    if (searches) {
+      expect(mockSearchStore.search).toHaveBeenCalledWith(query, "");
+      expect(mockSearchStore.clear).not.toHaveBeenCalled();
+    } else {
+      expect(mockSearchStore.search).not.toHaveBeenCalled();
+      expect(mockSearchStore.clear).toHaveBeenCalled();
+    }
+    const snippets = Array.from(document.querySelectorAll(".item-snippet")).map((el) =>
+      el.textContent?.trim(),
+    );
+    expect(snippets.includes("server hit")).toBe(searches);
+
+    unmount(component);
+  });
+
+  it("filters recent sessions locally for a single CJK character", async () => {
+    mockSessions.sessions = [
+      { ...makeSession("s1", "codex"), first_message: "消融实验的结果" },
+      { ...makeSession("s2", "codex"), first_message: "unrelated" },
+    ];
+    const component = mount(CommandPalette, { target: document.body });
+    await tick();
+
+    await enterSearchQuery("消");
+
+    const items = document.querySelectorAll(".palette-item");
+    expect(items).toHaveLength(1);
+    expect(items[0]?.textContent).toContain("消融实验的结果");
+
+    unmount(component);
+  });
+
+  it("search result click navigates to the session route", async () => {
+    mockSearchStore.results = [makeSearchResult()];
+
+    const component = mount(CommandPalette, { target: document.body });
+    await tick();
+
+    await enterSearchQuery();
+
+    const item = await tickUntil(".palette-item");
+    item.click();
+    await tick();
+
+    expect(mockRouter.navigateToSession).toHaveBeenCalledWith("codex:search123");
+    expect(mockUi.scrollToOrdinal).toHaveBeenCalledWith(7, "codex:search123");
+
+    unmount(component);
+  });
+
+  it("recent result click routes to the session and closes the palette", async () => {
+    const component = mount(CommandPalette, { target: document.body });
+    await tick();
+
+    const item = await tickUntil(".palette-item");
+    item.click();
+    await tick();
+
+    expect(mockRouter.navigateToSession).toHaveBeenCalledWith("s1");
+    expect(mockUi.activeModal).toBeNull();
+
+    unmount(component);
+  });
+
+  it("always renders localized search modes below the input", async () => {
+    const component = mount(CommandPalette, { target: document.body });
+    await tick();
+
+    const inputWrap = document.querySelector(".palette-input-wrap")!;
+    const controls = document.querySelector<HTMLElement>(".palette-controls")!;
+    const group = controls.querySelector<HTMLElement>(
+      '[role="radiogroup"][aria-label="Search mode"]',
+    );
+    const radios = Array.from(controls.querySelectorAll<HTMLElement>('[role="radio"]'));
+
+    expect(inputWrap.nextElementSibling).toBe(controls);
+    expect(group).not.toBeNull();
+    expect(radios.map((radio) => radio.textContent?.trim())).toEqual([
+      "Full text",
+      "Semantic",
+      "Hybrid",
+    ]);
+    expect(radios[0]?.getAttribute("aria-checked")).toBe("true");
+    expect(controls.querySelector(".palette-sort")).toBeNull();
+
+    unmount(component);
+  });
+
+  it("mode controls handle activation and arrows without activating results", async () => {
+    mockSearchStore.error = {
+      detail: "temporarily unavailable",
+      kind: "generic",
+    };
+    mockSearchStore.results = [makeSearchResult()];
+    const component = mount(CommandPalette, { target: document.body });
+    await enterSearchQuery();
+
+    const controls = document.querySelector<HTMLElement>(".palette-controls")!;
+    const radios = Array.from(controls.querySelectorAll<HTMLButtonElement>('[role="radio"]'));
+    radios[1]?.click();
+    radios[0]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    for (const key of ["Enter", " "]) {
+      radios[0]?.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+    }
+    await tick();
+
+    expect(mockSearchStore.setMode).toHaveBeenNthCalledWith(1, "semantic");
+    expect(mockSearchStore.setMode).toHaveBeenNthCalledWith(2, "semantic");
+    expect(mockSearchStore.retry).not.toHaveBeenCalled();
+    expect(mockRouter.navigateToSession).not.toHaveBeenCalled();
+
+    radios[0]?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await tick();
+    expect(mockUi.activeModal).toBeNull();
+
+    unmount(component);
+  });
+
+  it.each([
+    ["semantic", "click"],
+    ["semantic", "Enter"],
+    ["semantic", " "],
+    ["hybrid", "click"],
+    ["hybrid", "Enter"],
+    ["hybrid", " "],
+  ] as const)(
+    "retries an errored active %s mode once on %s without navigating",
+    async (mode, activation) => {
+      mockSearchStore.mode = mode;
+      mockSearchStore.error = {
+        detail: "temporarily unavailable",
+        kind: "generic",
+      };
+      mockSearchStore.results = [makeSearchResult()];
+      const component = mount(CommandPalette, { target: document.body });
+      await enterSearchQuery();
+
+      const activeMode = document.querySelector<HTMLButtonElement>(
+        '.palette-controls [role="radio"][aria-checked="true"]',
+      )!;
+      if (activation === "click") {
+        activeMode.click();
+      } else {
+        activeMode.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: activation,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      }
+      await tick();
+
+      expect(mockSearchStore.retry).toHaveBeenCalledOnce();
+      expect(mockSearchStore.setMode).not.toHaveBeenCalled();
+      expect(mockRouter.navigateToSession).not.toHaveBeenCalled();
+
+      unmount(component);
+    },
+  );
+
+  it("shows sort only for full-text query results and activates it through the rendered button", async () => {
+    mockSearchStore.results = [makeSearchResult()];
+    const fullText = mount(CommandPalette, { target: document.body });
+    await enterSearchQuery();
+
+    const recency = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(".palette-sort button"),
+    ).find((button) => button.textContent?.trim() === "Recency");
+    expect(recency).toBeDefined();
+    expect(recency?.closest(".palette-controls")).not.toBeNull();
+    recency?.click();
+    expect(mockSearchStore.setSort).toHaveBeenCalledWith("recency");
+    unmount(fullText);
+
+    mockSearchStore.mode = "semantic";
+    const semantic = mount(CommandPalette, { target: document.body });
+    await enterSearchQuery();
+    expect(document.querySelector(".palette-sort")).toBeNull();
+    unmount(semantic);
+  });
+
+  it("announces searching through a status region that is already mounted", async () => {
+    const component = mount(CommandPalette, { target: document.body });
+    await tick();
+    // Mounted and empty before any query.
+    const status = document.querySelector('[role="status"].palette-search-status');
+    expect(status).not.toBeNull();
+    expect(status?.textContent?.trim()).toBe("");
+
+    // The store mock is not reactive; entering the query is the change
+    // that re-renders the palette with the search running.
+    mockSearchStore.isSearching = true;
+    await enterSearchQuery();
+    // Same node, new text: live regions announce changes, not insertions.
+    expect(document.querySelector('[role="status"].palette-search-status')).toBe(status);
+    expect(status?.textContent?.trim()).toBe("Searching...");
+
+    unmount(component);
+  });
+
+  it("renders loading before error, empty state, and results", async () => {
+    mockSearchStore.isSearching = true;
+    mockSearchStore.error = { detail: "backend detail", kind: "generic" };
+    mockSearchStore.results = [makeSearchResult()];
+    const component = mount(CommandPalette, { target: document.body });
+    await enterSearchQuery();
+
+    const loading = document.querySelector(".palette-loading");
+    expect(loading?.querySelectorAll(".skeleton-row").length).toBeGreaterThan(0);
+    const status = document.querySelector('[role="status"].palette-search-status');
+    expect(status?.textContent?.trim()).toBe("Searching...");
+    expect(status?.closest('[aria-busy="true"]')).toBeNull();
+    expect(document.querySelector(".palette-results")?.getAttribute("aria-busy")).toBe("true");
+    expect(document.querySelector(".palette-error")).toBeNull();
+    expect(document.querySelector(".palette-item")).toBeNull();
+
+    unmount(component);
+  });
+
+  it("renders the localized error heading and exact backend detail before results", async () => {
+    mockSearchStore.error = {
+      detail: "Run agentsview index embeddings build --full-rebuild",
+      kind: "generic",
+    };
+    mockSearchStore.results = [makeSearchResult()];
+    const component = mount(CommandPalette, { target: document.body });
+    await enterSearchQuery();
+
+    const error = document.querySelector(".palette-error");
+    expect(error?.querySelector("strong")?.textContent).toBe("Search unavailable");
+    expect(error?.querySelector("span")?.textContent).toBe(
+      "Run agentsview index embeddings build --full-rebuild",
+    );
+    expect(document.querySelector(".palette-item")).toBeNull();
+
+    unmount(component);
+  });
+
+  it("renders localized fallback copy for an error without string detail", async () => {
+    mockSearchStore.error = { detail: null, kind: "generic" };
+    const component = mount(CommandPalette, { target: document.body });
+    await enterSearchQuery();
+
+    const error = document.querySelector(".palette-error");
+    expect(error?.querySelector("strong")?.textContent).toBe("Search unavailable");
+    expect(error?.querySelector("span")?.textContent).toBe("Search failed. Please try again.");
+
+    unmount(component);
+  });
+
+  it.each(["generic", "timeout"] as const)("retries a %s search error", async (kind) => {
+    mockSearchStore.mode = kind === "timeout" ? "semantic" : "fulltext";
+    mockSearchStore.error = { detail: kind === "timeout" ? "request timed out" : null, kind };
+    const component = mount(CommandPalette, { target: document.body });
+    await enterSearchQuery();
+    const retry = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(".palette-error button"),
+    ).find((button) => button.textContent?.trim() === "Retry");
+    expect(retry).toBeDefined();
+    retry!.focus();
+    retry!.click();
+    expect(document.activeElement).toBe(document.querySelector(".palette-input"));
+    expect(mockSearchStore.retry).toHaveBeenCalledOnce();
+    expect(mockRouter.navigateToSession).not.toHaveBeenCalled();
+
+    unmount(component);
+  });
+
+  it("keeps the first result selected after ArrowDown while stale results are hidden", async () => {
+    mockSearchStore.isSearching = true;
+    mockSearchStore.results = [makeSearchResult(), makeSearchResult({ session_id: "second" })];
+    const component = mount(CommandPalette, { target: document.body });
+    await enterSearchQuery();
+    const input = document.querySelector<HTMLInputElement>(".palette-input")!;
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(mockRouter.navigateToSession).not.toHaveBeenCalled();
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    mockSearchStore.isSearching = false;
+    mockSearchStore.results = [makeSearchResult()];
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(mockRouter.navigateToSession).toHaveBeenCalledWith("codex:search123");
+    unmount(component);
+  });
+
+  it("shows the inherited project and can search all projects without changing the sidebar", async () => {
+    mockSessions.filters.project = "proj-a";
+    const component = mount(CommandPalette, { target: document.body });
+    try {
+      await enterSearchQuery("configuration");
+      expect(mockSearchStore.search).toHaveBeenLastCalledWith("configuration", "proj-a");
+      const trigger = Array.from(
+        document.querySelectorAll<HTMLButtonElement>(".palette-controls button"),
+      ).find((button) => button.textContent?.trim() === "proj-a")!;
+      expect(trigger).toBeDefined();
+      trigger.click();
+      await tick();
+      const all = Array.from(document.querySelectorAll<HTMLElement>("[role='option']")).find(
+        (option) => option.textContent?.trim() === "All Projects",
+      )!;
+      all.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+      await tick();
+      expect(mockSearchStore.search).toHaveBeenLastCalledWith("configuration", "");
+      expect(mockSessions.filters.project).toBe("proj-a");
+      await enterSearchQuery("configuration details");
+      expect(mockSearchStore.search).toHaveBeenLastCalledWith("configuration details", "");
+      expect(document.querySelector(".palette-controls")?.textContent).toContain("All Projects");
+    } finally {
+      await unmount(component);
+    }
+  });
+
+  it("lets a search choose a date range without navigating or closing the palette", async () => {
+    mockSearchStore.mode = "semantic";
+    const cleanupShortcuts = registerShortcuts({
+      navigateMessage: vi.fn(),
+      navigateUserPrompt: vi.fn(),
+    });
+    const component = mount(CommandPalette, { target: document.body });
+    try {
+      await enterSearchQuery();
+
+      const trigger = document.querySelector<HTMLButtonElement>(
+        ".palette-controls button[aria-haspopup='dialog']",
+      )!;
+      expect(trigger.textContent).toContain("All time");
+      trigger.click();
+      await tick();
+      const preset = Array.from(
+        document.querySelectorAll<HTMLButtonElement>("[role='dialog'] button"),
+      ).find((button) => button.textContent?.trim() === "7d")!;
+      expect(preset).toBeDefined();
+      preset.click();
+      await tick();
+      expect(mockSearchStore.setRange).toHaveBeenCalledWith({ mode: "relative", days: 7 });
+      expect(mockRouter.navigateToSession).not.toHaveBeenCalled();
+      expect(mockUi.activeModal).toBe("commandPalette");
+
+      trigger.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      );
+      await tick();
+      expect(document.querySelector("[role='dialog']")).toBeNull();
+      expect(mockUi.activeModal).toBe("commandPalette");
+      trigger.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      );
+      expect(mockUi.activeModal).toBeNull();
+    } finally {
+      cleanupShortcuts();
+      await unmount(component);
+    }
+    expect(mockSearchStore.resetRange).toHaveBeenCalledOnce();
+  });
+
+  it("explains a semantic timeout", async () => {
+    mockSearchStore.mode = "semantic";
+    mockSearchStore.error = {
+      detail: "request timed out",
+      kind: "timeout",
+    };
+    const component = mount(CommandPalette, { target: document.body });
+    await enterSearchQuery();
+
+    const error = document.querySelector(".palette-error");
+    expect(error?.querySelector("strong")?.textContent).toBe("Search took too long");
+    expect(error?.querySelector("span")?.textContent).toBe(
+      "Try again. The first Semantic or Hybrid search can be slower while the embedding model warms up.",
+    );
+    expect(error?.textContent).not.toContain("request timed out");
+
+    unmount(component);
+  });
+
+  it.each(["semantic", "hybrid"] as const)("offers server settings in %s mode", async (mode) => {
+    mockSearchStore.mode = mode;
+    const component = mount(CommandPalette, { target: document.body });
+    await enterSearchQuery();
+    const links = document.querySelectorAll<HTMLAnchorElement>(
+      'a[href="https://agentsview.io/docs/semantic-search/#named-embeddings-servers"]',
+    );
+    expect(links).toHaveLength(1);
+    expect(links[0]?.textContent).toBe("Server settings");
+    unmount(component);
+    mockSearchStore.error = {
+      detail: "semantic search unavailable",
+      kind: "semantic-unavailable",
+    };
+    const failedComponent = mount(CommandPalette, { target: document.body });
+    await enterSearchQuery();
+    expect(document.querySelector(".palette-server-settings")).toBeNull();
+    unmount(failedComponent);
+  });
+
+  it("renders the semantic setup panel instead of the raw error for semantic-unavailable", async () => {
+    mockSearchStore.mode = "semantic";
+    mockSearchStore.error = {
+      detail: "semantic search unavailable",
+      kind: "semantic-unavailable",
+    };
+    const component = mount(CommandPalette, { target: document.body });
+    await enterSearchQuery();
+
+    expect(document.querySelector(".semantic-setup")).not.toBeNull();
+    expect(document.querySelector(".palette-error")).toBeNull();
+
+    unmount(component);
+  });
+
+  it.each([
+    [
+      "while it is off",
+      { enabled: true, provider: "built-in", missing_bytes: 295000000, busy: false },
+      true,
+    ],
+    [
+      "not while Turn on runs",
+      { enabled: false, provider: "", missing_bytes: 0, busy: true },
+      false,
+    ],
+  ] as const)(
+    "fetches setup once across keyword queries and shows the footer hint %s",
+    async (_name, setup, shown) => {
+      mockEmbeddingsService.getApiV1EmbeddingsStatus.mockResolvedValue({
+        running: false,
+        done: 0,
+        total: 0,
+        eta_milliseconds: 0,
+        setup: { ...setup, action: "turn-on", installing: false },
+      });
+      const component = mount(CommandPalette, { target: document.body });
+      await enterSearchQuery();
+      for (let i = 0; i < 10; i++) await tick();
+      expect(document.body.textContent?.includes("Search by meaning is off")).toBe(shown);
+      await enterSearchQuery("another query");
+      for (let i = 0; i < 10; i++) await tick();
+      if (shown) {
+        expect(mockEmbeddingsService.getApiV1EmbeddingsStatus).toHaveBeenCalledTimes(1);
+      }
+      unmount(component);
+    },
+  );
+
+  it.each([
+    [
+      "Build",
+      () =>
+        mockEmbeddingsService.getApiV1EmbeddingsStatus.mockResolvedValue({
+          running: false,
+          done: 0,
+          total: 0,
+          eta_milliseconds: 0,
+        }),
+      "button",
+      "Build embeddings",
+    ],
+    [
+      "Retry",
+      () =>
+        mockEmbeddingsService.getApiV1EmbeddingsStatus.mockRejectedValue(
+          new Error("status probe failed"),
+        ),
+      "button",
+      "Retry",
+    ],
+    [
+      "Copy",
+      () =>
+        mockEmbeddingsService.getApiV1EmbeddingsStatus.mockRejectedValue(
+          new ApiError(501, "embeddings manager not available"),
+        ),
+      "button.kit-copy-btn",
+      "",
+    ],
+  ] as const)(
+    "does not cancel Enter on the semantic setup %s control",
+    async (_name, arrangeStatus, selector, label) => {
+      arrangeStatus();
+      mockSearchStore.mode = "semantic";
+      mockSearchStore.error = {
+        detail:
+          "semantic search not available: run 'agentsview index embeddings build' or turn it on in Settings → Embeddings → Turn on",
+        kind: "semantic-unavailable",
+      };
+      const component = mount(CommandPalette, { target: document.body });
+      await enterSearchQuery();
+
+      const controls = await tickUntil(".semantic-setup");
+      const control = Array.from(controls.querySelectorAll<HTMLButtonElement>(selector)).find(
+        (button) => !label || button.textContent?.includes(label),
+      );
+      expect(control).toBeDefined();
+      control!.focus();
+      expect(document.activeElement).toBe(control);
+
+      const enter = new KeyboardEvent("keydown", {
+        key: "Enter",
+        bubbles: true,
+        cancelable: true,
+      });
+      const allowed = control!.dispatchEvent(enter);
+
+      expect(allowed).toBe(true);
+      expect(enter.defaultPrevented).toBe(false);
+
+      control!.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      expect(mockUi.activeModal).toBeNull();
+
+      unmount(component);
+    },
+  );
+
+  it("stops setup Escape before global shortcuts deselect the active session", async () => {
+    mockEmbeddingsService.getApiV1EmbeddingsStatus.mockRejectedValue(
+      new ApiError(501, "embeddings manager not available"),
+    );
+    mockSearchStore.mode = "semantic";
+    mockSearchStore.error = {
+      detail:
+        "semantic search not available: run 'agentsview index embeddings build' or turn it on in Settings → Embeddings → Turn on",
+      kind: "semantic-unavailable",
+    };
+    mockSessions.activeSessionId = "session-1";
+    const cleanupShortcuts = registerShortcuts({
+      navigateMessage: vi.fn(),
+      navigateUserPrompt: vi.fn(),
+    });
+    const component = mount(CommandPalette, { target: document.body });
+
+    try {
+      await enterSearchQuery();
+      const copy = await tickUntil(".semantic-setup button.kit-copy-btn");
+      copy.focus();
+      copy.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+
+      expect(mockUi.activeModal).toBeNull();
+      expect(mockSessions.activeSessionId).toBe("session-1");
+      expect(mockSessions.deselectSession).not.toHaveBeenCalled();
+    } finally {
+      cleanupShortcuts();
+      unmount(component);
+    }
+  });
+
+  it("renders empty and result states when no higher-priority state applies", async () => {
+    const empty = mount(CommandPalette, { target: document.body });
+    await enterSearchQuery();
+    expect(document.querySelector(".palette-empty")?.textContent).toContain("No results");
+    unmount(empty);
+
+    mockSearchStore.results = [makeSearchResult({ snippet: "visible result" })];
+    const results = mount(CommandPalette, { target: document.body });
+    await enterSearchQuery();
+    expect(document.querySelector(".item-snippet")?.textContent).toBe("visible result");
+    expect(document.querySelector(".palette-empty")).toBeNull();
+    unmount(results);
+  });
+
+  it("renders semantic snippets as literal text without creating HTML elements", async () => {
+    mockSearchStore.mode = "semantic";
+    mockSearchStore.results = [
+      makeSearchResult({
+        snippet: "<img src=x onerror=alert(1)>",
+        snippetFormat: "plain-text",
+      }),
+    ];
+    const component = mount(CommandPalette, { target: document.body });
+    await enterSearchQuery();
+
+    const snippet = document.querySelector(".item-snippet");
+    expect(snippet?.textContent).toBe("<img src=x onerror=alert(1)>");
+    expect(snippet?.querySelector("img")).toBeNull();
+
+    unmount(component);
+  });
+
+  it("preserves sanitized full-text mark highlighting", async () => {
+    mockSearchStore.results = [
+      makeSearchResult({
+        snippet: "before <mark>needle</mark> after",
+        snippetFormat: "highlighted-html",
+      }),
+    ];
+    const component = mount(CommandPalette, { target: document.body });
+    await enterSearchQuery();
+
+    const mark = document.querySelector(".item-snippet mark");
+    expect(mark?.textContent).toBe("needle");
+
+    unmount(component);
+  });
+});

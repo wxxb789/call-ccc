@@ -1,0 +1,306 @@
+package db
+
+import (
+	"cmp"
+	"database/sql"
+	"fmt"
+	"slices"
+	"strings"
+)
+
+// termsSnippetSeparator joins the per-term windows of a terms snippet when
+// the matched terms sit too far apart to share one window.
+const termsSnippetSeparator = " ... "
+
+// ParseContentSearchTerms returns de-duplicated whitespace-separated literal
+// terms while preserving first-seen spelling and order.
+func ParseContentSearchTerms(pattern string) []string {
+	fields := strings.Fields(pattern)
+	seen := make(map[string]struct{}, len(fields))
+	terms := make([]string, 0, len(fields))
+	for _, field := range fields {
+		key := strings.ToLower(field)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		terms = append(terms, field)
+	}
+	return terms
+}
+
+// ValidateTermsFilter validates the message-only, scope-aware terms mode.
+func ValidateTermsFilter(f ContentSearchFilter) error {
+	for _, source := range f.Sources {
+		if source != "messages" {
+			return searchInputErrorf(
+				"search: terms searches messages only (got source %q)", source)
+		}
+	}
+	return ValidateContentSearchScope(f.Scope)
+}
+
+// termsSQLFragments holds the SQL that differs between the backends that
+// implement terms mode. Everything else in the query is shared so the
+// exchange definition cannot drift between them.
+type termsSQLFragments struct {
+	systemPrefix               func(contentCol, roleCol string) string
+	messageText, prefilterText string
+	// bodyAgg concatenates an exchange's message content in ordinal order.
+	bodyAgg string
+	// timestamp and sessionSort select the match timestamp and the session
+	// recency key; orderBySort orders by that key, newest first.
+	timestamp, sessionSort, orderBySort string
+}
+
+var termsSQLByDialect = map[string]termsSQLFragments{
+	"sqlite": {
+		systemPrefix:  SystemPrefixSQL,
+		messageText:   "COALESCE(m.dialogue_text, m.content)",
+		prefilterText: "COALESCE(dialogue_text, content)",
+		bodyAgg:       "GROUP_CONCAT(content, char(10) ORDER BY ordinal)",
+		timestamp:     "COALESCE(m.timestamp,'')",
+		sessionSort:   "COALESCE(s.ended_at, s.started_at, s.created_at)",
+		orderBySort:   "julianday(sort_ts) DESC",
+	},
+	"postgres": {
+		systemPrefix:  PostgresSystemPrefixSQL,
+		messageText:   "COALESCE(m.dialogue_text, m.content)",
+		prefilterText: "content",
+		bodyAgg:       `STRING_AGG(content, E'\n' ORDER BY ordinal)`,
+		timestamp:     "m.timestamp",
+		sessionSort:   "COALESCE(s.ended_at, s.started_at, s.created_at)",
+		orderBySort:   "sort_ts DESC NULLS LAST",
+	},
+}
+
+// BuildTermsSearchSQL renders the terms-mode query for a dialect. It groups
+// embeddable user/assistant rows into a transient exchange: one user message
+// and the following assistant run on the same sidechain branch. Every term
+// must occur literally somewhere in that exchange. Tool and system content
+// never participates.
+//
+// Session scope follows the semantic modes: Scope governs subordinate
+// visibility, so the sidebar-child exclusion is omitted and child sessions
+// are exempt from the one-shot gate. Only sessions where each term occurs in
+// some message are grouped, which keeps the aggregation off the rest of the
+// archive; a term holds no whitespace, so it cannot span the newline that
+// joins two messages and the prefilter never drops a real match. For the
+// same reason, an exchange contains a term only when one of its messages
+// does, so bodies are built only for exchanges where each term has a hit.
+// Assistant rows before a session's first user message anchor no exchange,
+// so those groups are dropped and assistant-only sessions never match.
+//
+// Columns: session_id, project, agent, transcript_revision, location, role,
+// start_ordinal, timestamp, body, end_ordinal, relationship_type,
+// parent_session_id, is_sidechain, subordinate, machine, display_name.
+// ScanTermsMatches reads them.
+func BuildTermsSearchSQL(
+	f ContentSearchFilter, terms []string, dialect QueryDialect,
+) (string, []any, error) {
+	return buildTermsSearchSQL(f, terms, dialect, nil)
+}
+
+// termsScopeSQL renders the sessions WHERE clause that scopes a terms search,
+// with its bind arguments.
+func termsScopeSQL(f ContentSearchFilter, dialect QueryDialect) (string, []any) {
+	sf := ContentSessionFilter(f)
+	sf.ChildExemptOneShot = true
+	where, scopeArgs := BuildSessionBaseFilterSQL(sf, dialect)
+	b := NewQueryBuilder(dialect, len(scopeArgs))
+	if ids := NormalizeExcludeSessionIDs(f.ExcludeSessionIDs); len(ids) > 0 {
+		phs := make([]string, len(ids))
+		for i, id := range ids {
+			phs[i] = b.Add(id)
+		}
+		where += " AND id NOT IN (" + strings.Join(phs, ",") + ")"
+	}
+	return where, append(scopeArgs, b.Args()...)
+}
+
+// buildTermsSearchSQL renders the terms query. indexed holds the SQLite
+// substring index query for each term the index should prefilter; the
+// session prefilter then reads only the messages the index lists.
+func buildTermsSearchSQL(
+	f ContentSearchFilter, terms []string, dialect QueryDialect,
+	indexed map[string]string,
+) (string, []any, error) {
+	frag, ok := termsSQLByDialect[dialect.name]
+	if !ok {
+		return "", nil, searchInputErrorf(
+			"search: terms mode is not supported on the %s backend", dialect.name)
+	}
+	where, scopeArgs := termsScopeSQL(f, dialect)
+	b := NewQueryBuilder(dialect, len(scopeArgs))
+
+	// SQLite binds ? placeholders by position, so the hit flags in the
+	// eligible select list take their arguments before the prefilter.
+	hitFlags := make([]string, len(terms))
+	exchangeHits := make([]string, len(terms))
+	hitTests := make([]string, len(terms))
+	for i, term := range terms {
+		hitFlags[i] = fmt.Sprintf(",\n\t\t\t\tCASE WHEN %s THEN 1 ELSE 0 END AS hit_%d",
+			b.ContainsPredicate(frag.messageText, term), i)
+		exchangeHits[i] = fmt.Sprintf(",\n\t\t\t\tMAX(hit_%d) OVER exchange AS exchange_hit_%d", i, i)
+		hitTests[i] = fmt.Sprintf("h.exchange_hit_%d = 1", i)
+	}
+	var prefilter strings.Builder
+	for _, term := range terms {
+		listed := ""
+		if query, ok := indexed[term]; ok {
+			listed = "id IN (SELECT rowid FROM message_trigram_fts WHERE message_trigram_fts MATCH " +
+				b.Add(query) + ")\n\t\t\t\t  AND "
+		}
+		prefilter.WriteString(`
+			  AND m.session_id IN (
+				SELECT session_id FROM messages
+				WHERE ` + listed + `session_id IN (SELECT id FROM scoped)
+				  AND ` + b.ContainsPredicate(frag.prefilterText, term) + ")")
+	}
+	predicates := make([]string, 0, len(terms)+1)
+	for _, term := range terms {
+		predicates = append(predicates, b.ContainsPredicate("body", term))
+	}
+	switch f.Scope {
+	case "top":
+		predicates = append(predicates, "subordinate = "+dialect.falseLiteral)
+	case "subordinate":
+		predicates = append(predicates, "subordinate = "+dialect.trueLiteral)
+	}
+
+	query := fmt.Sprintf(`
+		WITH scoped AS (
+			SELECT id FROM sessions WHERE %s
+		), eligible AS (
+			SELECT m.session_id, m.ordinal, m.is_sidechain,
+				CASE WHEN m.role = 'user' THEN 1 ELSE 0 END AS user_start%s
+			FROM messages m
+			JOIN scoped sc ON sc.id = m.session_id
+			WHERE m.role IN ('user','assistant')
+			  AND m.is_system = %s AND %s%s
+		), tagged AS (
+			SELECT *, SUM(user_start) OVER (
+				PARTITION BY session_id, is_sidechain
+				ORDER BY ordinal ROWS UNBOUNDED PRECEDING
+			) AS exchange_no
+			FROM eligible
+		), hits AS (
+			SELECT session_id, ordinal, is_sidechain, exchange_no%s
+			FROM tagged
+			WHERE exchange_no > 0
+			WINDOW exchange AS (PARTITION BY session_id, is_sidechain, exchange_no)
+		), members AS (
+			SELECT h.session_id, s.project, s.agent, s.machine,
+				COALESCE(s.display_name, s.session_name) AS display_name,
+				s.transcript_revision AS transcript_revision,
+				s.relationship_type AS relationship_type,
+				COALESCE(s.parent_session_id,'') AS parent_session_id,
+				m.role, h.ordinal, %s AS ts, %s AS content, h.is_sidechain,
+				%s AS sort_ts,
+				CASE WHEN h.is_sidechain = %s OR %s
+					THEN %s ELSE %s END AS subordinate,
+				h.exchange_no
+			FROM hits h
+			JOIN messages m ON m.session_id = h.session_id AND m.ordinal = h.ordinal
+			JOIN sessions s ON s.id = h.session_id
+			WHERE %s
+		), exchanges AS (
+			SELECT session_id, project, agent, machine, display_name, transcript_revision, relationship_type,
+				parent_session_id, is_sidechain, subordinate, exchange_no,
+				MIN(ordinal) AS start_ordinal, MAX(ordinal) AS end_ordinal,
+				CASE WHEN exchange_no > 0 THEN 'user' ELSE 'assistant' END AS role,
+				MIN(ts) AS ts,
+				%s AS body,
+				MAX(sort_ts) AS sort_ts
+			FROM members
+			WHERE exchange_no > 0
+			GROUP BY session_id, project, agent, machine, display_name, transcript_revision, relationship_type,
+				parent_session_id, is_sidechain, subordinate, exchange_no
+		)
+		SELECT session_id, project, agent, transcript_revision, 'message', role, start_ordinal,
+			ts, body, end_ordinal, relationship_type, parent_session_id,
+			is_sidechain, subordinate, machine, display_name
+		FROM exchanges
+		WHERE %s
+		ORDER BY subordinate ASC, %s, session_id ASC, start_ordinal ASC
+		LIMIT %s OFFSET %s`,
+		where, strings.Join(hitFlags, ""),
+		dialect.falseLiteral, frag.systemPrefix("m.content", "m.role"),
+		prefilter.String(), strings.Join(exchangeHits, ""),
+		frag.timestamp, frag.messageText, frag.sessionSort,
+		dialect.trueLiteral, SubordinateSessionSQL("s"),
+		dialect.trueLiteral, dialect.falseLiteral,
+		strings.Join(hitTests, " AND "), frag.bodyAgg,
+		strings.Join(predicates, " AND "), frag.orderBySort,
+		b.Add(f.Limit+1), b.Add(f.Cursor))
+	return query, append(scopeArgs, b.Args()...), nil
+}
+
+// ScanTermsMatches reads BuildTermsSearchSQL rows into a page. The timestamp
+// column's Go type differs per backend, so the caller supplies its scan
+// destination and a formatter that reads the value scanned for the current
+// row.
+func ScanTermsMatches(
+	rows *sql.Rows, f ContentSearchFilter, terms []string,
+	timestampDest any, timestamp func() string,
+) (ContentSearchPage, error) {
+	matches := make([]ContentMatch, 0, f.Limit+1)
+	for rows.Next() {
+		var match ContentMatch
+		var body string
+		var endOrdinal int
+		if err := rows.Scan(
+			&match.SessionID, &match.Project, &match.Agent,
+			&match.TranscriptRevision, &match.Location,
+			&match.Role, &match.Ordinal, timestampDest, &body, &endOrdinal,
+			&match.Relationship, &match.ParentSessionID, &match.Sidechain,
+			&match.Subordinate, &match.Machine, &match.DisplayName,
+		); err != nil {
+			return ContentSearchPage{}, fmt.Errorf("scan terms match: %w", err)
+		}
+		match.Timestamp = timestamp()
+		match.OrdinalRange = [2]int{match.Ordinal, endOrdinal}
+		match.Snippet = f.TermsSnippet(body, terms)
+		matches = append(matches, match)
+	}
+	if err := rows.Err(); err != nil {
+		return ContentSearchPage{}, fmt.Errorf("iterate terms matches: %w", err)
+	}
+	return f.Page(matches), nil
+}
+
+// TermsSnippet returns redacted context around the first occurrence of every
+// term in an exchange body. Terms close enough to share context produce one
+// window; distant terms produce separate windows joined by
+// termsSnippetSeparator, so the snippet grows with the number of terms and
+// never with the length of the exchange.
+func (f ContentSearchFilter) TermsSnippet(body string, terms []string) string {
+	type window struct{ lo, hi int }
+	windows := make([]window, 0, len(terms))
+	for _, term := range terms {
+		start, end, ok := CaseInsensitiveSpan(body, term)
+		if !ok {
+			continue
+		}
+		lo, hi := SnippetBounds(body, start, end, ContentSnippetRadius)
+		windows = append(windows, window{lo, hi})
+	}
+	if len(windows) == 0 {
+		return f.BuildSnippet(body, 0, 0)
+	}
+	slices.SortFunc(windows, func(a, b window) int { return cmp.Compare(a.lo, b.lo) })
+	merged := windows[:1]
+	for _, w := range windows[1:] {
+		last := &merged[len(merged)-1]
+		if w.lo <= last.hi {
+			last.hi = max(last.hi, w.hi)
+			continue
+		}
+		merged = append(merged, w)
+	}
+	parts := make([]string, len(merged))
+	for i, w := range merged {
+		parts[i] = f.redactedWindow(body, w.lo, w.hi)
+	}
+	return strings.Join(parts, termsSnippetSeparator)
+}

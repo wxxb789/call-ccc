@@ -12,6 +12,9 @@ or N/A -- is rewritten to FAIL before the verdict, so it exits 1.
 
 Knobs (in-repo, auditable):
   scripts/gate-targets.txt    Go package patterns for build/vet/test; absent = ./...
+  scripts/gate-goflags.txt    extra Go flags for build/vet/test (e.g. -tags fts5)
+  scripts/upstream-manifest.txt  the carry manifest, which also says which files the secrets step
+                              scans (this repository's own; the carried tree is the parity step's)
   scripts/gate-required.txt   steps that MUST be PASS; a listed step that is
                               skipped, unavailable or a platform boundary fails
   scripts/upstream-parity.py  source-side parity check, run when present
@@ -30,11 +33,21 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from upstream_manifest import ManifestError, load_manifest  # noqa: E402  (path set up above)
 
 ROOT = Path(os.environ.get("CALLCCC_GATE_ROOT") or Path(__file__).resolve().parent.parent).resolve()
 PASS, FAIL, SKIP, BOUNDARY, NA = "PASS", "FAIL", "SKIP", "BOUNDARY", "N/A"
 KNOWN_STEPS = ("gofmt", "build", "vet", "test", "selftest", "parity", "secrets")
+
+#: How many characters of ``*.go`` paths one ``gofmt`` invocation may carry. Windows caps a process
+#: command line at 32 767 characters, and the carried tree's file list is far past that, so the step
+#: runs bounded batches that stay well inside the cap on every platform -- see ``gofmt_batches``.
+GOFMT_BATCH_CHARS = 8000
 
 
 def read_list(name: str) -> list[str]:
@@ -56,9 +69,13 @@ def run(cmd: list[str], env: dict[str, str] | None = None, timeout: int = 1800):
         return subprocess.run(
             cmd, cwd=str(ROOT), env=merged, capture_output=True, text=True, timeout=timeout
         )
-    except FileNotFoundError as exc:
-        # A missing binary is a step result, not a crash: report it as rc=127.
-        return subprocess.CompletedProcess(cmd, 127, "", f"{exc}\n")
+    except OSError as exc:
+        # A missing binary is a step result, not a crash: report it as rc=127. Every other OSError --
+        # a command line the platform refuses (Windows caps one at 32 767 characters), a binary it
+        # cannot execute -- is the same kind of answer, so a step reports it instead of the gate
+        # ending in a traceback with no verdict at all.
+        return subprocess.CompletedProcess(cmd, 127 if isinstance(exc, FileNotFoundError) else 126,
+                                           "", f"{exc}\n")
 
 
 def tail(text: str, limit: int = 2500) -> str:
@@ -95,6 +112,20 @@ def go_targets() -> list[str]:
     return read_list("gate-targets.txt") or ["./..."]
 
 
+def go_flags() -> list[str]:
+    """Extra Go flags from ``scripts/gate-goflags.txt``, folded into build/vet/test.
+
+    The inherited AgentsView build passes ``-tags fts5`` on every Go command it ships, and the flag is
+    not cosmetic: without it the SQLite driver has no FTS5 module, so a binary built here could not
+    load an archive that has a full-text index. The knob stays in the tree rather than in a shell
+    history so the flags a gate run used are auditable next to the targets it used.
+    """
+    flags: list[str] = []
+    for line in read_list("gate-goflags.txt"):
+        flags.extend(line.split())
+    return flags
+
+
 def go_env() -> tuple[dict[str, str], str | None]:
     """Return (environment, boundary_reason). boundary_reason means 'cannot build here'."""
     env = {"GOFLAGS": "-mod=mod", "CGO_ENABLED": "1"}
@@ -103,21 +134,57 @@ def go_env() -> tuple[dict[str, str], str | None]:
     return env, None
 
 
+def gofmt_batches(files: list[str], limit: int = GOFMT_BATCH_CHARS) -> list[list[str]]:
+    """Split the ``*.go`` list into invocations that fit a process command line.
+
+    Windows caps a process command line at 32 767 characters, and the carried AgentsView tree holds
+    thousands of ``*.go`` files, so one ``gofmt -l <every path>`` invocation cannot be started there at
+    all. The batches together are still the whole list, in the same order, and a path longer than the
+    limit is a batch of its own rather than a dropped one.
+    """
+    batches: list[list[str]] = []
+    batch: list[str] = []
+    used = 0
+    for path in files:
+        cost = len(path) + 1  # the separator the command line spends between arguments
+        if batch and used + cost > limit:
+            batches.append(batch)
+            batch, used = [], 0
+        batch.append(path)
+        used += cost
+    if batch:
+        batches.append(batch)
+    return batches
+
+
 def step_gofmt(go_files: list[str]) -> tuple[str, str]:
     if not shutil.which("gofmt"):
         return FAIL, "gofmt not found (Go toolchain is required)"
     if not go_files:
         return SKIP, "no Go sources in the tree yet"
-    proc = run(["gofmt", "-l", *go_files])
-    if proc.returncode != 0:
-        return FAIL, tail(proc.stderr)
-    unformatted = [line for line in proc.stdout.splitlines() if line.strip()]
+    batches = gofmt_batches(go_files)
+    unformatted: list[str] = []
+    failed: list[str] = []
+    for batch in batches:
+        proc = run(["gofmt", "-l", *batch])
+        if proc.returncode != 0:
+            failed.append(tail(proc.stderr, 1200))
+            continue
+        unformatted.extend(line for line in proc.stdout.splitlines() if line.strip())
+    if failed:
+        # One line, so the tool's own message reaches the step's printed line (and any assertion that
+        # reads it) instead of only the detail's second line.
+        return FAIL, (f"gofmt could not check {len(failed)} of {len(batches)} batch(es): "
+                      + " | ".join(failed))
     if unformatted:
-        return FAIL, "not gofmt-clean:\n" + "\n".join(unformatted[:40])
+        more = f"\n… and {len(unformatted) - 40} more" if len(unformatted) > 40 else ""
+        return FAIL, "not gofmt-clean:\n" + "\n".join(unformatted[:40]) + more
     return PASS, f"{len(go_files)} file(s) gofmt-clean"
 
 
-def step_go(sub: str, go_files: list[str], boundary: str | None, targets: list[str]) -> tuple[str, str]:
+def step_go(
+    sub: str, go_files: list[str], boundary: str | None, targets: list[str], flags: list[str]
+) -> tuple[str, str]:
     name = {"build": "go build", "vet": "go vet", "test": "go test -count=1"}[sub]
     if not (ROOT / "go.mod").exists():
         return SKIP, "no go.mod yet"
@@ -128,7 +195,10 @@ def step_go(sub: str, go_files: list[str], boundary: str | None, targets: list[s
     if not shutil.which("go"):
         return FAIL, "go not found on PATH"
     env, _ = go_env()
-    cmd = ["go", sub, *targets] if sub in ("build", "vet") else ["go", "test", "-count=1", *targets]
+    if sub == "test":
+        cmd = ["go", "test", "-count=1", *flags, *targets]
+    else:
+        cmd = ["go", sub, *flags, *targets]
     proc = run(cmd, env=env)
     detail = tail((proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else ""))
     if proc.returncode != 0:
@@ -163,34 +233,91 @@ def step_parity() -> tuple[str, str]:
     return PASS, tail(proc.stdout, 800).replace("\n", " | ") or "rc=0"
 
 
-def step_secrets() -> tuple[str, str]:
-    """Scan the whole working tree -- untracked and gitignored files included.
+def secrets_scope() -> tuple[Path | None, int, str]:
+    """Stage this repository's own files for the leak scan and describe the scope.
 
-    ``--no-git`` (no git history, current files only) has no gitignore switch, so
-    a local ``.env`` is read here even though CI's clean checkout never has one;
-    the PASS message below states the scope instead of implying a tracked-tree one.
+    The carried AgentsView tree is not scanned here: it is upstream's content, byte-verified against
+    the pinned revision by the parity step, and a credential shape inside upstream's own
+    secret-detector corpora (``internal/secrets/rules_test.go`` and friends) is upstream's test data,
+    not a credential call/ccc committed. What this step is for is the other half -- the files this
+    repository owns -- and the manifest is what says which those are, so a new project file is scanned
+    automatically and a carried one cannot be mistaken for ours.
+
+    Returns ``(directory, file count, note)``. ``directory`` is None when the copy could not be made,
+    which the caller reports instead of scanning something else.
+    """
+    manifest_path = ROOT / "scripts" / "upstream-manifest.txt"
+    try:
+        manifest = load_manifest(manifest_path)
+    except (OSError, ManifestError) as broken:
+        # A tree without a carry manifest is not this repository's shape (a throw-away test tree, a
+        # copy): the honest fallback is to scan the whole tree and say so.
+        return ROOT, -1, f"no readable carry manifest ({broken}), so the whole tree was scanned"
+    stage_root: str | None = None
+    try:
+        stage_root = tempfile.mkdtemp(prefix="ccc-secrets-")
+        staged = Path(stage_root)
+        copied = 0
+        for path in ROOT.rglob("*"):
+            if not path.is_file() or ".git" in path.relative_to(ROOT).parts:
+                continue
+            relative = path.relative_to(ROOT).as_posix()
+            if not manifest.is_owned(relative):
+                continue
+            target = staged / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+            copied += 1
+    except OSError as failed:
+        # Staging needs disk space and permissions the scan itself does not: report the scope that
+        # could not be prepared, so the caller names it instead of crashing on a traceback.
+        if stage_root is not None:
+            shutil.rmtree(stage_root, ignore_errors=True)
+        return None, 0, f"could not stage this repository's own files for the leak scan ({failed})"
+    return staged, copied, (
+        f"{copied} file(s) this repository owns (the carried upstream tree is covered by the parity "
+        f"step, not by this scan)")
+
+
+def step_secrets() -> tuple[str, str]:
+    """Scan this repository's own files for credentials.
+
+    ``--no-git`` (no git history, current files only) has no gitignore switch, so a local ``.env`` is
+    read here even though CI's clean checkout never has one; the PASS message states the scope
+    instead of implying a tracked-tree one.
     """
     if not shutil.which("gitleaks"):
         return SKIP, "gitleaks not installed on this host (CI installs it)"
-    proc = run(
-        ["gitleaks", "detect", "--no-git", "--source", ".", "--redact", "--no-banner", "--exit-code", "7"],
-        timeout=600,
-    )
+    scope, copied, note = secrets_scope()
+    if scope is None:
+        # The scan could not be prepared: like a gitleaks binary that is absent or a run that did not
+        # complete, that is a disclosed SKIP named in the verdict line, not a leak result.
+        return SKIP, note
+    try:
+        proc = run(
+            ["gitleaks", "detect", "--no-git", "--source", str(scope), "--redact", "--no-banner",
+             "--exit-code", "7"],
+            timeout=600,
+        )
+    finally:
+        if scope != ROOT:
+            shutil.rmtree(scope, ignore_errors=True)
     if proc.returncode == 0:
-        return PASS, "no leaks found in the working tree (untracked and gitignored files included)"
+        return PASS, f"no leaks found in {note}"
     if proc.returncode == 7:
-        return FAIL, "gitleaks reported leaks (redacted):\n" + tail(proc.stdout, 1200)
+        return FAIL, f"gitleaks reported leaks (redacted) in {note}:\n" + tail(proc.stdout, 1200)
     return SKIP, f"gitleaks did not complete (rc={proc.returncode}): " + tail(proc.stderr, 400)
 
 
 def build_steps() -> list[tuple[str, str, str]]:
     go_files = tracked_go_files()
     targets = go_targets()
+    flags = go_flags()
     _, boundary = go_env()
     steps: list[tuple[str, str, str]] = []
     steps.append(("gofmt", *step_gofmt(go_files)))
     for sub in ("build", "vet", "test"):
-        steps.append((sub, *step_go(sub, go_files, boundary, targets)))
+        steps.append((sub, *step_go(sub, go_files, boundary, targets, flags)))
     steps.append(("selftest", *step_selftest()))
     steps.append(("parity", *step_parity()))
     steps.append(("secrets", *step_secrets()))

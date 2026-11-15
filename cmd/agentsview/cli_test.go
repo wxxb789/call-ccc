@@ -1,0 +1,406 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"database/sql"
+	"encoding/json/v2"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/spf13/cobra"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.kenn.io/agentsview/internal/apiclient"
+	"go.kenn.io/agentsview/internal/db"
+	"go.yaml.in/yaml/v3"
+)
+
+func TestCLIArchiveStaleWarning(t *testing.T) {
+	for _, stale := range []bool{false, true} {
+		t.Run(strconv.FormatBool(stale), func(t *testing.T) {
+			newAgentDataDir(t)
+			ts := sessionUsageRuntimeServer(t, func(w http.ResponseWriter, r *http.Request) {
+				if stale {
+					w.Header().Set(apiclient.ArchiveStaleHeader, "true")
+				}
+				switch r.URL.Path {
+				case "/api/v1/sessions":
+					writeJSONResponse(w, `{"sessions":[],"total":0}`)
+				default:
+					assert.Fail(t, "unexpected request", r.URL.Path)
+					http.NotFound(w, r)
+				}
+			})
+			var stdout, stderr bytes.Buffer
+			require.NoError(t, executeCLIWithLegacyFlagCompat([]string{"session", "list", "--server", ts.URL, "--json"}, &stdout, &stderr))
+			decodeCLIJSON[cliSessionList](t, stdout.String())
+			assert.NotContains(t, stdout.String(), apiclient.ArchiveStaleWarning)
+			wantWarnings := 0
+			if stale {
+				wantWarnings = 1
+			}
+			assert.Equal(t, wantWarnings, strings.Count(stderr.String(), apiclient.ArchiveStaleWarning))
+		})
+	}
+}
+
+func executeCommand(root *cobra.Command, args ...string) (string, error) {
+	_, output, err := executeCommandC(root, args...)
+	return output, err
+}
+
+func executeCommandC(root *cobra.Command, args ...string) (*cobra.Command, string, error) {
+	buf := new(bytes.Buffer)
+	root.SetOut(buf)
+	root.SetErr(buf)
+	root.SetArgs(args)
+
+	cmd, err := root.ExecuteC()
+	return cmd, buf.String(), err
+}
+
+func TestRootHelpShowsKeySectionsAndCommands(t *testing.T) {
+	help, err := executeCommand(newRootCommand(), "--help")
+	require.NoError(t, err, "Execute")
+	for _, want := range []string{
+		"Usage:\n  agentsview [flags]\n  agentsview <command> [flags]",
+		"Core Commands:",
+		"Data Commands:",
+		"Usage Commands:",
+		"Other Commands:",
+		"serve                  Start the web UI and sync server",
+		"replica                Sync and serve database replicas",
+		"source                 Discover and ingest session sources",
+		"report                 Report activity, usage, and workspace statistics",
+		"index                  Build and manage derived search indexes",
+		"completion             Generate the autocompletion script for the specified shell",
+		"Flags:",
+		"--version",
+		"[agents.claude]",
+		"dirs = [\"/path/one\", \"/path/two\"]",
+		"[agents.codex]",
+		"dirs = [\"/codex/a\", \"/codex/b\"]",
+	} {
+		assert.Contains(t, help, want, "help missing %q", want)
+	}
+	for _, unwanted := range []string{
+		"--host string",
+		"--port int",
+	} {
+		assert.NotContains(t, help, unwanted,
+			"root help should not include serve flag %q", unwanted)
+	}
+}
+
+func TestPruneCommandAgentFilter(t *testing.T) {
+	var got []PruneConfig
+	cmd := newPruneCommandWithRunner(func(ctx context.Context, cfg PruneConfig) {
+		got = append(got, cfg)
+	})
+	_, err := executeCommand(cmd,
+		"--agent", "mimocode", "--project", "project-a", "--max-messages", "0",
+		"--before", "2025-01-01", "--first-message", "hello", "--dry-run", "--yes")
+	require.NoError(t, err)
+	assert.Equal(t, []PruneConfig{{
+		Filter: db.PruneFilter{Agent: "mimocode", Project: "project-a", MaxMessages: new(0), Before: "2025-01-01", FirstMessage: "hello"},
+		DryRun: true, Yes: true,
+	}}, got)
+}
+
+func TestPruneCommandRejectsEmptyAgent(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		args []string
+	}{
+		{"agent only", []string{"--agent="}},
+		{"with project", []string{"--agent=", "--project", "project-a"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			cmd := newPruneCommandWithRunner(func(context.Context, PruneConfig) {
+				called = true
+			})
+			_, err := executeCommand(cmd, tt.args...)
+			require.EqualError(t, err, "--agent must not be empty")
+			assert.False(t, called, "runner must not be called")
+		})
+	}
+}
+
+func TestRawSyncCommandsKeepCredentialOutOfArguments(t *testing.T) {
+	help, err := executeCommand(newRootCommand(), "raw-sync", "watch", "--help")
+	require.NoError(t, err)
+	for _, want := range []string{
+		"--server", "--device-id", "--allow-insecure-http", "--debounce", "--interval",
+		"AGENTSVIEW_RAW_SYNC_CREDENTIAL",
+	} {
+		assert.Contains(t, help, want)
+	}
+	assert.NotContains(t, help, "--credential")
+	_, err = executeCommand(
+		newRootCommand(), "raw-sync", "watch", "--credential=private-value",
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown flag: --credential")
+	assert.NotContains(t, err.Error(), "private-value")
+	status, err := executeCommand(newRootCommand(), "raw-sync", "status", "--help")
+	require.NoError(t, err)
+	assert.Contains(t, status, "Show durable laptop raw-sync status")
+}
+
+func TestOpenAPICommandEmitsSpec(t *testing.T) {
+	out, err := executeCommand(newRootCommand(), "openapi")
+	require.NoError(t, err, "Execute")
+
+	var spec struct {
+		OpenAPI string                    `json:"openapi"`
+		Paths   map[string]map[string]any `json:"paths"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &spec))
+	assert.Equal(t, "3.1.0", spec.OpenAPI)
+	require.Contains(t, spec.Paths, "/api/v1/sessions")
+	assert.Contains(t, spec.Paths["/api/v1/sessions"], "get")
+	require.Contains(t, spec.Paths, "/api/v1/sessions/{id}/rename")
+	assert.Contains(t, spec.Paths["/api/v1/sessions/{id}/rename"], "patch")
+}
+
+func TestOpenAPICommandEmitsYAML(t *testing.T) {
+	out, err := executeCommand(newRootCommand(), "openapi", "--yaml")
+	require.NoError(t, err)
+	var spec struct {
+		OpenAPI string                    `yaml:"openapi"`
+		Paths   map[string]map[string]any `yaml:"paths"`
+	}
+	require.NoError(t, yaml.Unmarshal([]byte(out), &spec))
+	assert.Equal(t, "3.1.0", spec.OpenAPI)
+	require.Contains(t, spec.Paths, "/api/v1/sessions")
+	assert.Contains(t, spec.Paths["/api/v1/sessions"], "get")
+}
+
+func TestServeCheckDataVersionRejectsNewerDatabase(t *testing.T) {
+	dataDir := testDataDir(t)
+	dbPath := filepath.Join(dataDir, "sessions.db")
+
+	database, err := db.Open(t.Context(), dbPath)
+	require.NoError(t, err, "open db")
+	require.NoError(t, database.Close(), "close db")
+
+	futureVersion := db.CurrentDataVersion() + 10
+	conn, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err, "raw sqlite open")
+	_, err = conn.ExecContext(t.Context(), fmt.Sprintf("PRAGMA user_version = %d", futureVersion))
+	require.NoError(t, err, "set future user_version")
+	require.NoError(t, conn.Close(), "close raw sqlite")
+
+	out, err := executeCommand(newRootCommand(), "serve", "--check-data-version")
+	require.Error(t, err, "preflight should reject newer archive")
+	assert.Equal(t, dataVersionTooNewExitCode, exitCodeFromError(err))
+	assert.Empty(t, out)
+	assert.Contains(t, err.Error(), "database data version")
+	assert.Contains(t, err.Error(), "is newer than this agentsview binary")
+	assert.Contains(t, err.Error(),
+		fmt.Sprintf("Use an AgentsView build with data version %d or newer", futureVersion))
+	assert.Contains(t, err.Error(),
+		fmt.Sprintf("restore an archive backup compatible with data version %d",
+			db.CurrentDataVersion()))
+	assert.Contains(t, err.Error(), "The archive was not modified")
+	assert.NotContains(t, err.Error(), `Run "agentsview update"`)
+}
+
+func TestServeCheckDataVersionDoesNotCreateConfig(t *testing.T) {
+	dataDir := testDataDir(t)
+
+	out, err := executeCommand(newRootCommand(), "serve", "--check-data-version")
+
+	require.NoError(t, err, "preflight with no database")
+	assert.Empty(t, out)
+	_, statErr := os.Stat(filepath.Join(dataDir, "config.toml"))
+	require.ErrorIs(t, statErr, os.ErrNotExist,
+		"preflight must not create config.toml")
+}
+
+func TestRootNoArgsShowsHelp(t *testing.T) {
+	out, err := executeCommand(newRootCommand())
+	require.NoError(t, err, "Execute")
+	for _, want := range []string{
+		"Usage:\n  agentsview [flags]\n  agentsview <command> [flags]",
+		"Core Commands:",
+		"serve                  Start the web UI and sync server",
+	} {
+		assert.Contains(t, out, want, "output missing %q", want)
+	}
+}
+
+func TestRootHelpKeepsSummaryClean(t *testing.T) {
+	help, err := executeCommand(newRootCommand(), "--help")
+	require.NoError(t, err, "Execute")
+	for _, unwanted := range []string{
+		"agentsview serve [flags]",
+		"\nCommands:\n",
+		"completion bash",
+		"completion fish",
+		"completion powershell",
+		"completion zsh",
+	} {
+		assert.NotContains(t, help, unwanted,
+			"root help should not include %q", unwanted)
+	}
+}
+
+func TestNormalizeFlagHelpWidth(t *testing.T) {
+	tests := []struct {
+		in   int
+		want int
+	}{
+		{in: 0, want: 80},
+		{in: -1, want: 80},
+		{in: 79, want: 79},
+		{in: 120, want: 120},
+		{in: 160, want: 160},
+		{in: 220, want: 160},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, normalizeFlagHelpWidth(tt.in),
+			"normalizeFlagHelpWidth(%d)", tt.in)
+	}
+}
+
+func TestFlagHelpWidthFallback(t *testing.T) {
+	assert.Equal(t, 80, flagHelpWidth(&bytes.Buffer{}),
+		"flagHelpWidth(buffer)")
+
+	f, err := os.CreateTemp(t.TempDir(), "help-width")
+	require.NoError(t, err, "CreateTemp")
+	defer f.Close()
+
+	assert.Equal(t, 80, flagHelpWidth(f), "flagHelpWidth(file)")
+}
+
+func TestRootVersionFlag(t *testing.T) {
+	got, err := executeCommand(newRootCommand(), "--version")
+	require.NoError(t, err, "Execute")
+	assert.Contains(t, got, "agentsview ", "version output = %q", got)
+}
+
+func TestVersionJSONContractDoesNotRequireRuntimeState(t *testing.T) {
+	oldVersion, oldCommit, oldBuildDate := version, commit, buildDate
+	t.Cleanup(func() {
+		version, commit, buildDate = oldVersion, oldCommit, oldBuildDate
+	})
+	version = "v1.2.3"
+	commit = "abc1234"
+	buildDate = "2026-07-12T14:30:00Z"
+
+	dataDirFile := filepath.Join(t.TempDir(), "not-a-directory")
+	require.NoError(t, os.WriteFile(dataDirFile, []byte("occupied"), 0o600))
+	t.Setenv("AGENTSVIEW_DATA_DIR", dataDirFile)
+
+	got, err := executeCommand(newRootCommand(), "version", "--json")
+	require.NoError(t, err, "Execute")
+
+	var doc struct {
+		SchemaVersion int    `json:"schema_version"`
+		Name          string `json:"name"`
+		Version       string `json:"version"`
+		Commit        string `json:"commit"`
+		BuildDate     string `json:"build_date"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(got), &doc))
+	assert.Equal(t, 1, doc.SchemaVersion)
+	assert.Equal(t, "agentsview", doc.Name)
+	assert.Equal(t, "v1.2.3", doc.Version)
+	assert.Equal(t, "abc1234", doc.Commit)
+	assert.Equal(t, "2026-07-12T14:30:00Z", doc.BuildDate)
+}
+
+func TestNormalizeLegacyLongFlags(t *testing.T) {
+	flags := collectLongFlags(newRootCommand())
+	got, rewrites := normalizeLegacyLongFlags([]string{
+		"-host", "0.0.0.0",
+		"-port=9090",
+		"sync",
+		"-full",
+		"--",
+		"-port", "1000",
+	}, flags)
+	want := []string{
+		"--host", "0.0.0.0",
+		"--port=9090",
+		"sync",
+		"--full",
+		"--",
+		"-port", "1000",
+	}
+	assert.Equal(t, want, got)
+	wantRewrites := []string{
+		"-host -> --host",
+		"-port -> --port",
+		"-full -> --full",
+	}
+	assert.Equal(t, wantRewrites, rewrites)
+}
+
+func TestNormalizeLegacyLongFlagsSkipsShortFlagsAndNumbers(t *testing.T) {
+	flags := collectLongFlags(newRootCommand())
+	got, rewrites := normalizeLegacyLongFlags([]string{
+		"-h",
+		"-v",
+		"-1",
+		"-abc",
+		"--port", "9090",
+	}, flags)
+	want := []string{"-h", "-v", "-1", "-abc", "--port", "9090"}
+	assert.Equal(t, want, got)
+	assert.Empty(t, rewrites)
+}
+
+func TestLegacyLongFlagWarning(t *testing.T) {
+	got := legacyLongFlagWarning([]string{
+		"-host -> --host",
+		"-port -> --port",
+	})
+	want := "warning: deprecated single-dash long flags detected; use GNU-style long flags instead: -host -> --host, -port -> --port\n"
+	assert.Equal(t, want, got)
+}
+
+func TestExecuteCLIWithLegacyFlagCompatWarnsOnce(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	require.NoError(t,
+		executeCLIWithLegacyFlagCompat([]string{"-version"}, &stdout, &stderr),
+		"Execute")
+	assert.Contains(t, stdout.String(), "agentsview ",
+		"version output = %q", stdout.String())
+	want := "warning: deprecated single-dash long flags detected; use GNU-style long flags instead: -version -> --version\n"
+	assert.Equal(t, want, stderr.String())
+}
+
+// Deployments pass --pprof to whichever serve command they run, so every
+// command that serves the web UI must accept it, or the service fails to start
+// on an unknown flag. The deprecated top-level aliases are separate command
+// instances and are covered too.
+func TestServeCommandsAcceptHiddenPprofFlag(t *testing.T) {
+	for _, path := range []string{
+		"serve",
+		"replica clickhouse serve", "clickhouse serve",
+		"replica pg serve", "pg serve",
+		"replica duckdb serve", "duckdb serve",
+	} {
+		t.Run(path, func(t *testing.T) {
+			cmd, rest, err := newRootCommand().Find(strings.Fields(path))
+			require.NoError(t, err)
+			require.Empty(t, rest)
+			require.NoError(t, cmd.ParseFlags([]string{"--pprof"}))
+			enabled, err := cmd.Flags().GetBool("pprof")
+			require.NoError(t, err)
+			assert.True(t, enabled)
+			assert.True(t, cmd.Flags().Lookup("pprof").Hidden,
+				"--pprof is a developer flag and stays out of help")
+		})
+	}
+}

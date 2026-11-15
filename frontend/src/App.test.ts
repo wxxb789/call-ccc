@@ -1,0 +1,2039 @@
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { mount, tick, unmount } from "svelte";
+import { analytics } from "./lib/stores/analytics.svelte.js";
+import { activity } from "./lib/stores/activity.svelte.js";
+import { analyticsPageDates } from "./lib/stores/analyticsPageDates.js";
+import { insights } from "./lib/stores/insights.svelte.js";
+import { messages } from "./lib/stores/messages.svelte.js";
+import { pins } from "./lib/stores/pins.svelte.js";
+import { router } from "./lib/stores/router.svelte.js";
+import { rollingRange } from "./lib/utils/dates.js";
+import { sessionTiming } from "./lib/stores/sessionTiming.svelte.js";
+import { createSessionsStore, sessions } from "./lib/stores/sessions.svelte.js";
+import { settings } from "./lib/stores/settings.svelte.js";
+import { starred } from "./lib/stores/starred.svelte.js";
+import { sync } from "./lib/stores/sync.svelte.js";
+import { codexCloudStatus } from "./lib/stores/codexCloud.svelte.js";
+import { ui } from "./lib/stores/ui.svelte.js";
+import { usage } from "./lib/stores/usage.svelte.js";
+import { yokedDates } from "./lib/stores/yokedDates.svelte.js";
+import type { DbMessage as Message } from "./lib/api/generated/index.js";
+import { hasVisibleSegments } from "./lib/utils/content-parser.js";
+import { SessionsService } from "./lib/api/generated/index.js";
+import { dismissFlash } from "@kenn-io/kit-ui";
+vi.mock("./lib/feature-flags.js", () => ({
+  PROJECT_MAPPING_WORKSPACE_ENABLED: true,
+}));
+// @ts-ignore
+import App, { findUserPromptOrdinal } from "./App.svelte";
+import { requestUrl } from "./lib/test-support/request-url.js";
+
+let component: ReturnType<typeof mount> | undefined;
+
+async function flushEffects() {
+  await tick();
+  await Promise.resolve();
+  await tick();
+}
+
+async function selectRelativeRange(days: number) {
+  const trigger = document.querySelector<HTMLButtonElement>(".kit-date-range-picker__trigger");
+  expect(trigger).not.toBeNull();
+  trigger!.click();
+  await flushEffects();
+
+  const preset = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+    (button) => button.textContent?.trim() === `${days}d`,
+  );
+  expect(preset).not.toBeUndefined();
+  preset!.click();
+  await flushEffects();
+}
+
+function stubAppDependencies() {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  vi.spyOn(settings, "load").mockResolvedValue();
+  vi.spyOn(starred, "load").mockResolvedValue();
+  vi.spyOn(sync, "loadStatus").mockResolvedValue();
+  vi.spyOn(sync, "loadStats").mockResolvedValue();
+  vi.spyOn(sync, "loadVersion").mockResolvedValue();
+  vi.spyOn(sync, "checkForUpdate").mockResolvedValue();
+  vi.spyOn(sync, "startPolling").mockImplementation(() => {});
+  vi.spyOn(codexCloudStatus, "load").mockResolvedValue();
+  vi.spyOn(sync, "watchSession").mockResolvedValue(false);
+  vi.spyOn(sessions, "loadProjects").mockResolvedValue();
+  vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+  vi.spyOn(sessions, "attachSidebar").mockReturnValue(() => {});
+  vi.spyOn(sessions, "loadChildSessions").mockResolvedValue();
+  vi.spyOn(messages, "loadSession").mockResolvedValue();
+  vi.spyOn(sessionTiming, "load").mockResolvedValue();
+  vi.spyOn(pins, "loadForSession").mockResolvedValue();
+  vi.spyOn(analytics, "fetchAll").mockResolvedValue();
+  vi.spyOn(analytics, "fetchSignalsForQuality").mockResolvedValue();
+  vi.spyOn(insights, "load").mockResolvedValue();
+  vi.spyOn(usage, "fetchAll").mockResolvedValue();
+}
+
+afterEach(() => {
+  if (component) {
+    unmount(component);
+    component = undefined;
+  }
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+  document.body.innerHTML = "";
+  localStorage.clear();
+  window.history.replaceState(null, "", "/");
+  router.route = "sessions";
+  router.params = {};
+  router.sessionId = null;
+  router.isRootPath = false;
+  sessions.activeSessionId = null;
+  sessions.archiveEmpty = false;
+  sessions.filters.date = "";
+  sessions.filters.dateFrom = "";
+  sessions.filters.dateTo = "";
+  sessions.filters.includeOneShot = true;
+  sessions.filters.includeAutomated = false;
+  starred.filterOnly = false;
+  sessions.initFromParams({});
+  sessions.filters.project = "";
+  analytics.applyRollingWindow(365);
+  usage.isPinned = false;
+  usage.windowDays = 30;
+  usage.from = "";
+  usage.to = "";
+  analyticsPageDates.clear();
+  yokedDates.setEnabled(false);
+  ui.clearScrollState();
+  settings.needsAuth = false;
+  settings.loaded = false;
+  settings.readOnly = false;
+  settings.error = null;
+  sync.serverVersion = null;
+  settings.saveError = null;
+  dismissFlash();
+});
+
+it("shows settings save errors through the app shell", async () => {
+  stubAppDependencies();
+  router.route = "settings";
+  settings.saveError = "settings endpoint unavailable";
+  component = mount(App, { target: document.body });
+  await flushEffects();
+
+  const flash = document.body.querySelector<HTMLElement>(
+    '.kit-flash-banner[data-kit-tone="danger"]',
+  );
+  expect(flash).not.toBeNull();
+  expect(flash?.textContent).toContain("settings endpoint unavailable");
+});
+
+it("keeps the first analytics range for a window_days=90 deep link", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-06-20T12:00:00"));
+  stubAppDependencies();
+  vi.spyOn(sessions, "load").mockResolvedValue();
+  sessions.loading = true;
+  window.history.replaceState(null, "", "/sessions?window_days=90");
+  router.route = "sessions";
+  router.params = { window_days: "90" };
+  router.isRootPath = false;
+  const ranges: string[][] = [];
+  vi.mocked(analytics.fetchAll).mockImplementation(async () => {
+    ranges.push([analytics.from, analytics.to]);
+  });
+  component = mount(App, { target: document.body });
+  await flushEffects();
+  expect(analytics.fetchAll).not.toHaveBeenCalled();
+  sessions.loading = false;
+  await flushEffects();
+  await vi.advanceTimersByTimeAsync(0);
+  await flushEffects();
+  expect(ranges).toHaveLength(1);
+  expect(ranges[0]).toEqual(["2026-03-23", "2026-06-20"]);
+  expect(analytics.windowDays).toBe(90);
+});
+
+describe("App Recall availability", () => {
+  it("opens Generated insights without querying the corpus on a read-only backend", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    const fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      if (url.includes("/recall/extraction/status")) {
+        return new Response(JSON.stringify({ configured: false }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.includes("/api/v1/insights")) {
+        return new Response(JSON.stringify({ insights: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ entries: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    vi.spyOn(settings, "load").mockResolvedValue();
+    vi.spyOn(starred, "load").mockResolvedValue();
+    vi.spyOn(sync, "loadStatus").mockResolvedValue();
+    vi.spyOn(sync, "loadStats").mockResolvedValue();
+    vi.spyOn(sync, "loadVersion").mockResolvedValue();
+    vi.spyOn(sync, "checkForUpdate").mockResolvedValue();
+    vi.spyOn(sync, "startPolling").mockImplementation(() => {});
+    vi.spyOn(codexCloudStatus, "load").mockResolvedValue();
+    vi.spyOn(sessions, "loadProjects").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+
+    sync.serverVersion = {
+      api_version: 1,
+      data_version: 1,
+      session_stats_available: false,
+      friction_available: false,
+      friction_build_allowed: false,
+      insight_generation_available: false,
+      kata_available: false,
+      version: "dev",
+      commit: "unknown",
+      build_date: "",
+      read_only: true,
+    };
+    router.route = "recall";
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+
+    expect(document.body.textContent).toContain("Generated insights");
+    expect(fetchSpy.mock.calls.some(([input]) => requestUrl(input).includes("/recall/"))).toBe(
+      false,
+    );
+  });
+});
+
+describe("App session URL date state", () => {
+  it.each(["selection change", "selection cleared", "route exit", "unmount"])(
+    "ignores an old watch's children fallback after %s",
+    async (change) => {
+      stubAppDependencies();
+      vi.spyOn(sessions, "load").mockResolvedValue();
+      vi.spyOn(sessions, "navigateToSession").mockResolvedValue();
+      const ready = Promise.withResolvers<boolean>();
+      vi.mocked(sync.watchSession).mockReturnValueOnce(ready.promise);
+      router.route = "sessions";
+      router.isRootPath = false;
+      router.sessionId = "session-1";
+      sessions.activeSessionId = "session-1";
+      component = mount(App, { target: document.body });
+      await flushEffects();
+      expect(sync.watchSession).toHaveBeenCalledWith(
+        "session-1",
+        expect.any(Function),
+        expect.any(Function),
+      );
+      expect(sessions.loadChildSessions).not.toHaveBeenCalled();
+
+      if (change === "selection change") {
+        sessions.activeSessionId = "session-2";
+      } else if (change === "selection cleared") {
+        sessions.activeSessionId = null;
+      } else if (change === "route exit") {
+        router.navigate("usage");
+      } else {
+        await unmount(component);
+        component = undefined;
+      }
+      await flushEffects();
+      vi.mocked(sessions.loadChildSessions).mockClear();
+
+      ready.resolve(false);
+      await flushEffects();
+      expect(sessions.loadChildSessions).not.toHaveBeenCalled();
+    },
+  );
+
+  it("requests children once when the session watch becomes ready on open", async () => {
+    stubAppDependencies();
+    vi.mocked(sync.watchSession).mockRestore();
+    vi.mocked(sessions.loadChildSessions).mockRestore();
+    vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    vi.spyOn(sessions, "navigateToSession").mockResolvedValue();
+    vi.spyOn(sessions, "refreshActiveSession").mockResolvedValue();
+    vi.spyOn(messages, "reload").mockResolvedValue();
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const watch = vi.spyOn(SessionsService, "getApiV1SessionsByIdWatch").mockResolvedValue(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            stream = controller;
+          },
+        }),
+        { headers: { "Content-Type": "text/event-stream" } },
+      ),
+    );
+    const fetchSpy = vi.fn(
+      async (_input: RequestInfo | URL) =>
+        new Response("[]", {
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+    router.route = "sessions";
+    router.sessionId = "session-1";
+    sessions.activeSessionId = "session-1";
+    try {
+      component = mount(App, { target: document.body });
+      await flushEffects();
+      expect(watch).toHaveBeenCalledWith({ id: "session-1" }, expect.anything());
+      stream.enqueue(new TextEncoder().encode("event: session_ready\ndata: {}\n\n"));
+      await vi.waitFor(() =>
+        expect(
+          fetchSpy.mock.calls.some(([input]) =>
+            requestUrl(input).endsWith("/api/v1/sessions/session-1/children"),
+          ),
+        ).toBe(true),
+      );
+      await flushEffects();
+      const childrenRequests = fetchSpy.mock.calls.filter(([input]) =>
+        requestUrl(input).endsWith("/api/v1/sessions/session-1/children"),
+      );
+      expect(childrenRequests).toHaveLength(1);
+    } finally {
+      sync.unwatchSession();
+      stream.close();
+    }
+  });
+
+  it("cancels session reads on route exit and restarts an incomplete load on return", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(settings, "load").mockResolvedValue();
+    vi.spyOn(starred, "load").mockResolvedValue();
+    vi.spyOn(sync, "loadStatus").mockResolvedValue();
+    vi.spyOn(sync, "loadStats").mockResolvedValue();
+    vi.spyOn(sync, "loadVersion").mockResolvedValue();
+    vi.spyOn(sync, "checkForUpdate").mockResolvedValue();
+    vi.spyOn(sync, "startPolling").mockImplementation(() => {});
+    vi.spyOn(codexCloudStatus, "load").mockResolvedValue();
+    const ready = Promise.resolve(false);
+    vi.spyOn(sync, "watchSession").mockReturnValue(ready);
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    vi.spyOn(sessions, "loadProjects").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    vi.spyOn(sessions, "attachSidebar").mockReturnValue(() => {});
+    vi.spyOn(sessions, "loadChildSessions").mockResolvedValue();
+    const cancelRouteReads = vi.spyOn(sessions, "cancelRouteReads");
+    const loadMessages = vi.spyOn(messages, "loadSession").mockResolvedValue();
+    const cancelMessages = vi.spyOn(messages, "cancelInFlight");
+    vi.spyOn(sessionTiming, "load").mockResolvedValue();
+    vi.spyOn(pins, "loadForSession").mockResolvedValue();
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+
+    router.route = "sessions";
+    router.sessionId = "session-1";
+    sessions.activeSessionId = "session-1";
+    component = mount(App, { target: document.body });
+    await flushEffects();
+
+    expect(loadMessages).toHaveBeenCalledWith("session-1", ready);
+    router.navigate("usage");
+    await flushEffects();
+    expect(cancelRouteReads).toHaveBeenCalled();
+    expect(cancelMessages).toHaveBeenCalled();
+
+    router.navigateToSession("session-1");
+    await flushEffects();
+    expect(loadMessages).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries missing metadata when returning to the same session", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(settings, "load").mockResolvedValue();
+    vi.spyOn(starred, "load").mockResolvedValue();
+    vi.spyOn(sync, "loadStatus").mockResolvedValue();
+    vi.spyOn(sync, "loadStats").mockResolvedValue();
+    vi.spyOn(sync, "loadVersion").mockResolvedValue();
+    vi.spyOn(sync, "checkForUpdate").mockResolvedValue();
+    vi.spyOn(sync, "startPolling").mockImplementation(() => {});
+    vi.spyOn(codexCloudStatus, "load").mockResolvedValue();
+    vi.spyOn(sync, "watchSession").mockResolvedValue(false);
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    vi.spyOn(sessions, "loadProjects").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    vi.spyOn(sessions, "attachSidebar").mockReturnValue(() => {});
+    vi.spyOn(sessions, "loadChildSessions").mockResolvedValue();
+    vi.spyOn(messages, "loadSession").mockResolvedValue();
+    vi.spyOn(sessionTiming, "load").mockResolvedValue();
+    vi.spyOn(pins, "loadForSession").mockResolvedValue();
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+    const navigateToSession = vi.spyOn(sessions, "navigateToSession").mockResolvedValue();
+
+    sessions.sessions = [];
+    sessions.activeSessionId = "session-1";
+    router.route = "sessions";
+    router.sessionId = "session-1";
+    component = mount(App, { target: document.body });
+    await flushEffects();
+    expect(navigateToSession).toHaveBeenCalledTimes(1);
+
+    router.navigate("usage");
+    await flushEffects();
+    router.navigateToSession("session-1");
+    await flushEffects();
+
+    expect(navigateToSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears a stale active session entering /sessions from a non-session page (#1190)", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(settings, "load").mockResolvedValue();
+    vi.spyOn(starred, "load").mockResolvedValue();
+    vi.spyOn(sync, "loadStatus").mockResolvedValue();
+    vi.spyOn(sync, "loadStats").mockResolvedValue();
+    vi.spyOn(sync, "loadVersion").mockResolvedValue();
+    vi.spyOn(sync, "checkForUpdate").mockResolvedValue();
+    vi.spyOn(sync, "startPolling").mockImplementation(() => {});
+    vi.spyOn(codexCloudStatus, "load").mockResolvedValue();
+    vi.spyOn(sync, "watchSession").mockResolvedValue(false);
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    vi.spyOn(sessions, "loadProjects").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    vi.spyOn(sessions, "attachSidebar").mockReturnValue(() => {});
+    vi.spyOn(sessions, "loadChildSessions").mockResolvedValue();
+    vi.spyOn(messages, "loadSession").mockResolvedValue();
+    vi.spyOn(sessionTiming, "load").mockResolvedValue();
+    vi.spyOn(pins, "loadForSession").mockResolvedValue();
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+    vi.spyOn(sessions, "navigateToSession").mockResolvedValue();
+
+    router.route = "sessions";
+    router.sessionId = "session-1";
+    sessions.activeSessionId = "session-1";
+    component = mount(App, { target: document.body });
+    await flushEffects();
+
+    // Leave for a non-session page: the URL drops the session id but the
+    // deselect guard only clears on the sessions route, so the active
+    // session is intentionally preserved here.
+    router.navigate("usage");
+    await flushEffects();
+    expect(sessions.activeSessionId).toBe("session-1");
+
+    // Enter the bare sessions list. The session id stays null across this
+    // transition, so a session-id-only dependency would not rerun; tracking
+    // the route makes the effect fire and clear the stale selection.
+    router.navigate("sessions");
+    await flushEffects();
+    expect(sessions.activeSessionId).toBeNull();
+  });
+
+  it("keeps route-first search scroll intent when entering the sessions route", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(settings, "load").mockResolvedValue();
+    vi.spyOn(starred, "load").mockResolvedValue();
+    vi.spyOn(sync, "loadStatus").mockResolvedValue();
+    vi.spyOn(sync, "loadStats").mockResolvedValue();
+    vi.spyOn(sync, "loadVersion").mockResolvedValue();
+    vi.spyOn(sync, "checkForUpdate").mockResolvedValue();
+    vi.spyOn(sync, "startPolling").mockImplementation(() => {});
+    vi.spyOn(codexCloudStatus, "load").mockResolvedValue();
+    vi.spyOn(sync, "watchSession").mockResolvedValue(false);
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    vi.spyOn(sessions, "loadProjects").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    vi.spyOn(sessions, "attachSidebar").mockReturnValue(() => {});
+    vi.spyOn(sessions, "loadChildSessions").mockResolvedValue();
+    vi.spyOn(messages, "loadSession").mockResolvedValue();
+    vi.spyOn(sessionTiming, "load").mockResolvedValue();
+    vi.spyOn(pins, "loadForSession").mockResolvedValue();
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+    const navigateToSession = vi.spyOn(sessions, "navigateToSession").mockResolvedValue();
+
+    router.route = "usage";
+    component = mount(App, { target: document.body });
+    await flushEffects();
+
+    // Route-first search activation: URL and scroll intent are queued
+    // before the deep-link effect selects the target session.
+    router.navigateToSession("session-2");
+    ui.scrollToOrdinal(7, "session-2");
+    await flushEffects();
+
+    expect(navigateToSession).toHaveBeenCalledWith("session-2");
+    expect(ui.pendingScrollOrdinal).toBe(7);
+    expect(ui.pendingScrollSession).toBe("session-2");
+  });
+
+  it("clears stale route-first scroll intent when the user selects another session", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(settings, "load").mockResolvedValue();
+    vi.spyOn(starred, "load").mockResolvedValue();
+    vi.spyOn(sync, "loadStatus").mockResolvedValue();
+    vi.spyOn(sync, "loadStats").mockResolvedValue();
+    vi.spyOn(sync, "loadVersion").mockResolvedValue();
+    vi.spyOn(sync, "checkForUpdate").mockResolvedValue();
+    vi.spyOn(sync, "startPolling").mockImplementation(() => {});
+    vi.spyOn(codexCloudStatus, "load").mockResolvedValue();
+    vi.spyOn(sync, "watchSession").mockResolvedValue(false);
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    vi.spyOn(sessions, "loadProjects").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    vi.spyOn(sessions, "attachSidebar").mockReturnValue(() => {});
+    vi.spyOn(sessions, "loadChildSessions").mockResolvedValue();
+    vi.spyOn(messages, "loadSession").mockResolvedValue();
+    vi.spyOn(sessionTiming, "load").mockResolvedValue();
+    vi.spyOn(pins, "loadForSession").mockResolvedValue();
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+    vi.spyOn(sessions, "navigateToSession").mockResolvedValue();
+
+    router.route = "sessions";
+    component = mount(App, { target: document.body });
+    await flushEffects();
+
+    // Route-first navigation to B queues its scroll intent; B's
+    // hydration never lands (mocked), so the URL still names B when
+    // the user selects C from the sidebar.
+    router.navigateToSession("session-b");
+    ui.scrollToOrdinal(7, "session-b");
+    await flushEffects();
+    expect(ui.pendingScrollOrdinal).toBe(7);
+
+    sessions.activeSessionId = "session-c";
+    await flushEffects();
+
+    expect(ui.pendingScrollOrdinal).toBeNull();
+    expect(ui.pendingScrollSession).toBeNull();
+  });
+
+  it("rehydrates the routed session when a sidebar rebuild drops its row", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(settings, "load").mockResolvedValue();
+    vi.spyOn(starred, "load").mockResolvedValue();
+    vi.spyOn(sync, "loadStatus").mockResolvedValue();
+    vi.spyOn(sync, "loadStats").mockResolvedValue();
+    vi.spyOn(sync, "loadVersion").mockResolvedValue();
+    vi.spyOn(sync, "checkForUpdate").mockResolvedValue();
+    vi.spyOn(sync, "startPolling").mockImplementation(() => {});
+    vi.spyOn(codexCloudStatus, "load").mockResolvedValue();
+    vi.spyOn(sync, "watchSession").mockResolvedValue(false);
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    vi.spyOn(sessions, "loadProjects").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    vi.spyOn(sessions, "attachSidebar").mockReturnValue(() => {});
+    vi.spyOn(sessions, "loadChildSessions").mockResolvedValue();
+    vi.spyOn(messages, "loadSession").mockResolvedValue();
+    vi.spyOn(sessionTiming, "load").mockResolvedValue();
+    vi.spyOn(pins, "loadForSession").mockResolvedValue();
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+    const navigateToSession = vi.spyOn(sessions, "navigateToSession").mockResolvedValue();
+
+    sessions.sessions = [
+      {
+        compaction_count: 0,
+        consecutive_failure_max: 0,
+        edit_churn_count: 0,
+        ended_with_role: "",
+        final_failure_streak: 0,
+        mid_task_compaction_count: 0,
+        outcome: "",
+        outcome_confidence: "",
+        secret_leak_count: 0,
+        tool_failure_signal_count: 0,
+        tool_retry_count: 0,
+        id: "session-1",
+        project: "proj-a",
+        machine: "local",
+        agent: "claude",
+        first_message: "hello",
+        started_at: "2026-02-20T12:30:00Z",
+        ended_at: "2026-02-20T12:31:00Z",
+        message_count: 2,
+        user_message_count: 1,
+        total_output_tokens: 0,
+        peak_context_tokens: 0,
+        has_total_output_tokens: false,
+        has_peak_context_tokens: false,
+        is_automated: false,
+        is_teammate: false,
+        is_index_only: false,
+        created_at: "2026-02-20T12:30:00Z",
+      } as unknown as (typeof sessions.sessions)[number],
+    ];
+    sessions.activeSessionId = "session-1";
+    router.route = "sessions";
+    router.sessionId = "session-1";
+    component = mount(App, { target: document.body });
+    await flushEffects();
+    expect(navigateToSession).not.toHaveBeenCalled();
+
+    sessions.sessions = [];
+    await flushEffects();
+
+    expect(navigateToSession).toHaveBeenCalledWith("session-1");
+  });
+
+  it("renders the Data page shell for the data route", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(settings, "load").mockResolvedValue();
+    vi.spyOn(starred, "load").mockResolvedValue();
+    vi.spyOn(sync, "loadStatus").mockResolvedValue();
+    vi.spyOn(sync, "loadStats").mockResolvedValue();
+    vi.spyOn(sync, "loadVersion").mockResolvedValue();
+    vi.spyOn(sync, "checkForUpdate").mockResolvedValue();
+    vi.spyOn(sync, "startPolling").mockImplementation(() => {});
+    vi.spyOn(codexCloudStatus, "load").mockResolvedValue();
+    vi.spyOn(sync, "watchSession").mockResolvedValue(false);
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    vi.spyOn(sessions, "loadProjects").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    vi.spyOn(sessions, "attachSidebar").mockReturnValue(() => {});
+
+    router.route = "data";
+    component = mount(App, { target: document.body });
+    await flushEffects();
+
+    const dataPage = document.querySelector(".data-page");
+    expect(dataPage).not.toBeNull();
+    expect(dataPage?.querySelector("h2")?.textContent).toBe("Projects");
+  });
+
+  it("carries rolling intent into the sessions URL write-back", async () => {
+    component = mount(App, { target: document.body });
+    await tick();
+    // Simulates a rolling window restored from localStorage (or applied
+    // from a panel): the URL write-back must include window_days, or the
+    // next route initialization re-reads the concrete dates as an
+    // explicit fixed range and the rolling intent is lost after one
+    // reload.
+    sessions.applyPanelDateFilters({ date_from: "2026-03-10", date_to: "2026-04-08" }, 30);
+    await tick();
+    await tick();
+    expect(router.params["window_days"]).toBe("30");
+    // The route round-trip rematerializes the window against the current
+    // date — the intent surviving is the contract, not the exact bounds.
+    const range = rollingRange(30);
+    expect(router.params["date_from"]).toBe(range.from);
+    expect(router.params["date_to"]).toBe(range.to);
+  });
+});
+
+describe("App root Sessions landing", () => {
+  function setRootUrl(params: Record<string, string> = {}) {
+    const query = new URLSearchParams(params).toString();
+    window.history.replaceState(null, "", query ? `/?${query}` : "/");
+    router.route = "sessions";
+    router.params = params;
+    router.sessionId = null;
+    router.isRootPath = true;
+  }
+
+  it.each([true, false])("renders the landing view for archive empty %s", async (empty) => {
+    stubAppDependencies();
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    sessions.archiveEmpty = empty;
+    router.navigate("sessions");
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+
+    expect(document.body.querySelector(".empty-archive-panel") !== null).toBe(empty);
+    expect(document.body.querySelector(".analytics-page") !== null).toBe(!empty);
+  });
+
+  it("resets filters without changing the bare root URL or saved value", async () => {
+    stubAppDependencies();
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    const saved = JSON.stringify({
+      version: 2,
+      project: "saved-project",
+      agent: "codex",
+    });
+    localStorage.setItem("session-filters", saved);
+    sessions.initFromParams({ project: "saved-project", agent: "codex" });
+    setRootUrl();
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+
+    expect(sessions.filters.project).toBe("");
+    expect(sessions.filters.agent).toBe("");
+    expect(window.location.pathname).toBe("/");
+    expect(window.location.search).toBe("");
+    expect(localStorage.getItem("session-filters")).toBe(saved);
+  });
+
+  it("clears starred-only filtering when entering the root landing", async () => {
+    stubAppDependencies();
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    starred.filterOnly = true;
+    setRootUrl();
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+
+    expect(starred.filterOnly).toBe(false);
+    expect(window.location.pathname).toBe("/");
+    expect(window.location.search).toBe("");
+  });
+
+  it("promotes a starred-only toggle from root to Sessions", async () => {
+    stubAppDependencies();
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    setRootUrl();
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+
+    starred.filterOnly = true;
+    await flushEffects();
+
+    expect(window.location.pathname).toBe("/sessions");
+    expect(window.location.search).toBe("?starred=true");
+    expect(router.isRootPath).toBe(false);
+  });
+
+  it("normalizes a starred-only root deep link to Sessions", async () => {
+    stubAppDependencies();
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    setRootUrl({ starred: "true" });
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+
+    expect(starred.filterOnly).toBe(true);
+    expect(window.location.pathname).toBe("/sessions");
+    expect(window.location.search).toBe("?starred=true");
+    expect(router.isRootPath).toBe(false);
+  });
+
+  it("persists defaults after starred-only is toggled in a root-derived detail", async () => {
+    stubAppDependencies();
+    vi.spyOn(SessionsService, "getApiV1SessionsSidebarIndex").mockResolvedValue({
+      sessions: [],
+      total: 0,
+      next_cursor: null,
+    } as never);
+    vi.spyOn(sessions, "navigateToSession").mockImplementation(async (id) => {
+      sessions.activeSessionId = id;
+    });
+    const saved = JSON.stringify({
+      version: 2,
+      project: "saved-project",
+      agent: "codex",
+    });
+    localStorage.setItem("session-filters", saved);
+    sessions.initFromParams({ project: "saved-project", agent: "codex" });
+    setRootUrl();
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+    router.navigateToSession("session-a");
+    await flushEffects();
+
+    starred.filterOnly = true;
+    await flushEffects();
+    expect(router.params.starred).toBe("true");
+
+    starred.filterOnly = false;
+    await flushEffects();
+    expect(router.params.starred).toBeUndefined();
+
+    sessions.deselectSession();
+    await flushEffects();
+    expect(window.location.pathname).toBe("/sessions");
+
+    const reloaded = createSessionsStore();
+    expect(reloaded.filters.project).toBe("");
+    expect(reloaded.filters.agent).toBe("");
+  });
+
+  it("keeps sticky parameters on the root landing URL", async () => {
+    stubAppDependencies();
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    setRootUrl({ desktop: "1" });
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+
+    expect(router.isRootPath).toBe(true);
+    expect(window.location.pathname).toBe("/");
+    expect(window.location.search).toBe("?desktop=1");
+  });
+
+  it("preserves the shared date yoke while resetting root session filters", async () => {
+    stubAppDependencies();
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    sessions.initFromParams({
+      date_from: "2026-06-01",
+      date_to: "2026-06-30",
+    });
+    yokedDates.setEnabled(true);
+    yokedDates.updateFromPanel({
+      from: "2026-06-01",
+      to: "2026-06-30",
+      mode: "fixed",
+    });
+    setRootUrl();
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+
+    expect(sessions.filters.dateFrom).toBe("");
+    expect(sessions.filters.dateTo).toBe("");
+    expect(yokedDates.range).toMatchObject({
+      from: "2026-06-01",
+      to: "2026-06-30",
+      mode: "fixed",
+    });
+    expect(JSON.parse(localStorage.getItem("yoked-dates") ?? "{}").range).toMatchObject({
+      from: "2026-06-01",
+      to: "2026-06-30",
+      mode: "fixed",
+    });
+  });
+
+  it("keeps root URL, yoke, and saved filters through analytics refresh", async () => {
+    stubAppDependencies();
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    const saved = JSON.stringify({
+      version: 2,
+      project: "saved-project",
+      agent: "codex",
+    });
+    localStorage.setItem("session-filters", saved);
+    sessions.initFromParams({ project: "saved-project", agent: "codex" });
+    yokedDates.setEnabled(true);
+    yokedDates.updateFromPanel({
+      from: "2026-06-01",
+      to: "2026-06-30",
+      mode: "fixed",
+    });
+    setRootUrl();
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+
+    const refresh = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Refresh analytics"]',
+    );
+    expect(refresh).not.toBeNull();
+    refresh!.click();
+    await flushEffects();
+
+    expect(window.location.pathname).toBe("/");
+    expect(window.location.search).toBe("");
+    expect(yokedDates.range).toMatchObject({
+      from: "2026-06-01",
+      to: "2026-06-30",
+      mode: "fixed",
+    });
+    expect(localStorage.getItem("session-filters")).toBe(saved);
+    expect(JSON.parse(localStorage.getItem("yoked-dates") ?? "{}").range).toMatchObject({
+      from: "2026-06-01",
+      to: "2026-06-30",
+      mode: "fixed",
+    });
+  });
+
+  it("treats filter-bearing root URLs as explicit deep links", async () => {
+    stubAppDependencies();
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    setRootUrl({ project: "explicit-project" });
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+
+    expect(sessions.filters.project).toBe("explicit-project");
+    expect(window.location.pathname).toBe("/sessions");
+    expect(window.location.search).toBe("?project=explicit-project");
+    expect(router.isRootPath).toBe(false);
+  });
+
+  it("restores saved filters on direct root-to-list navigation", async () => {
+    stubAppDependencies();
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    const saved = JSON.stringify({
+      version: 2,
+      project: "saved-project",
+      agent: "codex",
+    });
+    localStorage.setItem("session-filters", saved);
+    sessions.initFromParams({ project: "saved-project", agent: "codex" });
+    setRootUrl();
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+    expect(sessions.filters.project).toBe("");
+
+    router.navigate("sessions");
+    await flushEffects();
+
+    expect(window.location.pathname).toBe("/sessions");
+    expect(sessions.filters.project).toBe("saved-project");
+    expect(sessions.filters.agent).toBe("codex");
+  });
+
+  it("restores saved filters after visiting another route from root", async () => {
+    stubAppDependencies();
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    const saved = JSON.stringify({
+      version: 2,
+      project: "saved-project",
+      agent: "codex",
+    });
+    localStorage.setItem("session-filters", saved);
+    sessions.initFromParams({ project: "saved-project", agent: "codex" });
+    setRootUrl();
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+    expect(sessions.filters.project).toBe("");
+
+    router.navigate("usage");
+    await flushEffects();
+    router.navigate("sessions");
+    await flushEffects();
+
+    expect(window.location.pathname).toBe("/sessions");
+    expect(sessions.filters.project).toBe("saved-project");
+    expect(sessions.filters.agent).toBe("codex");
+  });
+
+  it("restores saved filters after root detail visits another route", async () => {
+    stubAppDependencies();
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    vi.spyOn(sessions, "navigateToSession").mockImplementation(async (id) => {
+      sessions.activeSessionId = id;
+    });
+    const saved = JSON.stringify({
+      version: 2,
+      project: "saved-project",
+      agent: "codex",
+    });
+    localStorage.setItem("session-filters", saved);
+    sessions.initFromParams({ project: "saved-project", agent: "codex" });
+    setRootUrl();
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+    expect(sessions.filters.project).toBe("");
+
+    router.navigateToSession("session-a");
+    await flushEffects();
+    router.navigate("usage");
+    await flushEffects();
+    router.navigate("sessions");
+    await flushEffects();
+
+    expect(window.location.pathname).toBe("/sessions");
+    expect(sessions.filters.project).toBe("saved-project");
+    expect(sessions.filters.agent).toBe("codex");
+  });
+
+  it("restores saved filters when opening a session from Usage after root", async () => {
+    stubAppDependencies();
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    vi.spyOn(sessions, "navigateToSession").mockImplementation(async (id) => {
+      sessions.activeSessionId = id;
+    });
+    const saved = JSON.stringify({
+      version: 2,
+      project: "saved-project",
+      agent: "codex",
+    });
+    localStorage.setItem("session-filters", saved);
+    sessions.initFromParams({ project: "saved-project", agent: "codex" });
+    setRootUrl();
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+    expect(sessions.filters.project).toBe("");
+
+    router.navigate("usage");
+    await flushEffects();
+    router.navigateToSession("session-a");
+    await flushEffects();
+    sessions.deselectSession();
+    await flushEffects();
+
+    expect(window.location.pathname).toBe("/sessions");
+    expect(sessions.filters.project).toBe("saved-project");
+    expect(sessions.filters.agent).toBe("codex");
+  });
+
+  it("keeps root unfiltered when returning from Usage with a shared date range", async () => {
+    stubAppDependencies();
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    window.history.replaceState(null, "", "/usage");
+    router.route = "usage";
+    router.params = {};
+    router.sessionId = null;
+    router.isRootPath = false;
+    yokedDates.setEnabled(true);
+    yokedDates.updateFromPanel({
+      from: "2026-06-01",
+      to: "2026-06-30",
+      mode: "fixed",
+    });
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+
+    window.history.replaceState(null, "", "/");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await flushEffects();
+
+    expect(router.isRootPath).toBe(true);
+    expect(window.location.pathname).toBe("/");
+    expect(sessions.filters.dateFrom).toBe("");
+    expect(sessions.filters.dateTo).toBe("");
+  });
+
+  it("keeps root restoration pending through non-session URL parameters", async () => {
+    stubAppDependencies();
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    const saved = JSON.stringify({
+      version: 2,
+      project: "saved-project",
+      agent: "codex",
+    });
+    localStorage.setItem("session-filters", saved);
+    sessions.initFromParams({ project: "saved-project", agent: "codex" });
+    setRootUrl();
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+    expect(sessions.filters.project).toBe("");
+
+    router.navigate("usage", { window_days: "30" });
+    await flushEffects();
+    router.navigate("sessions");
+    await flushEffects();
+
+    expect(window.location.pathname).toBe("/sessions");
+    expect(sessions.filters.project).toBe("saved-project");
+    expect(sessions.filters.agent).toBe("codex");
+  });
+
+  it("promotes divergent root filters and resets them on root popstate", async () => {
+    stubAppDependencies();
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    const saved = JSON.stringify({
+      version: 2,
+      project: "saved-project",
+      agent: "codex",
+    });
+    localStorage.setItem("session-filters", saved);
+    sessions.initFromParams({ project: "saved-project", agent: "codex" });
+    setRootUrl();
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+    const historyLength = window.history.length;
+
+    sessions.filters.project = "chosen-project";
+    await flushEffects();
+
+    expect(window.location.pathname).toBe("/sessions");
+    expect(window.location.search).toBe("?project=chosen-project");
+    expect(window.history.length).toBeGreaterThan(historyLength);
+    expect(router.isRootPath).toBe(false);
+
+    window.history.replaceState(null, "", "/");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await flushEffects();
+
+    expect(router.isRootPath).toBe(true);
+    expect(sessions.filters.project).toBe("");
+    expect(localStorage.getItem("session-filters")).toBe(saved);
+  });
+
+  it("pushes date-filter promotion from root and restores the unfiltered root on Back", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-04-25T12:00:00"));
+    stubAppDependencies();
+    const analyticsFetchRanges: Array<{
+      from: string;
+      to: string;
+      isPinned: boolean;
+      windowDays: number;
+    }> = [];
+    vi.mocked(analytics.fetchAll).mockImplementation(() => {
+      analyticsFetchRanges.push({
+        from: analytics.from,
+        to: analytics.to,
+        isPinned: analytics.isPinned,
+        windowDays: analytics.windowDays,
+      });
+      return Promise.resolve();
+    });
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    yokedDates.setEnabled(true);
+    setRootUrl();
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+    const historyLength = window.history.length;
+
+    await selectRelativeRange(30);
+
+    expect(window.location.pathname).toBe("/sessions");
+    expect(router.params.window_days).toBe("30");
+    expect(window.history.length).toBeGreaterThan(historyLength);
+    const preservedYoke = { ...yokedDates.range! };
+    analyticsFetchRanges.length = 0;
+
+    window.history.replaceState(null, "", "/");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await flushEffects();
+
+    expect(router.isRootPath).toBe(true);
+    expect(sessions.filters.dateFrom).toBe("");
+    expect(sessions.filters.dateTo).toBe("");
+    expect(document.querySelector(".kit-date-range-picker__trigger-label")?.textContent).toBe(
+      "Last year",
+    );
+    expect(analyticsFetchRanges).toEqual([
+      {
+        from: "2025-04-26",
+        to: "2026-04-25",
+        isPinned: false,
+        windowDays: 365,
+      },
+    ]);
+    expect(yokedDates.range).toEqual(preservedYoke);
+  });
+
+  it("restores shared dates after Back returns a root detail to the landing", async () => {
+    stubAppDependencies();
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    vi.spyOn(sessions, "navigateToSession").mockImplementation(async (id) => {
+      sessions.activeSessionId = id;
+    });
+    yokedDates.setEnabled(true);
+    yokedDates.updateFromPanel({
+      from: "2026-06-01",
+      to: "2026-06-30",
+      mode: "fixed",
+    });
+    setRootUrl();
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+
+    router.navigateToSession("session-a");
+    await flushEffects();
+    expect(window.location.pathname).toBe("/sessions/session-a");
+
+    window.history.back();
+    await vi.waitFor(() => {
+      expect(router.isRootPath).toBe(true);
+    });
+    await flushEffects();
+    expect(window.location.pathname).toBe("/");
+    expect(sessions.filters.dateFrom).toBe("");
+    expect(sessions.filters.dateTo).toBe("");
+
+    sessions.filters.project = "chosen-project";
+    await flushEffects();
+
+    const params = new URLSearchParams(window.location.search);
+    expect(window.location.pathname).toBe("/sessions");
+    expect(params.get("project")).toBe("chosen-project");
+    expect(params.get("date_from")).toBe("2026-06-01");
+    expect(params.get("date_to")).toBe("2026-06-30");
+    expect(sessions.filters.dateFrom).toBe("2026-06-01");
+    expect(sessions.filters.dateTo).toBe("2026-06-30");
+  });
+
+  it("restores shared dates when a filter changes in a root-derived detail", async () => {
+    stubAppDependencies();
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    vi.spyOn(sessions, "navigateToSession").mockImplementation(async (id) => {
+      sessions.activeSessionId = id;
+    });
+    yokedDates.setEnabled(true);
+    yokedDates.updateFromPanel({
+      from: "2026-06-01",
+      to: "2026-06-30",
+      mode: "fixed",
+    });
+    setRootUrl();
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+    router.navigateToSession("session-a");
+    await flushEffects();
+
+    sessions.filters.project = "chosen-project";
+    await flushEffects();
+
+    const params = new URLSearchParams(window.location.search);
+    expect(window.location.pathname).toBe("/sessions/session-a");
+    expect(params.get("project")).toBe("chosen-project");
+    expect(params.get("date_from")).toBe("2026-06-01");
+    expect(params.get("date_to")).toBe("2026-06-30");
+    expect(sessions.filters.dateFrom).toBe("2026-06-01");
+    expect(sessions.filters.dateTo).toBe("2026-06-30");
+  });
+
+  it("restores shared dates when a filter changes after a root detail closes", async () => {
+    stubAppDependencies();
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    vi.spyOn(sessions, "navigateToSession").mockImplementation(async (id) => {
+      sessions.activeSessionId = id;
+    });
+    yokedDates.setEnabled(true);
+    yokedDates.updateFromPanel({
+      from: "2026-06-01",
+      to: "2026-06-30",
+      mode: "fixed",
+    });
+    setRootUrl();
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+    router.navigateToSession("session-a");
+    await flushEffects();
+    sessions.deselectSession();
+    await flushEffects();
+    expect(window.location.pathname).toBe("/sessions");
+    expect(window.location.search).toBe("");
+
+    sessions.filters.project = "chosen-project";
+    await flushEffects();
+
+    const params = new URLSearchParams(window.location.search);
+    expect(window.location.pathname).toBe("/sessions");
+    expect(params.get("project")).toBe("chosen-project");
+    expect(params.get("date_from")).toBe("2026-06-01");
+    expect(params.get("date_to")).toBe("2026-06-30");
+    expect(sessions.filters.dateFrom).toBe("2026-06-01");
+    expect(sessions.filters.dateTo).toBe("2026-06-30");
+  });
+
+  it("preserves starred-only filtering when selecting a session date range", async () => {
+    stubAppDependencies();
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    window.history.replaceState(null, "", "/sessions?starred=true");
+    router.route = "sessions";
+    router.params = { starred: "true" };
+    router.sessionId = null;
+    router.isRootPath = false;
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+    expect(starred.filterOnly).toBe(true);
+
+    await selectRelativeRange(30);
+
+    const params = new URLSearchParams(window.location.search);
+    expect(window.location.pathname).toBe("/sessions");
+    expect(params.get("starred")).toBe("true");
+    expect(params.get("window_days")).toBe("30");
+    expect(starred.filterOnly).toBe(true);
+  });
+
+  it("keeps saved filters through consecutive root-derived detail exits", async () => {
+    stubAppDependencies();
+    const actualAttachSidebar = sessions.attachSidebar.bind(sessions);
+    const sidebarIndex = vi
+      .spyOn(SessionsService, "getApiV1SessionsSidebarIndex")
+      .mockImplementation(
+        () =>
+          Promise.resolve({
+            sessions: [],
+            total: 0,
+            next_cursor: null,
+          }) as never,
+      );
+    vi.spyOn(sessions, "navigateToSession").mockImplementation(async (id) => {
+      sessions.activeSessionId = id;
+    });
+    const saved = JSON.stringify({
+      version: 2,
+      project: "saved-project",
+      agent: "codex",
+    });
+    localStorage.setItem("session-filters", saved);
+    sessions.initFromParams({ project: "saved-project", agent: "codex" });
+    yokedDates.setEnabled(true);
+    yokedDates.updateFromPanel({
+      from: "2026-06-01",
+      to: "2026-06-30",
+      mode: "fixed",
+    });
+    setRootUrl();
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+    expect(localStorage.getItem("session-filters")).toBe(saved);
+    expect(window.location.search).toBe("");
+    const detach = actualAttachSidebar();
+
+    sidebarIndex.mockClear();
+    router.navigateToSession("session-a");
+    await flushEffects();
+    expect(localStorage.getItem("session-filters")).toBe(saved);
+    expect(window.location.search).toBe("");
+    sessions.refreshSidebarIfAttached();
+    await vi.waitFor(() => {
+      expect(sidebarIndex).toHaveBeenCalled();
+    });
+    expect(localStorage.getItem("session-filters")).toBe(saved);
+
+    sessions.deselectSession();
+    await flushEffects();
+
+    expect(window.location.pathname).toBe("/sessions");
+    expect(window.location.search).toBe("");
+    expect(sessions.filters.project).toBe("");
+    expect(yokedDates.range).toMatchObject({
+      from: "2026-06-01",
+      to: "2026-06-30",
+      mode: "fixed",
+    });
+    expect(localStorage.getItem("session-filters")).toBe(saved);
+
+    const refresh = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Refresh analytics"]',
+    );
+    expect(refresh).not.toBeNull();
+    refresh!.click();
+    await flushEffects();
+
+    expect(window.location.pathname).toBe("/sessions");
+    expect(window.location.search).toBe("");
+    expect(yokedDates.range).toMatchObject({
+      from: "2026-06-01",
+      to: "2026-06-30",
+      mode: "fixed",
+    });
+    expect(localStorage.getItem("session-filters")).toBe(saved);
+
+    router.navigateToSession("session-b");
+    await flushEffects();
+    expect(window.location.search).toBe("");
+    expect(localStorage.getItem("session-filters")).toBe(saved);
+
+    sessions.deselectSession();
+    await flushEffects();
+
+    expect(window.location.pathname).toBe("/sessions");
+    expect(window.location.search).toBe("");
+    expect(sessions.filters.project).toBe("");
+    expect(yokedDates.range).toMatchObject({
+      from: "2026-06-01",
+      to: "2026-06-30",
+      mode: "fixed",
+    });
+    expect(localStorage.getItem("session-filters")).toBe(saved);
+    detach();
+  });
+});
+
+function message(ordinal: number, role: Message["role"], isSystem = false) {
+  return {
+    kind: "message" as const,
+    ordinals: [ordinal],
+    message: { role, is_system: isSystem } as Message,
+  };
+}
+
+describe("findUserPromptOrdinal", () => {
+  const items = [
+    message(1, "user"),
+    message(2, "assistant"),
+    { kind: "tool-group" as const, ordinals: [3], messages: [], timestamp: "" },
+    message(4, "user"),
+  ];
+
+  it("moves among visible user messages in chronological order", () => {
+    expect(findUserPromptOrdinal(items, 1, 1, true)).toBe(4);
+    expect(findUserPromptOrdinal(items, 2, 1, true)).toBe(4);
+    expect(findUserPromptOrdinal(items, 3, -1, true)).toBe(1);
+    expect(findUserPromptOrdinal(items, null, 1, true)).toBe(1);
+    expect(findUserPromptOrdinal(items, null, -1, true)).toBe(4);
+    expect(findUserPromptOrdinal(items, 99, 1, true)).toBe(1);
+    expect(findUserPromptOrdinal(items, 99, -1, true)).toBe(4);
+    expect(findUserPromptOrdinal(items.slice(1, 3), 2, 1, true)).toBeUndefined();
+  });
+
+  it("keeps chronological directions when newest-first reorders rows", () => {
+    expect(findUserPromptOrdinal(items, 1, 1, true)).toBe(4);
+    expect(findUserPromptOrdinal(items, 4, -1, true)).toBe(1);
+  });
+
+  it("skips user rows when only their code segment is visible", () => {
+    const codeOnlyUser = {
+      id: 5,
+      role: "user",
+      content: "```ts\nconst hiddenPrompt = true;\n```",
+      has_tool_use: false,
+      content_length: 36,
+    } as Message;
+    expect(hasVisibleSegments(codeOnlyUser, (type) => type === "code")).toBe(true);
+
+    expect(
+      findUserPromptOrdinal(
+        [message(1, "assistant"), { kind: "message", ordinals: [5], message: codeOnlyUser }],
+        1,
+        1,
+        false,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("stops on each empty prompt inside an empty group", () => {
+    const empty = (ordinal: number, role: Message["role"]) =>
+      ({ ordinal, role, is_system: false }) as Message;
+    const group = {
+      kind: "empty-group" as const,
+      ordinals: [2, 3, 4],
+      messages: [empty(2, "assistant"), empty(3, "user"), empty(4, "user")],
+      timestamp: "",
+    };
+    const withGroup = [message(1, "user"), group, message(5, "user")];
+    expect(findUserPromptOrdinal(withGroup, 1, 1, true)).toBe(3);
+    expect(findUserPromptOrdinal(withGroup, 3, 1, true)).toBe(4);
+    expect(findUserPromptOrdinal(withGroup, 4, 1, true)).toBe(5);
+    expect(findUserPromptOrdinal(withGroup, 5, -1, true)).toBe(4);
+    expect(findUserPromptOrdinal(withGroup, 2, -1, true)).toBe(1);
+  });
+
+  it("skips system boundaries with a user role", () => {
+    expect(
+      findUserPromptOrdinal(
+        [message(1, "user"), message(2, "user", true), message(3, "user")],
+        1,
+        1,
+        true,
+      ),
+    ).toBe(3);
+  });
+});
+
+describe("App analytics date navigation", () => {
+  it("materializes and publishes rolling detail dates before loading", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-10T12:00:00"));
+    const datesAtSessionLoad: Array<{
+      shared: { from: string; to: string } | null;
+      filters: { from: string; to: string };
+    }> = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(settings, "load").mockResolvedValue();
+    vi.spyOn(starred, "load").mockResolvedValue();
+    vi.spyOn(sync, "loadStatus").mockResolvedValue();
+    vi.spyOn(sync, "loadStats").mockResolvedValue();
+    vi.spyOn(sync, "loadVersion").mockResolvedValue();
+    vi.spyOn(sync, "checkForUpdate").mockResolvedValue();
+    vi.spyOn(sync, "startPolling").mockImplementation(() => {});
+    vi.spyOn(codexCloudStatus, "load").mockResolvedValue();
+    vi.spyOn(sync, "watchSession").mockResolvedValue(false);
+    vi.spyOn(sessions, "load").mockImplementation(() => {
+      const shared = yokedDates.seedForPanel();
+      datesAtSessionLoad.push({
+        shared: shared ? { from: shared.from, to: shared.to } : null,
+        filters: {
+          from: sessions.filters.dateFrom,
+          to: sessions.filters.dateTo,
+        },
+      });
+      return Promise.resolve();
+    });
+    vi.spyOn(sessions, "loadProjects").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    vi.spyOn(sessions, "attachSidebar").mockReturnValue(() => {});
+    vi.spyOn(sessions, "loadChildSessions").mockResolvedValue();
+    vi.spyOn(sessions, "navigateToSession").mockImplementation(async (id) => {
+      sessions.activeSessionId = id;
+    });
+    vi.spyOn(messages, "loadSession").mockResolvedValue();
+    vi.spyOn(sessionTiming, "load").mockResolvedValue();
+    vi.spyOn(pins, "loadForSession").mockResolvedValue();
+    vi.spyOn(analytics, "fetchAll").mockResolvedValue();
+    vi.spyOn(analytics, "fetchSignalsForQuality").mockResolvedValue();
+    vi.spyOn(insights, "load").mockResolvedValue();
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+
+    window.history.replaceState(null, "", "/quality");
+    router.route = "quality";
+    router.params = {};
+    router.sessionId = null;
+    yokedDates.setEnabled(true);
+    yokedDates.updateFromPanel({
+      from: "2026-05-01",
+      to: "2026-05-31",
+      mode: "fixed",
+    });
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+
+    router.navigateToSession("session-1", {
+      msg: "42",
+      window_days: "30",
+      date_from: "2026-01-01",
+      date_to: "2026-01-30",
+    });
+    await flushEffects();
+
+    expect(datesAtSessionLoad[0]).toEqual({
+      shared: { from: "2026-06-11", to: "2026-07-10" },
+      filters: { from: "2026-06-11", to: "2026-07-10" },
+    });
+    expect(yokedDates.seedForPanel()).toMatchObject({
+      from: "2026-06-11",
+      to: "2026-07-10",
+      mode: "rolling",
+      windowDays: 30,
+    });
+    expect(router.params).toMatchObject({
+      msg: "42",
+      window_days: "30",
+      date_from: "2026-06-11",
+      date_to: "2026-07-10",
+    });
+    expect(ui.selectedOrdinal).toBe(42);
+
+    router.navigate("usage");
+    await flushEffects();
+
+    expect(usage.isPinned).toBe(false);
+    expect(usage.windowDays).toBe(30);
+    expect(usage.from).toBe("2026-06-11");
+    expect(usage.to).toBe("2026-07-10");
+  });
+
+  it("applies an enabled shared range when entering session detail", async () => {
+    const sessionLoadDates: Array<{
+      dateFrom: string;
+      dateTo: string;
+    }> = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(settings, "load").mockResolvedValue();
+    vi.spyOn(starred, "load").mockResolvedValue();
+    vi.spyOn(sync, "loadStatus").mockResolvedValue();
+    vi.spyOn(sync, "loadStats").mockResolvedValue();
+    vi.spyOn(sync, "loadVersion").mockResolvedValue();
+    vi.spyOn(sync, "checkForUpdate").mockResolvedValue();
+    vi.spyOn(sync, "startPolling").mockImplementation(() => {});
+    vi.spyOn(codexCloudStatus, "load").mockResolvedValue();
+    vi.spyOn(sync, "watchSession").mockResolvedValue(false);
+    vi.spyOn(sessions, "load").mockImplementation(() => {
+      sessionLoadDates.push({
+        dateFrom: sessions.filters.dateFrom,
+        dateTo: sessions.filters.dateTo,
+      });
+      return Promise.resolve();
+    });
+    vi.spyOn(sessions, "loadProjects").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    vi.spyOn(sessions, "attachSidebar").mockReturnValue(() => {});
+    vi.spyOn(sessions, "navigateToSession").mockImplementation(async (id) => {
+      sessions.activeSessionId = id;
+    });
+    vi.spyOn(analytics, "fetchAll").mockResolvedValue();
+    vi.spyOn(analytics, "fetchSignalsForQuality").mockResolvedValue();
+    vi.spyOn(insights, "load").mockResolvedValue();
+
+    window.history.replaceState(null, "", "/quality");
+    router.route = "quality";
+    router.params = {};
+    router.sessionId = null;
+    yokedDates.setEnabled(true);
+    yokedDates.updateFromPanel({
+      from: "2026-05-01",
+      to: "2026-05-31",
+      mode: "fixed",
+    });
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+    sessionLoadDates.length = 0;
+
+    router.navigateToSession("session-1");
+    await flushEffects();
+
+    expect(sessionLoadDates[0]).toEqual({
+      dateFrom: "2026-05-01",
+      dateTo: "2026-05-31",
+    });
+    expect(router.sessionId).toBe("session-1");
+    expect(router.params.date_from).toBe("2026-05-01");
+    expect(router.params.date_to).toBe("2026-05-31");
+  });
+
+  it("applies an enabled shared range to the first Sessions load", async () => {
+    const sessionLoadFilters: Array<{
+      project: string;
+      dateFrom: string;
+      dateTo: string;
+    }> = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(settings, "load").mockResolvedValue();
+    vi.spyOn(starred, "load").mockResolvedValue();
+    vi.spyOn(sync, "loadStatus").mockResolvedValue();
+    vi.spyOn(sync, "loadStats").mockResolvedValue();
+    vi.spyOn(sync, "loadVersion").mockResolvedValue();
+    vi.spyOn(sync, "checkForUpdate").mockResolvedValue();
+    vi.spyOn(sync, "startPolling").mockImplementation(() => {});
+    vi.spyOn(codexCloudStatus, "load").mockResolvedValue();
+    vi.spyOn(sessions, "load").mockImplementation(() => {
+      sessionLoadFilters.push({
+        project: sessions.filters.project,
+        dateFrom: sessions.filters.dateFrom,
+        dateTo: sessions.filters.dateTo,
+      });
+      return Promise.resolve();
+    });
+    vi.spyOn(sessions, "loadProjects").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    vi.spyOn(sessions, "attachSidebar").mockReturnValue(() => {});
+    vi.spyOn(analytics, "fetchAll").mockResolvedValue();
+    vi.spyOn(analytics, "fetchSignalsForQuality").mockResolvedValue();
+    vi.spyOn(insights, "load").mockResolvedValue();
+
+    window.history.replaceState(null, "", "/quality");
+    router.route = "quality";
+    router.params = {};
+    router.sessionId = null;
+    analyticsPageDates.retain(
+      "sessions",
+      {
+        from: "2026-01-01",
+        to: "2026-01-31",
+        mode: "fixed",
+      },
+      true,
+    );
+    yokedDates.setEnabled(true);
+    yokedDates.updateFromPanel({
+      from: "2026-05-01",
+      to: "2026-05-31",
+      mode: "fixed",
+    });
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+    sessionLoadFilters.length = 0;
+
+    router.navigate("sessions", { project: "project-alpha" });
+    await flushEffects();
+
+    expect(sessionLoadFilters[0]).toEqual({
+      project: "project-alpha",
+      dateFrom: "2026-05-01",
+      dateTo: "2026-05-31",
+    });
+  });
+
+  it("restores a retained rolling Sessions range without pinning it", async () => {
+    const sessionLoadDates: Array<{
+      dateFrom: string;
+      dateTo: string;
+    }> = [];
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-10T12:00:00"));
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(settings, "load").mockResolvedValue();
+    vi.spyOn(starred, "load").mockResolvedValue();
+    vi.spyOn(sync, "loadStatus").mockResolvedValue();
+    vi.spyOn(sync, "loadStats").mockResolvedValue();
+    vi.spyOn(sync, "loadVersion").mockResolvedValue();
+    vi.spyOn(sync, "checkForUpdate").mockResolvedValue();
+    vi.spyOn(sync, "startPolling").mockImplementation(() => {});
+    vi.spyOn(codexCloudStatus, "load").mockResolvedValue();
+    vi.spyOn(sessions, "load").mockImplementation(() => {
+      sessionLoadDates.push({
+        dateFrom: sessions.filters.dateFrom,
+        dateTo: sessions.filters.dateTo,
+      });
+      return Promise.resolve();
+    });
+    vi.spyOn(sessions, "loadProjects").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    vi.spyOn(sessions, "attachSidebar").mockReturnValue(() => {});
+    vi.spyOn(analytics, "fetchAll").mockResolvedValue();
+    vi.spyOn(analytics, "fetchSignalsForQuality").mockResolvedValue();
+    vi.spyOn(insights, "load").mockResolvedValue();
+
+    window.history.replaceState(null, "", "/sessions");
+    router.route = "sessions";
+    router.params = {};
+    router.sessionId = null;
+    analytics.applyRollingWindow(365);
+    yokedDates.setEnabled(false);
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+    await selectRelativeRange(30);
+
+    router.navigate("quality");
+    await flushEffects();
+    sessionLoadDates.length = 0;
+    const dateFiltersAtRouteReplace: Array<{
+      dateFrom: string;
+      dateTo: string;
+    }> = [];
+    const replaceParams = router.replaceParams.bind(router);
+    vi.spyOn(router, "replaceParams").mockImplementation((params) => {
+      if (params.window_days === "30") {
+        dateFiltersAtRouteReplace.push({
+          dateFrom: sessions.filters.dateFrom,
+          dateTo: sessions.filters.dateTo,
+        });
+      }
+      replaceParams(params);
+    });
+    window.history.replaceState(null, "", "/sessions");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await flushEffects();
+
+    expect(dateFiltersAtRouteReplace[0]).toEqual({
+      dateFrom: "2026-06-11",
+      dateTo: "2026-07-10",
+    });
+    expect(sessionLoadDates[0]).toEqual({
+      dateFrom: "2026-06-11",
+      dateTo: "2026-07-10",
+    });
+    expect(analytics.isPinned).toBe(false);
+    expect(analytics.windowDays).toBe(30);
+    expect(router.params.window_days).toBe("30");
+    expect(router.params.date_from).toBe("2026-06-11");
+    expect(router.params.date_to).toBe("2026-07-10");
+
+    sessions.filters.date = "";
+    sessions.filters.dateFrom = "";
+    sessions.filters.dateTo = "";
+    // Clearing dates now also means clearing the rolling intent — the
+    // store-level clear paths (clearSessionFilters, setProjectFilter) do
+    // both, and the URL write-back re-adds window_days otherwise.
+    sessions.dateFiltersWindowDays = null;
+    router.params = {};
+    await flushEffects();
+
+    expect(router.params).toEqual({});
+  });
+
+  it("shares a retained Quality range after linking is enabled", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-10T12:00:00"));
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(settings, "load").mockResolvedValue();
+    vi.spyOn(starred, "load").mockResolvedValue();
+    vi.spyOn(sync, "loadStatus").mockResolvedValue();
+    vi.spyOn(sync, "loadStats").mockResolvedValue();
+    vi.spyOn(sync, "loadVersion").mockResolvedValue();
+    vi.spyOn(sync, "checkForUpdate").mockResolvedValue();
+    vi.spyOn(sync, "startPolling").mockImplementation(() => {});
+    vi.spyOn(codexCloudStatus, "load").mockResolvedValue();
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    vi.spyOn(sessions, "loadProjects").mockResolvedValue();
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    vi.spyOn(sessions, "attachSidebar").mockReturnValue(() => {});
+    vi.spyOn(analytics, "fetchAll").mockResolvedValue();
+    vi.spyOn(analytics, "fetchSignalsForQuality").mockResolvedValue();
+    vi.spyOn(insights, "load").mockResolvedValue();
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+
+    window.history.replaceState(null, "", "/quality");
+    router.route = "quality";
+    router.params = {};
+    router.sessionId = null;
+    analytics.applyRollingWindow(365);
+    yokedDates.setEnabled(false);
+
+    component = mount(App, { target: document.body });
+    await flushEffects();
+    await selectRelativeRange(90);
+
+    router.navigate("settings");
+    await flushEffects();
+    yokedDates.setEnabled(true);
+    router.navigate("quality");
+    await flushEffects();
+    router.navigate("usage");
+    await flushEffects();
+
+    expect(usage.isPinned).toBe(false);
+    expect(usage.windowDays).toBe(90);
+    expect(usage.from).toBe("2026-04-12");
+    expect(usage.to).toBe("2026-07-10");
+  });
+});
+
+describe("App telemetry", () => {
+  let posted: Array<{ event: string; properties?: Record<string, string> }> = [];
+
+  function hydratedSession(
+    id: string,
+    agent: string,
+    extra: Record<string, unknown> = {},
+  ): (typeof sessions.sessions)[number] {
+    return {
+      compaction_count: 0,
+      consecutive_failure_max: 0,
+      edit_churn_count: 0,
+      ended_with_role: "",
+      final_failure_streak: 0,
+      mid_task_compaction_count: 0,
+      outcome: "",
+      outcome_confidence: "",
+      secret_leak_count: 0,
+      tool_failure_signal_count: 0,
+      tool_retry_count: 0,
+      id,
+      project: "proj-a",
+      machine: "local",
+      agent,
+      first_message: "hello",
+      started_at: "2026-02-20T12:30:00Z",
+      ended_at: "2026-02-20T12:31:00Z",
+      message_count: 2,
+      user_message_count: 1,
+      total_output_tokens: 0,
+      peak_context_tokens: 0,
+      has_total_output_tokens: false,
+      has_peak_context_tokens: false,
+      is_automated: false,
+      is_teammate: false,
+      is_index_only: false,
+      created_at: "2026-02-20T12:30:00Z",
+      ...extra,
+    } as unknown as (typeof sessions.sessions)[number];
+  }
+
+  function setup() {
+    stubAppDependencies();
+    vi.spyOn(activity, "load").mockResolvedValue(false);
+    vi.spyOn(activity, "loadFilterOptions").mockResolvedValue(false);
+    vi.spyOn(sessions, "load").mockResolvedValue();
+    // Selects without fetching, as the real store does before hydration lands.
+    vi.spyOn(sessions, "navigateToSession").mockImplementation(async (id: string) => {
+      sessions.activeSessionId = id;
+    });
+    posted = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const headers = { "Content-Type": "application/json" };
+        if (requestUrl(input).includes("/api/v1/telemetry/events")) {
+          if (typeof init?.body !== "string") throw new Error("telemetry body is not a string");
+          posted.push(JSON.parse(init.body));
+          return new Response('{"status":"queued"}', { status: 202, headers });
+        }
+        return new Response("{}", { status: 200, headers });
+      }),
+    );
+  }
+
+  function postedFor(event: string) {
+    return posted.filter((p) => p.event === event).map((p) => p.properties);
+  }
+
+  it("reports visible visit time after mounting and stops on unmount", async () => {
+    setup();
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+    component = mount(App, { target: document.body });
+    await flushEffects();
+    now = 120_000;
+    window.dispatchEvent(new Event("pagehide"));
+    await flushEffects();
+    expect(postedFor("visit_ended")).toHaveLength(1);
+    window.dispatchEvent(new Event("pageshow"));
+    await unmount(component);
+    component = undefined;
+    now = 240_000;
+    window.dispatchEvent(new Event("pagehide"));
+    await flushEffects();
+    expect(postedFor("visit_ended")).toHaveLength(1);
+  });
+
+  it("reports authenticated route changes and the usage alias", async () => {
+    setup();
+    router.replace("recall");
+    settings.needsAuth = true;
+    component = mount(App, { target: document.body });
+    await flushEffects();
+    expect(postedFor("screen_viewed")).toEqual([]);
+    settings.needsAuth = false;
+    await flushEffects();
+    for (const route of ["sessions", "token-usage"] as const) {
+      router.navigate(route);
+      await flushEffects();
+    }
+    await vi.waitFor(() =>
+      expect(postedFor("screen_viewed")).toEqual([
+        { screen: "recall", surface: "web" },
+        { screen: "sessions", surface: "web" },
+        { screen: "usage", surface: "web" },
+      ]),
+    );
+  });
+  async function open(id: string | null) {
+    router.route = "sessions";
+    router.sessionId = id;
+    sessions.activeSessionId = id;
+    await flushEffects();
+  }
+
+  afterEach(() => {
+    sessions.sessions = [];
+  });
+
+  it("reports one session_viewed per visit once the session hydrates", async () => {
+    setup();
+    sessions.sessions = [hydratedSession("session-1", "codex")];
+    router.route = "sessions";
+    component = mount(App, { target: document.body });
+    await flushEffects();
+    expect(postedFor("session_viewed")).toEqual([]);
+
+    await open("session-1");
+    await vi.waitFor(() => expect(postedFor("session_viewed")).toEqual([{ agent: "codex" }]));
+
+    sessions.sessions = [hydratedSession("session-1", "codex", { message_count: 3 })];
+    await flushEffects();
+    await vi.waitFor(() => expect(postedFor("session_viewed")).toHaveLength(1));
+
+    await open(null);
+    await open("session-1");
+    await vi.waitFor(() =>
+      expect(postedFor("session_viewed")).toEqual([{ agent: "codex" }, { agent: "codex" }]),
+    );
+
+    router.route = "usage";
+    router.sessionId = null;
+    await flushEffects();
+    await open("session-1");
+    await vi.waitFor(() => expect(postedFor("session_viewed")).toHaveLength(3));
+  });
+
+  it("reports analytics_viewed once per analytics page and never for the sessions landing page", async () => {
+    setup();
+    window.history.replaceState(null, "", "/");
+    router.route = "sessions";
+    component = mount(App, { target: document.body });
+    await vi.waitFor(() => expect(postedFor("app_opened")).toHaveLength(1));
+    expect(postedFor("analytics_viewed")).toEqual([]);
+
+    router.route = "usage";
+    await vi.waitFor(() => expect(postedFor("analytics_viewed")).toEqual([{ page: "usage" }]));
+    for (const route of ["token-usage", "activity"] as const) {
+      router.route = route;
+      await flushEffects();
+    }
+    await open(null);
+    await vi.waitFor(() =>
+      expect(postedFor("analytics_viewed")).toEqual([{ page: "usage" }, { page: "activity" }]),
+    );
+  });
+});

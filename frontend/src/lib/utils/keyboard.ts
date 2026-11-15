@@ -1,0 +1,318 @@
+import { ui } from "../stores/ui.svelte.js";
+import { sessions } from "../stores/sessions.svelte.js";
+import { starred } from "../stores/starred.svelte.js";
+import { sync } from "../stores/sync.svelte.js";
+import { router } from "../stores/router.svelte.js";
+import { ignoreShortcut } from "../search/find-input.js";
+import { inSessionSearch } from "../stores/inSessionSearch.svelte.js";
+import { messages } from "../stores/messages.svelte.js";
+import { getExportUrl } from "../api/client.js";
+import { SessionsService, type ResumeRequest } from "../api/generated/index";
+import { supportsResume, buildResumeCommand, formatResumeResponseCommand } from "./resume.js";
+import { copyToClipboard } from "./clipboard.js";
+import { reportTelemetry } from "./telemetry.js";
+import { toggleSidebarWithFocus } from "./sidebar-toggle.js";
+import {
+  getSessionListElement,
+  navigateRegisteredSessionList,
+  resolveArrowTarget,
+  type ArrowInteractionTarget,
+} from "./arrow-target.js";
+
+function starredSessionFilter(): ((s: { id: string }) => boolean) | undefined {
+  return starred.filterOnly ? (s: { id: string }) => starred.isStarred(s.id) : undefined;
+}
+
+function isInputFocused(): boolean {
+  const el = document.activeElement;
+  if (!el) return false;
+  const tag = el.tagName;
+  return (
+    tag === "INPUT" ||
+    tag === "TEXTAREA" ||
+    tag === "SELECT" ||
+    (el as HTMLElement).isContentEditable
+  );
+}
+
+function isFindInput(): boolean {
+  const el = document.activeElement;
+  return el instanceof HTMLInputElement && el.closest(".kit-find-bar") !== null;
+}
+
+interface ShortcutOptions {
+  navigateMessage: (delta: number) => void;
+  navigateUserPrompt: (delta: number) => void;
+}
+
+function handleEscape(): void {
+  if (ui.activeModal !== null) {
+    ui.activeModal = null;
+    return;
+  }
+  if (inSessionSearch.isOpen) {
+    inSessionSearch.close();
+    return;
+  }
+  if (sessions.activeSessionId && !isInputFocused()) {
+    sessions.deselectSession();
+  }
+}
+
+function activeResumeModel(sessionId: string): string {
+  return messages.resumeModelFor(sessionId);
+}
+
+/**
+ * Register global keyboard shortcuts.
+ * Returns a cleanup function to remove the listener.
+ */
+export function registerShortcuts(opts: ShortcutOptions): () => void {
+  let lastArrowInteraction: ArrowInteractionTarget | null = null;
+
+  function rememberArrowInteraction(e: PointerEvent | FocusEvent) {
+    if (!(e.target instanceof Element)) return;
+    const sessionList = getSessionListElement();
+    const sessionSidebar = sessionList?.closest("#session-sidebar");
+    if (sessionList?.contains(e.target) || sessionSidebar?.contains(e.target)) {
+      lastArrowInteraction = "sessionList";
+    } else if (e.target.closest(".message-list-scroll")) {
+      lastArrowInteraction = "message";
+    }
+  }
+
+  function handler(e: KeyboardEvent) {
+    if (ignoreShortcut(e)) return;
+    const meta = e.metaKey || e.ctrlKey;
+
+    // Cmd+K — always works
+    if (meta && e.key === "k") {
+      e.preventDefault();
+      ui.activeModal = ui.activeModal === "commandPalette" ? null : "commandPalette";
+      return;
+    }
+
+    // Cmd+F — open in-session find when the session view is
+    // active with a selected session. Allow from the find
+    // input itself but not from other inputs (e.g. sidebar
+    // typeahead) where native find should work normally.
+    if (
+      meta &&
+      e.key.toLowerCase() === "f" &&
+      router.route === "sessions" &&
+      sessions.activeSessionId &&
+      ui.activeModal === null &&
+      (!isInputFocused() || isFindInput())
+    ) {
+      e.preventDefault();
+      inSessionSearch.open();
+      return;
+    }
+
+    // Cmd+G / Cmd+Shift+G and F3 / Shift+F3 — next/prev while find is
+    // open on the session view. Skip when a modal is open or
+    // an unrelated input has focus.
+    if (
+      ((meta && e.key.toLowerCase() === "g") || (!meta && !e.altKey && e.key === "F3")) &&
+      router.route === "sessions" &&
+      sessions.activeSessionId &&
+      inSessionSearch.isOpen &&
+      ui.activeModal === null &&
+      (!isInputFocused() || isFindInput())
+    ) {
+      e.preventDefault();
+      if (e.shiftKey) {
+        inSessionSearch.prev();
+      } else {
+        inSessionSearch.next();
+      }
+      return;
+    }
+
+    if (
+      meta &&
+      e.key.toLowerCase() === "g" &&
+      !e.shiftKey &&
+      !e.altKey &&
+      ui.activeModal === null &&
+      !isInputFocused() &&
+      !(router.route === "sessions" && inSessionSearch.isOpen)
+    ) {
+      e.preventDefault();
+      ui.activeModal = "goToSession";
+      return;
+    }
+
+    // Zoom: Cmd+= / Cmd+- / Cmd+0 (desktop only)
+    if (sync.isDesktop) {
+      if (meta && (e.key === "=" || e.key === "+")) {
+        e.preventDefault();
+        ui.zoomIn();
+        return;
+      }
+      if (meta && e.key === "-") {
+        e.preventDefault();
+        ui.zoomOut();
+        return;
+      }
+      if (meta && e.key === "0") {
+        e.preventDefault();
+        ui.resetZoom();
+        return;
+      }
+    }
+
+    // Esc is handled by escapeHandler on window.
+    if (e.key === "Escape") return;
+
+    // All remaining shortcuts are plain single-key — skip if any modifier is held.
+    // (Shift is allowed because "?" requires Shift on most layouts.)
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+    // All other shortcuts: skip when modal open or input focused
+    if (ui.activeModal !== null || isInputFocused()) return;
+
+    if (e.shiftKey && (e.key === "J" || e.key === "K")) {
+      e.preventDefault();
+      opts.navigateUserPrompt(e.key === "J" ? 1 : -1);
+      return;
+    }
+
+    const keyActions: Record<string, () => void> = {
+      j: () => opts.navigateMessage(1),
+      ArrowDown: () => {
+        const target = resolveArrowTarget(
+          document.activeElement,
+          getSessionListElement(),
+          lastArrowInteraction,
+        );
+        if (target === "sessionList") {
+          navigateRegisteredSessionList(1);
+        } else if (target === "message") {
+          opts.navigateMessage(1);
+        }
+      },
+      k: () => opts.navigateMessage(-1),
+      ArrowUp: () => {
+        const target = resolveArrowTarget(
+          document.activeElement,
+          getSessionListElement(),
+          lastArrowInteraction,
+        );
+        if (target === "sessionList") {
+          navigateRegisteredSessionList(-1);
+        } else if (target === "message") {
+          opts.navigateMessage(-1);
+        }
+      },
+      "]": () => {
+        sessions.navigateSession(1, starredSessionFilter());
+      },
+      "[": () => {
+        sessions.navigateSession(-1, starredSessionFilter());
+      },
+      o: () => ui.toggleSort(),
+      l: () => ui.cycleLayout(),
+      r: () => sync.triggerSync(),
+      e: () => {
+        if (sessions.activeSessionId) {
+          window.open(getExportUrl(sessions.activeSessionId), "_blank");
+          reportTelemetry("export_run", { format: "html" });
+        }
+      },
+      p: () => {
+        const id = sessions.activeSessionId;
+        if (id) {
+          ui.publishSecret = false;
+          ui.setPublishTarget({ kind: "session", id });
+          ui.activeModal = "publish";
+        }
+      },
+      s: () => {
+        if (sessions.activeSessionId) {
+          starred.toggle(sessions.activeSessionId);
+        }
+      },
+      c: () => {
+        const session = sessions.activeSession;
+        if (session && supportsResume(session.agent)) {
+          // Copy a runnable resume command. Cursor needs the backend cwd
+          // applied client-side so the copied command is self-contained.
+          SessionsService.postApiV1SessionsByIdResume({ id: session.id }, {
+            command_only: true,
+          } satisfies ResumeRequest)
+            .then((resp) => {
+              const cmd =
+                formatResumeResponseCommand(session.agent, resp) ||
+                buildResumeCommand(session.agent, session.id, {
+                  model: activeResumeModel(session.id),
+                });
+              if (cmd) void copyToClipboard(cmd);
+            })
+            .catch(() => {
+              const cmd = buildResumeCommand(session.agent, session.id, {
+                model: activeResumeModel(session.id),
+              });
+              if (cmd) void copyToClipboard(cmd);
+            });
+        }
+      },
+      "/": () => {
+        if (sessions.activeSessionId) {
+          inSessionSearch.open();
+        }
+      },
+      Delete: () => {
+        if (router.route === "sessions" && sessions.activeSessionId) {
+          ui.activeModal = "confirmDelete";
+        }
+      },
+      Backspace: () => {
+        if (router.route === "sessions" && sessions.activeSessionId) {
+          ui.activeModal = "confirmDelete";
+        }
+      },
+      "?": () => {
+        ui.activeModal = "shortcuts";
+      },
+      b: () => {
+        if (router.route === "sessions") {
+          void toggleSidebarWithFocus();
+        } else if (ui.isMobileViewport) {
+          router.navigate("sessions");
+          ui.sidebarOpen = true;
+        } else {
+          void toggleSidebarWithFocus();
+        }
+      },
+    };
+
+    const action = keyActions[e.key];
+    if (action) {
+      e.preventDefault();
+      action();
+    }
+  }
+
+  // Escape listens on window so it runs after document-level listeners.
+  // An open kit-ui menu or popover dismisses itself there and calls
+  // preventDefault; that layer, not the session, is what this press closes.
+  function escapeHandler(e: KeyboardEvent) {
+    if (e.key !== "Escape" || ignoreShortcut(e)) return;
+    // The palette handles Escape after its nested popovers have had a
+    // chance to claim it.
+    if (ui.activeModal === "commandPalette") return;
+    handleEscape();
+  }
+
+  document.addEventListener("pointerdown", rememberArrowInteraction, true);
+  document.addEventListener("focusin", rememberArrowInteraction, true);
+  document.addEventListener("keydown", handler);
+  window.addEventListener("keydown", escapeHandler);
+  return () => {
+    document.removeEventListener("pointerdown", rememberArrowInteraction, true);
+    document.removeEventListener("focusin", rememberArrowInteraction, true);
+    document.removeEventListener("keydown", handler);
+    window.removeEventListener("keydown", escapeHandler);
+  };
+}

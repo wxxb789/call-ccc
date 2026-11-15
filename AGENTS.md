@@ -5,7 +5,11 @@ AI-agent harness continue as a new, natively resumable session of another harnes
 
 Read in this order; do not skip: this file → [`docs/core-design/README.md`](docs/core-design/README.md)
 → the active goal in [`docs/goals/`](docs/goals/README.md) → [`docs/conventions.md`](docs/conventions.md)
-→ [`docs/harness.md`](docs/harness.md).
+→ [`docs/upstream.md`](docs/upstream.md) (the carried AgentsView pin) → [`docs/harness.md`](docs/harness.md).
+
+An increment's own records live next to it: its plan in [`docs/plans/`](docs/plans/) (written before
+the implementation) and its evidence in [`docs/evidence/`](docs/evidence/) (the commands that ran,
+with their exit codes and counts).
 
 ## What is binding
 
@@ -15,7 +19,10 @@ Read in this order; do not skip: this file → [`docs/core-design/README.md`](do
   stop instead of improvising.
 - **AgentsView is the source-side authority.** Its reader, parser, sync, SQLite and migration code
   and their tests are carried at a traceable upstream revision and are never rewritten, simplified
-  or forked. A locally maintained parser fork is a defect, not a shortcut.
+  or forked. A locally maintained parser fork is a defect, not a shortcut. The pin, the declared
+  deviations and the update procedure are in [`docs/upstream.md`](docs/upstream.md); the machine
+  record is `scripts/upstream-manifest.txt`, and `scripts/upstream-parity.py` — a **required** gate
+  step — proves the carried files are still the pin's. Change a carried file only upstream.
 - **Precision over apparent completeness.** An explicitly partial translation beats a
   plausible-looking one. Never fabricate tool results, reasoning, roles, resume identities or a
   success result; a valid file is not evidence that anything can resume it.
@@ -24,10 +31,15 @@ Read in this order; do not skip: this file → [`docs/core-design/README.md`](do
 
 ## How to work here
 
-- Gate: `python3 scripts/gate.py`, which must print `GATE: PASS`; a run in which a step was skipped,
+- Gate: `python3 scripts/gate.py`, which must print `GATE: PASS`; it runs `parity` and `selftest` as
+  required steps, and its Go steps are narrowed to `./cmd/ccc/... ./internal/ccc/...` with the measured
+  reasons in [`docs/harness.md`](docs/harness.md#why-the-go-steps-target-a-subset) — that narrowing is
+  a disclosure, not a shortcut; a run in which a step was skipped,
   bounded or absent prints `GATE: PASS (partial: …)` naming it, so a partial run can never be quoted
   as a full one. It is the same file CI runs (the runners name the interpreter `python`); never narrow
-  or skip a step to get green — a step that cannot run is disclosed, not silenced. The gate also runs
+  or skip a step to get green — a step that cannot run is disclosed, not silenced, and a required step
+  that cannot *verify* fails: `parity` prints `parity: INCOMPLETE` and exits 2 when git cannot
+  enumerate the tree, instead of a PASS with the disclosure inside its detail line. The gate also runs
   its own regression tests from `scripts/tests/` (the `selftest` step, stdlib only).
 - The harness's own tests are part of that contract: an assertion under `scripts/tests/` must fail
   when the rule it names is broken, and must hold on every platform and every Python 3 the docs name

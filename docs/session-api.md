@@ -1,0 +1,1709 @@
+---
+title: Session API
+description: Programmatic access to session data via the agentsview session CLI and REST endpoints
+---
+
+The `agentsview session` command group is a stable, programmatic surface for
+reading and writing session data. It is designed for shell scripts, automation
+agents, and CI jobs that need structured output rather than the web UI.
+
+Local session reads use the AgentsView daemon over HTTP and start it when
+needed. This keeps reads and writes under the same archive owner. Explicit
+`--server` and `--pg` options select another backend; raw `session export`
+always runs locally.
+
+## Quick examples
+
+```bash
+# Search parsed message/tool content without scanning raw JSONL files.
+agentsview session search "database timeout" --json --limit 10
+
+# Recover recent context for one project, then fetch the first page
+# of messages from a selected session.
+agentsview session list --project myapp --limit 5 --json
+agentsview session messages <session-id> --from 0 --limit 20 --json
+
+# Query an already-running daemon explicitly.
+agentsview session list --server http://127.0.0.1:8080 --json
+
+# Read from configured PostgreSQL instead of local SQLite.
+agentsview session search "regression" --pg --json
+```
+
+## Stability
+
+- **Additive-only.** New fields may appear at any time. Existing fields are
+  never renamed or removed.
+- **Types are stable.** A field that is a string stays a string.
+- **Unknown fields are safe to ignore.** Well-behaved consumers tolerate
+  forward-compatible additions.
+
+HTTP and CLI share response schemas. The CLI adds browser links when it knows
+the server address. The CLI `watch` command emits NDJSON whose lines mirror
+the underlying SSE events.
+
+## Transport
+
+Detection uses kit daemon runtime records in `AGENTSVIEW_DATA_DIR` (its `run`
+subdirectory on Windows) and the daemon ping endpoint. Runtime records include
+service and API metadata so incompatible or read-only daemons are not mistaken
+for a writable local archive owner.
+
+- If `--server <url>` is set, supported commands proxy to that daemon over HTTP.
+  `--server` and `--pg` are mutually exclusive. The local config `auth_token`
+  is not sent to explicit URLs; set `AGENTSVIEW_SERVER_TOKEN` or pass
+  `--server-token-file <path>` when that remote daemon requires auth.
+- If no explicit server is set and a local daemon is running, read and write
+  commands proxy to it over HTTP.
+- If a [`pg serve`](/docs/pg-sync/#agentsview-pg-serve) daemon is running
+  (read-only), read commands proxy to it but `session sync` refuses with a
+  clear error.
+- If both a writable local daemon and a `pg serve` daemon advertise the same
+  data directory, the writable one wins so sync/write operations don't
+  silently land on a read-only target.
+- If no daemon is running, ordinary local session reads and writes start
+  `agentsview serve --background`, wait for readiness, and proxy the
+  operation to that daemon.
+- If `AGENTSVIEW_NO_DAEMON=1` is set, the CLI never auto-starts a daemon. Read
+  commands require an existing compatible daemon. The
+  [`session usage`](#agentsview-session-usage) refresh path can still run
+  directly after acquiring the write-owner lock; its `--no-sync` path requires
+  a daemon.
+- If a writable daemon is known to own the local archive but is not reachable,
+  session commands report the connection or compatibility error instead of
+  opening a second archive handle.
+- `session export` always runs locally regardless of daemon state, and rejects
+  `--server`, `--pg`, and `--format`/`--json` because it streams raw source
+  bytes.
+
+When a discovered local daemon requires auth (`require_auth: true`), the CLI
+attaches `Authorization: Bearer <token>` using the `auth_token` from the shared
+config. Explicit `--server` URLs are different: they only receive a bearer token
+supplied with `AGENTSVIEW_SERVER_TOKEN` or `--server-token-file <path>`, so a
+local daemon token is not leaked to arbitrary remote URLs. Prefer
+`--server-token-file` for long-running commands and shared hosts so the token
+does not appear in process arguments.
+
+`--pg` opens the configured PostgreSQL read store directly. It is useful for
+automation running away from the UI server, but it is read-only: `session sync`
+and `session export` reject it. If `AGENTSVIEW_PG_URL` or `[pg].url` is
+configured, read commands still use local SQLite unless `--pg` is supplied.
+
+When the CLI reads through HTTP, session list, detail, sync, and search JSON
+include `web_url` links to the selected server's browser view. The links retain
+the server's base path and separate the provider and session ID into URL
+segments, for example `/sessions/codex/<uuid>`. Use the returned link instead of
+constructing one. Direct `--pg` reads omit it because no browser address is
+known.
+
+## Common flags
+
+| Flag                         | Description                                                                                                                                                                                    |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--format human\|json`       | Output format. Default `human`.                                                                                                                                                                |
+| `--json`                     | Alias for `--format json`.                                                                                                                                                                     |
+| `--server <url>`             | Explicit daemon URL for HTTP-backed operations.                                                                                                                                                |
+| `--server-token-file <path>` | Bearer token file for an explicit `--server` URL.                                                                                                                                              |
+| `--machine <value>`          | Filter bare Codebuff/Freebuff timestamp resolution to one machine (`local`, ID, alias, name, or `*`). Default `local`. `session get` only; canonical IDs and other agents are unaffected.      |
+| `--pg`                       | Read from configured PostgreSQL instead of SQLite.                                                                                                                                             |
+
+## Shared metadata endpoints
+
+The HTTP `/api/v1/events` stream sends `events_ready` on every connection
+after subscribing to changes.
+To receive the changed session and message records themselves, with a cursor
+for resuming, use the
+[change stream](/docs/conversation-export/#follow-changes-live).
+
+The web UI and generated API clients use shared metadata endpoints for filter
+options:
+
+```http
+GET /api/v1/projects
+GET /api/v1/machines
+GET /api/v1/branches
+GET /api/v1/agents
+```
+
+`GET /api/v1/machines` returns the picker catalog and applies the visibility
+flags in its `machines` array. With `?machine=Workstation`, the separate
+`resolved_machines` array contains the canonical selector IDs, even when those
+IDs have no visible or stored sessions. It is omitted without a selector. Visibility
+flags do not limit resolution. Unknown or ambiguous selectors return HTTP 400
+with known choices.
+
+`GET /api/v1/branches` returns distinct `(project, branch)` pairs plus an opaque
+`token` field:
+
+```json
+{
+  "branches": [
+    {
+      "project": "myapp",
+      "branch": "main",
+      "token": "..."
+    }
+  ]
+}
+```
+
+Pass the returned token back as the `git_branch` query parameter on branch-aware
+endpoints. Treat it as opaque and URL-encode it in manual HTTP calls. The token
+is scoped by both project and branch, so `app-a/main` and `app-b/main` remain
+distinct, and an empty branch remains distinct from a literal `unknown` branch.
+
+## Commands
+
+### `agentsview session get`
+
+Return session metadata plus computed signal fields. Shape matches
+`GET /api/v1/sessions/{id}`.
+
+```bash
+agentsview session get <id> [--format json]
+```
+
+**Bare timestamps on remote stores.** Codebuff/Freebuff sessions live as
+`<agent>:<project>:<timestamp>` canonical IDs; a bare timestamp (e.g.
+`2026-07-16T00-09-00.236Z`) is not a canonical ID. Against the local archive the
+CLI resolves a bare timestamp to its canonical ID by walking the configured
+codebuff/freebuff roots, gated by `--machine` (default `local`). Against a
+remote store (`--server`, `--pg`) a bare Codebuff/Freebuff timestamp is rejected
+with an explicit error pointing at `session list`, because a bare timestamp is
+intrinsically ambiguous across machines and projects. The rejection is scoped to
+the Codebuff/Freebuff timestamp shape; bare IDs that are not timestamps (Codex /
+Copilot / Gemini UUIDs, etc.) are unaffected and continue to resolve via the
+registered agent prefix retry on remote reads, the same way they do locally.
+Always pass the full canonical ID on remote reads when one is known:
+
+```bash
+# Local reads: bare timestamp OK (--machine=local by default).
+agentsview session get 2026-07-16T00-09-00.236Z
+agentsview session get 2026-07-16T00-09-00.236Z --machine=*
+
+# Remote reads: pass the canonical ID from `session list`.
+agentsview session get codebuff:myproject:1704067200 --pg
+agentsview session get freebuff:myproject:1704067200 --pg
+agentsview session get host~codebuff:myproject:1704067200 --server http://remote
+agentsview session get host~freebuff:myproject:1704067200 --server http://remote
+```
+
+```json
+{
+  "id": "abc-123",
+  "project": "myapp",
+  "machine": "workstation",
+  "agent": "claude",
+  "first_message": "...",
+  "display_name": "...",
+  "git_branch": "main",
+  "started_at": "2026-04-18T12:00:00Z",
+  "ended_at": "2026-04-18T13:00:00Z",
+  "message_count": 42,
+  "user_message_count": 7,
+  "health_score": 85,
+  "health_grade": "A",
+  "outcome": "completed",
+  "health_score_basis": ["..."],
+  "health_penalties": {"tool_retries": 5},
+  "parser_malformed_lines": 3,
+  "secret_leak_count": 0,
+  "labels": [],
+  "pr_links": []
+}
+```
+
+`health_score_basis` and `health_penalties` are populated when `health_score` is
+non-null. Both HTTP and CLI surfaces return them.
+
+`git_branch` is the branch captured at sync time when the parser or source
+metadata exposes it; sessions with no recorded branch omit the field.
+`parser_malformed_lines` counts the malformed source lines a parser skipped
+while still recovering the session and is omitted when zero. Antigravity detail
+responses may also include `decode_confidence`; the value `low` means the
+session came from an unrecognized Antigravity schema fingerprint and was decoded
+heuristically.
+
+`labels` lists the session's [labels](#agentsview-session-label) and
+`pr_links` its [pull request links](#pull-request-links). Both are always
+present and are `[]` when empty. Human output prints them, plus the parent
+session when there is one.
+
+`secret_leak_count` (added in 0.30.0) counts definite-tier findings from
+[secret scanning](#secret-scanning) and is stamped inline during sync.
+Candidate-tier findings only show up after an explicit
+[`agentsview secrets scan --backfill`](/docs/commands/#agentsview-secrets) and
+do not contribute to this count.
+
+______________________________________________________________________
+
+### `agentsview session list`
+
+Filtered session list. The session fields match `GET /api/v1/sessions`; CLI JSON
+also includes a `machine_labels` catalog.
+
+```bash
+agentsview session list [flags]
+```
+
+```json
+{
+  "sessions": [ ... ],
+  "next_cursor": "...",
+  "total": 42,
+  "machine_labels": {
+    "machine-key": "Build Host"
+  }
+}
+```
+
+One-shot and automated sessions are excluded by default. When the first CLI page
+hides any, `session list` writes an advisory to stderr with the hidden count for
+each category and the `--include-one-shot` or `--include-automated` flag that
+reveals it. Human stdout stays unchanged, and the JSON catalog is additive, so
+redirecting or piping structured output remains safe. The JSON `total` continues
+to describe the filtered result, not the excluded sessions. Use the
+`--include-*` flags to opt back in.
+
+The list endpoint accepts `exclusion_counts=false` to return hidden one-shot and
+automated counts, or `exclusion_counts=true` to include the bounded child count.
+The optional `exclusion_counts` response contains `one_shot`, `automated`,
+`children`, and `children_lower_bound`. Cursor pages and fully included lists
+omit it. Other API callers leave this parameter unset to avoid the extra work.
+Servers that omit the summary still return a usable page; the CLI then omits
+the exclusion notice.
+
+Machine filters accept exact IDs, aliases, comma-separated ID/alias lists, or a
+unique whole display label. Exact ID/alias lists take precedence over a
+same-spelled label. Otherwise, the complete input is matched against labels,
+including labels containing commas. A valid 32-character hexadecimal installation
+ID takes precedence over a same-text label even without stored sessions. Unknown or ambiguous selectors
+return HTTP 400 with code `invalid_machine_filter`.
+
+In JSON output, `sessions[].machine` keeps the machine key. Look it up in the
+top-level `machine_labels` map when a display name is needed. A key without a
+stored label is absent from the map, and labels for machines outside the current
+page are omitted. If the catalog cannot be read, the command keeps the session
+result and emits `machine_labels: {}` with a warning on stderr. Human output
+does not read the catalog.
+
+Use `session list --json --include-source` to include each session's recorded
+`file_path`, `file_size`, and `local_modified_at` when the backend stores them.
+Source fields are omitted by default; this option does not add a column to human
+output. HTTP callers use `include_source=true`. PostgreSQL stores the source path
+but does not store file size or archive-row update time.
+
+To compare copies across hosts, fetch their metadata in one request:
+
+```http
+GET /api/v1/sessions?ids=codex:abc,codex:def&include_source=true
+```
+
+The HTTP-only `ids` parameter accepts 1 to 100 comma-separated IDs. Quote an ID
+that contains a comma or line break using RFC 4180 CSV quoting; double any quote
+characters inside it. For example, the decoded query value
+`ids="openclaw:main:part,part"` selects one ID. When none of the IDs contains a
+comma or line break, quote characters are treated literally. Whitespace around
+members is trimmed and duplicate IDs are returned once. Empty members or more
+than 100 members return HTTP 400. A raw ID matches itself and copies whose IDs
+end in `~<raw-id>`; an ID containing `~` matches exactly. Unknown IDs return no
+rows. IDs containing a CRLF sequence cannot be selected through this parameter.
+Direct selection includes child, automated, one-shot, and empty sessions. Deleted
+sessions remain excluded. Other explicit filters intersect the selected rows;
+normal sorting, limits, and cursor pagination still apply. Hosted PostgreSQL
+resolves public IDs first and rejects ambiguous copies through its existing
+identity-conflict response.
+
+Compare `cwd`, `is_truncated`, `message_count`, `file_size`,
+`local_modified_at`, and the session timestamps when choosing a copy. Source
+metadata and timestamps help compare copies; they do not guarantee a complete
+transcript. `local_modified_at` records changes to the archived session row,
+including custom names and later metadata edits. Labels and launcher parent links
+advance only the mirror sync marker. It is not the source file's modification
+time.
+
+Date filters match a session when its activity window overlaps the selected date
+or range. Sessions that start before midnight and remain active after it
+therefore appear on both dates.
+
+| Flag                  | HTTP param          | Notes                                                                                                                                                                             |
+| --------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--project`           | `project`           | string                                                                                                                                                                            |
+| `--exclude-project`   | `exclude_project`   | string                                                                                                                                                                            |
+| `--machine`           | `machine`           | string                                                                                                                                                                            |
+| —                     | `git_branch`        | opaque token from `GET /api/v1/branches`                                                                                                                                          |
+| `--agent`             | `agent`             | string                                                                                                                                                                            |
+| `--date`              | `date`              | `YYYY-MM-DD`                                                                                                                                                                      |
+| `--date-from`         | `date_from`         | `YYYY-MM-DD`                                                                                                                                                                      |
+| `--date-to`           | `date_to`           | `YYYY-MM-DD`                                                                                                                                                                      |
+| `--active-since`      | `active_since`      | RFC3339 timestamp                                                                                                                                                                 |
+| `--since`             | `active_since`      | Relative — `Nh` hours, `Nd` days, `Nw` weeks, `Nm` calendar months (not minutes), `Ny` years — or `YYYY-MM-DD`; resolved against now and mutually exclusive with `--active-since` |
+| `--resume`            | `active_since`      | CLI shortcut for sessions active in the last 15 minutes                                                                                                                           |
+| `--active`            | `active_since`      | Alias for `--resume`                                                                                                                                                              |
+| `--min-messages`      | `min_messages`      | int                                                                                                                                                                               |
+| `--max-messages`      | `max_messages`      | int                                                                                                                                                                               |
+| `--min-user-messages` | `min_user_messages` | int                                                                                                                                                                               |
+| `--include-one-shot`  | `include_one_shot`  | bool                                                                                                                                                                              |
+| `--include-automated` | `include_automated` | bool                                                                                                                                                                              |
+| `--include-children`  | `include_children`  | bool                                                                                                                                                                              |
+| `--include-source`    | `include_source`    | bool; include available source path, size, and archive-row update time, hidden by default                                                                                                                      |
+| `--outcome`           | `outcome`           | comma-separated                                                                                                                                                                   |
+| `--health-grade`      | `health_grade`      | comma-separated                                                                                                                                                                   |
+| `--min-tool-failures` | `min_tool_failures` | int; `0` is a meaningful filter                                                                                                                                                   |
+| `--has-secret`        | `has_secret`        | bool — only sessions with at least one definite [secret finding](#secret-scanning)                                                                                                |
+| `--label`             | `label`             | repeatable; exact label match, every listed label required                                                                                                                        |
+| `--pr`                | `pr`                | `owner/repo`, `owner/repo#123`, or `github.com::owner/repo#123`; see [Pull request links](#pull-request-links)                                                                              |
+| `--sort`              | `order_by`          | comma-separated keys; optional `:asc` / `:desc` suffix per key                                                                                                                    |
+| `--reverse`, `-r`     | `descending`        | flips the default direction for unsuffixed sort keys                                                                                                                              |
+| `--cursor`            | `cursor`            | opaque string from prior response                                                                                                                                                 |
+| `--limit`             | `limit`             | int; default 200, max 500                                                                                                                                                         |
+
+Sort keys are `recent`, `started`, `messages`, `user-messages`, `output-tokens`,
+`peak-context`, `failures`, `retries`, `edit-churn`, `compactions`,
+`context-pressure`, `health`, `secrets`, and `id`. `recent` defaults descending;
+the other keys default ascending unless `--reverse`, `descending=true`, or an
+explicit suffix overrides them.
+
+Human CLI output is formatted for resuming work: it shows the full session ID,
+age, agent, project, branch, message count, title, and working directory, with a
+marker on sessions active in the last 15 minutes. `--resume` and `--active` set
+`active_since` to that 15-minute window unless `--active-since` is supplied
+explicitly. HTTP callers should pass `active_since` directly.
+
+Examples:
+
+```bash
+agentsview session list --resume
+agentsview session list --sort messages:desc,started:asc
+agentsview session list --sort health --reverse
+```
+
+______________________________________________________________________
+
+### `agentsview session compactions`
+
+Read full compaction summaries for one session or sessions active since an
+RFC3339 timestamp. RooCode and legacy Kilo sessions are excluded. Older Evener
+labels that may be literal summary text appear separately as ambiguous, with
+their session ID and ordinal. The session limit does not cap response bytes;
+`--limit 0` uses the default of 20 sessions. Use `--limit` and `--cursor` to
+page sessions. Resume a cursor with the same `--active-since` value, even when a
+page has no summaries.
+
+```bash
+agentsview session compactions <id> --json
+agentsview session compactions --active-since 2024-01-01T00:00:00Z --limit 20 --json
+```
+
+The messages API accepts `compact_boundary=true` to select compaction boundaries in linear reads. It cannot be combined with `around`.
+
+### `agentsview session messages`
+
+Return a window of messages. Response shape matches
+`GET /api/v1/sessions/{id}/messages`.
+
+```bash
+agentsview session messages <id> [--from N] [--limit N] [--direction asc|desc]
+agentsview session messages <id> --around N [--before N] [--after N] [--role user,assistant]
+```
+
+`--from` is pointer-valued at the service layer: omitting it means "start at the
+beginning" for ascending and "start at the newest page" for descending; an
+explicit `--from 0` means "start at ordinal 0" in both directions. `--direction`
+is validated to `asc` or `desc`.
+
+Window and role flags (see
+[Semantic Search](/docs/semantic-search/#cursor-follow-from-a-hit-to-its-surrounding-conversation)
+for the cursor-follow workflow they support):
+
+| Flag       | HTTP param | Notes                                                                           |
+| ---------- | ---------- | ------------------------------------------------------------------------------- |
+| `--around` | `around`   | Center a window on this ordinal; mutually exclusive with `--from`/`--direction` |
+| `--before` | `before`   | Messages before the anchor (default 5); requires `--around`                     |
+| `--after`  | `after`    | Messages after the anchor (default 5); requires `--around`                      |
+| `--role`   | `roles`    | Comma-separated roles to include, e.g. `user,assistant`                         |
+
+With a `--role` filter, `--before`/`--after` count filtered messages; the anchor
+message is always included. Responses report the window's
+`first_ordinal`/`last_ordinal` so callers can continue paging with
+`--from <last_ordinal + 1>`.
+
+```json
+{
+  "messages": [
+    {
+      "ordinal": 0,
+      "role": "user",
+      "content": "...",
+      "thinking_text": "",
+      "timestamp": "2026-04-18T12:00:00Z",
+      "is_system": false,
+      "source_type": "user",
+      "source_subtype": "",
+      "has_thinking": false,
+      "has_tool_use": false
+    }
+  ],
+  "count": 1
+}
+```
+
+`thinking_text` holds the concatenated text of any `thinking` blocks the agent
+emitted, separated from the flattened `content` which still contains inline
+`[Thinking]...[/Thinking]` markers for UI rendering.
+
+Promoted `source_subtype` values on `is_system: true` messages: `continuation`,
+`resume`, `interrupted`, `task_notification`, `stop_hook`, `peer_message`,
+`compact_boundary`, `hook_success`, `hook_additional_context`, `hook_cancelled`,
+`stop_hook_summary`.
+The three `hook_*` subtypes carry Claude hook output with
+`source_type: "attachment"`. `stop_hook_summary` carries stop hook results with
+`source_type: "system"`.
+`peer_message` is a message another Claude Code session sent; its `content`
+keeps the `<cross-session-message>` wrapper with the sender's name. The content
+may include a framing line before the wrapper and a notice after it.
+
+______________________________________________________________________
+
+### `agentsview session tool-calls`
+
+Chronological flattened list of tool invocations.
+
+```bash
+agentsview session tool-calls <id>
+```
+
+```json
+{
+  "tool_calls": [
+    {
+      "ordinal": 3,
+      "timestamp": "2026-04-18T12:05:00Z",
+      "tool_use_id": "toolu_01abc...",
+      "tool_name": "Bash",
+      "category": "Bash",
+      "input_json": "{\"command\":\"ls\"}",
+      "skill_name": "",
+      "subagent_session_id": "",
+      "result_length": 128
+    }
+  ],
+  "count": 1
+}
+```
+
+`input_json` is a string — usually a serialized JSON object but may be a plain
+string (e.g. `"echo hello world"` from Codex).
+
+______________________________________________________________________
+
+### `POST /api/v1/sessions/{id}/resume`
+
+Resume a local session in its native agent, or return the command that would be
+launched. This is an HTTP-only surface used by the web UI's resume menu.
+
+```http
+POST /api/v1/sessions/{id}/resume
+```
+
+Request body:
+
+```json
+{
+  "skip_permissions": false,
+  "fork_session": false,
+  "from_ordinal": 17,
+  "command_only": false,
+  "opener_id": ""
+}
+```
+
+Response:
+
+```json
+{
+  "launched": true,
+  "terminal": "Terminal",
+  "command": "cd /repo && claude --resume abc-123",
+  "cwd": "/repo"
+}
+```
+
+`command_only: true` returns the command without launching a terminal. When a
+launch is attempted but fails, the response still includes the command with
+`launched: false` and an `error` code of `no_terminal_found` or `launch_failed`.
+Read-only local mode can still return commands, but remote sessions and
+read-only remote serving cannot launch local programs.
+
+For Claude Code sessions, setting `fork_session: true` without `from_ordinal`
+appends Claude's native `--fork-session` flag to the normal resume command.
+Setting both `fork_session: true` and `from_ordinal` creates a message-point
+fork: AgentsView renders the transcript through that message ordinal into a
+temporary prompt and runs `claude < prompt` from the resolved session working
+directory. Message-point forks are Claude-only, require `fork_session`, reject
+`opener_id`, and return `404` when the ordinal is not present.
+
+______________________________________________________________________
+
+### The `agentsview://` URL scheme
+
+The desktop app registers the `agentsview://` URL scheme, letting
+external tools open a session in the app without going through HTTP:
+
+```bash
+open "agentsview://sessions/<session-id>"
+```
+
+Contract:
+
+- Only `agentsview://sessions/<session-id>` URLs are accepted. The
+  session id must be a single path segment; percent-encode reserved
+  characters. Anything else is logged to the desktop log and ignored.
+- An optional `?msg=<ordinal>` or `?msg=last` query scrolls to that
+  message. Other query parameters are dropped.
+- If the app is running, its window is focused and navigated to the
+  session. If not, the app launches and opens the session once its
+  backend is ready. On Windows and Linux a second launch forwards its
+  URL to the running instance and exits.
+- Callers can detect a missing handler because `open` (macOS) and
+  equivalent launchers exit non-zero when no app claims the scheme;
+  fall back to the web UI at
+  `http://<host>:<port>/sessions/<session-id>` in that case.
+
+The scheme is registered by the installed desktop app; it is not
+available when only the CLI or server is installed.
+
+______________________________________________________________________
+
+### `agentsview session export`
+
+Stream the raw session source file to stdout. This is a **local-only**
+filesystem helper: the source file path is resolved from the local SQLite
+archive, never from any daemon. Both `--server` and `--format`/`--json` are
+rejected with an error — the command also rejects `--pg`. It streams raw bytes,
+so structured-output and remote-store flags don't apply.
+
+Detected secrets, such as API keys, tokens and private keys, are masked by
+default, with the same detector and masked form as search results. The command
+reads the whole source before writing. A JSON Lines source is masked inside each
+record's decoded strings, so JSON escapes such as `\n` cannot hide a key, and
+each record stays valid JSON. Any other source is masked as a whole, so a key
+block that spans lines is still caught. Pass `--reveal` to stream the source
+unchanged.
+
+```bash
+agentsview session export <id>
+agentsview session export <id> --reveal
+```
+
+Exit states:
+
+| State                                  | Behavior                                         |
+| -------------------------------------- | ------------------------------------------------ |
+| Session in local archive, file on disk | Streams bytes, secrets masked unless `--reveal`  |
+| Session in local archive, file missing | Exit 1: error prefixed `source file not found`   |
+| Session in local archive, path empty   | Exit 1: `source file not found for session <id>` |
+| Session not in local archive           | Exit 1: `session not in local archive: <id>`     |
+
+For a DB-derived export (HTML or markdown) use the HTTP endpoints
+`/api/v1/sessions/{id}/export` or `/api/v1/sessions/{id}/md`. They mask
+secrets too; see [secrets in exports](/docs/usage/#secrets-in-exports).
+
+Markdown export accepts an optional `depth` query parameter:
+
+- omitted: root session only
+- `depth=1`: include direct child/subagent sessions
+- `depth=all`: recurse through the child-session tree
+
+Any other `depth` value is rejected.
+
+______________________________________________________________________
+
+### `agentsview session sync`
+
+Parse and insert a single session. Blocks until indexing and signal computation
+complete. JSON output is the `SessionDetail` of the synced session; human output
+is one line: `synced: <id>`.
+
+```bash
+agentsview session sync <path-or-id>
+```
+
+Argument resolution: if the argument is an existing filesystem path, it is
+treated as a raw JSONL file to parse. Otherwise it is treated as a session ID
+for re-parse.
+
+With `--server <url>`, path-shaped arguments such as
+`/var/log/agent/session.jsonl` or `./session.jsonl` are sent to the remote
+daemon as paths and resolved on that daemon host. Bare values without path
+separators are treated as session IDs.
+
+When a single JSONL maps to more than one session (for example a Claude
+transcript with forked/resumed branches), `session sync <path>` refuses with an
+error that lists every candidate id. The contract is "one session in, one
+`SessionDetail` back", so the CLI never picks arbitrarily.
+
+At that point the file has already been parsed and every candidate session
+written to the local archive — the ambiguity check runs after the sync engine
+finishes. Re-run `session sync <id>` with the specific session you want; the
+`<id>` form resolves the file path from the archive, so it only works for
+sessions already present there.
+
+- `session sync` uses a writable local daemon when one is running, or starts a
+  detached daemon when no compatible daemon is running. It then proxies to
+  `POST /api/v1/sessions/sync` so parsing and signal computation remain
+  daemon-owned.
+- If the local archive needs a rebuild, `POST /api/v1/sessions/sync` returns
+  HTTP 409 with `X-Agentsview-Resync-Required: true`. Wait for the rebuild or
+  run `agentsview source sync --full`, then retry the session sync.
+- If a [`pg serve`](/docs/pg-sync/#agentsview-pg-serve) daemon is running
+  (read-only), sync refuses with a clear error.
+- If `AGENTSVIEW_NO_DAEMON=1` is set, the CLI runs the sync in-process only
+  after acquiring the local write-owner lock.
+
+______________________________________________________________________
+
+### Pull request links
+
+Sessions list the pull requests their agent recorded in the transcript, in
+`pr_links`:
+
+```json
+"pr_links": [
+  {
+    "url": "https://github.com/owner/repo/pull/123",
+    "host": "github.com",
+    "repository": "owner/repo",
+    "number": 123
+  }
+]
+```
+
+Claude Code is the only agent that records these today, as `pr-link` entries
+in its transcripts. AgentsView keeps one link per URL. The link says the session was associated with the pull request. It
+does not say whether the session opened it.
+Claude Code records these links for the whole transcript, so every session
+split from one transcript, such as a rewind's fork, carries them, like its name
+and git branch.
+
+Filter by pull request with `session list --pr` or the `pr` query parameter.
+The value is `owner/repo` for any pull request in that repository,
+`owner/repo#123` for one pull request, or `github.com::owner/repo#123` to
+restrict it to a host. Matching ignores case. Omitting the host matches any
+host, including nested repository paths such as `group/subgroup/repo`.
+Separate a host from the repository with `::`; dotted group names such as
+`my.org/sub/repo` remain hostless.
+
+#### Filtering by label or pull request
+
+Label and pull request filters name the sessions you want, the way `ids` does.
+Hosted raw sync carries no archive labels or launcher parent links. Its label
+filter matches nothing.
+
+- In a flat list (`session list`, `GET /api/v1/sessions`, MCP `list_sessions`)
+  they match each session directly. Child sessions, automated sessions, and
+  one-shot sessions are included, so a headless worker that an orchestrator
+  launched appears even though it is a child of the launching session. An explicit
+  `include_one_shot=false` still excludes one-shot sessions, and explicit
+  `include_automated=false` excludes automated sessions.
+- In tree views (the web UI sidebar and `include_children=true`) they keep a
+  top-level session when it or any session below it matches, and show its
+  whole tree. Filtering by a worker's pull request shows the orchestrator
+  session with that worker inside it.
+
+______________________________________________________________________
+
+### `agentsview session label`
+
+Annotation commands use the ID exactly as given, with no prefix lookup, so pass the archive session ID, e.g. `codex:<uuid>` for Codex.
+
+Add or remove free-form labels on a session. Use labels to find every session
+for one ticket, role, or kind of run. A `key=value` form such as
+`ticket=example` is a convention, not a requirement. `session get` and the
+session JSON show a session's labels.
+
+```bash
+agentsview session label <id> ticket=example role=reviewer
+agentsview session label <id> --remove role=reviewer
+agentsview session label <id> --replace nightly          # replace every label
+agentsview session label <id> --clear
+agentsview session list --label ticket=example --label role=reviewer
+```
+
+The API is `PATCH /api/v1/sessions/{id}/labels` with
+`{"add": ["nightly"], "remove": ["x"], "clear": false}`. `clear` removes every
+existing label first, so `{"clear": true, "add": [...]}` replaces the set and
+`{"clear": true}` empties it. Removing a label the session does not carry is
+not an error. The response is `{"session_id", "labels", "session_found"}`.
+
+- Labels are trimmed. A label may not be empty, start with `=`, contain control
+  characters, or exceed 200 bytes. A session holds at most 64 labels. Invalid
+  input returns HTTP 400.
+- The session does not have to exist yet. A launcher can label a session as soon
+  as it knows the ID; the labels appear when sync imports the session.
+  `session_found: false` reports that case, which also exposes a mistyped ID.
+- Labels are stored apart from the transcript, so a reparse or full resync never
+  changes them. PostgreSQL, DuckDB, and ClickHouse receive them on push and
+  serve the `label` filter, but labels are written only through the local
+  archive. Read-only daemons return HTTP 501.
+- See [Filtering by label or pull request](#filtering-by-label-or-pull-request)
+  for which sessions the filters return.
+
+______________________________________________________________________
+
+### `agentsview session parent`
+
+Record which session launched this one. Use it when an orchestrator starts
+worker sessions as separate processes, so the session tree shows them under the
+session that started them. `session get` and the session JSON show the
+resulting parent.
+
+```bash
+agentsview session parent <worker-id> <manager-id>
+agentsview session parent <worker-id> --clear
+```
+
+The API is `PUT /api/v1/sessions/{id}/parent` with
+`{"parent_session_id": "<id>"}`. An empty or omitted `parent_session_id`
+removes the link. The body accepts only `parent_session_id`;
+`relationship_type` is rejected, and links always record `subagent`.
+
+An applied link makes the worker a subagent of the launching session, and
+the response reports `relationship_type` as
+`subagent`. The worker nests under that session in the sidebar, and
+`session usage` includes its cost in the launcher's total. The response also
+reports `session_found` and `applied`.
+
+- The link applies only while the transcript names no parent of its own.
+  Subagent, fork, and continuation links that AgentsView derives from the
+  transcript win, and `applied` is `false` in that case.
+- AgentsView recomputes the link when writing sessions, linking spawn edges,
+  and setting or clearing launcher links.
+  When the transcript parent or loop that blocked it goes away, the session
+  goes back under the linked parent.
+- Either session may be missing when the link is recorded. It stays pending
+  with `applied=false` until both rows exist. A pending launcher link leaves
+  the worker's parent and classification unchanged.
+- The link is stored apart from the transcript and survives reparses and full
+  resyncs. Mirrors receive the resulting parent on push.
+- A session cannot be its own parent, and a link that would make a session its
+  own ancestor returns HTTP 400. Clearing an absent link succeeds without changing
+  the session.
+
+______________________________________________________________________
+
+### `agentsview session watch`
+
+Stream NDJSON events as the session updates. Each line is a small object that
+wraps an SSE event.
+
+```bash
+agentsview session watch <id>
+```
+
+```
+{"event":"session_updated","data":"abc-123"}
+{"event":"heartbeat","data":"2026-04-18T12:05:00Z"}
+```
+
+Recognized `event` values today: `session_updated`, `heartbeat`. New events may
+be added; consumers should ignore unknown events. The command runs until
+interrupted (Ctrl+C) or the context is cancelled. Like `session export`, it
+streams a fixed format and rejects `--format`/`--json`.
+
+On every connection, the HTTP session watch sends `session_ready` after
+taking its baseline; the CLI filters it out.
+
+Watch validates the session id before opening the stream. An unknown id fails
+fast with a `watch: session not found: <id>` error and non-zero exit instead of
+producing an indefinite heartbeat stream — typos in automation scripts surface
+immediately. When proxied to a daemon, the same condition surfaces as HTTP 404
+at the transport layer before being translated to the CLI error.
+
+______________________________________________________________________
+
+### `agentsview session search`
+
+Substring, RE2 regex, or FTS5 search across message bodies, thinking, tool inputs, and
+tool result content. Response shape matches `GET /api/v1/search/content`.
+
+```bash
+agentsview session search <pattern> [flags]
+```
+
+```json
+{
+  "matches": [
+    {
+      "session_id": "abc-123",
+      "project": "myapp",
+      "machine": "workstation",
+      "display_name": "Database investigation",
+      "ordinal": 17,
+      "ordinal_range": [12, 24],
+      "location": "tool_result",
+      "tool_name": "Bash",
+      "snippet": "...connecting to db with token ***REDACTED***...",
+      "matched_words": 3
+    }
+  ]
+}
+```
+
+Each content match includes `machine` and `display_name` in every supported
+search mode and source. `display_name` uses the user title, falls back to the
+provider session name, and is `null` when neither exists. Session search at
+`GET /api/v1/search` also includes `machine` alongside its existing `name`.
+
+The content-search response includes `active_filter_applied`, which is true when
+`exclude_active_since` was applied before pagination. All current stores support
+this filter. Older servers may omit the field.
+
+On SQLite, PostgreSQL, DuckDB, and ClickHouse, the `messages` source searches dialogue from
+structured text blocks in Pi, OMP, OMO, Prime Agent, StepCode, iFlow, Claude Code,
+Cowork, iCodeMate CLI, Qoder, Cursor JSONL, Amp, OpenClaude, OpenClaw, QClaw, Devin,
+and OpenHands.
+Those projections exclude rendered tool calls and reasoning from snippets,
+while preserving literal marker text in dialogue. These parsers store reasoning
+blocks in `thinking_text`, including Cursor JSONL and OpenHands. Substring and
+regex searches on SQLite, PostgreSQL, DuckDB, and ClickHouse include `thinking` by default;
+use `--in messages` for dialogue alone or `--in thinking` for reasoning alone.
+FTS searches messages only. Terms, semantic, and hybrid reject `thinking` as a
+source. Semantic search continues to embed full message text; hybrid's keyword
+search uses dialogue.
+Ordinary session search and the command palette continue to search the full
+rendered transcript.
+
+Existing sessions from these providers are reparsed when their source files are
+available. Other providers and parser paths, sessions without source files,
+imported v4 artifacts, and unpaired OpenHands observations keep searching their
+stored content as `message` hits.
+The first writable open refreshes SQLite's full-text indexes once. Startup waits
+for this scan; later opens reuse the indexes. Every message indexes its full
+rendered text in `rendered` and `COALESCE(dialogue_text, content)` in `content`.
+Ordinary session search matches `rendered` unless the query names an FTS column;
+FTS content search and hybrid's keyword search match `content`. Session-search
+ordering may shift.
+DuckDB mirrors rebuild on their next push to fill dialogue. The first ClickHouse
+push after upgrading is a full push to fill dialogue.
+
+PostgreSQL schema setup adds the dialogue column and builds trigram indexes on
+dialogue and reasoning beside the existing `content` index. The dialogue index
+is close to the size of the `content` index, the reasoning index grows with
+stored reasoning, and both slow message writes. Building them on an existing
+mirror blocks writes to `messages` until each finishes. The first push after
+upgrading publishes every session in its scope once to fill existing rows. A
+restricted hosted runtime role needs `UPDATE(dialogue_text)` on `messages`. For
+hosted raw uploads, run `agentsview replica pg raw-reparse hosted --run-id <id>` after
+upgrading the server. Repeat the same run ID until the command reports
+`complete=true`. A change to dialogue derivation alone keeps session IDs,
+content revisions, and embeddings. A parser upgrade that changes other fields,
+such as Pi reasoning text, produces a new content revision and session ID.
+
+Artifact transport is a separate follow-up.
+Transcript display, block order, and artifact format v4 remain unchanged.
+
+One-shot, automated, and subagent sessions are excluded by default; opt back in
+with `--include-one-shot`, `--include-automated`, or `--include-children`.
+HTTP substring and regex searches also accept `scope`; an omitted scope keeps
+these exclusions. Explicit scope uses each session's own filters and exempts
+child sessions from the one-shot exclusion.
+
+| Flag                  | HTTP param             | Notes                                                                                                                                                                             |
+| --------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--regex`             | `mode=regex`           | Treat pattern as an RE2 regex                                                                                                                                                     |
+| `--fts`               | `mode=fts`             | Tokenized FTS5 search; messages-only                                                                                                                                              |
+| `--semantic`          | `mode=semantic`        | Vector search over user/assistant messages; messages-only — see [Semantic Search](/docs/semantic-search/)                                                                         |
+| `--hybrid`            | `mode=hybrid`          | Semantic + FTS reciprocal rank fusion; messages-only — see [Semantic Search](/docs/semantic-search/)                                                                              |
+| `--scope`             | `scope`                | `top`, `all`, or `subordinate`; CLI: semantic/hybrid only, default `all`. HTTP: substring/regex/terms/semantic/hybrid; explicit scope supersedes `include_children`                                                                     |
+| `--context`           | `context`              | int — N messages of context before/after each match (max 10)                                                                                                                      |
+| `--in`                | `in`                   | Comma-separated: `messages,thinking,tool_input,tool_result` (default all); `thinking` requires SQLite, PostgreSQL, DuckDB, or ClickHouse substring/regex                                                                                                                  |
+| `--exclude-system`    | `exclude_system`       | Drop system messages from the scan                                                                                                                                                |
+| `--reveal`            | `reveal`               | Show full secret values (localhost-only; warning to stderr)                                                                                                                       |
+| `--project`           | `project`              | string                                                                                                                                                                            |
+| `--exclude-project`   | `exclude_project`      | string                                                                                                                                                                            |
+| `--machine`           | `machine`              | string                                                                                                                                                                            |
+| —                     | `git_branch`           | opaque token from `GET /api/v1/branches`                                                                                                                                          |
+| `--agent`             | `agent`                | string                                                                                                                                                                            |
+| `--date`              | `date`                 | `YYYY-MM-DD`                                                                                                                                                                      |
+| `--date-from`         | `date_from`            | `YYYY-MM-DD`                                                                                                                                                                      |
+| `--date-to`           | `date_to`              | `YYYY-MM-DD`                                                                                                                                                                      |
+| `--active-since`      | `active_since`         | RFC3339 timestamp                                                                                                                                                                 |
+| `--since`             | `active_since`         | Relative — `Nh` hours, `Nd` days, `Nw` weeks, `Nm` calendar months (not minutes), `Ny` years — or `YYYY-MM-DD`; resolved against now and mutually exclusive with `--active-since` |
+| `--include-children`  | `include_children`     | bool                                                                                                                                                                              |
+| `--include-automated` | `include_automated`    | bool                                                                                                                                                                              |
+| `--include-one-shot`  | `include_one_shot`     | bool                                                                                                                                                                              |
+| `--exclude-session`   | `exclude_session`      | repeatable session ID to drop before `--limit`                                                                                                                                    |
+| —                     | `exclude_active_since` | RFC3339 cutoff; exclude sessions active after it before pagination, using `ended_at`, then `started_at`, then `created_at`; keep unknown or malformed activity                    |
+| `--limit`             | `limit`                | int; default 50, max 500                                                                                                                                                          |
+| `--cursor`            | `cursor`               | int — pagination cursor from a previous response                                                                                                                                  |
+
+`--regex`, `--fts`, `--semantic`, and `--hybrid` are mutually exclusive. `--fts`
+is the fastest mode on large archives but only searches message bodies;
+substring (the default) and regex modes also walk `tool_calls.input_json`,
+`tool_calls.result_content`, and the `tool_result_events` rows. `--semantic` and
+`--hybrid` require an embedding index and return a single ranked page
+(`--cursor` is rejected) — see [Semantic Search](/docs/semantic-search/) for
+setup, scoring, and limitations.
+
+On SQLite, a default search of several words that includes `messages` returns
+exact text matches first, then messages ordered by how many query words they
+hold, with that count in `matched_words`. Unquoted stop words do not count.
+Regular word forms count, and a quoted phrase inside the query requires its
+words together and in order. `--fts` and hybrid's keyword leg use the same word
+matching unless the query starts with a quote and holds only
+quoted phrases or FTS5 operators, which keeps FTS5 behavior. Other searches
+report `matched_words` as `0`.
+
+On PostgreSQL, `--fts` matches each word or quoted phrase as a case-insensitive substring; a query that starts with a quote also honors `AND`, `OR`, `NOT`, and parentheses as SQLite does. `NEAR(...)` and prefix `*` are not supported there; `*` matches literally.
+
+Every match, in every mode, carries the conversation-unit citation described in
+[Hit shape](/docs/semantic-search/#hit-shape-ranges-and-anchors):
+`ordinal_range` — `[start, end]` of the conversation unit containing the match,
+always present, `[ordinal, ordinal]` when the match is its own unit — plus the
+lineage fields `subordinate`, `relationship`, `parent_session_id`, and
+`is_sidechain`. `ordinal` stays the anchor (the exact matched message) in every
+mode. Only the lineage fields are `omitempty`: a missing key unambiguously means
+top-level with no lineage, while `ordinal_range` is never omitted, even at
+`[0, 0]`. `score` is the one field only `--semantic`/`--hybrid` emit. `--scope`
+is rejected outside `--semantic`/`--hybrid`; in those modes it supersedes
+`--include-children`, and subagent/fork-typed or parent-linked sessions are
+exempt from the default one-shot exclusion.
+
+Snippets carry ~60 characters of context on each side of the match, snapped to
+rune boundaries. Any substring that matches the
+[secret scanner](#secret-scanning) rule set is masked unless `--reveal` is
+passed. The same masking applies to the HTTP endpoint when called from a remote
+origin — `reveal=true` is only honored on a localhost-bound daemon.
+
+______________________________________________________________________
+
+### `agentsview session usage-batch`
+
+Read usage for several sessions in one CLI process. Local and PostgreSQL modes
+select the backend and open the archive or connection once. With `--server`,
+the command still makes requests for each ID. IDs resolve as they do for
+`session usage`, including short IDs. Repeated IDs produce repeated results in
+input order.
+
+```bash
+agentsview session usage-batch <id>... [--format json] [--own-only] [--no-sync]
+```
+
+The command accepts the same `--server`, `--server-token-file`, and `--pg`
+options as `session usage`. Descendant usage and source refresh follow the
+single-session command's rules below.
+
+JSON always contains a `results` array, even for one ID. Each entry has
+`requested_id`, `exit_code`, and `usage` when available. `usage` has the same
+shape as `session usage --json`. Per-session failures include `error` text;
+missing sessions have code 2, and sessions without token data, cost, or plan
+usage figures have code 3. Code 0 means token data, cost, or Codex Cloud plan
+usage figures are available. Other lookup errors have code 1. The command
+continues after a per-session failure.
+
+```json
+{
+  "results": [
+    {
+      "requested_id": "missing-session",
+      "exit_code": 2,
+      "error": "session not found: missing-session"
+    }
+  ]
+}
+```
+
+Human output labels each requested ID and its exit code before its usage or
+error. The process exits 0 after completing the results, including per-session
+failures. Backend setup or output failures exit 1. The existing
+`session usage <id>` output and process exit codes remain unchanged.
+
+### `agentsview session diagnose`
+
+`agentsview session diagnose <id> --json` reports archived usage and evidence
+for investigating an expensive task. It uses the same pricing and linked
+subagent accounting and source refresh as `session usage`. Pass `--no-sync`
+to read archived usage without refreshing source transcripts. If refresh fails,
+human output warns that it is incomplete, and JSON sets
+`usage.refresh_incomplete`. Pass `--own-only` to exclude subagent usage; child
+links remain listed. Human output is the default; `--pg` and `--server` select
+the same read transports as other session commands.
+Missing sessions and read failures return exit 1.
+
+The versioned JSON includes the usage breakdown, totals of its normalized
+uncached input, cache-read, cache-write and output rows, context observations,
+compaction ordinals and inferred counts, the ten largest recorded tool-result
+lengths, and runs of
+three or more consecutive calls with identical recorded arguments. Tool and
+context evidence covers the named session only; child links are shown when
+recorded. Retry candidates use the same recorded-argument comparison as the
+`tool_retry_count` signal. Empty or placeholder arguments can form candidates;
+they do not prove that a provider retried a request. These observations can be
+incomplete: usage rows are not always requests, request counts and provider
+cache-miss reasons are unavailable, and result lengths are not billed tokens.
+Cost is reported or estimated according to the existing usage contract; no
+causal savings or invoice total is inferred. The report omits transcript content
+and tool arguments. Context, compaction, and tool evidence comes from a paged
+scan of all archived messages. Human output shows the latest ten context
+observations; JSON includes every observation. Usage is a separate read and can
+reflect a different archive revision if ingestion runs concurrently. Message
+pages share no snapshot, so a transcript rewritten during the scan can mix
+revisions; run the command again after the rewrite for a stable result.
+`schema_version` versions the output shape, not the archive snapshot.
+
+Compactions follow ingestion's detection rules. Explicit boundary markers appear
+in `compaction_ordinals`. When there are no explicit markers,
+`inferred_compaction_count` counts drops greater than 30% between successive
+reported assistant context measurements, including across message pages. Missing
+measurements are skipped. Explicit markers take precedence and leave the
+inferred count at zero.
+
+### `agentsview session usage`
+
+Per-session token usage and cost estimate. Output shape is stable for the fields
+shown below; new fields may be added. MCP clients read the same figures with the
+[`get_session_usage`](/docs/mcp/#session-details-reports-and-guides) tool.
+
+Totals cover the named session **and every subagent transcript spawned beneath
+it**. Claude Code writes each Task-tool subagent to its own file under
+`<session>/subagents/`, which agentsview ingests as a separate session;
+reporting only the parent's own rows understated its cost by up to 77% in real
+sessions. Attribution happens at read time — no rollup is persisted, no child
+row is duplicated under the parent, and daily/activity aggregates (which already
+count subagent sessions as first-class spend) are unaffected. Pass `--own-only`
+to report just the named transcript's rows, which is the pre-0.40.0 output.
+
+The REST endpoint is `GET /api/v1/sessions/{id}/usage`, and it is own-session by
+default. Two query params widen it, and they are not composable: if both are
+passed, `rollup=true` takes precedence and `subagents` is ignored for that
+request.
+
+- `?subagents=true` folds descendant usage into `cost`, `total_output_tokens`,
+  `models`, `breakdown`, and `breakdown_count`, and adds `subagent_count`.
+  For a Codex Cloud chat it also folds `capture_coverage`: `uncaptured_turns`
+  is the sum across the root and its sub-agents, and `last_capture_at` is the
+  newest of theirs. `plan_usage` stays the root's report, which already counts
+  its sub-agents. This is what the CLI requests.
+- `?rollup=true` keeps the totals own-session and reports the combined cost in
+  the separate `rollup_*` fields below. The session detail header uses this
+  form. When both `rollup=true` and `subagents=true` are passed, the handler
+  returns from the rollup branch first, so `subagents` has no effect.
+
+```bash
+agentsview session usage <id> [--format json] [--own-only] [--no-sync]
+```
+
+```json
+{
+  "session_id": "abc-123",
+  "agent": "claude",
+  "project": "myapp",
+  "total_output_tokens": 15230,
+  "peak_context_tokens": 84000,
+  "has_token_data": true,
+  "cost": {"microdollars": 2410000},
+  "has_cost": true,
+  "cost_usd": 2.41,
+  "cost_source": "computed",
+  "models": ["claude-opus-4-7"],
+  "unpriced_models": [],
+  "breakdown_count": 42,
+  "subagent_count": 2,
+  "breakdown": [
+    {
+      "ordinal": 1,
+      "message_ordinal": 0,
+      "source": "message",
+      "label": "Prompt 1",
+      "timestamp": "2026-07-08T14:03:21Z",
+      "model": "claude-opus-4-7",
+      "input_tokens": 1200,
+      "output_tokens": 640,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 43000,
+      "web_search_requests": 2,
+      "cost": {"microdollars": 580000},
+      "has_cost": true
+    },
+    {
+      "ordinal": 2,
+      "message_ordinal": 4,
+      "source": "message",
+      "label": "Prompt 5",
+      "timestamp": "2026-07-08T14:05:02Z",
+      "model": "claude-opus-4-7",
+      "subagent_session_id": "agent-9f2c",
+      "input_tokens": 800,
+      "output_tokens": 310,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 12000,
+      "cost": {"microdollars": 190000},
+      "has_cost": true
+    }
+  ],
+  "server_running": false,
+  "refresh_incomplete": true
+}
+```
+
+| Field                   | Notes                                                                                                                                                                                                                                            |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `total_output_tokens`   | Generated output tokens across the session and its included subagents, deduplicated the same way `cost` is (see below)                                                                                                                           |
+| `peak_context_tokens`   | Highest context-token count observed in any included session; peaks are high-water marks, so they are maxed rather than summed                                                                                                                   |
+| `has_token_data`        | `false` when no included session has token usage                                                                                                                                                                                                 |
+| `cost`                  | Model-pricing estimate as an integer microdollar object; zero when `has_cost` is `false`                                                                                                                                                         |
+| `has_cost`              | `false` if any contributing row is unpriced — never reports a partial total as complete                                                                                                                                                          |
+| `cost_usd`              | Deprecated compatibility alias for `cost.microdollars / 1e6`, present only when `has_cost` is `true`; will be removed in a future release, use `cost.microdollars` instead                                                                       |
+| `cost_source`           | Omitted without a complete cost; `reported` for an authoritative session total, otherwise `computed`, `reported`, or `mixed` for the contributing rows                                                                                           |
+| `ai_credits`            | Omitted unless the priced agent uses AI Credits; derived from `cost_usd` at 100 credits per dollar                                                                                                                                               |
+| `models`                | Models with contributing usage, sorted by model name                                                                                                                                                                                             |
+| `unpriced_models`       | Omitted from JSON when empty; lists models seen but missing from pricing                                                                                                                                                                         |
+| `breakdown_count`       | Number of deduplicated per-step usage rows across all included sessions; always populated                                                                                                                                                        |
+| `subagent_count`        | Number of subagent descendant sessions folded in; omitted when zero, so own-session results are byte-identical to before                                                                                                                         |
+| `breakdown`             | Per-step usage rows ordered by timestamp across all included sessions (the queried session wins ties); when a reported session total exists, row costs are estimated allocations that sum to it; CLI JSON always includes them (added in 0.37.1) |
+| `recorded_cost`         | Present with the breakdown when at least one row carries a cost the agent recorded itself. `recorded` sums those figures, `computed` is AgentsView's cost for the same rows, `difference` is `computed` minus `recorded`, and `rows`, `fallback_rows` (rows priced by the agent's figure because the catalog has no rate) and `unpriced_rows` count them. The human output shows it as an `Agent cost:` line |
+| `session_total`         | Present when the agent recorded a total for the whole session (Claude Code `cost-state`). `source`, `subagent_scope` (`included`, `excluded`, or omitted when unknown), `cost`, `incomplete` when the agent could not price every model, and per-model `models` token counts and costs. It overlaps the usage rows, so it is never part of `cost` or the token totals; compare it with a result that includes subagents when `subagent_scope` is `included`. The human output shows it as an `Agent total:` line |
+| `server_running`        | `true` when the report came from an already-running daemon                                                                                                                                                                                       |
+| `refresh_incomplete`   | Present as `true` when a requested source refresh was refused or failed; the result still contains archived totals                                                                                                                                 |
+| `rollup_cost`           | REST only, with `rollup=true`; integer microdollar object present only when `has_rollup_cost` is true, carrying the complete cost across the root and explicit subagent descendants                                                              |
+| `has_rollup_cost`       | REST only, with `rollup=true`; true only when at least one contributing row exists and every contributing row is priced                                                                                                                          |
+| `rollup_subagent_count` | REST only, with `rollup=true`; count of reachable explicit subagent descendants, including those without usage rows                                                                                                                              |
+| `plan_usage`            | Codex Cloud only; omitted for other agents and until AgentsView has stored a report or a check outcome for the chat. OpenAI's plan usage report for the chat: `data_as_of`, `data_status` (`available`, `partial`, or `unavailable`), `weekly_percent`, `five_hour_percent`, `credits` (a decimal string), per-model `groups`, `final`, and the newest `outcome_kind` and `outcome_at`. An outcome-only object, such as one with `outcome_kind` `account_unavailable`, has no figures. A sub-agent chat has `outcome_kind` `counted_under` and the root session ID in `counted_under`|
+| `capture_coverage`      | Codex Cloud only; omitted when live capture never saw the chat. `last_capture_at`, when AgentsView last received a token update for the chat, and `uncaptured_turns`, the number of finished turns live capture did not fully see: no token update covers them directly or through a later turn's running total |
+
+A Codex Cloud session that live capture never saw has `has_token_data` and
+`has_cost` set to `false` and carries its figures in `plan_usage` instead. The
+CLI's human output shows `n/a` for output and peak context, and "billed as plan
+usage" for cost when the session has plan usage figures. A `Plan usage:` line
+follows, and, when live capture saw the chat, a `Captured:` line. When a later
+check left the chat out or failed, the `Plan usage:` line says what that check
+found and that the figures may be out of date. For missed turns, the `Captured:`
+line says some of their tokens may be missing from the totals. When the newest
+report is complete and no later check failed, it adds that plan usage counts the
+turns that ran before the report's data time; AgentsView does not know whether
+each missed turn ran before that time, so it does not claim more.
+
+Claude Code echoes some parent turns into a subagent's sidechain transcript, so
+the same message can appear in two sessions. Every combined figure counts it
+once: `cost`, `total_output_tokens`, `breakdown`, and `breakdown_count` are all
+derived from one deduplicated row set, so they agree with each other and with
+the day aggregates. This is why the combined `total_output_tokens` can be lower
+than the sum of the included sessions' individual `total_output_tokens` — each
+of those is derived from its own transcript in isolation and still contains the
+echo. A session with no per-message usage rows contributes its session-level
+total instead, since it has nothing to deduplicate against.
+
+Each `breakdown` row carries the fields shown in the example:
+
+| Row field             | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ordinal`             | 1-based position of the row in the deduplicated usage stream                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `message_ordinal`     | Ordinal of the originating message; omitted when the row is not tied to one                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `source`              | `message` for per-message token usage; otherwise the usage-event source. Subagent rows keep their real source — they are marked by `subagent_session_id`, not by a different source                                                                                                                                                                                                                                                                                                                                  |
+| `subagent_session_id` | Id of the subagent session the row came from; omitted for the queried session's own rows                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `label`               | Display label — `Prompt N` for message rows, `Step N` for other rows tied to a message, else the source name                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `web_search_requests` | Anthropic server-side web searches this row was billed for, at $0.01 each on top of tokens; omitted when the row performed none                                                                                                                                                                                                                                                                                                                                                                                      |
+| `cost`                | Per-row integer microdollar object; includes the web search fee when `web_search_requests` is present and the row's cost is computed. A row with an authoritative reported cost is assumed to already settle its own server tool use, so the fee is not added on top even when `web_search_requests` is present. Zero with `has_cost: false` when the model is unpriced and the row performed no web search; an unpriced computed row that did still reports the fee, because the fee does not depend on token rates |
+| `recorded_cost`       | The cost the agent recorded for this row, as an integer microdollar object; omitted when it recorded none. It prices the row only when the catalog has no rate for the model and it is above zero |
+| `recorded_cost_priced` | Present as `true` when `recorded_cost` is the row's `cost` because the catalog has no rate for the model |
+
+Human output is a compact summary:
+
+```
+Session:       abc-123
+Agent:         claude
+Output:        15230
+Peak ctx:      84000
+Subagents:     2 (included)
+Cost:          ~$2.41 (claude-opus-4-7)
+```
+
+The `Subagents` line appears only when the figures cover subagent transcripts,
+so a session without them (or a `--own-only` run) prints the same five lines it
+always has.
+
+When refresh is incomplete, human output adds `Usage refresh is incomplete. Saved totals may be out of date.`.
+
+The leading `~` on the cost line marks a computed or mixed figure. A reported
+cost omits it. The parenthesized model list is shown only when contributing
+models exist, so a cost-only reported session does not render empty parentheses.
+When some contributing models are unpriced, the cost line reads
+`n/a (unpriced: model-x)`; when the session has no token data at all, it reads
+`n/a`. Priced Copilot-family sessions add an `AI Credits` line after the cost.
+
+**HTTP endpoint** — as of 0.32.0, the same data is available over REST:
+
+```http
+GET /api/v1/sessions/{id}/usage
+```
+
+In 0.47.0 and later, this endpoint accepts raw agent session IDs
+as well as canonical archive IDs. Exact matches take precedence. If an exact
+lookup misses or reports an ambiguous identity, an ID without a known agent
+prefix or `~` host namespace is matched literally against stored IDs ending in
+`:` or `~` followed by that ID. Trashed sessions do not count toward these
+matches.
+A unique match returns `200` with the canonical archive ID in `session_id`.
+This applies to plain requests and all `subagents`, `rollup`, and `breakdown`
+combinations.
+Explicit canonical IDs that are missing still return `404`.
+
+Multiple matches return `409` with `error.code = "ambiguous_session_id"`:
+
+```json
+{
+  "error": {
+    "code": "ambiguous_session_id",
+    "message": "multiple sessions match; retry with a canonical candidate ID",
+    "candidates": ["archive-a~codex:thread-id", "archive-b~codex:thread-id"]
+  }
+}
+```
+
+Retry with one of the canonical IDs in `error.candidates`. The list contains
+at most five candidates and may omit additional matches. No match returns the
+same `404` described below. Lookup failures return the same `500` as usage-query
+failures. This fallback is specific to the usage endpoint; other session routes
+keep their existing lookup behavior. The GET reads archived data without
+refreshing or syncing source files.
+
+The response uses the same JSON fields shown above and is available from both
+local SQLite-backed `agentsview serve` and read-only
+[`agentsview replica pg serve`](/docs/pg-sync/#agentsview-pg-serve). HTTP responses set
+`server_running: true`. As of 0.37.1, pass `?breakdown=true` to include the
+per-step `breakdown` rows; without it `breakdown` is `[]` while
+`breakdown_count` still reports the row count. The CLI requests the breakdown on
+every path (local, `--server`, and `--pg`), so its `--format json` output always
+includes the rows; it also passes `subagents=true` unless `--own-only` was
+given, so the three backends return the same document. The session detail header
+uses this endpoint to render its
+[per-step usage breakdown](/docs/usage/#token-usage). Existing sessions return
+`200 OK` even when token or cost data is absent; inspect `has_token_data`,
+`has_cost`, and `unpriced_models` to decide how to present that state. Missing
+sessions return `404` with:
+
+```json
+{
+  "error": {
+    "code": "session_not_found",
+    "message": "session not found"
+  }
+}
+```
+
+Unexpected usage-query failures return `500` with
+`error.code = "usage_query_failed"`.
+
+**Exit codes**:
+
+| Code | Meaning                                                                        |
+| ---- | ------------------------------------------------------------------------------ |
+| `0`  | Token data, cost, or Codex Cloud plan usage figures present                    |
+| `1`  | Query error or session unavailable during startup ingestion or archive rebuild |
+| `2`  | Session missing after startup or rebuild, or from an archive-only/direct lookup |
+| `3`  | Session exists but has no token data, cost, or plan usage figures              |
+
+The codes classify the reported document, so a session whose only token data
+lives in its subagents exits `0`, not `3`. With `--own-only` it exits `3`, as it
+did before. A Codex Cloud session with plan usage figures but no captured tokens
+exits `0`. A sub-agent chat counted under its root, or a session whose plan
+usage has not been reported, exits `3`.
+
+Combined usage refreshes a known session and nearby Claude subagent transcripts
+without waiting for startup ingestion. The CLI requests this with
+`usage_refresh: true`, `id`, and `subagents: true` on
+`POST /api/v1/sessions/sync`. If refresh is refused or fails, the command
+returns archived totals with a warning; JSON sets `refresh_incomplete: true`.
+A missing daemon ID returns a retry error while `GET /api/v1/sync/status`
+reports `startup_pending`, `archive_stale`, or `sync_pending`. Once all three
+are clear, it returns exit 2. Scheduled ingestion owns retries.
+
+Daemon API 15 adds `sync_pending`, which stays true while ingestion catches up
+after an idle period. Older local clients must upgrade to interpret it. The
+field and catch-up warning clear when the pass finishes or fails, and failures
+are logged. Archive responses carry `X-Agentsview-Archive-Stale: true` while
+catch-up is incomplete. A required parser rebuild uses the stale header
+independently.
+
+HTTP `--own-only` and `--no-sync` read only the archive and return exit 2 for
+missing IDs. Direct mode still refreshes the named transcript. Combined HTTP
+refresh requires daemon API 12; upgrade or restart older servers, or use
+`--no-sync`. Archived combined reads require API 6. `POST /api/v1/sessions/sync`
+returns HTTP 409 for a stale local archive for every caller, including
+`session sync`. A usage refresh also returns HTTP 409 while startup ingestion
+is incomplete or another sync holds the engine. When startup ingestion is
+deferred, its automatic fallback starts after a 30-second grace period.
+
+Pass `--no-sync` to read archived usage without refreshing source transcripts.
+This preserves the full subagent rollup and the exit codes above; combine it
+with `--own-only` only when you want to exclude subagents. Local and remote
+HTTP queries skip the sync request, so recent usage appears after the watcher
+or a separate sync has indexed it. PostgreSQL reads already use archived data.
+The local `--no-sync` path requires a compatible daemon and starts one with
+source synchronization disabled if needed. With `AGENTSVIEW_NO_DAEMON=1`,
+it requires an existing compatible daemon.
+
+The command uses a writable local daemon when one is running, or starts a
+detached daemon when fresh local data is needed and no compatible daemon is
+running. Without `--no-sync`, `AGENTSVIEW_NO_DAEMON=1` selects direct local SQLite
+after acquiring the write-owner lock for any required refresh. Configured
+PostgreSQL does not change this command's default local behavior; pass `--pg` to
+read usage from the shared PostgreSQL store. With `--server`, it calls
+`GET /api/v1/sessions/{id}/usage` on the explicit daemon. With `--pg`, it reads
+usage from the shared PostgreSQL store.
+
+Pricing comes from the same `model_pricing` table and
+[custom pricing overrides](/docs/token-usage/#custom-model-pricing) that back
+`agentsview report usage daily`. Replaces the older
+[`agentsview token-use`](/docs/commands/#agentsview-token-use), which remains as
+a deprecated alias.
+
+______________________________________________________________________
+
+## Activity Report
+
+The Activity report endpoint powers the top-level [Activity](/docs/activity/)
+page and the `agentsview report activity` CLI command. It returns one resolved
+range with concurrency buckets, summary totals, breakdowns, and contributing
+sessions.
+
+```http
+GET /api/v1/activity/report
+GET /api/v1/activity/report/{report_id}/sessions
+```
+
+Session-page responses omit the complete report by default so browser sorting,
+bucket filtering, and pagination stay page-bounded. Stateless clients can add
+`include_report=true`; a `refresh_required` response includes its complete
+replacement report regardless.
+
+Activity includes one-shot sessions by default. Automated sessions are also
+included by default and can be filtered with the `automation` query parameter.
+
+The JSON response shares the same `schema_version`, `pricing`, and `projects`
+metadata contract as `agentsview report activity --json`.
+
+The report route negotiates its response with `Accept`. Ordinary clients receive
+plain JSON. Clients requesting `text/event-stream` receive throttled `progress`
+events followed by one terminal `report` event. Both forms use the long-running
+route and are not subject to the ordinary 30-second operation timeout.
+
+| Query param  | Notes                                                      |
+| ------------ | ---------------------------------------------------------- |
+| `preset`     | `day`, `week`, `month`, or `custom`                        |
+| `date`       | Anchor date for day/week/month presets (`YYYY-MM-DD`)      |
+| `from`       | Custom range start, RFC3339                                |
+| `to`         | Custom range end, RFC3339                                  |
+| `timezone`   | IANA timezone name; default `UTC`                          |
+| `bucket`     | Optional bucket override: `5m`, `15m`, `1h`, `1d`, or `1w` |
+| `project`    | Filter by project                                          |
+| `git_branch` | Filter by opaque branch token from `GET /api/v1/branches`  |
+| `agent`      | Filter by agent                                            |
+| `machine`    | Exact ID, alias, ID/alias list, or unique whole display label; unknown or ambiguous values return HTTP 400 |
+| `automation` | `all`, `interactive`, or `automated`; default `all`        |
+
+Project, branch, agent, and machine filters are limited to 1,024 UTF-8 bytes
+each and 3,072 bytes combined. The fully encoded signed report ID is also
+validated before aggregation so JSON escaping cannot overflow the session-page
+URL token.
+
+Response excerpt:
+
+```json
+{
+  "schema_version": 7,
+  "report_id": "v1.eyJ2IjoxLC4uLn0.signature",
+  "sessions_total": 18,
+  "sessions_next_cursor": "v1.eyJvZmZzZXQiOjIwMH0.signature",
+  "pricing": {
+    "source": "fetched",
+    "table_version": "litellm-398a0b15378c",
+    "latest_row_updated_at": "2026-06-20T18:40:00Z",
+    "custom_override_count": 0,
+    "effective_row_count": 2432,
+    "digest": "sha256:8d815a1737bce68fa1a19ba977bf33c8c8efcc74deb954fcf62ce80e46e75f2c",
+    "cost_source": "mixed",
+    "fallback": {
+      "used": false,
+      "models": []
+    },
+    "models": {
+      "gpt-5.4": {
+        "cost_source": "computed",
+        "resolutions": [
+          {
+            "priced_model": "gpt-5.4",
+            "matched_pattern": "gpt-5.4",
+            "input_cost_per_mtok": {"microdollars": 2500000},
+            "output_cost_per_mtok": {"microdollars": 15000000},
+            "cache_write_cost_per_mtok": {"microdollars": 0},
+            "cache_write_1h_cost_per_mtok": {"microdollars": 0},
+            "cache_read_cost_per_mtok": {"microdollars": 250000},
+            "cost_source": "computed",
+            "bands": [
+              {
+                "above_input_tokens": 272000,
+                "input_cost_per_mtok": {"microdollars": 5000000},
+                "output_cost_per_mtok": {"microdollars": 22500000},
+                "cache_write_cost_per_mtok": {"microdollars": 0},
+                "cache_write_1h_cost_per_mtok": {"microdollars": 0},
+                "cache_read_cost_per_mtok": {"microdollars": 500000}
+              }
+            ],
+            "application": {
+              "base_request_count": 14,
+              "aggregate_row_count": 0,
+              "bands": [
+                {"above_input_tokens": 272000, "request_count": 2}
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "projects": {
+    "agentsview": {
+      "resolution": "resolved",
+      "identity": {
+        "key": "sha256:97879729c8ab311e9d4b28941e3a04830b28c527f00af53f2270212eccdbbd39",
+        "key_source": "git_remote",
+        "normalized_remote": "github.com/acme/agentsview"
+      }
+    }
+  },
+  "timezone": "America/Chicago",
+  "range_start": "2026-06-20T05:00:00Z",
+  "range_end": "2026-06-21T05:00:00Z",
+  "bucket_unit": "hour",
+  "bucket_seconds": 3600,
+  "partial": true,
+  "as_of": "2026-06-20T18:40:00Z",
+  "peak": {"agents": 4, "at": "2026-06-20T15:00:00Z"},
+  "totals": {
+    "active_minutes": 210.5,
+    "agent_minutes": 346.2,
+    "sessions": 18,
+    "untimed_sessions": 1,
+    "distinct_projects": 5,
+    "distinct_models": 4,
+    "output_tokens": 84231,
+    "cost": 12.34,
+    "automated_sessions": 3,
+    "interactive_sessions": 15
+  },
+  "buckets": [
+    {
+      "start": "2026-06-20T15:00:00Z",
+      "end": "2026-06-20T16:00:00Z",
+      "max_agents": 4,
+      "agent_minutes": 52.0,
+      "output_tokens": 12000,
+      "cost": 1.87,
+      "automated_at_peak": 1,
+      "interactive_at_peak": 3
+    }
+  ],
+  "by_project": [{"key": "agentsview", "agent_minutes": 96.4, "cost": 4.20}],
+  "by_model": [{"key": "claude-sonnet-4-6", "agent_minutes": 80.0, "cost": 3.10}],
+  "by_agent": [{"key": "codex", "agent_minutes": 64.0, "cost": 2.85}],
+  "by_session": [
+    {
+      "session_id": "codex:abc",
+      "title": "Update docs",
+      "project": "agentsview",
+      "agent": "codex",
+      "primary_model": "gpt-5.4",
+      "models": ["gpt-5.4"],
+      "agent_minutes": 24.5,
+      "cost": 1.12,
+      "output_tokens": 9200,
+      "first_active": "2026-06-20T15:04:00Z",
+      "last_active": "2026-06-20T15:38:00Z",
+      "timing_quality": "timed",
+      "is_automated": false
+    }
+  ]
+}
+```
+
+Breakdown rows include total, automated, and interactive minutes and costs.
+Session rows with no reliable timestamped activity use
+`"timing_quality": "untimed"` and `agent_minutes: null`; they can still
+contribute cost and output tokens when usage rows exist.
+
+Schema v6 returns at most the first 200 session rows in `by_session` and no
+longer returns raw activity intervals. Fetch later pages, alternate sorts, or a
+bucket drill-down through the sessions endpoint. It accepts `limit` (default
+200, maximum 500), `cursor`, `sort`, `direction`, and the zero-based half-open
+range `bucket_start` and `bucket_end`. Both range bounds must be present. If the
+archive changed since the signed `report_id` was created, the response sets
+`refresh_required` and includes a complete replacement `report` so clients never
+combine different report generations.
+
+______________________________________________________________________
+
+## Secret Scanning
+
+As of 0.30.0, AgentsView scans session content for credentials during sync and
+exposes findings through CLI, HTTP, and per- session metadata. Two confidence
+tiers exist:
+
+| Tier          | Rules                                                                                                                                                                                                                                                                                                                                                         | When scanned                                        |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| **Definite**  | Well-anchored vendor formats: AWS access keys, Anthropic `sk-ant-…`, OpenAI `sk-proj-`/`sk-svcacct-`/`sk-admin-`, GitHub `ghp_…` and `github_pat_…`, GitLab `glpat-…`, Slack `xoxb`/`xoxa`/`xoxp`/`xoxr`/`xoxs`, Stripe `sk_live_…` and `rk_live_…`, Google `AIza…`, npm `npm_…`, PyPI `pypi-…`, Hugging Face `hf_…`, SendGrid `SG.…`, PEM private-key blocks | Inline during sync                                  |
+| **Candidate** | FP-prone heuristics: basic-auth URLs, JWTs, high-entropy assignments                                                                                                                                                                                                                                                                                          | Only when `agentsview secrets scan` runs explicitly |
+
+Findings are written to a `secret_findings` table keyed by session ID, with the
+rule name, confidence, location (message / tool_input / tool_result /
+tool_result_event), match coordinates, and a `redacted_match` value (the raw
+secret is never stored). Each session also carries a `secret_leak_count` and a
+`secrets_rules_version` so a future ruleset bump can drive an incremental
+backfill.
+
+### HTTP API
+
+```
+GET /api/v1/secrets
+POST /api/v1/secrets/scan
+GET /api/v1/search/content    (when called with text that matches a secret rule, snippets are masked)
+```
+
+`GET /api/v1/secrets` accepts: `project`, `agent`, `date_from`, `date_to`,
+`rule`, `confidence` (`definite` / `candidate` / `all`, default `definite`),
+`reveal`, `limit`, `cursor`. `reveal=true` is only honored on a localhost-bound
+daemon — remote callers that request reveal receive HTTP 403.
+
+`POST /api/v1/secrets/scan` streams progress with Server-Sent Events and accepts
+`backfill`, `project`, `agent`, `date_from`, and `date_to`. It is only available
+from a writable local daemon.
+
+### Listing sessions with findings
+
+`agentsview session list --has-secret` (or `has_secret=true` on
+`GET /api/v1/sessions`) returns only sessions with at least one definite
+finding. The candidate tier does not contribute to `secret_leak_count` and so
+does not surface through this filter.
+
+### CLI
+
+The [`agentsview secrets`](/docs/commands/#agentsview-secrets) command group
+wraps the scan and list operations. The fast path is:
+
+```bash
+# Re-scan the archive with the full ruleset (definite + candidate)
+agentsview secrets scan
+
+# List definite findings (redacted; localhost-only --reveal for raw values)
+agentsview secrets list
+agentsview secrets list --reveal
+```
+
+### PostgreSQL parity
+
+When [PostgreSQL sync](/docs/pg-sync/) is enabled, the `secret_findings` table,
+the session-level `secret_leak_count`, and the `--has-secret` filter all mirror
+to the shared database. Substring and regex content search work the same way
+against `pg serve`, with the same masking and `--reveal` constraints.
+
+### Ingest-time image offload
+
+The normalized Markdown endpoint `/api/v1/sessions/{id}/md` carries stored tool-result content, including `agentsview_image` placeholders and `image_ref` asset references. The HTML export keeps its existing contract. A serving host needs the matching `{dataDir}/assets` directory. PostgreSQL and CockroachDB retain the reference text but cannot resolve local assets. The raw `agentsview session export` command streams provider source bytes and retains their original inline payloads.
+
+## Commit lookups
+
+`GET /api/v1/sessions/{id}/commits` returns `{"commits": [...]}` for one
+session. `POST /api/v1/commits/sessions` accepts `{"shas": ["abc1234"]}` and
+returns `{"commits": [{"sha": "abc1234", "links": [...]}]}` in request order.
+Send 1 to 200 hexadecimal SHAs or prefixes of 7 to 64 characters. Queries ignore
+case. Unknown SHAs have empty `links`. Invalid SHAs or array lengths return
+HTTP 400. PostgreSQL, DuckDB, and ClickHouse replicas answer transcript and
+trailer link lookups after a push with a version that stores commit links.
+Hosted PostgreSQL returns HTTP 501.
+
+Each link includes `session_id`, the recorded `sha`, `branch`, `subject`,
+`repository`, `message_ordinal`, `call_index`, `tool_use_id`, `committed_at`,
+and `source`. For `source: "transcript"`, `committed_at` is the tool call's
+message time. The SHA is exactly as Git printed it, usually a short prefix. Full
+SHAs match stored prefixes. `turn` contains `heuristic: false` and the `ordinal`
+and `text` of the last nonempty, non-system user prompt before the commit call.
+Tool-result messages are excluded. Text is limited to 2,000 UTF-8 bytes. The
+turn is omitted when no eligible prompt exists.
+
+Links to trashed or permanently deleted sessions carry `missing: true` and omit
+`turn`. Restoring a trashed session restores its turn. Every candidate link
+carries `ambiguous: true` when the matched SHAs cannot all describe one commit.
+The same SHA recorded by several sessions, or a short SHA and its full SHA,
+remains unambiguous.
+
+Sessions permanently deleted before this release have no transcript links
+because their stored tool calls are already gone.
+
+Transcript links require a `git commit` invocation, allowing Git global options,
+and Git's commit summary with a SHA of 7 to 64 characters in the call's stored
+output. Quiet commits and summaries with shorter SHAs have no link. Older Codex
+commands stored as argument arrays support direct Git calls and scripts passed
+to `sh`, `bash`, or `zsh` with `-c` or `-lc`. Codex output received
+through a later `write_stdin` poll links to the original commit call when its
+process ID matches. Polls with no originating commit call produce no links.
+Code-mode scripts with exactly one tool call and a fixed command literal can
+link commits, including output without a process ID. Command literals containing
+`${` have no links. A single-call `write_stdin` script can poll an earlier
+commit execution without an output process ID. Scripts with several tool calls
+cannot start new commit links because their output and working directories
+cannot be assigned to one execution. Their polls need output process IDs
+matching an earlier commit call. Each session records a SHA once, at its first
+matching call. Decorated log lines are excluded. A custom log format that prints
+one bare ref in the same shape as a commit summary can still create a link when
+the call also invokes `git commit`; this is a known limitation.
+
+Repository paths use the tool's `workdir` or `cwd`, or the session's working
+directory. The last `cd` before the first commit invocation adjusts that base,
+and `git -C` overrides it. Relative paths join onto the base using the
+transcript's path style; `~` paths stay literal. A `cd` after that invocation is
+ignored. A single shell execution that commits in two repositories records the
+first directory for both commits.
+
+Archives using `archive_content = "transcripts"` keep trailer links but no
+transcript links; `"usage"` archives keep neither.
+
+### Git trailer links
+
+Commits containing `Agent-Session: <agent>:<session-id>` lines appear with
+`source: "trailer"`, a full SHA, Git's author time, and a repository path.
+Claude IDs omit the `claude:` prefix in the archive; other agents use their
+registered prefix. Matching uses the exact archive ID. Sessions imported from
+other hosts as `host~<archive-id>` do not receive trailer links from the original
+session ID. Unknown agents and invalid trailer values are ignored.
+Every matching line in the commit message counts, including lines in squash
+commit bodies. Inline mentions don't create links. Merge commits count.
+
+`agentsview source sync` scans repositories used by local sessions. Under
+`agentsview serve`, editor commits appear at the next scheduled pass, within 15
+minutes. Each pass rereads every repository's history, including fetched older
+branches. Only checkouts a local session ran in are read. If a checkout has
+disappeared, another session must still resolve to its repository to read new
+commits. Stored rows survive checkout removal and archive rebuilds under policies
+that keep trailer links; rows for commits no longer reachable are kept.
+
+Known limitation: the protected-path guard doesn't follow a repository's `config.worktree` or config includes.
+
+Trailer links use `call_index: -1` and an empty `tool_use_id`. Their branch is
+Git's traversal source with `refs/heads/` or `refs/remotes/` removed, excluding
+remote `HEAD` aliases; other sources, such as tags and stash, leave it empty.
+Their `committed_at` is the Git author time in UTC. Their `message_ordinal`
+is the last message ordinal at or before commit time within the preceding five
+minutes, or `-1` when none exists. Messages of any role can satisfy this bound.
+
+The suggested `turn` is the last real user prompt in transcript order with a
+usable timestamp at or before commit time and an ordinal at or before
+`message_ordinal`. It carries `heuristic: true`; no recent message or eligible
+prompt means no turn. A squash commit made hours after the session went quiet
+therefore has no suggested turn. Rebased commits use their preserved author
+time. This time rule adapts
+[Pando's fallback](https://github.com/backnotprop/pando/blob/80c8f91f3c445b080d49a95d7600ca6a348e9828/worker/src/understand/lookups.ts).
+A transcript link for the same session takes precedence when its SHA is a
+prefix of the trailer SHA, including a full SHA match. Git prints a short SHA
+that uniquely identifies the commit when it is made. Other sessions' trailer
+links remain visible.

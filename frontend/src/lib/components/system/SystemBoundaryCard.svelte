@@ -1,0 +1,96 @@
+<script lang="ts">
+  import { Disclosure } from "@kenn-io/kit-ui";
+  import { m } from "../../i18n/index.js";
+  import { ui } from "../../stores/ui.svelte.js";
+  import { formatTimestamp } from "../../utils/format.js";
+
+  interface Props {
+    subtype: string;
+    content: string;
+    timestamp: string;
+  }
+  let { subtype, content, timestamp }: Props = $props();
+
+  const LABELS: Record<string, string> = $derived({
+    continuation: m.system_boundary_continuation(),
+    resume: m.system_boundary_resume(),
+    interrupted: m.system_boundary_interrupted(),
+    task_notification: m.system_boundary_task_notification(),
+    stop_hook: m.system_boundary_stop_hook(),
+    peer_message: m.system_boundary_peer_message(),
+    stop_hook_summary: m.system_boundary_stop_hook_summary(),
+    hook_cancelled: m.system_boundary_hook_cancelled(),
+    hook_success: m.system_boundary_hook_success(),
+    hook_additional_context: m.system_boundary_hook_success(),
+  });
+
+  let label = $derived(LABELS[subtype] ?? subtype);
+  let preview = $derived.by(() => {
+    const text = (content ?? "").trim();
+    if (!text) return "";
+    const firstLine = text.split("\n")[0] ?? "";
+    return firstLine.length > 140
+      ? firstLine.slice(0, 140) + "…"
+      : firstLine;
+  });
+</script>
+
+<div
+  class="system-boundary"
+  title={m.system_boundary_title({ subtype })}
+>
+  <span class="label">{label}</span>
+  {#if timestamp}
+    <span class="timestamp">
+      &middot; {formatTimestamp(timestamp, ui.alwaysShowYear)}
+    </span>
+  {/if}
+  {#if preview}
+    <Disclosure variant="plain">
+      {#snippet summary()}
+        <span class="show-content">{m.system_boundary_show_content()}</span>
+      {/snippet}
+      <pre>{content}</pre>
+    </Disclosure>
+  {/if}
+</div>
+
+<style>
+  .system-boundary {
+    padding: 6px 12px;
+    margin: 4px 12px;
+    background: color-mix(
+      in srgb, var(--text-muted) 6%, transparent
+    );
+    border-left: 3px solid
+      color-mix(in srgb, var(--text-muted) 40%, transparent);
+    border-radius: 0 var(--radius-sm, 4px)
+      var(--radius-sm, 4px) 0;
+    font-size: 12px;
+    color: var(--text-secondary);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .label {
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 11px;
+  }
+  .timestamp,
+  .show-content {
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--text-muted);
+  }
+  pre {
+    white-space: pre-wrap;
+    margin: 6px 0 0;
+    padding: 8px 10px;
+    font-size: 12px;
+    background: var(--bg-inset);
+    border-radius: var(--radius-sm, 4px);
+    overflow-x: auto;
+  }
+</style>

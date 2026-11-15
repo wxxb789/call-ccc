@@ -1,0 +1,7864 @@
+use std::collections::BTreeMap;
+use std::error::Error;
+use std::ffi::OsString;
+use std::fs;
+use std::io;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, TcpStream};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{sync_channel, Receiver as StdReceiver, SyncSender, TrySendError};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use tauri::async_runtime::Receiver;
+#[cfg(target_os = "macos")]
+use tauri::menu::{CheckMenuItem, CheckMenuItemBuilder};
+use tauri::menu::{
+    MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder, HELP_SUBMENU_ID,
+    WINDOW_SUBMENU_ID,
+};
+use tauri::plugin::Builder as PluginBuilder;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use tauri::tray::TrayIconBuilder;
+use tauri::utils::config::BackgroundThrottlingPolicy;
+use tauri::{
+    App, AppHandle, Emitter, Manager, RunEvent, State, Url, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder,
+};
+use tauri_plugin_deep_link::DeepLinkExt;
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+use tauri_plugin_opener::OpenerExt;
+use tauri_plugin_shell::process::{CommandChild, CommandEvent};
+use tauri_plugin_shell::ShellExt;
+use tauri_plugin_updater::UpdaterExt;
+
+#[cfg(all(test, windows))]
+mod update_archive_tests;
+#[cfg(test)]
+mod updater_key;
+
+const HOST: &str = "127.0.0.1";
+const LOCALHOST: &str = "localhost";
+const IPV6_HOST: &str = "[::1]";
+const CLAUDE_AUTH_WINDOW_LABEL: &str = "claude-auth";
+const CLAUDE_AUTH_URL: &str = "https://claude.ai/login?return_url=%2Fnew";
+
+#[derive(Default)]
+struct ClaudeAuthState {
+    pending_browser_requests:
+        Mutex<BTreeMap<String, tokio::sync::oneshot::Sender<ClaudeBrowserResponse>>>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeBrowserResponse {
+    status: u16,
+    body: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retry_after: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeBrowserFetchResult {
+    request_id: String,
+    status: u16,
+    body: String,
+    error: Option<String>,
+    retry_after: Option<String>,
+}
+
+const READY_TIMEOUT: Duration = Duration::from_secs(30);
+const DAEMON_STARTUP_LONG_NOTICE_AFTER: Duration = Duration::from_secs(300);
+const DAEMON_UNHEALTHY_GRACE: Duration = Duration::from_secs(15);
+const READY_POLL_INTERVAL: Duration = Duration::from_millis(125);
+/// How often the Rust side probes the backend while the app is running. The
+/// web view's own recovery paths are JavaScript, and macOS stops executing the
+/// web view when the app has no window on screen, so this probe is the only
+/// recovery that keeps running. Kept well below a minute so an outage is
+/// noticed soon after it ends, and well above the request cost of one
+/// loopback GET.
+const BACKEND_PROBE_INTERVAL: Duration = Duration::from_secs(30);
+const BACKEND_READY_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
+const BACKEND_LIVENESS_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+const STATUS_POLL_MAX_INTERVAL: Duration = Duration::from_secs(1);
+const STATUS_PROBE_TIMEOUT: Duration = Duration::from_millis(1250);
+const STATUS_PROBE_FAILURE_NOTICE_AFTER: u32 = 10;
+const STATUS_PROBE_FAILURE_FAIL_AFTER: u32 = 30;
+const LOGIN_SHELL_ENV_TIMEOUT: Duration = Duration::from_secs(3);
+
+static LOGIN_SHELL_ENV: OnceLock<Vec<(OsString, OsString)>> = OnceLock::new();
+// Stopping the detached daemon before an update install must outlast
+// both a daemon that is still mid-startup (serve stop refuses with
+// "retry once it is ready" while the startup sync runs, which takes
+// tens of seconds on large archives) and serve stop's own 10s graceful
+// shutdown window before it escalates to a forced kill.
+const UPDATE_SIDECAR_STOP_TIMEOUT: Duration = Duration::from_secs(120);
+const UPDATE_STOP_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+const SERVE_STOP_STARTING_RETRY_HINT: &str = "a server is starting; retry once it is ready";
+const DATA_VERSION_TOO_NEW_EXIT_CODE: i32 = 3;
+const DESKTOP_LOG_FILE_NAME: &str = "agentsview-desktop.log";
+const DESKTOP_LOG_QUEUE_CAPACITY: usize = 64;
+const STARTUP_OUTPUT_MAX_CHARS: usize = 12_000;
+const DEEP_LINK_SCHEME: &str = "agentsview";
+const DEEP_LINK_SESSIONS_HOST: &str = "sessions";
+const ABOUT_MENU_ID: &str = "about";
+const CHECK_UPDATES_MENU_ID: &str = "check_updates";
+const OPEN_LOGS_FOLDER_MENU_ID: &str = "open_logs_folder";
+const DOCUMENTATION_MENU_ID: &str = "documentation";
+const SHOW_MAIN_WINDOW_MENU_ID: &str = "show_main_window";
+const QUIT_FROM_STATUS_ITEM_MENU_ID: &str = "quit_from_status_item";
+#[cfg(target_os = "macos")]
+const DOCK_MODE_MENU_ID: &str = "dock_mode";
+const DOCK_MODE_SETTINGS_FILE_NAME: &str = "settings.json";
+// Delay after navigating to the backend before probing whether the
+// Linux WebKitGTK web content process is actually alive. Gives the
+// process time to spawn so we don't false-positive on slow startup.
+#[cfg(target_os = "linux")]
+const WEBVIEW_HEALTH_PROBE_DELAY: Duration = Duration::from_secs(5);
+
+#[cfg(target_os = "linux")]
+const HOST_WAYLAND_CLIENT_FALLBACKS: &[&str] = &[
+    "/usr/lib/libwayland-client.so.0",
+    "/usr/lib64/libwayland-client.so.0",
+    "/usr/lib/x86_64-linux-gnu/libwayland-client.so.0",
+    "/lib/x86_64-linux-gnu/libwayland-client.so.0",
+    "/usr/lib/aarch64-linux-gnu/libwayland-client.so.0",
+    "/lib/aarch64-linux-gnu/libwayland-client.so.0",
+];
+
+type DynError = Box<dyn Error>;
+type CommandRx = Receiver<CommandEvent>;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum BackendHost {
+    #[default]
+    Ipv4,
+    Localhost,
+    Ipv6,
+}
+
+impl BackendHost {
+    fn web_host(self) -> &'static str {
+        match self {
+            Self::Ipv4 => HOST,
+            Self::Localhost => LOCALHOST,
+            Self::Ipv6 => IPV6_HOST,
+        }
+    }
+
+    fn socket_addrs(self, port: u16) -> Vec<SocketAddr> {
+        let ipv4 = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port));
+        let ipv6 = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::LOCALHOST, port, 0, 0));
+        match self {
+            Self::Ipv4 => vec![ipv4],
+            Self::Localhost => vec![ipv4, ipv6],
+            Self::Ipv6 => vec![ipv6],
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BackendEndpoint {
+    host: BackendHost,
+    port: u16,
+}
+
+impl BackendEndpoint {
+    const fn new(host: BackendHost, port: u16) -> Self {
+        Self { host, port }
+    }
+}
+
+#[derive(Default)]
+struct SidecarState {
+    child: Mutex<Option<SidecarProcess>>,
+    backend_port: Mutex<Option<u16>>,
+    backend_host: Mutex<BackendHost>,
+    active_generation: Mutex<Option<u64>>,
+    stopping_generation: Mutex<Option<u64>>,
+    restart_after_stop_timeout_generation: Mutex<Option<u64>>,
+    active_update_stop_waiters: AtomicUsize,
+    terminated_generation: Mutex<u64>,
+    termination: Condvar,
+    next_generation: AtomicU64,
+    // Held across an update stop's start and retirement and across each window action a launch takes.
+    launch_gate: Mutex<()>,
+}
+
+struct SidecarProcess {
+    child: CommandChild,
+    generation: u64,
+}
+
+struct DeepLinkState {
+    dispatch: Mutex<DeepLinkDispatch>,
+}
+
+// Routes stay Deferred until the next backend redirect so a deep
+// link that arrives before the server answers rides
+// redirect_when_ready instead of racing it. Redirecting covers the
+// window between the redirect thread consuming the deferred route
+// and its navigation landing: a route dispatched there would lose
+// to the still-in-flight redirect, so it queues until
+// finish_redirect replays it.
+enum DeepLinkDispatch {
+    Deferred(Option<String>),
+    Redirecting(Option<String>),
+    Live(BackendProbeState),
+}
+
+impl DeepLinkDispatch {
+    // Some((port, route)) means the caller should navigate now.
+    fn route_for_navigation(&mut self, route: String, port: Option<u16>) -> Option<(u16, String)> {
+        match self {
+            DeepLinkDispatch::Deferred(pending) | DeepLinkDispatch::Redirecting(pending) => {
+                *pending = Some(route);
+                None
+            }
+            DeepLinkDispatch::Live(_) => match port {
+                Some(port) => Some((port, route)),
+                // Sidecar is down; hold the route for the next redirect.
+                None => {
+                    *self = DeepLinkDispatch::Deferred(Some(route));
+                    None
+                }
+            },
+        }
+    }
+
+    fn take_pending(&mut self) -> Option<String> {
+        match self {
+            DeepLinkDispatch::Deferred(pending) | DeepLinkDispatch::Redirecting(pending) => {
+                let route = pending.take();
+                *self = DeepLinkDispatch::Redirecting(None);
+                route
+            }
+            DeepLinkDispatch::Live(_) => None,
+        }
+    }
+
+    // Returns a route queued while the startup redirect was in
+    // flight; it is newer than the redirect target, so the caller
+    // must navigate to it. After a defer() (backend restarting) the
+    // state is Deferred again and a queued route rides the next
+    // redirect instead, so a late-finishing redirect thread changes
+    // nothing.
+    fn finish_redirect(&mut self) -> Option<String> {
+        match self {
+            DeepLinkDispatch::Redirecting(pending) => {
+                let route = pending.take();
+                *self = DeepLinkDispatch::Live(BackendProbeState::default());
+                route
+            }
+            DeepLinkDispatch::Deferred(_) | DeepLinkDispatch::Live(_) => None,
+        }
+    }
+
+    // A freshly published port precedes HTTP readiness, so a route
+    // dispatched in that window would be clobbered by the pending
+    // redirect's fallback root navigation; hold routes until it runs.
+    fn defer(&mut self) {
+        match self {
+            DeepLinkDispatch::Live(_) => *self = DeepLinkDispatch::Deferred(None),
+            DeepLinkDispatch::Redirecting(pending) => {
+                let route = pending.take();
+                *self = DeepLinkDispatch::Deferred(route);
+            }
+            DeepLinkDispatch::Deferred(_) => {}
+        }
+    }
+
+    // Startup owns navigation until its redirect finishes. Completing that
+    // redirect starts fresh probe history so a later probe cannot repeat it.
+    fn observe_backend(&mut self, port: u16, reachable: bool) -> bool {
+        match self {
+            DeepLinkDispatch::Live(probe) => probe.observe(port, reachable),
+            DeepLinkDispatch::Deferred(_) | DeepLinkDispatch::Redirecting(_) => false,
+        }
+    }
+}
+
+impl Default for DeepLinkState {
+    fn default() -> Self {
+        Self {
+            dispatch: Mutex::new(DeepLinkDispatch::Deferred(None)),
+        }
+    }
+}
+
+/// Retained handle to the tray dock-mode checkbox. muda flips the
+/// checkmark before the menu event fires and Tauri 2.10 cannot look up
+/// tray items by id, so the toggle needs this handle to read the new
+/// checked state and to revert the mark when persisting fails.
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct DockModeCheckItem(Mutex<Option<CheckMenuItem<tauri::Wry>>>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DesktopMenuAction {
+    About,
+    CheckUpdates,
+    OpenLogsFolder,
+    Documentation,
+    Quit,
+    ShowMainWindow,
+    #[cfg(target_os = "macos")]
+    ToggleDockMode,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SidecarLogRecord {
+    label: &'static str,
+    record: String,
+}
+
+impl SidecarLogRecord {
+    fn new(label: &'static str, record: impl Into<String>) -> Self {
+        Self {
+            label,
+            record: record.into(),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SidecarStdoutUpdate {
+    chunk: String,
+    redacted_chunk: String,
+    status: Option<String>,
+    endpoint: Option<BackendEndpoint>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum BackendStatusProbe {
+    Ready(BackendEndpoint),
+    Starting(String),
+    Unhealthy(String),
+    NotRunning(String),
+    Incompatible(String),
+    ReadOnly(String),
+    Unusable(String),
+    Unavailable,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum BackendRecoveryAction {
+    None,
+    Reload,
+    Redirect(BackendEndpoint),
+    Relaunch,
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    // WebKitGTK 2.40+ DMABUF renderer aborts on some Linux EGL
+    // setups (NVIDIA, headless, certain Wayland sessions); fall
+    // back to the legacy compositing path unless the user opted
+    // out by setting the variable explicitly.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+    #[cfg(target_os = "linux")]
+    apply_appimage_host_wayland_preload();
+
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            show_main_window(app);
+        }))
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(init_navigation_guard_plugin())
+        .manage(SidecarState::default())
+        .manage(DeepLinkState::default())
+        .manage(ClaudeAuthState::default())
+        .invoke_handler(tauri::generate_handler![
+            claude_auth_connect,
+            claude_auth_fetch,
+            claude_auth_close,
+            claude_auth_fetch_result
+        ]);
+
+    #[cfg(target_os = "macos")]
+    let builder = builder.manage(DockModeCheckItem::default());
+
+    builder
+        .setup(|app| {
+            setup_deep_link_handling(app);
+            if let Err(err) = setup_menu(app) {
+                eprintln!("[agentsview] failed to set up desktop menu: {err}");
+            }
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            if let Err(err) =
+                setup_close_to_tray_with(app, setup_status_item, setup_window_lifecycle)
+            {
+                eprintln!("[agentsview] failed to set up close-to-tray behavior: {err}");
+            }
+            match tauri::async_runtime::block_on(run_data_version_preflight(app.handle())) {
+                Ok(()) => {
+                    if let Err(err) = launch_backend(app) {
+                        eprintln!("[agentsview] backend launch failed: {err}");
+                        let window = main_window(app)?;
+                        spawn_startup_error_render(
+                            window,
+                            "AgentsView could not start",
+                            "The local backend failed to launch.",
+                            err.to_string().as_str(),
+                        );
+                    } else {
+                        schedule_auto_update_check(app.handle().clone());
+                    }
+                }
+                Err(DataVersionPreflightError::TooNew(message)) => {
+                    eprintln!("[agentsview] data version preflight rejected archive: {message}");
+                    let window = main_window(app)?;
+                    spawn_preflight_error_render(
+                        window,
+                        "AgentsView needs an update",
+                        too_new_archive_status_message(message.as_str()).as_str(),
+                        too_new_archive_footer_message(),
+                    );
+                    let handle = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        check_for_updates(&handle, false).await;
+                    });
+                }
+                Err(DataVersionPreflightError::Failed(message)) => {
+                    let window = main_window(app)?;
+                    spawn_startup_error_render(
+                        window,
+                        "AgentsView could not verify the archive",
+                        "The database compatibility check failed, so the backend was not started.",
+                        message.as_str(),
+                    );
+                }
+            }
+            Ok(())
+        })
+        .build(tauri::generate_context!())
+        .expect("failed to build tauri app")
+        .run(|app_handle, event| {
+            if let RunEvent::MenuEvent(event) = &event {
+                handle_desktop_menu_event(app_handle, event.id().0.as_str());
+            }
+            // macOS asks a running app to show itself again through
+            // applicationShouldHandleReopen (Dock icon click, Cmd-Tab
+            // activation with no visible windows, `open -a AgentsView`).
+            // Restore the close-to-tray window here; otherwise the app
+            // stays hidden with no way back in until it is relaunched.
+            #[cfg(target_os = "macos")]
+            if let RunEvent::Reopen { .. } = &event {
+                show_main_window(app_handle);
+            }
+        });
+}
+
+fn desktop_menu_action(id: &str) -> Option<DesktopMenuAction> {
+    match id {
+        ABOUT_MENU_ID => Some(DesktopMenuAction::About),
+        CHECK_UPDATES_MENU_ID => Some(DesktopMenuAction::CheckUpdates),
+        OPEN_LOGS_FOLDER_MENU_ID => Some(DesktopMenuAction::OpenLogsFolder),
+        DOCUMENTATION_MENU_ID => Some(DesktopMenuAction::Documentation),
+        QUIT_FROM_STATUS_ITEM_MENU_ID => Some(DesktopMenuAction::Quit),
+        SHOW_MAIN_WINDOW_MENU_ID => Some(DesktopMenuAction::ShowMainWindow),
+        #[cfg(target_os = "macos")]
+        DOCK_MODE_MENU_ID => Some(DesktopMenuAction::ToggleDockMode),
+        _ => None,
+    }
+}
+
+fn handle_desktop_menu_event(handle: &AppHandle, id: &str) {
+    match desktop_menu_action(id) {
+        Some(DesktopMenuAction::About) => {
+            if let Some(window) = handle.get_webview_window("main") {
+                let _ = window.eval("window.dispatchEvent(new CustomEvent('show-about'));");
+            }
+        }
+        Some(DesktopMenuAction::CheckUpdates) => {
+            let handle = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                check_for_updates(&handle, false).await;
+            });
+        }
+        Some(DesktopMenuAction::OpenLogsFolder) => open_logs_folder(handle),
+        Some(DesktopMenuAction::Documentation) => {
+            if let Err(err) = handle
+                .opener()
+                .open_url("https://agentsview.io/docs/", Option::<&str>::None)
+            {
+                eprintln!("[agentsview] failed to open documentation: {err}");
+            }
+        }
+        Some(DesktopMenuAction::Quit) => handle.exit(0),
+        Some(DesktopMenuAction::ShowMainWindow) => show_main_window(handle),
+        #[cfg(target_os = "macos")]
+        Some(DesktopMenuAction::ToggleDockMode) => toggle_dock_mode(handle),
+        None => {}
+    }
+}
+
+/// Flips the persisted dock mode from the tray checkbox and applies the
+/// new Dock presence immediately, so a change while the window is hidden
+/// takes effect without showing and re-hiding the window.
+///
+/// muda flips the checkmark before the menu event fires, so the target
+/// mode is derived from the item's checked state (UI and intent cannot
+/// diverge); if persisting fails the mark is flipped back so the menu
+/// still reports the mode that is actually stored.
+#[cfg(target_os = "macos")]
+fn toggle_dock_mode(handle: &AppHandle) {
+    let Some(item) = dock_mode_check_item(handle) else {
+        return;
+    };
+    let Ok(checked) = item.is_checked() else {
+        return;
+    };
+    let Some(path) = dock_mode_settings_path(handle) else {
+        let _ = item.set_checked(!checked);
+        return;
+    };
+    let next = DockMode::from_checked(checked);
+    if let Err(err) = write_dock_mode(&path, next) {
+        eprintln!("[agentsview] failed to persist dock mode: {err}");
+        let _ = item.set_checked(!checked);
+        return;
+    }
+    let window_visible = handle
+        .get_webview_window("main")
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false);
+    apply_dock_presence(handle, next, window_visible);
+}
+
+#[cfg(target_os = "macos")]
+fn dock_mode_check_item(handle: &AppHandle) -> Option<CheckMenuItem<tauri::Wry>> {
+    handle
+        .state::<DockModeCheckItem>()
+        .0
+        .lock()
+        .expect("lock dock mode item")
+        .as_ref()
+        .cloned()
+}
+
+fn show_main_window(handle: &AppHandle) {
+    let Some(window) = handle.get_webview_window("main") else {
+        return;
+    };
+    #[cfg(target_os = "macos")]
+    sync_dock_presence(handle, true);
+    restore_main_window(&window);
+}
+
+fn setup_deep_link_handling(app: &App) {
+    let handle = app.handle().clone();
+    app.deep_link().on_open_url(move |event| {
+        for url in event.urls() {
+            handle_deep_link_url(&handle, &url);
+        }
+    });
+    // Launch URLs can precede the listener above: the plugin consumes
+    // Windows/Linux launch arguments during its own setup, and macOS
+    // can deliver an Opened event before app setup runs. Both paths
+    // record into get_current, so drain it here.
+    if let Ok(Some(urls)) = app.deep_link().get_current() {
+        for url in urls {
+            handle_deep_link_url(app.handle(), &url);
+        }
+    }
+    // Installers register the scheme; this covers dev builds and
+    // AppImages that were never registered with a launcher.
+    #[cfg(any(windows, target_os = "linux"))]
+    if let Err(err) = app.deep_link().register_all() {
+        log_deep_link_event(
+            app.handle(),
+            format!("failed to register deep link schemes: {err}").as_str(),
+        );
+    }
+}
+
+fn handle_deep_link_url(handle: &AppHandle, url: &Url) {
+    let Some(route) = deep_link_session_route(url) else {
+        log_deep_link_event(
+            handle,
+            format!("ignoring unsupported deep link URL: {url}").as_str(),
+        );
+        return;
+    };
+    log_deep_link_event(
+        handle,
+        format!("opening deep link {url} as route {route}").as_str(),
+    );
+    show_main_window(handle);
+    dispatch_deep_link_route(handle, route);
+}
+
+// Packaged builds discard stderr (no console on Windows, detached from
+// any terminal when Finder-launched), so mirror deep link diagnostics
+// into the desktop log file that Open Logs Folder surfaces.
+fn log_deep_link_event(handle: &AppHandle, message: &str) {
+    eprintln!("[agentsview] {message}");
+    let Ok(path) = desktop_log_file_path(handle) else {
+        return;
+    };
+    if let Err(err) = append_sidecar_log_record_at_path(&path, "deep-link", message) {
+        eprintln!("[agentsview] failed to append deep link log: {err}");
+    }
+}
+
+fn dispatch_deep_link_route(handle: &AppHandle, route: String) {
+    let deep_link_state = handle.state::<DeepLinkState>();
+    let Ok(mut dispatch) = deep_link_state.dispatch.lock() else {
+        log_deep_link_event(
+            handle,
+            format!("dropping deep link route {route}: dispatch lock poisoned").as_str(),
+        );
+        return;
+    };
+    if let Some((port, route)) = dispatch.route_for_navigation(route, current_backend_port(handle))
+    {
+        drop(dispatch);
+        navigate_main_window_to_route(handle, port, route.as_str());
+    }
+}
+
+fn take_pending_deep_link_route(handle: &AppHandle) -> Option<String> {
+    let deep_link_state = handle.try_state::<DeepLinkState>()?;
+    let Ok(mut dispatch) = deep_link_state.dispatch.lock() else {
+        log_deep_link_event(
+            handle,
+            "dropping any pending deep link route: dispatch lock poisoned",
+        );
+        return None;
+    };
+    dispatch.take_pending()
+}
+
+fn finish_deep_link_redirect(handle: &AppHandle) -> Option<String> {
+    let deep_link_state = handle.try_state::<DeepLinkState>()?;
+    let Ok(mut dispatch) = deep_link_state.dispatch.lock() else {
+        log_deep_link_event(
+            handle,
+            "dropping any deep link route queued during redirect: dispatch lock poisoned",
+        );
+        return None;
+    };
+    dispatch.finish_redirect()
+}
+
+fn defer_deep_link_dispatch(app: &AppHandle) {
+    let Some(deep_link_state) = app.try_state::<DeepLinkState>() else {
+        return;
+    };
+    let Ok(mut dispatch) = deep_link_state.dispatch.lock() else {
+        // Skipping the defer reopens the publish/redirect race, so
+        // leave a trace even though poisoning is near-unreachable.
+        log_deep_link_event(
+            app,
+            "cannot defer deep link dispatch: dispatch lock poisoned",
+        );
+        return;
+    };
+    dispatch.defer();
+}
+
+fn navigate_main_window_to_route(handle: &AppHandle, port: u16, route: &str) {
+    let Some(window) = handle.get_webview_window("main") else {
+        log_deep_link_event(
+            handle,
+            format!("dropping deep link route {route}: main window missing").as_str(),
+        );
+        return;
+    };
+    let target = desktop_route_url(current_backend_host(handle), port, route);
+    match Url::parse(target.as_str()) {
+        Ok(url) => {
+            if let Err(err) = window.navigate(url) {
+                log_deep_link_event(
+                    handle,
+                    format!("deep link navigation failed: {err}").as_str(),
+                );
+            }
+        }
+        Err(err) => {
+            log_deep_link_event(
+                handle,
+                format!("invalid deep link target URL {target}: {err}").as_str(),
+            );
+        }
+    }
+}
+
+// The id segment stays percent-encoded so splicing it into the
+// backend URL preserves the value the frontend router decodes.
+fn deep_link_session_route(url: &Url) -> Option<String> {
+    if url.scheme() != DEEP_LINK_SCHEME {
+        return None;
+    }
+    if !url
+        .host_str()
+        .is_some_and(|host| host.eq_ignore_ascii_case(DEEP_LINK_SESSIONS_HOST))
+    {
+        return None;
+    }
+    let mut segments = url.path_segments()?;
+    let id = segments.next()?;
+    if segments.next().is_some() {
+        return None;
+    }
+    // "." and ".." would collapse when the backend URL is parsed; a
+    // raw backslash would turn into a path separator there.
+    if id.is_empty() || id == "." || id == ".." || id.contains('\\') {
+        return None;
+    }
+    let route = format!("/sessions/{id}");
+    Some(match deep_link_msg_param(url) {
+        Some(msg) => format!("{route}?msg={msg}"),
+        None => route,
+    })
+}
+
+// Only ?msg=<ordinal|last> is forwarded; the frontend scrolls to that
+// message. Anything else in the query is dropped.
+fn deep_link_msg_param(url: &Url) -> Option<String> {
+    let value = url
+        .query_pairs()
+        .find(|(key, _)| key == "msg")
+        .map(|(_, value)| value.into_owned())?;
+    let valid = value == "last" || (!value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()));
+    valid.then_some(value)
+}
+
+trait MainWindowVisibility {
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn hide_main_window(&self);
+    fn show_main_window(&self);
+    fn unminimize_main_window(&self);
+    fn focus_main_window(&self);
+}
+
+impl MainWindowVisibility for WebviewWindow {
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn hide_main_window(&self) {
+        let _ = self.hide();
+    }
+
+    fn show_main_window(&self) {
+        let _ = self.show();
+    }
+
+    fn unminimize_main_window(&self) {
+        let _ = self.unminimize();
+    }
+
+    fn focus_main_window(&self) {
+        let _ = self.set_focus();
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn hide_main_window_on_close(window: &impl MainWindowVisibility, prevent_close: impl FnOnce()) {
+    prevent_close();
+    window.hide_main_window();
+}
+
+fn restore_main_window(window: &impl MainWindowVisibility) {
+    window.show_main_window();
+    window.unminimize_main_window();
+    window.focus_main_window();
+}
+
+/// Controls whether AgentsView keeps its Dock and Cmd-Tab presence while
+/// the main window is hidden. `Dock` keeps today's behavior (always
+/// present while running); `Hybrid` leaves the Dock and Cmd-Tab while
+/// the window is hidden, like a menu-bar-only app, and comes back when
+/// the window is restored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DockMode {
+    Dock,
+    Hybrid,
+}
+
+impl DockMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            DockMode::Dock => "dock",
+            DockMode::Hybrid => "hybrid",
+        }
+    }
+
+    fn from_str(value: &str) -> Option<DockMode> {
+        match value {
+            "dock" => Some(DockMode::Dock),
+            "hybrid" => Some(DockMode::Hybrid),
+            _ => None,
+        }
+    }
+
+    fn from_checked(checked: bool) -> DockMode {
+        if checked {
+            DockMode::Hybrid
+        } else {
+            DockMode::Dock
+        }
+    }
+}
+
+// Dock mode is persisted next to the other desktop app state as
+// {"dock_mode":"dock"|"hybrid"}. Any read failure falls back to Dock so
+// a missing or corrupt file never flips behavior behind the user's back.
+fn read_dock_mode(path: &Path) -> DockMode {
+    let Ok(content) = fs::read_to_string(path) else {
+        return DockMode::Dock;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return DockMode::Dock;
+    };
+    value
+        .get("dock_mode")
+        .and_then(|value| value.as_str())
+        .and_then(DockMode::from_str)
+        .unwrap_or(DockMode::Dock)
+}
+
+fn write_dock_mode(path: &Path, mode: DockMode) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    // Read-modify-write: keep any other keys in the settings file so a
+    // future setting added next to dock_mode is not wiped on toggle.
+    let mut settings = fs::read_to_string(path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    settings.insert(
+        "dock_mode".to_string(),
+        serde_json::Value::String(mode.as_str().to_string()),
+    );
+    let content =
+        serde_json::to_vec(&serde_json::Value::Object(settings)).map_err(io::Error::other)?;
+    fs::write(path, content)
+}
+
+fn dock_mode_settings_path(handle: &AppHandle) -> Option<PathBuf> {
+    handle
+        .path()
+        .app_config_dir()
+        .ok()
+        .map(|dir| dir.join(DOCK_MODE_SETTINGS_FILE_NAME))
+}
+
+/// Which Dock presence macOS should show for a dock mode and window
+/// visibility. Kept as an own type so the decision is testable without
+/// constructing Tauri's non-exhaustive ActivationPolicy.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DockPresence {
+    Regular,
+    Accessory,
+}
+
+#[cfg(target_os = "macos")]
+fn dock_presence_for(mode: DockMode, window_visible: bool) -> DockPresence {
+    match (mode, window_visible) {
+        (DockMode::Hybrid, false) => DockPresence::Accessory,
+        _ => DockPresence::Regular,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn apply_dock_presence(handle: &AppHandle, mode: DockMode, window_visible: bool) {
+    let policy = match dock_presence_for(mode, window_visible) {
+        DockPresence::Regular => tauri::ActivationPolicy::Regular,
+        DockPresence::Accessory => tauri::ActivationPolicy::Accessory,
+    };
+    if let Err(err) = handle.set_activation_policy(policy) {
+        eprintln!("[agentsview] failed to apply dock presence: {err}");
+    }
+}
+
+/// Reapplies the Dock presence for the current window state. Call after
+/// hiding or before showing the window.
+#[cfg(target_os = "macos")]
+fn sync_dock_presence(handle: &AppHandle, window_visible: bool) {
+    if let Some(path) = dock_mode_settings_path(handle) {
+        apply_dock_presence(handle, read_dock_mode(&path), window_visible);
+    }
+}
+
+/// Initial checked state for the tray dock-mode checkbox: checked only
+/// when hybrid mode is persisted.
+#[cfg(target_os = "macos")]
+fn dock_mode_checked(app: &App) -> bool {
+    dock_mode_settings_path(app.handle())
+        .map(|path| read_dock_mode(&path) == DockMode::Hybrid)
+        .unwrap_or(false)
+}
+
+fn launch_backend(app: &mut App) -> Result<(), DynError> {
+    let window = main_window(app)?;
+    let handle = app.handle().clone();
+    let (rx, child) = spawn_sidecar(&handle)?;
+
+    let sidecar_pid = child.pid();
+    let generation = save_sidecar(&handle, child)?;
+
+    let focus_window = window.clone();
+    let focus_handle = app.handle().clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::Focused(true) = event {
+            let port = focus_handle
+                .state::<SidecarState>()
+                .backend_port
+                .lock()
+                .ok()
+                .and_then(|g| *g);
+            if let Some(port) = port {
+                recover_webview(&focus_window, current_backend_host(&focus_handle), port);
+            }
+        }
+    });
+
+    spawn_backend_probe(window.clone(), app.handle().clone());
+
+    forward_sidecar_logs(rx, window, generation, sidecar_pid);
+
+    Ok(())
+}
+
+fn launch_backend_from_handle(handle: &AppHandle) -> Result<(), DynError> {
+    let window = main_window_from_handle(handle)?;
+    let (rx, child) = spawn_sidecar(handle)?;
+    let sidecar_pid = child.pid();
+    let generation = save_sidecar(handle, child)?;
+    defer_deep_link_dispatch(handle);
+    clear_sidecar_port(handle);
+    forward_sidecar_logs(rx, window, generation, sidecar_pid);
+    Ok(())
+}
+
+fn spawn_sidecar(app: &AppHandle) -> Result<(CommandRx, CommandChild), DynError> {
+    spawn_sidecar_with_args(app, sidecar_args())
+}
+
+fn spawn_sidecar_with_args(
+    app: &AppHandle,
+    args: Vec<String>,
+) -> Result<(CommandRx, CommandChild), DynError> {
+    let mut command = app.shell().sidecar("agentsview")?;
+    for (key, value) in sidecar_env() {
+        command = command.env(key, value);
+    }
+
+    Ok(command.args(args).spawn()?)
+}
+
+fn sidecar_args() -> Vec<String> {
+    vec![
+        "serve".to_string(),
+        "--background".to_string(),
+        "--host".to_string(),
+        HOST.to_string(),
+        "--port".to_string(),
+        "0".to_string(),
+    ]
+}
+
+fn sidecar_stop_args() -> Vec<String> {
+    vec!["serve".to_string(), "stop".to_string()]
+}
+
+fn sidecar_status_args() -> Vec<String> {
+    vec!["serve".to_string(), "status".to_string()]
+}
+
+fn data_version_preflight_args() -> Vec<String> {
+    vec!["serve".to_string(), "--check-data-version".to_string()]
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DataVersionPreflightError {
+    TooNew(String),
+    Failed(String),
+}
+
+async fn run_data_version_preflight(app: &AppHandle) -> Result<(), DataVersionPreflightError> {
+    let mut command = app
+        .shell()
+        .sidecar("agentsview")
+        .map_err(|err| DataVersionPreflightError::Failed(err.to_string()))?;
+    for (key, value) in sidecar_env() {
+        command = command.env(key, value);
+    }
+
+    let (mut rx, _child) = command
+        .args(data_version_preflight_args())
+        .spawn()
+        .map_err(|err| DataVersionPreflightError::Failed(err.to_string()))?;
+
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    while let Some(event) = rx.recv().await {
+        match event {
+            CommandEvent::Stdout(bytes) => {
+                stdout.push_str(String::from_utf8_lossy(&bytes).as_ref());
+            }
+            CommandEvent::Stderr(bytes) => {
+                stderr.push_str(String::from_utf8_lossy(&bytes).as_ref());
+            }
+            CommandEvent::Terminated(payload) => {
+                return classify_data_version_preflight_exit(payload.code, &stdout, &stderr);
+            }
+            CommandEvent::Error(err) => {
+                stderr.push_str(err.as_str());
+                stderr.push('\n');
+            }
+            _ => {}
+        }
+    }
+
+    Err(DataVersionPreflightError::Failed(
+        "data version preflight ended without an exit status".to_string(),
+    ))
+}
+
+fn classify_data_version_preflight_exit(
+    code: Option<i32>,
+    stdout: &str,
+    stderr: &str,
+) -> Result<(), DataVersionPreflightError> {
+    if code == Some(0) {
+        return Ok(());
+    }
+
+    let message = combined_preflight_output(stdout, stderr)
+        .unwrap_or_else(|| format!("data version preflight exited with code {code:?}"));
+    if code == Some(DATA_VERSION_TOO_NEW_EXIT_CODE) {
+        return Err(DataVersionPreflightError::TooNew(message));
+    }
+    Err(DataVersionPreflightError::Failed(message))
+}
+
+fn combined_preflight_output(stdout: &str, stderr: &str) -> Option<String> {
+    let stderr = stderr.trim();
+    if !stderr.is_empty() {
+        return Some(stderr.to_string());
+    }
+    let stdout = stdout.trim();
+    if !stdout.is_empty() {
+        return Some(stdout.to_string());
+    }
+    None
+}
+
+fn init_navigation_guard_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    PluginBuilder::new("navigation-guard")
+        .on_navigation(|webview, url| {
+            if webview.label() == CLAUDE_AUTH_WINDOW_LABEL {
+                return url.scheme() == "https";
+            }
+            let backend_port = webview
+                .app_handle()
+                .try_state::<SidecarState>()
+                .and_then(|state| state.backend_port.lock().ok().and_then(|g| *g));
+            if is_allowed_navigation_url(url, backend_port) {
+                return true;
+            }
+            if is_allowed_external_open_url(url) {
+                if let Err(err) = webview
+                    .app_handle()
+                    .opener()
+                    .open_url(url.as_str(), Option::<&str>::None)
+                {
+                    eprintln!("[agentsview] failed to open external URL in system browser: {err}");
+                }
+            } else {
+                eprintln!(
+                    "[agentsview] blocked disallowed external URL scheme: {}",
+                    url.as_str()
+                );
+            }
+            false
+        })
+        .build()
+}
+
+fn is_allowed_navigation_url(url: &Url, backend_port: Option<u16>) -> bool {
+    // macOS/Linux: tauri://localhost
+    if url.scheme() == "tauri" && url.host_str() == Some("localhost") {
+        return true;
+    }
+    // Windows (WebView2): http://tauri.localhost or https://tauri.localhost.
+    // WebView2 uses http by default for the custom localhost origin.
+    // Reject explicit ports to prevent spoofing via other local services.
+    if matches!(url.scheme(), "http" | "https")
+        && url.host_str() == Some("tauri.localhost")
+        && url.port().is_none()
+    {
+        return true;
+    }
+    // Only allow navigation to the known sidecar port on a supported loopback
+    // host. Rejects all loopback URLs when the sidecar port is not yet known.
+    if let Some(port) = backend_port {
+        return url.scheme() == "http"
+            && matches!(url.host_str(), Some(HOST | "localhost" | IPV6_HOST))
+            && url.port_or_known_default() == Some(port);
+    }
+    false
+}
+
+fn is_allowed_external_open_url(url: &Url) -> bool {
+    matches!(
+        url.scheme(),
+        "http" | "https" | "mailto" | "codex" | "claude"
+    )
+}
+
+// sidecar_env returns the environment passed to the backend
+// sidecar process. It merges the app environment with
+// login-shell variables so desktop launches inherit zshrc/bash
+// exports. An optional ~/.agentsview/desktop.env file can
+// override specific keys as an escape hatch.
+fn sidecar_env() -> Vec<(OsString, OsString)> {
+    let skip_login_shell = std::env::var_os("AGENTSVIEW_DESKTOP_SKIP_LOGIN_SHELL_ENV");
+    let should_probe =
+        should_probe_login_shell(skip_login_shell.as_ref(), cfg!(target_os = "windows"));
+    let is_windows = cfg!(target_os = "windows");
+
+    build_sidecar_env(
+        std::env::vars_os().collect(),
+        if should_probe {
+            cached_login_shell_env()
+        } else {
+            Vec::new()
+        },
+        read_desktop_env_file(),
+        std::env::var_os("AGENTSVIEW_DESKTOP_PATH"),
+        is_windows,
+        is_windows,
+    )
+}
+
+// The login shell is a snapshot of the user's launch environment. Cache both
+// successful and failed probes for this desktop process so repeated sidecar
+// commands do not rerun shell startup or repeat a 3s timeout.
+fn cached_login_shell_env() -> Vec<(OsString, OsString)> {
+    LOGIN_SHELL_ENV
+        .get_or_init(|| read_login_shell_env().unwrap_or_default())
+        .clone()
+}
+
+// read_login_shell_env invokes the user's login shell and
+// parses NUL-delimited env output (`env -0`).
+fn read_login_shell_env() -> Option<Vec<(OsString, OsString)>> {
+    let default_shell = default_login_shell();
+    let shell = std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(default_shell);
+
+    let stdout = run_login_shell_env(shell.as_str(), LOGIN_SHELL_ENV_TIMEOUT)?;
+    Some(parse_nul_env(stdout.as_slice()))
+}
+
+fn default_login_shell() -> String {
+    if cfg!(target_os = "macos") {
+        return "/bin/zsh".to_string();
+    }
+    if Path::new("/bin/bash").exists() {
+        return "/bin/bash".to_string();
+    }
+    "/bin/sh".to_string()
+}
+
+// read_desktop_env_file parses ~/.agentsview/desktop.env as
+// KEY=VALUE lines. This provides a manual override path before
+// desktop settings UI exists.
+fn read_desktop_env_file() -> Vec<(OsString, OsString)> {
+    let Some(home) = resolve_home_dir() else {
+        return Vec::new();
+    };
+    let path = home.join(".agentsview").join("desktop.env");
+    let Ok(content) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+
+    parse_desktop_env_content(content.as_str())
+}
+
+fn resolve_home_dir() -> Option<PathBuf> {
+    resolve_home_dir_from_lookup(|key| std::env::var_os(key), cfg!(target_os = "windows"))
+}
+
+fn should_probe_login_shell(skip: Option<&OsString>, is_windows: bool) -> bool {
+    !is_windows && skip.is_none()
+}
+
+fn build_sidecar_env(
+    inherited: Vec<(OsString, OsString)>,
+    login_shell: Vec<(OsString, OsString)>,
+    desktop_file: Vec<(OsString, OsString)>,
+    forced_path: Option<OsString>,
+    case_insensitive_keys: bool,
+    is_windows: bool,
+) -> Vec<(OsString, OsString)> {
+    let mut merged = BTreeMap::new();
+    merge_env_pairs(&mut merged, inherited, case_insensitive_keys);
+    merge_env_pairs(&mut merged, login_shell, case_insensitive_keys);
+    merge_desktop_env_pairs(&mut merged, desktop_file, case_insensitive_keys, is_windows);
+
+    if let Some(path) = forced_path {
+        merged.insert(
+            normalize_env_key(std::ffi::OsStr::new("PATH"), case_insensitive_keys),
+            path,
+        );
+    }
+
+    merged.into_iter().collect()
+}
+
+fn merge_desktop_env_pairs(
+    dest: &mut BTreeMap<OsString, OsString>,
+    pairs: Vec<(OsString, OsString)>,
+    case_insensitive_keys: bool,
+    is_windows: bool,
+) {
+    for (k, v) in pairs {
+        let translated = translate_desktop_env_value(v, is_windows);
+        dest.insert(
+            normalize_env_key(k.as_os_str(), case_insensitive_keys),
+            translated,
+        );
+    }
+}
+
+fn translate_desktop_env_value(value: OsString, is_windows: bool) -> OsString {
+    if !is_windows {
+        return value;
+    }
+    let Some(v) = value.to_str() else {
+        return value;
+    };
+    let Some((distro, unix_path)) = v
+        .strip_prefix("wsl:")
+        .and_then(|value| value.split_once(":/"))
+    else {
+        return value;
+    };
+    if distro.is_empty()
+        || distro.contains(':')
+        || unix_path.is_empty()
+        || unix_path.starts_with('/')
+    {
+        return value;
+    }
+    OsString::from(format!(r"\\wsl.localhost\{distro}\{unix_path}").replace('/', "\\"))
+}
+
+fn merge_env_pairs(
+    dest: &mut BTreeMap<OsString, OsString>,
+    pairs: Vec<(OsString, OsString)>,
+    case_insensitive_keys: bool,
+) {
+    for (k, v) in pairs {
+        dest.insert(normalize_env_key(k.as_os_str(), case_insensitive_keys), v);
+    }
+}
+
+fn normalize_env_key(key: &std::ffi::OsStr, case_insensitive_keys: bool) -> OsString {
+    if case_insensitive_keys {
+        return OsString::from(key.to_string_lossy().to_ascii_uppercase());
+    }
+    key.to_os_string()
+}
+
+/// LoginShellEnvError captures every way try_run_login_shell_env
+/// can fail so tests can print an actionable reason when the
+/// probe returns nothing. Production callers flatten this into
+/// `Option` via `.ok()` since they already fall back to parent
+/// env on any failure.
+#[derive(Debug)]
+enum LoginShellEnvError {
+    TempFile(io::Error),
+    Spawn(io::Error),
+    Wait(io::Error),
+    Timeout {
+        elapsed: Duration,
+    },
+    NonZero {
+        code: Option<i32>,
+        stdout_len: usize,
+        stderr: Vec<u8>,
+    },
+    ReadStdout(io::Error),
+}
+
+impl std::fmt::Display for LoginShellEnvError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TempFile(e) => write!(f, "tempfile create/clone failed: {e}"),
+            Self::Spawn(e) => write!(f, "spawn failed: {e}"),
+            Self::Wait(e) => write!(f, "try_wait failed: {e}"),
+            Self::Timeout { elapsed } => write!(f, "timed out after {elapsed:?}"),
+            Self::NonZero {
+                code,
+                stdout_len,
+                stderr,
+            } => {
+                let stderr_str = String::from_utf8_lossy(stderr);
+                write!(
+                    f,
+                    "child exited non-zero code={code:?} stdout_len={stdout_len} \
+                     stderr={stderr_str:?}"
+                )
+            }
+            Self::ReadStdout(e) => write!(f, "reading stdout tempfile failed: {e}"),
+        }
+    }
+}
+
+/// try_run_login_shell_env spawns `shell -<login-flag> "env -0"` and
+/// returns the captured stdout, or a structured error explaining why
+/// it couldn't. stdout is captured to a tempfile (not a pipe) so a
+/// child that emits more than a pipe buffer's worth of bytes never
+/// deadlocks. stderr is captured the same way so test failures can
+/// surface the shell's error output.
+fn try_run_login_shell_env(shell: &str, timeout: Duration) -> Result<Vec<u8>, LoginShellEnvError> {
+    let shell_arg = shell_login_env_flag(shell);
+    let mut stdout_capture = tempfile::tempfile().map_err(LoginShellEnvError::TempFile)?;
+    let stdout_writer = stdout_capture
+        .try_clone()
+        .map_err(LoginShellEnvError::TempFile)?;
+    let mut stderr_capture = tempfile::tempfile().map_err(LoginShellEnvError::TempFile)?;
+    let stderr_writer = stderr_capture
+        .try_clone()
+        .map_err(LoginShellEnvError::TempFile)?;
+    let mut child = std::process::Command::new(shell)
+        .args([shell_arg, "env -0"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::from(stderr_writer))
+        .stdout(Stdio::from(stdout_writer))
+        .spawn()
+        .map_err(LoginShellEnvError::Spawn)?;
+
+    let started = Instant::now();
+    let deadline = started + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(LoginShellEnvError::Timeout {
+                        elapsed: started.elapsed(),
+                    });
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(err) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(LoginShellEnvError::Wait(err));
+            }
+        }
+    };
+
+    let mut output = Vec::new();
+    if let Err(e) = stdout_capture.seek(SeekFrom::Start(0)) {
+        return Err(LoginShellEnvError::ReadStdout(e));
+    }
+    if let Err(e) = stdout_capture.read_to_end(&mut output) {
+        return Err(LoginShellEnvError::ReadStdout(e));
+    }
+
+    if !status.success() {
+        let mut stderr_bytes = Vec::new();
+        let _ = stderr_capture.seek(SeekFrom::Start(0));
+        let _ = stderr_capture.read_to_end(&mut stderr_bytes);
+        return Err(LoginShellEnvError::NonZero {
+            code: status.code(),
+            stdout_len: output.len(),
+            stderr: stderr_bytes,
+        });
+    }
+
+    Ok(output)
+}
+
+/// run_login_shell_env is the Option-returning facade used by
+/// production code, which treats any probe failure as "no login
+/// shell env available" and falls back to the parent environment.
+/// Tests that need a failure reason should call
+/// try_run_login_shell_env directly.
+fn run_login_shell_env(shell: &str, timeout: Duration) -> Option<Vec<u8>> {
+    match try_run_login_shell_env(shell, timeout) {
+        Ok(bytes) => Some(bytes),
+        Err(err) => {
+            eprintln!("[agentsview] login shell env probe failed: {err}");
+            None
+        }
+    }
+}
+
+fn shell_login_env_flag(shell: &str) -> &'static str {
+    let name = Path::new(shell)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    match name {
+        "sh" | "dash" | "busybox" => "-c",
+        "fish" => "-lc",
+        _ => "-lic",
+    }
+}
+
+fn parse_nul_env(content: &[u8]) -> Vec<(OsString, OsString)> {
+    let mut vars = Vec::new();
+    for entry in content.split(|b| *b == 0) {
+        if entry.is_empty() {
+            continue;
+        }
+        let Some(eq) = entry.iter().position(|b| *b == b'=') else {
+            continue;
+        };
+        if eq == 0 {
+            continue;
+        }
+        vars.push((
+            os_string_from_bytes(&entry[..eq]),
+            os_string_from_bytes(&entry[eq + 1..]),
+        ));
+    }
+    vars
+}
+
+#[cfg(unix)]
+fn os_string_from_bytes(bytes: &[u8]) -> OsString {
+    use std::os::unix::ffi::OsStringExt;
+    OsString::from_vec(bytes.to_vec())
+}
+
+#[cfg(not(unix))]
+fn os_string_from_bytes(bytes: &[u8]) -> OsString {
+    OsString::from(String::from_utf8_lossy(bytes).into_owned())
+}
+
+fn parse_desktop_env_content(content: &str) -> Vec<(OsString, OsString)> {
+    let mut vars = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        let key = k.trim();
+        if key.is_empty() {
+            continue;
+        }
+        vars.push((OsString::from(key), OsString::from(v.trim())));
+    }
+    vars
+}
+
+fn resolve_home_dir_from_lookup<F>(mut lookup: F, prefer_userprofile: bool) -> Option<PathBuf>
+where
+    F: FnMut(&str) -> Option<OsString>,
+{
+    let get = |key: &str, lookup: &mut F| lookup(key).filter(|v| !v.is_empty());
+
+    if prefer_userprofile {
+        if let Some(profile) = get("USERPROFILE", &mut lookup) {
+            return Some(PathBuf::from(profile));
+        }
+        if let Some(home) = get("HOME", &mut lookup) {
+            return Some(PathBuf::from(home));
+        }
+    } else {
+        if let Some(home) = get("HOME", &mut lookup) {
+            return Some(PathBuf::from(home));
+        }
+        if let Some(profile) = get("USERPROFILE", &mut lookup) {
+            return Some(PathBuf::from(profile));
+        }
+    }
+
+    let drive = get("HOMEDRIVE", &mut lookup)?;
+    let path = get("HOMEPATH", &mut lookup)?;
+    let mut combined = drive;
+    combined.push(path);
+    Some(PathBuf::from(combined))
+}
+
+fn save_sidecar(app: &AppHandle, child: CommandChild) -> Result<u64, DynError> {
+    let state = app.state::<SidecarState>();
+    let generation = state.next_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    let mut guard = state
+        .child
+        .lock()
+        .map_err(|_| io::Error::other("sidecar state lock poisoned"))?;
+    *guard = Some(SidecarProcess { child, generation });
+    if let Ok(mut active_generation) = state.active_generation.lock() {
+        *active_generation = Some(generation);
+    }
+    if let Ok(mut stopping_generation) = state.stopping_generation.lock() {
+        *stopping_generation = None;
+    }
+    if let Ok(mut restart_generation) = state.restart_after_stop_timeout_generation.lock() {
+        *restart_generation = None;
+    }
+    Ok(generation)
+}
+
+fn save_sidecar_endpoint(app: &AppHandle, endpoint: BackendEndpoint) {
+    // Defer before publishing so a deep link cannot observe the new
+    // port and navigate ahead of the pending readiness redirect.
+    defer_deep_link_dispatch(app);
+    let state = app.state::<SidecarState>();
+    set_sidecar_host(&state, endpoint.host);
+    set_sidecar_port(&state, Some(endpoint.port));
+}
+
+fn clear_sidecar_port(app: &AppHandle) {
+    let state = app.state::<SidecarState>();
+    set_sidecar_port(&state, None);
+    set_sidecar_host(&state, BackendHost::default());
+}
+
+fn set_sidecar_port(state: &SidecarState, port: Option<u16>) {
+    if let Ok(mut guard) = state.backend_port.lock() {
+        *guard = port;
+    }
+}
+
+fn set_sidecar_host(state: &SidecarState, host: BackendHost) {
+    if let Ok(mut guard) = state.backend_host.lock() {
+        *guard = host;
+    }
+}
+
+fn handle_sidecar_terminated(
+    state: &SidecarState,
+    startup_handled: &AtomicBool,
+    generation: u64,
+) -> bool {
+    if mark_sidecar_inactive_if_current(state, generation) {
+        set_sidecar_port(state, None);
+        set_sidecar_host(state, BackendHost::default());
+    }
+    clear_sidecar_child_if_current(state, generation);
+    clear_stopping_generation_if_current(state, generation);
+    record_sidecar_terminated(state, generation);
+    !startup_handled.swap(true, Ordering::SeqCst)
+}
+
+fn handle_launcher_terminated_after_startup(state: &SidecarState, generation: u64) {
+    let _ = mark_sidecar_inactive_if_current(state, generation);
+    clear_sidecar_child_if_current(state, generation);
+    clear_stopping_generation_if_current(state, generation);
+    clear_restart_after_stop_timeout_if_current(state, generation);
+    record_sidecar_terminated(state, generation);
+}
+
+fn mark_sidecar_inactive_if_current(state: &SidecarState, generation: u64) -> bool {
+    let Ok(mut guard) = state.active_generation.lock() else {
+        return false;
+    };
+    if *guard == Some(generation) {
+        *guard = None;
+        return true;
+    }
+    false
+}
+
+fn clear_sidecar_child_if_current(state: &SidecarState, generation: u64) {
+    let Ok(mut guard) = state.child.lock() else {
+        return;
+    };
+    if guard
+        .as_ref()
+        .map(|process| process.generation)
+        .is_some_and(|active_generation| active_generation == generation)
+    {
+        *guard = None;
+    }
+}
+
+fn mark_sidecar_stopping(state: &SidecarState, generation: u64) {
+    if let Ok(mut guard) = state.stopping_generation.lock() {
+        *guard = Some(generation);
+    }
+}
+
+fn current_stopping_generation(state: &SidecarState) -> Option<u64> {
+    state
+        .stopping_generation
+        .lock()
+        .ok()
+        .and_then(|guard| *guard)
+}
+
+fn clear_stopping_generation_if_current(state: &SidecarState, generation: u64) {
+    let Ok(mut guard) = state.stopping_generation.lock() else {
+        return;
+    };
+    if *guard == Some(generation) {
+        *guard = None;
+    }
+}
+
+fn mark_restart_after_stop_timeout(state: &SidecarState, generation: u64) {
+    if let Ok(mut guard) = state.restart_after_stop_timeout_generation.lock() {
+        *guard = Some(generation);
+    }
+}
+
+fn clear_restart_after_stop_timeout_if_current(state: &SidecarState, generation: u64) {
+    if let Ok(mut guard) = state.restart_after_stop_timeout_generation.lock() {
+        if *guard == Some(generation) {
+            *guard = None;
+        }
+    }
+}
+
+fn take_restart_after_stop_timeout_if_current(state: &SidecarState, generation: u64) -> bool {
+    let Ok(mut guard) = state.restart_after_stop_timeout_generation.lock() else {
+        return false;
+    };
+    if *guard == Some(generation) {
+        *guard = None;
+        return true;
+    }
+    false
+}
+
+fn begin_update_stop_wait(state: &SidecarState) {
+    let _gate = state.launch_gate.lock();
+    state
+        .active_update_stop_waiters
+        .fetch_add(1, Ordering::SeqCst);
+}
+
+fn end_update_stop_wait(state: &SidecarState) {
+    let previous = state
+        .active_update_stop_waiters
+        .fetch_sub(1, Ordering::SeqCst);
+    debug_assert!(previous > 0);
+}
+
+fn has_active_update_stop_waiter(state: &SidecarState) -> bool {
+    state.active_update_stop_waiters.load(Ordering::SeqCst) > 0
+}
+
+// A completed update stop retires the launch it stopped; a failed one leaves it in charge.
+fn finish_update_stop_wait(state: &SidecarState, stopped: bool) {
+    let _gate = state.launch_gate.lock();
+    if stopped {
+        state.next_generation.fetch_add(1, Ordering::SeqCst);
+    }
+    end_update_stop_wait(state);
+}
+
+fn launch_superseded(state: &SidecarState, generation: u64) -> bool {
+    state.next_generation.load(Ordering::SeqCst) != generation
+}
+
+// While an update stop is in flight the launch's fate is unknown, so it must not act yet.
+fn launch_is_current(state: &SidecarState, generation: u64) -> bool {
+    !has_active_update_stop_waiter(state) && !launch_superseded(state, generation)
+}
+
+// Waits out an update stop, then acts only if the launch survived, holding the gate so no stop starts mid-action.
+fn with_current_launch<T>(
+    state: &SidecarState,
+    generation: u64,
+    act: impl FnOnce() -> T,
+) -> Option<T> {
+    loop {
+        let gate = state.launch_gate.lock().ok()?;
+        if launch_superseded(state, generation) {
+            return None;
+        }
+        if !has_active_update_stop_waiter(state) {
+            return Some(act());
+        }
+        drop(gate);
+        thread::sleep(READY_POLL_INTERVAL);
+    }
+}
+
+// Non-blocking variant for async callers: acts only if the launch is current right now.
+fn act_if_current<T>(state: &SidecarState, generation: u64, act: impl FnOnce() -> T) -> Option<T> {
+    let _gate = state.launch_gate.lock().ok()?;
+    launch_is_current(state, generation).then(act)
+}
+
+fn act_if_current_backend<T>(
+    state: &SidecarState,
+    generation: u64,
+    expected_endpoint: BackendEndpoint,
+    act: impl FnOnce() -> T,
+) -> Option<T> {
+    let _gate = state.launch_gate.lock().ok()?;
+    if !launch_is_current(state, generation) || sidecar_endpoint(state) != Some(expected_endpoint) {
+        return None;
+    }
+    Some(act())
+}
+
+fn take_restart_after_stop_timeout_for_terminated_sidecar(
+    state: &SidecarState,
+    generation: u64,
+) -> bool {
+    if has_active_update_stop_waiter(state) {
+        return false;
+    }
+    take_restart_after_stop_timeout_if_current(state, generation)
+}
+
+fn restart_backend_after_stop_timeout_if_terminated(
+    app: &AppHandle,
+    state: &SidecarState,
+    generation: u64,
+) {
+    if !sidecar_generation_terminated(state, generation) {
+        return;
+    }
+    if take_restart_after_stop_timeout_for_terminated_sidecar(state, generation) {
+        restart_backend_after_update(app.clone());
+    }
+}
+
+fn record_sidecar_terminated(state: &SidecarState, generation: u64) {
+    if let Ok(mut guard) = state.terminated_generation.lock() {
+        if *guard < generation {
+            *guard = generation;
+        }
+        state.termination.notify_all();
+    }
+}
+
+fn sidecar_generation_terminated(state: &SidecarState, generation: u64) -> bool {
+    state
+        .terminated_generation
+        .lock()
+        .is_ok_and(|guard| *guard >= generation)
+}
+
+fn wait_for_sidecar_termination(state: &SidecarState, generation: u64, timeout: Duration) -> bool {
+    let Ok(mut guard) = state.terminated_generation.lock() else {
+        return false;
+    };
+    let deadline = Instant::now() + timeout;
+    loop {
+        if *guard >= generation {
+            return true;
+        }
+
+        let now = Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        let remaining = deadline.saturating_duration_since(now);
+        match state.termination.wait_timeout(guard, remaining) {
+            Ok((next_guard, result)) => {
+                guard = next_guard;
+                if result.timed_out() && *guard < generation {
+                    return false;
+                }
+            }
+            Err(_) => return false,
+        }
+    }
+}
+
+fn forward_sidecar_logs(
+    mut rx: CommandRx,
+    window: WebviewWindow,
+    generation: u64,
+    sidecar_pid: u32,
+) {
+    let startup_handled = Arc::new(AtomicBool::new(false));
+    let first_output = Arc::new(AtomicBool::new(false));
+    let startup_output = Arc::new(Mutex::new(String::new()));
+    let log_sender = spawn_sidecar_log_writer(window.app_handle().clone());
+    queue_startup_log_record(
+        &log_sender,
+        generation,
+        format!(
+            "started by desktop {} (pid {}), sidecar pid {sidecar_pid}",
+            window.app_handle().package_info().version,
+            std::process::id()
+        )
+        .as_str(),
+    );
+    let timeout_window = window.clone();
+    let timeout_state = startup_handled.clone();
+    thread::spawn(move || {
+        thread::sleep(READY_TIMEOUT);
+        if !timeout_state.load(Ordering::SeqCst) {
+            let _ = timeout_window.eval(
+                "window.__setStatus(\
+                 'AgentsView backend is still starting. Large migrations or initial syncs can take several minutes.');",
+            );
+        }
+    });
+
+    tauri::async_runtime::spawn(async move {
+        let mut stdout_buffer = String::new();
+        let mut stdout_log_buffer = String::new();
+        let mut stderr_log_buffer = String::new();
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(chunk_bytes) => {
+                    let stdout_update = prepare_sidecar_stdout_update(
+                        &log_sender,
+                        &mut stdout_buffer,
+                        &mut stdout_log_buffer,
+                        &chunk_bytes,
+                    );
+                    emit_redacted_sidecar_stdout_chunk(stdout_update.redacted_chunk.as_str());
+                    push_startup_output(
+                        &startup_output,
+                        "stdout",
+                        stdout_update.redacted_chunk.as_str(),
+                    );
+                    if !startup_handled.load(Ordering::SeqCst) {
+                        if !first_output.swap(true, Ordering::SeqCst) {
+                            let _ = window.eval(
+                                "window.__setStage(1); \
+                                 window.__setStatus('Starting database and syncing sessions...');",
+                            );
+                        }
+                        if let Some(status) = stdout_update.status {
+                            let _ = window.eval(status_update_script(status.as_str()).as_str());
+                        }
+                        if let Some(endpoint) = stdout_update.endpoint {
+                            save_sidecar_endpoint(window.app_handle(), endpoint);
+                            startup_handled.store(true, Ordering::SeqCst);
+                            let _ = window.eval(
+                                "window.__setStage(2); \
+                                 window.__setStatus('Connecting to interface...');",
+                            );
+                            redirect_when_ready(
+                                window.clone(),
+                                endpoint,
+                                generation,
+                                "sidecar stdout",
+                                log_sender.clone(),
+                            );
+                        }
+                    }
+                }
+                CommandEvent::Stderr(line_bytes) => {
+                    let redacted_stderr = queue_redacted_sidecar_chunk(
+                        &log_sender,
+                        "stderr",
+                        &mut stderr_log_buffer,
+                        String::from_utf8_lossy(&line_bytes).as_ref(),
+                    );
+                    emit_redacted_sidecar_stderr_chunk(redacted_stderr.as_str());
+                    push_startup_output(&startup_output, "stderr", redacted_stderr.as_str());
+                }
+                CommandEvent::Terminated(payload) => {
+                    let flushed_stdout = flush_pending_sidecar_log_record(
+                        &log_sender,
+                        "stdout",
+                        &mut stdout_log_buffer,
+                    );
+                    emit_redacted_sidecar_stdout_chunk(flushed_stdout.as_str());
+                    push_startup_output(&startup_output, "stdout", flushed_stdout.as_str());
+                    let flushed_stderr = flush_pending_sidecar_log_record(
+                        &log_sender,
+                        "stderr",
+                        &mut stderr_log_buffer,
+                    );
+                    emit_redacted_sidecar_stderr_chunk(flushed_stderr.as_str());
+                    push_startup_output(&startup_output, "stderr", flushed_stderr.as_str());
+                    queue_sidecar_event_log_record(
+                        &log_sender,
+                        &CommandEvent::Terminated(payload.clone()),
+                    );
+                    push_startup_output(
+                        &startup_output,
+                        "terminated",
+                        format!(
+                            "sidecar terminated (code: {:?}, signal: {:?})",
+                            payload.code, payload.signal
+                        )
+                        .as_str(),
+                    );
+                    eprintln!(
+                        "[agentsview] sidecar terminated (code: {:?}, signal: {:?})",
+                        payload.code, payload.signal
+                    );
+                    let handle = window.app_handle().clone();
+                    let state = handle.state::<SidecarState>();
+                    if startup_handled.load(Ordering::SeqCst) {
+                        handle_launcher_terminated_after_startup(&state, generation);
+                        break;
+                    }
+                    if payload.code == Some(0) {
+                        startup_handled.store(true, Ordering::SeqCst);
+                        handle_launcher_terminated_after_startup(&state, generation);
+                        let _ = window.eval(
+                            "window.__setStatus(\
+                             'Waiting for background daemon to become ready...');",
+                        );
+                        poll_background_status_after_launcher_exit(
+                            window.clone(),
+                            generation,
+                            log_sender.clone(),
+                        );
+                        break;
+                    }
+                    if handle_sidecar_terminated(&state, startup_handled.as_ref(), generation) {
+                        spawn_launch_error_render(
+                            window.clone(),
+                            generation,
+                            "AgentsView backend failed",
+                            "The local backend exited before startup completed.",
+                            startup_failure_detail(
+                                "The sidecar process ended before it reported a ready backend.",
+                                recent_startup_output(&startup_output).as_str(),
+                            )
+                            .as_str(),
+                        );
+                    }
+                    let restart_after_stop_timeout =
+                        take_restart_after_stop_timeout_for_terminated_sidecar(&state, generation);
+                    if restart_after_stop_timeout {
+                        restart_backend_after_update(handle);
+                    }
+                    break;
+                }
+                CommandEvent::Error(err) => {
+                    queue_sidecar_event_log_record(&log_sender, &CommandEvent::Error(err.clone()));
+                    let redacted = redact_sidecar_log_line(err.as_str());
+                    push_startup_output(
+                        &startup_output,
+                        "error",
+                        format!("sidecar command error: {redacted}").as_str(),
+                    );
+                    eprintln!("[agentsview:error] {err}");
+                    if !startup_handled.swap(true, Ordering::SeqCst) {
+                        spawn_launch_error_render(
+                            window.clone(),
+                            generation,
+                            "AgentsView backend failed",
+                            "The desktop wrapper received an error from the backend process.",
+                            startup_failure_detail(
+                                redacted.as_str(),
+                                recent_startup_output(&startup_output).as_str(),
+                            )
+                            .as_str(),
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+        let flushed_stdout =
+            flush_pending_sidecar_log_record(&log_sender, "stdout", &mut stdout_log_buffer);
+        emit_redacted_sidecar_stdout_chunk(flushed_stdout.as_str());
+        push_startup_output(&startup_output, "stdout", flushed_stdout.as_str());
+        let flushed_stderr =
+            flush_pending_sidecar_log_record(&log_sender, "stderr", &mut stderr_log_buffer);
+        emit_redacted_sidecar_stderr_chunk(flushed_stderr.as_str());
+        push_startup_output(&startup_output, "stderr", flushed_stderr.as_str());
+    });
+}
+
+fn main_window(app: &App) -> Result<WebviewWindow, DynError> {
+    app.get_webview_window("main")
+        .ok_or_else(|| io::Error::other("missing main window").into())
+}
+
+fn main_window_from_handle(handle: &AppHandle) -> Result<WebviewWindow, DynError> {
+    handle
+        .get_webview_window("main")
+        .ok_or_else(|| io::Error::other("missing main window").into())
+}
+
+fn spawn_startup_error_render(window: WebviewWindow, title: &str, message: &str, detail: &str) {
+    render_startup_error(window, title, message, detail, None);
+}
+
+// Rechecks the launch before every attempt so an update stop that lands mid-retry drops the render.
+fn spawn_launch_error_render(
+    window: WebviewWindow,
+    generation: u64,
+    title: &str,
+    message: &str,
+    detail: &str,
+) {
+    render_startup_error(window, title, message, detail, Some(generation));
+}
+
+fn render_startup_error(
+    window: WebviewWindow,
+    title: &str,
+    message: &str,
+    detail: &str,
+    generation: Option<u64>,
+) {
+    let title = title.to_string();
+    let message = message.to_string();
+    let detail = detail.to_string();
+    let footer = startup_failure_footer(window.app_handle());
+    thread::spawn(move || {
+        let script = startup_error_script(
+            title.as_str(),
+            message.as_str(),
+            detail.as_str(),
+            footer.as_str(),
+        );
+        let state = window.app_handle().state::<SidecarState>();
+        let eval = || window.eval(script.as_str()).is_ok();
+        // The script no-ops until the loading page is ready, so keep resubmitting until the deadline.
+        let deadline = Instant::now() + READY_TIMEOUT;
+        let mut submitted = false;
+        while Instant::now() < deadline {
+            submitted |= match generation {
+                Some(g) => match with_current_launch(&state, g, eval) {
+                    Some(ok) => ok,
+                    None => return,
+                },
+                None => eval(),
+            };
+            thread::sleep(READY_POLL_INTERVAL);
+        }
+        if !submitted {
+            eprintln!("[agentsview] timed out waiting to render startup error");
+        }
+    });
+}
+
+fn startup_error_script(title: &str, message: &str, detail: &str, footer: &str) -> String {
+    let title = js_string_literal(title);
+    let message = js_string_literal(message);
+    let detail = js_string_literal(detail);
+    let footer = js_string_literal(footer);
+    format!(
+        "(function renderStartupError() {{\
+            var h = document.querySelector('h1');\
+            var status = document.getElementById('status');\
+            if (!h || !status) {{\
+                return;\
+            }}\
+            var shell = document.querySelector('.shell');\
+            if (shell) shell.setAttribute('role', 'alert');\
+            if (h) h.textContent = {title};\
+            if (status) status.textContent = {message};\
+            var detail = document.getElementById('startup-error-detail');\
+            if (!detail) {{\
+                detail = document.createElement('pre');\
+                detail.id = 'startup-error-detail';\
+                status.insertAdjacentElement('afterend', detail);\
+            }}\
+            detail.textContent = {detail};\
+            detail.style.cssText = 'margin:14px 0 0;padding:12px;border:1px solid #f0b8b8;border-radius:8px;background:#fff7f7;color:#5f1f1f;font:12px/1.45 Consolas,Menlo,monospace;white-space:pre-wrap;max-height:280px;overflow:auto;';\
+            var meter = document.querySelector('.meter');\
+            if (meter) meter.style.display = 'none';\
+            var stages = document.querySelector('.stage-list');\
+            if (stages) stages.style.display = 'none';\
+            var foot = document.querySelector('.foot');\
+            if (foot) foot.textContent = {footer};\
+        }})()"
+    )
+}
+
+fn spawn_preflight_error_render(window: WebviewWindow, title: &str, message: &str, footer: &str) {
+    let title = title.to_string();
+    let message = message.to_string();
+    let footer = footer.to_string();
+    thread::spawn(move || {
+        let script = preflight_error_script(title.as_str(), message.as_str(), footer.as_str());
+        let deadline = Instant::now() + READY_TIMEOUT;
+        while Instant::now() < deadline {
+            if window.eval(script.as_str()).is_ok() {
+                return;
+            }
+            thread::sleep(READY_POLL_INTERVAL);
+        }
+        eprintln!("[agentsview] timed out waiting to render data-version preflight error");
+    });
+}
+
+fn preflight_error_script(title: &str, message: &str, footer: &str) -> String {
+    let title = js_string_literal(title);
+    let message = js_string_literal(message);
+    let footer = js_string_literal(footer);
+    let retry_ms = READY_POLL_INTERVAL.as_millis();
+    format!(
+        "(function renderPreflightError() {{\
+            var h = document.querySelector('h1');\
+            var status = document.getElementById('status');\
+            if (!h || !status) {{\
+                window.setTimeout(renderPreflightError, {retry_ms});\
+                return;\
+            }}\
+            if (h) h.textContent = {title};\
+            if (status) status.textContent = {message};\
+            var meter = document.querySelector('.meter');\
+            if (meter) meter.style.display = 'none';\
+            var stages = document.querySelector('.stage-list');\
+            if (stages) stages.style.display = 'none';\
+            var foot = document.querySelector('.foot');\
+            if (foot) foot.textContent = {footer};\
+        }})()"
+    )
+}
+
+fn too_new_archive_status_message(_detail: &str) -> String {
+    "This session archive was updated by a newer version of AgentsView. \
+     Update the app before opening it so your data is not read or synced by an older version."
+        .to_string()
+}
+
+fn too_new_archive_footer_message() -> &'static str {
+    "AgentsView is checking for updates now. If no update appears, use Check for Updates from the AgentsView menu or install the latest release manually."
+}
+
+fn js_string_literal(value: &str) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
+}
+
+fn status_update_script(status: &str) -> String {
+    format!("window.__setStatus({});", js_string_literal(status))
+}
+
+fn startup_failure_footer(handle: &AppHandle) -> String {
+    match desktop_log_file_path(handle) {
+        Ok(path) => format!(
+            "Attach this desktop log when reporting the failure: {}. If the details mention serve.log, attach that file too.",
+            path.display()
+        ),
+        Err(_) => {
+            "Use File > Open Logs Folder and attach agentsview-desktop.log when reporting this. If the details mention serve.log, attach that file too."
+                .to_string()
+        }
+    }
+}
+
+fn startup_failure_detail(summary: &str, recent_output: &str) -> String {
+    let recent_output = recent_output.trim();
+    if recent_output.is_empty() {
+        return format!("{summary}\n\nNo backend output was captured before startup stopped.");
+    }
+    format!("{summary}\n\nRecent backend output:\n{recent_output}")
+}
+
+fn push_startup_output(buffer: &Arc<Mutex<String>>, label: &str, chunk: &str) {
+    let chunk = chunk.trim();
+    if chunk.is_empty() {
+        return;
+    }
+    let Ok(mut guard) = buffer.lock() else {
+        return;
+    };
+    if !guard.is_empty() {
+        guard.push('\n');
+    }
+    guard.push('[');
+    guard.push_str(label);
+    guard.push_str("] ");
+    guard.push_str(chunk);
+    trim_startup_output(&mut guard);
+}
+
+fn recent_startup_output(buffer: &Arc<Mutex<String>>) -> String {
+    buffer
+        .lock()
+        .map(|guard| guard.trim().to_string())
+        .unwrap_or_default()
+}
+
+fn trim_startup_output(output: &mut String) {
+    if output.len() <= STARTUP_OUTPUT_MAX_CHARS {
+        return;
+    }
+    let target = output.len() - STARTUP_OUTPUT_MAX_CHARS;
+    let mut drain_to = output.len();
+    for (idx, ch) in output.char_indices() {
+        if ch == '\n' && idx + ch.len_utf8() >= target {
+            drain_to = idx + ch.len_utf8();
+            break;
+        }
+        if idx >= target {
+            drain_to = idx;
+            break;
+        }
+    }
+    output.drain(..drain_to);
+    let prefix = "[earlier startup output truncated]\n";
+    if !output.starts_with(prefix) {
+        output.insert_str(0, prefix);
+    }
+}
+
+fn desktop_redirect_url(host: BackendHost, port: u16) -> String {
+    desktop_route_url(host, port, "")
+}
+
+fn desktop_route_url(host: BackendHost, port: u16, route: &str) -> String {
+    let sep = if route.contains('?') { '&' } else { '?' };
+    format!("http://{}:{port}{route}{sep}desktop=1", host.web_host())
+}
+
+/// Recover a dead or stale WebView on window focus.
+///
+/// Layer 1: try eval — if WKWebView content process was killed by
+/// macOS (sleep/wake, memory pressure), eval returns Err and we
+/// navigate to the backend URL which spawns a fresh content process.
+///
+/// Layer 2: if eval succeeds (content process alive), the injected
+/// JS pings the backend and reloads on failure — covers
+/// alive-but-disconnected WebViews.
+fn recover_webview(window: &WebviewWindow, host: BackendHost, port: u16) {
+    // Probe the sidecar at its absolute URL (not relative) so we
+    // always hit the correct port even if the WebView is still on
+    // a stale origin from a previous sidecar instance. No auth
+    // header — the local sidecar doesn't require it, and sending
+    // one to a random service on the old port would leak the token.
+    //
+    // Uses AbortController+setTimeout instead of AbortSignal.timeout
+    // for compatibility with older WebKit (macOS 12 / Safari 15).
+    let probe = format!("http://{}:{port}/api/v1/version", host.web_host());
+    let target = desktop_redirect_url(host, port);
+    let health_js = format!(
+        "(function(){{\
+        var c=new AbortController();\
+        setTimeout(function(){{c.abort()}},3000);\
+        fetch('{probe}',{{signal:c.signal}})\
+        .then(function(r){{if(r.status>=500)throw r}})\
+        .catch(function(){{location.href='{target}'}})\
+        }})()"
+    );
+    match window.eval(health_js) {
+        Ok(()) => {}
+        Err(err) => {
+            eprintln!("[agentsview] WebView eval failed, recovering: {err}");
+            let url = desktop_redirect_url(host, port);
+            if let Ok(parsed) = Url::parse(url.as_str()) {
+                let _ = window.navigate(parsed);
+            }
+        }
+    }
+}
+
+fn redirect_when_ready(
+    window: WebviewWindow,
+    endpoint: BackendEndpoint,
+    generation: u64,
+    source: &'static str,
+    log_sender: SyncSender<SidecarLogRecord>,
+) {
+    thread::spawn(move || {
+        let ready_host =
+            wait_for_selected_backend(&log_sender, generation, source, endpoint, READY_TIMEOUT);
+        let handle = window.app_handle().clone();
+        let state = handle.state::<SidecarState>();
+        if with_current_launch(&state, generation, || ()).is_none() {
+            return;
+        }
+        if let Some(host) = ready_host {
+            let port = endpoint.port;
+            if with_current_launch(&state, generation, || set_sidecar_host(&state, host)).is_none()
+            {
+                return;
+            }
+            let deferred_route = take_pending_deep_link_route(window.app_handle());
+            let target_url = match deferred_route.as_deref() {
+                Some(route) => {
+                    log_deep_link_event(
+                        window.app_handle(),
+                        format!("redirecting to deferred deep link route {route}").as_str(),
+                    );
+                    desktop_route_url(host, port, route)
+                }
+                None => desktop_redirect_url(host, port),
+            };
+            // Packaged builds discard stderr, so record navigation
+            // failures in the desktop log as well.
+            match Url::parse(target_url.as_str()) {
+                Ok(url) => {
+                    let Some(navigated) =
+                        with_current_launch(&state, generation, || window.navigate(url))
+                    else {
+                        // Hand the consumed route back so the replacement launch opens it.
+                        if let Some(route) = deferred_route {
+                            dispatch_deep_link_route(window.app_handle(), route);
+                        }
+                        return;
+                    };
+                    if let Err(err) = navigated {
+                        queue_startup_log_record(
+                            &log_sender,
+                            generation,
+                            format!("port {port} navigation failed: {err}").as_str(),
+                        );
+                        if deferred_route.is_some() {
+                            log_deep_link_event(
+                                window.app_handle(),
+                                format!("deferred deep link navigation failed: {err}").as_str(),
+                            );
+                        } else {
+                            eprintln!("[agentsview] navigate failed: {err}");
+                        }
+                    }
+                    // On Linux a failed WebKitGTK GPU/EGL init aborts the
+                    // web content process, leaving a blank window while the
+                    // backend keeps serving. Detect that and fall back to
+                    // the system browser. See
+                    // https://github.com/kenn-io/agentsview/issues/635
+                    #[cfg(target_os = "linux")]
+                    spawn_webview_health_fallback(window.clone(), host, port, generation);
+                }
+                Err(err) => {
+                    queue_startup_log_record(
+                        &log_sender,
+                        generation,
+                        format!("port {port} invalid redirect URL: {err}").as_str(),
+                    );
+                    if deferred_route.is_some() {
+                        log_deep_link_event(
+                            window.app_handle(),
+                            format!("invalid deferred deep link redirect URL {target_url}: {err}")
+                                .as_str(),
+                        );
+                    } else {
+                        eprintln!("[agentsview] invalid redirect URL: {err}");
+                    }
+                }
+            }
+            if let Some(route) = finish_deep_link_redirect(window.app_handle()) {
+                log_deep_link_event(
+                    window.app_handle(),
+                    format!("navigating to deep link route {route} queued during startup redirect")
+                        .as_str(),
+                );
+                let routed = with_current_launch(&state, generation, || {
+                    navigate_main_window_to_route(window.app_handle(), port, route.as_str())
+                });
+                if routed.is_none() {
+                    dispatch_deep_link_route(window.app_handle(), route);
+                }
+            }
+            return;
+        }
+
+        let backend_url = desktop_redirect_url(endpoint.host, endpoint.port);
+        spawn_launch_error_render(
+            window,
+            generation,
+            "AgentsView interface did not respond",
+            "The backend reported a port, but the desktop window could not connect to it.",
+            format!("Backend URL: {backend_url}").as_str(),
+        );
+    });
+}
+
+fn poll_background_status_after_launcher_exit(
+    window: WebviewWindow,
+    generation: u64,
+    log_sender: SyncSender<SidecarLogRecord>,
+) {
+    let handle = window.app_handle().clone();
+    tauri::async_runtime::spawn(async move {
+        let started = Instant::now();
+        let mut failed_status_probes = 0;
+        let mut status_poll_backoff_attempts = 0;
+        let mut long_startup_notice_shown = false;
+        let mut unhealthy_since: Option<Instant> = None;
+        loop {
+            if launch_superseded(&handle.state::<SidecarState>(), generation) {
+                return;
+            }
+            // Hold without probing while an update stop decides this launch's fate.
+            if !launch_is_current(&handle.state::<SidecarState>(), generation) {
+                tokio::time::sleep(READY_POLL_INTERVAL).await;
+                continue;
+            }
+            let status = probe_backend_status(&handle, &log_sender, generation).await;
+            if !launch_is_current(&handle.state::<SidecarState>(), generation) {
+                continue;
+            }
+            status_poll_backoff_attempts =
+                next_background_status_poll_attempts(&status, status_poll_backoff_attempts);
+            match status {
+                BackendStatusProbe::Ready(endpoint) => {
+                    let acted = act_if_current(&handle.state::<SidecarState>(), generation, || {
+                        save_sidecar_endpoint(&handle, endpoint);
+                        let _ = window.eval(
+                            "window.__setStage(2); \
+                             window.__setStatus('Connecting to interface...');",
+                        );
+                        redirect_when_ready(
+                            window.clone(),
+                            endpoint,
+                            generation,
+                            "serve status",
+                            log_sender.clone(),
+                        );
+                    });
+                    if acted.is_none() {
+                        continue;
+                    }
+                    return;
+                }
+                BackendStatusProbe::Starting(status) => {
+                    failed_status_probes = 0;
+                    unhealthy_since = None;
+                    if !long_startup_notice_shown && !status.trim().is_empty() {
+                        let _ = window.eval(status_update_script(status.as_str()).as_str());
+                    }
+                }
+                BackendStatusProbe::Unhealthy(status) => {
+                    failed_status_probes = 0;
+                    let first_seen = unhealthy_since.get_or_insert_with(Instant::now);
+                    if first_seen.elapsed() >= DAEMON_UNHEALTHY_GRACE {
+                        spawn_launch_error_render(
+                            window,
+                            generation,
+                            "AgentsView backend is not responding",
+                            "A backend process is running, but it is not answering health checks.",
+                            startup_failure_detail(
+                                "The daemon runtime record points to a live process, but repeated health checks did not get a usable response.",
+                                status.as_str(),
+                            )
+                            .as_str(),
+                        );
+                        return;
+                    }
+                    let _ = window.eval(
+                        "window.__setStatus(\
+                         'AgentsView found a backend process, but health checks are not responding yet.');",
+                    );
+                }
+                BackendStatusProbe::NotRunning(status) => {
+                    spawn_launch_error_render(
+                        window,
+                        generation,
+                        "AgentsView backend stopped",
+                        "The background launcher exited, and no AgentsView server is running.",
+                        startup_failure_detail(
+                            "The background backend disappeared before it became ready.",
+                            status.as_str(),
+                        )
+                        .as_str(),
+                    );
+                    return;
+                }
+                BackendStatusProbe::Incompatible(status) => {
+                    spawn_launch_error_render(
+                        window,
+                        generation,
+                        "AgentsView backend is incompatible",
+                        "AgentsView found a running backend that this desktop app cannot use.",
+                        status.as_str(),
+                    );
+                    return;
+                }
+                BackendStatusProbe::ReadOnly(status) => {
+                    spawn_launch_error_render(
+                        window,
+                        generation,
+                        "AgentsView backend is read-only",
+                        "AgentsView Desktop needs a writable local backend to sync and migrate the archive.",
+                        startup_failure_detail(
+                            "A read-only backend is running for this archive, but desktop startup requires a writable daemon.",
+                            status.as_str(),
+                        )
+                        .as_str(),
+                    );
+                    return;
+                }
+                BackendStatusProbe::Unusable(status) => {
+                    spawn_launch_error_render(
+                        window,
+                        generation,
+                        "AgentsView backend status is unusable",
+                        "The background launcher exited, but the backend did not report a usable writable server.",
+                        startup_failure_detail(
+                            "The status command returned output that is not a ready writable daemon or an active startup lock.",
+                            status.as_str(),
+                        )
+                        .as_str(),
+                    );
+                    return;
+                }
+                BackendStatusProbe::Unavailable => {
+                    failed_status_probes += 1;
+                    if status_probe_failures_should_stop(failed_status_probes) {
+                        spawn_launch_error_render(
+                            window,
+                            generation,
+                            "AgentsView backend status is unavailable",
+                            "The background launcher exited, but the desktop app could not confirm backend status.",
+                            startup_failure_detail(
+                                format!(
+                                    "`agentsview serve status` failed, timed out, or returned no usable output after {failed_status_probes} attempts."
+                                )
+                                .as_str(),
+                                "",
+                            )
+                            .as_str(),
+                        );
+                        return;
+                    }
+                    if failed_status_probes == STATUS_PROBE_FAILURE_NOTICE_AFTER {
+                        let _ = window.eval(
+                            "window.__setStatus(\
+                             'Waiting for background daemon status. Check serve.log if this persists.');",
+                        );
+                    }
+                }
+            }
+            if !long_startup_notice_shown && started.elapsed() >= DAEMON_STARTUP_LONG_NOTICE_AFTER {
+                long_startup_notice_shown = true;
+                let _ = window.eval(
+                    "window.__setStatus(\
+                     'AgentsView is still preparing the local archive. Large migrations or full resyncs can take many minutes.');",
+                );
+            }
+            tokio::time::sleep(background_status_poll_interval(
+                status_poll_backoff_attempts,
+            ))
+            .await;
+        }
+    });
+}
+
+fn background_status_poll_interval(backoff_attempts: u32) -> Duration {
+    let multiplier = match backoff_attempts {
+        0..=8 => 1,
+        9..=16 => 2,
+        17..=24 => 4,
+        _ => 8,
+    };
+    READY_POLL_INTERVAL
+        .saturating_mul(multiplier)
+        .min(STATUS_POLL_MAX_INTERVAL)
+}
+
+fn next_background_status_poll_attempts(status: &BackendStatusProbe, current: u32) -> u32 {
+    match status {
+        BackendStatusProbe::Starting(_)
+        | BackendStatusProbe::Unhealthy(_)
+        | BackendStatusProbe::Unavailable => current.saturating_add(1),
+        BackendStatusProbe::Ready(_)
+        | BackendStatusProbe::NotRunning(_)
+        | BackendStatusProbe::Incompatible(_)
+        | BackendStatusProbe::ReadOnly(_)
+        | BackendStatusProbe::Unusable(_) => current,
+    }
+}
+
+fn status_probe_failures_should_stop(failed_status_probes: u32) -> bool {
+    failed_status_probes >= STATUS_PROBE_FAILURE_FAIL_AFTER
+}
+
+async fn probe_backend_status(
+    handle: &AppHandle,
+    log_sender: &SyncSender<SidecarLogRecord>,
+    generation: u64,
+) -> BackendStatusProbe {
+    let Ok(mut command) = handle.shell().sidecar("agentsview") else {
+        return BackendStatusProbe::Unavailable;
+    };
+    for (key, value) in sidecar_env() {
+        command = command.env(key, value);
+    }
+    let Ok((rx, child)) = command.args(sidecar_status_args()).spawn() else {
+        return BackendStatusProbe::Unavailable;
+    };
+    let status = tokio::time::timeout(
+        STATUS_PROBE_TIMEOUT,
+        read_backend_status(rx, log_sender, generation),
+    )
+    .await;
+    match status {
+        Ok(Ok(status)) => status,
+        Ok(Err(())) | Err(_) => {
+            let _ = child.kill();
+            BackendStatusProbe::Unavailable
+        }
+    }
+}
+
+async fn read_backend_status(
+    mut rx: CommandRx,
+    log_sender: &SyncSender<SidecarLogRecord>,
+    generation: u64,
+) -> Result<BackendStatusProbe, ()> {
+    let mut stdout_buffer = String::new();
+    let mut stderr_buffer = String::new();
+    while let Some(event) = rx.recv().await {
+        match event {
+            CommandEvent::Stdout(bytes) => {
+                stdout_buffer.push_str(String::from_utf8_lossy(&bytes).as_ref());
+            }
+            CommandEvent::Stderr(bytes) => {
+                stderr_buffer.push_str(String::from_utf8_lossy(&bytes).as_ref());
+            }
+            CommandEvent::Terminated(_) => {
+                let status =
+                    classify_backend_status_output(stdout_buffer.as_str(), stderr_buffer.as_str());
+                if matches!(status, BackendStatusProbe::Ready(_)) {
+                    queue_startup_log_record(
+                        log_sender,
+                        generation,
+                        format!(
+                            "serve status: {}",
+                            redact_sidecar_log_line(stdout_buffer.trim())
+                        )
+                        .as_str(),
+                    );
+                }
+                return Ok(status);
+            }
+            CommandEvent::Error(err) => {
+                eprintln!("[agentsview:error] {err}");
+                return Err(());
+            }
+            _ => {}
+        }
+    }
+    Ok(BackendStatusProbe::Unavailable)
+}
+
+fn classify_backend_status_output(stdout: &str, stderr: &str) -> BackendStatusProbe {
+    if let Some(endpoint) = parse_writable_listening_endpoint_from_status(stdout) {
+        return BackendStatusProbe::Ready(endpoint);
+    }
+
+    let detail = combined_probe_output(stdout, stderr);
+    if detail.contains("No agentsview server is running.") {
+        return BackendStatusProbe::NotRunning(detail);
+    }
+    if detail.contains("incompatible running writable daemon") {
+        return BackendStatusProbe::Incompatible(detail);
+    }
+    if status_output_is_unhealthy(detail.as_str()) {
+        return BackendStatusProbe::Unhealthy(detail);
+    }
+    if detail.trim().is_empty() {
+        return BackendStatusProbe::Unavailable;
+    }
+    if status_output_is_read_only(detail.as_str()) {
+        return BackendStatusProbe::ReadOnly(detail);
+    }
+    if status_output_is_starting(detail.as_str()) {
+        return BackendStatusProbe::Starting(detail);
+    }
+    BackendStatusProbe::Unusable(detail)
+}
+
+fn status_output_is_unhealthy(output: &str) -> bool {
+    output.contains("agentsview process running")
+        && output.contains("not responding to health checks")
+}
+
+fn status_output_is_starting(output: &str) -> bool {
+    output
+        .lines()
+        .any(|line| line.trim() == "agentsview is starting up.")
+}
+
+fn combined_probe_output(stdout: &str, stderr: &str) -> String {
+    let stdout = stdout.trim();
+    let stderr = stderr.trim();
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => stdout.to_string(),
+        (true, false) => stderr.to_string(),
+        (false, false) => format!("{stdout}\n{stderr}"),
+    }
+}
+
+// AppImage WebKit loads the bundled libwayland-client while EGL comes from
+// the host Mesa stack. On Wayland sessions such as Hyprland with i915 that
+// mismatch aborts WebKitWebProcess with
+// `Could not create default EGL display: EGL_BAD_PARAMETER` even when
+// WEBKIT_DISABLE_DMABUF_RENDERER=1. Prepend the host client on LD_PRELOAD
+// so the content process resolves it first. APPIMAGE or APPDIR marks an
+// official AppImage or a Homebrew cask that launches one.
+// AGENTSVIEW_NO_WAYLAND_PRELOAD leaves the environment unchanged. Dev
+// builds and distro packages set neither root variable.
+#[cfg(target_os = "linux")]
+fn apply_appimage_host_wayland_preload() {
+    let appimage = std::env::var("APPIMAGE").ok();
+    let appdir = std::env::var("APPDIR").ok();
+    let disabled = std::env::var_os("AGENTSVIEW_NO_WAYLAND_PRELOAD").is_some();
+    if disabled || (appimage.is_none() && appdir.is_none()) {
+        return;
+    }
+
+    let Some(process_elf) = read_elf_identity(Path::new("/proc/self/exe")) else {
+        return;
+    };
+    let existing_preload = std::env::var("LD_PRELOAD").ok();
+    let listing = read_ldconfig_library_listing();
+    let ordered = ordered_wayland_client_paths(
+        listing.as_str(),
+        std::env::consts::ARCH,
+        HOST_WAYLAND_CLIENT_FALLBACKS,
+    );
+    let existing_candidate_paths = loadable_wayland_client_paths(&ordered, process_elf);
+    let Some(preload) = appimage_host_wayland_preload(
+        appimage.as_deref(),
+        appdir.as_deref(),
+        existing_preload.as_deref(),
+        disabled,
+        existing_candidate_paths.as_slice(),
+    ) else {
+        return;
+    };
+    let library = match preload.split_once(' ') {
+        Some((library, _)) => library,
+        None => preload.as_str(),
+    };
+    eprintln!("[agentsview] using host libwayland-client for AppImage WebKit: {library}");
+    std::env::set_var("LD_PRELOAD", preload);
+}
+
+#[cfg(target_os = "linux")]
+fn read_ldconfig_library_listing() -> String {
+    let output = match std::process::Command::new("ldconfig").arg("-p").output() {
+        Ok(output) => output,
+        Err(_) => return String::new(),
+    };
+    if !output.status.success() {
+        return String::new();
+    }
+    String::from_utf8(output.stdout).unwrap_or_default()
+}
+
+// The loader ignores a preload whose ELF class, byte order, or machine
+// differs from the process, so a 32-bit /usr/lib copy on a lib64 host
+// must not win over the 64-bit one.
+#[cfg(any(test, target_os = "linux"))]
+fn loadable_wayland_client_paths(ordered: &[String], process_elf: [u8; 4]) -> Vec<&str> {
+    ordered
+        .iter()
+        .map(String::as_str)
+        .filter(|path| read_elf_identity(Path::new(*path)) == Some(process_elf))
+        .collect()
+}
+
+// EI_CLASS, EI_DATA, and the two e_machine bytes from an ELF header.
+#[cfg(any(test, target_os = "linux"))]
+fn read_elf_identity(path: &Path) -> Option<[u8; 4]> {
+    let mut header = [0u8; 20];
+    fs::File::open(path).ok()?.read_exact(&mut header).ok()?;
+    if !header.starts_with(b"\x7fELF") {
+        return None;
+    }
+    Some([header[4], header[5], header[18], header[19]])
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn ordered_wayland_client_paths(
+    ldconfig_output: &str,
+    arch: &str,
+    fallbacks: &[&str],
+) -> Vec<String> {
+    let mut preferred = Vec::new();
+    let mut other = Vec::new();
+    for line in ldconfig_output.lines() {
+        let Some((tag, path)) = parse_ldconfig_wayland_client_line(line) else {
+            continue;
+        };
+        if ldconfig_tag_matches_arch(arch, tag) {
+            preferred.push(path);
+        } else {
+            other.push(path);
+        }
+    }
+
+    let mut ordered = Vec::new();
+    for path in preferred
+        .into_iter()
+        .chain(other)
+        .chain(fallbacks.iter().copied())
+    {
+        if path.is_empty() || path.chars().any(char::is_whitespace) {
+            continue;
+        }
+        if ordered.iter().any(|existing| existing == path) {
+            continue;
+        }
+        ordered.push(path.to_string());
+    }
+    ordered
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn parse_ldconfig_wayland_client_line(line: &str) -> Option<(&str, &str)> {
+    let line = line.trim();
+    let rest = line.strip_prefix("libwayland-client.so.0")?;
+    match rest.chars().next() {
+        Some('(') => {}
+        Some(ch) if ch.is_whitespace() => {}
+        _ => return None,
+    }
+    let rest = rest.trim_start();
+    let (tag, rest) = if let Some(after_open) = rest.strip_prefix('(') {
+        let (tag, after_tag) = after_open.split_once(')')?;
+        (tag, after_tag.trim_start())
+    } else {
+        ("", rest)
+    };
+    let path = rest.strip_prefix("=>")?.trim();
+    if path.is_empty() {
+        return None;
+    }
+    Some((tag, path))
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn ldconfig_tag_matches_arch(arch: &str, tag: &str) -> bool {
+    match arch {
+        "x86_64" => tag.split(',').any(|part| part.trim() == "x86-64"),
+        "aarch64" => tag.to_ascii_lowercase().contains("aarch64"),
+        _ => false,
+    }
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn appimage_host_wayland_preload(
+    appimage: Option<&str>,
+    appdir: Option<&str>,
+    existing_preload: Option<&str>,
+    disabled: bool,
+    existing_candidate_paths: &[&str],
+) -> Option<String> {
+    if disabled || (appimage.is_none() && appdir.is_none()) {
+        return None;
+    }
+    if existing_preload.is_some_and(|preload| preload.contains("libwayland-client")) {
+        return None;
+    }
+    let path = existing_candidate_paths
+        .iter()
+        .copied()
+        .find(|path| host_wayland_candidate_allowed(path, appdir))?;
+    Some(merge_host_wayland_preload(path, existing_preload))
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn host_wayland_candidate_allowed(path: &str, appdir: Option<&str>) -> bool {
+    if !path.starts_with('/') || path.chars().any(char::is_whitespace) {
+        return false;
+    }
+    match appdir {
+        Some(appdir) if !appdir.is_empty() => !path_is_inside_appdir(path, appdir),
+        _ => true,
+    }
+}
+
+// Whole path components, so APPDIR=/tmp/app keeps /tmp/app-extra eligible.
+#[cfg(any(test, target_os = "linux"))]
+fn path_is_inside_appdir(path: &str, appdir: &str) -> bool {
+    let dir_parts: Vec<&str> = appdir.split('/').filter(|part| !part.is_empty()).collect();
+    if dir_parts.is_empty() {
+        return false;
+    }
+    let path_parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    path_parts.starts_with(dir_parts.as_slice())
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn merge_host_wayland_preload(path: &str, existing_preload: Option<&str>) -> String {
+    match existing_preload
+        .map(str::trim)
+        .filter(|preload| !preload.is_empty())
+    {
+        Some(preload) => format!("{path} {preload}"),
+        None => path.to_string(),
+    }
+}
+
+/// Fall back to the system browser when the Linux WebView fails to render.
+///
+/// On some Linux GPU/driver/compositor combinations (e.g. Wayland + AMD,
+/// headless, certain NVIDIA setups) WebKitGTK cannot initialize EGL and
+/// aborts the web content process with
+/// `Could not create default EGL display: EGL_BAD_PARAMETER. Aborting...`.
+/// The Tauri UI process survives, so the user is left staring at a blank
+/// window even though the backend is up and the web UI is fully usable.
+///
+/// We reuse the same signal `recover_webview` relies on: when the content
+/// process is gone, `eval` returns `Err`. This check is purely additive —
+/// if the WebView is healthy (`eval` succeeds) it does nothing, so it can
+/// never disrupt the working path. When the WebView is dead we open the
+/// backend URL in the system browser, hide the blank window, and tell the
+/// user where the UI went. If no browser can be opened the window stays
+/// visible and the dialog shows the URL to open manually.
+#[cfg(target_os = "linux")]
+fn spawn_webview_health_fallback(
+    window: WebviewWindow,
+    host: BackendHost,
+    port: u16,
+    generation: u64,
+) {
+    // One-shot guard so focus/navigation retries can't open many tabs.
+    static FALLBACK_TRIGGERED: AtomicBool = AtomicBool::new(false);
+
+    thread::spawn(move || {
+        thread::sleep(WEBVIEW_HEALTH_PROBE_DELAY);
+
+        // A trivial eval round-trips through the web content process; an
+        // error means it is gone (e.g. the EGL_BAD_PARAMETER abort above).
+        if window.eval("void 0").is_ok() {
+            return;
+        }
+        let state = window.app_handle().state::<SidecarState>();
+        with_current_launch(&state, generation, || {
+            if FALLBACK_TRIGGERED.swap(true, Ordering::SeqCst) {
+                return;
+            }
+
+            let url = format!("http://{}:{port}", host.web_host());
+            eprintln!(
+                "[agentsview] WebView content process is not responding \
+                 (likely a GPU/EGL initialization failure); opening {url} \
+                 in the system browser instead"
+            );
+
+            let handle = window.app_handle().clone();
+            match handle.opener().open_url(url.as_str(), Option::<&str>::None) {
+                Ok(()) => {
+                    let _ = window.hide();
+                    handle
+                        .dialog()
+                        .message(format!(
+                            "AgentsView could not render its window, likely due to a \
+                             graphics driver (EGL) issue. It has been opened in your \
+                             web browser instead:\n\n{url}"
+                        ))
+                        .title("AgentsView")
+                        .show(|_| {});
+                }
+                Err(err) => {
+                    eprintln!("[agentsview] failed to open system browser fallback: {err}");
+                    // Keep the window up so the app stays visible and quittable.
+                    handle
+                        .dialog()
+                        .message(format!(
+                            "AgentsView could not render its window, likely due to a \
+                             graphics driver (EGL) issue, and no web browser could be \
+                             opened automatically. Open this URL in a browser to use \
+                             AgentsView:\n\n{url}"
+                        ))
+                        .title("AgentsView")
+                        .show(|_| {});
+                }
+            }
+        });
+    });
+}
+
+/// Extracts the latest human-readable status text from a stdout
+/// chunk during startup. The Go server uses `\r` for in-place
+/// progress updates and `\n` for line breaks.
+fn extract_startup_status(chunk: &str) -> Option<String> {
+    // Split on \r or \n, take the last non-empty segment.
+    let segment = chunk
+        .rsplit(['\r', '\n'])
+        .map(|s| s.trim())
+        .find(|s| !s.is_empty())?;
+    // Only forward lines that look like sync output, not
+    // arbitrary log noise.
+    if segment.contains("sessions")
+        || segment.contains("ync")
+        || segment.contains("atching")
+        || segment.contains("search index")
+        || segment.contains("database")
+    {
+        return Some(segment.to_string());
+    }
+    None
+}
+
+fn parse_listening_endpoint(line: &str) -> Option<BackendEndpoint> {
+    let markers = ["listening at ", "running at ", "backend at "];
+    let endpoint = markers
+        .iter()
+        .find_map(|marker| line.split_once(marker).map(|(_, endpoint)| endpoint))?
+        .split_ascii_whitespace()
+        .next()?;
+    let host_prefix = format!("http://{HOST}:");
+    let (host, after) = if let Some(after) = endpoint.strip_prefix(host_prefix.as_str()) {
+        (BackendHost::Ipv4, after)
+    } else if let Some(after) = endpoint.strip_prefix("http://localhost:") {
+        (BackendHost::Localhost, after)
+    } else if let Some(after) = endpoint.strip_prefix("http://[::1]:") {
+        (BackendHost::Ipv6, after)
+    } else {
+        return None;
+    };
+    let digits: String = after.chars().take_while(|ch| ch.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    Some(BackendEndpoint::new(host, digits.parse::<u16>().ok()?))
+}
+
+#[cfg(test)]
+fn parse_listening_port(line: &str) -> Option<u16> {
+    parse_listening_endpoint(line).map(|endpoint| endpoint.port)
+}
+
+fn parse_listening_endpoint_from_stdout_buffer(
+    buffer: &mut String,
+    chunk: &str,
+) -> Option<BackendEndpoint> {
+    buffer.push_str(chunk);
+
+    let mut consumed = 0;
+    while let Some(rel_idx) = buffer[consumed..].find('\n') {
+        let end = consumed + rel_idx;
+        let line = buffer[consumed..end].trim_end_matches('\r');
+        if let Some(endpoint) = parse_listening_endpoint(line) {
+            return Some(endpoint);
+        }
+        consumed = end + 1;
+    }
+
+    if consumed > 0 {
+        buffer.drain(..consumed);
+    }
+
+    None
+}
+
+#[cfg(test)]
+fn parse_listening_port_from_stdout_buffer(buffer: &mut String, chunk: &str) -> Option<u16> {
+    parse_listening_endpoint_from_stdout_buffer(buffer, chunk).map(|endpoint| endpoint.port)
+}
+
+fn parse_listening_endpoint_from_stdout_tail(buffer: &str) -> Option<BackendEndpoint> {
+    for line in buffer.lines().rev() {
+        if let Some(endpoint) = parse_listening_endpoint(line.trim_end_matches('\r')) {
+            return Some(endpoint);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+fn parse_listening_port_from_stdout_tail(buffer: &str) -> Option<u16> {
+    parse_listening_endpoint_from_stdout_tail(buffer).map(|endpoint| endpoint.port)
+}
+
+fn status_output_is_read_only(buffer: &str) -> bool {
+    buffer.lines().any(|line| {
+        let line = line.trim();
+        line.starts_with("mode:") && line.contains("read-only")
+    })
+}
+
+fn parse_writable_listening_endpoint_from_status(buffer: &str) -> Option<BackendEndpoint> {
+    if status_output_is_read_only(buffer) {
+        return None;
+    }
+    parse_listening_endpoint_from_stdout_tail(buffer)
+}
+
+#[cfg(test)]
+fn parse_writable_listening_port_from_status(buffer: &str) -> Option<u16> {
+    parse_writable_listening_endpoint_from_status(buffer).map(|endpoint| endpoint.port)
+}
+
+fn setup_menu(app: &mut App) -> Result<(), DynError> {
+    let about = MenuItemBuilder::with_id(ABOUT_MENU_ID, "About AgentsView").build(app)?;
+    let open_logs_folder =
+        MenuItemBuilder::with_id(OPEN_LOGS_FOLDER_MENU_ID, "Open Logs Folder").build(app)?;
+    let check_updates =
+        MenuItemBuilder::with_id(CHECK_UPDATES_MENU_ID, "Check for Updates...").build(app)?;
+
+    #[cfg(target_os = "macos")]
+    let app_submenu = SubmenuBuilder::new(app, "AgentsView")
+        .item(&about)
+        .separator()
+        .item(&open_logs_folder)
+        .item(&check_updates)
+        .separator()
+        .item(&PredefinedMenuItem::services(app, None)?)
+        .separator()
+        .item(&PredefinedMenuItem::hide(app, None)?)
+        .item(&PredefinedMenuItem::hide_others(app, None)?)
+        .item(&PredefinedMenuItem::show_all(app, None)?)
+        .separator()
+        .item(&PredefinedMenuItem::quit(app, None)?)
+        .build()?;
+
+    #[cfg(not(target_os = "macos"))]
+    let file_submenu = SubmenuBuilder::new(app, "File")
+        .item(&about)
+        .separator()
+        .item(&open_logs_folder)
+        .item(&check_updates)
+        .separator()
+        .item(&PredefinedMenuItem::close_window(app, None)?)
+        .separator()
+        .item(&PredefinedMenuItem::quit(app, None)?)
+        .build()?;
+
+    #[cfg(target_os = "macos")]
+    let file_submenu = SubmenuBuilder::new(app, "File")
+        .item(&PredefinedMenuItem::close_window(app, None)?)
+        .build()?;
+
+    let edit_submenu = SubmenuBuilder::new(app, "Edit")
+        .item(&PredefinedMenuItem::undo(app, None)?)
+        .item(&PredefinedMenuItem::redo(app, None)?)
+        .separator()
+        .item(&PredefinedMenuItem::cut(app, None)?)
+        .item(&PredefinedMenuItem::copy(app, None)?)
+        .item(&PredefinedMenuItem::paste(app, None)?)
+        .item(&PredefinedMenuItem::select_all(app, None)?)
+        .build()?;
+
+    #[cfg(target_os = "macos")]
+    let window_submenu = SubmenuBuilder::with_id(app, WINDOW_SUBMENU_ID, "Window")
+        .item(&PredefinedMenuItem::minimize(app, None)?)
+        .item(&PredefinedMenuItem::maximize(app, None)?)
+        .build()?;
+
+    let documentation =
+        MenuItemBuilder::with_id(DOCUMENTATION_MENU_ID, "Documentation").build(app)?;
+    let help_submenu = SubmenuBuilder::with_id(app, HELP_SUBMENU_ID, "Help")
+        .item(&documentation)
+        .build()?;
+
+    #[cfg(target_os = "macos")]
+    let menu = MenuBuilder::new(app)
+        .item(&app_submenu)
+        .item(&file_submenu)
+        .item(&edit_submenu)
+        .item(&window_submenu)
+        .item(&help_submenu)
+        .build()?;
+
+    #[cfg(not(target_os = "macos"))]
+    let menu = MenuBuilder::new(app)
+        .item(&file_submenu)
+        .item(&edit_submenu)
+        .item(&help_submenu)
+        .build()?;
+    app.set_menu(menu)?;
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn setup_status_item(app: &mut App) -> Result<(), DynError> {
+    let show = MenuItemBuilder::with_id(SHOW_MAIN_WINDOW_MENU_ID, "Show AgentsView").build(app)?;
+    let open_logs =
+        MenuItemBuilder::with_id(OPEN_LOGS_FOLDER_MENU_ID, "Open Logs Folder").build(app)?;
+    let check_updates =
+        MenuItemBuilder::with_id(CHECK_UPDATES_MENU_ID, "Check for Updates...").build(app)?;
+    let quit =
+        MenuItemBuilder::with_id(QUIT_FROM_STATUS_ITEM_MENU_ID, "Quit AgentsView").build(app)?;
+    #[cfg(target_os = "macos")]
+    let hide_from_dock = CheckMenuItemBuilder::with_id(
+        DOCK_MODE_MENU_ID,
+        "Hide from Dock and Cmd-Tab when window closed",
+    )
+    .checked(dock_mode_checked(app))
+    .build(app)?;
+
+    #[cfg(target_os = "macos")]
+    {
+        let item = hide_from_dock.clone();
+        *app.state::<DockModeCheckItem>()
+            .0
+            .lock()
+            .expect("lock dock mode item") = Some(item);
+    }
+
+    let menu = MenuBuilder::new(app)
+        .item(&show)
+        .separator()
+        .item(&open_logs)
+        .item(&check_updates)
+        .separator();
+
+    #[cfg(target_os = "macos")]
+    let menu = menu.item(&hide_from_dock).separator();
+
+    let menu = menu.item(&quit).build()?;
+
+    let builder = TrayIconBuilder::with_id("agentsview")
+        .tooltip("AgentsView")
+        .menu(&menu);
+
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .icon(macos_status_item_icon()?)
+        .icon_as_template(true);
+
+    #[cfg(target_os = "windows")]
+    let builder = builder.icon(
+        app.default_window_icon()
+            .cloned()
+            .ok_or_else(|| io::Error::other("default window icon is unavailable"))?,
+    );
+
+    builder.build(app)?;
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn setup_close_to_tray_with<T>(
+    target: &mut T,
+    setup_status_item: impl FnOnce(&mut T) -> Result<(), DynError>,
+    setup_window_lifecycle: impl FnOnce(&T) -> Result<(), DynError>,
+) -> Result<(), DynError> {
+    setup_status_item(target)?;
+    setup_window_lifecycle(target)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn setup_window_lifecycle(app: &App) -> Result<(), DynError> {
+    let window = main_window(app)?;
+    let close_window = window.clone();
+    #[cfg(target_os = "macos")]
+    let dock_presence_handle = app.handle().clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            hide_main_window_on_close(&close_window, || api.prevent_close());
+            #[cfg(target_os = "macos")]
+            sync_dock_presence(&dock_presence_handle, false);
+        }
+    });
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_status_item_icon() -> Result<tauri::image::Image<'static>, DynError> {
+    Ok(tauri::image::Image::from_bytes(include_bytes!(
+        "../icons/trayTemplate.png"
+    ))?)
+}
+
+fn open_logs_folder(handle: &AppHandle) {
+    let log_dir = match ensure_desktop_log_dir(handle) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("[agentsview] failed to resolve logs folder: {err}");
+            return;
+        }
+    };
+
+    if let Err(err) = handle
+        .opener()
+        .open_path(log_dir.to_string_lossy().into_owned(), None::<&str>)
+    {
+        let log_path = desktop_log_file_path(handle).ok();
+        let err_text = err.to_string();
+        let message = open_logs_folder_failure_message(&log_dir, err_text.as_str());
+        if let Some(path) = log_path {
+            if let Err(log_err) =
+                append_open_logs_folder_failure_at_path(&path, &log_dir, err_text.as_str())
+            {
+                eprintln!("[agentsview] failed to append logs-folder failure log: {log_err}");
+            }
+        }
+        eprintln!("[agentsview] {message}");
+    }
+}
+
+fn desktop_log_file_path(handle: &AppHandle) -> io::Result<PathBuf> {
+    Ok(ensure_desktop_log_dir(handle)?.join(DESKTOP_LOG_FILE_NAME))
+}
+
+fn ensure_desktop_log_dir(handle: &AppHandle) -> io::Result<PathBuf> {
+    let log_dir = handle
+        .path()
+        .app_log_dir()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    fs::create_dir_all(&log_dir)?;
+    tighten_desktop_log_dir_permissions(&log_dir)?;
+    Ok(log_dir)
+}
+
+fn spawn_sidecar_log_writer(handle: AppHandle) -> SyncSender<SidecarLogRecord> {
+    let (log_sender, log_receiver) = sync_channel(DESKTOP_LOG_QUEUE_CAPACITY);
+    thread::spawn(move || drain_sidecar_log_records(handle, log_receiver));
+    log_sender
+}
+
+fn drain_sidecar_log_records(handle: AppHandle, log_receiver: StdReceiver<SidecarLogRecord>) {
+    while let Ok(record) = log_receiver.recv() {
+        let path = match desktop_log_file_path(&handle) {
+            Ok(path) => path,
+            Err(err) => {
+                eprintln!("[agentsview] failed to resolve sidecar event log path: {err}");
+                continue;
+            }
+        };
+        if let Err(err) =
+            append_sidecar_log_record_at_path(&path, record.label, record.record.as_str())
+        {
+            eprintln!("[agentsview] failed to append sidecar event log: {err}");
+        }
+    }
+}
+
+fn prepare_sidecar_stdout_update(
+    log_sender: &SyncSender<SidecarLogRecord>,
+    stdout_buffer: &mut String,
+    stdout_log_buffer: &mut String,
+    chunk_bytes: &[u8],
+) -> SidecarStdoutUpdate {
+    let chunk = String::from_utf8_lossy(chunk_bytes).into_owned();
+    let redacted_chunk =
+        queue_redacted_sidecar_chunk(log_sender, "stdout", stdout_log_buffer, chunk.as_str());
+    SidecarStdoutUpdate {
+        status: extract_startup_status(chunk.as_ref()),
+        endpoint: parse_listening_endpoint_from_stdout_buffer(stdout_buffer, chunk.as_ref()),
+        chunk,
+        redacted_chunk,
+    }
+}
+
+fn emit_redacted_sidecar_stdout_chunk(redacted_chunk: &str) {
+    emit_sidecar_console_chunk("agentsview", redacted_chunk);
+}
+
+fn emit_redacted_sidecar_stderr_chunk(redacted_chunk: &str) {
+    emit_sidecar_console_chunk("agentsview:stderr", redacted_chunk);
+}
+
+fn emit_sidecar_console_chunk(prefix: &str, redacted_chunk: &str) {
+    for line in redacted_chunk.lines().filter(|line| !line.is_empty()) {
+        eprintln!("[{prefix}] {line}");
+    }
+}
+
+fn queue_redacted_sidecar_chunk(
+    log_sender: &SyncSender<SidecarLogRecord>,
+    label: &'static str,
+    log_buffer: &mut String,
+    chunk: &str,
+) -> String {
+    let redacted_chunk = drain_redacted_sidecar_log_lines(log_buffer, chunk);
+    if !redacted_chunk.trim().is_empty() {
+        try_send_sidecar_log_record(
+            log_sender,
+            SidecarLogRecord::new(label, redacted_chunk.clone()),
+        );
+    }
+    redacted_chunk
+}
+
+fn drain_redacted_sidecar_log_lines(log_buffer: &mut String, chunk: &str) -> String {
+    log_buffer.push_str(chunk);
+
+    let mut redacted_lines = Vec::new();
+    let mut consumed = 0;
+    let mut chars = log_buffer.char_indices().peekable();
+    while let Some((idx, ch)) = chars.next() {
+        if ch != '\r' && ch != '\n' {
+            continue;
+        }
+        let line = &log_buffer[consumed..idx];
+        if !line.is_empty() {
+            redacted_lines.push(redact_sidecar_log_line(line));
+        }
+        consumed = idx + ch.len_utf8();
+        if ch == '\r' && matches!(chars.peek(), Some((_, '\n'))) {
+            let (next_idx, next_ch) = chars.next().expect("peeked newline");
+            consumed = next_idx + next_ch.len_utf8();
+        }
+    }
+
+    if consumed > 0 {
+        log_buffer.drain(..consumed);
+    }
+
+    redacted_lines.join("\n")
+}
+
+fn flush_pending_sidecar_log_record(
+    log_sender: &SyncSender<SidecarLogRecord>,
+    label: &'static str,
+    log_buffer: &mut String,
+) -> String {
+    if log_buffer.trim().is_empty() {
+        log_buffer.clear();
+        return String::new();
+    }
+    let pending = std::mem::take(log_buffer);
+    let redacted = pending
+        .split(['\r', '\n'])
+        .filter(|line| !line.is_empty())
+        .map(redact_sidecar_log_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
+    if !redacted.is_empty() {
+        try_send_sidecar_log_record(log_sender, SidecarLogRecord::new(label, redacted.clone()));
+    }
+    redacted
+}
+
+fn redact_sidecar_log_line(line: &str) -> String {
+    let mut redacted = line.to_string();
+    for prefix in [
+        "Authorization: Bearer ",
+        "authorization: Bearer ",
+        "Bearer ",
+        "bearer ",
+        "Token: ",
+        "token: ",
+        "--auth-token=",
+        "--auth-token ",
+        "auth_token=",
+        "token=",
+    ] {
+        redacted = redact_value_after_prefix(redacted, prefix);
+    }
+    redacted
+}
+
+fn redact_value_after_prefix(mut text: String, prefix: &str) -> String {
+    let mut search_from = 0;
+    while let Some(relative_start) = text[search_from..].find(prefix) {
+        let value_start = search_from + relative_start + prefix.len();
+        let value_end = value_start
+            + text[value_start..]
+                .find(is_sensitive_value_terminator)
+                .unwrap_or_else(|| text.len() - value_start);
+        if value_end > value_start {
+            text.replace_range(value_start..value_end, "<redacted>");
+            search_from = value_start + "<redacted>".len();
+        } else {
+            search_from = value_start;
+        }
+    }
+    text
+}
+
+fn is_sensitive_value_terminator(ch: char) -> bool {
+    ch.is_whitespace() || matches!(ch, '"' | '\'' | ',' | '&' | ')' | ']' | '}')
+}
+
+fn queue_sidecar_event_log_record(log_sender: &SyncSender<SidecarLogRecord>, event: &CommandEvent) {
+    if let Some(record) = sidecar_log_record_from_event(event) {
+        try_send_sidecar_log_record(log_sender, record);
+    }
+}
+
+fn sidecar_log_record_from_event(event: &CommandEvent) -> Option<SidecarLogRecord> {
+    match event {
+        CommandEvent::Stdout(_) => None,
+        CommandEvent::Stderr(line_bytes) => Some(SidecarLogRecord::new(
+            "stderr",
+            String::from_utf8_lossy(line_bytes)
+                .split(['\r', '\n'])
+                .filter(|line| !line.is_empty())
+                .map(redact_sidecar_log_line)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )),
+        CommandEvent::Terminated(payload) => Some(SidecarLogRecord::new(
+            "terminated",
+            format!(
+                "sidecar terminated (code: {:?}, signal: {:?})",
+                payload.code, payload.signal
+            ),
+        )),
+        CommandEvent::Error(err) => Some(SidecarLogRecord::new(
+            "error",
+            format!("sidecar command error: {err}"),
+        )),
+        _ => None,
+    }
+}
+
+fn try_send_sidecar_log_record(
+    log_sender: &SyncSender<SidecarLogRecord>,
+    record: SidecarLogRecord,
+) {
+    match log_sender.try_send(record) {
+        Ok(()) => {}
+        Err(TrySendError::Full(record)) => {
+            eprintln!(
+                "[agentsview] dropping sidecar {} log because the log queue is full",
+                record.label
+            );
+        }
+        Err(TrySendError::Disconnected(record)) => {
+            eprintln!(
+                "[agentsview] dropping sidecar {} log because the log worker is unavailable",
+                record.label
+            );
+        }
+    }
+}
+
+fn queue_startup_log_record(
+    log_sender: &SyncSender<SidecarLogRecord>,
+    generation: u64,
+    message: &str,
+) {
+    try_send_sidecar_log_record(
+        log_sender,
+        SidecarLogRecord::new("startup", format!("launch {generation}: {message}")),
+    );
+}
+
+fn wait_for_selected_backend(
+    log_sender: &SyncSender<SidecarLogRecord>,
+    generation: u64,
+    source: &str,
+    endpoint: BackendEndpoint,
+    timeout: Duration,
+) -> Option<BackendHost> {
+    let port = endpoint.port;
+    queue_startup_log_record(
+        log_sender,
+        generation,
+        format!("selected port {port} from {source}").as_str(),
+    );
+    let ready = wait_for_server_at(endpoint, timeout).then_some(endpoint.host);
+    if let Some(host) = ready {
+        queue_startup_log_record(
+            log_sender,
+            generation,
+            format!("port {port} ready on {}", host.web_host()).as_str(),
+        );
+    } else {
+        queue_startup_log_record(
+            log_sender,
+            generation,
+            format!("port {port} did not respond within {timeout:?}").as_str(),
+        );
+    }
+    ready
+}
+
+#[cfg(test)]
+fn append_sidecar_event_record_at_path(path: &Path, event: &CommandEvent) -> io::Result<()> {
+    match event {
+        CommandEvent::Stdout(chunk_bytes) => append_sidecar_log_record_at_path(
+            path,
+            "stdout",
+            String::from_utf8_lossy(chunk_bytes).as_ref(),
+        ),
+        CommandEvent::Stderr(line_bytes) => append_sidecar_log_record_at_path(
+            path,
+            "stderr",
+            String::from_utf8_lossy(line_bytes).as_ref(),
+        ),
+        CommandEvent::Terminated(payload) => append_sidecar_log_record_at_path(
+            path,
+            "terminated",
+            format!(
+                "sidecar terminated (code: {:?}, signal: {:?})",
+                payload.code, payload.signal
+            )
+            .as_str(),
+        ),
+        CommandEvent::Error(err) => append_sidecar_log_record_at_path(
+            path,
+            "error",
+            format!("sidecar command error: {err}").as_str(),
+        ),
+        _ => Ok(()),
+    }
+}
+
+fn append_sidecar_log_record_at_path(path: &Path, label: &str, record: &str) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+        tighten_desktop_log_dir_permissions(parent)?;
+    }
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    tighten_desktop_log_file_permissions(&file)?;
+    write_labeled_log_record(&mut file, label, record)
+}
+
+#[cfg(unix)]
+fn tighten_desktop_log_dir_permissions(path: &Path) -> io::Result<()> {
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(unix))]
+fn tighten_desktop_log_dir_permissions(_path: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn tighten_desktop_log_file_permissions(file: &fs::File) -> io::Result<()> {
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn tighten_desktop_log_file_permissions(_file: &fs::File) -> io::Result<()> {
+    Ok(())
+}
+
+fn write_labeled_log_record(file: &mut fs::File, label: &str, record: &str) -> io::Result<()> {
+    let trimmed = record.trim_end_matches(['\r', '\n']);
+    if trimmed.is_empty() {
+        writeln!(file, "[{label}]")?;
+        return Ok(());
+    }
+    for line in trimmed.split(['\r', '\n']).filter(|line| !line.is_empty()) {
+        writeln!(file, "[{label}] {line}")?;
+    }
+    Ok(())
+}
+
+fn open_logs_folder_failure_message(log_dir: &Path, err: &str) -> String {
+    format!("failed to open logs folder {}: {err}", log_dir.display())
+}
+
+fn append_open_logs_folder_failure_at_path(
+    path: &Path,
+    log_dir: &Path,
+    err: &str,
+) -> io::Result<()> {
+    append_sidecar_log_record_at_path(
+        path,
+        "menu",
+        open_logs_folder_failure_message(log_dir, err).as_str(),
+    )
+}
+
+/// Restore input focus to the main webview after a native GTK dialog
+/// is dismissed. On Linux/WebKitGTK, native dialogs can leave the
+/// webview in a frozen state where it renders but does not process
+/// input events.
+fn restore_webview_focus(handle: &AppHandle) {
+    let handle = handle.clone();
+    // Delay focus restoration so the native GTK dialog has time to
+    // fully close and release window focus. Without this, set_focus()
+    // fires while the dialog still owns focus and the webview stays
+    // unresponsive.
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        if let Some(window) = handle.get_webview_window("main") {
+            let _ = window.set_focus();
+        }
+    });
+}
+
+static UPDATE_CHECK_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+// Guard that clears UPDATE_CHECK_ACTIVE on drop, ensuring the
+// flag is reset regardless of which return path is taken.
+struct UpdateGuard;
+
+impl Drop for UpdateGuard {
+    fn drop(&mut self) {
+        UPDATE_CHECK_ACTIVE.store(false, Ordering::SeqCst);
+    }
+}
+
+fn schedule_auto_update_check(handle: AppHandle) {
+    let disabled = std::env::var("AGENTSVIEW_DESKTOP_AUTOUPDATE")
+        .map(|v| v == "0")
+        .unwrap_or(false);
+    if disabled {
+        return;
+    }
+
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        check_for_updates(&handle, true).await;
+    });
+}
+
+async fn check_for_updates(handle: &AppHandle, silent: bool) {
+    if UPDATE_CHECK_ACTIVE
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        if !silent {
+            let h = handle.clone();
+            handle
+                .dialog()
+                .message("An update check is already in progress.")
+                .title("Update Check")
+                .show(move |_| restore_webview_focus(&h));
+        }
+        return;
+    }
+    let _guard = UpdateGuard;
+
+    let updater = match handle.updater() {
+        Ok(updater) => updater,
+        Err(err) => {
+            eprintln!("[agentsview] updater unavailable: {err}");
+            if !silent {
+                let h = handle.clone();
+                handle
+                    .dialog()
+                    .message("Could not check for updates. The updater is not configured.")
+                    .title("Update Check")
+                    .show(move |_| restore_webview_focus(&h));
+            }
+            return;
+        }
+    };
+
+    let update = match updater.check().await {
+        Ok(update) => update,
+        Err(err) => {
+            eprintln!("[agentsview] update check failed: {err}");
+            if !silent {
+                let h = handle.clone();
+                handle
+                    .dialog()
+                    .message("Could not check for updates. Please try again later.")
+                    .title("Update Check")
+                    .show(move |_| restore_webview_focus(&h));
+            }
+            return;
+        }
+    };
+
+    let Some(update) = update else {
+        if !silent {
+            let h = handle.clone();
+            handle
+                .dialog()
+                .message("You're running the latest version.")
+                .title("No Updates Available")
+                .show(move |_| restore_webview_focus(&h));
+        }
+        return;
+    };
+
+    let version = update.version.clone();
+    let confirmed = dialog_confirm(
+        handle,
+        "Update Available",
+        &format!(
+            "Version {version} is available. \
+             Would you like to download and install it?"
+        ),
+    )
+    .await;
+
+    if !confirmed {
+        return;
+    }
+
+    let update_bytes = match update.download(|_, _| {}, || {}).await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            eprintln!("[agentsview] update download failed: {err}");
+            let h = handle.clone();
+            handle
+                .dialog()
+                .message(
+                    "Failed to download the update. \
+                     Please try downloading manually from the releases page.",
+                )
+                .title("Update Failed")
+                .show(move |_| restore_webview_focus(&h));
+            return;
+        }
+    };
+
+    let backend_stopped =
+        Some(stop_backend_and_wait(handle.clone(), UPDATE_SIDECAR_STOP_TIMEOUT).await);
+    let backend_stopped_for_update = backend_stopped == Some(true);
+
+    if let Err(err) = install_downloaded_update(
+        update_bytes,
+        backend_stopped,
+        || restart_backend_after_update(handle.clone()),
+        |bytes| update.install(bytes),
+    ) {
+        eprintln!("[agentsview] update install failed: {err}");
+        let message = match err {
+            InstallDownloadedUpdateError::BackendStopTimedOut => {
+                "The update was downloaded, but the local backend \
+                 could not be stopped in time. Please try again in \
+                 a moment."
+            }
+            InstallDownloadedUpdateError::Install(_) => {
+                "Failed to install the update. \
+                 Please try downloading manually from the releases page."
+            }
+        };
+        let h = handle.clone();
+        handle
+            .dialog()
+            .message(message)
+            .title("Update Failed")
+            .show(move |_| restore_webview_focus(&h));
+        return;
+    }
+
+    let restart = dialog_confirm(
+        handle,
+        "Update Complete",
+        "Update installed. Restart now to apply?",
+    )
+    .await;
+
+    let emit_handle = handle.clone();
+    let restart_handle = handle.clone();
+    let backend_handle = handle.clone();
+    finish_successful_update(
+        backend_stopped_for_update,
+        restart,
+        || {
+            let _ = emit_handle.emit("restart", ());
+        },
+        || restart_handle.restart(),
+        || restart_backend_after_update(backend_handle),
+    );
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum InstallDownloadedUpdateError<E> {
+    BackendStopTimedOut,
+    Install(E),
+}
+
+impl<E: std::fmt::Display> std::fmt::Display for InstallDownloadedUpdateError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BackendStopTimedOut => write!(f, "backend did not stop before update install"),
+            Self::Install(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl<E: std::fmt::Debug + std::fmt::Display> Error for InstallDownloadedUpdateError<E> {}
+
+fn install_downloaded_update<R, I, E>(
+    update_bytes: Vec<u8>,
+    backend_stopped: Option<bool>,
+    restart_backend: R,
+    install: I,
+) -> Result<(), InstallDownloadedUpdateError<E>>
+where
+    R: FnOnce(),
+    I: FnOnce(Vec<u8>) -> Result<(), E>,
+{
+    if backend_stopped == Some(false) {
+        return Err(InstallDownloadedUpdateError::BackendStopTimedOut);
+    }
+    match install(update_bytes) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            if backend_stopped.is_some() {
+                restart_backend();
+            }
+            Err(InstallDownloadedUpdateError::Install(err))
+        }
+    }
+}
+
+fn finish_successful_update<E, A, B>(
+    backend_stopped_for_update: bool,
+    restart_confirmed: bool,
+    emit_restart: E,
+    restart_app: A,
+    restart_backend: B,
+) where
+    E: FnOnce(),
+    A: FnOnce(),
+    B: FnOnce(),
+{
+    if restart_confirmed {
+        emit_restart();
+        restart_app();
+    } else if backend_stopped_for_update {
+        restart_backend();
+    }
+}
+
+async fn dialog_confirm(handle: &AppHandle, title: &str, message: &str) -> bool {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let h = handle.clone();
+    handle
+        .dialog()
+        .message(message)
+        .title(title)
+        .buttons(MessageDialogButtons::OkCancel)
+        .show(move |confirmed| {
+            restore_webview_focus(&h);
+            let _ = tx.send(confirmed);
+        });
+    rx.await.unwrap_or(false)
+}
+
+async fn stop_backend_and_wait(app: AppHandle, timeout: Duration) -> bool {
+    tauri::async_runtime::spawn_blocking(move || stop_backend_inner(&app, Some(timeout)))
+        .await
+        .unwrap_or(false)
+}
+
+fn stop_backend_inner(app: &AppHandle, wait_timeout: Option<Duration>) -> bool {
+    let state = app.state::<SidecarState>();
+    if let Some(timeout) = wait_timeout {
+        let deadline = Instant::now() + timeout;
+        begin_update_stop_wait(&state);
+        let mut waited_generation = None;
+        let detached_endpoint = current_backend_endpoint(app);
+        let active_generation = {
+            let Ok(guard) = state.child.lock() else {
+                end_update_stop_wait(&state);
+                return false;
+            };
+            guard.as_ref().map(|process| {
+                let generation = process.generation;
+                mark_sidecar_stopping(&state, generation);
+                if let Err(err) = request_sidecar_stop(process) {
+                    eprintln!("[agentsview] failed to stop sidecar: {err}");
+                }
+                generation
+            })
+        };
+        let stopped = if let Some(generation) = active_generation {
+            waited_generation = Some(generation);
+            let launcher_stopped = finish_backend_stop_wait(
+                app,
+                &state,
+                generation,
+                wait_for_sidecar_termination(&state, generation, remaining_timeout(deadline)),
+            );
+            launcher_stopped && stop_detached_backend_for_update(app, deadline, detached_endpoint)
+        } else if let Some(generation) = current_stopping_generation(&state) {
+            waited_generation = Some(generation);
+            let launcher_stopped = finish_backend_stop_wait(
+                app,
+                &state,
+                generation,
+                wait_for_sidecar_termination(&state, generation, remaining_timeout(deadline)),
+            );
+            launcher_stopped && stop_detached_backend_for_update(app, deadline, detached_endpoint)
+        } else {
+            stop_detached_backend_for_update(app, deadline, detached_endpoint)
+        };
+        finish_update_stop_wait(&state, stopped);
+        if let Some(generation) = waited_generation {
+            restart_backend_after_stop_timeout_if_terminated(app, &state, generation);
+        }
+        return stopped;
+    }
+
+    let process = {
+        let Ok(mut guard) = state.child.lock() else {
+            return false;
+        };
+        guard.take()
+    };
+    if let Some(process) = process.as_ref() {
+        let _ = mark_sidecar_inactive_if_current(&state, process.generation);
+        clear_restart_after_stop_timeout_if_current(&state, process.generation);
+        clear_stopping_generation_if_current(&state, process.generation);
+    }
+
+    if let Some(process) = process {
+        if let Err(err) = process.child.kill() {
+            eprintln!("[agentsview] failed to stop sidecar: {err}");
+        }
+        clear_sidecar_port(app);
+        return true;
+    }
+    clear_sidecar_port(app);
+    true
+}
+
+fn current_backend_port(app: &AppHandle) -> Option<u16> {
+    sidecar_port(&app.state::<SidecarState>())
+}
+
+fn current_backend_host(app: &AppHandle) -> BackendHost {
+    app.state::<SidecarState>()
+        .backend_host
+        .lock()
+        .map(|guard| *guard)
+        .unwrap_or_default()
+}
+
+fn current_backend_endpoint(app: &AppHandle) -> Option<BackendEndpoint> {
+    current_backend_port(app).map(|port| BackendEndpoint::new(current_backend_host(app), port))
+}
+
+fn sidecar_endpoint(state: &SidecarState) -> Option<BackendEndpoint> {
+    sidecar_port(state).map(|port| {
+        let host = state
+            .backend_host
+            .lock()
+            .map(|guard| *guard)
+            .unwrap_or_default();
+        BackendEndpoint::new(host, port)
+    })
+}
+
+fn sidecar_port(state: &SidecarState) -> Option<u16> {
+    state.backend_port.lock().ok().and_then(|guard| *guard)
+}
+
+fn stop_detached_backend_for_update(
+    app: &AppHandle,
+    deadline: Instant,
+    endpoint: Option<BackendEndpoint>,
+) -> bool {
+    // serve stop exits non-zero while the daemon is still starting up
+    // ("a server is starting; retry once it is ready"), so a single
+    // failed attempt must not abort the update. Retry until the
+    // deadline passes.
+    let result = retry_stop_launcher(
+        deadline,
+        UPDATE_STOP_RETRY_INTERVAL,
+        |remaining| {
+            let (mut rx, child) = match spawn_sidecar_with_args(app, sidecar_stop_args()) {
+                Ok(spawned) => spawned,
+                Err(err) => {
+                    eprintln!("[agentsview] failed to run serve stop before update install: {err}");
+                    return StopLauncherResult::Fatal;
+                }
+            };
+            let result = wait_for_stop_launcher(&mut rx, remaining);
+            if result != StopLauncherResult::Success {
+                let _ = child.kill();
+            }
+            result
+        },
+        thread::sleep,
+    );
+    if result != StopLauncherResult::Success {
+        if endpoint.is_none() {
+            eprintln!(
+                "[agentsview] serve stop did not report success, but no detached daemon port is known"
+            );
+        }
+        if result == StopLauncherResult::RetryableStartup {
+            eprintln!("[agentsview] gave up stopping the backend before update install");
+        }
+        return false;
+    }
+    if let Some(endpoint) = endpoint {
+        if !wait_for_server_stopped(endpoint, remaining_timeout(deadline)) {
+            eprintln!(
+                "[agentsview] timed out waiting for detached daemon to stop before update install"
+            );
+            return false;
+        }
+    }
+    clear_sidecar_port(app);
+    true
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StopLauncherResult {
+    Success,
+    RetryableStartup,
+    Fatal,
+}
+
+fn retry_stop_launcher<A, S>(
+    deadline: Instant,
+    retry_interval: Duration,
+    mut attempt: A,
+    mut sleep: S,
+) -> StopLauncherResult
+where
+    A: FnMut(Duration) -> StopLauncherResult,
+    S: FnMut(Duration),
+{
+    loop {
+        let result = attempt(remaining_timeout(deadline));
+        if result != StopLauncherResult::RetryableStartup {
+            return result;
+        }
+        if remaining_timeout(deadline) <= retry_interval {
+            return result;
+        }
+        sleep(retry_interval);
+    }
+}
+
+fn remaining_timeout(deadline: Instant) -> Duration {
+    deadline
+        .checked_duration_since(Instant::now())
+        .unwrap_or_default()
+}
+
+fn wait_for_stop_launcher(rx: &mut CommandRx, timeout: Duration) -> StopLauncherResult {
+    let deadline = Instant::now() + timeout;
+    let mut output = String::new();
+    loop {
+        match rx.try_recv() {
+            Ok(CommandEvent::Terminated(payload)) => {
+                return classify_stop_launcher_termination(payload.code, &output);
+            }
+            Ok(CommandEvent::Stdout(bytes)) => {
+                let line = String::from_utf8_lossy(&bytes);
+                eprintln!("[agentsview] {}", line.trim_end());
+                output.push_str(&line);
+            }
+            Ok(CommandEvent::Stderr(bytes)) => {
+                let line = String::from_utf8_lossy(&bytes);
+                eprintln!("[agentsview:stderr] {}", line.trim_end());
+                output.push_str(&line);
+            }
+            Ok(CommandEvent::Error(err)) => {
+                eprintln!("[agentsview:error] {err}");
+                return StopLauncherResult::Fatal;
+            }
+            Ok(_) => {}
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                return StopLauncherResult::Fatal;
+            }
+        }
+        if Instant::now() >= deadline {
+            eprintln!("[agentsview] timed out waiting for serve stop before update install");
+            return StopLauncherResult::Fatal;
+        }
+        thread::sleep(READY_POLL_INTERVAL);
+    }
+}
+
+fn classify_stop_launcher_termination(code: Option<i32>, output: &str) -> StopLauncherResult {
+    if code == Some(0) {
+        return StopLauncherResult::Success;
+    }
+    if output.contains(SERVE_STOP_STARTING_RETRY_HINT) {
+        return StopLauncherResult::RetryableStartup;
+    }
+    StopLauncherResult::Fatal
+}
+
+fn finish_backend_stop_wait(
+    app: &AppHandle,
+    state: &SidecarState,
+    generation: u64,
+    terminated: bool,
+) -> bool {
+    if terminated {
+        clear_restart_after_stop_timeout_if_current(state, generation);
+        let _ = mark_sidecar_inactive_if_current(state, generation);
+        clear_sidecar_child_if_current(state, generation);
+        clear_stopping_generation_if_current(state, generation);
+        clear_sidecar_port(app);
+    } else {
+        mark_restart_after_stop_timeout(state, generation);
+        eprintln!("[agentsview] timed out waiting for sidecar to stop before update install");
+    }
+    terminated
+}
+
+fn request_sidecar_stop(process: &SidecarProcess) -> io::Result<()> {
+    request_process_stop(process.child.pid())
+}
+
+#[cfg(windows)]
+fn request_process_stop(pid: u32) -> io::Result<()> {
+    let status = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "taskkill failed for pid {pid} with status {status}"
+        )))
+    }
+}
+
+#[cfg(unix)]
+fn request_process_stop(pid: u32) -> io::Result<()> {
+    let status = std::process::Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "kill failed for pid {pid} with status {status}"
+        )))
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn request_process_stop(pid: u32) -> io::Result<()> {
+    Err(io::Error::other(format!(
+        "stopping pid {pid} is unsupported on this platform"
+    )))
+}
+
+fn restart_backend_after_update(handle: AppHandle) {
+    if let Err(err) = launch_backend_from_handle(&handle) {
+        eprintln!("[agentsview] failed to restart backend after update: {err}");
+    }
+}
+
+/// Records what the Rust-side probe last saw of the backend, so a restart the
+/// suspended web view could not notice can be recovered from.
+#[derive(Debug, Default)]
+struct BackendProbeState {
+    last: Option<(u16, bool)>,
+}
+
+#[derive(serde::Deserialize)]
+struct BackendPingResponse {
+    ok: bool,
+    service: String,
+}
+
+impl BackendProbeState {
+    /// Records one probe result and reports whether the current page needs
+    /// to be reloaded.
+    ///
+    /// The window is reloaded when a reachable backend is not the one the
+    /// window was last known to be on: it answers on a different port, or it
+    /// answers again after having been unreachable. A backend that comes back
+    /// on the same port may be a different process, so the down-then-up
+    /// transition is the signal. Recovery fires once per transition, never on
+    /// every probe, and never while the backend is down, because there would
+    /// be nothing to reload.
+    ///
+    /// The first observation never reloads: start-up has already pointed the
+    /// window at the backend.
+    fn observe(&mut self, port: u16, reachable: bool) -> bool {
+        let previous = self.last.replace((port, reachable));
+        if !reachable {
+            return false;
+        }
+        match previous {
+            None => false,
+            Some((last_port, last_reachable)) => !last_reachable || last_port != port,
+        }
+    }
+}
+
+fn backend_recovery_action(
+    stale_endpoint: BackendEndpoint,
+    status: &BackendStatusProbe,
+    endpoint_ready: impl FnOnce(BackendEndpoint) -> bool,
+) -> BackendRecoveryAction {
+    match status {
+        BackendStatusProbe::Ready(endpoint) => {
+            if !endpoint_ready(*endpoint) {
+                return BackendRecoveryAction::None;
+            }
+            if *endpoint == stale_endpoint {
+                BackendRecoveryAction::Reload
+            } else {
+                BackendRecoveryAction::Redirect(*endpoint)
+            }
+        }
+        BackendStatusProbe::NotRunning(_) => BackendRecoveryAction::Relaunch,
+        _ => BackendRecoveryAction::None,
+    }
+}
+
+fn recover_backend_after_failed_probe(
+    window: &WebviewWindow,
+    handle: &AppHandle,
+    stale_endpoint: BackendEndpoint,
+) {
+    let stale_port = stale_endpoint.port;
+    let state = handle.state::<SidecarState>();
+    let generation = state.next_generation.load(Ordering::SeqCst);
+    if !launch_is_current(&state, generation) || sidecar_endpoint(&state) != Some(stale_endpoint) {
+        return;
+    }
+
+    let log_sender = spawn_sidecar_log_writer(handle.clone());
+    let status =
+        tauri::async_runtime::block_on(probe_backend_status(handle, &log_sender, generation));
+    let action = backend_recovery_action(stale_endpoint, &status, backend_liveness_ready_at);
+    match action {
+        BackendRecoveryAction::None => {}
+        BackendRecoveryAction::Reload => {
+            let _ = act_if_current_backend(&state, generation, stale_endpoint, || {
+                let deep_link_state = handle.state::<DeepLinkState>();
+                if let Ok(mut dispatch) = deep_link_state.dispatch.lock() {
+                    if dispatch.observe_backend(stale_port, true) {
+                        eprintln!(
+                            "[agentsview] backend returned on port {stale_port}, reloading window"
+                        );
+                        if let Err(err) = window.reload() {
+                            eprintln!("[agentsview] backend recovery reload failed: {err}");
+                        }
+                    }
+                };
+            });
+        }
+        BackendRecoveryAction::Redirect(endpoint) => {
+            let _ = act_if_current_backend(&state, generation, stale_endpoint, || {
+                let port = endpoint.port;
+                eprintln!(
+                    "[agentsview] backend moved from port {stale_port} to {port}, redirecting window"
+                );
+                save_sidecar_endpoint(handle, endpoint);
+                redirect_when_ready(
+                    window.clone(),
+                    endpoint,
+                    generation,
+                    "runtime serve status",
+                    log_sender,
+                );
+            });
+        }
+        BackendRecoveryAction::Relaunch => {
+            let launched = act_if_current_backend(&state, generation, stale_endpoint, || {
+                eprintln!(
+                    "[agentsview] backend on port {stale_port} stopped, starting a replacement"
+                );
+                launch_backend_from_handle(handle)
+            });
+            if let Some(Err(err)) = launched {
+                eprintln!("[agentsview] backend recovery launch failed: {err}");
+            }
+        }
+    }
+}
+
+/// Starts the Rust-side backend probe for the app's lifetime.
+///
+/// Recovery used to be wired to `WindowEvent::Focused(true)` alone, and the
+/// frontend's own health check is disabled in desktop mode on the grounds that
+/// Tauri owns recovery. With the window closed to the tray macOS suspends the
+/// web view, so neither path can fire: the backend can restart, or go away and
+/// come back, and the window stays on a dead page until the app is quit and
+/// started again. This probe runs on the side that keeps executing.
+fn spawn_backend_probe(window: WebviewWindow, handle: AppHandle) {
+    thread::spawn(move || {
+        loop {
+            if let Some(endpoint) = current_backend_endpoint(&handle) {
+                let port = endpoint.port;
+                let reachable = backend_liveness_ready_at(endpoint);
+                let deep_link_state = handle.state::<DeepLinkState>();
+                let mut should_recover = false;
+                if let Ok(mut dispatch) = deep_link_state.dispatch.lock() {
+                    // Recheck after HTTP: startup may have published a new port.
+                    // Hold dispatch through the asynchronous reload request so
+                    // a new deep link or startup redirect always follows it.
+                    if current_backend_endpoint(&handle) == Some(endpoint) {
+                        if dispatch.observe_backend(port, reachable) {
+                            eprintln!(
+                                "[agentsview] backend returned on port {port}, reloading window"
+                            );
+                            if let Err(err) = window.reload() {
+                                eprintln!("[agentsview] backend recovery reload failed: {err}");
+                            }
+                        }
+                        should_recover = !reachable;
+                    }
+                };
+                if should_recover {
+                    recover_backend_after_failed_probe(&window, &handle, endpoint);
+                }
+            }
+            thread::sleep(BACKEND_PROBE_INTERVAL);
+        }
+    });
+}
+
+fn wait_for_server_at(endpoint: BackendEndpoint, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if backend_endpoint_ready_at(endpoint) {
+            return true;
+        }
+        thread::sleep(READY_POLL_INTERVAL);
+    }
+    false
+}
+
+fn wait_for_server_stopped(endpoint: BackendEndpoint, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if !backend_endpoint_ready_at(endpoint) {
+            return true;
+        }
+        thread::sleep(READY_POLL_INTERVAL);
+    }
+    !backend_endpoint_ready_at(endpoint)
+}
+
+#[cfg(test)]
+fn backend_endpoint_ready(port: u16) -> bool {
+    backend_ready_host(port).is_some()
+}
+
+fn backend_endpoint_ready_at(endpoint: BackendEndpoint) -> bool {
+    backend_ready_on(endpoint.host, endpoint.port)
+}
+
+fn backend_ready_on(host: BackendHost, port: u16) -> bool {
+    let request = format!(
+        "GET /api/v1/version HTTP/1.1\r\nHost: {}:{}\r\nConnection: close\r\n\r\n",
+        host.web_host(),
+        port,
+    );
+    host.socket_addrs(port).into_iter().any(|addr| {
+        read_http_response(addr, request.as_str(), BACKEND_READY_PROBE_TIMEOUT).is_some_and(
+            |response| {
+                response_is_auth_challenge(response.as_slice())
+                    || version_response_looks_valid(response.as_slice())
+            },
+        )
+    })
+}
+
+#[cfg(test)]
+fn backend_ready_host(port: u16) -> Option<BackendHost> {
+    [BackendHost::Ipv4, BackendHost::Ipv6]
+        .into_iter()
+        .find(|host| backend_ready_on(*host, port))
+}
+
+#[cfg(test)]
+fn backend_liveness_ready(port: u16) -> bool {
+    backend_liveness_host(port).is_some()
+}
+
+fn backend_liveness_ready_at(endpoint: BackendEndpoint) -> bool {
+    backend_liveness_on(endpoint.host, endpoint.port)
+}
+
+fn backend_liveness_on(host: BackendHost, port: u16) -> bool {
+    let request = format!(
+        "GET /api/ping HTTP/1.1\r\nHost: {}:{}\r\nConnection: close\r\n\r\n",
+        host.web_host(),
+        port,
+    );
+    host.socket_addrs(port).into_iter().any(|addr| {
+        read_http_response(addr, request.as_str(), BACKEND_LIVENESS_PROBE_TIMEOUT).is_some_and(
+            |response| {
+                response_is_auth_challenge(response.as_slice())
+                    || ping_response_looks_valid(response.as_slice())
+            },
+        )
+    })
+}
+
+#[cfg(test)]
+fn backend_liveness_host(port: u16) -> Option<BackendHost> {
+    // Runtime recovery only needs process liveness. Unlike the version
+    // endpoint, this probe does not wait for archive-backed state.
+    [BackendHost::Ipv4, BackendHost::Ipv6]
+        .into_iter()
+        .find(|host| backend_liveness_on(*host, port))
+}
+
+fn read_http_response(addr: SocketAddr, request: &str, timeout: Duration) -> Option<Vec<u8>> {
+    let mut stream = TcpStream::connect_timeout(&addr, timeout).ok()?;
+
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+
+    if stream.write_all(request.as_bytes()).is_err() {
+        return None;
+    }
+
+    let mut buf = Vec::with_capacity(4096);
+    if stream.read_to_end(&mut buf).is_err() {
+        return None;
+    }
+    if buf.is_empty() {
+        return None;
+    }
+    Some(buf)
+}
+
+fn response_is_auth_challenge(response: &[u8]) -> bool {
+    response.starts_with(b"HTTP/1.1 401 ") || response.starts_with(b"HTTP/1.0 401 ")
+}
+
+fn success_response_body(response: &[u8]) -> Option<&[u8]> {
+    if !(response.starts_with(b"HTTP/1.1 200") || response.starts_with(b"HTTP/1.0 200")) {
+        return None;
+    }
+    if let Some(idx) = response.windows(4).position(|w| w == b"\r\n\r\n") {
+        return Some(&response[(idx + 4)..]);
+    }
+    response
+        .windows(2)
+        .position(|w| w == b"\n\n")
+        .map(|idx| &response[(idx + 2)..])
+}
+
+fn version_response_looks_valid(response: &[u8]) -> bool {
+    let Some(body) = success_response_body(response) else {
+        return false;
+    };
+    let body = String::from_utf8_lossy(body);
+    body.contains("\"version\"")
+        && body.contains("\"commit\"")
+        && body.contains("\"build_date\"")
+        && body.contains("\"api_version\"")
+        && body.contains("\"data_version\"")
+}
+
+fn ping_response_looks_valid(response: &[u8]) -> bool {
+    let Some(body) = success_response_body(response) else {
+        return false;
+    };
+    serde_json::from_slice::<BackendPingResponse>(body)
+        .is_ok_and(|ping| ping.ok && ping.service == "agentsview")
+}
+
+#[tauri::command]
+async fn claude_auth_connect(handle: AppHandle) -> Result<(), String> {
+    let window = match handle.get_webview_window(CLAUDE_AUTH_WINDOW_LABEL) {
+        Some(window) => window,
+        None => create_claude_auth_window(&handle, true)?.0,
+    };
+    window.show().map_err(|e| e.to_string())?;
+    window.set_focus().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn claude_auth_close(handle: AppHandle) -> Result<(), String> {
+    handle
+        .state::<ClaudeAuthState>()
+        .pending_browser_requests
+        .lock()
+        .map_err(|_| "Claude request lock failed")?
+        .clear();
+    if let Some(window) = handle.get_webview_window(CLAUDE_AUTH_WINDOW_LABEL) {
+        if !window.is_visible().map_err(|e| e.to_string())? {
+            window.close().map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn claude_auth_fetch(
+    handle: AppHandle,
+    path: String,
+) -> Result<ClaudeBrowserResponse, String> {
+    validate_claude_fetch_path(&path)?;
+    let window = match handle.get_webview_window(CLAUDE_AUTH_WINDOW_LABEL) {
+        Some(window) => window,
+        None => {
+            let (window, loaded) = create_claude_auth_window(&handle, false)?;
+            tokio::time::timeout(Duration::from_secs(30), loaded)
+                .await
+                .map_err(|_| "Claude page load timed out")?
+                .map_err(|_| "Claude page load failed")?;
+            window
+        }
+    };
+    let origin = window.url().map_err(|e| e.to_string())?;
+    if origin.origin().ascii_serialization() != "https://claude.ai" {
+        return Ok(ClaudeBrowserResponse {
+            status: 401,
+            body: String::new(),
+            error: None,
+            retry_after: None,
+        });
+    }
+    let state = handle.state::<ClaudeAuthState>();
+    let (request_id, receiver) = state.start_browser_request()?;
+    let request_id_json = serde_json::to_string(&request_id).map_err(|e| e.to_string())?;
+    let url =
+        serde_json::to_string(&format!("https://claude.ai{path}")).map_err(|e| e.to_string())?;
+    let script = claude_fetch_script(&url, &request_id_json);
+    let response = match window.eval(&script) {
+        Err(err) => Err(err.to_string()),
+        Ok(()) => match tokio::time::timeout(Duration::from_secs(60), receiver).await {
+            Ok(Ok(response)) => Ok(response),
+            _ => Err("Claude browser fetch timed out or disconnected".into()),
+        },
+    };
+    state
+        .pending_browser_requests
+        .lock()
+        .map_err(|_| "Claude request lock failed")?
+        .remove(&request_id);
+    response
+}
+
+fn claude_fetch_script(url: &str, request_id_json: &str) -> String {
+    let reader = include_str!("../../../frontend/chrome-extension/claude_fetch.js");
+    format!(
+        r#"(async () => {{
+        {reader}
+        const result = await claudeFetch({url});
+        await window.__TAURI__.core.invoke("claude_auth_fetch_result", {{ payload: {{ requestId: {request_id_json}, ...result }} }});
+    }})()"#
+    )
+}
+
+fn validate_claude_fetch_path(path: &str) -> Result<(), String> {
+    const ORGANIZATIONS_REQUEST: usize = 0;
+    const CONVERSATIONS_REQUEST: usize = 1;
+    const CONVERSATION_REQUEST: usize = 2;
+    let shapes: Vec<_> = include_str!("../../../internal/importer/claude_ai_requests.txt").lines().collect();
+    if path == shapes[ORGANIZATIONS_REQUEST] {
+        return Ok(());
+    }
+    let valid_uuid = |id: &str| {
+        uuid::Uuid::parse_str(id)
+            .is_ok_and(|uuid| uuid.hyphenated().to_string() == id.to_ascii_lowercase())
+    };
+    let (prefix, rest) = shapes[CONVERSATIONS_REQUEST].split_once("{organization}").unwrap();
+    if let Some(rest_path) = path.strip_prefix(prefix) {
+        if let Some((org, tail)) = rest_path.split_once('/') {
+            if valid_uuid(org) {
+                let list_prefix = rest.trim_start_matches('/').strip_suffix("{offset}").unwrap();
+                if let Some(offset) = tail.strip_prefix(list_prefix) {
+                    if !offset.is_empty() && offset.bytes().all(|b| b.is_ascii_digit()) {
+                        return Ok(());
+                    }
+                }
+                let detail = shapes[CONVERSATION_REQUEST].split_once("{organization}/").unwrap().1;
+                let (detail_prefix, detail_suffix) = detail.split_once("{conversation}").unwrap();
+                if let Some(id) = tail.strip_prefix(detail_prefix).and_then(|s| s.strip_suffix(detail_suffix)) {
+                    if valid_uuid(id) {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+    Err("Unsupported Claude fetch path".into())
+}
+
+fn create_claude_auth_window(
+    handle: &AppHandle,
+    visible: bool,
+) -> Result<(WebviewWindow, tokio::sync::oneshot::Receiver<()>), String> {
+    let url = Url::parse(if visible {
+        CLAUDE_AUTH_URL
+    } else {
+        "https://claude.ai/"
+    })
+    .map_err(|err| err.to_string())?;
+    let (sender, loaded) = tokio::sync::oneshot::channel();
+    let sender = Mutex::new(Some(sender));
+    let window =
+        WebviewWindowBuilder::new(handle, CLAUDE_AUTH_WINDOW_LABEL, WebviewUrl::External(url))
+            .title("Sign in to Claude.ai")
+            .inner_size(1100.0, 800.0)
+            .min_inner_size(800.0, 600.0)
+            .visible(visible)
+            .background_throttling(BackgroundThrottlingPolicy::Disabled)
+            .on_page_load(move |_, payload| {
+                if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                    if let Ok(mut sender) = sender.lock() {
+                        if let Some(sender) = sender.take() {
+                            let _ = sender.send(());
+                        }
+                    }
+                }
+            })
+            .build()
+            .map_err(|err| format!("could not open the Claude sign-in window: {err}"))?;
+    Ok((window, loaded))
+}
+
+#[tauri::command]
+async fn claude_auth_fetch_result(
+    state: State<'_, ClaudeAuthState>,
+    payload: ClaudeBrowserFetchResult,
+) -> Result<(), String> {
+    state.finish_browser_request(payload)
+}
+
+impl ClaudeAuthState {
+    fn start_browser_request(
+        &self,
+    ) -> Result<
+        (
+            String,
+            tokio::sync::oneshot::Receiver<ClaudeBrowserResponse>,
+        ),
+        String,
+    > {
+        let id = uuid::Uuid::new_v4().to_string();
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        self.pending_browser_requests
+            .lock()
+            .map_err(|_| "Claude request lock failed")?
+            .insert(id.clone(), sender);
+        Ok((id, receiver))
+    }
+
+    fn finish_browser_request(&self, payload: ClaudeBrowserFetchResult) -> Result<(), String> {
+        let sender = self
+            .pending_browser_requests
+            .lock()
+            .map_err(|_| "Claude browser request lock failed")?
+            .remove(&payload.request_id)
+            .ok_or("no Claude browser request is pending")?;
+        sender
+            .send(ClaudeBrowserResponse {
+                status: payload.status,
+                body: payload.body,
+                error: payload.error,
+                retry_after: payload.retry_after,
+            })
+            .map_err(|_| "Claude browser request was cancelled".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{HashMap, VecDeque};
+    use std::fs;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStrExt;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tempfile::tempdir;
+
+    fn ipv4_endpoint(port: u16) -> BackendEndpoint {
+        BackendEndpoint::new(BackendHost::Ipv4, port)
+    }
+
+    #[test]
+    fn sidecar_args_use_cobra_long_flags() {
+        assert_eq!(
+            sidecar_args(),
+            vec![
+                "serve".to_string(),
+                "--background".to_string(),
+                "--host".to_string(),
+                HOST.to_string(),
+                "--port".to_string(),
+                "0".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn sidecar_stop_args_use_serve_stop() {
+        assert_eq!(
+            sidecar_stop_args(),
+            vec!["serve".to_string(), "stop".to_string()]
+        );
+    }
+
+    #[test]
+    fn sidecar_status_args_use_serve_status() {
+        assert_eq!(
+            sidecar_status_args(),
+            vec!["serve".to_string(), "status".to_string()]
+        );
+    }
+
+    #[test]
+    fn background_status_poll_interval_backs_off_after_initial_probes() {
+        assert_eq!(
+            background_status_poll_interval(1),
+            Duration::from_millis(125)
+        );
+        assert_eq!(
+            background_status_poll_interval(8),
+            Duration::from_millis(125)
+        );
+        assert_eq!(
+            background_status_poll_interval(9),
+            Duration::from_millis(250)
+        );
+        assert_eq!(
+            background_status_poll_interval(17),
+            Duration::from_millis(500)
+        );
+        assert_eq!(background_status_poll_interval(25), Duration::from_secs(1));
+        assert_eq!(
+            background_status_poll_interval(u32::MAX),
+            Duration::from_secs(1)
+        );
+    }
+
+    #[test]
+    fn status_poll_backoff_counts_non_ready_statuses() {
+        let mut attempts = 0;
+
+        attempts = next_background_status_poll_attempts(
+            &BackendStatusProbe::Starting("agentsview is starting up.".to_string()),
+            attempts,
+        );
+        assert_eq!(attempts, 1);
+
+        attempts = next_background_status_poll_attempts(
+            &BackendStatusProbe::Unhealthy("health checks are not responding".to_string()),
+            attempts,
+        );
+        assert_eq!(attempts, 2);
+
+        attempts = next_background_status_poll_attempts(&BackendStatusProbe::Unavailable, attempts);
+        assert_eq!(attempts, 3);
+
+        attempts = next_background_status_poll_attempts(
+            &BackendStatusProbe::Ready(ipv4_endpoint(8080)),
+            attempts,
+        );
+        assert_eq!(attempts, 3);
+
+        assert_eq!(
+            next_background_status_poll_attempts(&BackendStatusProbe::Unavailable, u32::MAX),
+            u32::MAX
+        );
+    }
+
+    #[test]
+    fn status_probe_failures_stop_after_bounded_threshold() {
+        assert!(!status_probe_failures_should_stop(
+            STATUS_PROBE_FAILURE_FAIL_AFTER - 1
+        ));
+        assert!(status_probe_failures_should_stop(
+            STATUS_PROBE_FAILURE_FAIL_AFTER
+        ));
+        assert!(status_probe_failures_should_stop(u32::MAX));
+    }
+
+    #[test]
+    fn data_version_preflight_args_use_serve_check() {
+        assert_eq!(
+            data_version_preflight_args(),
+            vec!["serve".to_string(), "--check-data-version".to_string()]
+        );
+    }
+
+    #[test]
+    fn classify_data_version_preflight_exit_accepts_success() {
+        assert_eq!(
+            classify_data_version_preflight_exit(Some(0), "", ""),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn classify_data_version_preflight_exit_detects_too_new_database() {
+        let err = classify_data_version_preflight_exit(
+            Some(DATA_VERSION_TOO_NEW_EXIT_CODE),
+            "",
+            "fatal: archive is too new",
+        )
+        .expect_err("expected too-new error");
+
+        assert_eq!(
+            err,
+            DataVersionPreflightError::TooNew("fatal: archive is too new".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_data_version_preflight_exit_keeps_generic_failures_separate() {
+        let err =
+            classify_data_version_preflight_exit(Some(1), "", "fatal: loading config: bad toml")
+                .expect_err("expected preflight failure");
+
+        assert_eq!(
+            err,
+            DataVersionPreflightError::Failed("fatal: loading config: bad toml".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_data_version_preflight_exit_does_not_parse_error_prose() {
+        let err = classify_data_version_preflight_exit(
+            Some(1),
+            "",
+            "fatal: database data version 59 is newer than this agentsview binary's data version 49",
+        )
+        .expect_err("expected generic failure");
+
+        assert_eq!(
+            err,
+            DataVersionPreflightError::Failed(
+                "fatal: database data version 59 is newer than this agentsview binary's data version 49"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn too_new_archive_status_message_is_user_facing() {
+        let message = too_new_archive_status_message(
+            "fatal: database data version 59 is newer than this agentsview binary's data version 49",
+        );
+        let footer = too_new_archive_footer_message();
+
+        assert!(message.contains("updated by a newer version of AgentsView"));
+        assert!(!message.contains("database data version"));
+        assert!(!message.contains("bundled backend"));
+        assert!(footer.contains("checking for updates now"));
+        assert!(footer.contains("Check for Updates"));
+    }
+
+    #[test]
+    fn preflight_error_script_updates_dom_directly() {
+        let script = preflight_error_script("Needs update", "Archive is too new", "Footer");
+
+        assert!(script.contains("document.querySelector('h1')"));
+        assert!(script.contains("document.getElementById('status')"));
+        assert!(script.contains("querySelector('.foot')"));
+        assert!(!script.contains("window.__setStatus"));
+    }
+
+    #[test]
+    fn preflight_error_script_polls_until_loading_dom_exists() {
+        let script = preflight_error_script("Needs update", "Archive is too new", "Footer");
+
+        assert!(script.contains("function renderPreflightError"));
+        assert!(script.contains("setTimeout(renderPreflightError"));
+        assert!(script.contains("if (!h || !status)"));
+    }
+
+    #[test]
+    fn startup_error_script_renders_reportable_details() {
+        let script = startup_error_script(
+            "Backend failed",
+            "The local backend exited.",
+            "fatal: opening database",
+            "Attach logs",
+        );
+
+        assert!(script.contains("function renderStartupError"));
+        assert!(script.contains("startup-error-detail"));
+        assert!(script.contains("fatal: opening database"));
+        assert!(script.contains("role', 'alert'"));
+        assert!(script.contains("Attach logs"));
+    }
+
+    #[test]
+    fn status_update_script_serializes_multiline_startup_status() {
+        let status = "agentsview is starting up.\n  phase: opening user's \"main\" database\n  log: C:\\AgentsView\\serve.log";
+
+        assert_eq!(
+            status_update_script(status),
+            r#"window.__setStatus("agentsview is starting up.\n  phase: opening user's \"main\" database\n  log: C:\\AgentsView\\serve.log");"#
+        );
+    }
+
+    #[test]
+    fn startup_failure_detail_includes_recent_output() {
+        let detail = startup_failure_detail(
+            "The sidecar process ended before it was ready.",
+            "[stderr] fatal: opening database",
+        );
+
+        assert!(detail.contains("The sidecar process ended"));
+        assert!(detail.contains("Recent backend output"));
+        assert!(detail.contains("[stderr] fatal: opening database"));
+    }
+
+    #[test]
+    fn startup_output_buffer_labels_recent_chunks() {
+        let buffer = Arc::new(Mutex::new(String::new()));
+
+        push_startup_output(&buffer, "stdout", "Auth enabled. Token: secret-token");
+        push_startup_output(&buffer, "stderr", "fatal: bad config");
+
+        let output = recent_startup_output(&buffer);
+        assert!(output.contains("[stdout] Auth enabled. Token: secret-token"));
+        assert!(output.contains("[stderr] fatal: bad config"));
+    }
+
+    #[test]
+    fn parse_listening_port_extracts_backend_port() {
+        let line = "agentsview dev listening at http://127.0.0.1:18080 (started in 1.2s)";
+        assert_eq!(parse_listening_port(line), Some(18080));
+        assert_eq!(
+            parse_listening_port("agentsview running at http://127.0.0.1:19090 (pid 123)"),
+            Some(19090)
+        );
+        assert_eq!(
+            parse_listening_port("agentsview already running at http://127.0.0.1:19091 (pid 123)"),
+            Some(19091)
+        );
+        assert_eq!(
+            parse_listening_port("agentsview already running at http://localhost:19092 (pid 123)"),
+            Some(19092)
+        );
+        assert_eq!(
+            parse_listening_port("agentsview running at http://[::1]:19093 (pid 123)"),
+            Some(19093)
+        );
+        assert_eq!(
+            parse_listening_port("agentsview running at http://localhost:80 (pid 123)"),
+            Some(80)
+        );
+        assert_eq!(parse_listening_port("unrelated line"), None);
+    }
+
+    #[test]
+    fn parse_listening_port_ignores_non_listening_urls() {
+        let line = "probe successful for http://127.0.0.1:19090/health";
+        assert_eq!(parse_listening_port(line), None);
+    }
+
+    #[test]
+    fn parse_listening_port_rejects_unsupported_endpoints() {
+        for line in [
+            "agentsview running at https://localhost:19090 (pid 123)",
+            "agentsview running at http://192.0.2.1:19090 (pid 123)",
+            "agentsview running at http://[2001:db8::1]:19090 (pid 123)",
+        ] {
+            assert_eq!(parse_listening_port(line), None, "{line}");
+        }
+    }
+
+    #[test]
+    fn parse_listening_port_from_stdout_buffer_handles_chunked_output() {
+        let mut buf = String::new();
+        assert_eq!(
+            parse_listening_port_from_stdout_buffer(
+                &mut buf,
+                "agentsview dev listening at http://127.0.0.1:18"
+            ),
+            None
+        );
+        assert_eq!(
+            parse_listening_port_from_stdout_buffer(&mut buf, "080 (started in 1.2s)\n"),
+            Some(18080)
+        );
+    }
+
+    #[test]
+    fn append_sidecar_log_record_writes_labeled_stdout_and_stderr_lines() {
+        let tempdir = tempdir().expect("tempdir");
+        let log_path = tempdir.path().join("logs").join(DESKTOP_LOG_FILE_NAME);
+
+        append_sidecar_log_record_at_path(&log_path, "stdout", "booting\nlistening\n")
+            .expect("stdout log write");
+        append_sidecar_log_record_at_path(&log_path, "stderr", "fatal line\n")
+            .expect("stderr log write");
+
+        let logged = fs::read_to_string(log_path).expect("read log");
+        assert!(logged.contains("[stdout] booting"));
+        assert!(logged.contains("[stdout] listening"));
+        assert!(logged.contains("[stderr] fatal line"));
+    }
+
+    #[test]
+    fn append_sidecar_log_record_splits_carriage_return_progress_updates() {
+        let tempdir = tempdir().expect("tempdir");
+        let log_path = tempdir.path().join("logs").join(DESKTOP_LOG_FILE_NAME);
+
+        append_sidecar_log_record_at_path(&log_path, "stdout", "syncing\rindexing\r")
+            .expect("progress log write");
+
+        let logged = fs::read_to_string(log_path).expect("read progress log");
+        assert!(logged.contains("[stdout] syncing"));
+        assert!(logged.contains("[stdout] indexing"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn append_sidecar_log_record_tightens_log_permissions() {
+        let tempdir = tempdir().expect("tempdir");
+        let log_path = tempdir.path().join("logs").join(DESKTOP_LOG_FILE_NAME);
+
+        append_sidecar_log_record_at_path(&log_path, "stdout", "booting\n")
+            .expect("stdout log write");
+
+        let log_dir_mode = fs::metadata(log_path.parent().expect("log dir"))
+            .expect("read log dir metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        let log_file_mode = fs::metadata(&log_path)
+            .expect("read log file metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+
+        assert_eq!(log_dir_mode, 0o700);
+        assert_eq!(log_file_mode, 0o600);
+    }
+
+    #[test]
+    fn append_sidecar_log_record_returns_error_when_log_dir_is_not_directory() {
+        let tempdir = tempdir().expect("tempdir");
+        let blocked_parent = tempdir.path().join("blocked");
+        fs::write(&blocked_parent, "not a directory").expect("write blocker");
+        let log_path = blocked_parent.join(DESKTOP_LOG_FILE_NAME);
+
+        let err = append_sidecar_log_record_at_path(&log_path, "stdout", "booting")
+            .expect_err("append should fail");
+
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+    }
+
+    #[test]
+    fn append_sidecar_event_record_writes_logged_event_variants() {
+        let tempdir = tempdir().expect("tempdir");
+        let log_path = tempdir.path().join("logs").join(DESKTOP_LOG_FILE_NAME);
+
+        append_sidecar_event_record_at_path(
+            &log_path,
+            &CommandEvent::Stdout(b"booting\n".to_vec()),
+        )
+        .expect("stdout event log write");
+        append_sidecar_event_record_at_path(
+            &log_path,
+            &CommandEvent::Stderr(b"fatal line\n".to_vec()),
+        )
+        .expect("stderr event log write");
+        append_sidecar_event_record_at_path(
+            &log_path,
+            &CommandEvent::Terminated(tauri_plugin_shell::process::TerminatedPayload {
+                code: Some(23),
+                signal: None,
+            }),
+        )
+        .expect("terminated event log write");
+        append_sidecar_event_record_at_path(
+            &log_path,
+            &CommandEvent::Error("spawn failed".to_string()),
+        )
+        .expect("error event log write");
+
+        let logged = fs::read_to_string(log_path).expect("read log");
+        assert!(logged.contains("[stdout] booting"));
+        assert!(logged.contains("[stderr] fatal line"));
+        assert!(logged.contains("[terminated] sidecar terminated (code: Some(23), signal: None)"));
+        assert!(logged.contains("[error] sidecar command error: spawn failed"));
+    }
+
+    #[test]
+    fn append_open_logs_folder_failure_writes_menu_log_entry() {
+        let tempdir = tempdir().expect("tempdir");
+        let log_dir = tempdir.path().join("logs");
+        let log_path = log_dir.join(DESKTOP_LOG_FILE_NAME);
+
+        append_open_logs_folder_failure_at_path(&log_path, &log_dir, "not allowed")
+            .expect("menu failure log write");
+
+        let logged = fs::read_to_string(log_path).expect("read menu log");
+        assert!(logged.contains("[menu] failed to open logs folder"));
+        assert!(logged.contains(log_dir.display().to_string().as_str()));
+        assert!(logged.contains("not allowed"));
+    }
+
+    #[test]
+    fn prepare_sidecar_stdout_update_enqueues_log_and_keeps_endpoint_detection() {
+        let (log_sender, log_receiver) = sync_channel(1);
+        let mut stdout_buffer = String::new();
+        let mut stdout_log_buffer = String::new();
+
+        let stdout_update = prepare_sidecar_stdout_update(
+            &log_sender,
+            &mut stdout_buffer,
+            &mut stdout_log_buffer,
+            b"agentsview dev listening at http://127.0.0.1:18080 (started in 1.2s)\n",
+        );
+
+        assert_eq!(stdout_update.endpoint, Some(ipv4_endpoint(18080)));
+        let logged = log_receiver.try_recv().expect("stdout record");
+        assert_eq!(logged.label, "stdout");
+        assert!(logged
+            .record
+            .contains("agentsview dev listening at http://127.0.0.1:18080"));
+    }
+
+    #[test]
+    fn prepare_sidecar_stdout_update_redacts_token_bearing_lines() {
+        let (log_sender, log_receiver) = sync_channel(1);
+        let mut stdout_buffer = String::new();
+        let mut stdout_log_buffer = String::new();
+
+        let stdout_update = prepare_sidecar_stdout_update(
+            &log_sender,
+            &mut stdout_buffer,
+            &mut stdout_log_buffer,
+            b"Authorization: Bearer secret-token\nAuth enabled. Token: startup-secret\n--auth-token=another-secret\n",
+        );
+
+        let logged = log_receiver.try_recv().expect("stdout record");
+        assert_eq!(logged.label, "stdout");
+        assert!(stdout_update
+            .redacted_chunk
+            .contains("Authorization: Bearer <redacted>"));
+        assert!(stdout_update
+            .redacted_chunk
+            .contains("Auth enabled. Token: <redacted>"));
+        assert!(stdout_update
+            .redacted_chunk
+            .contains("--auth-token=<redacted>"));
+        assert!(!stdout_update.redacted_chunk.contains("secret-token"));
+        assert!(!stdout_update.redacted_chunk.contains("startup-secret"));
+        assert!(!stdout_update.redacted_chunk.contains("another-secret"));
+        assert!(logged.record.contains("Authorization: Bearer <redacted>"));
+        assert!(logged.record.contains("Auth enabled. Token: <redacted>"));
+        assert!(logged.record.contains("--auth-token=<redacted>"));
+        assert!(!logged.record.contains("secret-token"));
+        assert!(!logged.record.contains("startup-secret"));
+        assert!(!logged.record.contains("another-secret"));
+    }
+
+    #[test]
+    fn prepare_sidecar_stdout_update_redacts_split_token_lines_after_newline() {
+        let (log_sender, log_receiver) = sync_channel(1);
+        let mut stdout_buffer = String::new();
+        let mut stdout_log_buffer = String::new();
+
+        let first_update = prepare_sidecar_stdout_update(
+            &log_sender,
+            &mut stdout_buffer,
+            &mut stdout_log_buffer,
+            b"Auth enabled. Token: ",
+        );
+        assert!(first_update.redacted_chunk.is_empty());
+        assert!(log_receiver.try_recv().is_err());
+
+        let second_update = prepare_sidecar_stdout_update(
+            &log_sender,
+            &mut stdout_buffer,
+            &mut stdout_log_buffer,
+            b"split-secret\n",
+        );
+
+        let logged = log_receiver.try_recv().expect("stdout record");
+        assert_eq!(logged.label, "stdout");
+        assert!(second_update
+            .redacted_chunk
+            .contains("Auth enabled. Token: <redacted>"));
+        assert!(!second_update.redacted_chunk.contains("split-secret"));
+        assert!(logged.record.contains("Auth enabled. Token: <redacted>"));
+        assert!(!logged.record.contains("split-secret"));
+    }
+
+    #[test]
+    fn flush_pending_sidecar_stdout_log_record_redacts_split_token_tail() {
+        let (log_sender, log_receiver) = sync_channel(1);
+        let mut stdout_buffer = String::new();
+        let mut stdout_log_buffer = String::new();
+
+        prepare_sidecar_stdout_update(
+            &log_sender,
+            &mut stdout_buffer,
+            &mut stdout_log_buffer,
+            b"Auth enabled. Token: split-secret",
+        );
+        assert!(log_receiver.try_recv().is_err());
+
+        let flushed =
+            flush_pending_sidecar_log_record(&log_sender, "stdout", &mut stdout_log_buffer);
+
+        let logged = log_receiver.try_recv().expect("stdout record");
+        assert_eq!(logged.label, "stdout");
+        assert!(flushed.contains("Auth enabled. Token: <redacted>"));
+        assert!(!flushed.contains("split-secret"));
+        assert!(logged.record.contains("Auth enabled. Token: <redacted>"));
+        assert!(!logged.record.contains("split-secret"));
+    }
+
+    #[test]
+    fn queue_redacted_sidecar_stderr_chunk_redacts_split_token_lines_after_newline() {
+        let (log_sender, log_receiver) = sync_channel(1);
+        let mut stderr_log_buffer = String::new();
+
+        let first_chunk = queue_redacted_sidecar_chunk(
+            &log_sender,
+            "stderr",
+            &mut stderr_log_buffer,
+            "Authorization: Bearer ",
+        );
+        assert!(first_chunk.is_empty());
+        assert!(log_receiver.try_recv().is_err());
+
+        let second_chunk = queue_redacted_sidecar_chunk(
+            &log_sender,
+            "stderr",
+            &mut stderr_log_buffer,
+            "stderr-secret\n",
+        );
+
+        let logged = log_receiver.try_recv().expect("stderr record");
+        assert_eq!(logged.label, "stderr");
+        assert!(second_chunk.contains("Authorization: Bearer <redacted>"));
+        assert!(!second_chunk.contains("stderr-secret"));
+        assert!(logged.record.contains("Authorization: Bearer <redacted>"));
+        assert!(!logged.record.contains("stderr-secret"));
+    }
+
+    #[test]
+    fn flush_pending_sidecar_stderr_log_record_redacts_split_token_tail() {
+        let (log_sender, log_receiver) = sync_channel(1);
+        let mut stderr_log_buffer = String::new();
+
+        queue_redacted_sidecar_chunk(
+            &log_sender,
+            "stderr",
+            &mut stderr_log_buffer,
+            "Auth enabled. Token: stderr-tail",
+        );
+        assert!(log_receiver.try_recv().is_err());
+
+        let flushed =
+            flush_pending_sidecar_log_record(&log_sender, "stderr", &mut stderr_log_buffer);
+
+        let logged = log_receiver.try_recv().expect("stderr record");
+        assert_eq!(logged.label, "stderr");
+        assert!(flushed.contains("Auth enabled. Token: <redacted>"));
+        assert!(!flushed.contains("stderr-tail"));
+        assert!(logged.record.contains("Auth enabled. Token: <redacted>"));
+        assert!(!logged.record.contains("stderr-tail"));
+    }
+
+    #[test]
+    fn sidecar_log_record_from_event_redacts_stderr_token_lines() {
+        let record = sidecar_log_record_from_event(&CommandEvent::Stderr(
+            b"Authorization: Bearer stderr-secret\n".to_vec(),
+        ))
+        .expect("stderr record");
+
+        assert_eq!(record.label, "stderr");
+        assert!(record.record.contains("Authorization: Bearer <redacted>"));
+        assert!(!record.record.contains("stderr-secret"));
+    }
+
+    #[test]
+    fn prepare_sidecar_stdout_update_keeps_parsing_when_log_queue_is_full() {
+        let (log_sender, log_receiver) = sync_channel(1);
+        log_sender
+            .send(SidecarLogRecord::new("stdout", "already queued"))
+            .expect("fill queue");
+        let mut stdout_buffer = String::new();
+        let mut stdout_log_buffer = String::new();
+
+        let stdout_update = prepare_sidecar_stdout_update(
+            &log_sender,
+            &mut stdout_buffer,
+            &mut stdout_log_buffer,
+            b"Running initial sync...\n",
+        );
+
+        assert_eq!(
+            stdout_update.status,
+            Some("Running initial sync...".to_string())
+        );
+        let retained = log_receiver.try_recv().expect("queued record");
+        assert_eq!(retained.record, "already queued");
+    }
+
+    #[test]
+    fn wait_for_selected_backend_logs_readiness_timeout() {
+        let (log_sender, log_receiver) = sync_channel(DESKTOP_LOG_QUEUE_CAPACITY);
+        let listener = TcpListener::bind((HOST, 0)).expect("bind closed port");
+        let port = listener.local_addr().expect("local address").port();
+        drop(listener);
+
+        assert!(wait_for_selected_backend(
+            &log_sender,
+            1,
+            "serve status",
+            ipv4_endpoint(port),
+            Duration::from_millis(300),
+        )
+        .is_none());
+        let records: Vec<_> = log_receiver.try_iter().collect();
+        assert!(records.iter().any(|record| record.label == "startup"
+            && record.record == format!("launch 1: port {port} did not respond within 300ms")));
+    }
+
+    #[test]
+    fn wait_for_selected_backend_logs_stdout_decision_and_readiness() {
+        let (log_sender, log_receiver) = sync_channel(DESKTOP_LOG_QUEUE_CAPACITY);
+        let response = concat!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+            r#"{"version":"1.0.0","commit":"abc","build_date":"2026-01-01T00:00:00Z","#,
+            r#""api_version":1,"data_version":50}"#,
+        );
+        let (port, server) = spawn_response_server(response.as_bytes());
+
+        assert_eq!(
+            wait_for_selected_backend(
+                &log_sender,
+                2,
+                "sidecar stdout",
+                ipv4_endpoint(port),
+                Duration::from_secs(5),
+            ),
+            Some(BackendHost::Ipv4)
+        );
+        server.join().expect("join server");
+
+        let selected = log_receiver.try_recv().expect("port decision");
+        assert_eq!(selected.label, "startup");
+        assert_eq!(
+            selected.record,
+            format!("launch 2: selected port {port} from sidecar stdout")
+        );
+        let ready = log_receiver.try_recv().expect("readiness record");
+        assert_eq!(ready.label, "startup");
+        assert_eq!(
+            ready.record,
+            format!("launch 2: port {port} ready on {HOST}")
+        );
+    }
+
+    #[test]
+    fn read_backend_status_logs_daemon_identity() {
+        let (log_sender, log_receiver) = sync_channel(DESKTOP_LOG_QUEUE_CAPACITY);
+        let (sender, receiver) = tauri::async_runtime::channel(3);
+        let status = tauri::async_runtime::block_on(async {
+            sender
+                .send(CommandEvent::Stdout(
+                    b"agentsview running at http://127.0.0.1:8080\n  pid:     123\n".to_vec(),
+                ))
+                .await
+                .expect("send status");
+            sender
+                .send(CommandEvent::Stdout(
+                    b"  Authorization: Bearer test-token\n".to_vec(),
+                ))
+                .await
+                .expect("send status detail");
+            sender
+                .send(CommandEvent::Terminated(
+                    tauri_plugin_shell::process::TerminatedPayload {
+                        code: Some(0),
+                        signal: None,
+                    },
+                ))
+                .await
+                .expect("terminate status command");
+            read_backend_status(receiver, &log_sender, 3)
+                .await
+                .expect("status probe")
+        });
+
+        assert_eq!(status, BackendStatusProbe::Ready(ipv4_endpoint(8080)));
+        let logged = log_receiver.try_recv().expect("daemon status record");
+        assert_eq!(logged.label, "startup");
+        assert_eq!(
+            logged.record,
+            concat!(
+                "launch 3: serve status: agentsview running at http://127.0.0.1:8080\n",
+                "  pid:     123\n  Authorization: Bearer <redacted>",
+            )
+        );
+    }
+
+    #[test]
+    fn file_menu_includes_open_logs_folder_action() {
+        let source = include_str!("lib.rs");
+
+        assert!(source.contains("OPEN_LOGS_FOLDER_MENU_ID"));
+        assert!(source
+            .contains("MenuItemBuilder::with_id(OPEN_LOGS_FOLDER_MENU_ID, \"Open Logs Folder\")"));
+        assert!(source.contains(".open_path(log_dir.to_string_lossy().into_owned(), None::<&str>)"));
+    }
+
+    #[test]
+    fn parse_listening_port_from_stdout_tail_handles_final_partial_line() {
+        assert_eq!(
+            parse_listening_port_from_stdout_tail("agentsview running at http://127.0.0.1:18081"),
+            Some(18081)
+        );
+    }
+
+    #[test]
+    fn parse_listening_port_from_stdout_tail_prefers_latest_line() {
+        let output = "\
+agentsview running at http://127.0.0.1:18080 (pid 123)
+agentsview running at http://127.0.0.1:18081 (pid 124)";
+        assert_eq!(parse_listening_port_from_stdout_tail(output), Some(18081));
+    }
+
+    #[test]
+    fn parse_writable_listening_port_from_status_ignores_read_only_daemon() {
+        let output = "\
+agentsview running at http://127.0.0.1:18081 (pid 123)
+mode:    read-only
+";
+        assert_eq!(parse_writable_listening_port_from_status(output), None);
+    }
+
+    #[test]
+    fn parse_writable_listening_port_from_status_accepts_writable_daemon() {
+        let output = "\
+agentsview running at http://127.0.0.1:18082 (pid 123)
+  mode:    writable
+";
+        assert_eq!(
+            parse_writable_listening_port_from_status(output),
+            Some(18082)
+        );
+    }
+
+    #[test]
+    fn classify_backend_status_output_detects_ready_daemon() {
+        let output = "\
+agentsview running at http://127.0.0.1:18082 (pid 123)
+  mode:    writable
+";
+
+        assert_eq!(
+            classify_backend_status_output(output, ""),
+            BackendStatusProbe::Ready(ipv4_endpoint(18082))
+        );
+    }
+
+    #[test]
+    fn classify_backend_status_output_accepts_supported_loopback_hosts() {
+        for (host, backend_host, port) in [
+            ("localhost", BackendHost::Localhost, 18083),
+            ("[::1]", BackendHost::Ipv6, 18084),
+        ] {
+            let output = format!(
+                "agentsview running at http://{host}:{port} (pid 123)\n  mode:    writable\n"
+            );
+            assert_eq!(
+                classify_backend_status_output(output.as_str(), ""),
+                BackendStatusProbe::Ready(BackendEndpoint::new(backend_host, port)),
+                "{host}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_backend_status_output_keeps_starting_state_open_ended() {
+        assert_eq!(
+            classify_backend_status_output("agentsview is starting up.", ""),
+            BackendStatusProbe::Starting("agentsview is starting up.".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_backend_status_output_keeps_starting_with_stderr_diagnostics() {
+        assert_eq!(
+            classify_backend_status_output(
+                "agentsview is starting up.\n",
+                "warning: using default config"
+            ),
+            BackendStatusProbe::Starting(
+                "agentsview is starting up.\nwarning: using default config".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn classify_backend_status_output_detects_unhealthy_daemon() {
+        assert_eq!(
+            classify_backend_status_output(
+                "agentsview process running (pid 123) but not responding to health checks.",
+                "",
+            ),
+            BackendStatusProbe::Unhealthy(
+                "agentsview process running (pid 123) but not responding to health checks."
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn classify_backend_status_output_rejects_read_only_daemon() {
+        let output = "\
+agentsview running at http://127.0.0.1:18082
+  pid:     123
+  version: v0.35.0
+  mode:    read-only
+";
+
+        assert_eq!(
+            classify_backend_status_output(output, ""),
+            BackendStatusProbe::ReadOnly(output.trim().to_string())
+        );
+    }
+
+    #[test]
+    fn classify_backend_status_output_rejects_unknown_non_startup_status() {
+        assert_eq!(
+            classify_backend_status_output("agentsview status is unexpected.", ""),
+            BackendStatusProbe::Unusable("agentsview status is unexpected.".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_backend_status_output_reports_absent_or_incompatible_daemon() {
+        assert_eq!(
+            classify_backend_status_output("No agentsview server is running.", ""),
+            BackendStatusProbe::NotRunning("No agentsview server is running.".to_string())
+        );
+        assert_eq!(
+            classify_backend_status_output(
+                "agentsview found an incompatible running writable daemon.",
+                "",
+            ),
+            BackendStatusProbe::Incompatible(
+                "agentsview found an incompatible running writable daemon.".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn extract_startup_status_parses_progress_and_messages() {
+        // Carriage-return progress line
+        let chunk = "\r  25/100 sessions (25%) · 1250 messages";
+        assert_eq!(
+            extract_startup_status(chunk),
+            Some("25/100 sessions (25%) · 1250 messages".to_string())
+        );
+
+        // Multiple \r-delimited updates: takes the last one
+        let chunk = "\r  5/100 sessions (5%) · 25 messages\r  10/100 sessions (10%) · 50 messages";
+        assert_eq!(
+            extract_startup_status(chunk),
+            Some("10/100 sessions (10%) · 50 messages".to_string())
+        );
+
+        // Newline-delimited sync messages
+        assert_eq!(
+            extract_startup_status("Running initial sync...\n"),
+            Some("Running initial sync...".to_string())
+        );
+        assert_eq!(
+            extract_startup_status("Sync complete: 42 sessions synced in 125ms\n"),
+            Some("Sync complete: 42 sessions synced in 125ms".to_string())
+        );
+        assert_eq!(
+            extract_startup_status("Watching 50 directories for changes (12ms)\n"),
+            Some("Watching 50 directories for changes (12ms)".to_string())
+        );
+        assert_eq!(
+            extract_startup_status(
+                "\r  Rebuilding search index - Rebuilding the search index may take a while on large archives."
+            ),
+            Some(
+                "Rebuilding search index - Rebuilding the search index may take a while on large archives."
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            extract_startup_status("\r  Swapping rebuilt database into place"),
+            Some("Swapping rebuilt database into place".to_string())
+        );
+        for detail in [
+            "Finalizing sync: committing session writes",
+            "Finalizing sync: saving session source state",
+            "Finalizing sync: linking file-backed subagent sessions",
+            "Finalizing sync: repairing subagent relationships",
+            "Finalizing sync: releasing parsed-session memory",
+            "Finalizing sync: checking database-backed sessions",
+            "Finalizing sync: linking all subagent sessions",
+            "Finalizing sync: saving the skip cache",
+        ] {
+            assert_eq!(
+                extract_startup_status(&format!("\r  {detail}")),
+                Some(detail.to_string())
+            );
+        }
+
+        // Unrelated output is ignored
+        assert_eq!(extract_startup_status("some random log line\n"), None);
+        assert_eq!(extract_startup_status(""), None);
+    }
+
+    #[test]
+    fn is_allowed_navigation_url_allows_local_only() {
+        // macOS/Linux: tauri://localhost
+        let tauri_url = Url::parse("tauri://localhost/index.html").expect("valid tauri url");
+        assert!(is_allowed_navigation_url(&tauri_url, None));
+        assert!(is_allowed_navigation_url(&tauri_url, Some(18080)));
+
+        // Windows (WebView2): http://tauri.localhost (default origin)
+        let win_http =
+            Url::parse("http://tauri.localhost/index.html").expect("valid windows tauri url");
+        assert!(is_allowed_navigation_url(&win_http, None));
+        assert!(is_allowed_navigation_url(&win_http, Some(18080)));
+
+        // Windows: https://tauri.localhost also allowed
+        let win_https =
+            Url::parse("https://tauri.localhost/index.html").expect("valid windows https url");
+        assert!(is_allowed_navigation_url(&win_https, None));
+
+        // Reject tauri.localhost with an explicit port
+        let win_port =
+            Url::parse("https://tauri.localhost:9999/").expect("valid tauri localhost with port");
+        assert!(!is_allowed_navigation_url(&win_port, None));
+
+        let local_backend = Url::parse("http://127.0.0.1:18080/").expect("valid localhost url");
+        assert!(is_allowed_navigation_url(&local_backend, Some(18080)));
+
+        // Reject when port is unknown
+        assert!(!is_allowed_navigation_url(&local_backend, None));
+
+        // Reject when port doesn't match
+        assert!(!is_allowed_navigation_url(&local_backend, Some(9999)));
+
+        let remote = Url::parse("https://example.com/").expect("valid remote url");
+        assert!(!is_allowed_navigation_url(&remote, Some(18080)));
+
+        let localhost_name =
+            Url::parse("http://localhost:18080/").expect("valid localhost-name url");
+        assert!(is_allowed_navigation_url(&localhost_name, Some(18080)));
+
+        let ipv6_loopback = Url::parse("http://[::1]:18080/").expect("valid IPv6 loopback url");
+        assert!(is_allowed_navigation_url(&ipv6_loopback, Some(18080)));
+
+        let localhost_default = Url::parse("http://localhost:80/").expect("valid localhost URL");
+        assert!(is_allowed_navigation_url(&localhost_default, Some(80)));
+
+        let ipv6_default = Url::parse("http://[::1]:80/").expect("valid IPv6 loopback URL");
+        assert!(is_allowed_navigation_url(&ipv6_default, Some(80)));
+
+        let remote_ipv6 = Url::parse("http://[2001:db8::1]:18080/").expect("valid remote IPv6 url");
+        assert!(!is_allowed_navigation_url(&remote_ipv6, Some(18080)));
+    }
+
+    #[test]
+    fn is_allowed_external_open_url_limits_schemes() {
+        let https = Url::parse("https://example.com").expect("valid https url");
+        assert!(is_allowed_external_open_url(&https));
+
+        let http = Url::parse("http://example.com").expect("valid http url");
+        assert!(is_allowed_external_open_url(&http));
+
+        let mailto = Url::parse("mailto:test@example.com").expect("valid mailto url");
+        assert!(is_allowed_external_open_url(&mailto));
+
+        let codex = Url::parse("codex://threads/session-123").expect("valid codex url");
+        assert!(is_allowed_external_open_url(&codex));
+
+        let claude =
+            Url::parse("claude://code/new?folder=%2Ftmp%2Fproject").expect("valid Claude Code url");
+        assert!(is_allowed_external_open_url(&claude));
+
+        let obsolete_claude =
+            Url::parse("claude-cli://open?cwd=%2Ftmp%2Fproject").expect("valid obsolete URL");
+        assert!(!is_allowed_external_open_url(&obsolete_claude));
+
+        let file = Url::parse("file:///tmp/foo").expect("valid file url");
+        assert!(!is_allowed_external_open_url(&file));
+
+        let custom = Url::parse("custom-scheme://foo").expect("valid custom url");
+        assert!(!is_allowed_external_open_url(&custom));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn status_item_actions_share_desktop_menu_routing() {
+        assert_eq!(
+            desktop_menu_action(ABOUT_MENU_ID),
+            Some(DesktopMenuAction::About)
+        );
+        assert_eq!(
+            desktop_menu_action(SHOW_MAIN_WINDOW_MENU_ID),
+            Some(DesktopMenuAction::ShowMainWindow)
+        );
+        assert_eq!(
+            desktop_menu_action(OPEN_LOGS_FOLDER_MENU_ID),
+            Some(DesktopMenuAction::OpenLogsFolder)
+        );
+        assert_eq!(
+            desktop_menu_action(CHECK_UPDATES_MENU_ID),
+            Some(DesktopMenuAction::CheckUpdates)
+        );
+        assert_eq!(
+            desktop_menu_action(QUIT_FROM_STATUS_ITEM_MENU_ID),
+            Some(DesktopMenuAction::Quit)
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            desktop_menu_action(DOCK_MODE_MENU_ID),
+            Some(DesktopMenuAction::ToggleDockMode)
+        );
+        assert_eq!(desktop_menu_action("unknown"), None);
+    }
+
+    #[test]
+    fn dock_mode_round_trips_through_json_settings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(DOCK_MODE_SETTINGS_FILE_NAME);
+
+        write_dock_mode(&path, DockMode::Hybrid).expect("write hybrid");
+        assert_eq!(read_dock_mode(&path), DockMode::Hybrid);
+
+        write_dock_mode(&path, DockMode::Dock).expect("write dock");
+        assert_eq!(read_dock_mode(&path), DockMode::Dock);
+    }
+
+    #[test]
+    fn write_dock_mode_preserves_other_settings_keys() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(DOCK_MODE_SETTINGS_FILE_NAME);
+        fs::write(&path, r#"{"other":"value"}"#).expect("seed settings");
+
+        write_dock_mode(&path, DockMode::Hybrid).expect("write hybrid");
+
+        let content = fs::read_to_string(&path).expect("read settings");
+        let value: serde_json::Value = serde_json::from_str(&content).expect("valid json");
+        assert_eq!(value["dock_mode"], "hybrid");
+        assert_eq!(value["other"], "value");
+    }
+
+    #[test]
+    fn dock_mode_falls_back_to_dock_for_unreadable_settings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("missing.json");
+        assert_eq!(read_dock_mode(&missing), DockMode::Dock);
+
+        let corrupt = dir.path().join("corrupt.json");
+        fs::write(&corrupt, "not json").expect("write corrupt settings");
+        assert_eq!(read_dock_mode(&corrupt), DockMode::Dock);
+
+        let other_key = dir.path().join("other.json");
+        fs::write(&other_key, r#"{"other":"hybrid"}"#).expect("write settings");
+        assert_eq!(read_dock_mode(&other_key), DockMode::Dock);
+    }
+
+    #[test]
+    fn dock_mode_from_checked_reflects_the_tray_mark() {
+        assert_eq!(DockMode::from_checked(true), DockMode::Hybrid);
+        assert_eq!(DockMode::from_checked(false), DockMode::Dock);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn hybrid_dock_presence_is_accessory_only_while_window_is_hidden() {
+        assert_eq!(
+            dock_presence_for(DockMode::Hybrid, false),
+            DockPresence::Accessory
+        );
+        assert_eq!(
+            dock_presence_for(DockMode::Hybrid, true),
+            DockPresence::Regular
+        );
+        assert_eq!(
+            dock_presence_for(DockMode::Dock, false),
+            DockPresence::Regular
+        );
+        assert_eq!(
+            dock_presence_for(DockMode::Dock, true),
+            DockPresence::Regular
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[derive(Clone, Default)]
+    struct FakeMainWindow {
+        calls: std::sync::Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    impl MainWindowVisibility for FakeMainWindow {
+        fn hide_main_window(&self) {
+            self.calls.lock().expect("lock calls").push("hide");
+        }
+
+        fn show_main_window(&self) {
+            self.calls.lock().expect("lock calls").push("show");
+        }
+
+        fn unminimize_main_window(&self) {
+            self.calls.lock().expect("lock calls").push("unminimize");
+        }
+
+        fn focus_main_window(&self) {
+            self.calls.lock().expect("lock calls").push("focus");
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn close_hides_the_existing_window_and_show_restores_it() {
+        let window = FakeMainWindow::default();
+        let close_calls = window.calls.clone();
+
+        hide_main_window_on_close(&window, move || {
+            close_calls
+                .lock()
+                .expect("lock close calls")
+                .push("prevent_close");
+        });
+        restore_main_window(&window);
+
+        assert_eq!(
+            *window.calls.lock().expect("lock calls for assertion"),
+            vec!["prevent_close", "hide", "show", "unminimize", "focus"]
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn tray_setup_failure_does_not_register_window_lifecycle() {
+        let calls = std::cell::RefCell::new(Vec::new());
+
+        let result = setup_close_to_tray_with(
+            &mut (),
+            |_| {
+                calls.borrow_mut().push("tray");
+                Err(io::Error::other("tray setup failed").into())
+            },
+            |_| {
+                calls.borrow_mut().push("lifecycle");
+                Ok(())
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(*calls.borrow(), vec!["tray"]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_status_item_icon_is_a_key_only_template() {
+        let icon = macos_status_item_icon().expect("load macOS status item icon");
+
+        assert_eq!((icon.width(), icon.height()), (32, 32));
+        assert_eq!(image_alpha_at(&icon, 3, 3), 0, "tile stays transparent");
+        assert!(image_alpha_at(&icon, 8, 8) > 200, "key head is opaque");
+        assert_eq!(image_alpha_at(&icon, 20, 9), 0, "keyhole is transparent");
+        assert!(image_alpha_at(&icon, 16, 24) > 200, "key stem is opaque");
+    }
+
+    #[cfg(target_os = "macos")]
+    fn image_alpha_at(icon: &tauri::image::Image<'_>, x: u32, y: u32) -> u8 {
+        let offset = ((y * icon.width() + x) * 4 + 3) as usize;
+        icon.rgba()[offset]
+    }
+
+    #[test]
+    fn set_sidecar_port_updates_and_clears_state() {
+        let state = SidecarState::default();
+        set_sidecar_port(&state, Some(18080));
+        let port = state
+            .backend_port
+            .lock()
+            .expect("lock backend_port after set")
+            .to_owned();
+        assert_eq!(port, Some(18080));
+
+        set_sidecar_port(&state, None);
+        let cleared = state
+            .backend_port
+            .lock()
+            .expect("lock backend_port after clear")
+            .to_owned();
+        assert_eq!(cleared, None);
+    }
+
+    #[test]
+    fn handle_sidecar_terminated_clears_port_and_marks_startup() {
+        let state = SidecarState::default();
+        set_sidecar_port(&state, Some(18080));
+        *state
+            .active_generation
+            .lock()
+            .expect("lock active_generation") = Some(1);
+        *state
+            .stopping_generation
+            .lock()
+            .expect("lock stopping_generation") = Some(1);
+        let startup_handled = AtomicBool::new(false);
+
+        assert!(handle_sidecar_terminated(&state, &startup_handled, 1));
+        assert_eq!(
+            state
+                .backend_port
+                .lock()
+                .expect("lock backend_port after terminated")
+                .to_owned(),
+            None
+        );
+        assert!(startup_handled.load(Ordering::SeqCst));
+        assert_eq!(
+            state
+                .stopping_generation
+                .lock()
+                .expect("lock stopping_generation after terminated")
+                .to_owned(),
+            None
+        );
+
+        // Termination handling is idempotent for state and should only
+        // report first-time transition once.
+        assert!(!handle_sidecar_terminated(&state, &startup_handled, 1));
+    }
+
+    #[test]
+    fn launcher_terminated_after_startup_preserves_port() {
+        let state = SidecarState::default();
+        set_sidecar_port(&state, Some(18080));
+        *state
+            .active_generation
+            .lock()
+            .expect("lock active_generation") = Some(1);
+
+        handle_launcher_terminated_after_startup(&state, 1);
+
+        assert_eq!(
+            state
+                .backend_port
+                .lock()
+                .expect("lock backend_port after launcher terminated")
+                .to_owned(),
+            Some(18080)
+        );
+        assert_eq!(
+            state
+                .active_generation
+                .lock()
+                .expect("lock active_generation after launcher terminated")
+                .to_owned(),
+            None
+        );
+        assert!(sidecar_generation_terminated(&state, 1));
+    }
+
+    #[test]
+    fn restart_after_stop_timeout_is_consumed_for_matching_generation() {
+        let state = SidecarState::default();
+
+        mark_restart_after_stop_timeout(&state, 2);
+
+        assert!(!take_restart_after_stop_timeout_if_current(&state, 1));
+        assert!(take_restart_after_stop_timeout_if_current(&state, 2));
+        assert!(!take_restart_after_stop_timeout_if_current(&state, 2));
+    }
+
+    #[test]
+    fn update_stop_retires_running_launch() {
+        let state = SidecarState::default();
+        state.next_generation.store(1, Ordering::SeqCst);
+        assert!(launch_is_current(&state, 1));
+
+        begin_update_stop_wait(&state);
+        assert!(!launch_is_current(&state, 1));
+        assert!(!launch_superseded(&state, 1));
+
+        finish_update_stop_wait(&state, true);
+        assert!(launch_superseded(&state, 1));
+
+        let replacement = state.next_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        assert!(launch_is_current(&state, replacement));
+        assert!(launch_superseded(&state, 1));
+    }
+
+    #[test]
+    fn failed_update_stop_keeps_launch_current() {
+        let state = SidecarState::default();
+        state.next_generation.store(7, Ordering::SeqCst);
+        begin_update_stop_wait(&state);
+        finish_update_stop_wait(&state, false);
+        assert!(launch_is_current(&state, 7));
+        assert!(!launch_superseded(&state, 7));
+    }
+
+    #[test]
+    fn launch_survives_update_stop_waits_for_outcome() {
+        for (stopped, survives) in [(true, false), (false, true)] {
+            let state = Arc::new(SidecarState::default());
+            state.next_generation.store(1, Ordering::SeqCst);
+            begin_update_stop_wait(&state);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let waiter = Arc::clone(&state);
+            thread::spawn(move || {
+                let _ = tx.send(with_current_launch(&waiter, 1, || ()).is_some());
+            });
+            assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
+            finish_update_stop_wait(&state, stopped);
+            assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(survives));
+        }
+    }
+
+    #[test]
+    fn launch_survives_update_stop_returns_at_once_without_stop() {
+        let state = SidecarState::default();
+        state.next_generation.store(3, Ordering::SeqCst);
+        assert_eq!(with_current_launch(&state, 3, || 7), Some(7));
+        assert_eq!(with_current_launch(&state, 2, || 7), None);
+    }
+
+    #[test]
+    fn update_stop_waits_for_launch_action() {
+        let state = Arc::new(SidecarState::default());
+        state.next_generation.store(1, Ordering::SeqCst);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let stopper = Arc::clone(&state);
+        with_current_launch(&state, 1, || {
+            thread::spawn(move || {
+                begin_update_stop_wait(&stopper);
+                let _ = tx.send(());
+            });
+            assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
+        });
+        assert!(rx.recv_timeout(Duration::from_secs(5)).is_ok());
+    }
+
+    #[test]
+    fn restart_after_stop_timeout_waits_for_active_update_stop_waiter() {
+        let state = SidecarState::default();
+
+        mark_restart_after_stop_timeout(&state, 2);
+        begin_update_stop_wait(&state);
+
+        assert!(!take_restart_after_stop_timeout_for_terminated_sidecar(
+            &state, 2
+        ));
+
+        end_update_stop_wait(&state);
+
+        assert!(take_restart_after_stop_timeout_for_terminated_sidecar(
+            &state, 2
+        ));
+    }
+
+    #[test]
+    fn install_downloaded_update_installs_after_backend_stop() {
+        let events = Mutex::new(Vec::new());
+
+        let result = install_downloaded_update(
+            b"update-bytes".to_vec(),
+            Some(true),
+            || events.lock().expect("lock events").push("restart"),
+            |bytes| {
+                assert_eq!(bytes, b"update-bytes");
+                events.lock().expect("lock events").push("install");
+                Ok::<(), ()>(())
+            },
+        );
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(events.lock().expect("lock events").as_slice(), ["install"]);
+    }
+
+    #[test]
+    fn install_downloaded_update_can_install_without_backend_stop_result() {
+        let events = Mutex::new(Vec::new());
+
+        let result = install_downloaded_update(
+            b"update-bytes".to_vec(),
+            None,
+            || events.lock().expect("lock events").push("restart"),
+            |bytes| {
+                assert_eq!(bytes, b"update-bytes");
+                events.lock().expect("lock events").push("install");
+                Ok::<(), ()>(())
+            },
+        );
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(events.lock().expect("lock events").as_slice(), ["install"]);
+    }
+
+    #[test]
+    fn install_downloaded_update_does_not_restart_after_stop_timeout() {
+        let events = Mutex::new(Vec::new());
+
+        let result = install_downloaded_update(
+            b"update-bytes".to_vec(),
+            Some(false),
+            || events.lock().expect("lock events").push("restart"),
+            |_| {
+                events.lock().expect("lock events").push("install");
+                Ok::<(), ()>(())
+            },
+        );
+
+        assert_eq!(
+            result,
+            Err(InstallDownloadedUpdateError::BackendStopTimedOut)
+        );
+        assert!(events.lock().expect("lock events").is_empty());
+    }
+
+    #[test]
+    fn install_downloaded_update_restarts_backend_after_install_failure() {
+        let events = Mutex::new(Vec::new());
+
+        let result = install_downloaded_update(
+            b"update-bytes".to_vec(),
+            Some(true),
+            || events.lock().expect("lock events").push("restart"),
+            |bytes| {
+                assert_eq!(bytes, b"update-bytes");
+                events.lock().expect("lock events").push("install");
+                Err::<(), &str>("install failed")
+            },
+        );
+
+        assert_eq!(
+            result,
+            Err(InstallDownloadedUpdateError::Install("install failed"))
+        );
+        assert_eq!(
+            events.lock().expect("lock events").as_slice(),
+            ["install", "restart"]
+        );
+    }
+
+    #[test]
+    fn stop_launcher_retries_startup_refusal_then_succeeds() {
+        let attempts = Mutex::new(VecDeque::from([
+            StopLauncherResult::RetryableStartup,
+            StopLauncherResult::Success,
+        ]));
+        let sleeps = Mutex::new(Vec::new());
+
+        let result = retry_stop_launcher(
+            Instant::now() + Duration::from_secs(10),
+            Duration::from_secs(2),
+            |_| {
+                attempts
+                    .lock()
+                    .expect("lock attempts")
+                    .pop_front()
+                    .expect("configured attempt")
+            },
+            |duration| sleeps.lock().expect("lock sleeps").push(duration),
+        );
+
+        assert_eq!(result, StopLauncherResult::Success);
+        assert!(attempts.lock().expect("lock attempts").is_empty());
+        assert_eq!(
+            sleeps.lock().expect("lock sleeps").as_slice(),
+            [Duration::from_secs(2)]
+        );
+    }
+
+    #[test]
+    fn stop_launcher_does_not_retry_fatal_failure() {
+        let attempts = Mutex::new(0);
+        let sleeps = Mutex::new(Vec::new());
+
+        let result = retry_stop_launcher(
+            Instant::now() + Duration::from_secs(10),
+            Duration::from_secs(2),
+            |_| {
+                *attempts.lock().expect("lock attempts") += 1;
+                StopLauncherResult::Fatal
+            },
+            |duration| sleeps.lock().expect("lock sleeps").push(duration),
+        );
+
+        assert_eq!(result, StopLauncherResult::Fatal);
+        assert_eq!(*attempts.lock().expect("lock attempts"), 1);
+        assert!(sleeps.lock().expect("lock sleeps").is_empty());
+    }
+
+    #[test]
+    fn stop_launcher_stops_retrying_when_deadline_is_exhausted() {
+        let attempts = Mutex::new(0);
+
+        let result = retry_stop_launcher(
+            Instant::now(),
+            Duration::from_secs(2),
+            |_| {
+                *attempts.lock().expect("lock attempts") += 1;
+                StopLauncherResult::RetryableStartup
+            },
+            |_| panic!("deadline must prevent another retry"),
+        );
+
+        assert_eq!(result, StopLauncherResult::RetryableStartup);
+        assert_eq!(*attempts.lock().expect("lock attempts"), 1);
+    }
+
+    #[test]
+    fn stop_launcher_classifies_only_startup_refusal_as_retryable() {
+        assert_eq!(
+            classify_stop_launcher_termination(
+                Some(1),
+                "serve stop: a server is starting; retry once it is ready",
+            ),
+            StopLauncherResult::RetryableStartup
+        );
+        assert_eq!(
+            classify_stop_launcher_termination(
+                Some(1),
+                "serve stop: stopping pid 42: access denied",
+            ),
+            StopLauncherResult::Fatal
+        );
+        assert_eq!(
+            classify_stop_launcher_termination(Some(0), ""),
+            StopLauncherResult::Success
+        );
+    }
+
+    #[test]
+    fn stop_launcher_treats_command_error_as_fatal() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(2);
+        tx.try_send(CommandEvent::Error("wait failed".to_string()))
+            .expect("send command error");
+        tx.try_send(CommandEvent::Terminated(
+            tauri_plugin_shell::process::TerminatedPayload {
+                code: Some(0),
+                signal: None,
+            },
+        ))
+        .expect("send misleading success");
+
+        assert_eq!(
+            wait_for_stop_launcher(&mut rx, Duration::from_secs(1)),
+            StopLauncherResult::Fatal
+        );
+    }
+
+    #[test]
+    fn finish_successful_update_restarts_backend_when_restart_is_declined() {
+        let events = Mutex::new(Vec::new());
+
+        finish_successful_update(
+            true,
+            false,
+            || events.lock().expect("lock events").push("emit-restart"),
+            || events.lock().expect("lock events").push("restart-app"),
+            || events.lock().expect("lock events").push("restart-backend"),
+        );
+
+        assert_eq!(
+            events.lock().expect("lock events").as_slice(),
+            ["restart-backend"]
+        );
+    }
+
+    #[test]
+    fn shell_login_env_flag_matches_shell_compatibility() {
+        assert_eq!(shell_login_env_flag("/bin/sh"), "-c");
+        assert_eq!(shell_login_env_flag("/usr/bin/dash"), "-c");
+        assert_eq!(shell_login_env_flag("/opt/homebrew/bin/fish"), "-lc");
+        assert_eq!(shell_login_env_flag("/bin/bash"), "-lic");
+        assert_eq!(shell_login_env_flag("/bin/zsh"), "-lic");
+    }
+
+    #[test]
+    fn version_response_requires_identity_fields() {
+        let valid = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"version\":\"1.0.0\",\"commit\":\"abc\",\"build_date\":\"2026-01-01T00:00:00Z\",\"api_version\":1,\"data_version\":50}";
+        assert!(version_response_looks_valid(valid));
+
+        let missing = b"HTTP/1.1 200 OK\r\n\r\n{\"version\":\"1.0.0\",\"commit\":\"abc\",\"build_date\":\"2026-01-01T00:00:00Z\"}";
+        assert!(!version_response_looks_valid(missing));
+
+        let wrong_status = b"HTTP/1.1 404 Not Found\r\n\r\n{}";
+        assert!(!version_response_looks_valid(wrong_status));
+    }
+
+    #[test]
+    fn wait_for_server_at_accepts_auth_challenge() {
+        let response =
+            b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 13\r\nConnection: close\r\n\r\nUnauthorized\n";
+        let (port, request) = spawn_response_server(response);
+        let ready = wait_for_server_at(ipv4_endpoint(port), Duration::from_secs(1));
+        let request = request.join().expect("response server should finish");
+
+        assert!(request.starts_with("GET /api/v1/version HTTP/1.1\r\n"));
+        assert!(request.contains(&format!("Host: {HOST}:{port}\r\n")));
+        assert!(!request.contains("Authorization:"));
+        assert!(ready);
+    }
+
+    #[test]
+    fn wait_for_server_stopped_rejects_auth_challenge() {
+        let response = b"HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\nUnauthorized\n";
+        let (port, request) = spawn_response_server(response);
+        let stopped = wait_for_server_stopped(ipv4_endpoint(port), Duration::ZERO);
+        request.join().expect("response server should finish");
+
+        assert!(!stopped);
+    }
+
+    #[test]
+    fn wait_for_server_stopped_ignores_another_address_family() {
+        let response = b"HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\nUnauthorized\n";
+        let (port, unrelated_server) =
+            spawn_response_server_on(Ipv6Addr::LOCALHOST.into(), response);
+
+        let stopped = wait_for_server_stopped(ipv4_endpoint(port), Duration::ZERO);
+        if !unrelated_server.is_finished() {
+            let request = format!(
+                "GET /cleanup HTTP/1.1\r\nHost: {IPV6_HOST}:{port}\r\nConnection: close\r\n\r\n"
+            );
+            let _ = read_http_response(
+                SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::LOCALHOST, port, 0, 0)),
+                request.as_str(),
+                Duration::from_secs(1),
+            );
+        }
+        let unrelated_request = unrelated_server.join().expect("join unrelated server");
+
+        assert!(stopped);
+        assert!(unrelated_request.starts_with("GET /cleanup HTTP/1.1\r\n"));
+    }
+
+    #[test]
+    fn backend_endpoint_ready_preserves_status_boundaries() {
+        let cases: &[(&str, &[u8], bool)] = &[
+            (
+                "HTTP/1.0 401",
+                b"HTTP/1.0 401 Unauthorized\r\nConnection: close\r\n\r\nUnauthorized\n",
+                true,
+            ),
+            (
+                "HTTP/1.1 401",
+                b"HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\nUnauthorized\n",
+                true,
+            ),
+            (
+                "valid 200",
+                b"HTTP/1.1 200 OK\r\n\r\n{\"version\":\"1.0.0\",\"commit\":\"abc\",\"build_date\":\"2026-01-01T00:00:00Z\",\"api_version\":1,\"data_version\":50}",
+                true,
+            ),
+            ("unrelated HTML 200", b"HTTP/1.1 200 OK\r\n\r\n<html></html>", false),
+            ("403", b"HTTP/1.1 403 Forbidden\r\n\r\n", false),
+            ("503", b"HTTP/1.1 503 Service Unavailable\r\n\r\n", false),
+            ("HTTP/1.1 4010", b"HTTP/1.1 4010 Invalid\r\n\r\n", false),
+        ];
+
+        for &(name, response, expected) in cases {
+            let (port, request) = spawn_response_server(response);
+            let ready = backend_endpoint_ready(port);
+            request.join().expect("response server should finish");
+            assert_eq!(ready, expected, "{name}");
+        }
+
+        let (port, request) = spawn_response_server(b"");
+        let ready = backend_endpoint_ready(port);
+        request.join().expect("response server should finish");
+        assert!(!ready, "empty response");
+    }
+
+    #[test]
+    fn readiness_uses_the_reported_ipv6_endpoint() {
+        let ipv6_listener =
+            TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).expect("bind IPv6 response server");
+        let port = ipv6_listener.local_addr().expect("IPv6 address").port();
+        let ipv4_listener =
+            TcpListener::bind((Ipv4Addr::LOCALHOST, port)).expect("bind same-port IPv4 listener");
+        ipv4_listener
+            .set_nonblocking(true)
+            .expect("set IPv4 listener nonblocking");
+        let ipv6_server = spawn_response_server_from_listener(
+            ipv6_listener,
+            b"HTTP/1.1 200 OK\r\n\r\n{\"version\":\"1.0.0\",\"commit\":\"abc\",\"build_date\":\"2026-01-01T00:00:00Z\",\"api_version\":1,\"data_version\":50}",
+        );
+
+        assert!(backend_endpoint_ready_at(BackendEndpoint::new(
+            BackendHost::Ipv6,
+            port,
+        )));
+        assert!(matches!(
+            ipv4_listener.accept(),
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock
+        ));
+        ipv6_server.join().expect("join IPv6 response server");
+    }
+
+    #[test]
+    fn localhost_readiness_keeps_authority_on_an_ipv6_connection() {
+        let response = b"HTTP/1.1 200 OK\r\n\r\n{\"version\":\"1.0.0\",\"commit\":\"abc\",\"build_date\":\"2026-01-01T00:00:00Z\",\"api_version\":1,\"data_version\":50}";
+        let (port, request) = spawn_response_server_on(Ipv6Addr::LOCALHOST.into(), response);
+
+        assert!(backend_endpoint_ready_at(BackendEndpoint::new(
+            BackendHost::Localhost,
+            port,
+        )));
+        assert!(request
+            .join()
+            .expect("IPv6 response server should finish")
+            .contains(&format!("Host: {LOCALHOST}:{port}\r\n")));
+    }
+
+    #[test]
+    fn backend_liveness_probe_uses_ping_endpoint() {
+        let response = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"ok\":true,\"healthy\":true,\"service\":\"agentsview\",\"pid\":42}";
+        let (port, request) = spawn_response_server(response);
+        let ready = backend_liveness_ready(port);
+        let request = request.join().expect("response server should finish");
+
+        assert!(request.starts_with("GET /api/ping HTTP/1.1\r\n"));
+        assert!(request.contains(&format!("Host: {HOST}:{port}\r\n")));
+        assert!(!request.contains("/api/v1/version"));
+        assert!(!request.contains("Authorization:"));
+        assert!(ready);
+    }
+
+    #[test]
+    fn backend_liveness_probe_connects_to_ipv6_loopback() {
+        let response = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"ok\":true,\"healthy\":true,\"service\":\"agentsview\",\"pid\":42}";
+        let (port, request) = spawn_response_server_on(Ipv6Addr::LOCALHOST.into(), response);
+        let host = backend_liveness_host(port);
+        let request = request.join().expect("IPv6 response server should finish");
+
+        assert!(request.starts_with("GET /api/ping HTTP/1.1\r\n"));
+        assert!(request.contains(&format!("Host: {IPV6_HOST}:{port}\r\n")));
+        assert_eq!(host, Some(BackendHost::Ipv6));
+    }
+
+    #[test]
+    fn backend_liveness_probe_preserves_status_boundaries() {
+        let cases: &[(&str, &[u8], bool)] = &[
+            (
+                "HTTP/1.0 401",
+                b"HTTP/1.0 401 Unauthorized\r\nConnection: close\r\n\r\nUnauthorized\n",
+                true,
+            ),
+            (
+                "HTTP/1.1 401",
+                b"HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\nUnauthorized\n",
+                true,
+            ),
+            (
+                "healthy agentsview",
+                b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"ok\":true,\"healthy\":true,\"service\":\"agentsview\",\"pid\":42}",
+                true,
+            ),
+            (
+                "stalled agentsview",
+                b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"ok\":true,\"healthy\":false,\"service\":\"agentsview\",\"pid\":42}",
+                true,
+            ),
+            (
+                "not ok",
+                b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"ok\":false,\"service\":\"agentsview\"}",
+                false,
+            ),
+            (
+                "wrong service",
+                b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"ok\":true,\"service\":\"other\"}",
+                false,
+            ),
+            (
+                "unrelated HTML 200",
+                b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n<html></html>",
+                false,
+            ),
+            ("403", b"HTTP/1.1 403 Forbidden\r\n\r\n", false),
+            ("503", b"HTTP/1.1 503 Service Unavailable\r\n\r\n", false),
+            ("HTTP/1.1 4010", b"HTTP/1.1 4010 Invalid\r\n\r\n", false),
+        ];
+
+        for &(name, response, expected) in cases {
+            let (port, request) = spawn_response_server(response);
+            let ready = backend_liveness_ready(port);
+            request.join().expect("response server should finish");
+            assert_eq!(ready, expected, "{name}");
+        }
+
+        let (port, request) = spawn_response_server(b"");
+        let ready = backend_liveness_ready(port);
+        request.join().expect("response server should finish");
+        assert!(!ready, "empty response");
+    }
+
+    fn spawn_response_server(response: &[u8]) -> (u16, std::thread::JoinHandle<String>) {
+        spawn_response_server_on(Ipv4Addr::LOCALHOST.into(), response)
+    }
+
+    fn spawn_response_server_on(
+        host: std::net::IpAddr,
+        response: &[u8],
+    ) -> (u16, std::thread::JoinHandle<String>) {
+        let listener = TcpListener::bind(SocketAddr::new(host, 0)).expect("bind response server");
+        let port = listener
+            .local_addr()
+            .expect("get response server address")
+            .port();
+        (
+            port,
+            spawn_response_server_from_listener(listener, response),
+        )
+    }
+
+    fn spawn_response_server_from_listener(
+        listener: TcpListener,
+        response: &[u8],
+    ) -> std::thread::JoinHandle<String> {
+        listener
+            .set_nonblocking(true)
+            .expect("set response server nonblocking");
+        let response = response.to_vec();
+        thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(err)
+                        if err.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+                    {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(err) => panic!("accept response request: {err}"),
+                }
+            };
+            stream
+                .set_nonblocking(false)
+                .expect("set response stream blocking");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .expect("set response read timeout");
+
+            let mut request = Vec::new();
+            let mut buf = [0; 1024];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(size) => {
+                        request.extend_from_slice(&buf[..size]);
+                        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    Err(err)
+                        if err.kind() == io::ErrorKind::TimedOut
+                            || err.kind() == io::ErrorKind::WouldBlock =>
+                    {
+                        break;
+                    }
+                    Err(err) => panic!("read response request: {err}"),
+                }
+            }
+
+            if !response.is_empty() {
+                stream.write_all(&response).expect("write response");
+            }
+            String::from_utf8_lossy(&request).into_owned()
+        })
+    }
+
+    #[test]
+    fn should_probe_login_shell_skips_windows_or_explicit_skip() {
+        assert!(should_probe_login_shell(None, false));
+        assert!(!should_probe_login_shell(Some(&OsString::from("1")), false));
+        assert!(!should_probe_login_shell(None, true));
+    }
+
+    #[cfg(unix)]
+    fn run_sidecar_env_cache_child(
+        test_name: &str,
+        child_marker: &str,
+        script_body: &str,
+    ) -> Vec<u8> {
+        let dir = tempdir().expect("tempdir");
+        let shell = dir.path().join("login-shell-probe");
+        let counter = dir.path().join("probe-count");
+        fs::write(&shell, script_body).expect("write login shell probe");
+        let mut permissions = fs::metadata(&shell)
+            .expect("read login shell probe metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&shell, permissions).expect("make login shell probe executable");
+
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", test_name, "--nocapture"])
+            .env(child_marker, "1")
+            .env("SHELL", &shell)
+            .env("HOME", dir.path())
+            .env("AGENTSVIEW_LOGIN_SHELL_CACHE_COUNTER", &counter)
+            .env_remove("AGENTSVIEW_DESKTOP_PATH")
+            .env_remove("AGENTSVIEW_DESKTOP_SKIP_LOGIN_SHELL_ENV")
+            .env_remove("SHELL_CACHE_RETRY")
+            .env_remove("SHELL_CACHE_VALUE")
+            .output()
+            .expect("run isolated login shell cache test");
+
+        assert!(
+            output.status.success(),
+            "isolated test failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        fs::read(counter).expect("read login shell probe count")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_env_caches_successful_login_shell_probe() {
+        const CHILD_MARKER: &str = "AGENTSVIEW_LOGIN_SHELL_CACHE_SUCCESS_CHILD";
+        if std::env::var_os(CHILD_MARKER).is_some() {
+            let first: HashMap<_, _> = sidecar_env().into_iter().collect();
+            let second: HashMap<_, _> = sidecar_env().into_iter().collect();
+            let key = OsString::from("SHELL_CACHE_VALUE");
+            let expected = OsString::from("first");
+            assert_eq!(first.get(&key), Some(&expected));
+            assert_eq!(second.get(&key), Some(&expected));
+            return;
+        }
+
+        let count = run_sidecar_env_cache_child(
+            "tests::sidecar_env_caches_successful_login_shell_probe",
+            CHILD_MARKER,
+            concat!(
+                "#!/bin/sh\n",
+                "printf x >> \"$AGENTSVIEW_LOGIN_SHELL_CACHE_COUNTER\"\n",
+                "export SHELL_CACHE_VALUE=first\n",
+                "exec /usr/bin/env -0\n",
+            ),
+        );
+        assert_eq!(count, b"x");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_env_caches_failed_login_shell_probe() {
+        const CHILD_MARKER: &str = "AGENTSVIEW_LOGIN_SHELL_CACHE_FAILURE_CHILD";
+        if std::env::var_os(CHILD_MARKER).is_some() {
+            let first: HashMap<_, _> = sidecar_env().into_iter().collect();
+            let second: HashMap<_, _> = sidecar_env().into_iter().collect();
+            let key = OsString::from("SHELL_CACHE_RETRY");
+            assert_eq!(first.get(&key), None);
+            assert_eq!(second.get(&key), None);
+            return;
+        }
+
+        let count = run_sidecar_env_cache_child(
+            "tests::sidecar_env_caches_failed_login_shell_probe",
+            CHILD_MARKER,
+            concat!(
+                "#!/bin/sh\n",
+                "printf x >> \"$AGENTSVIEW_LOGIN_SHELL_CACHE_COUNTER\"\n",
+                "count=$(wc -c < \"$AGENTSVIEW_LOGIN_SHELL_CACHE_COUNTER\")\n",
+                "if [ \"$count\" -gt 1 ]; then\n",
+                "  export SHELL_CACHE_RETRY=unexpected\n",
+                "  exec /usr/bin/env -0\n",
+                "fi\n",
+                "exit 42\n",
+            ),
+        );
+        assert_eq!(count, b"x");
+    }
+
+    #[test]
+    fn build_sidecar_env_applies_precedence_and_path_override() {
+        let merged = build_sidecar_env(
+            vec![
+                (OsString::from("PATH"), OsString::from("/bin")),
+                (OsString::from("HOME"), OsString::from("/base")),
+            ],
+            vec![(OsString::from("HOME"), OsString::from("/login"))],
+            vec![(OsString::from("HOME"), OsString::from("/desktop"))],
+            Some(OsString::from("/custom/path")),
+            false,
+            false,
+        );
+        let map: HashMap<_, _> = merged.into_iter().collect();
+        assert_eq!(
+            map.get(&OsString::from("HOME")),
+            Some(&OsString::from("/desktop"))
+        );
+        assert_eq!(
+            map.get(&OsString::from("PATH")),
+            Some(&OsString::from("/custom/path"))
+        );
+    }
+
+    #[test]
+    fn build_sidecar_env_supports_case_insensitive_windows_keys() {
+        let merged = build_sidecar_env(
+            vec![(OsString::from("Path"), OsString::from("A"))],
+            vec![(OsString::from("PATH"), OsString::from("B"))],
+            vec![],
+            Some(OsString::from("C")),
+            true,
+            false,
+        );
+        let map: HashMap<_, _> = merged.into_iter().collect();
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get(&OsString::from("PATH")), Some(&OsString::from("C")));
+    }
+
+    #[test]
+    fn parse_desktop_env_content_ignores_comments_and_invalid_lines() {
+        let parsed = parse_desktop_env_content(
+            r#"
+            # comment
+            PATH=/custom/bin
+            BADLINE
+            =missingkey
+            FOO = bar
+            "#,
+        );
+        let map: HashMap<_, _> = parsed.into_iter().collect();
+        assert_eq!(
+            map.get(&OsString::from("PATH")),
+            Some(&OsString::from("/custom/bin"))
+        );
+        assert_eq!(
+            map.get(&OsString::from("FOO")),
+            Some(&OsString::from("bar"))
+        );
+        assert!(!map.contains_key(&OsString::from("BADLINE")));
+    }
+
+    #[test]
+    fn merge_desktop_env_pairs_preserves_non_marker_windows_values() {
+        let merged = build_sidecar_env(
+            Vec::new(),
+            Vec::new(),
+            vec![(OsString::from("HOME"), OsString::from("/base"))],
+            None,
+            false,
+            true,
+        );
+        let map: HashMap<_, _> = merged.into_iter().collect();
+        assert_eq!(
+            map.get(&OsString::from("HOME")),
+            Some(&OsString::from("/base"))
+        );
+    }
+
+    #[test]
+    fn merge_desktop_env_pairs_translates_windows_wsl_marker() {
+        let merged = build_sidecar_env(
+            Vec::new(),
+            Vec::new(),
+            vec![(
+                OsString::from("CODEX_SESSIONS_DIR"),
+                OsString::from("wsl:Ubuntu:/home/me/.codex/sessions"),
+            )],
+            None,
+            false,
+            true,
+        );
+        let map: HashMap<_, _> = merged.into_iter().collect();
+        assert_eq!(
+            map.get(&OsString::from("CODEX_SESSIONS_DIR")),
+            Some(&OsString::from(
+                r"\\wsl.localhost\Ubuntu\home\me\.codex\sessions"
+            ))
+        );
+    }
+
+    #[test]
+    fn merge_desktop_env_pairs_preserves_malformed_wsl_marker() {
+        let merged = build_sidecar_env(
+            Vec::new(),
+            Vec::new(),
+            vec![(
+                OsString::from("CODEX_SESSIONS_DIR"),
+                OsString::from("wsl::/home/me/.codex/sessions"),
+            )],
+            None,
+            false,
+            true,
+        );
+        let map: HashMap<_, _> = merged.into_iter().collect();
+        assert_eq!(
+            map.get(&OsString::from("CODEX_SESSIONS_DIR")),
+            Some(&OsString::from("wsl::/home/me/.codex/sessions"))
+        );
+    }
+
+    #[test]
+    fn merge_desktop_env_pairs_preserves_extra_colon_in_wsl_marker() {
+        let merged = build_sidecar_env(
+            Vec::new(),
+            Vec::new(),
+            vec![(
+                OsString::from("CODEX_SESSIONS_DIR"),
+                OsString::from("wsl:Ubuntu:C:/tmp"),
+            )],
+            None,
+            false,
+            true,
+        );
+        let map: HashMap<_, _> = merged.into_iter().collect();
+        assert_eq!(
+            map.get(&OsString::from("CODEX_SESSIONS_DIR")),
+            Some(&OsString::from("wsl:Ubuntu:C:/tmp"))
+        );
+    }
+
+    #[test]
+    fn merge_desktop_env_pairs_preserves_url_like_wsl_marker() {
+        let merged = build_sidecar_env(
+            Vec::new(),
+            Vec::new(),
+            vec![(
+                OsString::from("CODEX_SESSIONS_DIR"),
+                OsString::from("wsl:http://example"),
+            )],
+            None,
+            false,
+            true,
+        );
+        let map: HashMap<_, _> = merged.into_iter().collect();
+        assert_eq!(
+            map.get(&OsString::from("CODEX_SESSIONS_DIR")),
+            Some(&OsString::from("wsl:http://example"))
+        );
+    }
+
+    #[test]
+    fn resolve_home_dir_from_lookup_honors_platform_precedence() {
+        let mut lookup = HashMap::new();
+        lookup.insert("HOME".to_string(), OsString::from("/home/a"));
+        lookup.insert("USERPROFILE".to_string(), OsString::from("C:\\Users\\a"));
+        let resolved_unix = resolve_home_dir_from_lookup(|k| lookup.get(k).cloned(), false);
+        assert_eq!(resolved_unix, Some(PathBuf::from("/home/a")));
+
+        let resolved_windows = resolve_home_dir_from_lookup(|k| lookup.get(k).cloned(), true);
+        assert_eq!(resolved_windows, Some(PathBuf::from("C:\\Users\\a")));
+    }
+
+    #[test]
+    fn parse_nul_env_tolerates_invalid_utf8_entries() {
+        let raw = b"PATH=/bin\0BROKEN=\xFF\xFE\0EMPTY=\0\0";
+        let parsed = parse_nul_env(raw);
+        let map: HashMap<_, _> = parsed.into_iter().collect();
+        assert!(map.contains_key(&OsString::from("PATH")));
+
+        #[cfg(unix)]
+        {
+            let broken = map
+                .get(&OsString::from("BROKEN"))
+                .expect("BROKEN key present");
+            assert_eq!(broken.as_os_str().as_bytes(), b"\xFF\xFE");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_login_shell_env_handles_large_stdout() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("valid clock")
+            .as_nanos();
+        let script_path = std::env::temp_dir().join(format!(
+            "agentsview-login-shell-{stamp}-{}.sh",
+            std::process::id()
+        ));
+        // Probe absolute paths for the byte-emitting tool. Earlier
+        // versions called bare `head` which silently exited
+        // non-zero on CI runners with a stripped PATH (the
+        // function then returns None and the test panicked with
+        // the unhelpful "expected shell output" message). Fall
+        // back across known coreutils locations and finally to dd
+        // so the test does not depend on PATH or any single
+        // distro layout.
+        let head_candidates = ["/usr/bin/head", "/bin/head", "/usr/local/bin/head"];
+        let dd_candidates = ["/usr/bin/dd", "/bin/dd"];
+        let head = head_candidates
+            .iter()
+            .find(|p| Path::new(p).exists())
+            .copied();
+        let dd = dd_candidates
+            .iter()
+            .find(|p| Path::new(p).exists())
+            .copied();
+        let script_body = match (head, dd) {
+            (Some(h), _) => format!("#!/bin/sh\nexec {h} -c 262144 /dev/zero\n"),
+            (None, Some(d)) => format!(
+                "#!/bin/sh\nexec {d} if=/dev/zero bs=1024 count=256 \
+                 status=none\n"
+            ),
+            (None, None) => {
+                eprintln!(
+                    "skipping: neither head nor dd found in standard \
+                     paths"
+                );
+                return;
+            }
+        };
+        fs::write(&script_path, &script_body).expect("write shell script");
+        let mut perms = fs::metadata(&script_path)
+            .expect("read shell script metadata")
+            .permissions();
+        perms.set_mode(0o700);
+        fs::set_permissions(&script_path, perms).expect("set executable permissions");
+
+        // 10s gives slow ARM64 CI runners headroom; the script
+        // itself completes in milliseconds. Call the
+        // Result-returning variant so a CI flake prints the real
+        // reason (spawn error, non-zero exit + stderr, timeout,
+        // etc.) instead of an opaque "returned None".
+        //
+        // Linux can return ETXTBSY (OS error 26) on execve when a
+        // parallel test thread's fork briefly holds a writable fd
+        // for the script we just wrote. Retry a few times on that
+        // race so cargo test -j N doesn't flake.
+        let mut attempts_left = 5;
+        let result = loop {
+            let result = try_run_login_shell_env(
+                script_path.to_str().expect("script path utf-8"),
+                Duration::from_secs(10),
+            );
+            match &result {
+                Err(LoginShellEnvError::Spawn(e)) if e.raw_os_error() == Some(26) => {
+                    attempts_left -= 1;
+                    if attempts_left == 0 {
+                        break result;
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+                _ => break result,
+            }
+        };
+        let removed = fs::remove_file(&script_path);
+
+        let output = result.unwrap_or_else(|err| {
+            panic!(
+                "try_run_login_shell_env failed: {err}\n\
+                 script_path={script_path:?} (removed={removed:?})\n\
+                 script_body={script_body:?}"
+            )
+        });
+        assert!(
+            output.len() >= 262_144,
+            "expected at least 262144 bytes, got {}",
+            output.len()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_login_shell_env_timeout_returns_when_stdout_fd_stays_open() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("valid clock")
+            .as_nanos();
+        let script_path = std::env::temp_dir().join(format!(
+            "agentsview-login-shell-timeout-{stamp}-{}.sh",
+            std::process::id()
+        ));
+        fs::write(&script_path, "#!/bin/sh\n(sleep 2) &\nsleep 10\n").expect("write shell script");
+        let mut perms = fs::metadata(&script_path)
+            .expect("read shell script metadata")
+            .permissions();
+        perms.set_mode(0o700);
+        fs::set_permissions(&script_path, perms).expect("set executable permissions");
+
+        // Linux can return ETXTBSY (OS error 26) on execve when a
+        // parallel test thread's fork briefly holds a writable fd
+        // for the script we just wrote. Retry a few times on that
+        // race so cargo test -j N doesn't flake.
+        let mut attempts_left = 5;
+        let (result, elapsed) = loop {
+            let started = Instant::now();
+            let result = try_run_login_shell_env(
+                script_path.to_str().expect("script path utf-8"),
+                Duration::from_millis(120),
+            );
+            let elapsed = started.elapsed();
+            match &result {
+                Err(LoginShellEnvError::Spawn(e)) if e.raw_os_error() == Some(26) => {
+                    attempts_left -= 1;
+                    if attempts_left == 0 {
+                        break (result, elapsed);
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+                _ => break (result, elapsed),
+            }
+        };
+        let _ = fs::remove_file(&script_path);
+
+        match result {
+            Err(LoginShellEnvError::Timeout { .. }) => {}
+            other => panic!("expected Timeout error; got {other:?}"),
+        }
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "timeout path took too long: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn desktop_redirect_url_includes_desktop_query_param() {
+        let url = desktop_redirect_url(BackendHost::Ipv4, 18080);
+        assert_eq!(url, "http://127.0.0.1:18080?desktop=1");
+
+        assert_eq!(
+            desktop_redirect_url(BackendHost::Localhost, 18081),
+            "http://localhost:18081?desktop=1"
+        );
+
+        let url2 = desktop_redirect_url(BackendHost::Ipv6, 8080);
+        assert!(url2.contains("?desktop=1"));
+        assert!(url2.starts_with("http://[::1]:8080"));
+    }
+
+    #[test]
+    fn desktop_route_url_keeps_route_and_desktop_query_param() {
+        assert_eq!(
+            desktop_route_url(BackendHost::Ipv4, 18080, "/sessions/abc-123"),
+            "http://127.0.0.1:18080/sessions/abc-123?desktop=1"
+        );
+        assert_eq!(
+            desktop_route_url(BackendHost::Ipv6, 18080, "/sessions/abc-123?msg=last"),
+            "http://[::1]:18080/sessions/abc-123?msg=last&desktop=1"
+        );
+    }
+
+    #[test]
+    fn deep_link_session_route_maps_session_urls() {
+        let cases = [
+            ("agentsview://sessions/abc-123", "/sessions/abc-123"),
+            ("agentsview://SESSIONS/abc-123", "/sessions/abc-123"),
+            ("agentsview://sessions/a%20b", "/sessions/a%20b"),
+            (
+                "agentsview://sessions/cursor:0198c6a1-b125-7c60-8d3f-2f9e4a7b1c2d",
+                "/sessions/cursor:0198c6a1-b125-7c60-8d3f-2f9e4a7b1c2d",
+            ),
+            ("agentsview://sessions/abc?msg=42", "/sessions/abc?msg=42"),
+            (
+                "agentsview://sessions/abc?msg=last",
+                "/sessions/abc?msg=last",
+            ),
+            ("agentsview://sessions/abc?msg=", "/sessions/abc"),
+            ("agentsview://sessions/abc?msg=evil&x=1", "/sessions/abc"),
+            ("agentsview://sessions/abc?other=1", "/sessions/abc"),
+        ];
+        for (input, want) in cases {
+            let url = Url::parse(input).expect(input);
+            assert_eq!(
+                deep_link_session_route(&url).as_deref(),
+                Some(want),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn deep_link_dispatch_defers_routes_until_first_redirect() {
+        let mut dispatch = DeepLinkDispatch::Deferred(None);
+        assert_eq!(
+            dispatch.route_for_navigation("/sessions/a".to_string(), Some(18080)),
+            None
+        );
+        assert_eq!(dispatch.take_pending().as_deref(), Some("/sessions/a"));
+        assert_eq!(dispatch.take_pending(), None);
+    }
+
+    #[test]
+    fn deep_link_dispatch_keeps_latest_route_while_deferred() {
+        let mut dispatch = DeepLinkDispatch::Deferred(None);
+        assert_eq!(
+            dispatch.route_for_navigation("/sessions/a".to_string(), None),
+            None
+        );
+        assert_eq!(
+            dispatch.route_for_navigation("/sessions/b".to_string(), Some(18080)),
+            None
+        );
+        assert_eq!(dispatch.take_pending().as_deref(), Some("/sessions/b"));
+    }
+
+    #[test]
+    fn deep_link_dispatch_navigates_directly_once_live() {
+        let mut dispatch = DeepLinkDispatch::Deferred(None);
+        dispatch.take_pending();
+        assert_eq!(dispatch.finish_redirect(), None);
+        assert_eq!(
+            dispatch.route_for_navigation("/sessions/a".to_string(), Some(18080)),
+            Some((18080, "/sessions/a".to_string()))
+        );
+    }
+
+    #[test]
+    fn deep_link_dispatch_queues_route_during_startup_redirect() {
+        // Between take_pending and the redirect's navigation landing,
+        // a newer route must queue and replay after the redirect
+        // instead of navigating first and losing to it.
+        let mut dispatch = DeepLinkDispatch::Deferred(Some("/sessions/a".to_string()));
+        assert_eq!(dispatch.take_pending().as_deref(), Some("/sessions/a"));
+        assert_eq!(
+            dispatch.route_for_navigation("/sessions/b".to_string(), Some(18080)),
+            None
+        );
+        assert_eq!(dispatch.finish_redirect().as_deref(), Some("/sessions/b"));
+        assert_eq!(
+            dispatch.route_for_navigation("/sessions/c".to_string(), Some(18080)),
+            Some((18080, "/sessions/c".to_string()))
+        );
+    }
+
+    #[test]
+    fn deep_link_dispatch_defer_during_redirect_holds_queued_route() {
+        let mut dispatch = DeepLinkDispatch::Deferred(None);
+        dispatch.take_pending();
+        assert_eq!(
+            dispatch.route_for_navigation("/sessions/a".to_string(), Some(18080)),
+            None
+        );
+        dispatch.defer();
+        // The redirect thread finishing after the defer must not flip
+        // the re-deferred dispatch to Live or steal the queued route.
+        assert_eq!(dispatch.finish_redirect(), None);
+        assert_eq!(dispatch.take_pending().as_deref(), Some("/sessions/a"));
+    }
+
+    #[test]
+    fn deep_link_dispatch_re_defers_live_route_when_port_unknown() {
+        let mut dispatch = DeepLinkDispatch::Deferred(None);
+        dispatch.take_pending();
+        dispatch.finish_redirect();
+        assert_eq!(
+            dispatch.route_for_navigation("/sessions/a".to_string(), None),
+            None
+        );
+        assert_eq!(dispatch.take_pending().as_deref(), Some("/sessions/a"));
+    }
+
+    #[test]
+    fn deep_link_dispatch_defer_holds_routes_for_the_next_redirect() {
+        // A republished port precedes readiness, so a route arriving
+        // after defer() must wait for the redirect, not navigate.
+        let mut dispatch = DeepLinkDispatch::Deferred(None);
+        dispatch.take_pending();
+        dispatch.finish_redirect();
+        dispatch.defer();
+        assert_eq!(
+            dispatch.route_for_navigation("/sessions/a".to_string(), Some(18080)),
+            None
+        );
+        assert_eq!(dispatch.take_pending().as_deref(), Some("/sessions/a"));
+    }
+
+    #[test]
+    fn deep_link_dispatch_defer_preserves_pending_route() {
+        let mut dispatch = DeepLinkDispatch::Deferred(Some("/sessions/a".to_string()));
+        dispatch.defer();
+        assert_eq!(dispatch.take_pending().as_deref(), Some("/sessions/a"));
+    }
+
+    #[test]
+    fn deep_link_session_route_rejects_unsupported_urls() {
+        let cases = [
+            "agentsview://sessions",
+            "agentsview://sessions/",
+            "agentsview://sessions/a/b",
+            "agentsview://sessions/.",
+            "agentsview://sessions/..",
+            "agentsview://settings/abc",
+            "agentsview:///sessions/abc",
+            "codex://sessions/abc",
+        ];
+        for input in cases {
+            let url = Url::parse(input).expect(input);
+            assert_eq!(deep_link_session_route(&url), None, "{input}");
+        }
+    }
+
+    #[test]
+    fn run_login_shell_env_returns_none_when_shell_missing() {
+        let output = run_login_shell_env(
+            "agentsview-missing-shell-binary",
+            Duration::from_millis(100),
+        );
+        assert!(output.is_none(), "missing shell should return None");
+    }
+
+    #[test]
+    fn try_run_login_shell_env_reports_spawn_error_when_shell_missing() {
+        let result = try_run_login_shell_env(
+            "agentsview-missing-shell-binary",
+            Duration::from_millis(100),
+        );
+        match result {
+            Err(LoginShellEnvError::Spawn(_)) => {}
+            other => panic!("expected Spawn error; got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn try_run_login_shell_env_reports_non_zero_with_stderr() {
+        // Script that writes to stderr and exits non-zero, so we
+        // can confirm the NonZero variant carries both the code
+        // and the captured stderr. Future CI flakes in the large-
+        // stdout test will surface the same info.
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("valid clock")
+            .as_nanos();
+        let script_path = std::env::temp_dir().join(format!(
+            "agentsview-login-shell-fail-{stamp}-{}.sh",
+            std::process::id()
+        ));
+        fs::write(&script_path, "#!/bin/sh\necho diag-stderr >&2\nexit 42\n")
+            .expect("write shell script");
+        let mut perms = fs::metadata(&script_path)
+            .expect("read shell script metadata")
+            .permissions();
+        perms.set_mode(0o700);
+        fs::set_permissions(&script_path, perms).expect("set executable permissions");
+
+        let mut attempts_left = 5;
+        let result = loop {
+            let result = try_run_login_shell_env(
+                script_path.to_str().expect("script path utf-8"),
+                Duration::from_secs(2),
+            );
+            match &result {
+                Err(LoginShellEnvError::Spawn(e)) if e.raw_os_error() == Some(26) => {
+                    attempts_left -= 1;
+                    if attempts_left == 0 {
+                        break result;
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+                _ => break result,
+            }
+        };
+        let _ = fs::remove_file(&script_path);
+
+        match result {
+            Err(LoginShellEnvError::NonZero {
+                code: Some(42),
+                stderr,
+                ..
+            }) => {
+                let s = String::from_utf8_lossy(&stderr);
+                assert!(
+                    s.contains("diag-stderr"),
+                    "stderr should be captured; got {s:?}"
+                );
+            }
+            other => panic!("expected NonZero{{code=42}}; got {other:?}"),
+        }
+    }
+
+    // The desktop window's only recovery path was a window-focus event, and
+    // every other recovery path is JavaScript inside the web view. With no
+    // window on screen macOS stops executing that web view, so a backend that
+    // restarts leaves the window permanently stale. These tests pin the
+    // Rust-side probe that recovers it, because the Rust side is the part that
+    // keeps running.
+
+    #[test]
+    fn backend_probe_does_not_navigate_on_the_first_observation() {
+        let mut state = BackendProbeState::default();
+        assert!(
+            !state.observe(8080, true),
+            "start-up has already navigated; the first probe must not repeat it"
+        );
+        assert!(
+            !state.observe(8080, true),
+            "a backend that stays up must not be navigated again"
+        );
+    }
+
+    #[test]
+    fn backend_probe_navigates_when_the_backend_comes_back() {
+        let mut state = BackendProbeState::default();
+        assert!(!state.observe(8080, true));
+        assert!(
+            !state.observe(8080, false),
+            "there is nothing to navigate to while the backend is down"
+        );
+        assert!(
+            state.observe(8080, true),
+            "a backend that came back may be a new process, and a suspended \
+             web view cannot have noticed"
+        );
+        assert!(
+            !state.observe(8080, true),
+            "recovery happens once per outage, not on every later probe"
+        );
+    }
+
+    #[test]
+    fn backend_probe_navigates_when_the_port_changes() {
+        let mut state = BackendProbeState::default();
+        assert!(!state.observe(8080, true));
+        assert!(
+            state.observe(9090, true),
+            "a backend on a new port is a different backend"
+        );
+    }
+
+    #[test]
+    fn backend_probe_does_not_navigate_to_an_unreachable_backend() {
+        let mut state = BackendProbeState::default();
+        assert!(!state.observe(8080, true));
+        assert!(!state.observe(9090, false));
+        assert!(
+            state.observe(9090, true),
+            "the new port is navigated to once it answers"
+        );
+    }
+
+    #[test]
+    fn backend_recovery_redirects_to_a_new_ready_port() {
+        let mut probed = Vec::new();
+        let stale = ipv4_endpoint(35035);
+        let replacement = ipv4_endpoint(57295);
+        let action =
+            backend_recovery_action(stale, &BackendStatusProbe::Ready(replacement), |endpoint| {
+                probed.push(endpoint);
+                endpoint == replacement
+            });
+
+        assert_eq!(probed, vec![replacement]);
+        assert_eq!(action, BackendRecoveryAction::Redirect(replacement));
+    }
+
+    #[test]
+    fn backend_recovery_reloads_when_the_same_port_returns() {
+        let endpoint = ipv4_endpoint(35035);
+        assert_eq!(
+            backend_recovery_action(endpoint, &BackendStatusProbe::Ready(endpoint), |_| true),
+            BackendRecoveryAction::Reload
+        );
+    }
+
+    #[test]
+    fn backend_recovery_redirects_when_address_family_changes_on_the_same_port() {
+        let stale = BackendEndpoint::new(BackendHost::Ipv6, 35035);
+        let replacement = ipv4_endpoint(35035);
+
+        assert_eq!(
+            backend_recovery_action(stale, &BackendStatusProbe::Ready(replacement), |_| true),
+            BackendRecoveryAction::Redirect(replacement)
+        );
+    }
+
+    #[test]
+    fn backend_recovery_waits_for_the_reported_port_to_answer() {
+        let stale = ipv4_endpoint(35035);
+        let replacement = ipv4_endpoint(57295);
+        assert_eq!(
+            backend_recovery_action(stale, &BackendStatusProbe::Ready(replacement), |_| false),
+            BackendRecoveryAction::None
+        );
+    }
+
+    #[test]
+    fn backend_recovery_relaunches_an_absent_daemon() {
+        assert_eq!(
+            backend_recovery_action(
+                ipv4_endpoint(35035),
+                &BackendStatusProbe::NotRunning("No agentsview server is running.".to_string()),
+                |_| panic!("an absent daemon has no endpoint to probe"),
+            ),
+            BackendRecoveryAction::Relaunch
+        );
+        assert_eq!(
+            backend_recovery_action(
+                ipv4_endpoint(35035),
+                &BackendStatusProbe::Starting("agentsview is starting up.".to_string()),
+                |_| panic!("a starting daemon has no ready endpoint to probe"),
+            ),
+            BackendRecoveryAction::None
+        );
+    }
+
+    #[test]
+    fn stale_backend_recovery_cannot_replace_a_newer_port() {
+        let state = SidecarState::default();
+        state.next_generation.store(1, Ordering::SeqCst);
+        set_sidecar_port(&state, Some(57295));
+        let acted = AtomicBool::new(false);
+
+        assert_eq!(
+            act_if_current_backend(&state, 1, ipv4_endpoint(35035), || {
+                acted.store(true, Ordering::SeqCst)
+            },),
+            None
+        );
+        assert!(!acted.load(Ordering::SeqCst));
+        assert_eq!(sidecar_port(&state), Some(57295));
+    }
+
+    #[test]
+    fn backend_probe_preserves_startup_deep_link() {
+        let mut dispatch = DeepLinkDispatch::Deferred(Some("/sessions/a".to_string()));
+        assert!(!dispatch.observe_backend(8080, false));
+        assert!(!dispatch.observe_backend(8080, true));
+        assert_eq!(dispatch.take_pending().as_deref(), Some("/sessions/a"));
+        assert!(!dispatch.observe_backend(8080, true));
+        assert_eq!(dispatch.finish_redirect(), None);
+        assert!(!dispatch.observe_backend(8080, true));
+    }
+
+    #[test]
+    fn backend_probe_does_not_repeat_completed_restart_redirect() {
+        for port in [8080, 9090] {
+            let mut dispatch = DeepLinkDispatch::Live(BackendProbeState::default());
+            assert!(!dispatch.observe_backend(8080, true));
+            assert!(!dispatch.observe_backend(8080, false));
+            dispatch.defer();
+            assert_eq!(
+                dispatch.route_for_navigation("/sessions/a".to_string(), Some(port)),
+                None
+            );
+            assert_eq!(dispatch.take_pending().as_deref(), Some("/sessions/a"));
+            assert_eq!(dispatch.finish_redirect(), None);
+            // The whole redirect can complete between scheduled probes.
+            assert!(!dispatch.observe_backend(port, true));
+
+            // A later outage still reloads the current page exactly once.
+            assert!(!dispatch.observe_backend(port, false));
+            assert!(dispatch.observe_backend(port, true));
+            assert!(!dispatch.observe_backend(port, true));
+        }
+    }
+
+    #[test]
+    fn backend_probe_recovers_live_deep_link_after_outage() {
+        let mut dispatch = DeepLinkDispatch::Live(BackendProbeState::default());
+        assert!(!dispatch.observe_backend(8080, true));
+        assert!(!dispatch.observe_backend(8080, false));
+        assert_eq!(
+            dispatch.route_for_navigation("/sessions/a".to_string(), Some(8080)),
+            Some((8080, "/sessions/a".to_string()))
+        );
+        // Opening a link does not establish readiness; the navigation can
+        // fail while the backend is down and still needs recovery afterward.
+        assert!(dispatch.observe_backend(8080, true));
+    }
+
+    #[test]
+    fn appimage_host_wayland_preload_uses_ldconfig_host_client() {
+        let ordered = ordered_wayland_client_paths(
+            "libwayland-client.so.0 (libc6,x86-64) => /usr/lib/libwayland-client.so.0",
+            "x86_64",
+            &[],
+        );
+        let candidates: Vec<&str> = ordered.iter().map(String::as_str).collect();
+        assert_eq!(
+            appimage_host_wayland_preload(
+                Some("/tmp/AgentsView.AppImage"),
+                Some("/tmp/app"),
+                Some(""),
+                false,
+                &candidates,
+            )
+            .as_deref(),
+            Some("/usr/lib/libwayland-client.so.0"),
+        );
+    }
+
+    #[test]
+    fn appimage_host_wayland_skips_client_built_for_another_arch() {
+        fn elf_header(class: u8, machine: u16) -> Vec<u8> {
+            let mut header = vec![0u8; 64];
+            header[..4].copy_from_slice(b"\x7fELF");
+            header[4] = class;
+            header[5] = 1;
+            header[18..20].copy_from_slice(&machine.to_le_bytes());
+            header
+        }
+        let dir = tempdir().expect("tempdir");
+        let lib32 = dir.path().join("lib/libwayland-client.so.0");
+        let lib64 = dir.path().join("lib64/libwayland-client.so.0");
+        let script = dir.path().join("script/libwayland-client.so.0");
+        for path in [&lib32, &lib64, &script] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+        }
+        fs::write(&lib32, elf_header(1, 3)).unwrap();
+        fs::write(&lib64, elf_header(2, 62)).unwrap();
+        fs::write(&script, b"#!/bin/sh\n").unwrap();
+        let ordered: Vec<String> = [
+            lib32.to_str().unwrap(),
+            dir.path().join("missing.so.0").to_str().unwrap(),
+            script.to_str().unwrap(),
+            lib64.to_str().unwrap(),
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+        assert_eq!(
+            loadable_wayland_client_paths(&ordered, [2, 1, 62, 0]),
+            [lib64.to_str().unwrap()],
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn appimage_host_wayland_reads_running_process_elf_identity() {
+        let identity = read_elf_identity(Path::new("/proc/self/exe")).expect("process ELF header");
+        let class = if cfg!(target_pointer_width = "64") { 2 } else { 1 };
+        assert_eq!(identity[0], class);
+    }
+
+    #[test]
+    fn appimage_host_wayland_orders_client_paths_by_process_arch() {
+        let listing = "\
+libwayland-client.so.0 (libc6) => /usr/lib/i386-linux-gnu/libwayland-client.so.0
+libwayland-client.so.0 (libc6,x86-64) => /usr/lib/x86_64-linux-gnu/libwayland-client.so.0
+";
+        assert_eq!(
+            ordered_wayland_client_paths(listing, "x86_64", &[]),
+            [
+                "/usr/lib/x86_64-linux-gnu/libwayland-client.so.0",
+                "/usr/lib/i386-linux-gnu/libwayland-client.so.0",
+            ],
+        );
+
+        let listing = "\
+libwayland-client.so.0 (libc6,x86-64) => /usr/lib/x86_64-linux-gnu/libwayland-client.so.0
+libwayland-client.so.0 (libc6,AArch64) => /usr/lib/aarch64-linux-gnu/libwayland-client.so.0
+";
+        assert_eq!(
+            ordered_wayland_client_paths(listing, "aarch64", &[]),
+            [
+                "/usr/lib/aarch64-linux-gnu/libwayland-client.so.0",
+                "/usr/lib/x86_64-linux-gnu/libwayland-client.so.0",
+            ],
+        );
+    }
+
+    #[test]
+    fn appimage_host_wayland_preload_prepends_other_library_and_keeps_existing_client() {
+        assert_eq!(
+            appimage_host_wayland_preload(
+                Some("/tmp/AgentsView.AppImage"),
+                Some("/tmp/app"),
+                Some("/opt/other.so"),
+                false,
+                &["/usr/lib/libwayland-client.so.0"],
+            )
+            .as_deref(),
+            Some("/usr/lib/libwayland-client.so.0 /opt/other.so"),
+        );
+        assert_eq!(
+            appimage_host_wayland_preload(
+                Some("/tmp/AgentsView.AppImage"),
+                Some("/tmp/app"),
+                Some("/usr/lib/libwayland-client.so.0"),
+                false,
+                &["/usr/lib/libwayland-client.so.0"],
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn appimage_host_wayland_preload_requires_appimage_and_honors_opt_out() {
+        assert_eq!(
+            appimage_host_wayland_preload(
+                None,
+                None,
+                Some(""),
+                false,
+                &["/usr/lib/libwayland-client.so.0"],
+            ),
+            None,
+        );
+        assert_eq!(
+            appimage_host_wayland_preload(
+                Some("/tmp/AgentsView.AppImage"),
+                None,
+                Some(""),
+                false,
+                &["/usr/lib/libwayland-client.so.0"],
+            )
+            .as_deref(),
+            Some("/usr/lib/libwayland-client.so.0"),
+        );
+        assert_eq!(
+            appimage_host_wayland_preload(
+                None,
+                Some("/tmp/app"),
+                Some(""),
+                false,
+                &["/usr/lib/libwayland-client.so.0"],
+            )
+            .as_deref(),
+            Some("/usr/lib/libwayland-client.so.0"),
+        );
+        assert_eq!(
+            appimage_host_wayland_preload(
+                Some("/tmp/AgentsView.AppImage"),
+                Some("/tmp/app"),
+                Some(""),
+                true,
+                &["/usr/lib/libwayland-client.so.0"],
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn appimage_host_wayland_preload_skips_bundled_and_whitespace_paths() {
+        assert_eq!(
+            appimage_host_wayland_preload(
+                Some("/tmp/AgentsView.AppImage"),
+                Some("/tmp/app"),
+                Some(""),
+                false,
+                &[
+                    "/usr/lib/my lib/libwayland-client.so.0",
+                    "/tmp/app/usr/lib/libwayland-client.so.0",
+                    "/tmp/app-extra/usr/lib/libwayland-client.so.0",
+                ],
+            )
+            .as_deref(),
+            Some("/tmp/app-extra/usr/lib/libwayland-client.so.0"),
+        );
+    }
+
+    #[test]
+    fn appimage_host_wayland_parser_ignores_other_sonames_and_falls_back() {
+        let listing = "\
+libwayland-cursor.so.0 (libc6,x86-64) => /usr/lib/libwayland-cursor.so.0
+libwayland-egl.so.1 (libc6,x86-64) => /usr/lib/libwayland-egl.so.1
+libwayland-client.so (libc6,x86-64) => /usr/lib/libwayland-client.so
+";
+        assert_eq!(
+            ordered_wayland_client_paths(listing, "x86_64", &[]),
+            Vec::<String>::new(),
+        );
+
+        let fallback =
+            ordered_wayland_client_paths("", "x86_64", &["/usr/lib/libwayland-client.so.0"]);
+        let fallback_refs: Vec<&str> = fallback.iter().map(String::as_str).collect();
+        assert_eq!(
+            appimage_host_wayland_preload(
+                Some("/tmp/AgentsView.AppImage"),
+                Some("/tmp/app"),
+                Some(""),
+                false,
+                &fallback_refs,
+            )
+            .as_deref(),
+            Some("/usr/lib/libwayland-client.so.0"),
+        );
+
+        let none = ordered_wayland_client_paths("", "x86_64", &[]);
+        let none_refs: Vec<&str> = none.iter().map(String::as_str).collect();
+        assert_eq!(
+            appimage_host_wayland_preload(
+                Some("/tmp/AgentsView.AppImage"),
+                Some("/tmp/app"),
+                Some(""),
+                false,
+                &none_refs,
+            ),
+            None,
+        );
+
+        assert_eq!(
+            ordered_wayland_client_paths(
+                "libwayland-client.so.0 (libc6,x86-64) => /usr/lib/libwayland-client.so.0",
+                "x86_64",
+                &[
+                    "/usr/lib/libwayland-client.so.0",
+                    "/usr/lib64/libwayland-client.so.0",
+                ],
+            ),
+            [
+                "/usr/lib/libwayland-client.so.0",
+                "/usr/lib64/libwayland-client.so.0",
+            ],
+        );
+    }
+}
+
+#[cfg(test)]
+mod claude_sync_tests {
+    #[test]
+    fn claude_browser_response_omits_absent_fields() {
+        let response = super::ClaudeBrowserResponse { status: 200, body: String::new(), error: None, retry_after: None };
+        assert_eq!(serde_json::to_string(&response).unwrap(), r#"{"status":200,"body":""}"#);
+    }
+
+    #[test]
+    fn claude_fetch_bounds_browser_response() {
+        use std::io::Write;
+        let child = std::process::Command::new("node")
+            .arg("-e")
+            .arg(include_str!("claude_fetch_test.cjs"))
+            .stdin(std::process::Stdio::piped())
+            .spawn();
+        let mut child = match child {
+            Ok(child) => child,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                panic!("Node.js is required for the browser response bounds test");
+            }
+            Err(err) => panic!("could not start Node.js: {err}"),
+        };
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(
+                super::claude_fetch_script("\"https://claude.ai/api/detail\"", "\"request\"")
+                    .as_bytes(),
+            )
+            .unwrap();
+        assert!(child.wait().unwrap().success());
+    }
+
+    #[test]
+    fn claude_fetch_accepts_only_sync_requests() {
+        let base = "/api/organizations/11111111-1111-4111-8111-111111111111";
+        let list = format!("{base}/chat_conversations_v2?limit=50&offset=0");
+        let detail = format!("{base}/chat_conversations/22222222-2222-4222-8222-222222222222?tree=True&rendering_mode=messages&consistency=strong&render_all_tools=true&include_inline_comparison=true");
+        assert!(super::validate_claude_fetch_path(&list).is_ok(), "{list}");
+        for template in include_str!("../../../internal/importer/claude_ai_requests.txt").lines() {
+            let path = template
+                .replace("{organization}", "11111111-1111-4111-8111-111111111111")
+                .replace("{conversation}", "22222222-2222-4222-8222-222222222222")
+                .replace("{offset}", "50");
+            assert!(super::validate_claude_fetch_path(&path).is_ok(), "{path}");
+        }
+        for path in [
+            "".into(), "/api".into(), "/api/../settings".into(), "/api/organizations/../organizations".into(),
+            "//example.com/api/organizations".into(), "https://claude.ai/api/organizations".into(),
+            "/api/organizations?extra=true".into(), format!("{base}/settings"),
+            list.replace("limit=50", "limit=100"), list.replace("offset=0", "offset=-1"),
+            format!("{list}&extra=true"), format!("{list}#fragment"),
+            list.replace("11111111-1111-4111-8111-111111111111", "%2e%2e"),
+            detail.replace("22222222-2222-4222-8222-222222222222", ".."),
+            detail.replace("22222222-2222-4222-8222-222222222222", "%2e%2e"),
+            detail.replace("22222222-2222-4222-8222-222222222222", "one/../../settings"),
+            detail.replace("tree=True", "tree=False"), format!("{detail}&extra=true"),
+        ] {
+            assert!(super::validate_claude_fetch_path(&path).is_err(), "{path}");
+        }
+    }
+
+    #[test]
+    fn claude_fetch_cancelled_request_does_not_block_next() {
+        let state = super::ClaudeAuthState::default();
+        let (old_id, old_receiver) = state.start_browser_request().unwrap();
+        drop(old_receiver);
+        let (id, mut receiver) = state.start_browser_request().unwrap();
+        let result = |request_id, body: &str| super::ClaudeBrowserFetchResult {
+            request_id,
+            status: 200,
+            body: body.into(),
+            error: None,
+            retry_after: None,
+        };
+        assert!(state
+            .finish_browser_request(result(old_id, "stale"))
+            .is_err());
+        assert!(receiver.try_recv().is_err());
+        state
+            .finish_browser_request(result(id.clone(), "new chat"))
+            .unwrap();
+        assert_eq!(receiver.try_recv().unwrap().body, "new chat");
+        assert!(state
+            .finish_browser_request(result(id, "duplicate"))
+            .is_err());
+    }
+}

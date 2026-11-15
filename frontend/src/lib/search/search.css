@@ -1,0 +1,16 @@
+::highlight(av-find) {
+  background-color: color-mix(in srgb, var(--accent-amber, #d29922) 36%, transparent);
+  color: var(--text-primary);
+}
+
+::highlight(av-find-current) {
+  background-color: var(--accent-amber, #d29922);
+  color: var(--bg-primary, #111827);
+}
+
+/* A thin amber frame marks the current block, so the eye finds it before
+   the match highlight inside it. */
+[data-search-current="true"] {
+  outline: 1.5px solid var(--accent-amber, #d29922);
+  outline-offset: -1.5px;
+}

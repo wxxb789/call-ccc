@@ -1,0 +1,287 @@
+package main
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"strings"
+
+	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/update"
+)
+
+type UpdateConfig struct {
+	Check bool
+	Yes   bool
+	Force bool
+}
+
+type updateDaemonStopResult struct {
+	Persistent       bool
+	Stopped          bool
+	Host             string
+	Port             int
+	ExplicitPort     *int
+	RequireAuth      bool
+	RequireAuthKnown bool
+	NoSync           bool
+}
+
+func runUpdate(ctx context.Context, cfg UpdateConfig, out io.Writer) {
+	dataDir, err := config.ResolveDataDir()
+	if err != nil {
+		fatal("resolving data dir: %v", err)
+	}
+
+	info, err := update.CheckForUpdate(ctx,
+		version, cfg.Force, dataDir,
+	)
+	if err != nil {
+		fatal("checking for updates: %v", err)
+	}
+
+	if info == nil {
+		fmt.Fprintf(out,
+			"agentsview %s is up to date.\n", version,
+		)
+		return
+	}
+
+	if info.IsDevBuild {
+		fmt.Fprintf(out,
+			"Running dev build (%s). "+
+				"Latest release: %s\n",
+			info.CurrentVersion, info.LatestVersion,
+		)
+		if cfg.Check {
+			printPackageUpdateGuidance(out, distribution)
+			return
+		}
+		// Cache-only results lack download metadata; re-fetch.
+		if info.NeedsRefetch() {
+			info, err = update.CheckForUpdate(ctx,
+				version, true, dataDir,
+			)
+			if err != nil {
+				fatal("checking for updates: %v", err)
+			}
+			if info == nil {
+				fmt.Fprintln(out, "Up to date.")
+				return
+			}
+		}
+	} else {
+		fmt.Fprintf(out,
+			"Update available: %s -> %s",
+			info.CurrentVersion, info.LatestVersion,
+		)
+		if info.Size > 0 {
+			fmt.Fprintf(out,
+				" (%s)", update.FormatSize(info.Size),
+			)
+		}
+		fmt.Fprintln(out)
+		if cfg.Check {
+			printPackageUpdateGuidance(out, distribution)
+			return
+		}
+	}
+
+	if !cfg.Yes {
+		fmt.Fprint(out, "Install update? [y/N] ")
+		reader := bufio.NewReader(os.Stdin)
+		answer, _ := reader.ReadString('\n')
+		answer = strings.TrimSpace(strings.ToLower(answer))
+		if answer != "y" && answer != "yes" {
+			fmt.Fprintln(out, "Update cancelled.")
+			return
+		}
+	}
+
+	progressFn := func(downloaded, total int64) {
+		if total > 0 {
+			pct := float64(downloaded) / float64(total) * 100
+			fmt.Fprintf(out,
+				"\r  %s / %s (%.0f%%)",
+				update.FormatSize(downloaded),
+				update.FormatSize(total),
+				pct,
+			)
+		}
+	}
+
+	if err := performUpdateWithDaemonLifecycle(ctx,
+		info,
+		progressFn,
+		loadDaemonConfigForUpdate,
+		stopWritableDaemonsForUpdate,
+		update.PerformUpdate,
+		restartDaemonAfterUpdate,
+	); err != nil {
+		fmt.Fprintln(out)
+		fatal("%v", err)
+	}
+}
+
+// directDownloadDistribution marks official direct-download release builds.
+// They own their own updates, like builds with no distribution.
+const directDownloadDistribution = "kenn"
+
+// packageManaged reports whether a package manager owns this binary, in
+// which case the package manager, not agentsview, installs updates.
+func packageManaged(distribution string) bool {
+	return distribution != "" && distribution != directDownloadDistribution
+}
+
+// packageUpgradeHint tells the user of a package-managed binary how to
+// upgrade it through the package manager that owns it.
+func packageUpgradeHint(distribution string) string {
+	if distribution == "homebrew" {
+		return "Homebrew manages this installation; run `brew upgrade agentsview` instead"
+	}
+	return distribution +
+		" manages this installation; upgrade agentsview through it instead"
+}
+
+// managedUpdateError refuses a self-update of a package-managed binary so
+// the package manager stays the owner of its files.
+func managedUpdateError(distribution string) error {
+	return errors.New(packageUpgradeHint(distribution))
+}
+
+func printPackageUpdateGuidance(out io.Writer, distribution string) {
+	if packageManaged(distribution) {
+		fmt.Fprintln(out, packageUpgradeHint(distribution))
+	}
+}
+
+func performUpdateWithDaemonLifecycle(ctx context.Context,
+	info *update.UpdateInfo,
+	progressFn func(downloaded, total int64),
+	loadDaemonConfig func() (config.Config, error),
+	stopDaemons func(context.Context, config.Config) (updateDaemonStopResult, error),
+	perform func(context.Context, *update.UpdateInfo, func(int64, int64)) error,
+	restartDaemon func(context.Context, config.Config, updateDaemonStopResult) error,
+) error {
+	daemonCfg, err := loadDaemonConfig()
+	if err != nil {
+		return fmt.Errorf("loading daemon config before update: %w", err)
+	}
+	stopResult, err := stopDaemons(ctx, daemonCfg)
+	if err != nil {
+		if stopResult.Stopped {
+			if restartErr := restartDaemon(ctx, daemonCfg, stopResult); restartErr != nil {
+				return fmt.Errorf(
+					"stopping daemon before update: %w "+
+						"(also failed to restart daemon: %v)",
+					err, restartErr,
+				)
+			}
+		}
+		return fmt.Errorf("stopping daemon before update: %w", err)
+	}
+
+	if err := perform(ctx, info, progressFn); err != nil {
+		if stopResult.Stopped {
+			if restartErr := restartDaemon(ctx, daemonCfg, stopResult); restartErr != nil {
+				return fmt.Errorf(
+					"update failed: %w (also failed to restart daemon: %w)",
+					err, restartErr,
+				)
+			}
+		}
+		return fmt.Errorf("update failed: %w", err)
+	}
+
+	if stopResult.Stopped {
+		if err := restartDaemon(ctx, daemonCfg, stopResult); err != nil {
+			return fmt.Errorf("restarting daemon after update: %w", err)
+		}
+	}
+	return nil
+}
+
+func loadDaemonConfigForUpdate() (config.Config, error) {
+	cfg, err := config.LoadReadOnlyFor(config.ScopeLocal)
+	if err == nil {
+		if err := cfg.ApplyDeploymentAuth(); err != nil {
+			return cfg, err
+		}
+		return cfg, nil
+	}
+	dataDir, dirErr := config.ResolveDataDir()
+	if dirErr != nil {
+		return cfg, err
+	}
+	return config.Config{DataDir: dataDir}, nil
+}
+
+func restartDaemonAfterUpdate(ctx context.Context,
+	cfg config.Config, stopResult updateDaemonStopResult,
+) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("finding current executable: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, exe, restartDaemonAfterUpdateArgs(cfg, stopResult)...)
+	cmd.Env = append(os.Environ(), "AGENTSVIEW_DATA_DIR="+cfg.DataDir)
+	if stopResult.Persistent {
+		cmd.Env = append(cmd.Env, updateRestartPersistentEnvVar+"=true")
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("serve --background: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func restartDaemonAfterUpdateArgs(
+	cfg config.Config, stopResult updateDaemonStopResult,
+) []string {
+	args := []string{"serve", "--background"}
+	if shouldPreserveUpdateRestartHost(cfg, stopResult) {
+		args = append(args, "--host", stopResult.Host)
+	} else if shouldForceLoopbackUpdateRestartHost(cfg, stopResult) {
+		args = append(args, "--host", "127.0.0.1")
+	}
+	args = append(args, serveHandoffPortArgs(stopResult.Port, stopResult.ExplicitPort)...)
+	if stopResult.RequireAuth ||
+		(!stopResult.RequireAuthKnown && cfg.RequireAuth) {
+		args = append(args, "--require-auth")
+	}
+	if stopResult.NoSync {
+		args = append(args, "--no-sync")
+	}
+	return args
+}
+
+func shouldForceLoopbackUpdateRestartHost(
+	cfg config.Config, stopResult updateDaemonStopResult,
+) bool {
+	if stopResult.Host == "" || isLoopbackHost(stopResult.Host) {
+		return false
+	}
+	if stopResult.RequireAuthKnown {
+		return !stopResult.RequireAuth
+	}
+	return !stopResult.RequireAuthKnown && !cfg.RequireAuth
+}
+
+func shouldPreserveUpdateRestartHost(
+	cfg config.Config, stopResult updateDaemonStopResult,
+) bool {
+	if stopResult.Host == "" {
+		return false
+	}
+	if isLoopbackHost(stopResult.Host) {
+		return true
+	}
+	if stopResult.RequireAuthKnown {
+		return stopResult.RequireAuth
+	}
+	return cfg.RequireAuth
+}

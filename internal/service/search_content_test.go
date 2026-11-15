@@ -1,0 +1,553 @@
+package service_test
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/dbtest"
+	"go.kenn.io/agentsview/internal/service"
+)
+
+const fakeAWSKey = "AKIA" + "7QHWN2DKR4FYPLJM"
+
+// seedServiceSearchSession creates a session with a single user message
+// whose content contains the given text. The session has UserMessageCount=2
+// so it is not excluded by the default one-shot filter.
+func seedServiceSearchSession(
+	t *testing.T, d *db.DB, id, project, msgContent string,
+) {
+	t.Helper()
+	dbtest.SeedSessionWithMessages(t, d, id, project, []db.Message{
+		dbtest.UserMsg(id, 0, msgContent),
+		dbtest.AsstMsg(id, 1, "understood"),
+	}, dbtest.WithMessageCounts(3, 2))
+}
+
+func TestDirectSearchContentRedacts(t *testing.T) {
+	t.Parallel()
+	d := dbtest.OpenTestDB(t)
+	seedServiceSearchSession(t, d, "x1", "proj",
+		"my key is "+fakeAWSKey+" ok")
+	be := service.NewDirectBackend(d, nil)
+
+	// default: secret should be redacted
+	res, err := be.SearchContent(t.Context(), service.ContentSearchRequest{
+		Pattern: "AKIA", Mode: "substring", Limit: 50,
+	})
+	require.NoError(t, err)
+	require.Len(t, res.Matches, 1)
+	assert.NotContains(t, res.Matches[0].Snippet, fakeAWSKey,
+		"default search leaked secret: %q", res.Matches[0].Snippet)
+
+	// reveal: full secret should be present
+	rev, err := be.SearchContent(t.Context(), service.ContentSearchRequest{
+		Pattern: "AKIA", Mode: "substring", Limit: 50, Reveal: true,
+	})
+	require.NoError(t, err)
+	require.Len(t, rev.Matches, 1)
+	assert.Contains(t, rev.Matches[0].Snippet, fakeAWSKey,
+		"reveal should show full secret: %q", rev.Matches[0].Snippet)
+}
+
+func TestDirectSearchContentFTSSourceGuard(t *testing.T) {
+	t.Parallel()
+	d := dbtest.OpenTestDB(t)
+	be := service.NewDirectBackend(d, nil)
+
+	_, err := be.SearchContent(t.Context(), service.ContentSearchRequest{
+		Pattern: "test", Mode: "fts",
+		Sources: []string{"tool_result"},
+		Limit:   50,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "messages only")
+}
+
+// fakeContentStore is a minimal db.Store fake for context-enrichment tests:
+// only SearchContent and GetMessagesWindow are implemented; every other
+// Store method comes from the embedded nil interface and would panic if a
+// test path reached it (none of these tests exercise anything else).
+type fakeContentStore struct {
+	db.Store
+	page           db.ContentSearchPage
+	pagesByPattern map[string]db.ContentSearchPage
+	lastFilter     db.ContentSearchFilter
+	filters        []db.ContentSearchFilter
+	windows        map[string][]db.Message // keyed by contextWindowKey
+}
+
+func (f *fakeContentStore) HasFTS(context.Context) bool { return true }
+func (f *fakeContentStore) HasSemantic() bool           { return false }
+func (f *fakeContentStore) ReadOnly() bool              { return true }
+
+func contextWindowKey(sessionID string, anchor int) string {
+	return fmt.Sprintf("%s:%d", sessionID, anchor)
+}
+
+func (f *fakeContentStore) SearchContent(
+	_ context.Context, filter db.ContentSearchFilter,
+) (db.ContentSearchPage, error) {
+	f.lastFilter = filter
+	f.filters = append(f.filters, filter)
+	// The fake's pages are complete result sets.
+	if filter.Candidates != nil {
+		filter.Candidates.Exhausted = true
+	}
+	if page, ok := f.pagesByPattern[filter.Pattern]; ok {
+		return page, nil
+	}
+	return f.page, nil
+}
+
+func TestDirectSearchContentConceptsIntersectAndRankSessions(t *testing.T) {
+	store := &fakeContentStore{pagesByPattern: map[string]db.ContentSearchPage{
+		"auth model": {Matches: []db.ContentMatch{
+			{SessionID: "both", Ordinal: 4, OrdinalRange: [2]int{3, 5}, Snippet: "auth evidence", Score: new(0.7), TranscriptRevision: "rev-1"},
+			{SessionID: "both", Ordinal: 8, OrdinalRange: [2]int{8, 9}, Snippet: "weaker auth", Score: new(0.4), TranscriptRevision: "rev-1"},
+			{SessionID: "auth-only", Ordinal: 2, OrdinalRange: [2]int{2, 2}, Snippet: "auth only", Score: new(0.95), TranscriptRevision: "rev-1"},
+			{SessionID: "tie", Ordinal: 1, OrdinalRange: [2]int{1, 2}, Snippet: "tie auth", Score: new(0.6), TranscriptRevision: "rev-1"},
+		}},
+		"retry policy": {Matches: []db.ContentMatch{
+			{SessionID: "both", Ordinal: 12, OrdinalRange: [2]int{11, 13}, Snippet: "retry evidence", Score: new(0.9), TranscriptRevision: "rev-2"},
+			{SessionID: "tie", Ordinal: 6, OrdinalRange: [2]int{6, 7}, Snippet: "tie retry", Score: new(0.8), TranscriptRevision: "rev-1"},
+		}},
+	}}
+	be := service.NewReadOnlyBackend(store)
+
+	res, err := be.SearchContent(t.Context(), service.ContentSearchRequest{
+		Concepts: []string{" auth model ", "retry policy"},
+		Project:  "agentsview", Agent: "codex", SessionID: "target",
+		GitBranchExact: "feature/memory", DateFrom: "2026-08-01",
+		DateTo: "2026-09-20", ExcludeSessionIDs: []string{"current"},
+		Scope: "top", Limit: 10,
+	})
+	require.NoError(t, err)
+	require.Len(t, res.Matches, 2)
+	assert.False(t, res.CandidateTruncated)
+	assert.True(t, res.RevisionBound)
+
+	both := res.Matches[0]
+	assert.Equal(t, "both", both.SessionID)
+	require.NotNil(t, both.Score)
+	assert.InDelta(t, 0.8, *both.Score, 0.0001)
+	require.Len(t, both.ConceptEvidence, 2)
+	assert.Equal(t, db.ConceptEvidence{
+		Concept: "auth model", Ordinal: 4, OrdinalRange: [2]int{3, 5},
+		Snippet: "auth evidence", Score: 0.7, TranscriptRevision: "rev-1",
+	}, both.ConceptEvidence[0])
+	assert.Equal(t, db.ConceptEvidence{
+		Concept: "retry policy", Ordinal: 12, OrdinalRange: [2]int{11, 13},
+		Snippet: "retry evidence", Score: 0.9, TranscriptRevision: "rev-2",
+	}, both.ConceptEvidence[1])
+
+	assert.Equal(t, "tie", res.Matches[1].SessionID)
+	require.NotNil(t, res.Matches[1].Score)
+	assert.InDelta(t, 0.7, *res.Matches[1].Score, 0.0001)
+
+	require.Len(t, store.filters, 2)
+	assert.Equal(t, "auth model", store.filters[0].Pattern)
+	assert.Equal(t, "retry policy", store.filters[1].Pattern)
+	for _, filter := range store.filters {
+		assert.Equal(t, "semantic", filter.Mode)
+		assert.Equal(t, "agentsview", filter.Project)
+		assert.Equal(t, "codex", filter.Agent)
+		assert.Equal(t, "target", filter.SessionID)
+		assert.Equal(t, "feature/memory", filter.GitBranchExact)
+		assert.Equal(t, "2026-08-01", filter.DateFrom)
+		assert.Equal(t, "2026-09-20", filter.DateTo)
+		assert.Equal(t, []string{"current"}, filter.ExcludeSessionIDs)
+		assert.Equal(t, "top", filter.Scope)
+		assert.Equal(t, 50, filter.Limit)
+		assert.Zero(t, filter.Cursor)
+	}
+}
+
+func TestDirectSearchContentConceptsRejectInvalidRequests(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		req  service.ContentSearchRequest
+		want string
+	}{
+		{"pattern", service.ContentSearchRequest{Pattern: "x", Concepts: []string{"a", "b"}}, "pattern and concepts"},
+		{"one", service.ContentSearchRequest{Concepts: []string{"a"}}, "between 2 and 5"},
+		{"six", service.ContentSearchRequest{Concepts: []string{"a", "b", "c", "d", "e", "f"}}, "between 2 and 5"},
+		{"blank", service.ContentSearchRequest{Concepts: []string{"a", " "}}, "must not be blank"},
+		{"duplicate", service.ContentSearchRequest{Concepts: []string{"a", " a"}}, "must be distinct"},
+		{"mode", service.ContentSearchRequest{Concepts: []string{"a", "b"}, Mode: "hybrid"}, "mode must be semantic"},
+		{"cursor", service.ContentSearchRequest{Concepts: []string{"a", "b"}, Cursor: 1}, "cursor is not supported"},
+		{"limit", service.ContentSearchRequest{Concepts: []string{"a", "b"}, Limit: 51}, "limit must be between 1 and 50"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeContentStore{}
+			_, err := service.NewReadOnlyBackend(store).SearchContent(t.Context(), tc.req)
+			var inputErr *db.SearchInputError
+			require.ErrorAs(t, err, &inputErr)
+			assert.Contains(t, err.Error(), tc.want)
+			assert.Empty(t, store.filters)
+		})
+	}
+}
+
+func TestDirectSearchContentConceptsBoundCandidatesAndReportTruncation(t *testing.T) {
+	sessions := func(ids ...string) db.ContentSearchPage {
+		page := db.ContentSearchPage{}
+		for _, id := range ids {
+			page.Matches = append(page.Matches, db.ContentMatch{SessionID: id, Score: new(0.5)})
+		}
+		return page
+	}
+	tests := []struct {
+		name          string
+		limit         int
+		a, b          db.ContentSearchPage
+		wantLegLimit  int
+		wantSessions  []string
+		wantTruncated bool
+	}{
+		{
+			name: "default limit", limit: 0,
+			a: sessions("s1"), b: sessions("s1"),
+			wantLegLimit: 250, wantSessions: []string{"s1"},
+		},
+		{
+			// Equal mean scores keep the legs' reciprocal-rank order.
+			name: "limit cuts the intersection", limit: 1,
+			a: sessions("z", "a"), b: sessions("z", "a"),
+			wantLegLimit: 5, wantSessions: []string{"z"}, wantTruncated: true,
+		},
+		{
+			name: "full candidate window", limit: 1,
+			a: sessions("s1", "s2", "s3", "s4", "s5"), b: sessions("s1"),
+			wantLegLimit: 5, wantSessions: []string{"s1"}, wantTruncated: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeContentStore{pagesByPattern: map[string]db.ContentSearchPage{
+				"a": tc.a, "b": tc.b,
+			}}
+			res, err := service.NewReadOnlyBackend(store).SearchContent(t.Context(), service.ContentSearchRequest{
+				Concepts: []string{"a", "b"}, Limit: tc.limit,
+			})
+			require.NoError(t, err)
+			ids := make([]string, 0, len(res.Matches))
+			for _, m := range res.Matches {
+				ids = append(ids, m.SessionID)
+			}
+			assert.Equal(t, tc.wantSessions, ids)
+			assert.Equal(t, tc.wantTruncated, res.CandidateTruncated)
+			require.Len(t, store.filters, 2)
+			assert.Equal(t, tc.wantLegLimit, store.filters[0].Limit)
+		})
+	}
+}
+
+// conceptVectorSearcher returns a fixed ranking for each concept and records
+// every candidate count it was asked for.
+type conceptVectorSearcher struct {
+	hits map[string][]db.VectorHit
+	ks   map[string][]int
+}
+
+func (s *conceptVectorSearcher) PrepareSemanticSearch(
+	_ context.Context, query string,
+) (db.VectorSearchPage, int, error) {
+	return func(_ context.Context, k int) ([]db.VectorHit, bool, error) {
+		s.ks[query] = append(s.ks[query], k)
+		hits := s.hits[query]
+		return hits[:min(k, len(hits))], len(hits) < k, nil
+	}, 0, nil
+}
+
+func (s *conceptVectorSearcher) ResolveMessageUnits(
+	_ context.Context, refs []db.MessageRef,
+) ([]db.UnitRef, error) {
+	return make([]db.UnitRef, len(refs)), nil
+}
+
+func TestDirectSearchContentConceptsSearchPastFilteredCandidates(t *testing.T) {
+	d := dbtest.OpenTestDB(t)
+	seedServiceSearchSession(t, d, "target", "agentsview", "auth model and retry policy")
+	seedServiceSearchSession(t, d, "noise", "elsewhere", "auth model")
+	unit := func(session string, ordinal int) db.VectorHit {
+		return db.VectorHit{
+			SessionID: session, Ordinal: ordinal, OrdinalStart: ordinal,
+			OrdinalEnd: ordinal, Score: 0.5,
+		}
+	}
+	for _, tc := range []struct {
+		name          string
+		noise         int
+		wantSessions  []string
+		wantTruncated bool
+		wantKs        []int
+	}{
+		{
+			// The first window holds only another project's units.
+			name: "match past the first window", noise: 200,
+			wantSessions: []string{"target"}, wantKs: []int{200, 400},
+		},
+		{
+			name: "match past the candidate cap", noise: 5000,
+			wantSessions: []string{}, wantTruncated: true,
+			wantKs: []int{200, 400, 800, 1600, 3200, 4096},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			auth := make([]db.VectorHit, 0, tc.noise+1)
+			for i := range tc.noise {
+				auth = append(auth, unit("noise", i))
+			}
+			searcher := &conceptVectorSearcher{
+				hits: map[string][]db.VectorHit{
+					"auth model":   append(auth, unit("target", 0)),
+					"retry policy": {unit("target", 1)},
+				},
+				ks: map[string][]int{},
+			}
+			d.SetVectorSearcher(searcher)
+			res, err := service.NewReadOnlyBackend(d).SearchContent(t.Context(), service.ContentSearchRequest{
+				Concepts: []string{"auth model", "retry policy"},
+				Project:  "agentsview", Limit: 1,
+			})
+			require.NoError(t, err)
+			ids := make([]string, 0, len(res.Matches))
+			for _, m := range res.Matches {
+				ids = append(ids, m.SessionID)
+			}
+			assert.Equal(t, tc.wantSessions, ids)
+			assert.Equal(t, tc.wantTruncated, res.CandidateTruncated)
+			assert.Equal(t, tc.wantKs, searcher.ks["auth model"])
+		})
+	}
+}
+
+func TestDirectSearchContentTermsAndExactFilters(t *testing.T) {
+	store := &fakeContentStore{}
+	be := service.NewReadOnlyBackend(store)
+
+	_, err := be.SearchContent(t.Context(), service.ContentSearchRequest{
+		Pattern: "alpha beta", Mode: "terms",
+		SessionID: "session-1", GitBranchExact: "feature/memory",
+		Scope: "top", Limit: 50,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"messages"}, store.lastFilter.Sources)
+	assert.Equal(t, "session-1", store.lastFilter.SessionID)
+	assert.Equal(t, "feature/memory", store.lastFilter.GitBranchExact)
+	assert.Equal(t, "top", store.lastFilter.Scope)
+
+	_, err = be.SearchContent(t.Context(), service.ContentSearchRequest{
+		Pattern: "alpha beta", Mode: "terms",
+		Sources: []string{"tool_result"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "messages only")
+}
+
+func (f *fakeContentStore) GetMessagesWindow(
+	_ context.Context, sessionID string, w db.MessageWindow,
+) ([]db.Message, error) {
+	return f.windows[contextWindowKey(sessionID, *w.Around)], nil
+}
+
+// contextWindowFixture builds the before/anchor/after messages
+// GetMessagesWindow(Around) would return for an anchor ordinal, ascending.
+func contextWindowFixture(sessionID string, anchor int) []db.Message {
+	return []db.Message{
+		{SessionID: sessionID, Ordinal: anchor - 2, Role: "user", Content: "before2"},
+		{SessionID: sessionID, Ordinal: anchor - 1, Role: "assistant", Content: "before1"},
+		{SessionID: sessionID, Ordinal: anchor, Role: "user", Content: "anchor"},
+		{SessionID: sessionID, Ordinal: anchor + 1, Role: "assistant", Content: "after1"},
+		{SessionID: sessionID, Ordinal: anchor + 2, Role: "user", Content: "after2"},
+	}
+}
+
+func TestDirectSearchContentContextEnrichment(t *testing.T) {
+	t.Parallel()
+	const sess = "s1"
+	matches := []db.ContentMatch{
+		{SessionID: sess, Ordinal: 5, Snippet: "match one"},
+		{SessionID: sess, Ordinal: 20, Snippet: "match two"},
+	}
+	store := &fakeContentStore{
+		page: db.ContentSearchPage{Matches: matches},
+		windows: map[string][]db.Message{
+			contextWindowKey(sess, 5):  contextWindowFixture(sess, 5),
+			contextWindowKey(sess, 20): contextWindowFixture(sess, 20),
+		},
+	}
+	be := service.NewReadOnlyBackend(store)
+
+	res, err := be.SearchContent(t.Context(), service.ContentSearchRequest{
+		Pattern: "match", Context: 2,
+	})
+	require.NoError(t, err)
+	require.Len(t, res.Matches, 2)
+	for _, m := range res.Matches {
+		require.Len(t, m.ContextBefore, 2)
+		assert.Equal(t, "before2", m.ContextBefore[0].Content)
+		assert.Equal(t, "before1", m.ContextBefore[1].Content)
+		require.Len(t, m.ContextAfter, 2)
+		assert.Equal(t, "after1", m.ContextAfter[0].Content)
+		assert.Equal(t, "after2", m.ContextAfter[1].Content)
+		combined := slices.Concat(m.ContextBefore, m.ContextAfter)
+		for _, cm := range combined {
+			assert.NotEqual(t, m.Ordinal, cm.Ordinal, "anchor row must be excluded")
+		}
+	}
+}
+
+func TestDirectSearchContentContextZeroLeavesNil(t *testing.T) {
+	t.Parallel()
+	store := &fakeContentStore{
+		page: db.ContentSearchPage{
+			Matches: []db.ContentMatch{{SessionID: "s1", Ordinal: 5}},
+		},
+	}
+	be := service.NewReadOnlyBackend(store)
+
+	res, err := be.SearchContent(t.Context(), service.ContentSearchRequest{
+		Pattern: "match",
+	})
+	require.NoError(t, err)
+	require.Len(t, res.Matches, 1)
+	assert.Nil(t, res.Matches[0].ContextBefore)
+	assert.Nil(t, res.Matches[0].ContextAfter)
+}
+
+func TestDirectSearchContentContextRejectsOverMax(t *testing.T) {
+	t.Parallel()
+	be := service.NewReadOnlyBackend(&fakeContentStore{})
+
+	_, err := be.SearchContent(t.Context(), service.ContentSearchRequest{
+		Pattern: "match", Context: 11,
+	})
+	require.Error(t, err)
+	assert.Equal(t, "context: maximum is 10", err.Error())
+}
+
+// contextWindowFixtureWithSecret is contextWindowFixture but with an AWS
+// access key planted in the message immediately before the anchor, so tests
+// can assert that context enrichment redacts (or reveals) it independently
+// of the match's own Snippet redaction.
+func contextWindowFixtureWithSecret(sessionID string, anchor int) []db.Message {
+	msgs := contextWindowFixture(sessionID, anchor)
+	msgs[1].Content = "my key is " + fakeAWSKey + " ok"
+	return msgs
+}
+
+// TestDirectSearchContentContextRedactsSecretsByDefault verifies that a
+// secret-shaped span in a context message (not the match itself) is
+// redacted in ContextBefore/ContextAfter when the request does not reveal,
+// and left intact when it does. This must hold regardless of transport
+// (HTTP, CLI, MCP) since the redaction happens once in
+// directBackend.enrichContentContext.
+func TestDirectSearchContentContextRedactsSecretsByDefault(t *testing.T) {
+	t.Parallel()
+	const sess = "s1"
+	newStore := func() *fakeContentStore {
+		return &fakeContentStore{
+			page: db.ContentSearchPage{
+				Matches: []db.ContentMatch{{SessionID: sess, Ordinal: 5, Snippet: "match one"}},
+			},
+			windows: map[string][]db.Message{
+				contextWindowKey(sess, 5): contextWindowFixtureWithSecret(sess, 5),
+			},
+		}
+	}
+
+	redacted := service.NewReadOnlyBackend(newStore())
+	res, err := redacted.SearchContent(t.Context(), service.ContentSearchRequest{
+		Pattern: "match", Context: 2,
+	})
+	require.NoError(t, err)
+	require.Len(t, res.Matches, 1)
+	require.Len(t, res.Matches[0].ContextBefore, 2)
+	assert.NotContains(t, res.Matches[0].ContextBefore[1].Content, fakeAWSKey,
+		"default (Reveal=false) must redact a secret in a context message: %q",
+		res.Matches[0].ContextBefore[1].Content)
+
+	revealed := service.NewReadOnlyBackend(newStore())
+	rev, err := revealed.SearchContent(t.Context(), service.ContentSearchRequest{
+		Pattern: "match", Context: 2, Reveal: true,
+	})
+	require.NoError(t, err)
+	require.Len(t, rev.Matches, 1)
+	require.Len(t, rev.Matches[0].ContextBefore, 2)
+	assert.Contains(t, rev.Matches[0].ContextBefore[1].Content, fakeAWSKey,
+		"Reveal=true must leave a context message's secret intact: %q",
+		rev.Matches[0].ContextBefore[1].Content)
+}
+
+// TestDirectSearchContentContextRedactsToolPayloads verifies that a secret
+// carried in a context message's tool call payloads (input_json,
+// result_content, and a result event's content) is also redacted by
+// default, not just the message's own Content field.
+func TestDirectSearchContentContextRedactsToolPayloads(t *testing.T) {
+	t.Parallel()
+	const sess = "s1"
+	secret := fakeAWSKey
+	store := &fakeContentStore{
+		page: db.ContentSearchPage{
+			Matches: []db.ContentMatch{{SessionID: sess, Ordinal: 5, Snippet: "match one"}},
+		},
+		windows: map[string][]db.Message{
+			contextWindowKey(sess, 5): {
+				{
+					SessionID: sess, Ordinal: 4, Role: "assistant",
+					Content: "calling a tool",
+					ToolCalls: []db.ToolCall{{
+						ToolName:      "bash",
+						InputJSON:     fmt.Sprintf(`{"cmd":"export KEY=%s"}`, secret),
+						ResultContent: "key is " + secret,
+						ResultEvents: []db.ToolResultEvent{
+							{Source: "stdout", Content: "leaked: " + secret},
+						},
+					}},
+				},
+				{SessionID: sess, Ordinal: 5, Role: "user", Content: "anchor"},
+				{SessionID: sess, Ordinal: 6, Role: "assistant", Content: "after"},
+			},
+		},
+	}
+	be := service.NewReadOnlyBackend(store)
+
+	res, err := be.SearchContent(t.Context(), service.ContentSearchRequest{
+		Pattern: "match", Context: 2,
+	})
+	require.NoError(t, err)
+	require.Len(t, res.Matches, 1)
+	require.Len(t, res.Matches[0].ContextBefore, 1)
+	tc := res.Matches[0].ContextBefore[0].ToolCalls
+	require.Len(t, tc, 1)
+	assert.NotContains(t, tc[0].InputJSON, secret, "tool input_json must be redacted")
+	assert.NotContains(t, tc[0].ResultContent, secret, "tool result_content must be redacted")
+	require.Len(t, tc[0].ResultEvents, 1)
+	assert.NotContains(t, tc[0].ResultEvents[0].Content, secret,
+		"tool result event content must be redacted")
+}
+
+func TestDirectSearchContentContextSkipsNegativeOrdinal(t *testing.T) {
+	t.Parallel()
+	store := &fakeContentStore{
+		page: db.ContentSearchPage{
+			Matches: []db.ContentMatch{{SessionID: "s1", Ordinal: -1}},
+		},
+	}
+	be := service.NewReadOnlyBackend(store)
+
+	res, err := be.SearchContent(t.Context(), service.ContentSearchRequest{
+		Pattern: "match", Context: 2,
+	})
+	require.NoError(t, err)
+	require.Len(t, res.Matches, 1)
+	assert.Nil(t, res.Matches[0].ContextBefore)
+	assert.Nil(t, res.Matches[0].ContextAfter)
+}

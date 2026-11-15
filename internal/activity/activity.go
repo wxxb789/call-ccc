@@ -1,0 +1,1301 @@
+// Package activity aggregates a resolved time range of agent activity into a
+// concurrency- and usage-oriented report. It operates on in-memory input
+// streams supplied by a storage backend, so the same aggregation runs
+// identically across SQLite, PostgreSQL, and DuckDB. Export contract types are
+// referenced only for optional report metadata.
+package activity
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"time"
+
+	"go.kenn.io/agentsview/internal/export"
+	"go.kenn.io/agentsview/internal/money"
+)
+
+// Params controls one range aggregation. RangeStart/RangeEnd are the resolved
+// UTC bounds; EffectiveEnd clamps the end to now for an in-progress range
+// (Partial); Bucket is the resolved timeline bucket size. They are copied
+// verbatim from a resolved Query so the range/bucket logic lives only in the
+// query engine.
+type Params struct {
+	RangeStart    time.Time
+	RangeEnd      time.Time
+	Loc           *time.Location
+	EffectiveEnd  time.Time
+	Partial       bool
+	GapCapSeconds float64
+	Bucket        BucketSpec
+}
+
+// SessionMeta is one candidate session whose window intersects the day.
+type SessionMeta struct {
+	SessionID   string
+	Title       string
+	Project     string
+	ProjectKey  string // optional canonical key for joint export grouping
+	Agent       string
+	Machine     string
+	StartedAt   string // RFC3339 or ""
+	EndedAt     string // RFC3339 or ""
+	IsAutomated bool   // automation flag, independent of delegation
+	IsSubagent  bool   // delegation takes precedence over automation
+}
+
+// ActivityEvent is one timestamped message (backends send only timestamped rows).
+type ActivityEvent struct {
+	SessionID string
+	Ordinal   int
+	Timestamp string // RFC3339 (non-empty)
+	Role      string // "user" | "assistant" | ...
+	Model     string // "" when unknown
+}
+
+// UsageRow is one cost/token row from the usage-row union, with cost already
+// computed by the backend (so cost logic stays in each backend, matching
+// GetDailyUsage). Rows MUST be delivered in the timestamp, session ID, and
+// message-ordinal survivor order required by the caller.
+type UsageRow struct {
+	SessionID           string // session receiving attribution
+	SourceSessionID     string // transcript that supplied the surviving row
+	Model               string
+	ProviderID          string
+	Timestamp           string // ts, RFC3339 or ""
+	Project             string
+	Machine             string
+	MessageOrdinal      int64 // COALESCE(message_ordinal, -1)
+	UsageSource         string
+	InputTokens         int
+	OutputTokens        int
+	CacheCreationTokens int
+	CacheReadTokens     int
+	// WebSearchRequests is how many billed Anthropic server-side web
+	// searches the row's stored usage reports; it prices at a flat
+	// per-request fee on top of tokens.
+	WebSearchRequests int
+	Cost              money.Money
+	CostSource        export.CostSource
+	SessionCost       *money.Money
+	// RecordedCost is the cost the agent recorded for this row, when it
+	// recorded one; see UsagePrice.RecordedCost.
+	RecordedCost    *money.Money
+	CostAllocated   bool // an authoritative session total was apportioned
+	Priced          bool
+	Contributes     bool
+	Agent           string
+	ClaudeMessageID string
+	ClaudeRequestID string
+	SourceUUID      string
+	UsageDedupKey   string
+}
+
+// SessionTokenCoverage records the canonical token categories represented for
+// one source session. Equivalent snapshots and duplicate rows credit their
+// canonical survivor to every source session that contained the usage.
+type SessionTokenCoverage struct {
+	OutputTokens      int
+	PeakContextTokens int
+}
+
+// SessionUsageRows is a globally ordered, cross-session-deduplicated usage
+// row set. RawOutputTokensBySession records output from every usage row before
+// snapshot selection or cross-session deduplication. DeduplicatedOutputTokens
+// records output removed from each session when an earlier transcript already
+// represented the same usage.
+// CanonicalTokenCoverageBySession describes the output and context categories
+// represented by the survivor set for each original source session.
+// DiscardedContributingSessions records sessions whose snapshot or duplicate
+// rows carried billable usage before they were removed.
+type SessionUsageRows struct {
+	Rows                            []UsageRow
+	RawOutputTokensBySession        map[string]int
+	DeduplicatedOutputTokens        map[string]int
+	DiscardedContributingSessions   map[string]struct{}
+	CanonicalTokenCoverageBySession map[string]SessionTokenCoverage
+}
+
+// UsageDataContributes reports whether normalized usage data represents spend.
+func UsageDataContributes(
+	hasExplicitCost bool,
+	inputTokens, outputTokens, reasoningTokens int,
+	cacheCreationTokens, cacheReadTokens, webSearchRequests int,
+) bool {
+	return hasExplicitCost || inputTokens != 0 || outputTokens != 0 ||
+		reasoningTokens != 0 || cacheCreationTokens != 0 ||
+		cacheReadTokens != 0 || webSearchRequests != 0
+}
+
+type UsageCostAllocation struct {
+	Cost        money.Money
+	CostSource  export.CostSource
+	Priced      bool
+	Contributes bool
+}
+
+// AllocateUsageCosts selects aggregate row costs. A session may carry one
+// session total; when it does, that settlement replaces the session's row
+// estimates and is distributed by their catalog-cost weights.
+func AllocateUsageCosts(usage []UsageRow) []UsageCostAllocation {
+	allocated, err := AllocateUsageCostsContext(context.Background(), usage)
+	if err != nil {
+		panic(err)
+	}
+	return allocated
+}
+
+// AllocateUsageCostsContext is AllocateUsageCosts with cancellation for
+// bounded in-memory aggregation paths.
+func AllocateUsageCostsContext(
+	ctx context.Context, usage []UsageRow,
+) ([]UsageCostAllocation, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	type sessionCost struct {
+		carrier int
+		cost    money.Money
+		indices []int
+	}
+	allocated := make([]UsageCostAllocation, len(usage))
+	sessionCosts := make(map[string]*sessionCost)
+	for i, row := range usage {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		allocated[i] = UsageCostAllocation{
+			Cost: row.Cost, CostSource: row.CostSource,
+			Priced: row.Priced, Contributes: row.Contributes,
+		}
+		if row.SessionCost != nil {
+			sessionCosts[row.SessionID] = &sessionCost{
+				carrier: i,
+				cost:    *row.SessionCost,
+			}
+		}
+	}
+	for i, row := range usage {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		selected := sessionCosts[row.SessionID]
+		if selected == nil || !allocated[i].Contributes {
+			continue
+		}
+		selected.indices = append(selected.indices, i)
+	}
+	for _, selected := range sessionCosts {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if len(selected.indices) == 0 {
+			allocated[selected.carrier] = UsageCostAllocation{
+				Cost: selected.cost, CostSource: export.CostSourceReported,
+				Priced: true, Contributes: true,
+			}
+			continue
+		}
+		weights := make([]money.Money, len(selected.indices))
+		for i, index := range selected.indices {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			weights[i] = usage[index].Cost
+		}
+		costs, err := export.AllocateCostByWeightContext(
+			ctx, selected.cost, weights,
+		)
+		if err != nil {
+			return nil, err
+		}
+		for i, index := range selected.indices {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			allocated[index] = UsageCostAllocation{
+				Cost: costs[i], CostSource: export.CostSourceReported,
+				Priced: true, Contributes: true,
+			}
+		}
+	}
+	return allocated, nil
+}
+
+// Report is the API payload.
+type Report struct {
+	SchemaVersion      int                               `json:"schema_version,omitempty"`
+	ReportID           string                            `json:"report_id,omitempty"`
+	Pricing            *export.PricingBlock              `json:"pricing,omitempty"`
+	Projects           map[string]export.ProjectMapEntry `json:"projects"`
+	Timezone           string                            `json:"timezone"`
+	RangeStart         string                            `json:"range_start"`
+	RangeEnd           string                            `json:"range_end"`
+	BucketUnit         string                            `json:"bucket_unit"`
+	BucketSeconds      int                               `json:"bucket_seconds"`
+	BucketCount        int                               `json:"bucket_count"`
+	Partial            bool                              `json:"partial"`
+	AsOf               *string                           `json:"as_of"`
+	EffectiveEnd       string                            `json:"effective_end"`
+	ElapsedBucketCount int                               `json:"elapsed_bucket_count"`
+	Buckets            []Bucket                          `json:"buckets"`
+	Peak               Peak                              `json:"peak"`
+	InteractivePeak    Peak                              `json:"interactive_peak"`
+	SubagentPeak       Peak                              `json:"subagent_peak"`
+	AutomatedPeak      Peak                              `json:"automated_peak"`
+	Totals             Totals                            `json:"totals"`
+	ByProject          []KeyMinutes                      `json:"by_project"`
+	ByModel            []KeyMinutes                      `json:"by_model"`
+	ByAgent            []KeyMinutes                      `json:"by_agent"`
+	BySession          []SessionRow                      `json:"by_session"`
+	SessionsNextCursor string                            `json:"sessions_next_cursor,omitempty"`
+	SessionsTotal      int                               `json:"sessions_total"`
+	Intervals          []ReportInterval                  `json:"-"`
+	JointActivity      []JointActivityCell               `json:"-"`
+}
+
+func SanitizeProjectLabels(
+	report *Report, projects map[string]export.ProjectMapEntry,
+) {
+	for i := range report.ByProject {
+		report.ByProject[i].ProjectKey = export.ProjectKeyForEntry(
+			projects[report.ByProject[i].Key],
+		)
+		report.ByProject[i].Key = export.SafeProjectDisplayLabel(
+			report.ByProject[i].Key,
+		)
+	}
+	for i := range report.BySession {
+		title := export.SafeProjectDisplayLabel(report.BySession[i].Title)
+		if title == "" {
+			title = report.BySession[i].SessionID
+		}
+		report.BySession[i].Title = title
+		report.BySession[i].ProjectKey = export.ProjectKeyForEntry(
+			projects[report.BySession[i].Project],
+		)
+		report.BySession[i].Project = export.SafeProjectDisplayLabel(
+			report.BySession[i].Project,
+		)
+	}
+}
+
+type Bucket struct {
+	Start                string      `json:"start"`
+	End                  string      `json:"end"`
+	MaxAgents            int         `json:"max_agents"`
+	MaxInteractiveAgents int         `json:"max_interactive_agents"`
+	MaxSubagentAgents    int         `json:"max_subagent_agents"`
+	MaxAutomatedAgents   int         `json:"max_automated_agents"`
+	AgentMinutes         float64     `json:"agent_minutes"`
+	UserMessages         int         `json:"user_messages"`
+	AssistantMessages    int         `json:"assistant_messages"`
+	InputTokens          int         `json:"input_tokens,omitempty"`
+	OutputTokens         int         `json:"output_tokens"`
+	Cost                 money.Money `json:"cost"`
+	// Counts at the instant MaxAgents first occurs sum to MaxAgents.
+	// Independent category maxima above can occur at different times.
+	SubagentAtPeak    int `json:"subagent_at_peak"`
+	AutomatedAtPeak   int `json:"automated_at_peak"`
+	InteractiveAtPeak int `json:"interactive_at_peak"`
+}
+
+// ReportInterval is one half-open active span [Start, End) for a single
+// session, exposed so the UI can list the sessions active during a clicked
+// timeline slot. buildIntervals can emit several intervals per session within
+// one slot (one per consecutive message pair), so consumers dedup by SessionID.
+type ReportInterval struct {
+	SessionID string `json:"session_id"`
+	Start     string `json:"start"` // RFC3339 UTC
+	End       string `json:"end"`   // RFC3339 UTC
+}
+
+type Peak struct {
+	Agents int     `json:"agents"`
+	At     *string `json:"at"`
+}
+
+type Totals struct {
+	ActiveMinutes    float64     `json:"active_minutes"`
+	IdleMinutes      float64     `json:"idle_minutes"`
+	AgentMinutes     float64     `json:"agent_minutes"`
+	Sessions         int         `json:"sessions"`
+	UntimedSessions  int         `json:"untimed_sessions"`
+	DistinctProjects int         `json:"distinct_projects"`
+	DistinctModels   int         `json:"distinct_models"`
+	OutputTokens     int         `json:"output_tokens"`
+	Cost             money.Money `json:"cost"`
+	// Disjoint category segments sum to the combined minutes and cost.
+	AutomatedAgentMinutes   float64     `json:"automated_agent_minutes"`
+	InteractiveAgentMinutes float64     `json:"interactive_agent_minutes"`
+	SubagentAgentMinutes    float64     `json:"subagent_agent_minutes"`
+	AutomatedCost           money.Money `json:"automated_cost"`
+	InteractiveCost         money.Money `json:"interactive_cost"`
+	SubagentCost            money.Money `json:"subagent_cost"`
+	// Session counts are disjoint: subagents take precedence over automation.
+	// AutomatedSessions + InteractiveSessions + SubagentSessions == Sessions.
+	AutomatedSessions   int `json:"automated_sessions"`
+	InteractiveSessions int `json:"interactive_sessions"`
+	SubagentSessions    int `json:"subagent_sessions"`
+}
+
+// KeyMinutes is one breakdown row (by project/model/agent), with combined
+// minutes and cost and the additive interactive/subagent/automated segments.
+type KeyMinutes struct {
+	ProjectKey              string      `json:"project_key,omitempty"`
+	Key                     string      `json:"key"`
+	AgentMinutes            float64     `json:"agent_minutes"`
+	Cost                    money.Money `json:"cost"`
+	AutomatedAgentMinutes   float64     `json:"automated_agent_minutes"`
+	InteractiveAgentMinutes float64     `json:"interactive_agent_minutes"`
+	SubagentAgentMinutes    float64     `json:"subagent_agent_minutes"`
+	AutomatedCost           money.Money `json:"automated_cost"`
+	InteractiveCost         money.Money `json:"interactive_cost"`
+	SubagentCost            money.Money `json:"subagent_cost"`
+}
+
+type SessionRow struct {
+	SessionID     string      `json:"session_id"`
+	ProjectKey    string      `json:"project_key"`
+	Title         string      `json:"title"`
+	Project       string      `json:"project"`
+	Agent         string      `json:"agent"`
+	PrimaryModel  string      `json:"primary_model"`
+	Models        []string    `json:"models"`
+	AgentMinutes  *float64    `json:"agent_minutes"` // nil when untimed
+	Cost          money.Money `json:"cost"`
+	OutputTokens  int         `json:"output_tokens"`
+	FirstActive   *string     `json:"first_active"`
+	LastActive    *string     `json:"last_active"`
+	TimingQuality string      `json:"timing_quality"` // "timed" | "untimed"
+	IsAutomated   bool        `json:"is_automated"`
+	IsSubagent    bool        `json:"is_subagent"`
+}
+
+// interval is an internal half-open active span anchored to one session.
+type interval struct {
+	sessionID string
+	start     time.Time
+	end       time.Time
+	// tail is the start of the interval's last piece, for an interval that
+	// joins touching pieces; bucket membership depends on it.
+	tail  time.Time
+	model string // model attributed to this interval
+}
+
+// parseTS parses an RFC3339(/Nano) timestamp; ok=false on empty/invalid.
+func parseTS(s string) (time.Time, bool) {
+	if s == "" {
+		return time.Time{}, false
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t.UTC(), true
+	}
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t.UTC(), true
+	}
+	return time.Time{}, false
+}
+
+// rangeWindows tiles the range into bucket windows. BuildBuckets only errors
+// for an unvalidated bucket spec (Query validates upstream); on error or a
+// nil Loc it falls back to a single [start, end) window so the report stays
+// well-formed, mirroring the old dayWindow fallback.
+func rangeWindows(p Params) []BucketWindow {
+	windows, err := BuildBuckets(p.RangeStart, p.RangeEnd, p.Bucket, paramsLoc(p))
+	if err != nil || len(windows) == 0 {
+		return []BucketWindow{{Start: p.RangeStart, End: p.RangeEnd}}
+	}
+	return windows
+}
+
+// QueryWindows returns the bucket windows a report over q sums usage into.
+func QueryWindows(q Query) []BucketWindow {
+	return rangeWindows(Params{RangeStart: q.RangeStart, RangeEnd: q.RangeEnd, Bucket: q.Bucket, Loc: q.Loc})
+}
+
+// WindowIndex returns the index of the window that holds t, or -1.
+func WindowIndex(windows []BucketWindow, t time.Time) int {
+	return windowIndex(windows, t)
+}
+
+// Aggregate builds the range's report from the three input streams.
+func Aggregate(
+	p Params, sessions []SessionMeta, activity []ActivityEvent, usage []UsageRow,
+) (Report, error) {
+	gapCap := time.Duration(p.GapCapSeconds) * time.Second
+	candidates := PairActivityEvents(
+		activity, p.RangeStart, p.EffectiveEnd, gapCap,
+	)
+	return AggregateCandidates(
+		context.Background(), p, sessions, candidates, usage,
+	)
+}
+
+func newReport(p Params, windows []BucketWindow) Report {
+	var asOf *string
+	if p.Partial {
+		s := p.EffectiveEnd.Format(time.RFC3339)
+		asOf = &s
+	}
+	return Report{
+		Timezone:           paramsLoc(p).String(),
+		RangeStart:         p.RangeStart.Format(time.RFC3339),
+		RangeEnd:           p.RangeEnd.Format(time.RFC3339),
+		BucketUnit:         string(p.Bucket.Unit),
+		BucketSeconds:      p.Bucket.NominalSeconds,
+		BucketCount:        len(windows),
+		Partial:            p.Partial,
+		AsOf:               asOf,
+		EffectiveEnd:       p.EffectiveEnd.Format(time.RFC3339),
+		ElapsedBucketCount: elapsedBucketCount(windows, p.EffectiveEnd),
+		Buckets:            []Bucket{},
+		ByProject:          []KeyMinutes{},
+		ByModel:            []KeyMinutes{},
+		ByAgent:            []KeyMinutes{},
+		BySession:          []SessionRow{},
+		Intervals:          []ReportInterval{},
+	}
+}
+
+// paramsLoc returns the params timezone, defaulting nil to UTC.
+func paramsLoc(p Params) *time.Location {
+	if p.Loc == nil {
+		return time.UTC
+	}
+	return p.Loc
+}
+
+// elapsedBucketCount counts windows that have begun by effEnd.
+func elapsedBucketCount(windows []BucketWindow, effEnd time.Time) int {
+	n := 0
+	for _, w := range windows {
+		if w.Start.Before(effEnd) {
+			n++
+		}
+	}
+	return n
+}
+
+// EffectiveIntervalBounds applies the activity gap cap and clips one positive
+// message pair to [start, end). It returns false when no activity from the pair
+// falls inside the requested range.
+func EffectiveIntervalBounds(
+	previous, current, start, end time.Time,
+	gapCap time.Duration,
+) (time.Time, time.Time, bool) {
+	if !current.After(previous) {
+		return time.Time{}, time.Time{}, false
+	}
+	intervalEnd := current
+	if capped := previous.Add(gapCap); intervalEnd.After(capped) {
+		intervalEnd = capped
+	}
+	if previous.Before(start) {
+		previous = start
+	}
+	if intervalEnd.After(end) {
+		intervalEnd = end
+	}
+	if !intervalEnd.After(previous) {
+		return time.Time{}, time.Time{}, false
+	}
+	return previous, intervalEnd, true
+}
+
+type sessionKind uint8
+
+const (
+	interactiveSession sessionKind = iota
+	subagentSession
+	automatedSession
+)
+
+func (s SessionMeta) kind() sessionKind {
+	if s.IsSubagent {
+		return subagentSession
+	}
+	if s.IsAutomated {
+		return automatedSession
+	}
+	return interactiveSession
+}
+
+// ActivityCategory names the session's disjoint activity category for exports.
+// Subagents take precedence over automation, including workers without parents.
+func (s SessionMeta) ActivityCategory() string {
+	switch s.kind() {
+	case subagentSession:
+		return "subagent"
+	case automatedSession:
+		return "automated"
+	default:
+		return "interactive"
+	}
+}
+
+// Sessions absent from the map are treated as interactive.
+func sessionKinds(sessions []SessionMeta) map[string]sessionKind {
+	m := make(map[string]sessionKind, len(sessions))
+	for _, s := range sessions {
+		m[s.SessionID] = s.kind()
+	}
+	return m
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
+}
+
+// usageAgg accumulates per-session cost, output tokens, and per-model cost.
+// buildSessionsTable consumes it to build per-session rows and model breakdowns
+// from the same deduped survivor set dedupUsage returns.
+type usageAgg struct {
+	cost         money.Money
+	outputTokens int
+	models       map[string]money.Money // model -> cost (for primary/mixed)
+}
+
+// sessionIntervalAgg sums durations, which add exactly, so a session's
+// minutes do not depend on how its activity was split into intervals.
+type sessionIntervalAgg struct {
+	duration      time.Duration
+	modelDuration map[string]time.Duration
+	first, last   time.Time
+	hasIv         bool
+}
+
+// UsageDedupToken identifies a usage event for deduplication across sources.
+type UsageDedupToken struct {
+	Kind  string
+	Value string
+}
+
+// AddUsageDedupToken inserts a token and reports whether it was new.
+func AddUsageDedupToken(seen map[UsageDedupToken]struct{}, token UsageDedupToken) bool {
+	if _, exists := seen[token]; exists {
+		return false
+	}
+	seen[token] = struct{}{}
+	return true
+}
+
+// claudeUsageSnapshotToken identifies one Claude response. The message ID is
+// required; the request ID is empty when the transcript omits requestId, which
+// Claude Agent SDK transcripts do.
+type claudeUsageSnapshotToken struct {
+	messageID string
+	requestID string
+}
+
+// UsageIdentity holds the stored identifiers of a usage row.
+type UsageIdentity struct {
+	UsageSource     string
+	Agent           string
+	ClaudeMessageID string
+	ClaudeRequestID string
+	SourceUUID      string
+	UsageDedupKey   string
+}
+
+// UsageIdentity returns the row's stored deduplication identifiers.
+func (row UsageRow) UsageIdentity() UsageIdentity {
+	return UsageIdentity{
+		UsageSource: row.UsageSource, Agent: row.Agent,
+		ClaudeMessageID: row.ClaudeMessageID,
+		ClaudeRequestID: row.ClaudeRequestID,
+		SourceUUID:      row.SourceUUID, UsageDedupKey: row.UsageDedupKey,
+	}
+}
+
+// usageDedupTokenWithoutSourceGate picks the Claude response identity, source UUID, or stored usage key,
+// accepting source UUIDs regardless of UsageSource. SessionUsageDedupTokenForRow
+// restricts source UUIDs to message rows.
+func usageDedupTokenWithoutSourceGate(row UsageIdentity) (UsageDedupToken, bool) {
+	if row.ClaudeMessageID != "" {
+		return UsageDedupToken{
+			Kind: "claude", Value: row.ClaudeMessageID + ":" + row.ClaudeRequestID,
+		}, true
+	}
+	if row.Agent != "" && row.SourceUUID != "" {
+		return UsageDedupToken{Kind: "source", Value: row.Agent + ":" + row.SourceUUID}, true
+	}
+	if row.UsageDedupKey != "" {
+		return UsageDedupToken{Kind: "usage", Value: row.UsageDedupKey}, true
+	}
+	return UsageDedupToken{}, false
+}
+
+// SessionUsageDedupTokenForRow restricts source UUID identity to message rows.
+func SessionUsageDedupTokenForRow(row UsageIdentity) (UsageDedupToken, bool) {
+	if row.UsageSource != "message" {
+		row.SourceUUID = ""
+	}
+	return usageDedupTokenWithoutSourceGate(row)
+}
+
+// KeepSessionUsageRow records identified rows and keeps only their first occurrence.
+// Rows without an identity are always kept.
+func KeepSessionUsageRow(seen map[UsageDedupToken]struct{}, row UsageIdentity) bool {
+	key, ok := SessionUsageDedupTokenForRow(row)
+	return !ok || AddUsageDedupToken(seen, key)
+}
+
+// UsageSelectionRow contains the fields needed to select usage survivors.
+type UsageSelectionRow struct {
+	UsageIdentity
+	SessionID         string
+	MessageOrdinal    int64
+	Timestamp         time.Time
+	TimestampValid    bool
+	RawTimestamp      string
+	OutputTokens      int
+	WebSearchRequests int
+}
+
+func usageSelectionRows(rows []UsageRow) []UsageSelectionRow {
+	out := make([]UsageSelectionRow, len(rows))
+	for i, row := range rows {
+		ts, valid := parseTS(row.Timestamp)
+		out[i] = UsageSelectionRow{UsageIdentity: row.UsageIdentity(), SessionID: row.SessionID, MessageOrdinal: row.MessageOrdinal, Timestamp: ts, TimestampValid: valid, RawTimestamp: row.Timestamp, OutputTokens: row.OutputTokens, WebSearchRequests: row.WebSearchRequests}
+	}
+	return out
+}
+
+// ClaudeSnapshotSurvivorSelection also returns the earliest session and the
+// maximum billed web-search count for each surviving snapshot. Callers use the
+// former for attribution and the latter when pricing the selected token row.
+func ClaudeSnapshotSurvivorSelection(
+	usage []UsageRow,
+) (mask []bool, attribution []string, webSearchRequests []int) {
+	mask, attribution, webSearchRequests, err := ClaudeSnapshotSurvivorSelectionContext(context.Background(), usage)
+	if err != nil {
+		panic(err)
+	}
+	return mask, attribution, webSearchRequests
+}
+
+// ClaudeSnapshotSurvivorSelectionContext applies snapshot selection while
+// allowing bounded callers to stop large in-memory passes.
+func ClaudeSnapshotSurvivorSelectionContext(
+	ctx context.Context, usage []UsageRow,
+) (mask []bool, attribution []string, webSearchRequests []int, err error) {
+	mask, attribution, webSearchRequests, _, err = claudeSnapshotSelectionContext(ctx, usageSelectionRows(usage), nil)
+	return mask, attribution, webSearchRequests, err
+}
+
+func claudeSnapshotSelectionContext(
+	ctx context.Context, usage []UsageSelectionRow, eligible []bool,
+) (
+	mask []bool,
+	attribution []string,
+	webSearchRequests []int,
+	canonical []int,
+	err error,
+) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, nil, nil, err
+	}
+	mask = make([]bool, len(usage))
+	attribution = make([]string, len(usage))
+	webSearchRequests = make([]int, len(usage))
+	canonical = make([]int, len(usage))
+	for i := range canonical {
+		canonical[i] = -1
+	}
+	type snapshotSelection struct {
+		best, earliest, maximumWebSearchRequests int
+	}
+	// Each snapshot's selection lives in a slice so a row costs one map lookup.
+	groupOf := make(map[claudeUsageSnapshotToken]int)
+	groups := []snapshotSelection{}
+	rowGroup := make([]int, len(usage))
+	for i, u := range usage {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, nil, nil, err
+		}
+		if eligible != nil && !eligible[i] {
+			continue
+		}
+		if u.ClaudeMessageID == "" {
+			mask[i] = true
+			attribution[i] = u.SessionID
+			webSearchRequests[i] = u.WebSearchRequests
+			canonical[i] = i
+			continue
+		}
+		key := claudeUsageSnapshotToken{
+			messageID: u.ClaudeMessageID,
+			requestID: u.ClaudeRequestID,
+		}
+		g, ok := groupOf[key]
+		if !ok {
+			g = len(groups)
+			groupOf[key] = g
+			groups = append(groups, snapshotSelection{best: i, earliest: i})
+		}
+		selected := &groups[g]
+		if ok && earlierClaudeSnapshotAttribution(u, usage[selected.earliest]) {
+			selected.earliest = i
+		}
+		if ok && laterClaudeSnapshot(u, usage[selected.best]) {
+			selected.best = i
+		}
+		selected.maximumWebSearchRequests = max(
+			selected.maximumWebSearchRequests, u.WebSearchRequests)
+		rowGroup[i] = g
+	}
+	for _, selected := range groups {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, nil, nil, err
+		}
+		i := selected.best
+		mask[i] = true
+		attribution[i] = usage[selected.earliest].SessionID
+		webSearchRequests[i] = selected.maximumWebSearchRequests
+	}
+	for i, u := range usage {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, nil, nil, err
+		}
+		if eligible != nil && !eligible[i] {
+			continue
+		}
+		if u.ClaudeMessageID == "" {
+			continue
+		}
+		canonical[i] = groups[rowGroup[i]].best
+	}
+	return mask, attribution, webSearchRequests, canonical, nil
+}
+
+// CanonicalSessionTokenCoverageContext reports which token categories the
+// canonical survivor set represents for every original source session.
+func CanonicalSessionTokenCoverageContext(
+	ctx context.Context, usage []UsageRow,
+) (map[string]SessionTokenCoverage, error) {
+	_, _, _, snapshotCanonical, err := claudeSnapshotSelectionContext(ctx, usageSelectionRows(usage), nil)
+	if err != nil {
+		return nil, err
+	}
+	genericCanonical := make(map[int]int, len(usage))
+	seen := make(map[UsageDedupToken]int)
+	for i, row := range usage {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if snapshotCanonical[i] != i {
+			continue
+		}
+		genericCanonical[i] = i
+		if key, ok := SessionUsageDedupTokenForRow(row.UsageIdentity()); ok {
+			if previous, duplicate := seen[key]; duplicate {
+				genericCanonical[i] = previous
+				continue
+			}
+			seen[key] = i
+		}
+	}
+	coverage := make(map[string]SessionTokenCoverage)
+	seenBySession := make(map[string]map[int]struct{})
+	for i, row := range usage {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		snapshotIndex := snapshotCanonical[i]
+		if snapshotIndex < 0 {
+			continue
+		}
+		canonicalIndex := genericCanonical[snapshotIndex]
+		if seenBySession[row.SessionID] == nil {
+			seenBySession[row.SessionID] = make(map[int]struct{})
+		}
+		if _, duplicate := seenBySession[row.SessionID][canonicalIndex]; duplicate {
+			continue
+		}
+		seenBySession[row.SessionID][canonicalIndex] = struct{}{}
+		canonicalRow := usage[canonicalIndex]
+		value := coverage[row.SessionID]
+		value.OutputTokens += canonicalRow.OutputTokens
+		value.PeakContextTokens = max(value.PeakContextTokens,
+			canonicalRow.InputTokens+canonicalRow.CacheCreationTokens+
+				canonicalRow.CacheReadTokens)
+		coverage[row.SessionID] = value
+	}
+	return coverage, nil
+}
+
+func earlierClaudeSnapshotAttribution(candidate, current UsageSelectionRow) bool {
+	if candidate.TimestampValid && current.TimestampValid && !candidate.Timestamp.Equal(current.Timestamp) {
+		return candidate.Timestamp.Before(current.Timestamp)
+	}
+	if candidate.TimestampValid != current.TimestampValid {
+		return candidate.TimestampValid
+	}
+	if candidate.SessionID != current.SessionID {
+		return candidate.SessionID < current.SessionID
+	}
+	if candidate.MessageOrdinal != current.MessageOrdinal {
+		return candidate.MessageOrdinal < current.MessageOrdinal
+	}
+	return !candidate.TimestampValid && candidate.RawTimestamp < current.RawTimestamp
+}
+
+func laterClaudeSnapshot(candidate, current UsageSelectionRow) bool {
+	if candidate.OutputTokens != current.OutputTokens {
+		return candidate.OutputTokens > current.OutputTokens
+	}
+	if candidate.TimestampValid && current.TimestampValid && !candidate.Timestamp.Equal(current.Timestamp) {
+		return candidate.Timestamp.After(current.Timestamp)
+	}
+	if candidate.TimestampValid != current.TimestampValid {
+		return candidate.TimestampValid
+	}
+	if candidate.SessionID != current.SessionID {
+		return candidate.SessionID > current.SessionID
+	}
+	if candidate.MessageOrdinal != current.MessageOrdinal {
+		return candidate.MessageOrdinal > current.MessageOrdinal
+	}
+	return !candidate.TimestampValid && candidate.RawTimestamp > current.RawTimestamp
+}
+
+// UsageSurvivorSelection returns the survivor mask, accounting destination,
+// and maximum billed web-search count for each surviving row. A complete
+// snapshot can come from a later transcript while retaining the earliest
+// transcript's attribution and an earlier snapshot's server-tool count.
+func UsageSurvivorSelection(
+	start, end, effEnd time.Time, usage []UsageRow,
+) (mask []bool, attribution []string, webSearchRequests []int) {
+	mask, attribution, webSearchRequests, err := usageSurvivorSelection(
+		context.Background(), start, end, effEnd, usage, nil,
+	)
+	if err != nil {
+		panic(err)
+	}
+	return mask, attribution, webSearchRequests
+}
+
+// UsageSurvivorSelectionForSessions selects complete Claude snapshots across
+// all supplied rows, then limits them to the requested accounting destinations
+// before applying generic first-seen deduplication. This prevents an excluded
+// source-UUID or usage-key duplicate from suppressing an included row.
+func UsageSurvivorSelectionForSessions(
+	ctx context.Context,
+	start, end, effEnd time.Time, usage []UsageRow, sessionIDs []string,
+) (mask []bool, attribution []string, webSearchRequests []int, err error) {
+	allowed := make(map[string]struct{}, len(sessionIDs))
+	for _, id := range sessionIDs {
+		allowed[id] = struct{}{}
+	}
+	return usageSurvivorSelection(ctx, start, end, effEnd, usage, allowed)
+}
+
+func usageSurvivorSelection(
+	ctx context.Context,
+	start, end, effEnd time.Time,
+	usage []UsageRow,
+	allowed map[string]struct{},
+) (mask []bool, attribution []string, webSearchRequests []int, err error) {
+	return usageSelection(ctx, start, end, effEnd, usageSelectionRows(usage), allowed)
+}
+
+// SelectUsageSurvivorsForSessions selects from compact, timestamp-parsed rows.
+func SelectUsageSurvivorsForSessions(ctx context.Context, start, end, effEnd time.Time, usage []UsageSelectionRow, sessionIDs []string) (mask []bool, attribution []string, webSearchRequests []int, err error) {
+	allowed := make(map[string]struct{}, len(sessionIDs))
+	for _, id := range sessionIDs {
+		allowed[id] = struct{}{}
+	}
+	return usageSelection(ctx, start, end, effEnd, usage, allowed)
+}
+
+func usageSelection(ctx context.Context, start, end, effEnd time.Time, usage []UsageSelectionRow, allowed map[string]struct{}) (mask []bool, attribution []string, webSearchRequests []int, err error) {
+	eligible := make([]bool, len(usage))
+	for i, u := range usage {
+		t := u.Timestamp
+		if !u.TimestampValid || t.Before(start) || !t.Before(end) {
+			continue
+		}
+		if !t.Before(effEnd) {
+			continue
+		}
+		eligible[i] = true
+	}
+	snapshots, snapshotAttribution, snapshotWebSearchRequests, _, err := claudeSnapshotSelectionContext(ctx, usage, eligible)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	mask = make([]bool, len(usage))
+	attribution = make([]string, len(usage))
+	webSearchRequests = make([]int, len(usage))
+	seen := map[UsageDedupToken]struct{}{}
+	for i, u := range usage {
+		if !snapshots[i] {
+			continue
+		}
+		if allowed != nil {
+			if _, ok := allowed[snapshotAttribution[i]]; !ok {
+				continue
+			}
+		}
+		if k, ok := usageDedupTokenWithoutSourceGate(u.UsageIdentity); ok && !AddUsageDedupToken(seen, k) {
+			continue
+		}
+		mask[i] = true
+		attribution[i] = snapshotAttribution[i]
+		webSearchRequests[i] = snapshotWebSearchRequests[i]
+	}
+	return mask, attribution, webSearchRequests, nil
+}
+
+// dedupUsage filters usage rows to the range, keeps the fullest Claude
+// snapshot across the candidate rows, then applies first-seen dedup that
+// mirrors the usage stores. Rows arrive pre-sorted by (ts, session_id,
+// COALESCE(message_ordinal,-1)). The half-open instant filter drops rows before
+// start or at/after end; on a partial range effEnd is the as-of clip, so rows
+// at or after effEnd are dropped before they can claim a dedup key, matching
+// the activity/bucket clipping Aggregate applies. For a full range
+// effEnd == end, so nothing extra is excluded.
+func dedupUsage(ctx context.Context, start, end, effEnd time.Time, usage []UsageRow) ([]UsageRow, error) {
+	out := make([]UsageRow, 0, len(usage))
+	mask, attribution, webSearchRequests, err := usageSurvivorSelection(ctx, start, end, effEnd, usage, nil)
+	if err != nil {
+		return nil, err
+	}
+	for i, keep := range mask {
+		if keep {
+			row := usage[i]
+			row.SessionID = attribution[i]
+			row.WebSearchRequests = webSearchRequests[i]
+			out = append(out, row)
+		}
+	}
+	return out, nil
+}
+
+func applyUsageRows(
+	r *Report, windows []BucketWindow, usage []UsageRow,
+	allocated []UsageCostAllocation,
+	kindBy map[string]sessionKind,
+) error {
+	for i, u := range usage {
+		r.Totals.OutputTokens += u.OutputTokens
+		var err error
+		r.Totals.Cost, err = money.Add(r.Totals.Cost, allocated[i].Cost)
+		if err != nil {
+			return fmt.Errorf("summing activity report cost: %w", err)
+		}
+		switch kindBy[u.SessionID] {
+		case subagentSession:
+			r.Totals.SubagentCost, err = money.Add(r.Totals.SubagentCost, allocated[i].Cost)
+			if err != nil {
+				return fmt.Errorf("summing subagent activity report cost: %w", err)
+			}
+		case automatedSession:
+			r.Totals.AutomatedCost, err = money.Add(
+				r.Totals.AutomatedCost, allocated[i].Cost,
+			)
+			if err != nil {
+				return fmt.Errorf("summing automated activity report cost: %w", err)
+			}
+		default:
+			r.Totals.InteractiveCost, err = money.Add(
+				r.Totals.InteractiveCost, allocated[i].Cost,
+			)
+			if err != nil {
+				return fmt.Errorf("summing interactive activity report cost: %w", err)
+			}
+		}
+		t, _ := parseTS(u.Timestamp)
+		if b := windowIndex(windows, t); b >= 0 && b < len(r.Buckets) {
+			r.Buckets[b].InputTokens += u.InputTokens
+			r.Buckets[b].OutputTokens += u.OutputTokens
+			r.Buckets[b].Cost, err = money.Add(
+				r.Buckets[b].Cost, allocated[i].Cost,
+			)
+			if err != nil {
+				return fmt.Errorf("summing activity bucket cost: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// windowIndex returns the index of the ascending-sorted window whose half-open
+// [Start, End) contains t, or -1 if none does. Uses binary search since
+// windows are sorted by Start.
+func windowIndex(windows []BucketWindow, t time.Time) int {
+	lo, hi := 0, len(windows)-1
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		w := windows[mid]
+		switch {
+		case t.Before(w.Start):
+			hi = mid - 1
+		case !t.Before(w.End):
+			lo = mid + 1
+		default:
+			return mid
+		}
+	}
+	return -1
+}
+
+func buildSessionsTableFromDedupedUsage(
+	r *Report, sessions []SessionMeta, agg map[string]*sessionIntervalAgg,
+	usage []UsageRow, allocated []UsageCostAllocation,
+) error {
+	// Sort sessions by ID so the cost and minute rollups below accumulate in
+	// one deterministic order. addKey sums float64 values across sessions and
+	// float addition is not associative, so the unspecified per-backend row
+	// order (no activityReportSessions query imposes ORDER BY) would otherwise
+	// yield 1-ULP-different breakdown costs across SQLite, PostgreSQL, and
+	// DuckDB for identical data.
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].SessionID < sessions[j].SessionID
+	})
+	// Per-session cost/tokens/models from deduped usage.
+	cost := map[string]*usageAgg{}
+	for i, u := range usage {
+		c := cost[u.SessionID]
+		if c == nil {
+			c = &usageAgg{models: map[string]money.Money{}}
+			cost[u.SessionID] = c
+		}
+		var err error
+		c.cost, err = money.Add(c.cost, allocated[i].Cost)
+		if err != nil {
+			return fmt.Errorf("summing activity session cost: %w", err)
+		}
+		c.outputTokens += u.OutputTokens
+		if u.Model != "" {
+			c.models[u.Model], err = money.Add(
+				c.models[u.Model], allocated[i].Cost,
+			)
+			if err != nil {
+				return fmt.Errorf("summing activity session model cost: %w", err)
+			}
+		}
+	}
+	projSet := map[string]struct{}{}
+	modelSet := map[string]struct{}{}
+	byProject := map[string]*keyAgg{}
+	byAgent := map[string]*keyAgg{}
+	byModel := map[string]*keyAgg{}
+	r.BySession = make([]SessionRow, 0, len(sessions))
+	for _, s := range sessions {
+		kind := s.kind()
+		switch kind {
+		case subagentSession:
+			r.Totals.SubagentSessions++
+		case automatedSession:
+			r.Totals.AutomatedSessions++
+		default:
+			r.Totals.InteractiveSessions++
+		}
+		projSet[s.Project] = struct{}{}
+		row := SessionRow{
+			SessionID: s.SessionID, Title: s.Title, Project: s.Project,
+			Agent: s.Agent, TimingQuality: "untimed", IsAutomated: s.IsAutomated, IsSubagent: s.IsSubagent,
+		}
+		if a := agg[s.SessionID]; a != nil && a.hasIv {
+			mins := a.duration.Minutes()
+			row.AgentMinutes = &mins
+			row.TimingQuality = "timed"
+			f := a.first.Format(time.RFC3339)
+			l := a.last.Format(time.RFC3339)
+			row.FirstActive, row.LastActive = &f, &l
+			row.PrimaryModel, row.Models = primaryAndDurations(a.modelDuration)
+			if err := addKey(byProject, s.Project, mins, money.Money{}, kind); err != nil {
+				return fmt.Errorf("summing activity project minutes: %w", err)
+			}
+			if err := addKey(byAgent, s.Agent, mins, money.Money{}, kind); err != nil {
+				return fmt.Errorf("summing activity agent minutes: %w", err)
+			}
+			for m, d := range a.modelDuration {
+				if err := addKey(byModel, m, d.Minutes(), money.Money{}, kind); err != nil {
+					return fmt.Errorf("summing activity model minutes: %w", err)
+				}
+			}
+		} else {
+			r.Totals.UntimedSessions++
+		}
+		if c := cost[s.SessionID]; c != nil {
+			row.Cost = c.cost
+			row.OutputTokens = c.outputTokens
+			if row.PrimaryModel == "" {
+				row.PrimaryModel, row.Models = primaryAndMoneyModels(c.models)
+			}
+			// Cost rolls up for every session with usage, timed or not, so the
+			// cost breakdown sums to Totals.Cost. Minutes stay timed-only above.
+			if err := addKey(byProject, s.Project, 0, c.cost, kind); err != nil {
+				return fmt.Errorf("summing activity project cost: %w", err)
+			}
+			if err := addKey(byAgent, s.Agent, 0, c.cost, kind); err != nil {
+				return fmt.Errorf("summing activity agent cost: %w", err)
+			}
+			for m, mc := range c.models {
+				if err := addKey(byModel, m, 0, mc, kind); err != nil {
+					return fmt.Errorf("summing activity model cost: %w", err)
+				}
+			}
+		}
+		for _, m := range row.Models {
+			modelSet[m] = struct{}{}
+		}
+		r.BySession = append(r.BySession, row)
+	}
+	sort.Slice(r.BySession, func(i, j int) bool {
+		left, right := minutesOf(r.BySession[i]), minutesOf(r.BySession[j])
+		if left != right {
+			return left > right
+		}
+		return r.BySession[i].SessionID < r.BySession[j].SessionID
+	})
+	r.Totals.Sessions = len(sessions)
+	r.Totals.DistinctProjects = len(projSet)
+	r.Totals.DistinctModels = len(modelSet)
+	r.ByProject = breakdownRows(byProject, false)
+	r.ByAgent = breakdownRows(byAgent, false)
+	r.ByModel = breakdownRows(byModel, true)
+	return nil
+}
+
+// keyAgg accumulates a breakdown key's combined agent-minutes and cost plus the
+// interactive/subagent/automated split of each. Minutes come from timed intervals; cost
+// from deduped usage (all sessions, timed or not).
+type keyAgg struct {
+	minutes      float64
+	cost         money.Money
+	autoMinutes  float64
+	subMinutes   float64
+	interMinutes float64
+	autoCost     money.Money
+	subCost      money.Money
+	interCost    money.Money
+}
+
+// addKey accumulates minutes and cost into the key's aggregate, routing the
+// values into the segment for the session's class.
+func addKey(
+	m map[string]*keyAgg, key string, minutes float64, cost money.Money,
+	kind sessionKind,
+) error {
+	a := m[key]
+	if a == nil {
+		a = &keyAgg{}
+		m[key] = a
+	}
+	a.minutes += minutes
+	var err error
+	a.cost, err = money.Add(a.cost, cost)
+	if err != nil {
+		return err
+	}
+	switch kind {
+	case subagentSession:
+		a.subMinutes += minutes
+		a.subCost, err = money.Add(a.subCost, cost)
+	case automatedSession:
+		a.autoMinutes += minutes
+		a.autoCost, err = money.Add(a.autoCost, cost)
+	default:
+		a.interMinutes += minutes
+		a.interCost, err = money.Add(a.interCost, cost)
+	}
+	return err
+}
+
+// breakdownRows turns a key->aggregate map into a slice sorted by combined
+// agent-minutes descending (the UI re-sorts by the selected metric). It drops
+// empty keys and rows with neither minutes nor cost; when dropModelKeys is set
+// it also drops the "unknown" model key.
+func breakdownRows(m map[string]*keyAgg, dropModelKeys bool) []KeyMinutes {
+	out := make([]KeyMinutes, 0, len(m))
+	for k, v := range m {
+		if k == "" || (v.minutes == 0 && v.cost.Microdollars == 0) {
+			continue
+		}
+		if dropModelKeys && k == "unknown" {
+			continue
+		}
+		out = append(out, KeyMinutes{
+			Key:                     k,
+			AgentMinutes:            v.minutes,
+			Cost:                    v.cost,
+			AutomatedAgentMinutes:   v.autoMinutes,
+			InteractiveAgentMinutes: v.interMinutes,
+			AutomatedCost:           v.autoCost,
+			InteractiveCost:         v.interCost,
+			SubagentCost:            v.subCost,
+			SubagentAgentMinutes:    v.subMinutes,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].AgentMinutes == out[j].AgentMinutes {
+			return out[i].Key < out[j].Key
+		}
+		return out[i].AgentMinutes > out[j].AgentMinutes
+	})
+	return out
+}
+
+func minutesOf(s SessionRow) float64 {
+	if s.AgentMinutes == nil {
+		return -1
+	}
+	return *s.AgentMinutes
+}
+
+// primaryAndDurations returns the highest-duration model and sorted set.
+// Duration keeps primary-model ties deterministic across different stream
+// orders without relying on floating-point summation order.
+func primaryAndDurations(w map[string]time.Duration) (string, []string) {
+	var keys []string
+	primary := ""
+	var best time.Duration
+	for key, duration := range w {
+		if key == "" || key == "unknown" {
+			continue
+		}
+		keys = append(keys, key)
+		if duration > best || duration == best && (primary == "" || key < primary) {
+			best, primary = duration, key
+		}
+	}
+	sort.Strings(keys)
+	if primary == "" && len(keys) > 0 {
+		primary = keys[0]
+	}
+	return primary, keys
+}
+
+func primaryAndMoneyModels(w map[string]money.Money) (string, []string) {
+	var keys []string
+	primary := ""
+	var best int64
+	for k, v := range w {
+		if k == "" || k == "unknown" {
+			continue
+		}
+		keys = append(keys, k)
+		if v.Microdollars > best || v.Microdollars == best && best > 0 && k < primary {
+			best, primary = v.Microdollars, k
+		}
+	}
+	sort.Strings(keys)
+	if primary == "" && len(keys) > 0 {
+		primary = keys[0]
+	}
+	return primary, keys
+}

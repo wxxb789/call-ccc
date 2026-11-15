@@ -1,0 +1,137 @@
+# Background Work and Memory
+
+Read this file before changing watchers, polling, sync scheduling, or other
+long-running background work. Also read it before investigating memory growth.
+
+## The internal/poller Scheduler
+
+Define interval-driven jobs against external APIs or shared resources as
+`poller.Job` values passed to `poller.Start` at daemon startup. Jobs cannot be
+added later. The scheduler owns jitter, cooldown recorded before attempts,
+capped failure backoff, `RetryAfterError`, and cancellation. Status is in memory
+only; `TriggerNow` bypasses cooldown.
+
+Pricing refresh and conversation tombstone pruning use the scheduler. Periodic
+session sync, vector embedding, and recall extraction still own their timing;
+migrating them is separate work.
+
+## Memory and Work Bounds
+
+- Keep passive daemon memory within a few hundred megabytes on macOS, Linux, and
+  Windows. Treat sustained growth beyond that range as a regression.
+
+- Bound watcher, polling, and sync work by the changed batch, not the full
+  archive. Do not scan or load every stored session for each filesystem event.
+
+- A rejected parser checkpoint forbids resuming from its cursor. It must not
+  force a transcript rewrite when the full source hash and stored metadata
+  still match. Filesystem device numbers can change across boots.
+
+- Declare costly scheduling inputs as provider capabilities. Compute them only
+  for providers that use them, and default new capabilities to unsupported.
+
+- Add cardinality-scaling regressions for background paths. Compare small and
+  large archives and prove that unchanged work per event stays bounded. Cover
+  deletion, tombstones, and persistent archives in the same tests.
+
+- Diagnose long-running memory with allocation and CPU profiles, live heap,
+  forced-GC heap, and operating-system physical or dirty memory. Raw RSS does
+  not prove live memory because it includes clean reclaimable mappings.
+
+- Profile branch binaries only against isolated, production-scale database and
+  source clones. Never use live archives or agent transcripts.
+
+- Observe retention long enough to reproduce the reported growth window. On
+  macOS, record `vmmap` physical footprint and dirty memory. Use portable Go
+  allocation and heap metrics on Linux and Windows.
+
+## Codex rollout compression
+
+Before changing rollout selection or accepting a compression-related review
+finding, read the pinned Codex sources in the
+[format provenance](../internal/session-format-sources.md#codex-codex).
+Compression and restoration change the representation of one rollout at the same
+path. Prefer its plain JSONL sibling when both forms exist.
+
+A test that writes different transcript contents under separate configured roots
+exercises AgentsView's import policy. It does not show that Codex creates that
+state. Establish the upstream producer path before reporting such a test as a
+Codex data-loss bug or a merge blocker.
+
+## Usage cache backfill
+
+- Start usage-cache backfill only after the writable archive transaction that
+  changed a session has committed. Mutation hooks enqueue session IDs; they
+  never fill while holding the archive writer.
+- Foreground fills are per-session single-flight and detached from request
+  cancellation. Cancelling one waiter must not cancel shared progress.
+- Detached fills and rollup builds hold their own cache-generation lease.
+  Retirement cancels their coordinator context and waits for those leases
+  before closing SQLite handles.
+- A writable daemon starts a newest-usage-first coverage pass after HTTP
+  readiness. A usage read also starts a pass when its timezone has no trusted
+  claim or its catalog digest differs, unless a pass is already active. Each
+  pass installs at most 256 sessions per cache transaction and yields between
+  batches. The pass fills normalized facts and daily rollups for the
+  process-local timezone plus up to eight retained recently requested explicit
+  timezones. On completion, it claims each timezone through its captured
+  archive revision, capped by older installs written during the pass. Installs
+  from another catalog prevent the claim. A changed claim revision or install
+  boundary prevents replacement.
+- Served usage requests own timezone recency in
+  `usage_rollup_timezones.last_requested_at`, rewriting it at most once a
+  minute per zone. Rollup installs stamp only a zone's first row, so
+  background rebuilds never reorder which eight explicit zones stay warm.
+- Archive writes during a pass do not restart it. Each session's facts and
+  source version come from one archive read transaction, so they are always
+  paired correctly, and a session written during the pass is refilled by its
+  own mutation notification. Do not reintroduce a restart loop over a moving
+  source fingerprint.
+- After each notification batch, the daemon rebuilds filled sessions' daily
+  rollups and requeues invalidated dedup peers for the same timezones, in
+  chunks of 256. A failed rebuild is retried by the next write or usage
+  request. Cursor rollups stay with the request.
+- Session notifications that exceed the channel capacity retain their IDs in a
+  deduplicated overflow map capped at 1,024 IDs, including dedup peers.
+  Pending batches hold at most 2,048 IDs; backfill or requests cover dropped
+  IDs.
+- Notifications hold a daemon work lease through queueing and rebuilding until
+  the pending set, overflow and in-flight batch are empty.
+- A scheduled pricing refresh calls `RewarmUsageCache` once it returns, when the
+  stored catalog digest changed, including a partial refresh that also reports
+  an error. It starts the same coverage pass, which rebuilds only rollups
+  whose pricing lookups now resolve differently. A pass resolves prices from
+  the catalog it captured at start. The pass checks the committed pricing
+  revision between batches and before and after its final recheck. A change
+  stops the pass and queues a new pass with the current catalog, even before
+  re-warm is called. The final recheck uses one rollup call across the whole
+  snapshot to repair installs invalidated by later batches.
+- Sweep the archive deletion journal before and after the pass and between
+  install batches. Queries also inner-join current archive sessions before
+  ranking, so tombstone processing is hygiene rather than a correctness
+  dependency.
+- Run incremental vacuum between batches only when the cache freelist exceeds
+  4,096 pages, and reclaim at most 256 pages per call.
+- Run `PRAGMA optimize` between substantial batches and after install-heavy
+  foreground fills. Run full `ANALYZE` after generation creation and complete
+  initial backfill, not after every batch.
+- Keep the selected session batch outermost in rollup fact and cross-session
+  identity queries. An identity index scan still reads the whole cache; verify
+  that query plans seek facts by selected session before checking identities.
+- Backfill logs aggregate counts and elapsed time only. Do not log session IDs,
+  projects, paths, prompts, or fact contents.
+- Keep newest-first fact plus process-local-rollup coverage within 30 seconds
+  and complete fact plus process-local-rollup archive coverage within five
+  minutes on the protected production-scale benchmark clone. These are release
+  gates, not reasons to delay daemon readiness. A foreground request for an
+  unbuilt timezone or all-history coverage remains exact and may pay the
+  remaining `fill facts -> build rollups -> read` cold cost.
+- Native PostgreSQL serving queues a coverage pass at launch for unready
+  process-local and recently requested timezones. A Usage read returns the
+  direct PostgreSQL result when its timezone has no current journal claim, its
+  pricing, account usage, or project identity changed, or it would refresh
+  more than 64 changed sessions. That read queues its timezone for one
+  background worker, which reads all history in the timezone. The worker's
+  read fills facts, rebuilds rollups, and claims coverage, so later reads in
+  any window refresh only sessions changed since. One worker bounds this work
+  to one pass at a time. Closing the store cancels and joins it.

@@ -1,0 +1,72 @@
+package clickhouse
+
+import (
+	"unsafe"
+
+	"go.kenn.io/agentsview/internal/readbase"
+)
+
+// Byte caps of the memos whose entries can be large.
+const (
+	dailyUsageRowsBytes = 128 << 20
+)
+
+// The estimates below count a value's own bytes and the bytes of the
+// strings and slices it holds. They leave out allocator and map overhead,
+// so they bound a memo's memory roughly rather than exactly.
+
+func stringBytes(values ...string) int64 {
+	var n int64
+	for _, v := range values {
+		n += int64(len(v))
+	}
+	return n
+}
+
+func optionalStringBytes(values ...*string) int64 {
+	var n int64
+	for _, v := range values {
+		if v != nil {
+			n += int64(len(*v))
+		}
+	}
+	return n
+}
+
+func aggregateRowBytes(r CHUsageAggregateRow) int64 {
+	return int64(unsafe.Sizeof(r)) + stringBytes(r.Date, r.TS, r.PricingTS, r.SessionID, r.Project,
+		r.Agent, r.Machine, r.Model, r.ProviderID, r.PriceModel, r.Source, r.DisplayName, r.StartedAt, r.GroupKey, r.SessionName)
+}
+
+func dailyUsageRowBytes(r chDailyUsageGroupRow) int64 {
+	return aggregateRowBytes(r.CHUsageAggregateRow) + int64(unsafe.Sizeof(r)-unsafe.Sizeof(r.CHUsageAggregateRow)) +
+		stringBytes(r.Kind, r.ContextID, r.PriceError) +
+		int64(len(r.InexactModels)+len(r.InexactProjects))*int64(unsafe.Sizeof("")) +
+		stringBytes(r.InexactModels...) + stringBytes(r.InexactProjects...)
+}
+
+func usageSessionRowBytes(r chUsageSessionRow) int64 {
+	return int64(unsafe.Sizeof(r)) + stringBytes(r.sessionID, r.project, r.agent)
+}
+
+func analyticsSessionBytes(r readbase.AnalyticsSession) int64 {
+	return int64(unsafe.Sizeof(r)) +
+		stringBytes(r.ID, r.Project, r.Machine, r.Agent, r.StartedAt, r.EndedAt, r.CreatedAt,
+			r.Outcome, r.OutcomeConfidence) +
+		optionalStringBytes(r.FirstMessage, r.DisplayName, r.TerminationStatus, r.HealthGrade)
+}
+
+func sessionListingBytes(l activitySessionListing) int64 {
+	n := int64(unsafe.Sizeof(l))
+	for _, s := range l.sessions {
+		n += int64(unsafe.Sizeof(s)) + stringBytes(s.SessionID, s.Title, s.Project, s.ProjectKey,
+			s.Agent, s.Machine, s.StartedAt, s.EndedAt)
+	}
+	for _, id := range l.ids {
+		n += int64(unsafe.Sizeof(id)) + int64(len(id))
+	}
+	for id := range l.versions {
+		n += int64(len(id)) + 24
+	}
+	return n
+}

@@ -1,0 +1,863 @@
+package main
+
+import (
+	"context"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"sync/atomic"
+	"text/tabwriter"
+	"time"
+
+	"github.com/doordash-oss/oapi-codegen-dd/v3/pkg/runtime"
+	"go.kenn.io/agentsview/internal/apiclient"
+	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/export"
+	"go.kenn.io/agentsview/internal/money"
+	"go.kenn.io/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/pricing"
+	"go.kenn.io/agentsview/internal/pricingrefresh"
+	"go.kenn.io/agentsview/internal/service"
+	"go.kenn.io/agentsview/internal/sync"
+	"go.kenn.io/agentsview/internal/timeutil"
+)
+
+// quickSyncMargin pads the mtime cutoff backward from the
+// last recorded sync start time to catch files modified
+// during the prior sync. Smaller values are faster but risk
+// missing recent writes; 10s is a safe default.
+const quickSyncMargin = 10 * time.Second
+
+// defaultUsageDays is the default lookback window for
+// `agentsview usage daily` when neither --since nor --all is
+// given. Matches ccusage's default and avoids scanning the
+// full history when users usually want recent spend.
+const defaultUsageDays = 30
+
+// defaultUsageDateRange mirrors the HTTP usage route's default range:
+// fill a missing upper bound with today, then fill a missing lower
+// bound relative to that upper bound. Callers that intentionally want
+// an open-ended range must set NoDefaultRange instead of calling this.
+func defaultUsageDateRange(
+	from, to string, now time.Time,
+) (string, string) {
+	now = now.UTC()
+	if to == "" {
+		to = now.Format("2006-01-02")
+	}
+	if from == "" {
+		t, err := time.Parse("2006-01-02", to)
+		if err != nil {
+			t = now
+		}
+		from = t.AddDate(0, 0, -defaultUsageDays).Format("2006-01-02")
+	}
+	return from, to
+}
+
+type UsageDailyConfig struct {
+	JSON         bool
+	Since        string
+	Until        string
+	All          bool
+	Agent        string
+	Breakdown    bool
+	Offline      bool
+	NoSync       bool
+	Timezone     string
+	OutputWriter io.Writer
+	ErrorWriter  io.Writer
+}
+
+type usageDailyDocument struct {
+	db.DailyUsageResult
+	MachineLabels service.MachineLabelCatalog `json:"machine_labels,omitzero"`
+	// PlanOnlySessions and PartlyCapturedSessions match the usage summary
+	// API: sessions left out of the totals as billed to plan usage, and
+	// sessions whose token counts are low.
+	PlanOnlySessions       int `json:"planOnlySessions,omitzero"`
+	PartlyCapturedSessions int `json:"partlyCapturedSessions,omitzero"`
+}
+
+// resolveUsageWindow resolves the raw --since/--until flags into concrete
+// inclusive YYYY-MM-DD bounds. Both accept a duration like 28d or a date,
+// the same syntax as `stats`. --until resolves first; a duration --since is
+// then measured back from the resolved --until (or from now when --until is
+// open), matching how stats anchors a duration window. An inverted explicit
+// window is rejected so a reversed range fails loudly instead of returning
+// an empty result.
+func resolveUsageWindow(
+	since, until string, now time.Time, loc *time.Location,
+) (string, string, error) {
+	if loc == nil {
+		loc = time.UTC
+	}
+	now = now.In(loc)
+	// Resolve --until first and keep it as the anchor for --since:
+	// ParseWindowPoint measures a duration back from its time argument, so
+	// a duration --since is measured from the resolved --until while a date
+	// stands alone. --until open leaves the anchor at now.
+	anchor := now
+	to := ""
+	if until != "" {
+		t, date, err := resolveUsageWindowPoint(until, now, loc)
+		if err != nil {
+			return "", "", fmt.Errorf("invalid --until: %w", err)
+		}
+		anchor, to = t, date
+	}
+	from := ""
+	if since != "" {
+		_, date, err := resolveUsageWindowPoint(since, anchor, loc)
+		if err != nil {
+			return "", "", fmt.Errorf("invalid --since: %w", err)
+		}
+		from = date
+	}
+	// Bounds are inclusive, so from == to is a valid single day (hence >
+	// not >=). String comparison is valid because YYYY-MM-DD sorts
+	// lexically.
+	if from != "" && to != "" && from > to {
+		return "", "", fmt.Errorf(
+			"--since (%s) must not be after --until (%s)", from, to)
+	}
+	return from, to, nil
+}
+
+func resolveUsageWindowPoint(
+	raw string, anchor time.Time, loc *time.Location,
+) (time.Time, string, error) {
+	if t, err := time.ParseInLocation("2006-01-02", raw, loc); err == nil {
+		return t, raw, nil
+	}
+	t, err := db.ParseWindowPoint(raw, anchor)
+	if err != nil {
+		return time.Time{}, "", err
+	}
+	return t, t.In(loc).Format("2006-01-02"), nil
+}
+
+func runUsageDaily(ctx context.Context, cfg UsageDailyConfig) error {
+	return runUsageDailyResult(ctx, cfg)
+}
+
+func runUsageDailyResult(ctx context.Context, cfg UsageDailyConfig) error {
+	output, diagnostics := cfg.OutputWriter, cfg.ErrorWriter
+	if output == nil {
+		output = os.Stdout
+	}
+	if diagnostics == nil {
+		diagnostics = os.Stderr
+	}
+	tz := cfg.Timezone
+	if tz == "" {
+		tz = localTimezone()
+	}
+
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return cliValidationError(fmt.Errorf("invalid --timezone: %w", err),
+			"Use --timezone with an IANA timezone such as UTC or America/New_York.")
+	}
+
+	since, until, err := resolveUsageWindow(cfg.Since, cfg.Until, time.Now(), loc)
+	if err != nil {
+		return cliValidationError(err,
+			"Use --since and --until with a duration such as 28d or a date YYYY-MM-DD; --since must not be after --until.")
+	}
+
+	filter := db.UsageFilter{
+		From:     since,
+		To:       until,
+		Agent:    cfg.Agent,
+		Timezone: tz,
+	}
+	noDefaultRange := cfg.All || cfg.Since != "" || cfg.Until != ""
+
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt)
+	defer stop()
+	backend, cleanup, err := resolveArchiveQueryBackend(ctx, archiveQueryPolicy{
+		Offline:              cfg.Offline,
+		NoSync:               cfg.NoSync,
+		AutoStart:            true,
+		SkipInitialSync:      true,
+		ReadOnlyDaemon:       archiveQuerySkipReadOnlyDaemon,
+		DirectReadOnlyAction: "refresh usage directly",
+	})
+	if err != nil {
+		return err
+	}
+	defer closeArchiveQueryBackend(cleanup)
+
+	progress, finishProgress := newUsageProgressPrinter(diagnostics)
+	result, err := backend.DailyUsage(ctx, dailyUsageQuery{
+		Progress:       progress,
+		Filter:         filter,
+		NoDefaultRange: noDefaultRange,
+		Breakdowns:     cfg.Breakdown,
+		SessionCounts:  cfg.JSON,
+	})
+	finishProgress()
+	if err != nil {
+		return err
+	}
+
+	if cfg.JSON {
+		document := usageDailyDocument{
+			DailyUsageResult:       result.DailyUsageResult,
+			PlanOnlySessions:       result.PlanOnlySessions,
+			PartlyCapturedSessions: result.PartlyCapturedSessions,
+		}
+		if cfg.Breakdown {
+			keys := make(map[string]struct{})
+			for _, day := range result.Daily {
+				for _, breakdown := range day.MachineBreakdowns {
+					keys[breakdown.MachineName] = struct{}{}
+				}
+			}
+			document.MachineLabels = machineLabelsForKeys(machineLabelCatalog(
+				ctx, diagnostics, backend.MachineLabels,
+			), keys)
+		}
+		enc := jsontext.NewEncoder(output, jsontext.WithIndent("  "))
+		if err := json.MarshalEncode(enc, document); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	if err := printDailyTable(output, result.DailyUsageResult, cfg.Breakdown); err != nil {
+		return err
+	}
+	if note := noTokenDataNote(cfg.Agent, result.Totals); note != "" {
+		fmt.Fprintln(diagnostics, note)
+	}
+	for _, note := range planUsageNotes(result) {
+		fmt.Fprintln(diagnostics, note)
+	}
+	return nil
+}
+
+// planUsageNotes returns the stderr notes that explain sessions the totals
+// leave out or undercount: codex-cloud sessions billed only as plan usage,
+// which have no token counts to price, and sessions live capture saw only
+// in part.
+func planUsageNotes(report dailyUsageReport) []string {
+	var notes []string
+	if n := report.PlanOnlySessions; n > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"note: %d %s billed as plan usage, not priced, %s left out of these totals.",
+			n, plural(n, "session", "sessions"), plural(n, "is", "are")))
+	}
+	if n := report.PartlyCapturedSessions; n > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"note: %d %s partly captured; %s token counts are low.",
+			n, plural(n, "session", "sessions"), plural(n, "its", "their")))
+	}
+	return notes
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
+// noTokenDataNote returns a one-line stderr note for a zero usage result when
+// the user has filtered to agents that do not record per-message token usage.
+// The wording follows the service's unsupported-usage kind for the same
+// filter, so the CLI and the dashboard cannot drift: all-Copilot filters keep
+// the Copilot-specific wording and every other no-token filter gets the
+// generic note. It returns "" when the filter does not select only
+// no-token-data agents or real token/cost data exists. This is an
+// agent-property statement (issue #349) shown in response to an explicit
+// --agent the user typed, so it needs no session-presence check; it is
+// appropriate even for an empty window.
+func noTokenDataNote(agent string, totals db.UsageTotals) string {
+	if !parser.AgentFilterLacksPerMessageTokenData(agent) ||
+		!db.NoTokenData(totals) {
+		return ""
+	}
+	if service.UnsupportedUsageKindForAgentFilter(agent) ==
+		service.UnsupportedUsageKindCopilotNoTokenData {
+		return "note: these GitHub Copilot records do not include token " +
+			"or cost data that agentsview can total."
+	}
+	return "note: matching sessions do not record per-message token usage."
+}
+
+type UsageStatuslineConfig struct {
+	JSON         bool
+	Agent        string
+	Offline      bool
+	NoSync       bool
+	OutputWriter io.Writer
+	ErrorWriter  io.Writer
+}
+
+// usageStatuslineReport is the machine-readable form of the statusline. It
+// carries the same facts as the human line and nothing more: today's cost,
+// the day it covers, and the agent filter that produced it. Cost stays a
+// money.Money so callers read exact microdollars instead of scraping the
+// formatted string.
+type usageStatuslineReport struct {
+	Date  string      `json:"date"`
+	Cost  money.Money `json:"cost"`
+	Agent string      `json:"agent,omitempty"`
+}
+
+func usageDateForTimezone(now time.Time, timezone string) string {
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
+		loc = time.UTC
+	}
+	return now.In(loc).Format("2006-01-02")
+}
+
+func runUsageStatusline(ctx context.Context, cfg UsageStatuslineConfig) error {
+	return runUsageStatuslineResult(ctx, cfg)
+}
+
+func runUsageStatuslineResult(ctx context.Context, cfg UsageStatuslineConfig) error {
+	output := cfg.OutputWriter
+	if output == nil {
+		output = os.Stdout
+	}
+	timezone := localTimezone()
+	today := usageDateForTimezone(time.Now(), timezone)
+	filter := db.UsageFilter{
+		From:     today,
+		To:       today,
+		Agent:    cfg.Agent,
+		Timezone: timezone,
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	backend, cleanup, err := resolveArchiveQueryBackend(ctx, archiveQueryPolicy{
+		Offline:              cfg.Offline,
+		NoSync:               cfg.NoSync,
+		AutoStart:            true,
+		ReadOnlyDaemon:       archiveQuerySkipReadOnlyDaemon,
+		DirectReadOnlyAction: "refresh usage directly",
+	})
+	if err != nil {
+		return err
+	}
+	defer closeArchiveQueryBackend(cleanup)
+
+	report, err := backend.DailyUsage(ctx, dailyUsageQuery{
+		Filter:         filter,
+		NoDefaultRange: true,
+	})
+	if err != nil {
+		return err
+	}
+	result := report.DailyUsageResult
+
+	if cfg.JSON {
+		return writeUsageStatuslineJSON(output, result, cfg.Agent, today)
+	}
+
+	return printUsageStatusline(output, result, cfg.Agent)
+}
+
+func printUsageStatuslineJSON(
+	result db.DailyUsageResult, agent, date string,
+) error {
+	return writeUsageStatuslineJSON(os.Stdout, result, agent, date)
+}
+
+func writeUsageStatuslineJSON(
+	w io.Writer, result db.DailyUsageResult, agent, date string,
+) error {
+	enc := jsontext.NewEncoder(w, jsontext.WithIndent("  "))
+	report := usageStatuslineReport{
+		Date:  date,
+		Cost:  result.Totals.TotalCost,
+		Agent: agent,
+	}
+	if err := json.MarshalEncode(enc, report); err != nil {
+		return err
+	}
+	return nil
+}
+
+func printUsageStatusline(w io.Writer, result db.DailyUsageResult, agent string) error {
+	if agent != "" {
+		_, err := fmt.Fprintf(w, "%s today (%s)\n",
+			fmtCost(result.Totals.TotalCost), agent)
+		return err
+	}
+	_, err := fmt.Fprintf(w, "%s today\n", fmtCost(result.Totals.TotalCost))
+	return err
+}
+
+func applyCustomPricing(database *db.DB, cfg config.Config) {
+	if len(cfg.CustomModelPricing) == 0 {
+		return
+	}
+	database.SetCustomPricing(cfg.CustomModelPricing)
+}
+
+// ensureFreshData makes sure the database reflects recent
+// session file changes before serving a usage query.
+//
+// Decision tree:
+//  1. If the stored data version is stale (parser changes on
+//     upgrade), run a full resync.
+//  2. If a server process is active (via kit runtime record), wake
+//     it through the API and wait for its bounded catch-up.
+//  3. Otherwise, run a quick incremental sync scoped to files
+//     modified since the last recorded sync start time, with
+//     a small safety margin.
+//
+// Callers that need stale data (e.g. offline benchmarks) can
+// bypass via skip=true.
+func ensureFreshData(
+	ctx context.Context, appCfg config.Config, database *db.DB, skip bool,
+) {
+	if skip {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Silence engine worker log.Printf lines (e.g. "db:
+	// InsertMessages (N msgs)") for both branches so --json and
+	// statusline output stay clean. Progress goes to stderr
+	// below to stay out of stdout-bound payloads.
+	origLog := log.Writer()
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(origLog)
+
+	if database.NeedsResync() {
+		engine := sync.NewEngine(ctx, database, sync.EngineConfig{
+			AgentDirs:          appCfg.AgentDirs,
+			SourceMachines:     appCfg.SourceMachines,
+			ProviderMetadata:   appCfg.ProviderMetadata,
+			DisabledAgents:     appCfg.DisabledAgents,
+			IncludeCwdPrefixes: appCfg.SyncIncludeCwdPrefixes,
+			ScanProtectedPaths: appCfg.ScanProtectedPaths,
+			Machine:            appCfg.InstallationID,
+			ArchiveContent:     appCfg.ArchiveContent,
+		})
+		defer engine.Close()
+		fmt.Fprintln(os.Stderr,
+			"Data version changed, running full resync...")
+		t := time.Now()
+		progress := newResyncProgressPrinter(os.Stderr, time.Now)
+		stats := engine.ResyncAll(ctx, progress.Print)
+		progress.Finish()
+		printSyncSummaryStderr(stats, t)
+		return
+	}
+
+	// A writable daemon owns ingestion even while starting or incompatible.
+	if IsLocalDaemonActive(appCfg.DataDir, appCfg.AuthToken) {
+		stale := true
+		if rt := FindWritableDaemonRuntime(appCfg.DataDir, appCfg.AuthToken); rt != nil {
+			api, err := apiclient.NewHTTPClient(transportFromRuntime(rt).URL, appCfg.AuthToken, &http.Client{Timeout: 30 * time.Second})
+			if err == nil {
+				ctx, archiveStale := apiclient.TrackArchiveFreshness(ctx, nil)
+				// Wake idle ingestion through an in-memory status read.
+				response, err := api.GetAPIV1CodexCloudStatusWithResponse(ctx)
+				stale = err != nil || response == nil || response.StatusCode != http.StatusOK || archiveStale()
+			}
+		}
+		if stale {
+			fmt.Fprintln(os.Stderr, apiclient.ArchiveStaleWarning)
+		}
+		return
+	}
+
+	engine := sync.NewEngine(ctx, database, sync.EngineConfig{
+		AgentDirs:          appCfg.AgentDirs,
+		SourceMachines:     appCfg.SourceMachines,
+		ProviderMetadata:   appCfg.ProviderMetadata,
+		DisabledAgents:     appCfg.DisabledAgents,
+		IncludeCwdPrefixes: appCfg.SyncIncludeCwdPrefixes,
+		ScanProtectedPaths: appCfg.ScanProtectedPaths,
+		Machine:            appCfg.InstallationID,
+		ArchiveContent:     appCfg.ArchiveContent,
+	})
+	defer engine.Close()
+
+	since := engine.LastSyncStartedAt(ctx)
+	if !since.IsZero() {
+		since = since.Add(-quickSyncMargin)
+	}
+
+	engine.SyncAllSince(ctx, since, func(sync.Progress) {})
+}
+
+// printSyncSummaryStderr mirrors printSyncSummary but writes to
+// stderr so it does not pollute stdout-bound JSON or statusline output.
+func printSyncSummaryStderr(stats sync.SyncStats, t time.Time) {
+	summary := fmt.Sprintf(
+		"Sync complete: %d sessions synced",
+		stats.Synced,
+	)
+	if isTerminalWriter(os.Stderr) {
+		summary = "\n" + summary
+	}
+	if stats.OrphanedCopied > 0 {
+		summary += fmt.Sprintf(
+			", %d archived sessions preserved",
+			stats.OrphanedCopied,
+		)
+	}
+	if stats.Failed > 0 {
+		summary += fmt.Sprintf(", %d failed", stats.Failed)
+	}
+	summary += fmt.Sprintf(
+		" in %s\n", time.Since(t).Round(time.Millisecond),
+	)
+	summary += formatAnomalySummary(stats.Anomalies)
+	fmt.Fprint(os.Stderr, summary)
+	for _, w := range stats.Warnings {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
+	}
+}
+
+// seedPricing ensures fallback rates are present in model_pricing.
+//
+// Fallback rates are only upserted when the stored seed
+// version differs from pricing.SeedVersion (or is
+// absent). This avoids overwriting live LiteLLM rates on
+// every restart while still propagating corrected fallback
+// rates when the binary is upgraded. SeedVersion folds in
+// the supplemental alias version, so curated alias additions
+// (see internal/pricing/supplemental.go) also reach existing
+// databases without a resync.
+func seedPricing(
+	ctx context.Context,
+	database *db.DB,
+	runner remoteSyncExclusiveRunner,
+) {
+	err := runPricingExclusive(runner, func() error {
+		return pricingrefresh.SeedFallbackContext(ctx, database)
+	})
+	if err != nil {
+		log.Printf("pricing seed: %v", err)
+	}
+}
+
+func ensurePricing(ctx context.Context, database *db.DB, offline bool) {
+	if _, err := pricingrefresh.Ensure(
+		ctx, database, offline, pricing.FetchCatalogContext, time.Now(),
+	); err != nil {
+		fmt.Fprintf(os.Stderr,
+			"warning: pricing refresh failed: %v\n", err)
+	}
+}
+
+func ensureUsagePricing(
+	ctx context.Context, database *db.DB, offline bool,
+	custom map[string]config.CustomModelRate,
+) {
+	if offline && database.ReadOnly() {
+		applyFallbackPricing(database, custom)
+		return
+	}
+	ensurePricing(ctx, database, offline)
+}
+
+func applyFallbackPricing(
+	database *db.DB, custom map[string]config.CustomModelRate,
+) {
+	database.SetEffectivePricing(fallbackPricingRates(custom))
+}
+
+func applyEmptyCatalogPricing(
+	database *db.DB, custom map[string]config.CustomModelRate,
+) {
+	database.SetEmptyCatalogPricing(fallbackPricingRates(custom))
+}
+
+func fallbackPricingRates(
+	custom map[string]config.CustomModelRate,
+) map[string]export.ModelRates {
+	// These keys are the same concrete model-pattern keys that the
+	// model_pricing table stores. SQLite usage lookups run the merged map
+	// through pricing.Resolve, so normalized/canonical aliases still match
+	// when this read-only path cannot seed model_pricing rows.
+	rates := db.FallbackRateMap()
+	for model, rate := range custom {
+		if rate.PriceAs != "" {
+			continue
+		}
+		rates[model] = export.ModelRates{
+			InputPerMTok: money.Money{
+				Microdollars: rate.InputMicrodollarsPerMTok,
+			},
+			OutputPerMTok: money.Money{
+				Microdollars: rate.OutputMicrodollarsPerMTok,
+			},
+			CacheWritePerMTok: money.Money{
+				Microdollars: rate.CacheCreationMicrodollarsPerMTok,
+			},
+			CacheWrite1hPerMTok: money.Money{
+				Microdollars: rate.CacheCreation1hMicrodollarsPerMTok,
+			},
+			CacheReadPerMTok: money.Money{
+				Microdollars: rate.CacheReadMicrodollarsPerMTok,
+			},
+			Source: export.PricingRowSourceCustom,
+		}
+	}
+	return rates
+}
+
+func fetchHTTPDailyUsage(
+	ctx context.Context,
+	tr transport,
+	authToken string,
+	query dailyUsageQuery,
+) (dailyUsageReport, error) {
+	filter := query.Filter
+	q := apiclient.GetAPIV1UsageSummaryStreamQuery{
+		NoDefaultRange: new(query.NoDefaultRange), Breakdowns: new(query.Breakdowns), SessionCounts: new(query.SessionCounts),
+		IncludeOneShot: new(!filter.ExcludeOneShot), IncludeAutomated: new(!filter.ExcludeAutomated),
+	}
+	if filter.Timezone != "" {
+		q.Timezone = new(filter.Timezone)
+	}
+	if filter.Agent != "" {
+		q.Agent = new(filter.Agent)
+	}
+	if filter.Project != "" {
+		q.Project = new(filter.Project)
+	}
+	if filter.Machine != "" {
+		q.Machine = new(filter.Machine)
+	}
+	if filter.ExcludeProject != "" {
+		q.ExcludeProject = new(filter.ExcludeProject)
+	}
+	if filter.ExcludeAgent != "" {
+		q.ExcludeAgent = new(filter.ExcludeAgent)
+	}
+	if filter.ExcludeModel != "" {
+		q.ExcludeModel = new(filter.ExcludeModel)
+	}
+	if filter.Model != "" {
+		q.Model = new(filter.Model)
+	}
+	if filter.Termination != "" {
+		q.Termination = new(filter.Termination)
+	}
+	if filter.From != "" {
+		parsed, err := time.Parse(time.DateOnly, filter.From)
+		if err != nil {
+			return dailyUsageReport{}, err
+		}
+		q.From = &runtime.Date{Time: parsed}
+	}
+	if filter.To != "" {
+		parsed, err := time.Parse(time.DateOnly, filter.To)
+		if err != nil {
+			return dailyUsageReport{}, err
+		}
+		q.To = &runtime.Date{Time: parsed}
+	}
+	if filter.ActiveSince != "" {
+		parsed, err := time.Parse(time.RFC3339, filter.ActiveSince)
+		if err != nil {
+			return dailyUsageReport{}, err
+		}
+		q.ActiveSince = &parsed
+	}
+	if filter.MinUserMessages > 0 {
+		q.MinUserMessages = new(int64(filter.MinUserMessages))
+	}
+	api, err := apiclient.NewHTTPClient(tr.URL, authToken, &http.Client{Timeout: 0})
+	if err != nil {
+		return dailyUsageReport{}, err
+	}
+	var resp *http.Response
+	var payload []byte
+	var out apiclient.UsageSummaryResponse
+	var stream *runtime.Stream[[]byte]
+	if query.Progress != nil {
+		response, requestErr := api.GetAPIV1UsageSummaryStreamStreamWithResponse(ctx, &apiclient.GetAPIV1UsageSummaryStreamRequestOptions{Query: &q})
+		if response == nil {
+			return dailyUsageReport{}, requestErr
+		}
+		resp, payload, stream = response.HTTPResponse, response.Body, response.Stream200
+	} else {
+		bufferedQuery := apiclient.GetAPIV1UsageSummaryQuery(q)
+		response, requestErr := api.GetAPIV1UsageSummaryWithResponse(ctx, &apiclient.GetAPIV1UsageSummaryRequestOptions{Query: &bufferedQuery})
+		if response == nil {
+			return dailyUsageReport{}, requestErr
+		}
+		resp, payload = response.HTTPResponse, response.Body
+		if response.StatusCode == http.StatusOK {
+			if requestErr != nil {
+				return dailyUsageReport{}, requestErr
+			}
+			if len(response.Body) == 0 {
+				return dailyUsageReport{}, io.ErrUnexpectedEOF
+			}
+			out = *response.JSON200
+		}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body := payload
+		return dailyUsageReport{}, fmt.Errorf(
+			"usage summary: HTTP %d: %s",
+			resp.StatusCode, strings.TrimSpace(string(body)),
+		)
+	}
+	if query.Progress != nil {
+		if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+			return dailyUsageReport{}, fmt.Errorf("usage summary: expected a progress stream, received %q", resp.Header.Get("Content-Type"))
+		}
+		data, err := consumeDaemonPushEvents[apiclient.UsageSummaryResponse](stream, func(p struct {
+			Detail string `json:"detail"`
+		},
+		) {
+			query.Progress(p.Detail)
+		})
+		if err != nil {
+			return dailyUsageReport{}, fmt.Errorf("usage summary: %w", err)
+		}
+		out = data
+	}
+	if out.Projects == nil {
+		out.Projects = map[string]export.ProjectMapEntry{}
+	}
+	schemaVersion := 0
+	if out.SchemaVersion != nil {
+		schemaVersion = int(*out.SchemaVersion)
+	}
+	report := dailyUsageReport{
+		SchemaVersion: schemaVersion,
+		Pricing:       out.Pricing,
+		Projects:      out.Projects,
+		Daily:         out.Daily,
+		Totals:        out.Totals,
+		SessionCounts: out.SessionCounts,
+	}
+	if out.PlanOnlySessions != nil {
+		report.PlanOnlySessions = int(*out.PlanOnlySessions)
+	}
+	if out.PartlyCapturedSessions != nil {
+		report.PartlyCapturedSessions = int(*out.PartlyCapturedSessions)
+	}
+	return report, nil
+}
+
+func newUsageProgressPrinter(w io.Writer) (func(string), func()) {
+	started := time.Now()
+	var phase atomic.Pointer[string]
+	phase.Store(new("Preparing usage report from the archive"))
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		var lastPhase string
+		var lastPrinted time.Duration
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				current, elapsed := *phase.Load(), time.Since(started)
+				if current != lastPhase || elapsed-lastPrinted >= 5*time.Second {
+					fmt.Fprintf(w, "%s (%s)\n", current, elapsed.Round(time.Second))
+					lastPhase, lastPrinted = current, elapsed
+				}
+			}
+		}
+	}()
+	return func(current string) { phase.Store(&current) }, func() { close(stop); <-done }
+}
+
+func printDailyTable(
+	output io.Writer, result db.DailyUsageResult, breakdown bool,
+) error {
+	w := tabwriter.NewWriter(
+		output, 0, 4, 2, ' ', 0,
+	)
+
+	fmt.Fprintln(w,
+		"DATE\tINPUT\tOUTPUT\tCACHE_CR\tCACHE_RD\tCOST\tMODELS")
+	fmt.Fprintln(w,
+		"----\t-----\t------\t--------\t--------\t----\t------")
+
+	for _, day := range result.Daily {
+		models := joinModels(day.ModelsUsed)
+		fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t%s\t%s\n",
+			day.Date,
+			day.InputTokens,
+			day.OutputTokens,
+			day.CacheCreationTokens,
+			day.CacheReadTokens,
+			fmtCost(day.TotalCost),
+			models,
+		)
+
+		if breakdown {
+			for _, mb := range day.ModelBreakdowns {
+				fmt.Fprintf(w,
+					"  %s\t%d\t%d\t%d\t%d\t%s\t\n",
+					mb.ModelName,
+					mb.InputTokens,
+					mb.OutputTokens,
+					mb.CacheCreationTokens,
+					mb.CacheReadTokens,
+					fmtCost(mb.Cost),
+				)
+			}
+		}
+	}
+
+	fmt.Fprintln(w,
+		"----\t-----\t------\t--------\t--------\t----\t------")
+	fmt.Fprintf(w, "TOTAL\t%d\t%d\t%d\t%d\t%s\t\n",
+		result.Totals.InputTokens,
+		result.Totals.OutputTokens,
+		result.Totals.CacheCreationTokens,
+		result.Totals.CacheReadTokens,
+		fmtCost(result.Totals.TotalCost),
+	)
+
+	return w.Flush()
+}
+
+// localTimezone returns the IANA name of the system's local timezone.
+func localTimezone() string {
+	return timeutil.LocalTimezoneOrUTC()
+}
+
+// fmtCost formats a dollar amount with two decimal places,
+// matching conventional currency display. Non-zero values
+// under half a cent would otherwise round to "$0.00" and
+// read as "free", so they render as "<$0.01" instead.
+func fmtCost(v money.Money) string {
+	return money.FormatUSD(v, money.DisplayCents)
+}
+
+func joinModels(models []string) string {
+	if len(models) == 0 {
+		return ""
+	}
+	var s strings.Builder
+	s.WriteString(models[0])
+	for _, m := range models[1:] {
+		s.WriteString(", " + m)
+	}
+	return s.String()
+}

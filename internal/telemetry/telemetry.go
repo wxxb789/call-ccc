@@ -1,0 +1,206 @@
+package telemetry
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"strings"
+	"time"
+
+	kittelemetry "go.kenn.io/kit/telemetry/posthog"
+)
+
+const (
+	EnabledEnv            = "AGENTSVIEW_TELEMETRY_ENABLED"
+	GenericEnabledEnv     = kittelemetry.GenericEnabledEnv
+	EventDaemonActive     = "daemon_active"
+	EventSetupFinished    = "setup_finished"
+	EventAppOpened        = "app_opened"
+	EventVisitEnded       = "visit_ended"
+	EventScreenViewed     = "screen_viewed"
+	EventSearchRun        = "search_run"
+	EventSearchEmpty      = "search_empty"
+	EventErrorShown       = "error_shown"
+	EventSyncFailed       = "sync_failed"
+	EventSessionViewed    = "session_viewed"
+	EventExportRun        = "export_run"
+	EventInsightGenerated = "insight_generated"
+	EventAnalyticsViewed  = "analytics_viewed"
+	application           = "agentsview"
+	envPrefix             = "AGENTSVIEW"
+)
+
+var ErrUnsupportedEvent = kittelemetry.ErrUnsupportedEvent
+
+type Reporter struct {
+	client *kittelemetry.Reporter
+}
+
+type Options struct {
+	InstallationID string
+	// InstalledAt is when InstallationID was created. Reports carry its age as
+	// install_age_hours; zero sends them without an age.
+	InstalledAt      time.Time
+	Version          string
+	Commit           string
+	AgentTypes       []string
+	InsightKinds     []string
+	ScreenClaimsPath string
+}
+
+func EnabledFromEnv() bool {
+	return kittelemetry.EnabledFromEnv(envPrefix)
+}
+
+func NewReporter(opts Options) (*Reporter, error) {
+	if !EnabledFromEnv() {
+		// kit keeps the allowlist on an opted-out reporter, so the UI route still rejects unknown events.
+		client, err := newKitReporter(opts)
+		if err != nil {
+			return nil, err
+		}
+		return &Reporter{client: client}, nil
+	}
+	if strings.TrimSpace(opts.InstallationID) == "" {
+		return nil, errors.New("installation ID is required")
+	}
+
+	client, err := newKitReporter(opts)
+	if err != nil {
+		return nil, err
+	}
+	return &Reporter{client: client}, nil
+}
+
+func DisabledReporter() *Reporter {
+	return &Reporter{client: kittelemetry.DisabledReporter()}
+}
+
+func NewReporterOrDisabled(opts Options) *Reporter {
+	reporter, err := NewReporter(opts)
+	if err != nil {
+		slog.Warn("telemetry disabled", "err", err)
+		return DisabledReporter()
+	}
+	return reporter
+}
+
+func (r *Reporter) Enabled() bool {
+	return r != nil && r.client != nil && r.client.Enabled()
+}
+
+func (r *Reporter) CaptureDaemonActive(ctx context.Context) error {
+	if !r.Enabled() {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	return r.client.Capture(EventDaemonActive, nil)
+}
+
+func (r *Reporter) EventAllowed(event string) bool {
+	return r != nil && r.client != nil && r.client.EventAllowed(event)
+}
+
+// CaptureSetupFinished queues the daemon's first visible session milestone.
+func (r *Reporter) CaptureSetupFinished(ctx context.Context) error {
+	if r == nil {
+		return errors.New("setup telemetry was not queued")
+	}
+	status, err := r.client.Report(ctx, EventSetupFinished, nil)
+	if err != nil {
+		return err
+	}
+	if status != kittelemetry.StatusQueued {
+		return errors.New("setup telemetry was not queued")
+	}
+	return nil
+}
+
+// CaptureHandler lets the web UI report allowlisted events through this reporter.
+// It rejects setup_finished, whose archive check and claim belong to the daemon.
+func (r *Reporter) CaptureHandler() http.Handler {
+	var client *kittelemetry.Reporter
+	if r != nil {
+		client = r.client
+	}
+	return kittelemetry.NewCaptureHandler(client, kittelemetry.RejectEvents(EventSetupFinished))
+}
+
+func (r *Reporter) SanitizeProperties(
+	event string,
+	properties map[string]any,
+) (map[string]any, error) {
+	if r == nil || r.client == nil {
+		return nil, ErrUnsupportedEvent
+	}
+	return r.client.SanitizeProperties(event, properties)
+}
+
+func (r *Reporter) Close() error {
+	if r == nil || r.client == nil {
+		return nil
+	}
+	return r.client.Close()
+}
+
+func newKitReporter(opts Options) (*kittelemetry.Reporter, error) {
+	return kittelemetry.NewReporter(kitOptions(opts), allowedEventOptions(opts)...)
+}
+
+// kitOptions leaves APIKey empty so kit uses the project key that release
+// builds set at link time.
+func kitOptions(opts Options) kittelemetry.Options {
+	return kittelemetry.Options{
+		Application: application,
+		EnvPrefix:   envPrefix,
+		DistinctID:  opts.InstallationID,
+		InstalledAt: opts.InstalledAt,
+		Version:     opts.Version,
+		Commit:      opts.Commit,
+		Source:      "daemon",
+	}
+}
+
+func allowedEventOptions(opts Options) []kittelemetry.Option {
+	return []kittelemetry.Option{
+		kittelemetry.WithAllowedEvent(EventDaemonActive),
+		kittelemetry.WithAllowedEvent(EventSetupFinished),
+		kittelemetry.WithAllowedEvent(EventAppOpened),
+		kittelemetry.WithAllowedEvent(EventSearchEmpty),
+		kittelemetry.WithAllowedEvent(EventErrorShown, kittelemetry.RequireProperty("kind", outcomeValues("search", "session", "insight", "analytics", "export", "other"))),
+		kittelemetry.WithAllowedEvent(EventSyncFailed, kittelemetry.RequireProperty("reason", outcomeValues("request", "sign_in_required", "browser_extension", "already_running", "other"))),
+		kittelemetry.WithAllowedEvent(EventVisitEnded,
+			kittelemetry.AllowProperty("surface", kittelemetry.AllowStringValues("web")),
+			kittelemetry.AllowProperty("duration_bucket", kittelemetry.AllowStringValues("under_1m", "1_to_5m", "5_to_30m", "over_30m"))),
+		kittelemetry.WithDailyEvent(EventScreenViewed, "screen", kittelemetry.NewDailyClaims(opts.ScreenClaimsPath)),
+		kittelemetry.WithAllowedEvent(EventScreenViewed,
+			kittelemetry.AllowProperty("screen", kittelemetry.AllowStringValues("sessions", "usage", "activity", "trends", "recall", "quality", "pinned", "trash", "recent-edits", "friction", "data", "settings")),
+			kittelemetry.AllowProperty("surface", kittelemetry.AllowStringValues("web"))),
+		oneOf(EventSearchRun, "query_type", "text", "semantic", "hybrid"),
+		oneOf(EventSessionViewed, "agent", opts.AgentTypes...),
+		oneOf(EventExportRun, "format", "html", "insight_html", "friction_markdown", "csv", "markdown_link", "gist", "insight_gist"),
+		oneOf(EventInsightGenerated, "kind", opts.InsightKinds...),
+		oneOf(EventAnalyticsViewed, "page", "usage", "activity", "trends", "quality"),
+	}
+}
+
+func oneOf(event, property string, values ...string) kittelemetry.Option {
+	return kittelemetry.WithAllowedEvent(event,
+		kittelemetry.AllowProperty(property, kittelemetry.AllowStringValues(values...)))
+}
+
+func outcomeValues(values ...string) kittelemetry.PropertyFilter {
+	allowed := kittelemetry.AllowStringValues(values...)
+	return func(value any) (any, bool) {
+		if filtered, ok := allowed(value); ok {
+			return filtered, true
+		}
+		return "other", true
+	}
+}

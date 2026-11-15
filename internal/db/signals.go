@@ -1,0 +1,519 @@
+package db
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"log"
+)
+
+const signalsBackfillMarker = "session_quality_signals_v1"
+
+// SessionSignalUpdate holds computed signal values to persist
+// on the sessions table.
+type SessionSignalUpdate struct {
+	// FullState is optional state computed from the complete message snapshot
+	// being published. The same transaction binds it to the stored revision.
+	// Incremental and asynchronous writers use their own snapshot guards.
+	ToolObservations       []ToolObservation
+	FullState              *SessionSignalState
+	ToolFailureSignalCount int
+	ToolRetryCount         int
+	EditChurnCount         int
+	ConsecutiveFailureMax  int
+	Outcome                string
+	OutcomeConfidence      string
+	EndedWithRole          string
+	FinalFailureStreak     int
+	SignalsPendingSince    *string
+	CompactionCount        int
+	MidTaskCompactionCount int
+	ContextPressureMax     *float64
+	HealthScore            *int
+	HealthGrade            *string
+	HasToolCalls           bool
+	HasContextData         bool
+	SecretLeakCount        int
+	SecretsRulesVersion    string
+	// Friction, when non-nil, replaces the session's friction findings and
+	// summary columns in the same transaction as the signals.
+	// Nil leaves stored friction untouched for incremental maintenance.
+	Friction       *SessionFrictionUpdate
+	QualitySignals QualitySignals
+}
+
+// ToolObservation addresses derived facts by stable transcript coordinates.
+type ToolObservation struct {
+	MessageOrdinal int
+	CallIndex      int
+	Outcome        string
+	Repeat         string
+	SequenceEnding *string
+}
+
+// usageOnlySignalUpdate is the canonical derived-signal state for an archive
+// that deliberately omits the transcript content those signals require. The
+// current quality and friction versions mark the empty results as intentional
+// so startup backfills do not revisit the row on every process launch.
+func usageOnlySignalUpdate() SessionSignalUpdate {
+	frictionUpdate := SettledFriction()
+	return SessionSignalUpdate{
+		Friction: &frictionUpdate,
+		QualitySignals: QualitySignals{
+			Version: CurrentQualitySignalVersion,
+		},
+	}
+}
+
+func settleUsageOnlySignalsTx(
+	tx transactionQueries, sessionID string,
+) error {
+	if err := updateSessionSignalsTx(
+		tx, sessionID, usageOnlySignalUpdate(),
+	); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM session_signal_state WHERE session_id = ?`, sessionID); err != nil {
+		return fmt.Errorf("clearing usage-only signal state: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM session_frustration_markers WHERE session_id = ?`, sessionID); err != nil {
+		return fmt.Errorf("clearing usage-only frustration markers: %w", err)
+	}
+	return replaceSecretFindingsTx(tx, sessionID, nil, 0, "")
+}
+
+// SettleUsageOnlySignals atomically clears transcript-derived signal state and
+// records the current signal version. It also heals compact archives created
+// before usage-only writes persisted that terminal state.
+func (db *DB) SettleUsageOnlySignals(ctx context.Context, sessionID string) error {
+	if !db.usageOnlyStorage() {
+		return fmt.Errorf(
+			"settling usage-only signals for %s on a full-content database",
+			sessionID,
+		)
+	}
+
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	tx, err := db.getWriter().Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning usage-only signal tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := settleUsageOnlySignalsTx(tx, sessionID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// UpdateSessionSignals persists computed signal values on the
+// sessions table. Bumps local_modified_at so the session is
+// re-selected by the next pg push -- a recomputed signal column
+// is a change to the row from PG's perspective, even when the
+// inline write path didn't touch anything else (e.g. a one-time
+// BackfillSignals run after a schema migration).
+func (db *DB) UpdateSessionSignals(ctx context.Context,
+	sessionID string, u SessionSignalUpdate,
+) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	tx, err := db.getWriter().Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if db.usageOnlyStorage() {
+		err = settleUsageOnlySignalsTx(tx, sessionID)
+	} else {
+		if db.ArchiveContent().OmitsToolContent() {
+			u.ToolObservations = []ToolObservation{}
+		}
+		err = updateSessionSignalsTx(tx, sessionID, u)
+	}
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// updateSessionSignalsTx writes signal columns within an existing transaction.
+// Caller owns the lock and transaction lifecycle. It deliberately does NOT
+// write secret_leak_count/secrets_rules_version: those are owned solely by the
+// secret-finding replacement path (replaceSecretFindingsTx), so a signals-only
+// recompute cannot reset them while findings still exist. The two secret fields
+// on SessionSignalUpdate are carried here only so callers can forward them to
+// replaceSecretFindingsTx alongside the findings.
+func updateSessionSignalsTx(
+	tx transactionQueries, sessionID string, u SessionSignalUpdate,
+) error {
+	// Friction rows go first so their summary columns ride on the signals
+	// UPDATE instead of rewriting the session row a second time.
+	frictionColumns := ""
+	var frictionArgs []any
+	if u.Friction != nil {
+		changed, err := replaceSessionFrictionRowsTx(tx, sessionID, *u.Friction)
+		if err != nil {
+			return err
+		}
+		if changed {
+			frictionColumns = `
+			friction_count = ?,
+			friction_rules_version = ?,
+			friction_hash = ?,`
+			frictionArgs = []any{
+				len(u.Friction.Findings), u.Friction.RulesVersion, u.Friction.Hash,
+			}
+		}
+	} else {
+		// Friction review reads context pressure. A deferred signal recompute
+		// can change it after a review stamped the session current, so a
+		// change sends the session back for review.
+		frictionColumns = `
+			friction_rules_version = CASE
+				WHEN context_pressure_max IS NOT ? THEN ''
+				ELSE friction_rules_version END,`
+		frictionArgs = []any{u.ContextPressureMax}
+	}
+	args := []any{
+		u.ToolFailureSignalCount,
+		u.ToolRetryCount,
+		u.EditChurnCount,
+		u.ConsecutiveFailureMax,
+		u.Outcome,
+		u.OutcomeConfidence,
+		u.EndedWithRole,
+		u.FinalFailureStreak,
+		u.SignalsPendingSince,
+		u.CompactionCount,
+		u.MidTaskCompactionCount,
+		u.ContextPressureMax,
+		u.HealthScore,
+		u.HealthGrade,
+		u.HasToolCalls,
+		u.HasContextData,
+		u.QualitySignals.Version,
+		u.QualitySignals.ShortPromptCount,
+		u.QualitySignals.UnstructuredStart,
+		u.QualitySignals.MissingSuccessCriteriaCount,
+		u.QualitySignals.MissingVerificationCount,
+		u.QualitySignals.DuplicatePromptCount,
+		u.QualitySignals.NoCodeContextCount,
+		u.QualitySignals.RunawayToolLoopCount,
+	}
+	args = append(append(args, frictionArgs...), sessionID)
+	_, err := tx.Exec(`
+		UPDATE sessions SET
+			tool_failure_signal_count = ?,
+			tool_retry_count = ?,
+			edit_churn_count = ?,
+			consecutive_failure_max = ?,
+			outcome = ?,
+			outcome_confidence = ?,
+			ended_with_role = ?,
+			final_failure_streak = ?,
+			signals_pending_since = ?,
+			compaction_count = ?,
+			mid_task_compaction_count = ?,
+			context_pressure_max = ?,
+			health_score = ?,
+			health_grade = ?,
+			has_tool_calls = ?,
+			has_context_data = ?,
+			quality_signal_version = ?,
+			short_prompt_count = ?,
+			unstructured_start = ?,
+			missing_success_criteria_count = ?,
+			missing_verification_count = ?,
+			duplicate_prompt_count = ?,
+			no_code_context_count = ?,
+			runaway_tool_loop_count = ?,`+frictionColumns+`
+			local_modified_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+		WHERE id = ?`, args...)
+	if err != nil {
+		return fmt.Errorf(
+			"updating session signals for %s: %w",
+			sessionID, err,
+		)
+	}
+	if err := updateToolObservationsTx(tx, sessionID, u.ToolObservations); err != nil {
+		return err
+	}
+	if u.FullState != nil {
+		state := u.FullState
+		// Copy the revision inside SQLite, avoiding a post-commit read and
+		// a second transaction for the same session's derived state.
+		if _, err := tx.Exec(`
+			INSERT INTO session_signal_state
+				(session_id, state, transcript_revision, signal_version, updated_at)
+			SELECT id, ?, transcript_revision, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now')
+			FROM sessions WHERE id = ?
+			ON CONFLICT(session_id) DO UPDATE SET
+				state = excluded.state,
+				transcript_revision = excluded.transcript_revision,
+				signal_version = excluded.signal_version,
+				updated_at = excluded.updated_at`,
+			state.State, state.SignalVersion, sessionID,
+		); err != nil {
+			return fmt.Errorf("writing full signal state for %s: %w", sessionID, err)
+		}
+	}
+	return nil
+}
+
+// updateToolObservationsTx rewrites only the calls whose stored facts differ,
+// so recomputing an unchanged session leaves its tool-call rows untouched. A
+// nil slice keeps the stored facts; an empty slice clears them.
+func updateToolObservationsTx(tx transactionQueries, sessionID string, observations []ToolObservation) error {
+	if observations == nil {
+		return nil
+	}
+	wanted := make(map[ToolCallPosition][3]sql.NullString, len(observations))
+	for _, fact := range observations {
+		values := [3]sql.NullString{{String: fact.Outcome, Valid: true}, {String: fact.Repeat, Valid: true}, {}}
+		if fact.SequenceEnding != nil {
+			values[2] = sql.NullString{String: *fact.SequenceEnding, Valid: true}
+		}
+		wanted[ToolCallPosition{MessageOrdinal: fact.MessageOrdinal, CallIndex: fact.CallIndex}] = values
+	}
+	changed, err := changedToolObservationsTx(tx, sessionID, wanted)
+	if err != nil {
+		return err
+	}
+	for id, values := range changed {
+		if _, err := tx.Exec(`UPDATE tool_calls SET observed_outcome = ?, observed_repeat = ?, sequence_ending = ? WHERE id = ?`, values[0], values[1], values[2], id); err != nil {
+			return fmt.Errorf("updating tool observations for %s: %w", sessionID, err)
+		}
+	}
+	return nil
+}
+
+// changedToolObservationsTx returns the wanted facts for each stored call whose
+// facts differ, keyed by tool_calls.id. Calls absent from wanted are cleared.
+func changedToolObservationsTx(tx transactionQueries, sessionID string, wanted map[ToolCallPosition][3]sql.NullString) (map[int64][3]sql.NullString, error) {
+	rows, err := tx.Query(`SELECT tc.id, m.ordinal, tc.call_index, tc.observed_outcome, tc.observed_repeat, tc.sequence_ending FROM tool_calls tc JOIN messages m ON m.id = tc.message_id AND m.session_id = tc.session_id WHERE tc.session_id = ?`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("reading tool observations for %s: %w", sessionID, err)
+	}
+	defer rows.Close()
+	changed := make(map[int64][3]sql.NullString)
+	for rows.Next() {
+		var id int64
+		var ordinal int
+		var callIndex sql.NullInt64
+		var stored [3]sql.NullString
+		if err := rows.Scan(&id, &ordinal, &callIndex, &stored[0], &stored[1], &stored[2]); err != nil {
+			return nil, fmt.Errorf("scanning tool observations for %s: %w", sessionID, err)
+		}
+		var values [3]sql.NullString
+		if callIndex.Valid {
+			values = wanted[ToolCallPosition{MessageOrdinal: ordinal, CallIndex: int(callIndex.Int64)}]
+		}
+		if stored != values {
+			changed[id] = values
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading tool observations for %s: %w", sessionID, err)
+	}
+	return changed, nil
+}
+
+// PendingSignalSessions returns session IDs whose
+// signals_pending_since is non-NULL and older than cutoff.
+func (db *DB) PendingSignalSessions(
+	ctx context.Context, cutoff string,
+) ([]string, error) {
+	rows, err := db.getReader().QueryContext(ctx, `
+		SELECT id FROM sessions
+		WHERE signals_pending_since IS NOT NULL
+		  AND signals_pending_since < ?`, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"querying pending signal sessions: %w", err,
+		)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf(
+				"scanning pending signal session: %w", err,
+			)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// BackfillSignals recomputes signals for every session whose stored
+// quality_signal_version is below the current one. A stats marker
+// records that a run completed cleanly; once set, later calls with
+// no stale sessions return without logging. computeFn returns nil
+// on success or an
+// error to signal that the per-session recompute could not
+// be completed (e.g. the DB connection went away during a
+// concurrent resync swap). The completion marker is only set
+// when every session was processed successfully -- partial
+// runs leave the marker unset so the next startup retries.
+func (db *DB) BackfillSignals(
+	ctx context.Context,
+	computeFn func(ctx context.Context, sessionID string) error,
+) error {
+	db.mu.Lock()
+	var done int
+	if err := db.getWriter().QueryRow(ctx,
+		`SELECT count(*)
+		 FROM stats
+		 WHERE key = ? AND value != 0`,
+		signalsBackfillMarker,
+	).Scan(&done); err != nil {
+		db.mu.Unlock()
+		return fmt.Errorf(
+			"probing signals backfill marker: %w", err,
+		)
+	}
+	db.mu.Unlock()
+
+	// Filter on the stored signal version even when the completion
+	// marker is unset: quality_signal_version defaults to 0, so
+	// sessions that never had signals computed always qualify, while
+	// sessions already at the current version -- synced inline during
+	// a resync, or copied as orphans from an already-backfilled
+	// archive -- are skipped. Post-resync databases lose the marker
+	// but keep current versions, so an unfiltered walk would recompute
+	// the entire archive for nothing.
+	//
+	// Accepted edge: a database written before findings persisted
+	// ahead of the version bump can hold rows whose version is
+	// current even though a findings write once failed mid-sequence.
+	// Those rows are not revisited here. They require a partial write
+	// failure that no later session write healed, the old code froze
+	// them identically whenever its completion marker was set, and a
+	// forced `secrets scan` (non-backfill) rewrites findings for
+	// every session. Healing them automatically would mean either
+	// permanent grandfathering state or a full-archive recompute at
+	// upgrade -- both worse than the edge.
+	rows, err := db.getReader().QueryContext(ctx,
+		`SELECT id FROM sessions
+		 WHERE message_count > 0 AND quality_signal_version < ?`,
+		CurrentQualitySignalVersion,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"querying backfill candidates: %w", err,
+		)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf(
+				"scanning backfill candidate: %w", err,
+			)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		if done == 0 {
+			return db.MarkSignalsBackfillDone(ctx)
+		}
+		return nil
+	}
+
+	log.Printf(
+		"backfill: recomputing %d stale session signals...",
+		len(ids),
+	)
+
+	var failed int
+	for i, id := range ids {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err := computeFn(ctx, id); err != nil {
+			failed++
+			log.Printf(
+				"backfill: %s: %v", id, err,
+			)
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if (i+1)%100 == 0 {
+			log.Printf(
+				"backfill: %d/%d sessions", i+1, len(ids),
+			)
+		}
+	}
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	if failed > 0 {
+		return fmt.Errorf(
+			"backfill incomplete: %d/%d sessions failed; "+
+				"marker not set, next startup will retry",
+			failed, len(ids),
+		)
+	}
+
+	log.Printf(
+		"backfill: completed %d sessions", len(ids),
+	)
+
+	return db.MarkSignalsBackfillDone(ctx)
+}
+
+// MarkSignalsBackfillDone records that legacy signal backfill is
+// no longer needed for this database. Set after a fresh resync,
+// where every session is rewritten through the inline signal
+// path, so the post-resync BackfillSignals call is a no-op.
+func (db *DB) MarkSignalsBackfillDone(ctx context.Context) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	_, err := db.getWriter().Exec(ctx,
+		`INSERT INTO stats (key, value) VALUES (?, 1)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		signalsBackfillMarker,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"storing signals backfill marker: %w", err,
+		)
+	}
+	return nil
+}
+
+// ApplyToolObservations carries prepared observations into an existing mirror writer.
+func ApplyToolObservations(messages []Message, observations []ToolObservation) {
+	if observations == nil {
+		return
+	}
+	byOrdinal := make(map[int][]ToolCall, len(messages))
+	for i, message := range messages {
+		byOrdinal[message.Ordinal] = message.ToolCalls
+		for j := range messages[i].ToolCalls {
+			call := &messages[i].ToolCalls[j]
+			call.ObservedOutcome, call.ObservedRepeat, call.SequenceEnding = nil, nil, nil
+		}
+	}
+	for _, fact := range observations {
+		calls := byOrdinal[fact.MessageOrdinal]
+		if fact.CallIndex < 0 || fact.CallIndex >= len(calls) {
+			continue
+		}
+		call := &calls[fact.CallIndex]
+		outcome, repeat := fact.Outcome, fact.Repeat
+		call.ObservedOutcome, call.ObservedRepeat, call.SequenceEnding = &outcome, &repeat, fact.SequenceEnding
+	}
+}

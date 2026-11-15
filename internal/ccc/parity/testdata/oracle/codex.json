@@ -1,0 +1,243 @@
+{
+  "tool": "call-ccc-parity-oracle/3",
+  "case": "codex",
+  "fixture": {
+    "relative_to_root": "2026/05/04/rollout-2026-05-04T09-15-00-0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812.jsonl",
+    "bytes": 1792,
+    "sha256": "d9957a8d6f5731a3df9ce1f175ffe9e228c71f041cd765b03f743852aad1d68b"
+  },
+  "parse": {
+    "session_id": "codex:0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812",
+    "provider": "codex",
+    "agent": "Codex",
+    "source_file": "2026/05/04/rollout-2026-05-04T09-15-00-0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812.jsonl",
+    "project": "example_api",
+    "cwd": "/home/user/code/example-api",
+    "read_from": "source",
+    "malformed_lines": 0,
+    "truncated": false,
+    "counts": {
+      "messages": 6,
+      "user_messages": 2,
+      "assistant_messages": 4,
+      "system_messages": 0,
+      "tool_messages": 0,
+      "system_records": 1,
+      "sidechain_messages": 0,
+      "compact_boundaries": 1,
+      "tool_calls": 1,
+      "tool_results": 1
+    },
+    "messages": [
+      {
+        "ordinal": 0,
+        "role": "user",
+        "timestamp": "2026-05-04T09:15:02Z",
+        "model": "gpt-5.2-codex",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "4ee21cba2a63ae4c1eedfc39ec2750f0d880ba4add167662cfbe2a9080a4fda8",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "4ee21cba2a63ae4c1eedfc39ec2750f0d880ba4add167662cfbe2a9080a4fda8"
+      },
+      {
+        "ordinal": 1,
+        "role": "assistant",
+        "timestamp": "2026-05-04T09:15:05Z",
+        "model": "gpt-5.2-codex",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "85ff8b714db532c33f962a08ff3769cdef5153eae63c71d21eeae7c3b4eca4cc",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "tool_calls": [
+          {
+            "name": "shell",
+            "category": "Bash",
+            "tool_use_id": "call_01Example000000000000000000",
+            "input_sha256": "b7002b70e855759e21bac4aafe0e69a2d981d061192467f4d0c051d3314c6cb6",
+            "result_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        ],
+        "tool_results": [
+          {
+            "tool_use_id": "call_01Example000000000000000000",
+            "source": "function_call_output",
+            "content_sha256": "26e2b1bdf14d9e911457cf2cf2c644d6e04ca652a82a48858c97e7083c8eab31",
+            "content_size": 51
+          }
+        ]
+      },
+      {
+        "ordinal": 2,
+        "role": "assistant",
+        "timestamp": "2026-05-04T09:15:07Z",
+        "model": "gpt-5.2-codex",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "ba3598d63fc34fca054f9354d93295c7eed77349c0ae981c15dfa6068317fca6",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "ba3598d63fc34fca054f9354d93295c7eed77349c0ae981c15dfa6068317fca6"
+      },
+      {
+        "ordinal": 3,
+        "role": "assistant",
+        "timestamp": "2026-05-04T09:16:00Z",
+        "is_system": true,
+        "is_sidechain": false,
+        "is_compact_boundary": true,
+        "content_sha256": "2a1deec4a7aed97504a97e32a6a86ab67049eeb12181c729eb2d3bc52c7005b3",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "ordinal": 4,
+        "role": "user",
+        "timestamp": "2026-05-04T09:16:10Z",
+        "model": "gpt-5.2-codex",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "125ba30d5fe8bf84003560eb69e63d2cff6b0babf57f2457f9512fde86325671",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "125ba30d5fe8bf84003560eb69e63d2cff6b0babf57f2457f9512fde86325671"
+      },
+      {
+        "ordinal": 5,
+        "role": "assistant",
+        "timestamp": "2026-05-04T09:16:12Z",
+        "model": "gpt-5.2-codex",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "a1c1d745c3a03e4fdb815e99ac5a527b99636111cabde1b187e056487448915c",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "a1c1d745c3a03e4fdb815e99ac5a527b99636111cabde1b187e056487448915c"
+      }
+    ]
+  },
+  "archive": {
+    "session_id": "codex:0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812",
+    "provider": "codex",
+    "agent": "",
+    "source_file": "2026/05/04/rollout-2026-05-04T09-15-00-0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812.jsonl",
+    "project": "example_api",
+    "cwd": "/home/user/code/example-api",
+    "read_from": "archive",
+    "content_shown": "tool-payloads",
+    "malformed_lines": 0,
+    "truncated": false,
+    "counts": {
+      "messages": 6,
+      "user_messages": 2,
+      "assistant_messages": 4,
+      "system_messages": 0,
+      "tool_messages": 0,
+      "system_records": 1,
+      "sidechain_messages": 0,
+      "compact_boundaries": 1,
+      "tool_calls": 1,
+      "tool_results": 1
+    },
+    "messages": [
+      {
+        "ordinal": 0,
+        "role": "user",
+        "timestamp": "2026-05-04T09:15:02Z",
+        "model": "gpt-5.2-codex",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "4ee21cba2a63ae4c1eedfc39ec2750f0d880ba4add167662cfbe2a9080a4fda8",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "4ee21cba2a63ae4c1eedfc39ec2750f0d880ba4add167662cfbe2a9080a4fda8"
+      },
+      {
+        "ordinal": 1,
+        "role": "assistant",
+        "timestamp": "2026-05-04T09:15:05Z",
+        "model": "gpt-5.2-codex",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "85ff8b714db532c33f962a08ff3769cdef5153eae63c71d21eeae7c3b4eca4cc",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "tool_calls": [
+          {
+            "name": "shell",
+            "category": "Bash",
+            "tool_use_id": "call_01Example000000000000000000",
+            "input_sha256": "b7002b70e855759e21bac4aafe0e69a2d981d061192467f4d0c051d3314c6cb6",
+            "result_sha256": "26e2b1bdf14d9e911457cf2cf2c644d6e04ca652a82a48858c97e7083c8eab31",
+            "result_size": 51
+          }
+        ],
+        "tool_results": [
+          {
+            "tool_use_id": "call_01Example000000000000000000",
+            "source": "function_call_output",
+            "content_sha256": "26e2b1bdf14d9e911457cf2cf2c644d6e04ca652a82a48858c97e7083c8eab31",
+            "content_size": 51
+          }
+        ]
+      },
+      {
+        "ordinal": 2,
+        "role": "assistant",
+        "timestamp": "2026-05-04T09:15:07Z",
+        "model": "gpt-5.2-codex",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "ba3598d63fc34fca054f9354d93295c7eed77349c0ae981c15dfa6068317fca6",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "ba3598d63fc34fca054f9354d93295c7eed77349c0ae981c15dfa6068317fca6"
+      },
+      {
+        "ordinal": 3,
+        "role": "assistant",
+        "timestamp": "2026-05-04T09:16:00Z",
+        "is_system": true,
+        "is_sidechain": false,
+        "is_compact_boundary": true,
+        "content_sha256": "2a1deec4a7aed97504a97e32a6a86ab67049eeb12181c729eb2d3bc52c7005b3",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "ordinal": 4,
+        "role": "user",
+        "timestamp": "2026-05-04T09:16:10Z",
+        "model": "gpt-5.2-codex",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "125ba30d5fe8bf84003560eb69e63d2cff6b0babf57f2457f9512fde86325671",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "125ba30d5fe8bf84003560eb69e63d2cff6b0babf57f2457f9512fde86325671"
+      },
+      {
+        "ordinal": 5,
+        "role": "assistant",
+        "timestamp": "2026-05-04T09:16:12Z",
+        "model": "gpt-5.2-codex",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "a1c1d745c3a03e4fdb815e99ac5a527b99636111cabde1b187e056487448915c",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "a1c1d745c3a03e4fdb815e99ac5a527b99636111cabde1b187e056487448915c"
+      }
+    ]
+  },
+  "excluded_fields": [
+    "absolute paths (the two trees are checked out at different locations)",
+    "file mtime and inode (the fixtures are copied separately for each side)",
+    "archive created_at / sync bookkeeping timestamps (host clock)",
+    "database file name and data directory (per-side temporary directories)"
+  ]
+}

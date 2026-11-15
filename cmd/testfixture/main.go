@@ -1,0 +1,1037 @@
+package main
+
+import (
+	"context"
+	"encoding/json/jsontext"
+	"errors"
+	"flag"
+	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"time"
+
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/dbtest"
+	duckdbsync "go.kenn.io/agentsview/internal/duckdb"
+	"go.kenn.io/agentsview/internal/export"
+	"go.kenn.io/agentsview/internal/money"
+	"go.kenn.io/agentsview/internal/storage"
+)
+
+type sessionSpec struct {
+	project           string
+	suffix            string
+	msgCount          int
+	userMsgCount      int
+	parentSessionID   string
+	relationshipType  string
+	terminationStatus string
+}
+
+var specs = []sessionSpec{
+	{"project-alpha", "small-2", 2, 2, "", "", ""},
+	{"project-alpha", "small-5", 5, 3, "", "", ""},
+	// One unclean session for e2e termination tests.
+	{
+		"project-beta", "mixed-content-7", 7, 3, "", "",
+		"tool_call_pending",
+	},
+	{"project-beta", "medium-8", 8, 4, "", "", ""},
+	{"project-beta", "medium-100", 100, 50, "", "", ""},
+	{"project-gamma", "large-200", 200, 100, "", "", ""},
+	{"project-gamma", "large-1500", 1500, 750, "", "", ""},
+	{"project-delta", "xlarge-5500", 5500, 2750, "", "", ""},
+
+	// Sub-agent and fork sessions: must NOT appear in session
+	// list, stats, or analytics summary counts.
+	{
+		"project-alpha", "subagent-1", 12, 6,
+		"test-session-small-5", "subagent", "",
+	},
+	{
+		"project-alpha", "subagent-2", 8, 4,
+		"test-session-small-5", "subagent", "",
+	},
+	{
+		"project-beta", "fork-1", 15, 7,
+		"test-session-medium-8", "fork", "",
+	},
+
+	// Empty session (0 messages): must also be excluded.
+	{"project-gamma", "empty-0", 0, 0, "", "", ""},
+}
+
+func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	out := flag.String("out", "", "output database path")
+	duckDBOut := flag.String("duckdb-out", "", "optional output DuckDB mirror path")
+	flag.Parse()
+	if *out == "" {
+		return errors.New("usage: testfixture -out <path>")
+	}
+
+	if err := os.Remove(*out); err != nil &&
+		!errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("removing existing db: %w", err)
+	}
+
+	database, err := db.Open(ctx, *out)
+	if err != nil {
+		return fmt.Errorf("opening db: %w", err)
+	}
+	defer database.Close()
+
+	// Seed model pricing for usage page e2e tests.
+	if err := database.UpsertModelPricingContext(ctx, []db.ModelPricing{
+		{
+			ModelPattern:         "claude-sonnet-4-20250514",
+			InputPerMTok:         money.Money{Microdollars: 3_000_000},
+			OutputPerMTok:        money.Money{Microdollars: 15_000_000},
+			CacheCreationPerMTok: money.Money{Microdollars: 3_750_000},
+			CacheReadPerMTok:     money.Money{Microdollars: 300_000},
+		},
+		{
+			ModelPattern:         "claude-opus-4-20250514",
+			InputPerMTok:         money.Money{Microdollars: 15_000_000},
+			OutputPerMTok:        money.Money{Microdollars: 75_000_000},
+			CacheCreationPerMTok: money.Money{Microdollars: 18_750_000},
+			CacheReadPerMTok:     money.Money{Microdollars: 1_500_000},
+		},
+	}); err != nil {
+		return fmt.Errorf("seeding model pricing: %w", err)
+	}
+
+	// Use a recent base date so fixture data stays within the
+	// default 1-year analytics window.
+	base := time.Now().UTC().AddDate(0, 0, -30).
+		Truncate(24 * time.Hour).Add(10 * time.Hour)
+
+	for i, spec := range specs {
+		if err := createSessionFixture(ctx,
+			database, spec, i, base,
+		); err != nil {
+			return fmt.Errorf("creating fixture %s: %w", spec.suffix, err)
+		}
+		fmt.Printf(
+			"  test-session-%s: %d messages\n",
+			spec.suffix, spec.msgCount,
+		)
+	}
+
+	if err := createDurationShowcaseFixture(ctx,
+		database, base.Add(72*time.Hour),
+	); err != nil {
+		return fmt.Errorf("creating duration showcase: %w", err)
+	}
+
+	if err := createToolSequencesFixture(
+		ctx, database, base.Add(144*time.Hour),
+	); err != nil {
+		return fmt.Errorf("creating tool-sequences fixture: %w", err)
+	}
+
+	if err := createRecentEditsFixture(ctx,
+		database, base.Add(96*time.Hour),
+	); err != nil {
+		return fmt.Errorf("creating recent-edits fixture: %w", err)
+	}
+
+	if err := createProjectReclassificationFixture(ctx,
+		database, base.Add(120*time.Hour),
+	); err != nil {
+		return fmt.Errorf("creating project-reclassification fixture: %w", err)
+	}
+
+	fmt.Printf("Fixture DB written to %s\n", *out)
+	if *duckDBOut != "" {
+		if err := writeDuckDBMirror(ctx, database, *duckDBOut); err != nil {
+			return fmt.Errorf("writing DuckDB mirror: %w", err)
+		}
+		fmt.Printf("Fixture DuckDB mirror written to %s\n", *duckDBOut)
+	}
+	return nil
+}
+
+func createProjectReclassificationFixture(
+	ctx context.Context, database *db.DB, start time.Time,
+) error {
+	const (
+		machine      = "remote-example-host"
+		project      = "wrong_branch_label"
+		worktreeRoot = "/srv/worktrees/github.com/example-org/sample-service/example-worktree"
+		model        = "claude-sonnet-4-20250514"
+	)
+	cwds := []struct {
+		suffix string
+		cwd    string
+	}{
+		{suffix: "root", cwd: worktreeRoot},
+		{suffix: "nested", cwd: worktreeRoot + "/cmd/server"},
+	}
+	for index, item := range cwds {
+		sessionID := "test-session-project-reclassification-" + item.suffix
+		startedAt := start.Add(time.Duration(index) * time.Hour)
+		endedAt := startedAt.Add(12 * time.Minute)
+		firstMessage := "Inspect the sample service worktree."
+		session := db.Session{
+			ID:               sessionID,
+			Project:          project,
+			Machine:          machine,
+			Agent:            "claude",
+			StartedAt:        new(startedAt.Format(time.RFC3339Nano)),
+			EndedAt:          new(endedAt.Format(time.RFC3339Nano)),
+			MessageCount:     2,
+			UserMessageCount: 1,
+			FirstMessage:     new(firstMessage),
+			Cwd:              item.cwd,
+		}
+		if err := database.UpsertSession(ctx, session); err != nil {
+			return fmt.Errorf(
+				"upserting project-reclassification session: %w", err,
+			)
+		}
+		if err := database.InsertMessages(ctx, generateMessages(
+			sessionID, session.MessageCount, startedAt, model,
+		)); err != nil {
+			return fmt.Errorf(
+				"inserting project-reclassification messages: %w", err,
+			)
+		}
+		if err := database.UpsertProjectIdentityObservation(
+			ctx,
+			export.ProjectIdentityObservation{
+				SessionID:            sessionID,
+				Project:              project,
+				Machine:              machine,
+				RootPath:             worktreeRoot,
+				RepositoryPath:       "/srv/worktrees/github.com/example-org/sample-service",
+				WorktreeName:         "example-worktree",
+				WorktreeRootPath:     worktreeRoot,
+				WorktreeRelationship: export.WorktreeLinked,
+				CheckoutState:        export.CheckoutBranch,
+				GitBranch:            "example-worktree",
+				ObservedAt:           startedAt,
+			},
+		); err != nil {
+			return fmt.Errorf(
+				"upserting project-reclassification identity: %w", err,
+			)
+		}
+		fmt.Printf(
+			"  %s: %d messages (project reclassification)\n",
+			sessionID, session.MessageCount,
+		)
+	}
+	return nil
+}
+
+func createToolSequencesFixture(
+	ctx context.Context, database *db.DB, start time.Time,
+) error {
+	const sessionID = "test-session-tool-sequences"
+	msgs := dbtest.ToolSequencesExampleMessages(sessionID)
+	for i := range msgs {
+		messageTime := start.Add(time.Duration(msgs[i].Ordinal) * time.Minute)
+		msgs[i].Timestamp = messageTime.Format(time.RFC3339Nano)
+		for callIndex := range msgs[i].ToolCalls {
+			for eventIndex := range msgs[i].ToolCalls[callIndex].ResultEvents {
+				event := &msgs[i].ToolCalls[callIndex].ResultEvents[eventIndex]
+				eventTime := messageTime
+				if event.Status == "completed" || event.Status == "errored" {
+					eventTime = eventTime.Add(2 * time.Second)
+				}
+				event.Timestamp = eventTime.Format(time.RFC3339Nano)
+			}
+		}
+	}
+	for ordinal := len(msgs); ordinal < 54; ordinal++ {
+		role := "user"
+		if ordinal%2 == 1 {
+			role = "assistant"
+		}
+		content := fmt.Sprintf("Transcript context message %d", ordinal)
+		msgs = append(msgs, db.Message{
+			SessionID: sessionID, Ordinal: ordinal, Role: role,
+			Content: content, ContentLength: len(content),
+			Timestamp: start.Add(time.Duration(ordinal) * time.Minute).Format(time.RFC3339Nano),
+		})
+	}
+	startedAt := start.Format(time.RFC3339Nano)
+	endedAt := start.Add(55 * time.Minute).Format(time.RFC3339Nano)
+	firstMessage := "Find the config"
+	session := db.Session{
+		ID: sessionID, Project: "project-alpha", Machine: "test-machine", Agent: "claude",
+		FirstMessage: &firstMessage, StartedAt: &startedAt, EndedAt: &endedAt,
+		MessageCount: len(msgs), UserMessageCount: 26,
+		TerminationStatus: new("clean"),
+	}
+	if err := database.UpsertSession(ctx, session); err != nil {
+		return err
+	}
+	return database.ReplaceSessionMessages(ctx, sessionID, msgs)
+}
+
+func writeDuckDBMirror(ctx context.Context, database *db.DB, path string) error {
+	if err := os.Remove(path); err != nil &&
+		!errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("removing existing DuckDB mirror: %w", err)
+	}
+	result, err := duckdbsync.Push(
+		ctx, path, database, "test-machine", storage.MirrorPushOptions{}, true, nil,
+	)
+	if err != nil {
+		return err
+	}
+	if result.Errors > 0 {
+		return fmt.Errorf("DuckDB push had %d session error(s)", result.Errors)
+	}
+	return nil
+}
+
+func createSessionFixture(ctx context.Context,
+	database *db.DB, spec sessionSpec,
+	index int, base time.Time,
+) error {
+	sessionID := "test-session-" + spec.suffix
+	startedAt := base.Add(
+		time.Duration(index) * 24 * time.Hour,
+	)
+	endedAt := startedAt.Add(
+		time.Duration(spec.msgCount) * time.Minute,
+	)
+
+	sess := db.Session{
+		ID:               sessionID,
+		Project:          spec.project,
+		Machine:          "test-machine",
+		Agent:            "claude",
+		StartedAt:        new(startedAt.Format(time.RFC3339Nano)),
+		EndedAt:          new(endedAt.Format(time.RFC3339Nano)),
+		MessageCount:     spec.msgCount,
+		UserMessageCount: spec.userMsgCount,
+		RelationshipType: spec.relationshipType,
+	}
+	if spec.parentSessionID != "" {
+		sess.ParentSessionID = new(spec.parentSessionID)
+	}
+	if spec.terminationStatus != "" {
+		sess.TerminationStatus = new(spec.terminationStatus)
+	}
+	if spec.msgCount > 0 {
+		sess.FirstMessage = new(
+			"First message for " + spec.project,
+		)
+	}
+	if err := database.UpsertSession(ctx, sess); err != nil {
+		return fmt.Errorf("upserting session: %w", err)
+	}
+
+	if spec.msgCount == 0 {
+		return nil
+	}
+
+	model := "claude-sonnet-4-20250514"
+	if index%3 == 1 {
+		model = "claude-opus-4-20250514"
+	}
+
+	var msgs []db.Message
+	if spec.suffix == "mixed-content-7" {
+		msgs = generateMixedContentMessages(
+			sessionID, startedAt, model,
+		)
+	} else {
+		msgs = generateMessages(
+			sessionID, spec.msgCount, startedAt, model,
+		)
+	}
+	if err := database.InsertMessages(ctx, msgs); err != nil {
+		return fmt.Errorf("inserting messages: %w", err)
+	}
+	return nil
+}
+
+func generateMessages(
+	sessionID string, count int,
+	start time.Time, model string,
+) []db.Message {
+	msgs := make([]db.Message, 0, count)
+	for i := range count {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+
+		ts := start.Add(time.Duration(i) * time.Minute)
+		content := generateContent(role, i, count)
+
+		msg := db.Message{
+			SessionID:     sessionID,
+			Ordinal:       i,
+			Role:          role,
+			Content:       content,
+			Timestamp:     ts.Format(time.RFC3339Nano),
+			HasThinking:   role == "assistant" && i%5 == 0,
+			HasToolUse:    role == "assistant" && i%3 == 0,
+			ContentLength: len(content),
+		}
+
+		if role == "assistant" && model != "" {
+			msg.Model = model
+			inputTok := 500 + (i*137)%2000
+			outputTok := 200 + (i*89)%800
+			cacheCr := 50 + (i*31)%200
+			cacheRd := 1000 + (i*53)%4000
+			msg.TokenUsage = jsontext.Value(
+				fmt.Sprintf(
+					`{"input_tokens":%d,`+
+						`"output_tokens":%d,`+
+						`"cache_creation_input_tokens":%d,`+
+						`"cache_read_input_tokens":%d}`,
+					inputTok, outputTok,
+					cacheCr, cacheRd,
+				),
+			)
+		}
+
+		msgs = append(msgs, msg)
+	}
+	return msgs
+}
+
+func generateMixedContentMessages(
+	sessionID string, start time.Time, model string,
+) []db.Message {
+	type spec struct {
+		role        string
+		content     string
+		hasThinking bool
+		hasToolUse  bool
+	}
+
+	specs := []spec{
+		{
+			role:    "user",
+			content: "Help me read a file",
+		},
+		{
+			role: "assistant",
+			content: "[Thinking]\nLet me analyze..." +
+				"\n\nHere is my analysis.",
+			hasThinking: true,
+		},
+		{
+			role:    "user",
+			content: "Now check the directory",
+		},
+		{
+			role:       "assistant",
+			content:    "[Read /src/main.ts]\nconst app = express();",
+			hasToolUse: true,
+		},
+		{
+			role:       "assistant",
+			content:    "[Bash]\nls -la /src",
+			hasToolUse: true,
+		},
+		{
+			role: "assistant",
+			content: "[Thinking]\nGemini-style reasoning\n" +
+				"[/Thinking]\n\n" +
+				"This is the visible response after thinking.",
+			hasThinking: true,
+		},
+		{
+			role:    "user",
+			content: "Thanks",
+		},
+	}
+
+	msgs := make([]db.Message, 0, len(specs))
+	for i, s := range specs {
+		ts := start.Add(time.Duration(i) * time.Minute)
+		msg := db.Message{
+			SessionID:     sessionID,
+			Ordinal:       i,
+			Role:          s.role,
+			Content:       s.content,
+			Timestamp:     ts.Format(time.RFC3339Nano),
+			HasThinking:   s.hasThinking,
+			HasToolUse:    s.hasToolUse,
+			ContentLength: len(s.content),
+		}
+		if s.role == "assistant" && model != "" {
+			msg.Model = model
+			inputTok := 400 + (i*113)%1500
+			outputTok := 150 + (i*67)%600
+			cacheCr := 30 + (i*23)%150
+			cacheRd := 800 + (i*41)%3000
+			msg.TokenUsage = jsontext.Value(
+				fmt.Sprintf(
+					`{"input_tokens":%d,`+
+						`"output_tokens":%d,`+
+						`"cache_creation_input_tokens":%d,`+
+						`"cache_read_input_tokens":%d}`,
+					inputTok, outputTok,
+					cacheCr, cacheRd,
+				),
+			)
+		}
+		if i == 3 {
+			const resultContent = "# Fixture output\n\n**safe** <script>alert(\"xss\")</script>"
+			msg.ToolCalls = []db.ToolCall{
+				{
+					ToolName:            "Read",
+					Category:            "Read",
+					ToolUseID:           "tu_mixed_read",
+					InputJSON:           `{"file_path":"/workspace/packages/agentsview/frontend/src/lib/components/content/ToolBlock.svelte"}`,
+					ResultContentLength: len(resultContent),
+					ResultContent:       resultContent,
+				},
+			}
+		}
+		msgs = append(msgs, msg)
+	}
+	return msgs
+}
+
+func generateContent(role string, idx, total int) string {
+	if role == "user" {
+		return fmt.Sprintf(
+			"User message %d of %d. "+
+				"Please help me with this task. "+
+				"I need to understand how the code works.",
+			idx, total,
+		)
+	}
+	return fmt.Sprintf(
+		"Assistant response %d of %d. "+
+			"Here is my analysis of the code. "+
+			"The implementation follows standard patterns "+
+			"and uses well-known libraries. "+
+			"Let me explain the key components.",
+		idx, total,
+	)
+}
+
+// Copilot emits execution endpoints; the linked Task has a closed child interval.
+func createDurationShowcaseFixture(ctx context.Context,
+	database *db.DB, start time.Time,
+) error {
+	const (
+		parentID   = "test-session-duration-showcase"
+		subagentID = "test-session-duration-subagent-1"
+		project    = "project-duration"
+		model      = "claude-sonnet-4-20250514"
+	)
+
+	// Per-message timestamps anchored on `start`.
+	t0 := start
+	t1 := start.Add(2 * time.Second)
+	t2 := start.Add(4 * time.Second)
+	t3 := start.Add(14 * time.Second)
+	t4 := start.Add(2*time.Minute + 14*time.Second)
+	t5 := start.Add(2*time.Minute + 24*time.Second)
+	t6 := start.Add(2*time.Minute + 52*time.Second)
+	endParent := start.Add(2*time.Minute + 55*time.Second)
+
+	// Child bounds provide a closed completion interval for the linked Task call.
+	subStart := t3
+	subEnd := t4
+	subAgentMessages := buildDurationSubagentMessages(
+		subagentID, subStart,
+	)
+
+	subSess := db.Session{
+		ID:               subagentID,
+		Project:          project,
+		Machine:          "test-machine",
+		Agent:            "copilot",
+		StartedAt:        new(subStart.Format(time.RFC3339Nano)),
+		EndedAt:          new(subEnd.Format(time.RFC3339Nano)),
+		MessageCount:     len(subAgentMessages),
+		UserMessageCount: countUserMessages(subAgentMessages),
+		ParentSessionID:  new(parentID),
+		RelationshipType: "subagent",
+		FirstMessage: new(
+			"Inspect middleware request flow",
+		),
+	}
+	if err := database.UpsertSession(ctx, subSess); err != nil {
+		return fmt.Errorf(
+			"upserting subagent session: %w", err,
+		)
+	}
+	if err := database.InsertMessages(ctx,
+		subAgentMessages,
+	); err != nil {
+		return fmt.Errorf(
+			"inserting subagent messages: %w", err,
+		)
+	}
+	fmt.Printf(
+		"  %s: %d messages (subagent)\n",
+		subagentID, len(subAgentMessages),
+	)
+
+	parentMessages := buildDurationShowcaseMessages(
+		parentID, subagentID, model,
+		t0, t1, t2, t3, t4, t5, t6,
+	)
+
+	parentSess := db.Session{
+		ID:               parentID,
+		Project:          project,
+		Machine:          "test-machine",
+		Agent:            "copilot",
+		Cwd:              "/workspace/مشروع/.worktrees/שלוםfeaturewithalongcheckoutnamefortooltipwrappingwithoutbreakopportunities",
+		StartedAt:        new(t0.Format(time.RFC3339Nano)),
+		EndedAt:          new(endParent.Format(time.RFC3339Nano)),
+		MessageCount:     len(parentMessages),
+		UserMessageCount: countUserMessages(parentMessages),
+		FirstMessage: new(
+			"Investigate auth middleware performance",
+		),
+	}
+	if err := database.UpsertSession(ctx, parentSess); err != nil {
+		return fmt.Errorf(
+			"upserting showcase session: %w", err,
+		)
+	}
+	if err := database.InsertMessages(ctx,
+		parentMessages,
+	); err != nil {
+		return fmt.Errorf(
+			"inserting showcase messages: %w", err,
+		)
+	}
+	fmt.Printf(
+		"  %s: %d messages (duration showcase)\n",
+		parentID, len(parentMessages),
+	)
+	return nil
+}
+
+func countUserMessages(msgs []db.Message) int {
+	n := 0
+	for _, m := range msgs {
+		if m.Role == "user" {
+			n++
+		}
+	}
+	return n
+}
+
+// buildDurationShowcaseMessages assembles the parent session's
+// messages and tool calls. ToolUseIDs are stable strings so the
+// IDs surface intact in the tool_calls table; matching results
+// would arrive in the next user message in a real transcript,
+// but the result_content_length lives on the originating call
+// row in this DB schema, so it's set there directly.
+func buildDurationShowcaseMessages(
+	sessionID, subagentID, model string,
+	t0, t1, t2, t3, t4, t5, t6 time.Time,
+) []db.Message {
+	const (
+		readSoloID = "tu_read_solo"
+		readPar1ID = "tu_read_par1"
+		readPar2ID = "tu_read_par2"
+		taskID     = "tu_task_subagent"
+		bashSlowID = "tu_bash_slow"
+	)
+
+	tokenUsage := func(seed int) jsontext.Value {
+		input := 600 + seed*150
+		output := 220 + seed*80
+		cacheCr := 60 + seed*15
+		cacheRd := 1100 + seed*40
+		return jsontext.Value(fmt.Sprintf(
+			`{"input_tokens":%d,`+
+				`"output_tokens":%d,`+
+				`"cache_creation_input_tokens":%d,`+
+				`"cache_read_input_tokens":%d}`,
+			input, output, cacheCr, cacheRd,
+		))
+	}
+
+	msg0Content := "Take a look at the auth middleware " +
+		"and figure out where time is going."
+	msg1Content := "Reading the middleware so I can map " +
+		"the request flow."
+	msg2Content := "[tool_result]"
+	msg3Content := "Fanning out: two reads plus a sub-agent " +
+		"to dig into the session helpers."
+	msg4Content := "[tool_results]"
+	promptContent := "Confirm the slow path with the auth tests."
+	msg5Content := "Running the auth test suite to confirm " +
+		"the slow path matches what I read."
+	msg6Content := "[tool_result]"
+
+	return []db.Message{
+		{
+			SessionID:     sessionID,
+			Ordinal:       0,
+			Role:          "user",
+			Content:       msg0Content,
+			Timestamp:     t0.Format(time.RFC3339Nano),
+			ContentLength: len(msg0Content),
+		},
+		{
+			SessionID:     sessionID,
+			Ordinal:       1,
+			Role:          "assistant",
+			Content:       msg1Content,
+			Timestamp:     t1.Format(time.RFC3339Nano),
+			HasToolUse:    true,
+			ContentLength: len(msg1Content),
+			Model:         model,
+			TokenUsage:    tokenUsage(1),
+			ToolCalls: []db.ToolCall{
+				{
+					ToolName:  "Read",
+					Category:  "Read",
+					ToolUseID: readSoloID,
+					InputJSON: `{"file_path":` +
+						`"/src/auth/middleware.go"}`,
+					ResultContentLength: 412,
+				},
+			},
+		},
+		{
+			SessionID:     sessionID,
+			Ordinal:       2,
+			Role:          "user",
+			SourceSubtype: "tool_result",
+			Content:       msg2Content,
+			Timestamp:     t2.Format(time.RFC3339Nano),
+			ContentLength: len(msg2Content),
+		},
+		{
+			SessionID:     sessionID,
+			Ordinal:       3,
+			Role:          "assistant",
+			Content:       msg3Content,
+			Timestamp:     t3.Format(time.RFC3339Nano),
+			HasToolUse:    true,
+			ContentLength: len(msg3Content),
+			Model:         model,
+			TokenUsage:    tokenUsage(2),
+			ToolCalls: []db.ToolCall{
+				{
+					ToolName:  "Read",
+					Category:  "Read",
+					ToolUseID: readPar1ID,
+					InputJSON: `{"file_path":` +
+						`"/src/auth/session.go"}`,
+					ResultContentLength: 510,
+				},
+				{
+					ToolName:  "Read",
+					Category:  "Read",
+					ToolUseID: readPar2ID,
+					InputJSON: `{"file_path":` +
+						`"/src/auth/tokens.go"}`,
+					ResultContentLength: 388,
+				},
+				{
+					ToolName:          "Task",
+					Category:          "Task",
+					ToolUseID:         taskID,
+					SubagentSessionID: subagentID,
+					InputJSON: `{"description":` +
+						`"audit session helpers",` +
+						`"prompt":"Walk through ` +
+						`session helpers and report ` +
+						`anything that touches the DB ` +
+						`on the hot path."}`,
+					ResultContentLength: 1280,
+				},
+			},
+		},
+		{
+			SessionID:     sessionID,
+			Ordinal:       4,
+			Role:          "user",
+			SourceSubtype: "tool_result",
+			Content:       msg4Content,
+			Timestamp:     t4.Format(time.RFC3339Nano),
+			ContentLength: len(msg4Content),
+		},
+		{
+			SessionID:     sessionID,
+			Ordinal:       5,
+			Role:          "user",
+			Content:       promptContent,
+			Timestamp:     t4.Add(5 * time.Second).Format(time.RFC3339Nano),
+			ContentLength: len(promptContent),
+		},
+		{
+			SessionID:     sessionID,
+			Ordinal:       6,
+			Role:          "assistant",
+			Content:       msg5Content,
+			Timestamp:     t5.Format(time.RFC3339Nano),
+			HasToolUse:    true,
+			ContentLength: len(msg5Content),
+			Model:         model,
+			TokenUsage:    tokenUsage(3),
+			ToolCalls: []db.ToolCall{
+				{
+					ToolName:  "Bash",
+					Category:  "Bash",
+					ToolUseID: bashSlowID,
+					InputJSON: `{"command":` +
+						`"go test ./... -count=10",` +
+						`"description":"rerun ` +
+						`auth tests"}`,
+					ResultContentLength: 940,
+					ResultEvents: []db.ToolResultEvent{
+						{
+							ToolUseID:  bashSlowID,
+							Source:     "tool_execution",
+							Status:     "started",
+							Timestamp:  t5.Add(3 * time.Second).Format(time.RFC3339Nano),
+							EventIndex: 0,
+						},
+						{
+							ToolUseID:  bashSlowID,
+							Source:     "tool_execution",
+							Status:     "completed",
+							Timestamp:  t6.Add(-5 * time.Second).Format(time.RFC3339Nano),
+							EventIndex: 1,
+						},
+					},
+				},
+			},
+		},
+		{
+			SessionID:     sessionID,
+			Ordinal:       7,
+			Role:          "user",
+			SourceSubtype: "tool_result",
+			Content:       msg6Content,
+			Timestamp:     t6.Format(time.RFC3339Nano),
+			ContentLength: len(msg6Content),
+		},
+	}
+}
+
+// Child calls lack execution endpoints, so their durations remain unknown.
+func buildDurationSubagentMessages(
+	sessionID string, start time.Time,
+) []db.Message {
+	const model = "claude-sonnet-4-20250514"
+
+	tokenUsage := func(seed int) jsontext.Value {
+		input := 350 + seed*90
+		output := 180 + seed*55
+		cacheCr := 40 + seed*12
+		cacheRd := 700 + seed*30
+		return jsontext.Value(fmt.Sprintf(
+			`{"input_tokens":%d,`+
+				`"output_tokens":%d,`+
+				`"cache_creation_input_tokens":%d,`+
+				`"cache_read_input_tokens":%d}`,
+			input, output, cacheCr, cacheRd,
+		))
+	}
+
+	t0 := start
+	t1 := start.Add(20 * time.Second)
+	t2 := start.Add(40 * time.Second)
+	t3 := start.Add(70 * time.Second)
+	t4 := start.Add(95 * time.Second)
+	t5 := start.Add(115 * time.Second)
+
+	msg0 := "Audit the session helpers and report any " +
+		"hot-path DB calls."
+	msg1 := "Reading the helper module first."
+	msg2 := "[tool_result]"
+	msg3 := "Now scanning the cache layer for sync calls."
+	msg4 := "[tool_result]"
+	msg5 := "Two helpers issue a synchronous DB read on " +
+		"every request. Report attached."
+
+	return []db.Message{
+		{
+			SessionID:     sessionID,
+			Ordinal:       0,
+			Role:          "user",
+			Content:       msg0,
+			Timestamp:     t0.Format(time.RFC3339Nano),
+			ContentLength: len(msg0),
+		},
+		{
+			SessionID:     sessionID,
+			Ordinal:       1,
+			Role:          "assistant",
+			Content:       msg1,
+			Timestamp:     t1.Format(time.RFC3339Nano),
+			HasToolUse:    true,
+			ContentLength: len(msg1),
+			Model:         model,
+			TokenUsage:    tokenUsage(1),
+			ToolCalls: []db.ToolCall{
+				{
+					ToolName:  "Read",
+					Category:  "Read",
+					ToolUseID: "tu_sub_read1",
+					InputJSON: `{"file_path":` +
+						`"/src/auth/helpers.go"}`,
+					ResultContentLength: 320,
+				},
+			},
+		},
+		{
+			SessionID:     sessionID,
+			Ordinal:       2,
+			Role:          "user",
+			Content:       msg2,
+			Timestamp:     t2.Format(time.RFC3339Nano),
+			ContentLength: len(msg2),
+		},
+		{
+			SessionID:     sessionID,
+			Ordinal:       3,
+			Role:          "assistant",
+			Content:       msg3,
+			Timestamp:     t3.Format(time.RFC3339Nano),
+			HasToolUse:    true,
+			ContentLength: len(msg3),
+			Model:         model,
+			TokenUsage:    tokenUsage(2),
+			ToolCalls: []db.ToolCall{
+				{
+					ToolName:  "Grep",
+					Category:  "Grep",
+					ToolUseID: "tu_sub_grep1",
+					InputJSON: `{"pattern":` +
+						`"db.Query","path":` +
+						`"/src/auth"}`,
+					ResultContentLength: 210,
+				},
+			},
+		},
+		{
+			SessionID:     sessionID,
+			Ordinal:       4,
+			Role:          "user",
+			Content:       msg4,
+			Timestamp:     t4.Format(time.RFC3339Nano),
+			ContentLength: len(msg4),
+		},
+		{
+			SessionID:     sessionID,
+			Ordinal:       5,
+			Role:          "assistant",
+			Content:       msg5,
+			Timestamp:     t5.Format(time.RFC3339Nano),
+			ContentLength: len(msg5),
+			Model:         model,
+			TokenUsage:    tokenUsage(3),
+		},
+	}
+}
+
+// createRecentEditsFixture seeds one session that carries a real
+// Edit tool call with FilePath set. The feed at GET /api/v1/recent-edits
+// filters on category IN ('Edit','Write') AND file_path IS NOT NULL, so
+// FilePath must be set directly on the ToolCall — InputJSON alone does
+// not propagate to the file_path column.
+func createRecentEditsFixture(ctx context.Context,
+	database *db.DB, start time.Time,
+) error {
+	const (
+		sessionID = "test-session-recent-edits"
+		project   = "project-edits"
+		model     = "claude-sonnet-4-20250514"
+		editPath  = "/src/server/handler.go"
+	)
+
+	endedAt := start.Add(5 * time.Minute)
+	firstMsg := "Add request logging to the HTTP handler."
+
+	sess := db.Session{
+		ID:               sessionID,
+		Project:          project,
+		Machine:          "test-machine",
+		Agent:            "claude",
+		StartedAt:        new(start.Format(time.RFC3339Nano)),
+		EndedAt:          new(endedAt.Format(time.RFC3339Nano)),
+		MessageCount:     3,
+		UserMessageCount: 1,
+		FirstMessage:     new(firstMsg),
+	}
+	if err := database.UpsertSession(ctx, sess); err != nil {
+		return fmt.Errorf("upserting recent-edits session: %w", err)
+	}
+
+	msgs := []db.Message{
+		{
+			SessionID:     sessionID,
+			Ordinal:       0,
+			Role:          "user",
+			Content:       firstMsg,
+			Timestamp:     start.Format(time.RFC3339Nano),
+			ContentLength: len(firstMsg),
+		},
+		{
+			SessionID:  sessionID,
+			Ordinal:    1,
+			Role:       "assistant",
+			HasToolUse: true,
+			Content:    "[Edit /src/server/handler.go]",
+			Timestamp: start.Add(1 * time.Minute).
+				Format(time.RFC3339Nano),
+			ContentLength: 29,
+			Model:         model,
+			TokenUsage: jsontext.Value(
+				`{"input_tokens":800,` +
+					`"output_tokens":320,` +
+					`"cache_creation_input_tokens":80,` +
+					`"cache_read_input_tokens":1500}`,
+			),
+			ToolCalls: []db.ToolCall{
+				{
+					ToolName:  "Edit",
+					Category:  "Edit",
+					ToolUseID: "tu_edit_handler",
+					// FilePath must be set directly; InputJSON
+					// alone is not propagated to the DB column.
+					FilePath: editPath,
+					InputJSON: `{"file_path":"` + editPath + `",` +
+						`"old_string":"func handler(",` +
+						`"new_string":"func handler(// + logging\n"}`,
+					ResultContentLength: 0,
+				},
+			},
+		},
+		{
+			SessionID: sessionID,
+			Ordinal:   2,
+			Role:      "user",
+			Content:   "[tool_result]",
+			Timestamp: start.Add(2 * time.Minute).
+				Format(time.RFC3339Nano),
+			ContentLength: 13,
+		},
+	}
+	if err := database.InsertMessages(ctx, msgs); err != nil {
+		return fmt.Errorf(
+			"inserting recent-edits messages: %w", err,
+		)
+	}
+	fmt.Printf(
+		"  %s: %d messages (recent-edits fixture)\n",
+		sessionID, len(msgs),
+	)
+	return nil
+}

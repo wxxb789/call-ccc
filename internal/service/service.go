@@ -1,0 +1,605 @@
+// Package service provides the canonical session-operation interface
+// shared by the HTTP handlers and the CLI. Both are thin JSON encoders
+// that delegate to a SessionService implementation.
+package service
+
+import (
+	"context"
+	"encoding/json/v2"
+	"errors"
+	"io"
+	"strings"
+
+	"go.kenn.io/agentsview/internal/activity"
+	"go.kenn.io/agentsview/internal/db"
+)
+
+// ErrSearchUnavailable is returned by Search when the backing store has
+// no full-text search index. Both transports surface it: the HTTP
+// backend maps a 501 response to it, and callers can errors.Is it
+// regardless of transport (the REST handler maps it back to HTTP 501).
+var ErrSearchUnavailable = errors.New("search not available")
+
+// RecallQueryCapability is implemented by services whose backing store can
+// query Recall entries. Callers should treat services without this capability
+// as unsupported so retrieval surfaces are not advertised optimistically.
+type RecallQueryCapability interface {
+	SupportsRecallQueries() bool
+}
+
+// SupportsRecallQueries reports whether svc can query Recall entries.
+func SupportsRecallQueries(svc SessionService) bool {
+	capability, ok := svc.(RecallQueryCapability)
+	return ok && capability.SupportsRecallQueries()
+}
+
+// ErrAroundMutuallyExclusive is returned by Messages when Around is combined
+// with From or a non-default Direction: the two retrieval modes (symmetric
+// window vs. linear pagination) cannot both be requested. The HTTP handler
+// maps it to a 400 response.
+var ErrAroundMutuallyExclusive = errors.New(
+	"around is mutually exclusive with from/direction/compact_boundary",
+)
+
+// ErrBeforeAfterRequireAround is returned by Messages when Before or After
+// is set without Around. The HTTP handler maps it to a 400 response.
+var ErrBeforeAfterRequireAround = errors.New("before/after require around")
+
+// CompactionAPIVersion is the first daemon version with flat session reads.
+const CompactionAPIVersion = 20
+
+// ErrSemanticUnavailable is returned by SearchContent for modes
+// "semantic" and hybrid requests without keyword fallback when the backing
+// store has no VectorSearcher wired in.
+// It is the same sentinel as db.ErrSemanticUnavailable so direct callers can
+// errors.Is it without transport-specific handling; the HTTP backend maps a
+// 501 response back to it for daemon-backed callers.
+var ErrSemanticUnavailable = db.ErrSemanticUnavailable
+
+const (
+	// SemanticSearchIntentHeader is required on HTTP GET semantic/hybrid
+	// content searches. It forces browser callers to use an explicit fetch with
+	// a non-simple header, preventing blind no-CORS cross-origin GETs from
+	// spending embeddings quota through the local daemon.
+	SemanticSearchIntentHeader = "X-AgentsView-Search-Intent"
+	SemanticSearchIntentValue  = "semantic"
+)
+
+// SessionService is the canonical per-session operation interface.
+// Two implementations: directBackend (wraps *db.DB) and httpBackend
+// (proxies to a running daemon).
+type SessionService interface {
+	Get(ctx context.Context, id string) (*SessionDetail, error)
+	// FindSessionIDsByPartial returns IDs containing partial as a literal,
+	// case-sensitive substring, ordered by most recent activity and capped by
+	// limit.
+	FindSessionIDsByPartial(ctx context.Context, partial string, limit int) ([]string, error)
+	// FindSessionIDsByRawSuffix matches an exact stored ID or a literal
+	// colon/tilde-delimited suffix before applying limit.
+	FindSessionIDsByRawSuffix(ctx context.Context, raw string, limit int) ([]string, error)
+	List(ctx context.Context, f ListFilter) (*SessionList, error)
+	Messages(ctx context.Context, id string, f MessageFilter) (*MessageList, error)
+	ToolCalls(ctx context.Context, id string) (*ToolCallList, error)
+	SessionCommits(ctx context.Context, id string) (*db.SessionCommitList, error)
+	CommitSessions(ctx context.Context, shas []string) (*db.CommitSessionList, error)
+	// ChildSessions lists the sub-agent and fork sessions whose parent is id.
+	ChildSessions(ctx context.Context, id string) ([]db.Session, error)
+	// RecentEdits pages edited files, newest edit first, with the sessions
+	// whose Edit/Write tool calls touched each file.
+	RecentEdits(ctx context.Context, f RecentEditsFilter) (*db.RecentEditsResult, error)
+	Sync(ctx context.Context, in SyncInput) (*SessionDetail, error)
+	Watch(ctx context.Context, id string) (<-chan Event, error)
+	Stats(ctx context.Context, f StatsFilter) (*SessionStats, error)
+	Search(ctx context.Context, req SearchRequest) (*SessionSearchResult, error)
+	SearchContent(ctx context.Context, req ContentSearchRequest) (*ContentSearchResult, error)
+	UsageSummary(ctx context.Context, req UsageRequest) (*UsageSummaryResult, error)
+	// SessionUsage returns one session's token usage and cost with its
+	// full breakdown, or nil when the session does not exist. It reads the
+	// archive as stored and never refreshes source transcripts.
+	SessionUsage(ctx context.Context, req SessionUsageRequest) (*SessionUsageReport, error)
+	UsagePairwiseComparison(
+		ctx context.Context, req UsagePairwiseComparisonRequest,
+	) (*UsagePairwiseComparisonResponse, error)
+	// ActivityReport returns the Activity report for one range with every
+	// session row in BySession.
+	ActivityReport(ctx context.Context, req ActivityReportRequest) (*activity.Report, error)
+	ToolAnalytics(ctx context.Context, req AnalyticsRequest) (*db.ToolsAnalyticsResponse, error)
+	SignalAnalytics(ctx context.Context, req AnalyticsRequest) (*db.SignalsAnalyticsResponse, error)
+	SignalSessions(ctx context.Context, req SignalSessionsRequest) (*db.SignalSessionsResponse, error)
+	ListRecallEntries(ctx context.Context, f RecallFilter) (*RecallList, error)
+	GetRecallEntry(ctx context.Context, id string) (*db.RecallEntry, error)
+	QueryRecallEntries(ctx context.Context, req RecallQuery) (*RecallQueryResult, error)
+	ImportRecallEntries(
+		ctx context.Context, r io.Reader, opts db.RecallImportOptions,
+	) (*db.RecallImportResult, error)
+	ListSecrets(ctx context.Context, f SecretListFilter) (*SecretFindingList, error)
+	ScanSecrets(ctx context.Context, in SecretScanInput,
+		progress func(SecretScanProgress)) (*SecretScanSummary, error)
+}
+
+// SecretScanInput parameterises ScanSecrets (mirrors sync.SecretScanInput).
+type SecretScanInput struct {
+	Backfill bool
+	Project  string
+	Agent    string
+	DateFrom string
+	DateTo   string
+}
+
+// SecretScanProgress is one progress tick (mirrors sync.SecretScanProgress).
+type SecretScanProgress struct {
+	Scanned int `json:"scanned"`
+	Total   int `json:"total"`
+}
+
+// SecretScanSummary is the final scan result (mirrors sync.SecretScanSummary).
+type SecretScanSummary struct {
+	Scanned           int `json:"scanned"`
+	WithSecrets       int `json:"with_secrets"`
+	TotalFindings     int `json:"total_findings"`
+	DefiniteFindings  int `json:"definite_findings"`
+	CandidateFindings int `json:"candidate_findings"`
+}
+
+// SecretListFilter parameterises ListSecrets.
+type SecretListFilter struct {
+	Project    string
+	Agent      string
+	DateFrom   string
+	DateTo     string
+	Rule       string
+	Confidence string
+	Reveal     bool
+	Limit      int
+	Cursor     int
+}
+
+// SecretFindingList is a page of secret findings for transport. When the
+// request set Reveal, each row's RedactedMatch holds the full value (or a
+// "source changed" marker) instead of the redacted form.
+type SecretFindingList struct {
+	Findings   []db.SecretFindingRow `json:"findings"`
+	NextCursor int                   `json:"next_cursor,omitempty"`
+}
+
+// SearchRequest is the transport-neutral session-search (FTS) input.
+// It mirrors the GET /api/v1/search query parameters so both transports
+// produce identical results.
+type SearchRequest struct {
+	DateFrom string `json:"date_from,omitempty"`
+	DateTo   string `json:"date_to,omitempty"`
+	Query    string `json:"query"`
+	Project  string `json:"project,omitempty"`
+	Sort     string `json:"sort,omitempty"` // "relevance" (default) or "recency"
+	Cursor   int    `json:"cursor,omitempty"`
+	Limit    int    `json:"limit,omitempty"`
+}
+
+// SessionSearchResult mirrors db.SearchPage for transport: ranked
+// session hits plus the next pagination cursor.
+type SessionSearchResult struct {
+	Results    []db.SearchResult `json:"results"`
+	NextCursor int               `json:"next_cursor,omitempty"`
+}
+
+// ContentSearchRequest is the transport-neutral content-search input.
+type ContentSearchRequest struct {
+	Pattern string `json:"pattern"`
+	// Concepts runs one semantic search per concept and keeps only sessions
+	// with evidence for every one. See NormalizeContentSearchRequest.
+	Concepts        []string `json:"concepts,omitempty"`
+	Mode            string   `json:"mode,omitempty"` // substring|regex|fts|terms|semantic|hybrid
+	KeywordFallback bool     `json:"allow_keyword_fallback,omitempty"`
+	Sources         []string `json:"sources,omitempty"`
+	ExcludeSystem   bool     `json:"exclude_system,omitempty"`
+	Reveal          bool     `json:"reveal,omitempty"`
+	// Context requests N messages of inline context before and after each
+	// match (0 = off, max 10). See directBackend.SearchContent.
+	Context int `json:"context,omitempty"`
+
+	Project, ExcludeProject, Machine, Agent           string
+	SessionID, GitBranchExact                         string
+	Date, DateFrom, DateTo, Timezone, ActiveSince     string
+	ExcludeActiveSince                                string
+	IncludeChildren, IncludeAutomated, IncludeOneShot bool
+	ExcludeSessionIDs                                 []string
+	// GitBranch is a branchListSep-joined list of opaque (project, branch) tokens (EncodeBranchFilterToken).
+	GitBranch string
+
+	// Scope governs terms, semantic/hybrid, and explicit lexical visibility ("top", "all", or
+	// "subordinate") and supersedes IncludeChildren. Blank lexical scope keeps
+	// sidebar eligibility; blank terms/vector scope means "all". See db.ContentSearchFilter.Scope.
+	Scope string `json:"scope,omitempty"`
+
+	Limit  int `json:"limit,omitempty"`
+	Cursor int `json:"cursor,omitempty"`
+}
+
+// ContentSearchResult mirrors db.ContentSearchPage for transport.
+type ContentSearchResult struct {
+	EffectiveMode       string            `json:"effective_mode,omitempty"`
+	Note                string            `json:"note,omitempty"`
+	ActiveFilterApplied bool              `json:"active_filter_applied"`
+	Matches             []db.ContentMatch `json:"matches"`
+	NextCursor          int               `json:"next_cursor,omitempty"`
+	RevisionBound       bool              `json:"revision_bound"`
+	Coverage            MemoryCoverage    `json:"coverage"`
+	// CandidateTruncated reports that a multi-concept search may have missed
+	// sessions: a concept's candidate window filled, or more sessions matched
+	// every concept than the limit allowed.
+	CandidateTruncated bool `json:"candidate_truncated,omitempty"`
+}
+
+// RecallFilter mirrors GET /api/v1/recall/entries query parameters.
+type RecallFilter struct {
+	Query               string `json:"q,omitempty"`
+	Project             string `json:"project,omitempty"`
+	CWD                 string `json:"cwd,omitempty"`
+	GitBranch           string `json:"git_branch,omitempty"`
+	Agent               string `json:"agent,omitempty"`
+	Type                string `json:"type,omitempty"`
+	Scope               string `json:"scope,omitempty"`
+	Status              string `json:"status,omitempty"`
+	ExtractorMethod     string `json:"extractor_method,omitempty"`
+	SourceSessionID     string `json:"source_session_id,omitempty"`
+	SourceEpisodeID     string `json:"source_episode_id,omitempty"`
+	SourceRunID         string `json:"source_run_id,omitempty"`
+	SupersedesEntryID   string `json:"supersedes_entry_id,omitempty"`
+	SupersededByEntryID string `json:"superseded_by_entry_id,omitempty"`
+	TrustedOnly         bool   `json:"trusted_only,omitempty"`
+	Limit               int    `json:"limit,omitempty"`
+}
+
+// RecallList mirrors GET /api/v1/recall/entries.
+type RecallList struct {
+	RecallEntries []db.RecallResult `json:"entries"`
+	TrustedOnly   bool              `json:"trusted_only"`
+}
+
+// RecallQuery mirrors POST /api/v1/recall/query.
+type RecallQuery struct {
+	Query               string `json:"query"`
+	Mode                string `json:"mode,omitempty"`
+	Surface             string `json:"surface,omitempty"`
+	Project             string `json:"project,omitempty"`
+	CWD                 string `json:"cwd,omitempty"`
+	GitBranch           string `json:"git_branch,omitempty"`
+	Agent               string `json:"agent,omitempty"`
+	Type                string `json:"type,omitempty"`
+	Scope               string `json:"scope,omitempty"`
+	Status              string `json:"status,omitempty"`
+	ExtractorMethod     string `json:"extractor_method,omitempty"`
+	SourceSessionID     string `json:"source_session_id,omitempty"`
+	SourceEpisodeID     string `json:"source_episode_id,omitempty"`
+	SourceRunID         string `json:"source_run_id,omitempty"`
+	SupersedesEntryID   string `json:"supersedes_entry_id,omitempty"`
+	SupersededByEntryID string `json:"superseded_by_entry_id,omitempty"`
+	TrustedOnly         bool   `json:"trusted_only,omitempty"`
+	Limit               int    `json:"limit,omitempty"`
+	IncludeContext      bool   `json:"include_context,omitempty"`
+	ContextMaxBytes     int    `json:"context_max_bytes,omitempty"`
+	// SkipRecording keeps retrieval read-only by omitting the query event and
+	// exposure snapshot. MCP sets it because query_recall is declared read-only.
+	SkipRecording bool `json:"skip_recording,omitempty"`
+	// StrictRecording is reserved for local calibration workflows. It is not
+	// transported over JSON; ordinary query paths keep measurement best-effort.
+	StrictRecording bool `json:"-"`
+}
+
+// RecallQueryResult mirrors POST /api/v1/recall/query response.
+type RecallQueryResult struct {
+	Mode           string              `json:"mode"`
+	QueryID        string              `json:"query_id"`
+	MissReason     string              `json:"miss_reason"`
+	RecallEntries  []db.RecallResult   `json:"entries"`
+	TrustedOnly    bool                `json:"trusted_only"`
+	Summary        *RecallQuerySummary `json:"summary,omitempty"`
+	Context        string              `json:"context,omitempty"`
+	ContextMeta    *RecallContextMeta  `json:"context_meta,omitempty"`
+	ContextEntries []db.RecallResult   `json:"context_entries,omitempty"`
+	ContextSummary *RecallQuerySummary `json:"context_summary,omitempty"`
+}
+
+// RecallQuerySummary is aggregate metadata for auditing one recall query result.
+type RecallQuerySummary struct {
+	Count             int            `json:"count"`
+	ByType            map[string]int `json:"by_type"`
+	ByScope           map[string]int `json:"by_scope"`
+	ByStatus          map[string]int `json:"by_status"`
+	ByProject         map[string]int `json:"by_project"`
+	ByAgent           map[string]int `json:"by_agent"`
+	ByCWD             map[string]int `json:"by_cwd"`
+	ByGitBranch       map[string]int `json:"by_git_branch"`
+	ByMatchReason     map[string]int `json:"by_match_reason"`
+	ByExtractorMethod map[string]int `json:"by_extractor"`
+	ByModel           map[string]int `json:"by_model"`
+	BySourceRun       map[string]int `json:"by_source_run"`
+	BySourceSession   map[string]int `json:"by_source_session"`
+	BySourceEpisode   map[string]int `json:"by_source_episode"`
+	ByTransferability map[string]int `json:"by_transferability"`
+	ByProvenanceAudit map[string]int `json:"by_provenance_audit"`
+	ByEvidence        map[string]int `json:"by_evidence"`
+	ByLifecycle       map[string]int `json:"by_lifecycle"`
+}
+
+// RecallContextMeta describes the assembled recall context without exposing it
+// as additional model-visible evidence.
+type RecallContextMeta struct {
+	EntryCount                        int                 `json:"entry_count"`
+	Truncated                         bool                `json:"truncated"`
+	IncludedIDs                       []string            `json:"included_ids,omitempty"`
+	IncludedTypesByID                 map[string]string   `json:"included_types_by_id,omitempty"`
+	IncludedMatchReasonsByID          map[string][]string `json:"included_match_reasons_by_id,omitempty"`
+	SourceSessionIDs                  []string            `json:"source_session_ids,omitempty"`
+	SourceEpisodeIDs                  []string            `json:"source_episode_ids,omitempty"`
+	SourceRunIDs                      []string            `json:"source_run_ids,omitempty"`
+	TruncatedFrom                     int                 `json:"truncated_from,omitempty"`
+	OmittedCount                      int                 `json:"omitted_count,omitempty"`
+	PromptInjectionContext            bool                `json:"prompt_injection_context,omitempty"`
+	PromptInjectionContextIDs         []string            `json:"prompt_injection_context_ids,omitempty"`
+	PromptInjectionContextReasons     []string            `json:"prompt_injection_context_reasons,omitempty"`
+	PromptInjectionContextReasonsByID map[string][]string `json:"prompt_injection_context_reasons_by_id,omitempty"`
+}
+
+// SessionDetail mirrors the HTTP GetSession response shape: a
+// db.Session plus the computed health-breakdown fields that the
+// detail endpoint enriches. Both direct and HTTP backends return
+// this type so CLI JSON output is transport-neutral.
+type SessionDetail struct {
+	db.Session
+	HealthScoreBasis []string       `json:"health_score_basis,omitempty"`
+	HealthPenalties  map[string]int `json:"health_penalties,omitempty"`
+	// DecodeConfidence is a derive-on-read Antigravity marker: it has no
+	// persisted column. The serving side (buildSessionDetail) computes it
+	// once from the session's agent and source_version via
+	// parser.DecodeConfidence, so the "agy-schema:" prefix knowledge stays
+	// Go-only. It is a real reflected field so Huma/OpenAPI and the generated
+	// TypeScript client document and type the response property; MarshalJSON
+	// passes the field through and UnmarshalJSON restores it so the HTTP
+	// backend round-trips it rather than dropping it.
+	DecodeConfidence string `json:"decode_confidence,omitempty"`
+	// PlanUsage is the session's codex-cloud plan usage, nil when the
+	// session has none. It is separate from the token and cost fields,
+	// which stay empty for a session with only plan usage.
+	PlanUsage *db.PlanUsageView `json:"plan_usage,omitempty"`
+	// CaptureCoverage is the session's live token capture coverage, nil
+	// when no live capture saw the session.
+	CaptureCoverage *db.CaptureCoverageView `json:"capture_coverage,omitempty"`
+}
+
+// MarshalJSON preserves the grouped db.Session quality_signals field
+// while also exposing the detail-only health explanation fields and the
+// derived Antigravity decode-confidence marker. DecodeConfidence is passed
+// through from the field populated at construction (see buildSessionDetail),
+// not recomputed here.
+func (d SessionDetail) MarshalJSON() ([]byte, error) {
+	type sessionAlias db.Session
+	return json.Marshal(struct {
+		sessionAlias     `json:",inline"`
+		QualitySignals   *db.QualitySignals      `json:"quality_signals,omitempty"`
+		HealthScoreBasis []string                `json:"health_score_basis,omitempty"`
+		HealthPenalties  map[string]int          `json:"health_penalties,omitempty"`
+		DecodeConfidence string                  `json:"decode_confidence,omitempty"`
+		PlanUsage        *db.PlanUsageView       `json:"plan_usage,omitempty"`
+		CaptureCoverage  *db.CaptureCoverageView `json:"capture_coverage,omitempty"`
+	}{
+		sessionAlias:     sessionAlias(d.Session),
+		QualitySignals:   d.StoredQualitySignals(),
+		HealthScoreBasis: d.HealthScoreBasis,
+		HealthPenalties:  d.HealthPenalties,
+		DecodeConfidence: d.DecodeConfidence,
+		PlanUsage:        d.PlanUsage,
+		CaptureCoverage:  d.CaptureCoverage,
+	})
+}
+
+// UnmarshalJSON preserves the grouped quality_signals object and the
+// derived decode_confidence marker when SessionDetail is decoded by the
+// HTTP-backed service.
+func (d *SessionDetail) UnmarshalJSON(data []byte) error {
+	type sessionAlias db.Session
+	var v struct {
+		sessionAlias     `json:",inline"`
+		QualitySignals   *db.QualitySignals      `json:"quality_signals"`
+		HealthScoreBasis []string                `json:"health_score_basis"`
+		HealthPenalties  map[string]int          `json:"health_penalties"`
+		DecodeConfidence string                  `json:"decode_confidence"`
+		PlanUsage        *db.PlanUsageView       `json:"plan_usage"`
+		CaptureCoverage  *db.CaptureCoverageView `json:"capture_coverage"`
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	d.Session = db.Session(v.sessionAlias)
+	d.ApplyQualitySignals(v.QualitySignals)
+	d.HealthScoreBasis = v.HealthScoreBasis
+	d.HealthPenalties = v.HealthPenalties
+	d.DecodeConfidence = v.DecodeConfidence
+	d.PlanUsage = v.PlanUsage
+	d.CaptureCoverage = v.CaptureCoverage
+	return nil
+}
+
+// SessionList mirrors GET /api/v1/sessions.
+type SessionList struct {
+	ExclusionCounts *db.SessionExclusionCounts `json:"exclusion_counts,omitempty"`
+	Sessions        []db.Session               `json:"sessions"`
+	NextCursor      string                     `json:"next_cursor,omitempty"`
+	Total           int                        `json:"total"`
+}
+
+// SessionAnnotationsAPIVersion is the first daemon API that applies label
+// and pull request filters; older daemons ignore them.
+const SessionAnnotationsAPIVersion = 11
+
+// ListFilter mirrors the HTTP query parameters in handleListSessions.
+// Field names map to HTTP query param names via json tags.
+type ListFilter struct {
+	ExclusionCounts *bool `json:"exclusion_counts,omitempty"`
+	// IDs selects explicit sessions and their host copies; nil uses discovery defaults.
+	IDs []string `json:"ids,omitzero"`
+	// Flat matches child sessions individually when IncludeChildren is set.
+	Flat bool `json:"flat,omitempty"`
+
+	Project            string `json:"project,omitempty"`
+	ExcludeProject     string `json:"exclude_project,omitempty"`
+	Machine            string `json:"machine,omitempty"`
+	GitBranch          string `json:"git_branch,omitempty"`
+	Agent              string `json:"agent,omitempty"`
+	Date               string `json:"date,omitempty"`
+	DateFrom           string `json:"date_from,omitempty"`
+	DateTo             string `json:"date_to,omitempty"`
+	Timezone           string `json:"timezone,omitempty"`
+	ActiveSince        string `json:"active_since,omitempty"`
+	MinMessages        int    `json:"min_messages,omitempty"`
+	MaxMessages        int    `json:"max_messages,omitempty"`
+	MinUserMessages    int    `json:"min_user_messages,omitempty"`
+	IncludeOneShot     bool   `json:"include_one_shot,omitempty"`
+	OneShotFilterSet   bool   `json:"-"`
+	AutomatedFilterSet bool   `json:"-"`
+	IncludeAutomated   bool   `json:"include_automated,omitempty"`
+	IncludeChildren    bool   `json:"include_children,omitempty"`
+	IncludeSource      bool   `json:"include_source,omitempty"`
+	Outcome            string `json:"outcome,omitempty"`      // comma-separated
+	HealthGrade        string `json:"health_grade,omitempty"` // comma-separated
+	Termination        string `json:"termination,omitempty"`  // comma-separated
+	MinToolFailures    *int   `json:"min_tool_failures,omitempty"`
+	HasSecret          bool   `json:"has_secret,omitempty"`
+	Starred            bool   `json:"starred,omitempty"`
+	// Labels keeps sessions carrying every listed label.
+	Labels []string `json:"label,omitempty"`
+	// PR keeps sessions linked to a pull request: owner/repo,
+	// owner/repo#123.
+	PR     string `json:"pr,omitempty"`
+	Cursor string `json:"cursor,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+	// OrderBy selects the sort column ("" = recent activity). Descending
+	// overrides the sort key's canonical direction when non-nil.
+	OrderBy    string `json:"order_by,omitempty"`
+	Descending *bool  `json:"descending,omitempty"`
+}
+
+// SessionIDsRequireCSVEncoding reports whether an ID contains a comma or line
+// break that must be preserved by the HTTP sessions-list query encoding.
+func SessionIDsRequireCSVEncoding(ids []string) bool {
+	for _, id := range ids {
+		if strings.ContainsAny(id, ",\r\n") {
+			return true
+		}
+	}
+	return false
+}
+
+// MessageFilter mirrors GET /api/v1/sessions/{id}/messages query params.
+// From is a pointer so callers can distinguish "omitted" from "0". An
+// omitted From in descending mode means "start from the newest message";
+// an explicit 0 means "start at ordinal 0".
+//
+// Around/Before/After select a symmetric window centered on an ordinal
+// instead of linear pagination; they are mutually exclusive with
+// From/Direction (see directBackend.Messages). Roles filters the result to
+// the given roles (empty = all roles) in either mode.
+type MessageFilter struct {
+	From      *int     `json:"from,omitempty"`
+	Limit     int      `json:"limit,omitempty"`
+	Direction string   `json:"direction,omitempty"` // "asc" (default) or "desc"
+	Around    *int     `json:"around,omitempty"`
+	Before    *int     `json:"before,omitempty"` // default 5 when Around set
+	After     *int     `json:"after,omitempty"`  // default 5 when Around set
+	Roles     []string `json:"roles,omitempty"`
+	// ExpectedRevision rejects a read when the session no longer has the
+	// transcript revision cited by search or an earlier read.
+	ExpectedRevision string `json:"expected_revision,omitempty"`
+	// EvidenceSource is the opaque backend binding returned by an earlier
+	// read. It prevents a continuation cursor from being replayed against a
+	// different archive/server instance.
+	EvidenceSource string `json:"evidence_source,omitempty"`
+	// CompactBoundaryOnly limits linear reads to compact-boundary rows.
+	CompactBoundaryOnly bool `json:"compact_boundary,omitempty"`
+}
+
+// MessageList mirrors {messages, count}. FirstOrdinal/LastOrdinal report the
+// returned window's bounds (nil when Messages is empty) so callers can page
+// on with from = last_ordinal + 1.
+type MessageList struct {
+	Messages           []db.Message `json:"messages"`
+	Count              int          `json:"count"`
+	FirstOrdinal       *int         `json:"first_ordinal,omitempty"`
+	LastOrdinal        *int         `json:"last_ordinal,omitempty"`
+	TranscriptRevision string       `json:"transcript_revision,omitempty"`
+	EvidenceSource     string       `json:"evidence_source,omitempty"`
+}
+
+// ErrSourceChanged marks a revision-bound evidence read whose archive,
+// session, or transcript revision no longer matches the cited source.
+var ErrSourceChanged = errors.New("source_changed")
+
+// ErrRevisionBoundReadUnavailable marks a backend that cannot provide stable
+// transcript revisions for evidence reads.
+var ErrRevisionBoundReadUnavailable = errors.New("revision-bound reads unavailable")
+
+// ToolCall mirrors a flattened tool call with its enclosing message's
+// ordinal/timestamp attached. Serialized from parser.ParsedToolCall.
+type ToolCall struct {
+	Ordinal           int    `json:"ordinal"`
+	Timestamp         string `json:"timestamp"` // RFC3339
+	ToolUseID         string `json:"tool_use_id"`
+	ToolName          string `json:"tool_name"`
+	Category          string `json:"category"`
+	InputJSON         string `json:"input_json"`
+	SkillName         string `json:"skill_name,omitempty"`
+	SubagentSessionID string `json:"subagent_session_id,omitempty"`
+	ResultLength      int    `json:"result_length"`
+}
+
+// RecentEditsFilter parameterises RecentEdits. Search matches a
+// case-insensitive file path substring; Limit counts files, not edits.
+type RecentEditsFilter struct {
+	Project string
+	Search  string
+	Limit   int
+	Offset  int
+}
+
+// recentEditsPerFile matches the inline edit cap of GET /api/v1/recent-edits.
+const recentEditsPerFile = 20
+
+// ToolCallList mirrors {tool_calls, count}.
+type ToolCallList struct {
+	ToolCalls []ToolCall `json:"tool_calls"`
+	Count     int        `json:"count"`
+}
+
+// SyncInput carries the payload for a per-session sync.
+// Exactly one of Path or ID must be set.
+type SyncInput struct {
+	Path         string `json:"path,omitempty"`
+	ID           string `json:"id,omitempty"`
+	Subagents    bool   `json:"subagents,omitempty"`
+	UsageRefresh bool   `json:"usage_refresh,omitempty"`
+}
+
+// ErrInvalidUsageRefresh reports a usage refresh without both ID and Subagents.
+var ErrInvalidUsageRefresh = errors.New("sync: usage_refresh requires id and subagents")
+
+// ValidateUsageRefresh checks that a usage refresh targets one combined session.
+func ValidateUsageRefresh(in SyncInput) error {
+	if in.UsageRefresh && (in.ID == "" || !in.Subagents) {
+		return ErrInvalidUsageRefresh
+	}
+	return nil
+}
+
+// Event is the CLI-side NDJSON wrapper for SSE events from
+// /api/v1/sessions/{id}/watch. See spec "watch" section.
+type Event struct {
+	Event string `json:"event"`
+	Data  string `json:"data"`
+}
+
+// ExportFiles is a filesystem helper, not on SessionService.
+// Used by the CLI `session export` command to stream raw JSONL.
+type ExportFiles interface {
+	FilePath(id string) string
+	Open(path string) (io.ReadCloser, error)
+}

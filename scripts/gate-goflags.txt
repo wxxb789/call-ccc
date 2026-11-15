@@ -1,0 +1,4 @@
+# Extra Go flags for build/vet/test, one flag per line.
+# The inherited AgentsView build passes -tags fts5 on every Go command: without it the
+# SQLite driver has no FTS5 module and a binary built here cannot load an archive that has one.
+-tags fts5

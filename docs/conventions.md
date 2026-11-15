@@ -22,14 +22,38 @@ wins; when they disagree about structure or method, this file wins unless the in
 
 ```
 cmd/ccc/            the standalone CLI; no continuation-core types leak into it
-internal/           continuation core: conversation document, transform, target writers
+internal/ccc/       continuation core: conversation document, readers, archive access
+internal/ccc/parity the canonical dump and the oracle a pristine checkout runs too
 docs/core-design/   the long-lived product and engineering boundaries
 docs/goals/         numbered outcome contracts (archive/ once accepted)
+docs/plans/         one plan per increment, written before its implementation
+docs/evidence/      one evidence record per increment: real commands, exit codes, counts
+docs/upstream.md    the carried AgentsView pin, its declared deviations and the update procedure
 docs/decisions/     append-only record of decisions taken and defaults chosen
-scripts/            harness entry points (gate and its hooks)
+scripts/            harness entry points (gate, knobs, carry importer, parity and comparison)
 ```
 
-Inherited AgentsView packages keep their upstream paths and stay where upstream put them.
+Inherited AgentsView packages keep their upstream paths and stay where upstream put them. The carry is
+recorded in `scripts/upstream-manifest.txt` and checked by `scripts/upstream-parity.py`, which the
+gate runs as a required step.
+
+## The inherited tree
+
+- Carried files are **upstream's**, not ours: a fix to a carried parser, sync path, schema or test
+  belongs upstream, contributed separately, not as a local edit that the parity step then has to
+  declare as a deviation.
+- Four paths are this repository's own and are therefore not carried: `.gitignore`, `AGENTS.md`,
+  `README.md`, `docs/README.md`. Upstream's `.github/**` is not carried either, because Actions reads
+  `.github/workflows/` at the repository root and would run upstream's CI here. Everything else at
+  the pin is present, byte for byte, apart from one declared line-ending normalisation and one
+  generated build input; `docs/upstream.md` lists them.
+- A new revision arrives as a pin bump: `scripts/upstream-import.py --pin <rev>` rewrites the carried
+  files and the manifest, one increment says why the revision was taken, and `parity` must pass.
+- Carried code is edited under upstream's own guides (`docs/agents/*`), which are carried with it;
+  this repository's rules (this file, `AGENTS.md`) govern everything else.
+- The generated input `internal/pricing/snapshot/litellm_snapshot.json.gz` is committed although
+  upstream does not track it (upstream's Makefile restores it before every Go build), is ignored by
+  the carried `snapshot/.gitignore`, and therefore needs `git add -f` when it is first added.
 
 ## Rules of the work
 
