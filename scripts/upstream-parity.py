@@ -10,9 +10,9 @@ working tree is hashed in both branches, with git and without it, so the one ans
 be configured to suppress -- git's own ``status`` report, silenced by an ``assume-unchanged`` or
 ``skip-worktree`` index flag -- is never the answer a carried file's content is checked through; git
 adds what a stat cannot answer, namely what a fresh clone receives. A path carried with a declared
-normalisation is a carried path for every rule but its bytes: its presence, shape and executable bit
-are checked against the file this tree ships, in both branches, so the allowance can never pass for a
-copy that was changed in a way the bytes do not show -- ``git status`` is as silent about a mode edit
+normalisation is a carried path for every rule but its bytes: its presence, shape and owner-executable
+bit are checked against the file this tree ships, in both branches, so the allowance can never pass for
+a copy that was changed in a way the bytes do not show -- ``git status`` is as silent about a mode edit
 as it is about an unflagged content edit when the checkout does not record one. The generated build
 input is checked against the SHA-256 pinned inside the carried snapshot tool, so the input is verified
 against upstream's own pin rather than a second hard-coded copy, and -- where git is available --
@@ -297,7 +297,7 @@ def git_modified(root: Path) -> set[str] | None:
 def executable_bit_supported() -> bool:
     """Whether this filesystem reports POSIX mode bits at all.
 
-    Windows answers every ``st_mode & 0o111`` with 0, so checking an executable bit there would fail
+    Windows answers every ``st_mode & 0o100`` with 0, so checking an executable bit there would fail
     every carried ``100755`` file; the check is therefore answered where the bits exist, and the run
     says so when they do not.
     """
@@ -326,9 +326,18 @@ def carried_paths(manifest: Manifest) -> list[str]:
 def worktree_mode(root: Path, record: Record) -> tuple[str, bool]:
     """Whether a carried path's *working tree* copy carries the record's executable bit.
 
-    Answers ``(problem, mode_unverified)``: ``"mode"`` when the copy's executable bit is not the one
-    the record names, ``""`` when it is, and ``True`` for ``mode_unverified`` when this platform has
-    no POSIX mode bits to answer with at all (Windows answers every ``st_mode & 0o111`` with 0).
+    Answers ``(problem, mode_unverified)``: ``"mode"`` when the copy's executable bit -- its owner's
+    execute bit, the one the record's mode is about -- is not the one the record names, ``""`` when it
+    is, and ``True`` for ``mode_unverified`` when this platform has no POSIX mode bits to answer with
+    at all (Windows answers every ``st_mode & 0o100`` with 0).
+
+    The bit compared is the **owner's** execute bit, because that is the one git's stored mode records:
+    git reads a stat as ``100755`` when ``S_IXUSR`` is set and as ``100644`` otherwise, so a copy whose
+    only execute bits are the group's or another's (``0655``) *is* the ``100644`` file git stores, and
+    a ``100755`` record's file whose owner bit was cleared is not an executable file to git whatever
+    its other bits say. Asking whether *any* execute bit is set would accept that cleared file -- the
+    modification a checkout with ``core.filemode=false`` keeps out of git's own answers, for the reason
+    below.
 
     This is the one answer a checkout can be configured not to have: with ``core.filemode=false`` --
     and always where the filesystem keeps no mode bits -- an executable bit flipped on the file this
@@ -341,7 +350,7 @@ def worktree_mode(root: Path, record: Record) -> tuple[str, bool]:
         return "", False
     if not executable_bit_supported():
         return "", True
-    if bool((root / record.path).stat().st_mode & 0o111) != (record.mode == "100755"):
+    if bool((root / record.path).stat().st_mode & 0o100) != (record.mode == "100755"):
         return "mode", False
     return "", False
 
@@ -353,7 +362,7 @@ def worktree_state(root: Path, record: Record, link_files_allowed: bool) -> tupl
     the shape and mode the record names, and otherwise the first rule it breaks -- ``"shape"`` for a
     path that is a directory, or a link where the pin carries a file (or the reverse), ``"drifted"``
     for other bytes than the pinned blob, ``"size"`` for another size, ``"mode"`` for another
-    executable bit (see :func:`worktree_mode`). ``mode_unverified`` is True only when the copy is
+    owner-executable bit (see :func:`worktree_mode`). ``mode_unverified`` is True only when the copy is
     otherwise right and this platform has no POSIX mode bits to answer with.
 
     A ``120000`` record's copy is a link, or a file holding the link's target text where this checkout
@@ -458,7 +467,8 @@ def check_files(
         raise Failure(f"{len(size_mismatch)} carried file(s) changed size", size_mismatch)
     if wrong_mode:
         raise Failure(
-            f"{len(wrong_mode)} carried file(s) changed mode (executable bit or file type)",
+            f"{len(wrong_mode)} carried file(s) changed mode (the owner-executable bit or the file "
+            f"type)",
             wrong_mode,
         )
     if dirty:
@@ -535,8 +545,8 @@ def check_deviations(
       holds upstream's pre-normalisation bytes is named, not failed: git itself reads that copy as
       clean, and what a clone receives is the stored form. That path is a carried path in every other
       respect, so the rules that need no byte comparison apply to it too -- its shape and mode from
-      git's index, its presence in the working tree, its *working-tree executable bit* (asked of the
-      file itself by :func:`worktree_mode`, since neither the bytes nor a checkout with
+      git's index, its presence in the working tree, its *working-tree owner-executable bit* (asked of
+      the file itself by :func:`worktree_mode`, since neither the bytes nor a checkout with
       ``core.filemode=false`` answers it), and a working tree git reports as modified.
       :func:`check_not_ignored` asks the ignore rules about the same list of paths. The declaration is
       an allowance for its bytes, never for its absence or its mode.
@@ -600,8 +610,9 @@ def check_deviations(
                     f"stores ({record.stored_digest}) nor upstream's own ({record.digest})")
                 continue
             # The bytes are this path's own, but the copy this tree ships is a carried path in every
-            # other respect, so its executable bit is asked of the file itself -- the one answer a
-            # checkout with core.filemode=false, and a git index that never saw the edit, cannot give.
+            # other respect, so its owner-executable bit is asked of the file itself -- the one answer
+            # a checkout with core.filemode=false, and a git index that never saw the edit, cannot
+            # give.
             problem, mode_unverified_here = worktree_mode(root, record)
             if problem == "mode":
                 wrong_mode.append(record.path)
@@ -631,7 +642,7 @@ def check_deviations(
         notes.append(record.path)
     if wrong_mode:
         raise Failure(
-            f"{len(wrong_mode)} carried path(s) changed mode (the executable bit)", wrong_mode
+            f"{len(wrong_mode)} carried path(s) changed mode (the owner-executable bit)", wrong_mode
         )
     if dirty:
         raise Failure(
@@ -812,8 +823,8 @@ def run(root: Path) -> list[str]:
         if link_files_seen else []
     ) + (
         [
-            f"executable bits not verified for {mode_unverified + stored_mode_unverified} file(s): "
-            f"this platform has no POSIX mode bits"
+            f"owner-executable bits not verified for {mode_unverified + stored_mode_unverified} "
+            f"file(s): this platform has no POSIX mode bits"
         ]
         if mode_unverified + stored_mode_unverified else []
     ) + (

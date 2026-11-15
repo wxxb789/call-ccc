@@ -68,7 +68,11 @@ It verifies, in this order:
    with `.gitattributes` filters applied) — or, in a tree without git, what its bytes hash to;
 3. every carried path's **working tree copy** holds the pinned bytes, shape and executable bit — hashed
    and compared to the manifest record in both branches, with git and without it, before git is asked
-   anything. A carried symlink (a `120000` record) is a link, or the regular file holding the link's
+   anything. The bit compared is the **owner's** execute bit, because that is the bit git's own mode
+   records (`100755` when `S_IXUSR` is set, `100644` otherwise): a copy carrying only the group's and
+   another's execute bits (`0655`) *is* the `100644` file git stores, while a `100755` record's file
+   whose owner bit was cleared is not executable to git whatever its other bits say. A carried symlink
+   (a `120000` record) is a link, or the regular file holding the link's
    target text that a checkout which does not create symlinks has there — the two are the same git
    object, so the shape is the only thing that tells them apart — and the file form is accepted only
    where the checkout really stores links that way, which git's own `core.symlinks=false` (or a
@@ -92,8 +96,8 @@ It verifies, in this order:
    still holds upstream's pre-normalisation bytes is *reported*, not failed: git reads that copy as
    clean and a checkout writes the declared bytes. Such a path is a carried path for the rules above
    as well — present in the working tree, unmodified relative to git's index, not matched by the
-   ignore rules, and its *working-tree executable bit* compared with the file this repository ships
-   (`worktree_mode`, the same check a carried file's mode gets, in both branches) — because the
+   ignore rules, and its *working-tree owner-executable bit* compared with the file this repository
+   ships (`worktree_mode`, the same check a carried file's mode gets, in both branches) — because the
    declaration is an allowance for its *bytes*, never for its absence or its mode. The file's own bits
    are what answers it: a checkout with `core.filemode=false` records no mode change for `git status`
    or the index to report, so an executable bit flipped on that one path would leave every git-backed
@@ -112,9 +116,12 @@ answered. A tree git cannot enumerate at all is the separate INCOMPLETE verdict 
 is that one is a tree nobody could list and the other a repository that answered some queries and not
 others.
 
-Hashing every carried file's working-tree bytes costs about 0.8 s and reads ~63 MB on the import host
-(5 553 files), measured by running the check over this tree; the byte comparison is what makes the
-`assume-unchanged` and `skip-worktree` flags irrelevant to it, so no index flag inspection is needed.
+Hashing every carried file's working-tree bytes reads ~63 MB on the import host (5 553 carried files)
+and costs well under a second there: round 3 measured about 0.8 s, round 8 re-measured the whole check
+(hashes and git queries together, `time python3 scripts/upstream-parity.py`) at 0.40 s — the mode rule's
+predicate changed no measured work, so the difference is page-cache state. The byte comparison is what
+makes the `assume-unchanged` and `skip-worktree` flags irrelevant to it, so no index flag inspection is
+needed.
 
 A tree git cannot enumerate — no `git` on `PATH`, or a `--root` that is a copy rather than a
 repository — is reported as **INCOMPLETE**, not as a pass: the unexplained-file rule, the ignore rule
@@ -194,7 +201,7 @@ platform probe to its Windows answer (see the `selftest` section): no verdict in
 which platform is running it.
 
 Windows has no POSIX mode bits, so `parity` declines to check a carried file's — or a stored-byte
-deviation's — working-tree executable bit there and says so in its output instead of failing every
+deviation's — working-tree owner-executable bit there and says so in its output instead of failing every
 executable file; the *stored* mode still comes from git's own index, which records it on every
 platform.
 

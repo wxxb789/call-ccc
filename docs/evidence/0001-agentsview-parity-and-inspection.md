@@ -245,6 +245,38 @@ its named test when reverted; the stage report carries each observed failure):
   taken with that artifact present (the 33.9 s one; the quoted run has no artifact, since only the built
   tree was removed).
 
+The round-8 fix pass closed two review findings, one on the comparison's claim and one on the parity
+check's mode rule, with the same evidence shape (every rule the touched code claims mutated, the test
+that names it run, the line restored — ten mutations, each quoted in §6):
+
+- a tool result's **recorded outcome** is compared, not only its key and body. The inherited parser maps
+  a provider's own `is_error` marker to the result's status (`errored`, `internal/parser/content.go`),
+  ingestion keeps it on the archived event (`internal/ingest/tool_results.go`), and both new adapters
+  carry it (`internal/ccc/reader.go`, `messageFromArchive`) — but the comparison read the key and the
+  body and never the status, so an archive recording a failed call beside a source read recording the
+  same call as a success was reported as *holding every source message*, and the CLI printed "every
+  archived message matches the source read". The comparison now compares the outcomes both reads record
+  for a key, in both directions and as sets (one key can be held by several rows, and an empty status is
+  a value: it is what a read records for a result its provider did not mark as an error), wherever the
+  archive shows a status-bearing row for that key — a call row's own content is not one, which is the
+  same allowance the body comparison makes, and what keeps a provider whose results the archive stored
+  on the call from being reported as differing everywhere. The warning names both reads' statuses
+  (`TestInspectReportsADifferentFoldedResultOutcome` writes two Claude transcripts that differ in the
+  `is_error` field alone and holds them against one archive, whose first half is the control that the
+  transcript the archive was written from still agrees; `TestCompareMessagesNamesEveryDifference` pins
+  the verdicts directly: an outcome only the archive records, one only the source records, a matching
+  outcome, an extra archived outcome under one key, a key the archive holds only on its call row, and
+  the folded shape; the strictness the finding left open is the default recorded as Q-0001-19);
+- the parity check's **mode rule** compares the owner's execute bit. Git's stored mode is derived from
+  `S_IXUSR`, so a carried `100755` file chmod'ed to `0655` — group and other execute bits left set — is
+  a `100644` file to git, and the check's `st_mode & 0o111` predicate accepted it while the record's
+  bytes, the pinned index blob and a `git status` under `core.filemode=false` all agreed with the
+  modified tree. The comparison now asks for `0o100`, which is the bit git's own mode records, and the
+  messages, the disclosure line and `docs/harness.md`/`docs/upstream.md` say *owner-executable* where
+  they said executable (`test_the_owner_executable_bit_is_the_one_compared_with_the_record` clears only
+  that bit and requires the failure; the pre-existing cases for a `0644` file, the git-backed branch and
+  the stored-byte deviation still pin the rule from the other side).
+
 ## 2. A real source-to-archive parse and a subsequent archive read agree with the pinned implementation
 
 The oracle (`internal/ccc/parity`) parses a fixture, writes it through the inherited sync engine into
@@ -345,12 +377,14 @@ The round-3 review (finding 1) measured that the git-backed branch trusted `git 
 tree, and `git status` is exactly the answer a path can be configured to suppress: with a carried file
 marked `assume-unchanged` (or `skip-worktree`), an edit stays out of git's report while the pinned blob
 stays in the index, so every predicate the check made could agree with modified carried source. The
-working-tree comparison above is that fix, and it costs about 0.8 s and ~63 MB of file reads over this
-tree's 5 553 carried files (measured by hashing every path in
-[`scripts/upstream-manifest.txt`](../../scripts/upstream-manifest.txt)); three cases in
+working-tree comparison above is that fix, and the check costs about 0.4 s and reads ~63 MB of file data
+on this host — 5 553 carried files, 63 268 220 bytes (round 3 measured the hash pass at about 0.8 s,
+round 8 re-measured the whole check after the mode rule's predicate changed at 0.407 s and 0.403 s wall
+clock, `time python3 scripts/upstream-parity.py`, the difference being page-cache state: the rule does
+one `stat` per carried file either way); three cases in
 `scripts/tests/test_upstream_parity.py` script git's own answers with an empty `git status`, a pinned
-index blob and a modified working tree (bytes, shape and executable bit), and each fails when the
-working-tree comparison is removed from the shipped check. The same round pinned the rules that branch
+index blob and a modified working tree (bytes, shape and the owner-executable bit), and each fails when
+the working-tree comparison is removed from the shipped check. The same round pinned the rules that branch
 already claimed and nothing exercised: a carried path present on disk but absent from git's index
 (absent from a clone), a record whose pinned size is not its bytes' size, and a symlink record whose
 path became a directory.
@@ -427,6 +461,18 @@ files, with the disclosure line the run prints, the platform probe's own answer 
 `platform_name` seam, so no case depends on the host it runs on), and the `core.symlinks` query that
 cannot answer failing the run. Each fails when the rule it names is mutated away (below).
 
+The round-8 fix pass closed the mode rule's own edge. `worktree_mode` asked whether *any* execute bit
+was set (`st_mode & 0o111`), while git's stored mode is derived from the owner's execute bit
+(`S_IXUSR`): a carried `100755` file chmod'ed to `0655` — group and other execute bits left set — is a
+`100644` file to git, and the predicate still answered "executable", so the record's bytes, the pinned
+index blob and a `git status` under `core.filemode=false` all agreed with a modified carried file. The
+comparison now asks for `0o100`; the failure and disclosure lines say *owner-executable*, and so do
+`docs/harness.md` and `docs/upstream.md`. The new case clears only that bit
+(`test_the_owner_executable_bit_is_the_one_compared_with_the_record`, `0655` on the carried `100755`
+file) and requires the failure; the cases that remove every execute bit, reach the rule through the
+git-backed branch, and check a stored-byte deviation's mode still pin it from the other side, and each
+fails when the rule it names is mutated away (below).
+
 ## 4. The continuation functionality is callable without CLI types, and the CLI is standalone
 
 Engine packages: `internal/ccc` (Conversation document, `SourceReader`, `Archive`/`Ingestor`,
@@ -451,21 +497,21 @@ index is required: the archive is the inherited `sessions.db`, opened read-only.
 ## 6. The gate
 
 ```
-$ python3 scripts/gate.py        # rc=0, 25.2 s wall clock, taken on the final tree
+$ python3 scripts/gate.py        # rc=0, 24.4 s wall clock, taken on the final tree
 gate: <repo>
 gate: go=<go>/bin/go targets=./cmd/ccc/... ./internal/ccc/...
   PASS     gofmt    3574 file(s) gofmt-clean
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 134 tests in 6.057s (rc=0)
+  PASS     selftest Ran 135 tests in 5.058s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 25 project-owned prefix(es); files seen by git: 5613 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
   PASS     secrets  no leaks found in 60 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
 
 The gate truncates the middle of a long step detail, which is why the `parity` line above opens with `…`;
-the same run's full summary is quoted in §3. The `selftest` count in that run is 127, counting both
+the same run's full summary is quoted in §3. The `selftest` count in that run is 135, counting both
 harness modules. The round-2 fix pass brought the suite to 104 (74 parity cases plus the gate module's 30): the four carried-path cases for a
 declared line-ending normalisation, and the case that pins the incomplete verdict for a tree git cannot
 enumerate. Round 3 added six `scripts/tests/test_upstream_parity.py` cases — three for a working tree
@@ -493,20 +539,26 @@ the trashed-row refusal, the retained-row tier with its current-member preferenc
 reconciled source path, and the provider failure with no archive to fall back to), `cmd/ccc` went
 9 → 10 (the no-result exit keeping the inspection's diagnostics, in both spellings of the command
 line), and the harness's own count went 127 → 134 (`scripts/tests/test_upstream_parity.py` 94 → 101,
-`test_gate.py` unchanged at 33).
+`test_gate.py` unchanged at 33). The round-8 fix pass moved the comparison's and the parity check's own
+cases: `internal/ccc` went 50 → 51 test functions (`archive_test.go` 32 → 33: the folded tool result's
+recorded outcome end to end; the six new verdicts live as subtests of the comparison case that already
+pins that surface), `cmd/ccc` unchanged at 10, and the harness's own count went 134 → 135
+(`scripts/tests/test_upstream_parity.py` 101 → 102: the owner-executable bit that git's mode records).
 
 Wall clock for the whole gate on this host: 19–21 s with warm caches across the increment's earlier
 runs, 25 s to 156 s across the round-2 fix pass's runs (the 156 s run followed a cold Go build cache, so
 `build`/`vet`/`test` recompiled the inherited packages), 21–23 s across the round-3 runs, 22 s, 26 s and
 53 s across the three round-4 runs, and 21.8–25.0 s across the round-5 runs. The six round-6 runs
-measured 26.5 s, 25.2 s, 45.8 s, 28.3 s, 33.9 s and 31.1 s, and the round-7 runs 26.1 s, 28.8 s, 25.2 s
-and 55 s. The block above quotes the 25.2 s run, taken after every code and test edit the round made;
-the 28.8 s run beside it measured the same tree, the 26.1 s one preceded the test-helper refactor, and
-the 55 s one was taken last, on the finished tree — the only write after it is the sentence that quotes
-its own number, and its `selftest` step took 12.0 s against 5.5–6.1 s in the three runs before it, so
-that wall clock is host load and not a slower gate. With `selftest` steps
-between 4.76 s and 6.18 s across them, the wall-clock spread is host load rather than a slower gate (the
-28.3 s run's step was the slowest at 6.18 s, the 45.8 s run's among the fastest at 4.96 s).
+measured 26.5 s, 25.2 s, 45.8 s, 28.3 s, 33.9 s and 31.1 s, the round-7 runs 26.1 s, 28.8 s, 25.2 s and
+55 s, and the round-8 runs 33.3 s, 22.7 s, 23.4 s and 24.4 s (the quoted one is the last, whose
+`selftest` step took 5.058 s, inside the 4.76–6.18 s band this paragraph closes on). The block above
+quotes the round-8 run taken after every code, test and document edit this round made, and the only
+write after it is the sentence that quotes its own number. The round-7 runs' 55 s one was taken last on that round's finished tree — the only write
+after it is the sentence that quotes its own number, and its `selftest` step took 12.0 s against
+5.5–6.1 s in the three runs before it, so that wall clock is host load and not a slower gate. With
+`selftest` steps between 4.76 s and 6.18 s across them, the wall-clock spread is host load rather than a
+slower gate (the 28.3 s run's step was the slowest at 6.18 s, the 45.8 s run's among the fastest at
+4.96 s).
 The 53 s round-4 run
 ran while the host was busy, which is visible in its `selftest` step (23.6 s against 5.1 s and 5.2 s);
 the suite on its own measures 5.4–6.4 s over these runs, so the difference is load and not a test that
@@ -570,6 +622,39 @@ probe's *own* answer could not be asserted without depending on the host running
 reads a named seam (`platform_name`) whose both answers a case patches. Every recorded failure came
 from a compiling tree; the one mutation that did not (dropping `sort.Strings` and leaving the unused
 import) was re-run with the import removed too, which is the failure quoted above.
+
+The round-8 pass closed two findings with the same rule, one surface at a time: **every rule the
+touched code or test claims was mutated, and every mutation failed the test that names it** (10
+mutations). The observed failures, in the order they were run:
+
+- the parity check's mode rule (`scripts/upstream-parity.py`, 4 mutations). Comparing *any* execute bit
+  again (`& 0o100` → `& 0o111`) made
+  `test_the_owner_executable_bit_is_the_one_compared_with_the_record` fail with `AssertionError: 0 != 1`
+  — the `0655` file passed the run, which is the finding's own hole. Disabling the comparison
+  (`if False:`) failed five cases: `test_the_executable_bit_is_checked_where_the_platform_has_it` and
+  the owner-bit case above, both `GitBranchCase` mode cases
+  (`test_a_worktree_executable_bit_git_status_cannot_report_is_still_caught` and
+  `test_a_carried_normalisation_whose_worktree_mode_changed_is_still_caught`), and
+  `test_a_stored_deviation_whose_executable_bit_changed_fails`; disabling
+  only the stored-deviation path's call (`problem, mode_unverified_here = "", False`) failed
+  `test_a_stored_deviation_whose_executable_bit_changed_fails` alone; and dropping the no-mode-bits
+  disclosure (`if False else []`) failed `test_a_platform_without_mode_bits_discloses_them` and
+  `test_a_platform_without_mode_bits_discloses_a_stored_deviations_mode_too`.
+- the comparison's outcome rule (`internal/ccc/inspect.go`, 6 mutations). Dropping the held-row
+  comparison failed the two attached-outcome verdicts and the extra-archived-outcome verdict; dropping
+  the folded-row comparison failed `a_folded_result_whose_outcome_the_two_reads_disagree_about` and the
+  end-to-end `TestInspectReportsADifferentFoldedResultOutcome` (its second half, the transcript the
+  archive was written from, still agreed); dropping the "the archive shows no status row for this key"
+  skip failed the call-row-hold verdict and the body-scope verdict that shares it; dropping the
+  archive-side half of the set comparison failed `an_extra_archived_outcome_under_one_key`; and making
+  an empty status a skipped value rather than a value — once on the archive side, once on the source
+  side — failed, respectively, `an_attached_result_whose_outcome_only_the_source_records` (plus the
+  extra-outcome verdict) and `an_attached_result_whose_outcome_only_the_archive_records` (plus the
+  folded verdict and the end-to-end case).
+
+Two mutations needed a second line removed to compile — the folded-row mutation left `foldedStatuses`
+unused, and the skip-rule mutation left `ok` unused — and both were re-run from the compiling state;
+every failure above came from a tree that built.
 
 ## 7. Measurements that shaped the harness
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,12 +59,12 @@ type ArchiveReport struct {
 	ContentShown string `json:"content_shown,omitempty"`
 	// SameMessagesAsSource reports that every message the archive holds also appears in the source
 	// read at the same ordinal with the same role and content, and that each tool result the source
-	// records on such a message is held by the archive too, with the same body wherever both reads
-	// show one. The archive stores a projection, so it may hold *fewer* rows than the source -- a
-	// tool-result-only row is folded into its tool call and counted in FoldedToolResults -- but it
-	// must not hold a different one, and it must not be missing an outcome the source recorded on a
-	// row both of them have. It is nil when no source read happened, so a false value is always the
-	// result of a comparison that ran.
+	// records on such a message is held by the archive too, with the same body and the same recorded
+	// outcome wherever both reads show one. The archive stores a projection, so it may hold *fewer*
+	// rows than the source -- a tool-result-only row is folded into its tool call and counted in
+	// FoldedToolResults -- but it must not hold a different one, and it must not be missing an outcome
+	// the source recorded on a row both of them have. It is nil when no source read happened, so a
+	// false value is always the result of a comparison that ran.
 	SameMessagesAsSource *bool `json:"same_messages_as_source"`
 	// Warnings names every difference this comparison found.
 	Warnings []string `json:"warnings,omitempty"`
@@ -207,8 +208,9 @@ func archiveReport(
 // when the archive really holds that result: a stale archive that stopped before the result arrived
 // keeps its call and no outcome, and counting the source's row as folded would report evidence the
 // archive does not have. A folded result is held by key -- the call and the content length -- and its
-// body is compared too, wherever the archive keeps it: two same-length outcomes are one key, so a pair
-// of different outcomes would otherwise pass as agreement.
+// body and recorded outcome are compared too, wherever the archive keeps them: two same-length outcomes
+// are one key, so a pair of different outcomes, or a pair that disagree about whether the call failed,
+// would otherwise pass as agreement.
 //
 // A message both reads have is compared in full: its role, its content, and the tool results it
 // carries. The last of those is the only difference an archive written before a call's outcome arrived
@@ -218,7 +220,9 @@ func archiveReport(
 // source records on a row the archive also has must be held by that row, wherever the archive keeps it
 // (a result row of its own, an event, or the call's own content). Where both reads expose a result's
 // body, the bodies are compared too; a body only one of them shows (a blocked category, a writer that
-// stored the length and no text) is not a difference this comparison can see.
+// stored the length and no text) is not a difference this comparison can see. The outcomes the two reads
+// record for a result are compared wherever the archive shows a row that carries one, in both
+// directions: a read that records an error the other does not is a difference either way round.
 func compareMessages(source, archived []Message) (bool, int, []string) {
 	byOrdinal := make(map[int]Message, len(source))
 	for _, message := range source {
@@ -227,6 +231,7 @@ func compareMessages(source, archived []Message) (bool, int, []string) {
 	archivedOrdinals := make(map[int]struct{}, len(archived))
 	results := archivedResultKeys(archived)
 	foldedBodies := archivedResultBodies(archived)
+	foldedStatuses := archivedResultStatuses(archived)
 	same, folded := true, 0
 	var warnings []string
 	for _, message := range archived {
@@ -257,6 +262,13 @@ func compareMessages(source, archived []Message) (bool, int, []string) {
 				"archive message #%d holds a different body for tool result %s",
 				message.Ordinal, strings.Join(names, ", ")))
 		}
+		if names := differingResultOutcomeNames(
+			origin.ToolResults, messageResultStatuses(message)); len(names) > 0 {
+			same = false
+			warnings = append(warnings, fmt.Sprintf(
+				"archive message #%d records a different outcome for tool result %s",
+				message.Ordinal, strings.Join(names, "; ")))
+		}
 	}
 	for _, message := range source {
 		if _, ok := archivedOrdinals[message.Ordinal]; ok {
@@ -266,14 +278,21 @@ func compareMessages(source, archived []Message) (bool, int, []string) {
 			missing := unheldResults(message.ToolResults, results)
 			if len(missing) == 0 {
 				folded++
-				// The row is held, but holding it is not agreement: the archive's body for the same
-				// call and length can still be a different outcome, and a folded row is exactly where
-				// the two reads stop sharing an ordinal, so nothing else compares them.
+				// The row is held, but holding it is not agreement: the archive's body and outcome for
+				// the same call and length can still be different ones, and a folded row is exactly
+				// where the two reads stop sharing an ordinal, so nothing else compares them.
 				if names := differingResultBodyNames(message.ToolResults, foldedBodies); len(names) > 0 {
 					same = false
 					warnings = append(warnings, fmt.Sprintf(
 						"the archive holds a different body for tool result %s of source message #%d",
 						strings.Join(names, ", "), message.Ordinal))
+				}
+				if names := differingResultOutcomeNames(
+					message.ToolResults, foldedStatuses); len(names) > 0 {
+					same = false
+					warnings = append(warnings, fmt.Sprintf(
+						"the archive records a different outcome for tool result %s of source message #%d",
+						strings.Join(names, "; "), message.Ordinal))
 				}
 				continue
 			}
@@ -294,7 +313,8 @@ func compareMessages(source, archived []Message) (bool, int, []string) {
 // the content that came back. The body is deliberately not part of it -- an archive read may show a
 // result whose body its writer did not store (a blocked category keeps the length and a digest) while
 // the source read has the body -- and the size is what tells two rows of one id apart. Bodies are
-// compared separately, keyed by this pair (differingResultBodyNames), wherever both reads show one.
+// compared separately, keyed by this pair (differingResultBodyNames), wherever both reads show one, and
+// so are the outcomes the two reads record (differingResultOutcomeNames).
 type resultKey struct {
 	toolUseID string
 	size      int
@@ -418,6 +438,119 @@ func resultBodyMatches(archived []string, raw string) bool {
 		}
 	}
 	return false
+}
+
+// messageResultStatuses collects the outcomes the archived *message itself* records, keyed by
+// resultKey. It is the same scope messageResultBodies reads -- the message's own result rows, which is
+// where an archive read materializes a call's folded result events -- so a call's own summary is out of
+// it as well.
+func messageResultStatuses(message Message) map[resultKey][]string {
+	statuses := make(map[resultKey][]string)
+	collectResultStatuses(statuses, message.ToolResults)
+	return statuses
+}
+
+// archivedResultStatuses collects the outcomes the archived messages record, keyed by resultKey,
+// wherever the archive keeps a result row: a result row of its own, or the event it folded onto the
+// call. A key is present only when the archive really shows such a row: a call row's own result content
+// is not one -- the archive stores no status on the call -- so a key the archive holds only there has
+// no outcome to compare, and leaves the comparison to the bodies.
+func archivedResultStatuses(messages []Message) map[resultKey][]string {
+	statuses := make(map[resultKey][]string)
+	for _, message := range messages {
+		collectResultStatuses(statuses, message.ToolResults)
+	}
+	return statuses
+}
+
+// collectResultStatuses adds each result row's recorded status to the map. An empty status is added
+// too: it is what a read records for a result its provider did not mark as an error, so it is a value
+// the two reads must agree about rather than an absence to look past.
+func collectResultStatuses(into map[resultKey][]string, results []ToolResult) {
+	for _, result := range results {
+		key := resultKey{toolUseID: result.ToolUseID, size: result.ContentSize}
+		into[key] = append(into[key], result.Status)
+	}
+}
+
+// differingResultOutcomeNames names the source's tool results whose recorded *outcome* the archive's
+// rows disagree about, each with what the two reads record, so a warning can say what differed.
+//
+// The comparison is of sets, because one key can be held by several rows (an event delivered twice, a
+// result row beside the event it was restored from, one row per agent), and it is symmetric, because
+// either read can be the one that records a failure: an archived result recorded as errored against a
+// source result that now reads as a success is the same difference as the reverse, and the claim that
+// every archived message matches the source read must carry neither. A result whose key the archive
+// holds only without a status-bearing row (a call row's own content) is skipped -- the archive shows no
+// outcome for it, which is the allowance the body comparison makes as well -- while a key the archive
+// does show an outcome for must agree about it.
+func differingResultOutcomeNames(source []ToolResult, shown map[resultKey][]string) []string {
+	var names []string
+	sourceStatuses := make(map[resultKey][]string, len(source))
+	named := make(map[resultKey]string, len(source))
+	keys := make([]resultKey, 0, len(source))
+	for _, result := range source {
+		key := resultKey{toolUseID: result.ToolUseID, size: result.ContentSize}
+		if _, seen := named[key]; !seen {
+			named[key] = resultName(result)
+			keys = append(keys, key)
+		}
+		sourceStatuses[key] = append(sourceStatuses[key], result.Status)
+	}
+	for _, key := range keys {
+		archived, ok := shown[key]
+		if !ok || statusSetsAgree(archived, sourceStatuses[key]) {
+			continue
+		}
+		names = append(names, fmt.Sprintf("%s (the archive records %s, the source records %s)",
+			named[key], outcomeSummary(archived), outcomeSummary(sourceStatuses[key])))
+	}
+	return names
+}
+
+// statusSetsAgree reports whether the statuses one read records for a result are exactly the ones the
+// other read records: every status the archive shows is one the source records, and every status the
+// source records is one the archive shows.
+func statusSetsAgree(archived, source []string) bool {
+	recorded := make(map[string]struct{}, len(source))
+	for _, status := range source {
+		recorded[status] = struct{}{}
+	}
+	shown := make(map[string]struct{}, len(archived))
+	for _, status := range archived {
+		shown[status] = struct{}{}
+		if _, ok := recorded[status]; !ok {
+			return false
+		}
+	}
+	for status := range recorded {
+		if _, ok := shown[status]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// outcomeSummary names the outcomes a read records for one result, for a warning: the distinct statuses
+// in a stable order, with the empty one spelled out as "no status". A read records that value for a
+// result its provider did not mark as an error, and a warning that printed nothing for it would read as
+// if the read had answered nothing at all.
+func outcomeSummary(statuses []string) string {
+	seen := make(map[string]struct{}, len(statuses))
+	distinct := make([]string, 0, len(statuses))
+	for _, status := range statuses {
+		if _, ok := seen[status]; ok {
+			continue
+		}
+		seen[status] = struct{}{}
+		if status == "" {
+			distinct = append(distinct, "no status")
+			continue
+		}
+		distinct = append(distinct, strconv.Quote(status))
+	}
+	sort.Strings(distinct)
+	return strings.Join(distinct, ", ")
 }
 
 // contentWarnings names what an archive read could not show, because a caller that treats a narrowed

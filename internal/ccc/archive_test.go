@@ -1552,14 +1552,147 @@ func TestCompareMessagesNamesEveryDifference(t *testing.T) {
 				same, folded, warnings)
 		}
 	})
+
+	t.Run("an attached result whose outcome only the archive records", func(t *testing.T) {
+		// Claude's shape: the provider's own is_error marker becomes the result's status ("errored"),
+		// the writer keeps it, and the source read of the same body records no error. Both reads record
+		// a status for the row -- "" is what a read records for a result its provider did not mark as an
+		// error -- so the pair is not agreement, whichever of the two recorded the failure.
+		source := append([]Message{}, base...)
+		source[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "function_call_output", ContentRaw: "30\n", ContentSize: 3}}
+		archived := append([]Message{}, base...)
+		archived[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "function_call_output", Status: "errored",
+				ContentRaw: "30\n", ContentSize: 3}}
+		same, folded, warnings := compareMessages(source, archived)
+		if same || folded != 0 {
+			t.Errorf("same=%v folded=%d, want the archived error to be a difference", same, folded)
+		}
+		if len(warnings) != 1 || !strings.Contains(warnings[0], "records a different outcome") ||
+			!strings.Contains(warnings[0], toolUseID) || !strings.Contains(warnings[0], "errored") ||
+			!strings.Contains(warnings[0], "no status") {
+			t.Errorf("warnings = %v, want the differing outcome named with both reads' statuses",
+				warnings)
+		}
+	})
+
+	t.Run("an attached result whose outcome only the source records", func(t *testing.T) {
+		// The same difference the other way round: the archive was written from a transcript of this
+		// session that recorded an error the transcript read now does not. A comparison that only asked
+		// whether some archived status matched would agree here.
+		source := append([]Message{}, base...)
+		source[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "function_call_output", Status: "errored",
+				ContentRaw: "30\n", ContentSize: 3}}
+		archived := append([]Message{}, base...)
+		archived[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "function_call_output", ContentRaw: "30\n", ContentSize: 3}}
+		same, folded, warnings := compareMessages(source, archived)
+		if same || folded != 0 {
+			t.Errorf("same=%v folded=%d, want the unrecorded error to be a difference", same, folded)
+		}
+		if len(warnings) != 1 || !strings.Contains(warnings[0], "records a different outcome") ||
+			!strings.Contains(warnings[0], "errored") || !strings.Contains(warnings[0], "no status") {
+			t.Errorf("warnings = %v, want the differing outcome named with both reads' statuses",
+				warnings)
+		}
+	})
+
+	t.Run("an attached result both reads record as errored", func(t *testing.T) {
+		// The control: a status the two reads agree about is agreement, so the rule above cannot pass by
+		// reporting every result a provider marked as failed.
+		source := append([]Message{}, base...)
+		source[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "function_call_output", Status: "errored",
+				ContentRaw: "30\n", ContentSize: 3}}
+		archived := append([]Message{}, base...)
+		archived[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "function_call_output", Status: "errored",
+				ContentRaw: "30\n", ContentSize: 3}}
+		same, folded, warnings := compareMessages(source, archived)
+		if !same || folded != 0 || len(warnings) != 0 {
+			t.Errorf("same=%v folded=%d warnings=%v, want the matching outcome accepted",
+				same, folded, warnings)
+		}
+	})
+
+	t.Run("an extra archived outcome under one key", func(t *testing.T) {
+		// One key can be held by more than one archived row (an event delivered twice, a result row
+		// beside the event it was restored from). Agreement is about the *set* of outcomes the two reads
+		// record, so an archived row recording a failure the source does not is a difference even though
+		// the source's own status appears among the archive's rows.
+		source := append([]Message{}, base...)
+		source[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "function_call_output", Status: "errored",
+				ContentRaw: "30\n", ContentSize: 3}}
+		archived := append([]Message{}, base...)
+		archived[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "tool_result", Status: "errored",
+				ContentRaw: "30\n", ContentSize: 3},
+			{ToolUseID: toolUseID, Source: "tool_result", ContentRaw: "31\n", ContentSize: 3}}
+		same, folded, warnings := compareMessages(source, archived)
+		if same || folded != 0 {
+			t.Errorf("same=%v folded=%d, want the extra archived outcome to be a difference",
+				same, folded)
+		}
+		if len(warnings) != 1 || !strings.Contains(warnings[0], "records a different outcome") {
+			t.Errorf("warnings = %v, want the extra outcome named", warnings)
+		}
+	})
+
+	t.Run("a result the archive holds only on its call row has no outcome to compare", func(t *testing.T) {
+		// The archive stores a result on the call and nowhere else: the call carries no status (the
+		// column does not exist), so the archive's read shows no outcome for the key and the comparison
+		// reports nothing -- the same allowance the body comparison makes, and what keeps a provider
+		// whose results the archive kept on the call from being reported as differing everywhere.
+		source := append([]Message{}, base...)
+		source[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "function_call_output", Status: "errored",
+				ContentRaw: "30\n", ContentSize: 3}}
+		archived := append([]Message{}, base...)
+		archived[1].ToolCalls = []ToolCall{{ToolUseID: toolUseID, Name: "shell",
+			ResultContent: "30\n", ResultContentSize: 3}}
+		same, folded, warnings := compareMessages(source, archived)
+		if !same || folded != 0 || len(warnings) != 0 {
+			t.Errorf("same=%v folded=%d warnings=%v, want no outcome comparison for a call-row hold",
+				same, folded, warnings)
+		}
+	})
+
+	t.Run("a folded result whose outcome the two reads disagree about", func(t *testing.T) {
+		// Claude's folded shape, with the body identical: the archive recorded the call as errored and
+		// the transcript now records the same output as a success, so the key and the body both agree and
+		// the recorded outcome is the whole difference.
+		source := append(append([]Message{}, base...), Message{Ordinal: 2, Role: "user",
+			ToolResults: []ToolResult{{ToolUseID: toolUseID, Source: "tool_result",
+				ContentRaw: `"PASS"`, ContentSize: 4}}})
+		archived := append([]Message{}, base...)
+		archived[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "tool_result", Status: "errored",
+				ContentRaw: "PASS", ContentSize: 4}}
+		same, folded, warnings := compareMessages(source, archived)
+		if same || folded != 1 {
+			t.Errorf("same=%v folded=%d, want the row counted as folded and its outcome compared",
+				same, folded)
+		}
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0], "records a different outcome for tool result") ||
+			!strings.Contains(warnings[0], toolUseID) ||
+			!strings.Contains(warnings[0], "of source message #2") {
+			t.Errorf("warnings = %v, want the folded result's outcome named", warnings)
+		}
+	})
 }
 
 // claudeBashTranscript writes one small Claude session -- a user turn and a `Bash` call whose result the
 // transcript records verbatim -- under a throw-away provider root, and returns that root's configuration
 // with the file's path. Bash is not one of the inherited default configuration's blocked result
 // categories, so an archive of the file keeps the body: two same-length outputs are what a case needs to
-// hold an archive's recorded outcome against a later transcript of the same session.
-func claudeBashTranscript(t *testing.T, output string) (config.Config, string) {
+// hold an archive's recorded outcome against a later transcript of the same session. The `is_error` flag
+// is the provider's own marker for a failed call, which the parser maps to the result's `errored` status
+// (internal/parser/content.go), so a case can hold two transcripts apart by that field alone.
+func claudeBashTranscript(t *testing.T, output string, isError bool) (config.Config, string) {
 	t.Helper()
 	const toolUseID = "toolu_01Folded0000000000000001"
 	root := t.TempDir()
@@ -1568,6 +1701,12 @@ func claudeBashTranscript(t *testing.T, output string) (config.Config, string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("preparing the provider root: %v", err)
 	}
+	result := `{"content":` + jsonString(t, output) + `,"tool_use_id":"` + toolUseID +
+		`","type":"tool_result"}`
+	if isError {
+		result = `{"content":` + jsonString(t, output) + `,"is_error":true,"tool_use_id":"` +
+			toolUseID + `","type":"tool_result"}`
+	}
 	lines := []string{
 		`{"cwd":"/home/user/code/example-api","message":{"content":"Check the retry policy."},` +
 			`"sessionId":"` + claudeFixtureRef.ID + `","timestamp":"2026-05-04T09:15:00.000Z",` +
@@ -1575,8 +1714,7 @@ func claudeBashTranscript(t *testing.T, output string) (config.Config, string) {
 		`{"message":{"content":[{"id":"` + toolUseID + `","input":{"command":"make check"},` +
 			`"name":"Bash","type":"tool_use"}],"model":"claude-sonnet-4-5"},` +
 			`"timestamp":"2026-05-04T09:15:04.000Z","type":"assistant","version":"1.0.30"}`,
-		`{"message":{"content":[{"content":` + jsonString(t, output) + `,"tool_use_id":"` +
-			toolUseID + `","type":"tool_result"}]},"timestamp":"2026-05-04T09:15:06.000Z","type":"user"}`,
+		`{"message":{"content":[` + result + `]},"timestamp":"2026-05-04T09:15:06.000Z","type":"user"}`,
 	}
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
 		t.Fatalf("writing the transcript: %v", err)
@@ -1597,8 +1735,8 @@ func claudeBashTranscript(t *testing.T, output string) (config.Config, string) {
 // output must still agree, so the new answer cannot pass by reporting every folded result as differing.
 func TestInspectReportsADifferentFoldedResultBody(t *testing.T) {
 	ctx := context.Background()
-	archiveCfg, archiveFile := claudeBashTranscript(t, "PASS\n")
-	changedCfg, changedFile := claudeBashTranscript(t, "FAIL\n")
+	archiveCfg, archiveFile := claudeBashTranscript(t, "PASS\n", false)
+	changedCfg, changedFile := claudeBashTranscript(t, "FAIL\n", false)
 	if archiveFile == changedFile {
 		t.Fatal("the two transcripts are the same file")
 	}
@@ -1655,6 +1793,83 @@ func TestInspectReportsADifferentFoldedResultBody(t *testing.T) {
 			}
 			if !strings.Contains(warnings, "different body") ||
 				!strings.Contains(warnings, "toolu_01Folded") {
+				t.Errorf("the differing outcome is not named: %v", inspection.Warnings)
+			}
+		})
+	}
+}
+
+// TestInspectReportsADifferentFoldedResultOutcome pins the comparison end to end for the *outcome* a
+// folded tool result records. The two transcripts differ in one field only -- the Claude tool result's
+// `is_error` -- so the call, the key the result is held under and the body are identical, and the
+// recorded outcome is the whole difference: the inherited parser maps `is_error` to the result's status
+// (`errored`, internal/parser/content.go), ingestion keeps it on the event (internal/ingest), and an
+// archive written from the errored transcript was nevertheless reported as holding every source message
+// of a transcript that now records the same output as a success, because the comparison read the key and
+// the body and never the status both reads carry.
+//
+// The first half is the control: the same archive read against the transcript it was written from must
+// still agree, so the answer cannot pass by reporting every folded result as differing.
+func TestInspectReportsADifferentFoldedResultOutcome(t *testing.T) {
+	ctx := context.Background()
+	erroredCfg, erroredFile := claudeBashTranscript(t, "PASS\n", true)
+	successCfg, successFile := claudeBashTranscript(t, "PASS\n", false)
+	if erroredFile == successFile {
+		t.Fatal("the two transcripts are the same file")
+	}
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(erroredCfg, archivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	if err := ingestor.IngestPaths(ctx, erroredFile); err != nil {
+		t.Fatalf("ingesting the transcript: %v", err)
+	}
+
+	for name, testCase := range map[string]struct {
+		cfg  config.Config
+		same bool
+	}{
+		"the transcript the archive was written from": {cfg: erroredCfg, same: true},
+		"the same output recorded as a success":       {cfg: successCfg, same: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			inspection, err := Inspect(ctx, InspectOptions{
+				Ref:         claudeFixtureRef,
+				Config:      testCase.cfg,
+				Reader:      NewSourceReader(testCase.cfg),
+				ArchivePath: archivePath,
+			})
+			if err != nil {
+				t.Fatalf("inspecting: %v", err)
+			}
+			if inspection.Source == nil {
+				t.Fatalf("the source was not read: %v", inspection.Warnings)
+			}
+			if inspection.Archive == nil {
+				t.Fatalf("the archived session was not reported: %v", inspection.Warnings)
+			}
+			archived := inspection.Archive
+			if archived.SameMessagesAsSource == nil {
+				t.Fatal("the comparison did not run")
+			}
+			if *archived.SameMessagesAsSource != testCase.same {
+				t.Errorf("same_messages_as_source = %v, want %v (warnings: %v)",
+					*archived.SameMessagesAsSource, testCase.same, archived.Warnings)
+			}
+			if archived.FoldedToolResults != 1 {
+				t.Errorf("folded tool results = %d, want 1", archived.FoldedToolResults)
+			}
+			warnings := strings.Join(inspection.Warnings, "\n")
+			if testCase.same {
+				if strings.Contains(warnings, "different outcome") {
+					t.Errorf("the recorded error was reported as differing from itself: %v",
+						inspection.Warnings)
+				}
+				return
+			}
+			if !strings.Contains(warnings, "records a different outcome") ||
+				!strings.Contains(warnings, "errored") {
 				t.Errorf("the differing outcome is not named: %v", inspection.Warnings)
 			}
 		})

@@ -413,3 +413,29 @@ supersede it with a newer one and say which it supersedes.
 - **Settled by:** whether the operator wants a carried link's shape to be required to be a link
   everywhere (and Windows checkouts to be told to configure `core.symlinks=false`), or the current
   reading where the checkout's own answer decides.
+
+## Q-0001-19 — How strictly the comparison compares two reads' recorded tool-result outcomes
+
+- **Status:** resolved (default taken)
+- **Question:** the round-8 review (finding 2) measured that `same_messages_as_source` ignored
+  `ToolResult.Status`, so an archived Claude result and a source result with the same content but
+  different `is_error` values were reported as agreeing. The requested change — "compare statuses
+  wherever both reads retain them" — leaves the strictness open: compare only where both reads record a
+  non-empty status (the reading where "retain" means "recorded a value"), or compare the outcomes the
+  two reads record as a whole, including a read that records none.
+- **Default taken:** the whole recorded outcome, as a set per result key, in both directions, wherever
+  the archive shows a status-bearing row for that key. An empty status is a value, not an absence: it is
+  what a read records for a result its provider did not mark as an error, so an archive saying
+  `errored` beside a source saying nothing is a difference, and so is the reverse. A call row's own
+  result content is not status-bearing (the archive stores no status on the call), so a key the archive
+  holds only there is not compared — the same allowance the body comparison makes, and what keeps a
+  provider whose results the archive kept on the call from being reported as differing everywhere.
+  Statuses are retained metadata under every archive content policy (`internal/db/archive_content.go`),
+  never a payload a policy narrows, which is why their absence is comparable at all.
+- **Reversal:** one function (`differingResultOutcomeNames` in `internal/ccc/inspect.go`): return
+  `nil` (back to the state the finding measured), require only that the source's own status appear among
+  the archive's (drops the archive-records-an-extra-outcome case), or skip comparison whenever either
+  side records none (the narrower reading of "wherever both reads retain them").
+- **Settled by:** whether the operator wants an inspection to say "every archived message matches the
+  source read" when the archive and the transcript disagree about whether a tool call failed; today it
+  does not.

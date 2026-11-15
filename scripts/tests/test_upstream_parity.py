@@ -569,10 +569,30 @@ class ParityCase(ParityTreeCase, unittest.TestCase):
         code, output = self.tree.run_parity(executable_bit_supported=lambda: True)
         self.assert_failed(code, output, "executable bit")
 
+    def test_the_owner_executable_bit_is_the_one_compared_with_the_record(self) -> None:
+        """Git's executable mode *is* the owner's execute bit, so ``0655`` is ``100644`` to git.
+
+        A carried ``100755`` file chmod'ed to ``0655`` keeps the group and other execute bits: a
+        predicate that asked whether *any* execute bit was set still answers "executable", and with
+        ``core.filemode=false`` the pinned index blob, ``git status`` and the recorded bytes all agree
+        with the modified tree -- the modification git would record is exactly the owner bit that was
+        cleared. The comparison therefore asks for ``S_IXUSR``, the bit git's own mode is derived from.
+        """
+        if os.name == "nt":
+            self.assertEqual(self.tree.parity.executable_bit_supported(), False)
+            return
+        path = self.tree.root / "src/b.sh"
+        os.chmod(path, 0o655)
+        self.assertNotEqual(path.stat().st_mode & 0o111, 0, "the case needs the other bits left set")
+        code, output = self.tree.run_parity(executable_bit_supported=lambda: True)
+        self.assert_failed(code, output, "src/b.sh")
+        self.assertIn("changed mode", output)
+        self.assertIn("owner-executable bit", output)
+
     def test_a_platform_without_mode_bits_discloses_them(self) -> None:
         code, output = self.tree.run_parity(executable_bit_supported=lambda: False)
         self.assert_clean(code, output)
-        self.assertIn("executable bits not verified", output)
+        self.assertIn("owner-executable bits not verified", output)
 
     def test_a_malformed_manifest_fails_with_a_message(self) -> None:
         self.tree.write(MANIFEST, "pin " + PIN + "\nfile\t100644\tdeadbeef\tnot-a-number\tx\n")
@@ -745,7 +765,7 @@ class StoredDeviationCase(ParityTreeCase, unittest.TestCase):
         code, output = self.tree.run_parity(executable_bit_supported=lambda: False)
         self.assert_clean(code, output)
         expected = len(self.tree.carried) + len(self.tree.deviations)
-        self.assertIn(f"executable bits not verified for {expected} file(s)", output)
+        self.assertIn(f"owner-executable bits not verified for {expected} file(s)", output)
 
 
 class ScriptedGit:

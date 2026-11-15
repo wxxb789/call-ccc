@@ -26,16 +26,17 @@ the same on every platform, and a file whose line endings git would normalise ca
 checkout and fail in another. The working tree is *also* hashed in both branches, with git and without
 it: an `assume-unchanged` or `skip-worktree` index flag keeps an edited path out of `git status` while
 the pinned blob stays in the index, so a check that trusted git's own status for the working tree would
-pass for modified carried source; the record's shape, bytes and executable bit are compared directly
-with the file this repository ships, and git's index adds what a stat cannot answer — what a fresh
-clone receives. A carried symlink's shape is part of that comparison: the link and the regular file
-holding its target text are the same git object, so the file form is accepted only where the checkout
-says it stores links that way (`core.symlinks=false`, or a platform that cannot create symlinks), and
-the run reports how many it accepted. It then fails if a manifest path is missing or modified in the
-working tree, if a declared deviation has quietly turned back into upstream's copy — staged *or* only
+pass for modified carried source; the record's shape, bytes and owner-executable bit (the bit git's own
+mode records, `S_IXUSR`) are compared directly with the file this repository ships, and git's index adds
+what a stat cannot answer — what a fresh clone receives. A carried symlink's shape is part of that
+comparison: the link and the regular file holding its target text are the same git object, so the file
+form is accepted only where the checkout says it stores links that way (`core.symlinks=false`, or a
+platform that cannot create symlinks), and the run reports how many it accepted. It then fails if a
+manifest path is missing or modified in the working tree, if a declared deviation has quietly turned
+back into upstream's copy — staged *or* only
 written on disk, since the gate reads the working tree — or stops holding the stored bytes its record
 pins (that path is a carried path for everything but the byte comparison: it must also be present in
-the working tree, unmodified relative to git's index, its working-tree executable bit must be the
+the working tree, unmodified relative to git's index, its working-tree owner-executable bit must be the
 record's — checked on the file itself, because a checkout with `core.filemode=false` leaves that edit
 out of git's index and status — and it must be matched by no ignore rule), if the generated input
 stops hashing to the value the carried snapshot tool pins or is not what git's index stores for it
