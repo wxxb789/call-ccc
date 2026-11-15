@@ -17,6 +17,10 @@ import (
 	"go.kenn.io/agentsview/internal/parser"
 )
 
+// codexStaleCallID is the shell call the stale-archive case's Codex rollout records, and the identity
+// its output event carries.
+const codexStaleCallID = "call_01Stale00000000000000000001"
+
 // TestIngestThenArchiveRead covers the archive half of the contract: a real source file is parsed and
 // written into a SQLite archive by the inherited sync engine, read back through the inherited read
 // path, and the original source is byte-identical afterwards. Every path it touches is inside the
@@ -990,6 +994,200 @@ func TestCompareMessagesNamesEveryDifference(t *testing.T) {
 			t.Errorf("warnings = %v, want the unheld result named by its tool-use id", warnings)
 		}
 	})
+
+	t.Run("an attached result the archive never received", func(t *testing.T) {
+		// The Codex shape: the outcome is an event on the call's own row, so both reads have the same
+		// ordinals, roles and content, and the missing outcome is the only difference there is.
+		source := append([]Message{}, base...)
+		source[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "function_call_output", ContentRaw: "30\n", ContentSize: 3}}
+		same, folded, warnings := compareMessages(source, base)
+		if same || folded != 0 {
+			t.Errorf("same=%v folded=%d, want the missing outcome to be a difference", same, folded)
+		}
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0], "archive message #1 does not hold the tool result") ||
+			!strings.Contains(warnings[0], toolUseID) {
+			t.Errorf("warnings = %v, want the row's missing outcome named", warnings)
+		}
+	})
+
+	t.Run("an attached result the archive holds on the same row", func(t *testing.T) {
+		// The archive stores the same outcome as a result row of its own on that row: the key -- the
+		// call and the content length -- is what has to match, not the label the provider gave it.
+		archived := append([]Message{}, base...)
+		archived[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "tool_result", ContentSize: 3}}
+		source := append([]Message{}, base...)
+		source[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "function_call_output", ContentSize: 3}}
+		same, folded, warnings := compareMessages(source, archived)
+		if !same || folded != 0 || len(warnings) != 0 {
+			t.Errorf("same=%v folded=%d warnings=%v, want the held result accepted",
+				same, folded, warnings)
+		}
+	})
+
+	t.Run("an attached result both reads show and disagree about", func(t *testing.T) {
+		source := append([]Message{}, base...)
+		source[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "function_call_output", ContentRaw: "30\n", ContentSize: 3}}
+		archived := append([]Message{}, base...)
+		archived[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "function_call_output", ContentRaw: "31\n", ContentSize: 3}}
+		same, folded, warnings := compareMessages(source, archived)
+		if same || folded != 0 {
+			t.Errorf("same=%v folded=%d, want the differing body to be a difference", same, folded)
+		}
+		if len(warnings) != 1 || !strings.Contains(warnings[0], "different body for tool result") ||
+			!strings.Contains(warnings[0], toolUseID) {
+			t.Errorf("warnings = %v, want the differing body named", warnings)
+		}
+	})
+
+	t.Run("a body only the archive shows is not a difference", func(t *testing.T) {
+		// A writer that kept the length and no text (a blocked category, a narrowed archive content
+		// policy) leaves the archive's body empty; the key still matches, and a comparison that read
+		// the empty body as "differs" would report a difference the archive's own read cannot support.
+		source := append([]Message{}, base...)
+		source[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "function_call_output", ContentSize: 3}}
+		archived := append([]Message{}, base...)
+		archived[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "function_call_output", ContentRaw: "30\n", ContentSize: 3}}
+		same, folded, warnings := compareMessages(source, archived)
+		if !same || folded != 0 || len(warnings) != 0 {
+			t.Errorf("same=%v folded=%d warnings=%v, want no difference", same, folded, warnings)
+		}
+	})
+}
+
+// TestInspectDoesNotCallAStaleArchiveCompleteAfterACallOutcomeArrived pins the comparison's other
+// shape: Codex records a call's output as an event on the call's own row, so an archive written before
+// the output arrived has the same ordinals, roles and content as the later source read -- the *only*
+// difference is an outcome attached to a row both reads have. The comparison used to look at role and
+// content alone, so it reported that archive as holding the whole conversation and said nothing about
+// the missing outcome. Now the results a source row records are asked of the archived row too.
+//
+// The second half is the control: an archive of the same session *with* the output must still be
+// reported as agreeing, so the new answer cannot pass by reporting every attached result as missing.
+func TestInspectDoesNotCallAStaleArchiveCompleteAfterACallOutcomeArrived(t *testing.T) {
+	ctx := context.Background()
+	cfgStale, staleFile := codexTranscript(t, false)
+	cfgFull, fullFile := codexTranscript(t, true)
+
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(cfgStale, archivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	if err := ingestor.IngestPaths(ctx, staleFile); err != nil {
+		t.Fatalf("ingesting the rollout without its call output: %v", err)
+	}
+
+	inspection, err := Inspect(ctx, InspectOptions{
+		Ref:         codexFixtureRef,
+		Config:      cfgFull,
+		Reader:      NewSourceReader(cfgFull),
+		ArchivePath: archivePath,
+	})
+	if err != nil {
+		t.Fatalf("inspecting the grown session against the stale archive: %v", err)
+	}
+	if inspection.Source == nil {
+		t.Fatalf("the grown source was not read: %v", inspection.Warnings)
+	}
+	if inspection.Archive == nil {
+		t.Fatalf("the archived session was not reported: %v", inspection.Warnings)
+	}
+	archived := inspection.Archive
+	if archived.SameMessagesAsSource == nil || *archived.SameMessagesAsSource {
+		t.Errorf("a stale archive was reported as holding every source message: same=%v warnings=%v",
+			archived.SameMessagesAsSource != nil && *archived.SameMessagesAsSource, archived.Warnings)
+	}
+	if archived.FoldedToolResults != 0 {
+		t.Errorf("the stale archive was credited with %d folded tool result(s)",
+			archived.FoldedToolResults)
+	}
+	warnings := strings.Join(inspection.Warnings, "\n")
+	if !strings.Contains(warnings, "does not hold the tool result") {
+		t.Errorf("the missing call output is not named: %v", inspection.Warnings)
+	}
+	if !strings.Contains(warnings, codexStaleCallID) {
+		t.Errorf("the missing outcome is not named by its tool-use id: %v", inspection.Warnings)
+	}
+
+	// The control: the same session ingested *with* its output reads as agreement, so the rule above
+	// cannot be satisfied by calling every attached result missing.
+	fullArchivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	fullIngestor, err := NewIngestor(cfgFull, fullArchivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor for the full session: %v", err)
+	}
+	if err := fullIngestor.IngestPaths(ctx, fullFile); err != nil {
+		t.Fatalf("ingesting the rollout with its call output: %v", err)
+	}
+	fullInspection, err := Inspect(ctx, InspectOptions{
+		Ref:         codexFixtureRef,
+		Config:      cfgFull,
+		Reader:      NewSourceReader(cfgFull),
+		ArchivePath: fullArchivePath,
+	})
+	if err != nil {
+		t.Fatalf("inspecting the session against its own archive: %v", err)
+	}
+	if fullInspection.Archive == nil {
+		t.Fatalf("the current archive was not reported: %v", fullInspection.Warnings)
+	}
+	current := fullInspection.Archive
+	if current.SameMessagesAsSource == nil || !*current.SameMessagesAsSource {
+		t.Errorf("an archive holding the call output was reported as disagreeing: warnings=%v",
+			current.Warnings)
+	}
+	if current.FoldedToolResults != 0 {
+		t.Errorf("the current archive was credited with %d folded tool result(s)",
+			current.FoldedToolResults)
+	}
+}
+
+// codexTranscript writes one small Codex rollout -- a user turn, a shell call, and with includeOutput
+// the output event the call produced -- under a throw-away provider root, and returns that root's
+// configuration with the file's path. The two shapes are the same session at two moments, which is what
+// a test needs to hold a source read against an archive written before the call's outcome arrived.
+func codexTranscript(t *testing.T, includeOutput bool) (config.Config, string) {
+	t.Helper()
+	root := t.TempDir()
+	relative := filepath.Join("2026", "05", "04",
+		"rollout-2026-05-04T09-15-00-"+codexFixtureRef.ID+".jsonl")
+	path := filepath.Join(root, "codex", relative)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("preparing the provider root: %v", err)
+	}
+	lines := []string{
+		`{"payload":{"cwd":"/home/user/code/example-api","id":"` + codexFixtureRef.ID +
+			`","originator":"codex_cli_rs"},"timestamp":"2026-05-04T09:15:00.000Z",` +
+			`"type":"session_meta"}`,
+		`{"payload":{"content":[{"text":"Where is the retry cap configured?","type":"input_text"}],` +
+			`"role":"user"},"timestamp":"2026-05-04T09:15:02.000Z","type":"response_item"}`,
+		`{"payload":{"arguments":{"command":"grep -rn maxBackoffSeconds internal/retry"},` +
+			`"call_id":"` + codexStaleCallID + `","name":"shell","type":"function_call"},` +
+			`"timestamp":"2026-05-04T09:15:05.000Z","type":"response_item"}`,
+	}
+	if includeOutput {
+		lines = append(lines, `{"payload":{"call_id":"`+codexStaleCallID+
+			`","output":"internal/retry/config.go:41: maxBackoffSeconds = 30",`+
+			`"type":"function_call_output"},"timestamp":"2026-05-04T09:15:06.000Z",`+
+			`"type":"response_item"}`)
+	}
+	lines = append(lines, `{"payload":{"content":[{"text":"It is set in internal/retry/config.go.",`+
+		`"type":"output_text"}],"role":"assistant"},"timestamp":"2026-05-04T09:15:07.000Z",`+
+		`"type":"response_item"}`)
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("writing the rollout: %v", err)
+	}
+	cfg := fixtureConfig(t)
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentCodex: {filepath.Join(root, "codex")}}
+	return cfg, path
 }
 
 // claudeTranscript writes one small Claude session -- a user turn and a `Read` tool call, and with

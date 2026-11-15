@@ -15,7 +15,15 @@ are checked against the file this tree ships, in both branches, so the allowance
 copy that was changed in a way the bytes do not show -- ``git status`` is as silent about a mode edit
 as it is about an unflagged content edit when the checkout does not record one. The generated build
 input is checked against the SHA-256 pinned inside the carried snapshot tool, so the input is verified
-against upstream's own pin rather than a second hard-coded copy.
+against upstream's own pin rather than a second hard-coded copy, and -- where git is available --
+against git's index as well: that input is ignored by the carried ``snapshot/.gitignore``, so a copy
+that is present on disk but absent from the index is missing from every fresh clone and the carried
+``go:embed`` cannot compile there.
+
+Every git query this check makes is required: when git answers the file list but refuses the untracked
+list, the index or the status report, the step fails naming the probe instead of skipping the rule it
+answers for. "Nothing would be added" and "nothing is modified" are the answers that look like a pass,
+and neither may come from a question git never answered.
 
 A tree git cannot enumerate -- no git on this host, or a root that is a copy rather than a repository
 -- is reported as ``INCOMPLETE`` and exits 2: the file-list and ignore rules cannot be asked, and the
@@ -46,6 +54,7 @@ from upstream_manifest import (  # noqa: E402
     Manifest,
     ManifestError,
     Record,
+    blob_sha1,
     hashed_path,
     load_manifest,
     pinned_snapshot_sha256,
@@ -90,20 +99,26 @@ class Incomplete(Exception):
         self.skipped = skipped
 
 
-def tree_files(root: Path) -> tuple[list[str] | None, list[str]]:
+def tree_files(root: Path) -> tuple[list[str] | None, list[str] | None]:
     """Paths git knows about: ``(tracked, present but untracked and not ignored)``.
 
-    ``tracked`` is ``None`` in a tree without git (a copy, a throw-away test tree). The untracked
-    list is what makes the "no unexplained file inside the carried tree" check answer the same
-    before and after a commit: a tree that has not been committed yet still shows every file this
-    repository would add, and an ignored path (build output, the staged SQLite header) is not one
-    of them because the repository's own ignore rules already say so.
+    ``tracked`` is ``None`` in a tree without git (a copy, a throw-away test tree), and then the
+    untracked list is ``None`` as well: the file list and every rule derived from it is what the
+    caller's INCOMPLETE verdict covers. The untracked list is *also* ``None`` when git answered the
+    file list but refused the untracked query, which the caller reports as a failure -- an empty list
+    there would say "nothing would be added", the one answer that looks like a pass, for a question git
+    never answered.
+
+    The untracked list is what makes the "no unexplained file inside the carried tree" check answer the
+    same before and after a commit: a tree that has not been committed yet still shows every file this
+    repository would add, and an ignored path (build output, the staged SQLite header) is not one of
+    them because the repository's own ignore rules already say so.
     """
     tracked = git_run(root, "ls-files", "-z")
     if tracked is None:
-        return None, []
+        return None, None
     others = git_run(root, "ls-files", "-z", "--others", "--exclude-standard")
-    return decode_paths(tracked), decode_paths(others if others is not None else b"")
+    return decode_paths(tracked), (None if others is None else decode_paths(others))
 
 
 def ignored_paths(root: Path, paths: list[str]) -> list[str] | None:
@@ -358,19 +373,20 @@ def check_files(
 
 
 def check_untracked(root: Path, manifest: Manifest, tracked: list[str] | None,
-                    others: list[str]) -> int:
+                    others: list[str] | None) -> int:
     """Nothing git would add may sit outside the manifest unless this repository owns it.
 
     A tree git could not enumerate answers ``0`` here -- this function cannot tell "nothing is
     unexplained" from "nothing was listed" -- and the caller turns that into an incomplete run, which
-    the required gate step rejects.
+    the required gate step rejects. An untracked list the caller could not obtain is refused there
+    too, so an empty ``others`` here is always a real answer from git.
     """
     if tracked is None:
         return 0
     # Every path the manifest names is accounted for, whichever record kind names it: a carried file,
     # a declared deviation (present or absent) or a generated build input.
     named = {record.path for record in manifest.records if record.kind != "owned"}
-    seen = sorted(set(tracked) | set(others))
+    seen = sorted(set(tracked) | set(others or []))
     unexplained = [path for path in seen if path not in named and not manifest.is_owned(path)]
     if unexplained:
         raise Failure(
@@ -533,8 +549,20 @@ def check_deviations(
     return notes, stored_notes, on_disk_only, mode_unverified
 
 
-def check_inputs(root: Path, manifest: Manifest) -> list[str]:
-    """Generated build inputs: hash them, and cross-check the one upstream pins in its own tool."""
+def check_inputs(
+    root: Path, manifest: Manifest, index: dict[str, tuple[str, str]] | None
+) -> list[str]:
+    """Generated build inputs: hash them, cross-check the one upstream pins in its own tool, and -- with
+    git -- verify that the index carries them.
+
+    Hashing the working tree is not enough on its own. This tree's generated input is *ignored* by the
+    carried ``internal/pricing/snapshot/.gitignore`` (upstream's Makefile restores it from a pinned
+    artifact branch before every build), so git never lists it as untracked either: a copy that sits on
+    disk but is absent from git's index is missing from every fresh clone, where the carried
+    ``internal/pricing/fallback.go`` then has no ``go:embed`` input and the module does not compile. What
+    a clone receives is what git stores, so the path's presence, its mode and the blob its own bytes hash
+    to are checked in the index as well -- the same questions every carried file is asked there.
+    """
     problems: list[str] = []
     for record in manifest.inputs:
         if not present(root, record.path):
@@ -544,8 +572,24 @@ def check_inputs(root: Path, manifest: Manifest) -> list[str]:
         digest = hashlib.sha256(data).hexdigest()
         if digest != record.digest or len(data) != record.size:
             problems.append(f"{record.path}: hashes to {digest}, manifest says {record.digest}")
+            continue
+        if index is None:
+            continue
+        stored = index.get(record.path)
+        if stored is None:
+            problems.append(
+                f"{record.path}: absent from git's index, so a fresh clone would not receive the "
+                f"build input the carried go:embed needs (git add -f it)")
+            continue
+        if stored[0] != record.mode:
+            problems.append(
+                f"{record.path}: git stores mode {stored[0]}, the manifest records {record.mode}")
+            continue
+        blob = blob_sha1(data)
+        if stored[1] != blob:
+            problems.append(f"{record.path}: git stores {stored[1]}, its bytes hash to {blob}")
     if problems:
-        raise Failure(f"{len(problems)} generated input(s) changed", problems)
+        raise Failure(f"{len(problems)} generated input(s) are not what this tree declares", problems)
 
     pinned = pinned_snapshot_sha256(root / PRICING_TOOL)
     recorded = next((r.digest for r in manifest.inputs if r.path == PRICING_INPUT), "")
@@ -594,7 +638,24 @@ def run(root: Path) -> list[str]:
     check_pin_documented(root, manifest)
     reported_pin = check_reported_pin(root, manifest)
     tracked, others = tree_files(root)
+    if tracked is not None and others is None:
+        # git answered the file list but refused the untracked query. Reading that as "git would add
+        # nothing" is the one answer that looks like a pass, so the probe's silence fails the step.
+        raise Failure(
+            "could not ask git which untracked paths this tree would add, so the unexplained-file "
+            "check cannot be completed",
+            ["git ls-files --others --exclude-standard"],
+        )
     index = git_index(root)
+    if tracked is not None and index is None:
+        # The same rule for the index: without it, neither what a fresh clone receives nor what git
+        # reports as modified can be checked, and a run that skipped both would still have printed a
+        # PASS. A tree git cannot enumerate at all is the other answer -- the caller's INCOMPLETE
+        # verdict below -- and is not this case: `tracked` answered there.
+        raise Failure(
+            "could not read git's index, so what a fresh clone would receive cannot be verified",
+            ["git ls-files -s"],
+        )
     modified = git_modified(root) if index is not None else None
     if index is not None and modified is None:
         # A probe that could not answer must not read as "nothing is modified": that is the one answer
@@ -609,7 +670,7 @@ def run(root: Path) -> list[str]:
     seen = check_untracked(root, manifest, tracked, others)
     deviations, stored, on_disk_only, stored_mode_unverified = check_deviations(
         root, manifest, index, modified)
-    inputs = check_inputs(root, manifest)
+    inputs = check_inputs(root, manifest, index)
     if tracked is None:
         # Everything answerable has been answered above, so a real violation is reported as a failure
         # with its paths; what is left over is verification this host cannot perform at all. Returning
@@ -623,6 +684,8 @@ def run(root: Path) -> list[str]:
                 "the carried tree would not be listed, so it could not be caught",
                 "no carried path matches this tree's ignore rules: a carried path git would skip on "
                 "add would not be caught",
+                "the generated build input is what git stores for it: with no index to read, the "
+                "ignored snapshot's presence, mode and stored bytes were not checked",
             ],
         )
 

@@ -158,12 +158,11 @@ class ParityTree:
     def git_known_paths(self) -> list[str]:
         """The file list a scripted git answers for this throw-away tree: the paths the manifest names.
 
-        The tree is not a repository, and a tree git cannot enumerate is now reported as an incomplete
-        run rather than a pass, so a case about another rule has to declare the file list itself. This
-        list is the manifest's own paths: the tree's remaining files (the pin constant, the carried
-        tool, the upstream document) are scaffolding the checks read directly, and listing them would
-        make each of them an unexplained file in a case that is about something else. A case that *is*
-        about the file list, or about a tree nobody can enumerate, passes ``tree_files`` itself.
+        The tree is not a repository, so every git answer a case needs is scripted. This list is the
+        manifest's own paths: the tree's remaining files (the pin constant, the carried tool, the
+        upstream document) are scaffolding the checks read directly, and listing them would make each
+        of them an unexplained file in a case that is about something else. A case that *is* about the
+        file list, or about a tree nobody can enumerate, passes ``tree_files`` itself.
         """
         try:
             manifest = self.manifest_module.load_manifest(self.root / MANIFEST)
@@ -171,21 +170,76 @@ class ParityTree:
             return []  # the case under test is the malformed manifest itself
         return sorted(record.path for record in manifest.records if record.kind != "owned")
 
+    def index_state(self) -> dict[str, tuple[str, str]]:
+        """What a scripted git stores for this tree: its index, keyed by path.
+
+        A carried file's entry is the *pinned* blob its record names, so a case that breaks the file on
+        disk is caught by the working-tree comparison rather than by an index that was built from the
+        modified bytes; a declared deviation's entry is the blob of the file this tree ships, which is
+        what an importer writes and what a clone checks out. The generated input is not a git object in
+        the manifest's spelling (its record pins a SHA-256), so its entry is the blob its own bytes hash
+        to -- the same value the check computes and compares against the index.
+        """
+        index: dict[str, tuple[str, str]] = {}
+        try:
+            manifest = self.manifest_module.load_manifest(self.root / MANIFEST)
+        except self.manifest_module.ManifestError:
+            return index
+        for record in manifest.records:
+            if record.kind == "owned":
+                continue
+            if record.kind == "file":
+                index[record.path] = (record.mode, record.digest)
+                continue
+            if record.kind == "skip" and record.stored_digest:
+                index[record.path] = (record.mode, record.stored_digest)
+                continue
+            path = self.root / record.path
+            if path.is_file():
+                index[record.path] = (record.mode, blob_sha1(path.read_bytes()))
+        return index
+
+    def scripted_git(self, **overrides):
+        """A scripted repository whose answers describe this tree as a clean checkout of its manifest.
+
+        The tracked list is the manifest's own paths, the index is ``index_state``, nothing is
+        untracked, nothing is ignored and ``git status`` reports no modification: the shape a case about
+        a *different* rule needs, so its subject cannot fall into the unenumerable-tree verdict or trip
+        one of the probes that fails closed. A case that is about one of those answers overrides it.
+        """
+        return ScriptedGit(tracked=self.git_known_paths(), index=self.index_state(), **overrides)
+
+    @staticmethod
+    def gitless_answers() -> dict:
+        """The seam answers of a tree git cannot enumerate: no file list, no index, no status.
+
+        This is one coherent state, not four: ``tracked`` is ``None``, so the caller's INCOMPLETE verdict
+        covers every rule that needs the list, and the checks that answer from the tree's own bytes still
+        run -- and still fail on real drift, which a case below pins.
+        """
+        return {
+            "tree_files": lambda root: (None, None),
+            "git_index": lambda root: None,
+            "git_modified": lambda root: None,
+            "ignored_paths": lambda root, paths: [],
+        }
+
     def run_parity(self, **patches) -> tuple[int, str]:
         """Run the shipped check against this tree, with optional module seams patched.
 
-        The seams are the answers a git-backed run takes from git: the file list, the index and the
-        ignore answer. A case that supplies a scripted ``subprocess`` is asking for the shipped git
-        branch and answers every one of them itself; otherwise each seam defaults to the throw-away
-        tree's own answer -- the manifest's paths for the file list, nothing ignored, and no index, so
-        the byte-hashing half of the check runs -- so that a case about some other rule cannot fall
-        into the unenumerable-tree verdict by accident. The cases that *are* about one of those answers
-        pass the seam explicitly.
+        The seams are the answers a git-backed run takes from git: the file list, the index, what
+        ``git status`` reports, and the ignore answer. Each defaults to this tree's own clean scripted
+        answer -- the manifest's paths, an index holding the manifest's bytes, nothing modified and
+        nothing ignored -- so that a case about some other rule runs the whole check instead of falling
+        into the unenumerable-tree verdict, and a case that *is* about one of those answers passes that
+        seam itself. A case that wants the git-less branch passes ``gitless_answers()``, whose four
+        answers are the one coherent state a tree without git has.
         """
         if "subprocess" not in patches:
             patches.setdefault("tree_files", lambda root: (self.git_known_paths(), []))
+            patches.setdefault("git_index", lambda root: self.index_state())
+            patches.setdefault("git_modified", lambda root: set())
             patches.setdefault("ignored_paths", lambda root, paths: [])
-            patches.setdefault("git_index", lambda root: None)
         buffer = io.StringIO()
         with mock.patch.multiple(self.parity, **patches) if patches else _no_patch():
             with redirect_stdout(buffer):
@@ -340,7 +394,7 @@ class ParityCase(ParityTreeCase, unittest.TestCase):
         required and rejects any non-zero outcome, so this verdict can never be quoted as agreement
         with the pin; the script used to exit zero here and the gate used to print a bare PASS.
         """
-        code, output = self.tree.run_parity(tree_files=lambda root: (None, []))
+        code, output = self.tree.run_parity(**self.tree.gitless_answers())
         self.assert_incomplete(code, output)
         self.assertIn("did not run", output)
         self.assertIn("unexplained", output)
@@ -348,14 +402,34 @@ class ParityCase(ParityTreeCase, unittest.TestCase):
 
     def test_an_unanswerable_ignore_probe_fails_instead_of_passing(self) -> None:
         """``ignored_paths`` returning None means "could not ask", which must not read as "fine"."""
-        code, output = self.tree.run_parity(
-            tree_files=lambda root: (["src/a.txt", "src/b.sh", "docs/note.md"], []),
-            ignored_paths=lambda root, paths: None)
+        code, output = self.tree.run_parity(ignored_paths=lambda root, paths: None)
         self.assert_failed(code, output, "could not ask git which carried paths are ignored")
+
+    def test_an_index_probe_that_cannot_answer_fails_instead_of_passing(self) -> None:
+        """The same rule for the index: a query that failed is not "nothing to verify".
+
+        ``git ls-files -s`` failing while the ordinary file list succeeded used to be read as "this tree
+        has no index" -- which skipped both what a fresh clone receives and ``git status``, and still
+        reached a verdict. The rule is not conditional on which probe failed: an answer the check needs
+        and did not get fails the run, and the message names the query.
+        """
+        code, output = self.tree.run_parity(git_index=lambda root: None)
+        self.assert_failed(code, output, "could not read git's index")
+        self.assertIn("git ls-files -s", output)
+
+    def test_an_untracked_probe_that_cannot_answer_fails_instead_of_passing(self) -> None:
+        """A failed untracked-file query is not an empty list: that is the answer that looks like a pass.
+
+        ``git ls-files --others --exclude-standard`` refusing used to become ``[]`` here, so every file
+        git would add was silently reported as nothing to add and the run passed. The caller now refuses
+        the answer by name.
+        """
+        code, output = self.tree.run_parity(
+            tree_files=lambda root: (self.tree.git_known_paths(), None))
+        self.assert_failed(code, output, "could not ask git which untracked paths")
 
     def test_an_ignored_carried_path_fails(self) -> None:
         code, output = self.tree.run_parity(
-            tree_files=lambda root: (["src/a.txt", "src/b.sh", "docs/note.md"], []),
             ignored_paths=lambda root, paths: ["docs/note.md"])
         self.assert_failed(code, output, "docs/note.md")
         self.assertIn("ignore rules", output)
@@ -440,6 +514,51 @@ class ParityCase(ParityTreeCase, unittest.TestCase):
         self.assertEqual(module.blob_sha1(b"hello\n"), "ce013625030ba8dba906f756967f9e9ca394464a")
 
 
+class GitlessCase(ParityTreeCase, unittest.TestCase):
+    """The branch a tree without git takes: the answers that need no file list, then INCOMPLETE.
+
+    Every case here passes ``gitless_answers()`` -- no file list, no index, no status -- because that is
+    the one state a tree git cannot enumerate has. What the branch claims is that real drift is still
+    *reported as a failure* with its offenders before the run says it could not verify the rest, so a
+    tree nobody could enumerate is never read as a tree that holds the pin.
+    """
+
+    def test_a_tree_git_cannot_enumerate_still_fails_on_drift_it_can_see(self) -> None:
+        """Drift the bytes can answer is a FAIL, not hidden behind the INCOMPLETE verdict."""
+        self.tree.break_carried("src/a.txt", b"alpha changed\n")
+        code, output = self.tree.run_parity(**self.tree.gitless_answers())
+        self.assert_failed(code, output, "src/a.txt")
+        self.assertIn("differ from the pinned revision", output)
+
+    def test_stored_bytes_are_verified_against_the_files_own_bytes_without_git(self) -> None:
+        """The declared normalisation is answered by the file where there is no index to read.
+
+        The record's stored bytes are what a checkout writes, so the tree's own copy must hash to them;
+        the same declaration is answered through the index in ``GitBranchCase``. A copy that holds
+        neither the stored bytes nor upstream's own is a failure here too.
+        """
+        self.tree.add_stored_deviation("README.md", StoredDeviationCase.upstream,
+                                       StoredDeviationCase.stored)
+        code, output = self.tree.run_parity(**self.tree.gitless_answers())
+        self.assert_incomplete(code, output)
+        self.tree.write_bytes("README.md", b"locally rewritten\n")
+        self.assert_failed(*self.tree.run_parity(**self.tree.gitless_answers()),
+                           "neither the bytes this tree stores")
+
+    def test_a_recorded_path_that_is_absent_fails_without_git(self) -> None:
+        """The other answer the same rule gives where there is no index: the record is not honoured."""
+        self.tree.add_stored_deviation("README.md", StoredDeviationCase.upstream,
+                                       StoredDeviationCase.stored)
+        self.tree.remove("README.md")
+        self.assert_failed(*self.tree.run_parity(**self.tree.gitless_answers()),
+                           "the manifest records the bytes this tree stores")
+
+    def test_a_generated_input_that_changed_fails_without_git(self) -> None:
+        """The input's hash and its cross-check against the pinned tool need no file list either."""
+        self.tree.write_bytes(SNAPSHOT, b"different snapshot")
+        self.assert_failed(*self.tree.run_parity(**self.tree.gitless_answers()), "generated input")
+
+
 class StoredDeviationCase(ParityTreeCase, unittest.TestCase):
     """Cases for a declared deviation this tree carries anyway, with the bytes it stores pinned.
 
@@ -453,7 +572,13 @@ class StoredDeviationCase(ParityTreeCase, unittest.TestCase):
     upstream = b"upstream\r\nreadme\n"
     stored = b"upstream\nreadme\n"
 
-    def test_the_stored_bytes_are_verified_where_git_is_absent(self) -> None:
+    def test_the_stored_bytes_are_verified_against_the_record(self) -> None:
+        """The bytes this tree stores are checked, and the answer names the path it verified.
+
+        The scaffolding here is a scripted checkout (``index_state``), so this is the index-backed
+        answer; the same rule where git cannot answer at all -- verified against the file's own bytes
+        -- is pinned in ``GitlessCase``.
+        """
         self.tree.add_stored_deviation("README.md", self.upstream, self.stored)
         code, output = self.tree.run_parity()
         self.assert_clean(code, output)
@@ -474,9 +599,15 @@ class StoredDeviationCase(ParityTreeCase, unittest.TestCase):
         self.assert_failed(*self.tree.run_parity(), "neither the bytes this tree stores")
 
     def test_a_recorded_path_that_is_absent_fails(self) -> None:
+        """The record pins bytes this tree stores; a checkout that lost the file is not carrying them.
+
+        With git available the index still holds those bytes (which is what a fresh clone would
+        receive) and the working tree holds no file -- the git-backed answer this run reports. The
+        git-less branch reports the same rule by its record, pinned in ``GitlessCase``.
+        """
         self.tree.add_stored_deviation("README.md", self.upstream, self.stored)
         self.tree.remove("README.md")
-        self.assert_failed(*self.tree.run_parity(), "the manifest records the bytes this tree stores")
+        self.assert_failed(*self.tree.run_parity(), "holds no file at it")
 
     def test_a_record_whose_stored_bytes_are_upstreams_own_fails(self) -> None:
         """A declaration whose stored byte *is* upstream's blob declares nothing: it is carried."""
@@ -577,12 +708,11 @@ class GitBranchCase(ParityTreeCase, unittest.TestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self.index = {
-            path: (mode, blob_sha1(data)) for path, (mode, data) in self.tree.carried.items()
-        }
-        self.index["README.md"] = (
-            "100644", blob_sha1((self.tree.root / "README.md").read_bytes()))
-        self.tracked = sorted([*self.tree.carried, "README.md", SNAPSHOT])
+        # The scripted repository starts as this tree's own clean state: the index holds the manifest's
+        # bytes for every path it names (a carried file's pinned blob, a deviation's own copy, the
+        # generated input's bytes), and git's file list is the same set of paths.
+        self.index = self.tree.index_state()
+        self.tracked = self.tree.git_known_paths()
 
     def stage(self, path: str, data: bytes, mode: str = "100644") -> None:
         self.index[path] = (mode, blob_sha1(data))
@@ -597,6 +727,41 @@ class GitBranchCase(ParityTreeCase, unittest.TestCase):
         code, output = self.run_with_git()
         self.assert_clean(code, output)
         self.assertIn("compared through git's own object store", output)
+
+    def test_a_generated_input_absent_from_the_index_fails(self) -> None:
+        """Correct bytes on disk are not a build input a clone receives: the index has to hold it too.
+
+        The carried ``snapshot/.gitignore`` ignores this file, so git would never list it as untracked
+        and nothing but the index says whether a clone gets it -- which is why ``check_untracked``
+        accepts the manifest's naming of the path. A working-tree copy that is present, ignored and
+        correct is therefore compatible with every other rule here, while a fresh clone has no file at
+        all and the carried ``internal/pricing/fallback.go`` has nothing to embed.
+        """
+        index = dict(self.index)
+        del index[SNAPSHOT]
+        tracked = [path for path in self.tracked if path != SNAPSHOT]
+        # git's untracked list is empty here because the carried snapshot .gitignore matches the path,
+        # and the manifest names it -- so the "unexplained file" rule is satisfied while no clone would
+        # receive it.
+        code, output = self.tree.run_parity(
+            subprocess=ScriptedGit(tracked=tracked, index=index))
+        self.assert_failed(code, output, "absent from git's index")
+        self.assertIn(SNAPSHOT, output)
+
+    def test_a_generated_input_whose_indexed_bytes_differ_fails(self) -> None:
+        """The index's blob is compared with the bytes the file must hold, not merely with itself."""
+        index = dict(self.index)
+        index[SNAPSHOT] = (index[SNAPSHOT][0], "0" * 40)
+        code, output = self.tree.run_parity(subprocess=ScriptedGit(self.tracked, index=index))
+        self.assert_failed(code, output, SNAPSHOT)
+        self.assertIn("git stores", output)
+
+    def test_a_generated_input_whose_indexed_mode_changed_fails(self) -> None:
+        """The type git stores the input as is part of what a clone receives."""
+        index = dict(self.index)
+        index[SNAPSHOT] = ("100755", index[SNAPSHOT][1])
+        code, output = self.tree.run_parity(subprocess=ScriptedGit(self.tracked, index=index))
+        self.assert_failed(code, output, "git stores mode 100755")
 
     def test_a_staged_deviation_that_became_upstreams_copy_is_stale(self) -> None:
         """The index is what a clone receives, so upstream's blob there is a stale declaration."""

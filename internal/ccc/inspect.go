@@ -56,10 +56,12 @@ type ArchiveReport struct {
 	// a read-only handle cannot see.
 	ContentShown string `json:"content_shown,omitempty"`
 	// SameMessagesAsSource reports that every message the archive holds also appears in the source
-	// read at the same ordinal with the same role and content. The archive stores a projection, so it
+	// read at the same ordinal with the same role and content, and that each tool result the source
+	// records on such a message is held by the archive too. The archive stores a projection, so it
 	// may hold *fewer* rows than the source -- a tool-result-only row is folded into its tool call and
-	// counted in FoldedToolResults -- but it must not hold a different one. It is nil when no source
-	// read happened, so a false value is always the result of a comparison that ran.
+	// counted in FoldedToolResults -- but it must not hold a different one, and it must not be missing
+	// an outcome the source recorded on a row both of them have. It is nil when no source read
+	// happened, so a false value is always the result of a comparison that ran.
 	SameMessagesAsSource *bool `json:"same_messages_as_source"`
 	// Warnings names every difference this comparison found.
 	Warnings []string `json:"warnings,omitempty"`
@@ -197,6 +199,16 @@ func archiveReport(
 // when the archive really holds that result: a stale archive that stopped before the result arrived
 // keeps its call and no outcome, and counting the source's row as folded would report evidence the
 // archive does not have.
+//
+// A message both reads have is compared in full: its role, its content, and the tool results it
+// carries. The last of those is the only difference an archive written before a call's outcome arrived
+// can have -- the call's row is the same ordinal, role and text as the later source's, and the outcome
+// is an event *on* that row (Codex's function_call_output) rather than a row of its own, so a comparison
+// that stopped at role and content reported a stale archive as holding the conversation. A result the
+// source records on a row the archive also has must be held by that row, wherever the archive keeps it
+// (a result row of its own, an event, or the call's own content). Where both reads expose a result's
+// body, the bodies are compared too; a body only one of them shows (a blocked category, a writer that
+// stored the length and no text) is not a difference this comparison can see.
 func compareMessages(source, archived []Message) (bool, int, []string) {
 	byOrdinal := make(map[int]Message, len(source))
 	for _, message := range source {
@@ -220,6 +232,18 @@ func compareMessages(source, archived []Message) (bool, int, []string) {
 			warnings = append(warnings, fmt.Sprintf(
 				"archive message #%d differs from the source (role %q/%q)",
 				message.Ordinal, origin.Role, message.Role))
+		}
+		if missing := unheldResults(
+			origin.ToolResults, archivedResultKeys([]Message{message})); len(missing) > 0 {
+			same = false
+			warnings = append(warnings, fmt.Sprintf(
+				"archive message #%d does not hold the tool result(s) the source records on it: %s",
+				message.Ordinal, strings.Join(missing, ", ")))
+		}
+		for _, differing := range differingResultBodies(
+			message.Ordinal, origin.ToolResults, message.ToolResults) {
+			same = false
+			warnings = append(warnings, differing)
 		}
 	}
 	for _, message := range source {
@@ -288,6 +312,36 @@ func unheldResults(results []ToolResult, archived map[resultKey]struct{}) []stri
 			fmt.Sprintf("a %d-byte result with no tool-use id", result.ContentSize))
 	}
 	return missing
+}
+
+// differingResultBodies names the tool results both reads show a body for but disagree about. Only the
+// results the *archived message itself* carries are compared: a body the archive kept on the call
+// instead (a summarized call row) is one the source read never shows a body for, and the result key --
+// the call and the length -- cannot tell a stored summary from the tool's own output.
+func differingResultBodies(ordinal int, source, archived []ToolResult) []string {
+	bodies := make(map[resultKey]string, len(archived))
+	for _, result := range archived {
+		if result.ContentRaw != "" {
+			bodies[resultKey{toolUseID: result.ToolUseID, size: result.ContentSize}] = result.ContentRaw
+		}
+	}
+	var warnings []string
+	for _, result := range source {
+		if result.ContentRaw == "" {
+			continue
+		}
+		body, ok := bodies[resultKey{toolUseID: result.ToolUseID, size: result.ContentSize}]
+		if !ok || body == result.ContentRaw {
+			continue
+		}
+		name := result.ToolUseID
+		if name == "" {
+			name = fmt.Sprintf("a %d-byte result with no tool-use id", result.ContentSize)
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"archive message #%d holds a different body for tool result %s", ordinal, name))
+	}
+	return warnings
 }
 
 // contentWarnings names what an archive read could not show, because a caller that treats a narrowed

@@ -497,6 +497,91 @@ class GateProbeCase(GateTree, unittest.TestCase):
         self.assertIn("syntax error", detail)
         self.assertEqual(rc, 1, text)
 
+    def test_gofmt_checks_the_whole_list_in_bounded_batches(self) -> None:
+        """The file list reaches ``gofmt`` whole, split so no command line can outgrow the platform.
+
+        The carried tree holds thousands of ``*.go`` files, and Windows refuses a process command line
+        past 32 767 characters -- an ``OSError`` the gate used to raise with no verdict at all. The list
+        is therefore unchanged in scope, only divided: this case asserts every path is handed to
+        ``gofmt`` exactly once, in order, and that each invocation's own command line stays inside the
+        shipped budget, so a regression to one invocation fails here rather than in the Windows lane.
+        """
+        files = [f"internal/ccc/fixture_{index:04d}/deeply/nested/name.go" for index in range(400)]
+        seen: list[list[str]] = []
+
+        def recording(cmd, env=None, timeout=1800):
+            if cmd[0] == "gofmt":
+                seen.append(list(cmd))
+            return tool_result(cmd)
+
+        rc, text = self.run_in_process(tracked_go_files=lambda: files, run=recording)
+        self.assertEqual(rc, 0, text)
+        self.assertEqual(self.step_line(text, "gofmt")[0], "PASS", text)
+        self.assertGreater(len(seen), 1, "the whole list went to one invocation")
+        self.assertEqual([path for cmd in seen for path in cmd[2:]], files)
+        for cmd in seen:
+            budget = load_shipped_gate().GOFMT_BATCH_CHARS + len("gofmt -l")
+            self.assertLessEqual(len(" ".join(cmd)), budget, cmd[:3])
+
+    def test_every_gofmt_batch_is_checked_and_every_answer_is_reported(self) -> None:
+        """A later batch's answer is not dropped: unformatted files and a failed run both survive.
+
+        Batching is only a division of labour if the answers are aggregated: the first case here puts
+        the unformatted file in the *last* batch, the second makes an earlier batch exit non-zero, and
+        the other batches must still run -- a division that stopped at the first non-zero rc, or that
+        reported only the last batch's ``stdout``, would pass a run it did not complete.
+        """
+        files = [f"internal/ccc/pkg_{index:04d}/deeply/nested/generated_source_file.go"
+                 for index in range(200)]
+        batches = load_shipped_gate().gofmt_batches(files)
+        self.assertGreater(len(batches), 1, "no case here would exercise a second batch")
+        last_file = files[-1]
+
+        def unformatted_in_the_last_batch(cmd, env=None, timeout=1800):
+            out = last_file + "\n" if cmd[2:] == batches[-1] else ""
+            return tool_result(cmd, 0, out, "")
+
+        rc, text = self.run_in_process(
+            tracked_go_files=lambda: files, run=unformatted_in_the_last_batch)
+        status, detail = self.step_line(text, "gofmt")
+        self.assertEqual(status, "FAIL", text)
+        self.assertIn("not gofmt-clean", detail)
+        self.assertIn(last_file, text)
+        self.assertEqual(rc, 1, text)
+
+        seen: list[list[str]] = []
+
+        def failing_batch(cmd, env=None, timeout=1800):
+            if cmd[0] == "gofmt":
+                seen.append(list(cmd))
+                if cmd[2:] == batches[0]:
+                    return tool_result(cmd, 2, "", "syntax error in batch one\n")
+            return tool_result(cmd)
+
+        rc, text = self.run_in_process(tracked_go_files=lambda: files, run=failing_batch)
+        status, detail = self.step_line(text, "gofmt")
+        self.assertEqual(status, "FAIL", text)
+        self.assertIn("syntax error in batch one", detail)
+        self.assertIn(f"1 of {len(batches)} batch(es)", detail)
+        self.assertEqual([cmd[2:] for cmd in seen], batches, text)
+        self.assertEqual(rc, 1, text)
+
+    def test_a_command_line_the_platform_refuses_is_a_step_result_not_a_crash(self) -> None:
+        """``run()`` answers rc=126 for any ``OSError`` that is not a missing binary.
+
+        Windows refusing an over-long command line raises ``OSError`` (not ``FileNotFoundError``), and
+        the catch used to let it out of ``run()`` -- so a step that could not be started ended the gate
+        in a traceback with no ``GATE:`` verdict for the lane to read.
+        """
+        gate = load_shipped_gate()
+        gate.ROOT = self.root
+        with mock.patch.object(gate.subprocess, "run",
+                               side_effect=OSError("argument list too long")):
+            proc = gate.run(["gofmt", "-l", "many.go"])
+        self.assertEqual(proc.returncode, 126, proc.stderr)
+        self.assertEqual(proc.stdout, "")
+        self.assertIn("argument list too long", proc.stderr)
+
     def test_go_step_results_are_failures_when_the_tool_fails(self) -> None:
         """A non-zero ``go build``/``vet``/``test`` is a FAIL, with the shipped argv.
 

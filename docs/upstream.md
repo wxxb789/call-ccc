@@ -35,14 +35,17 @@ a carried path for everything but the byte comparison: it must also be present i
 unmodified relative to git's index, its working-tree executable bit must be the record's — checked on
 the file itself, because a checkout with `core.filemode=false` leaves that edit out of git's index and
 status — and it must be matched by no ignore rule), if the generated input stops hashing
-to the value the carried snapshot tool pins, if `docs/upstream.md` or `cmd/ccc/pin.go` disagree with the
-manifest about the revision, or if anything git would add sits inside the tree without a manifest record
-or a project-owned prefix. A `git status` or ignore probe that cannot answer fails the check: "nothing
-is modified" is the one answer that would look like a pass. A tree git cannot enumerate at all — no
-`git` on the host, or a root that is a copy rather than a repository — is reported as `INCOMPLETE` and
-exits non-zero, naming the file-list and ignore rules that did not run, so the required gate step cannot
-print a full pass for a tree nobody verified. The check is offline; it needs no checkout of upstream to
-answer.
+to the value the carried snapshot tool pins or is not what git's index stores for it (presence, mode and
+the blob its own bytes hash to: the carried `snapshot/.gitignore` keeps that path out of every untracked
+listing, so only the index says whether a clone receives it), if `docs/upstream.md` or `cmd/ccc/pin.go`
+disagree with the manifest about the revision, or if anything git would add sits inside the tree without
+a manifest record or a project-owned prefix. Every git query is required: an untracked-file, index or
+`git status` answer the host could not give fails the check rather than dropping the rule it answers
+for, because "git would add nothing" and "nothing is modified" are the answers that look like a pass. A
+tree git cannot enumerate at all — no `git` on the host, or a root that is a copy rather than a
+repository — is reported as `INCOMPLETE` and exits non-zero, naming the file-list and ignore rules that
+did not run, so the required gate step cannot print a full pass for a tree nobody verified. The check is
+offline; it needs no checkout of upstream to answer.
 
 Behaviour is a separate question from bytes, and it is answered by evidence rather than by this file:
 [`docs/evidence/0001-agentsview-parity-and-inspection.md`](evidence/0001-agentsview-parity-and-inspection.md)

@@ -27,6 +27,15 @@ prints and what the walk normalises to with `as_posix()`. The list handed to `go
 that pins it — therefore does not depend on the host's separator, and a regression to `str(relative)`
 is what the suite's Windows-flavoured case exists to catch.
 
+That list is handed over in **bounded batches**, not in one command: the carried tree holds thousands
+of `*.go` files and Windows refuses a process command line past 32 767 characters — an `OSError`, which
+`run()` answers as a step result (`rc=126`, never a traceback with no verdict). The batches together are
+still the whole list, in the same order, and every batch's answer is aggregated: a batch that cannot be
+checked and a file a later batch reports unformatted both fail the step. `gofmt_batches()` and
+`GOFMT_BATCH_CHARS` (8 000 characters of paths per invocation) are the shipped rule, pinned by two cases
+in `scripts/tests/test_gate.py` — one for the whole list staying whole and every command line staying
+inside the budget, one for the answers of a later batch surviving.
+
 `selftest` runs the suite with the interpreter that is running the gate (`sys.executable`), so the
 suite must hold on every Python 3 the docs allow and not only on CI's pinned 3.13: it is stdlib-only
 Python 3, and no case may depend on a `pathlib` behaviour that moved between minor versions —
@@ -84,19 +93,31 @@ It verifies, in this order:
    or the index to report, so an executable bit flipped on that one path would leave every git-backed
    predicate agreeing with a modified tree;
 7. the generated build input hashes to the SHA-256 that the carried snapshot tool pins in its own
-   source, so the input is verified against upstream's pin rather than a second hard-coded copy.
+   source, so the input is verified against upstream's pin rather than a second hard-coded copy — and,
+   where git answers, that the **index** carries it: its presence there, the mode it stores and the blob
+   its own bytes hash to. The carried `internal/pricing/snapshot/.gitignore` keeps the file out of every
+   untracked listing, so a copy that is present on disk and ignored is compatible with every other rule
+   here while a fresh clone receives nothing for the carried `go:embed` to compile.
+
+Every git query the check makes is required. When git answers the file list but refuses the untracked
+list, the index or the status report, the step **fails**, naming the probe: "git would add nothing" and
+"nothing is modified" are the answers that look like a pass, and neither may come from a question nobody
+answered. A tree git cannot enumerate at all is the separate INCOMPLETE verdict below — the difference
+is that one is a tree nobody could list and the other a repository that answered some queries and not
+others.
 
 Hashing every carried file's working-tree bytes costs about 0.8 s and reads ~63 MB on the import host
 (5 553 files), measured by running the check over this tree; the byte comparison is what makes the
 `assume-unchanged` and `skip-worktree` flags irrelevant to it, so no index flag inspection is needed.
 
 A tree git cannot enumerate — no `git` on `PATH`, or a `--root` that is a copy rather than a
-repository — is reported as **INCOMPLETE**, not as a pass: the unexplained-file rule and the ignore
-rule cannot run there, so `upstream-parity.py` prints `parity: INCOMPLETE — …`, names what it did not
-check, and exits `2`. The step is required and any non-zero outcome fails the gate, so such a tree
+repository — is reported as **INCOMPLETE**, not as a pass: the unexplained-file rule, the ignore rule
+and the generated input's index check cannot run there, so `upstream-parity.py` prints
+`parity: INCOMPLETE — …`, names what it did not check, and exits `2`. The step is required and any
+non-zero outcome fails the gate, so such a tree
 can never be quoted as agreement with the pin. Everything that does not need a file list is still
-checked first (carried bytes, deviations, the generated input, the recorded pin), so real drift in
-that tree is reported as `FAIL` with its offenders rather than as `INCOMPLETE`.
+checked first (carried bytes, deviations, the generated input's own bytes and its pin, the recorded
+pin), so real drift in that tree is reported as `FAIL` with its offenders rather than as `INCOMPLETE`.
 
 `scripts/upstream-compare.py` answers the other half — behaviour — and is deliberately **not** a gate
 step, because it needs network and a second checkout: it fetches the pinned revision into a scratch

@@ -11,6 +11,7 @@ import (
 
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/pathutil"
 )
 
 // ErrNotFound reports that a reference resolved to nothing a provider can read. Callers distinguish
@@ -71,7 +72,67 @@ func (r *SourceReader) provider(def parser.AgentDef, factory parser.ProviderFact
 	return factory.NewProvider(parser.ProviderConfig{
 		Roots:   r.cfg.ResolveDirs(def.Type),
 		Machine: r.cfg.InstallationID,
+		// The configured root-to-machine labels are part of the provider's own configuration, not a
+		// sync detail: the Antigravity and Cursor providers read them to treat a root that belongs to
+		// another machine as remote metadata (`ProviderConfig.SourceMachines`). A reader that dropped
+		// the mapping would read a foreign root as a local one -- inferring a working directory and a
+		// project from *this* machine's filesystem for a session recorded on another.
+		SourceMachines: r.cfg.SourceMachines[def.Type],
 	})
+}
+
+// machineForSource is the machine the resolved source's session belongs to.
+//
+// The inherited sync engine resolves it the same way (internal/sync's machineForProviderSource, which
+// asks machineForPath for the source's configured root): the longest configured root that contains the
+// path names the machine, and a source under no configured root belongs to this machine. It is what the
+// provider is told at parse time, so it is the machine the parsed session records for itself -- the
+// label the configuration gave the root, not this installation's identity.
+func (r *SourceReader) machineForSource(agent parser.AgentType, source parser.SourceRef) string {
+	path := source.ConfiguredRoot
+	if path == "" {
+		path = source.DisplayPath
+	}
+	if machine, ok := configuredMachineForPath(r.cfg.SourceMachines[agent], path); ok {
+		return machine
+	}
+	return r.cfg.InstallationID
+}
+
+// configuredMachineForPath answers the machine a configured mapping labels a path with, mirroring the
+// inherited lookup (internal/sync's configuredMachineForPath): the *longest* configured root that
+// contains the path decides, so a path below a labelled root keeps that root's machine, and a path no
+// configured root answers for is not labelled at all. Both sides of the comparison are resolved with
+// pathutil.LocalComparisonKey, the inherited spelling that makes the answer the same on a
+// case-insensitive filesystem.
+func configuredMachineForPath(machines map[string]string, path string) (string, bool) {
+	if len(machines) == 0 {
+		return "", false
+	}
+	key, err := pathutil.LocalComparisonKey(path)
+	if err != nil {
+		return "", false
+	}
+	bestRoot, machine := "", ""
+	for root, candidate := range machines {
+		cleanRoot, err := pathutil.LocalComparisonKey(root)
+		if err != nil || len(cleanRoot) <= len(bestRoot) || !pathWithinRoot(key, cleanRoot) {
+			continue
+		}
+		bestRoot, machine = cleanRoot, candidate
+	}
+	return machine, bestRoot != ""
+}
+
+// pathWithinRoot reports whether path is root itself or lies below it. It is the containment test the
+// inherited machine lookup applies (internal/sync's pathWithinRoot): a sibling that merely shares a
+// prefix ("/r/other" against "/r/one") is not inside the root.
+func pathWithinRoot(path, root string) bool {
+	relative, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 func (r *SourceReader) resolveFactory(provider string) (parser.AgentDef, parser.ProviderFactory, error) {
@@ -290,7 +351,7 @@ func (r *SourceReader) Read(ctx context.Context, ref Ref) (Conversation, error) 
 	outcome, err := provider.Parse(ctx, parser.ParseRequest{
 		Source:      source,
 		Fingerprint: fingerprint,
-		Machine:     r.cfg.InstallationID,
+		Machine:     r.machineForSource(def.Type, source),
 	})
 	if err != nil {
 		return Conversation{}, fmt.Errorf("parsing %s: %w", source.DisplayPath, err)
@@ -303,24 +364,44 @@ func (r *SourceReader) Read(ctx context.Context, ref Ref) (Conversation, error) 
 	return conversationFromParse(result, source, fingerprint), nil
 }
 
-// pickResult chooses the parsed session a reference named. A multi-session source (a container or a
-// database) returns several; the reference's own id decides, and a single result is taken as-is.
+// pickResult chooses the parsed session a reference named.
+//
+// A reference that names a filesystem path names a *source*, not one of the sessions a parse of it may
+// produce: the provider resolved the path to the session it belongs to, so a single result is that
+// session whatever id the provider reports, and a parse that produced several (a transcript holding a
+// DAG fork) is not one session a path can single out.
+//
+// Every other reference names a *session*, and the parse has to produce that identity. Taking the sole
+// result as-is was wrong the moment a provider resolves a reference by normalising it: the Piebald
+// provider looks a fork reference such as `42-7` up as its base chat 42, so a chat with no such fork
+// parses to the one result `piebald:42` and an inspection reported the base conversation as the fork
+// that was asked for. The sync engine makes the same check for the same reason (internal/sync's
+// providerSessionSourceMtime parses the base source and requires the requested session id to appear in
+// the outcome).
 func pickResult(outcome parser.ParseOutcome, ref Ref) (parser.ParseResult, bool) {
 	if len(outcome.Results) == 0 {
 		return parser.ParseResult{}, false
 	}
-	if len(outcome.Results) == 1 {
-		return outcome.Results[0].Result, true
+	if looksLikePath(ref.ID) {
+		if len(outcome.Results) == 1 {
+			return outcome.Results[0].Result, true
+		}
+		return parser.ParseResult{}, false
 	}
 	_, raw := parser.StripHostPrefix(ref.ID)
 	for _, candidate := range outcome.Results {
-		session := candidate.Result.Session
-		if session.SourceSessionID == raw || session.ID == ref.ID ||
-			strings.HasSuffix(session.ID, ":"+raw) {
+		if sessionIsRef(candidate.Result.Session, ref.ID, raw) {
 			return candidate.Result, true
 		}
 	}
 	return parser.ParseResult{}, false
+}
+
+// sessionIsRef reports whether a parsed session is the one a reference's identifier names: the id the
+// caller wrote (the provider-prefixed spelling), the native id that spelling ends in, or the raw id the
+// reference named inside it.
+func sessionIsRef(session parser.ParsedSession, id, raw string) bool {
+	return session.SourceSessionID == raw || session.ID == id || strings.HasSuffix(session.ID, ":"+raw)
 }
 
 // describeOutcome explains an empty parse result without inventing one.

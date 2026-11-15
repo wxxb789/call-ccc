@@ -44,6 +44,11 @@ ROOT = Path(os.environ.get("CALLCCC_GATE_ROOT") or Path(__file__).resolve().pare
 PASS, FAIL, SKIP, BOUNDARY, NA = "PASS", "FAIL", "SKIP", "BOUNDARY", "N/A"
 KNOWN_STEPS = ("gofmt", "build", "vet", "test", "selftest", "parity", "secrets")
 
+#: How many characters of ``*.go`` paths one ``gofmt`` invocation may carry. Windows caps a process
+#: command line at 32 767 characters, and the carried tree's file list is far past that, so the step
+#: runs bounded batches that stay well inside the cap on every platform -- see ``gofmt_batches``.
+GOFMT_BATCH_CHARS = 8000
+
 
 def read_list(name: str) -> list[str]:
     path = ROOT / "scripts" / name
@@ -64,9 +69,13 @@ def run(cmd: list[str], env: dict[str, str] | None = None, timeout: int = 1800):
         return subprocess.run(
             cmd, cwd=str(ROOT), env=merged, capture_output=True, text=True, timeout=timeout
         )
-    except FileNotFoundError as exc:
-        # A missing binary is a step result, not a crash: report it as rc=127.
-        return subprocess.CompletedProcess(cmd, 127, "", f"{exc}\n")
+    except OSError as exc:
+        # A missing binary is a step result, not a crash: report it as rc=127. Every other OSError --
+        # a command line the platform refuses (Windows caps one at 32 767 characters), a binary it
+        # cannot execute -- is the same kind of answer, so a step reports it instead of the gate
+        # ending in a traceback with no verdict at all.
+        return subprocess.CompletedProcess(cmd, 127 if isinstance(exc, FileNotFoundError) else 126,
+                                           "", f"{exc}\n")
 
 
 def tail(text: str, limit: int = 2500) -> str:
@@ -125,17 +134,51 @@ def go_env() -> tuple[dict[str, str], str | None]:
     return env, None
 
 
+def gofmt_batches(files: list[str], limit: int = GOFMT_BATCH_CHARS) -> list[list[str]]:
+    """Split the ``*.go`` list into invocations that fit a process command line.
+
+    Windows caps a process command line at 32 767 characters, and the carried AgentsView tree holds
+    thousands of ``*.go`` files, so one ``gofmt -l <every path>`` invocation cannot be started there at
+    all. The batches together are still the whole list, in the same order, and a path longer than the
+    limit is a batch of its own rather than a dropped one.
+    """
+    batches: list[list[str]] = []
+    batch: list[str] = []
+    used = 0
+    for path in files:
+        cost = len(path) + 1  # the separator the command line spends between arguments
+        if batch and used + cost > limit:
+            batches.append(batch)
+            batch, used = [], 0
+        batch.append(path)
+        used += cost
+    if batch:
+        batches.append(batch)
+    return batches
+
+
 def step_gofmt(go_files: list[str]) -> tuple[str, str]:
     if not shutil.which("gofmt"):
         return FAIL, "gofmt not found (Go toolchain is required)"
     if not go_files:
         return SKIP, "no Go sources in the tree yet"
-    proc = run(["gofmt", "-l", *go_files])
-    if proc.returncode != 0:
-        return FAIL, tail(proc.stderr)
-    unformatted = [line for line in proc.stdout.splitlines() if line.strip()]
+    batches = gofmt_batches(go_files)
+    unformatted: list[str] = []
+    failed: list[str] = []
+    for batch in batches:
+        proc = run(["gofmt", "-l", *batch])
+        if proc.returncode != 0:
+            failed.append(tail(proc.stderr, 1200))
+            continue
+        unformatted.extend(line for line in proc.stdout.splitlines() if line.strip())
+    if failed:
+        # One line, so the tool's own message reaches the step's printed line (and any assertion that
+        # reads it) instead of only the detail's second line.
+        return FAIL, (f"gofmt could not check {len(failed)} of {len(batches)} batch(es): "
+                      + " | ".join(failed))
     if unformatted:
-        return FAIL, "not gofmt-clean:\n" + "\n".join(unformatted[:40])
+        more = f"\n… and {len(unformatted) - 40} more" if len(unformatted) > 40 else ""
+        return FAIL, "not gofmt-clean:\n" + "\n".join(unformatted[:40]) + more
     return PASS, f"{len(go_files)} file(s) gofmt-clean"
 
 

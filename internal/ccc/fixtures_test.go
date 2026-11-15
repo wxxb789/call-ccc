@@ -594,3 +594,311 @@ func TestEmptyParseOutcomeIsExplained(t *testing.T) {
 		t.Errorf("an unknown skip reason reads as %q", got)
 	}
 }
+
+// fixedSourceProvider answers the reader's three questions from what a case sets: the source a
+// reference resolves to, a constant fingerprint, and one parse outcome. It is the stand-in for the one
+// shape no committed fixture produces -- a provider whose *lookup* normalises a reference onto a source
+// that parses to a different session (Piebald resolves a fork reference such as `42-7` to its base chat
+// 42), or one whose parse outcome a case wants to control row by row -- and it also keeps the
+// ProviderConfig and ParseRequest it was built and asked with, so the configuration a reader gives
+// a provider is observable. The embedded interface is nil: a case that reached another method
+// would panic rather than be answered quietly.
+type fixedSourceProvider struct {
+	parser.Provider
+	source  parser.SourceRef
+	outcome parser.ParseOutcome
+	config  parser.ProviderConfig
+	request parser.ParseRequest
+}
+
+func (p *fixedSourceProvider) FindSource(
+	context.Context, parser.FindSourceRequest,
+) (parser.SourceRef, bool, error) {
+	return p.source, true, nil
+}
+
+func (p *fixedSourceProvider) Fingerprint(
+	context.Context, parser.SourceRef,
+) (parser.SourceFingerprint, error) {
+	return parser.SourceFingerprint{Key: "fixed"}, nil
+}
+
+func (p *fixedSourceProvider) Parse(
+	_ context.Context, req parser.ParseRequest,
+) (parser.ParseOutcome, error) {
+	p.request = req
+	return p.outcome, nil
+}
+
+// fixedSourceFactory hands the reader one provider instance, whatever configuration it asks with.
+type fixedSourceFactory struct {
+	def      parser.AgentDef
+	provider *fixedSourceProvider
+}
+
+func (f fixedSourceFactory) Definition() parser.AgentDef { return f.def }
+
+func (f fixedSourceFactory) Capabilities() parser.Capabilities { return parser.Capabilities{} }
+
+func (f fixedSourceFactory) NewProvider(cfg parser.ProviderConfig) parser.Provider {
+	f.provider.config = cfg
+	return f.provider
+}
+
+// readerOverFixedProvider builds a reader whose only provider is the given stand-in, for an agent the
+// registry knows (so a reference can name it) and the configuration supplies.
+func readerOverFixedProvider(
+	t *testing.T, cfg config.Config, agent parser.AgentType,
+) (*SourceReader, *fixedSourceProvider) {
+	t.Helper()
+	def, ok := parser.AgentByType(agent)
+	if !ok {
+		t.Fatalf("the registry does not know %q", agent)
+	}
+	provider := &fixedSourceProvider{}
+	reader := &SourceReader{
+		cfg:       cfg,
+		factories: map[parser.AgentType]parser.ProviderFactory{agent: fixedSourceFactory{def: def, provider: provider}},
+	}
+	return reader, provider
+}
+
+// parsedSessionFor builds the minimal parsed session a parse outcome carries for one identity.
+func parsedSessionFor(agent parser.AgentType, id, rawID string) parser.ParseResult {
+	return parser.ParseResult{Session: parser.ParsedSession{
+		Agent:           agent,
+		ID:              id,
+		SourceSessionID: rawID,
+		File:            parser.FileInfo{Path: "/tmp/" + rawID + ".jsonl"},
+	}}
+}
+
+// TestReadRejectsASingleResultThatIsNotTheReference pins the identity rule for the one shape the
+// shortcut broke: a provider resolves a *fork* reference to the base conversation it forks from, so a
+// basic chat parses to the single result `piebald:42` while the caller asked for `piebald:42-7`. The
+// reader used to take the sole result as the requested session, which reported the base conversation as
+// a fork that does not exist. The requested identity is now required to appear in the parse outcome --
+// the same check the sync engine makes before it treats Piebald's chat mtime as a fork's
+// (internal/sync's providerSessionSourceMtime).
+func TestReadRejectsASingleResultThatIsNotTheReference(t *testing.T) {
+	ctx := context.Background()
+	cfg := fixtureConfig(t)
+	reader, provider := readerOverFixedProvider(t, cfg, parser.AgentPiebald)
+	provider.source = parser.SourceRef{
+		Provider:       parser.AgentPiebald,
+		ConfiguredRoot: cfg.InstallationID,
+		DisplayPath:    "/sessions/app.db#42",
+	}
+	provider.outcome = parser.ParseOutcome{Results: []parser.ParseResultOutcome{
+		{Result: parsedSessionFor(parser.AgentPiebald, "piebald:42", "42")},
+	}}
+
+	if _, err := reader.Read(ctx, Ref{Provider: "piebald", ID: "42-7"}); !errors.Is(err, ErrNotFound) {
+		t.Errorf("reading a fork that does not exist: err = %v, want ErrNotFound", err)
+	}
+	if provider.request.Source.DisplayPath != "/sessions/app.db#42" {
+		t.Errorf("the reader did not ask the provider to parse the resolved source: %+v",
+			provider.request)
+	}
+
+	// The fork the chat really produced is the reference's own answer.
+	provider.outcome = parser.ParseOutcome{Results: []parser.ParseResultOutcome{
+		{Result: parsedSessionFor(parser.AgentPiebald, "piebald:42", "42")},
+		{Result: parsedSessionFor(parser.AgentPiebald, "piebald:42-7", "42-7")},
+	}}
+	conversation, err := reader.Read(ctx, Ref{Provider: "piebald", ID: "42-7"})
+	if err != nil {
+		t.Fatalf("reading the fork that exists: %v", err)
+	}
+	if conversation.Source.SessionID != "piebald:42-7" {
+		t.Errorf("the read reported session %q, want the fork the reference named",
+			conversation.Source.SessionID)
+	}
+}
+
+// TestReadAcceptsTheOnlyResultOfAPathReference pins the other half of the same rule: a reference that
+// names a filesystem path names a *source*, and the provider's own resolution of that path is the
+// session's identity -- so the single result is the answer even though the path is not a session id and
+// an identity comparison could never match it.
+func TestReadAcceptsTheOnlyResultOfAPathReference(t *testing.T) {
+	cfg := fixtureConfig(t)
+	reader, provider := readerOverFixedProvider(t, cfg, parser.AgentClaude)
+	path := filepath.Join(cfg.AgentDirs[parser.AgentClaude][0], "-home-user-code-example-api",
+		claudeFixtureRef.ID+".jsonl")
+	provider.source = parser.SourceRef{
+		Provider:       parser.AgentClaude,
+		ConfiguredRoot: cfg.AgentDirs[parser.AgentClaude][0],
+		DisplayPath:    path,
+		FingerprintKey: path,
+	}
+	provider.outcome = parser.ParseOutcome{Results: []parser.ParseResultOutcome{
+		{Result: parsedSessionFor(parser.AgentClaude, "claude:"+claudeFixtureRef.ID, claudeFixtureRef.ID)},
+	}}
+	conversation, err := reader.Read(context.Background(), Ref{Provider: "claude", ID: path})
+	if err != nil {
+		t.Fatalf("reading by path: %v", err)
+	}
+	if conversation.Source.SessionID != "claude:"+claudeFixtureRef.ID {
+		t.Errorf("the path read reported session %q", conversation.Source.SessionID)
+	}
+}
+
+// TestPickResultRequiresTheReferenceIdentity pins the selection helper's own answers, the ones a fixture
+// cannot produce for every spelling: which results count as the reference (its raw id, the provider's
+// prefixed id, the native id the stored id ends in), that a lone result is not the answer unless it is
+// the reference, that several results are filtered by identity rather than picked, and that a path
+// reference is answered by the source's own single result.
+func TestPickResultRequiresTheReferenceIdentity(t *testing.T) {
+	one := func(id, raw string) parser.ParseOutcome {
+		return parser.ParseOutcome{Results: []parser.ParseResultOutcome{
+			{Result: parsedSessionFor(parser.AgentPiebald, id, raw)},
+		}}
+	}
+	base := parsedSessionFor(parser.AgentPiebald, "piebald:42", "42")
+	fork := parsedSessionFor(parser.AgentPiebald, "piebald:42-7", "42-7")
+	both := parser.ParseOutcome{Results: []parser.ParseResultOutcome{
+		{Result: base}, {Result: fork},
+	}}
+	pathRef := Ref{Provider: "claude", ID: "/tmp/sessions/" + claudeFixtureRef.ID + ".jsonl"}
+	cases := []struct {
+		name    string
+		outcome parser.ParseOutcome
+		ref     Ref
+		found   bool
+	}{
+		{"single result, reference in its raw id", one("piebald:42", "42"),
+			Ref{Provider: "piebald", ID: "42"}, true},
+		{"single result, reference in the prefixed id", one("piebald:42", "42"),
+			Ref{Provider: "piebald", ID: "piebald:42"}, true},
+		{"single result, reference is another session", one("piebald:42", "42"),
+			Ref{Provider: "piebald", ID: "42-7"}, false},
+		{"several results, the reference is the second", both,
+			Ref{Provider: "piebald", ID: "42-7"}, true},
+		{"several results, none is the reference", both,
+			Ref{Provider: "piebald", ID: "42-9"}, false},
+		{"no results", parser.ParseOutcome{}, Ref{Provider: "piebald", ID: "42"}, false},
+		{"path reference, one result", one("claude:"+claudeFixtureRef.ID, claudeFixtureRef.ID),
+			pathRef, true},
+		{"path reference, several results", parser.ParseOutcome{Results: []parser.ParseResultOutcome{
+			{Result: parsedSessionFor(parser.AgentClaude, "claude:a", "a")},
+			{Result: parsedSessionFor(parser.AgentClaude, "claude:b", "b")}}}, pathRef, false},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			result, found := pickResult(testCase.outcome, testCase.ref)
+			if found != testCase.found {
+				t.Fatalf("found = %v, want %v", found, testCase.found)
+			}
+			if found && result.Session.ID == "" {
+				t.Error("a found result carries no identity")
+			}
+		})
+	}
+}
+
+// TestReadUsesTheConfiguredSourceMachine pins the machine a read reports for a source under a root the
+// configuration labels as another machine's: it is that label, not this installation's identity, because
+// the machine is one of the parse request's inputs (the providers record it on the parsed session) and
+// the inherited sync engine resolves it from the same configured mapping.
+func TestReadUsesTheConfiguredSourceMachine(t *testing.T) {
+	ctx := context.Background()
+	claudeRoot := filepath.Join(fixtureRoot(t), "claude")
+	for name, machines := range map[string]map[parser.AgentType]map[string]string{
+		"labelled":     {parser.AgentClaude: {claudeRoot: "archivebox"}},
+		"this machine": {parser.AgentClaude: {claudeRoot: "localbox"}},
+		"unlabelled":   nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := fixtureConfig(t)
+			cfg.InstallationID = "localbox"
+			cfg.SourceMachines = machines
+			conversation, err := NewSourceReader(cfg).Read(ctx, claudeFixtureRef)
+			if err != nil {
+				t.Fatalf("reading the fixture: %v", err)
+			}
+			want := "localbox"
+			if name == "labelled" {
+				want = "archivebox"
+			}
+			if conversation.Source.Machine != want {
+				t.Errorf("a source under a %s root reports machine %q, want %q", name,
+					conversation.Source.Machine, want)
+			}
+		})
+	}
+}
+
+// antigravityBrainTranscript writes one small Antigravity conversation's plaintext transcript -- a user
+// step and a model step -- under a throw-away provider root, and returns that root. The transcript is
+// the session source the inherited provider reads whenever the conversation has no database, which is
+// what lets a case exercise the provider's foreign-root handling without a store.
+func antigravityBrainTranscript(t *testing.T) (string, string) {
+	t.Helper()
+	const id = "5c1d2f30-9b47-4a2c-8f0e-1d2b3c4a5e60"
+	root := t.TempDir()
+	path := filepath.Join(root, "brain", id, ".system_generated", "logs", "transcript.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("preparing the provider root: %v", err)
+	}
+	lines := []string{
+		`{"created_at":"2026-05-04T09:15:00Z","content":"Where is the retry cap configured?",` +
+			`"source":"USER_EXPLICIT","status":"DONE","step_index":0,"type":"USER_INPUT"}`,
+		`{"created_at":"2026-05-04T09:15:05Z","content":"It is set in internal/retry/config.go.",` +
+			`"source":"MODEL","status":"DONE","step_index":1,"type":"PLANNER_RESPONSE"}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("writing the transcript: %v", err)
+	}
+	return root, id
+}
+
+// TestReadKeepsAForeignRootForeign pins the other half of the configured mapping: the source a provider
+// resolves for a root that belongs to another machine is marked as remote by the provider itself, which
+// is only possible when the reader hands the provider the configured root-to-machine labels. Antigravity
+// is the provider that draws a conclusion from them -- a foreign root's working directory is metadata
+// from another machine, so it is kept as a project hint and no local filesystem discovery runs for it --
+// and its inherited tests pin that distinction for a provider that was configured with the mapping. This
+// is the reader's own end of it: the same fixture, the same provider, told what the configuration knows,
+// reports a remote working directory and the foreign machine's sessions.
+func TestReadKeepsAForeignRootForeign(t *testing.T) {
+	ctx := context.Background()
+	root, id := antigravityBrainTranscript(t)
+	for name, machines := range map[string]map[parser.AgentType]map[string]string{
+		"foreign root": {parser.AgentAntigravity: {root: "archivebox"}},
+		"local root":   {parser.AgentAntigravity: {root: "localbox"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := fixtureConfig(t)
+			cfg.InstallationID = "localbox"
+			cfg.SourceMachines = machines
+			cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentAntigravity: {root}}
+			reader := NewSourceReader(cfg)
+
+			source, found, err := reader.Resolve(ctx, Ref{Provider: "antigravity", ID: id})
+			if err != nil {
+				t.Fatalf("resolving the transcript: %v", err)
+			}
+			if !found {
+				t.Fatalf("the transcript was not resolved")
+			}
+			wantMachine := "localbox"
+			if source.CwdResolution.State == parser.SourceCwdRemote {
+				if name != "foreign root" {
+					t.Errorf("a source under a %s is marked remote: %+v", name, source.CwdResolution)
+				}
+				wantMachine = "archivebox"
+			} else if name == "foreign root" {
+				t.Errorf("a source under a foreign root reports cwd state %v, want %v",
+					source.CwdResolution.State, parser.SourceCwdRemote)
+			}
+			conversation, err := reader.Read(ctx, Ref{Provider: "antigravity", ID: id})
+			if err != nil {
+				t.Fatalf("reading the transcript: %v", err)
+			}
+			if conversation.Source.Machine != wantMachine {
+				t.Errorf("a source under a %s reports machine %q, want %q", name,
+					conversation.Source.Machine, wantMachine)
+			}
+		})
+	}
+}
