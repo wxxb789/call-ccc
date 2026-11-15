@@ -16,6 +16,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -81,7 +82,10 @@ func claudeSession() string {
 		"id":   "toolu_01Example0000000000000000",
 		"name": "Read",
 		"input": map[string]any{
-			"file_path": filepath.Join(claudeCwd(), "internal/retry/policy.go"),
+			// path.Join, not filepath.Join: this string is the wire form a transcript holds, which is
+			// a POSIX path on every platform, and the committed bytes have to be regenerable
+			// byte-for-byte wherever the generator runs.
+			"file_path": path.Join(claudeCwd(), "internal/retry/policy.go"),
 		},
 	}}
 	builder := testjsonl.NewSessionBuilder().

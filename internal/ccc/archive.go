@@ -86,9 +86,11 @@ type ArchiveStatus struct {
 //
 // An identifier is looked up as the archive's `<agent>:<native id>` spelling first and then by the
 // inherited raw-suffix answer, so a native id resolves even when the stored one carries an agent or
-// machine prefix. A reference that names a file resolves through the file the session was read from
-// (`sessions.file_path`, exact path and agent): the stored id is `<agent>:<native id>`, so a path can
-// never be one. More than one candidate is reported as ambiguous instead of picking one.
+// machine prefix; that answer is narrowed to the rows this provider recorded (sessionIDsForProvider),
+// because it has no agent predicate of its own. A reference that names a file resolves through the
+// file the session was read from (`sessions.file_path`, exact path and agent): the stored id is
+// `<agent>:<native id>`, so a path can never be one. More than one candidate is reported as ambiguous
+// instead of picking one.
 func (a *Archive) resolveSessionID(ctx context.Context, ref Ref) (string, bool, error) {
 	if strings.TrimSpace(ref.ID) == "" {
 		return "", false, fmt.Errorf("%s: empty session id", ref.Provider)
@@ -119,6 +121,10 @@ func (a *Archive) resolveSessionID(ctx context.Context, ref Ref) (string, bool, 
 	if err != nil {
 		return "", false, err
 	}
+	matches, err = a.sessionIDsForProvider(ctx, matches, ref.Provider)
+	if err != nil {
+		return "", false, err
+	}
 	switch len(matches) {
 	case 0:
 		return "", false, nil
@@ -127,6 +133,30 @@ func (a *Archive) resolveSessionID(ctx context.Context, ref Ref) (string, bool, 
 	default:
 		return "", false, &AmbiguousError{Ref: ref, Candidates: matches}
 	}
+}
+
+// sessionIDsForProvider keeps the candidates the requested provider recorded.
+//
+// The inherited suffix lookup answers "which stored ids end in this native id" and has no agent
+// predicate, while a native id can belong to any agent: without this narrowing, `codex:<a claude
+// session's id>` would resolve the Claude row and an inspection would report another agent's
+// conversation under this reference. The archive's own `agent` column decides, exactly as it does for
+// a reference that names a file (ListSessionIDsByFilePath takes the agent with the path).
+func (a *Archive) sessionIDsForProvider(
+	ctx context.Context, ids []string, provider string,
+) ([]string, error) {
+	kept := make([]string, 0, len(ids))
+	for _, id := range ids {
+		session, err := a.database.GetSession(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if session == nil || session.Agent != provider {
+			continue
+		}
+		kept = append(kept, id)
+	}
+	return kept, nil
 }
 
 // Status reports what the archive holds for a reference, without reading its messages.

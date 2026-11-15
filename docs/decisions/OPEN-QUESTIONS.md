@@ -154,3 +154,47 @@ supersede it with a newer one and say which it supersedes.
 - **Settled by:** the owner's preference between a label that names the writer's policy as an
   inference and one that states what the read shows; goal 0002's writer needing a policy name it
   cannot have.
+
+## Q-0001-08 — How a tool call's own result events reach the conversation
+
+- **Status:** resolved (default taken)
+- **Question:** the round-2 review (finding 1) measured that a call's own result events never reached a
+  source read: the inherited parser attaches a Codex `function_call_output` to the call
+  (`ParsedToolCall.ResultEvents`), `messageFromParsed` carried the calls but not their events, and so an
+  inspection reported 0 tool results for a session whose archive read reported 1 with the shell output
+  in it. Carrying them has two shapes: map each event onto the message's existing `ToolResult` rows —
+  which is exactly what `messageFromArchive` does for the stored events, so both reads describe the same
+  session the same way — or add an event-shaped `ToolCall.ResultEvents` field that also keeps the
+  event's `AgentID`, `SubagentSessionID` and timestamp.
+- **Default taken:** the first. `ToolResult` already holds the id, source, status, content and size, and
+  `Source` says which kind of row it is (`function_call_output`, a Claude tool-result block); the
+  re-recorded Codex dump shows both reads reporting the same 51-byte shell output under the same digest,
+  which is the agreement the round-trip evidence exists to show. The event's subagent attribution stays
+  on the call (`ToolCall.SubagentSessionID`) where the inherited parser already puts a spawned call's
+  session id; `docs/evidence/0001-…md` §8 names that as a stated limit rather than a silent loss.
+- **Reversal:** add the event shape as a fourth field and dump it (`ToolResultRow` in
+  `internal/ccc/parity/dump.go`), which needs `python3 scripts/upstream-compare.py --record` (network)
+  again because the dump tool id moves with the shape; the CLI needs no change either way.
+- **Settled by:** goal 0002's writer needing per-event attribution (a subagent timeline in the target
+  format) instead of the single result row it gets today.
+
+## Q-0001-09 — What a parity run that cannot enumerate the tree reports
+
+- **Status:** resolved (default taken)
+- **Question:** the round-2 review (finding 5) measured that without git the file-list and ignore rules
+  were skipped while the script still exited 0, so the required gate step printed an unqualified
+  `GATE: PASS` for a tree whose carried files were never enumerated. The verdict could be folded into
+  the existing `FAIL` (exit 1, "the tree violates parity"), or reported as its own status the gate
+  rejects.
+- **Default taken:** its own status — `parity: INCOMPLETE`, exit `2`, naming the two rules that did not
+  run; 1 keeps its meaning ("a rule is violated"), 0 keeps "verified", and the gate's required-step
+  machinery already fails any non-zero outcome, so an unverified tree cannot be quoted as agreement.
+  Everything answerable without a file list still runs first, so real drift in such a tree is still
+  reported as `FAIL` with its offenders rather than hidden behind the incompleteness. `docs/harness.md`,
+  `docs/upstream.md` and the script's own docstring state the three exit codes, and
+  `scripts/tests/test_upstream_parity.py` pins the verdict.
+- **Reversal:** return 1 from the same branch and drop the status — one `except` clause in
+  `scripts/upstream-parity.py`; the gate's verdict is identical either way, only a reader's telling of
+  "unverifiable" from "violated" changes.
+- **Settled by:** the owner's preference for a distinct incomplete verdict over a failure that also
+  covers trees nobody inspected closely.

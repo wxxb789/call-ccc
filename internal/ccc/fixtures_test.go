@@ -168,13 +168,31 @@ func TestFixtureParseReportsIdentityAndConversation(t *testing.T) {
 	codexCounts := Summarize(codex.Messages)
 	wantCodex := Counts{
 		Messages: 6, UserMessages: 2, AssistantMessages: 4, SystemRecords: 1,
-		CompactBoundaries: 1, ToolCalls: 1,
+		CompactBoundaries: 1, ToolCalls: 1, ToolResults: 1,
 	}
 	if codexCounts != wantCodex {
 		t.Errorf("Codex counts = %+v, want %+v", codexCounts, wantCodex)
 	}
 	if codex.Fidelity.MalformedLines != 0 {
 		t.Errorf("codex malformed lines = %d, want 0", codex.Fidelity.MalformedLines)
+	}
+	// Codex records a function call's output as an event on the call rather than as a message of its
+	// own, so the call's message is the only place its shell output can appear in a source read. The
+	// parser attaches the event to the call; a read that dropped it would report a call with no
+	// outcome while an archive read of the same session kept the body.
+	codexResults := codex.Messages[1].ToolResults
+	if len(codexResults) != 1 {
+		t.Fatalf("codex: tool results on the call's message = %+v, want the shell output",
+			codexResults)
+	}
+	shellOutput := "internal/retry/config.go:41: maxBackoffSeconds = 30"
+	if !strings.Contains(codexResults[0].ContentRaw, shellOutput) {
+		t.Errorf("codex: the source read lost the shell output: %+v", codexResults[0])
+	}
+	if codexResults[0].ToolUseID != codex.Messages[1].ToolCalls[0].ToolUseID ||
+		codexResults[0].Source != "function_call_output" ||
+		codexResults[0].ContentSize != len(shellOutput) {
+		t.Errorf("codex: the result row does not describe the call's output: %+v", codexResults[0])
 	}
 
 	report := reportFrom(claude)

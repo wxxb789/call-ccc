@@ -72,7 +72,9 @@ type ToolCall struct {
 }
 
 // ToolResult is the recorded outcome of a tool call, kept apart from the call so a translation can
-// report a result it cannot carry instead of inlining it as assistant prose.
+// report a result it cannot carry instead of inlining it as assistant prose. ContentRaw is the
+// provider's own raw content field for a tool-result block, or the content text of a result event the
+// provider attached to its call; Source says which kind it is, and both reads map it the same way.
 type ToolResult struct {
 	ToolUseID   string `json:"tool_use_id,omitempty"`
 	Status      string `json:"status,omitempty"`

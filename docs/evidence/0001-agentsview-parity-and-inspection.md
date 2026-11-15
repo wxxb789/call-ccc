@@ -96,15 +96,17 @@ harness runs the *same* oracle source in this tree and in a pristine checkout of
 separately copied fixture bytes and separately created archives.
 
 ```
-$ python3 scripts/upstream-compare.py                      # fetch mode: clones the pin itself
+$ python3 scripts/upstream-compare.py --record --scratch <tmp>/ccc-compare-0001-r2
 pin 83195c8a6861b8c74a4b6cb87512817fed6f8584 (v0.47.0-181-g83195c8a) from https://github.com/kenn-io/agentsview
-fetched the pinned revision into <tmp>/upstream (clean, at the pin)
+fetched the pinned revision into <tmp>/ccc-compare-0001-r2/upstream (clean, at the pin)
 - restored internal/pricing/snapshot/litellm_snapshot.json.gz in the pristine tree from upstream's pinned artifact
 - copied internal/ccc (10 Go source file(s)) from this tree into the pristine checkout: the oracle and its call/ccc wrapper are identical on both sides, so the only variable is which tree the inherited packages come from
-oracle source: 10 file(s), sha256=904abaca96843257ab51b66a65c5eca8093f1dc8b80936298e0a95b88a8a209e (identical on both sides)
+oracle source: 10 file(s), sha256=0080eb0bffb8adb6bbf0d1bf36c70b2c02ddf89b9eeacbc84956a76ee01fbf55 (identical on both sides)
 claude: fixture sha256=2bd510821d4abf83… ours=32244340553137fd… pristine=32244340553137fd… agreement=yes
-codex: fixture sha256=d9957a8d6f5731a3… ours=cf11dde0fb883e59… pristine=cf11dde0fb883e59… agreement=yes
-RESULT: PASS — 2 case(s) agree byte for byte with the pinned revision      # rc=0, 38 s
+  recorded internal/ccc/parity/testdata/oracle/claude.json
+codex: fixture sha256=d9957a8d6f5731a3… ours=fe8d542a39799f8f… pristine=fe8d542a39799f8f… agreement=yes
+  recorded internal/ccc/parity/testdata/oracle/codex.json
+RESULT: PASS — 2 case(s) agree byte for byte with the pinned revision      # rc=0, 48 s
 ```
 
 The same command against an existing clean checkout (`--upstream /path/to/agentsview`) reports the
@@ -119,8 +121,14 @@ tree's inherited code stops producing them:
 ```
 $ sha256sum internal/ccc/parity/testdata/oracle/*.json
 32244340553137fd9af173c84eb9c17c94d655c055af5e536dee0cc8d2daa712  internal/ccc/parity/testdata/oracle/claude.json
-cf11dde0fb883e593575d18938a9ea4b1b1a0d923db2d822d89f89d99ef8666d  internal/ccc/parity/testdata/oracle/codex.json
+fe8d542a39799f8fe973cb74b9ca2df86665e5f348c6a00d0e18eebf0e5e9a91  internal/ccc/parity/testdata/oracle/codex.json
 ```
+
+The Codex dump changed in this increment's fix pass, and only in its `parse` section: the wrapper now
+carries a call's own result events into the conversation (`internal/ccc/reader.go`, the same mapping
+`messageFromArchive` already used), so a Codex `function_call_output` reaches a source read instead of
+being dropped. The pristine side reproduces the change byte for byte, which is the point of recording
+from it: the adapter's correction is visible as agreement, not as a local edit to a dump.
 
 The dumps carry the archive round trip's shape: for the Claude fixture, parse reports 8 messages with
 1 tool call, 1 tool result and 1 compaction boundary; the archive read reports the same tool call and
@@ -129,7 +137,11 @@ result's length, because the inherited default configuration blocks result *bodi
 category), `"content_shown": "tool-payloads"` (what that read shows, in the dump's own vocabulary:
 `internal/ccc` derives it from the rows, since a read-only handle cannot see the writer's storage
 policy), and one malformed line on both sides — the truncated tail is counted, never turned into a
-message. For the Codex fixture the shell result body survives the round trip intact.
+message. For the Codex fixture the shell result body survives both reads: the parser attaches
+`function_call_output` to the call rather than as a message of its own, and each side of the dump now
+reports 1 tool result with the same content digest and the same 51-byte size — the source read
+reported 0 of them before this fix pass, so an inspection undercounted the session's results while an
+archive read of the same session kept the body.
 
 ## 3. No project-owned modification of the inherited parser/sync/DB/schema code and tests
 
@@ -198,22 +210,26 @@ gate: go=<go>/bin/go targets=./cmd/ccc/... ./internal/ccc/...
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 100 tests in 5.192s (rc=0)
-  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 25 project-owned prefix(es); files seen by git: 5613 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     selftest Ran 104 tests in 5.860s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 25 project-owned prefix(es); files seen by git: 5613 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes ver…
   PASS     secrets  no leaks found in 60 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
 
 The gate truncates the middle of a long step detail, which is why the `parity` line above opens with `…`;
-the same run's full summary is quoted in §3.
+the same run's full summary is quoted in §3. The `selftest` count is 104 in this run: the fix pass
+before it added the four carried-path cases for a declared line-ending normalisation (deleted from the
+working tree, modified in it, mode changed in git's index, matched by an ignore rule) and the case that
+pins the incomplete verdict for a tree git cannot enumerate.
 
-Wall clock for the whole gate on this host: 19–21 s with warm caches across this stage's runs (53 s
-cold, measured earlier in this increment); the quoted `selftest` duration is the last run's, and moves
-by a second or so between runs. The `secrets` count is the files under the manifest's project-owned
-prefixes, which includes the harness's own `scripts/tests/__pycache__/*.pyc` once the suite has run
-here (58 without them, 60 with the two this run's selftest left behind). `gofmt` covers the carried
-tree as well (3574 Go files); `build`/`vet`/`test` cover the three call/ccc packages, which compile the
-inherited packages they depend on.
+Wall clock for the whole gate on this host: 19–21 s with warm caches across the increment's earlier
+runs, and 25 s to 156 s across this fix pass's runs — the 156 s run followed a cold Go build cache, so
+`build`/`vet`/`test` recompiled the inherited packages. Every post-fix run reported 104 tests, with the
+`selftest` step itself taking between 5.9 s and 8.9 s. The `secrets` count is the files under the
+manifest's project-owned prefixes, which includes the harness's own `scripts/tests/__pycache__/*.pyc`
+once the suite has run here (58 without them, 60 with the two this run's selftest left behind).
+`gofmt` covers the carried tree as well (3574 Go files); `build`/`vet`/`test` cover the three call/ccc
+packages, which compile the inherited packages they depend on.
 
 ## 7. Measurements that shaped the harness
 
@@ -252,6 +268,20 @@ upstream's CI; `docs/harness.md` states this, and `parity` covers those files at
   would need upstream's live-daemon check, which lives in a `package main` call/ccc may not import
   ([the plan](../plans/0001-agentsview-parity-and-inspection.md), §3.1, states that boundary and §6
   records the decision to ship no write command).
+- **A result event's subagent attribution stays on the call.** A tool result a provider attaches to its
+  call reaches a source read as the message's `ToolResult` (id, source, status, content and size) —
+  the same mapping an archive read already used — but neither read carries the event's `AgentID` or
+  `SubagentSessionID`, because `internal/ccc`'s `ToolResult` has no field for them; a spawned call's
+  own `SubagentSessionID` is what the inherited parser sets on the call. The archive read additionally
+  folds the result's length onto the call (`result_size` in the recorded dump, where the source read
+  states it on the result row only), which is a difference in how the two reads describe the same
+  evidence, not in whether they hold it.
+- **`parity` cannot verify a tree git cannot enumerate.** No `git` on the host, or a root that is a
+  copy rather than a repository, leaves the file-list and ignore rules unasked, so the step now reports
+  `INCOMPLETE` and exits 2 instead of the pass with a disclosure inside its detail line it used to
+  print; the required-step machinery in `scripts/gate.py` rejects any non-zero outcome. A host that
+  needs a full pass therefore needs git — CI has it on all three runners — and the report a run prints
+  names the two rules it did not check.
 - **The ambiguity branch is not exercised by a fixture.** `AmbiguousError` and the CLI's "pass one of
   those session ids instead of a guess" line are implemented — the source reader reports several
   candidate sources for a changed path, and the archive reports every session row that names one

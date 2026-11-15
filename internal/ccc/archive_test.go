@@ -2,6 +2,7 @@ package ccc
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -347,6 +348,59 @@ func TestPathReferenceFindsTheArchivedSession(t *testing.T) {
 	if inspection.Archive.Status.SessionID != status.SessionID {
 		t.Errorf("the inspection reports session %q, the status %q",
 			inspection.Archive.Status.SessionID, status.SessionID)
+	}
+}
+
+// TestArchiveReferenceDoesNotCrossProviders pins that the inherited raw-suffix lookup is narrowed to
+// the provider a reference names. That lookup answers "which stored ids end in this native id" and has
+// no agent predicate, so without the narrowing `codex:<a claude session's id>` resolves the Claude row:
+// the inspection reports another agent's conversation under the requested label and the CLI exits
+// successfully although no Codex session exists anywhere.
+func TestArchiveReferenceDoesNotCrossProviders(t *testing.T) {
+	cfg := fixtureConfig(t)
+	claudeFile := fixturePath(t, filepath.Join("claude", "-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"))
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(cfg, archivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	ctx := context.Background()
+	if err := ingestor.IngestPaths(ctx, claudeFile); err != nil {
+		t.Fatalf("ingesting the fixture: %v", err)
+	}
+	archive, err := OpenArchive(ctx, archivePath)
+	if err != nil {
+		t.Fatalf("opening the archive: %v", err)
+	}
+	defer archive.Close()
+
+	// The archive holds the Claude session and nothing else, and its stored id is `claude:<native id>`:
+	// the same native id asked for as a Codex session is not this archive's Codex session.
+	crossed := Ref{Provider: "codex", ID: claudeFixtureRef.ID}
+	if status, found, err := archive.Status(ctx, crossed); err != nil || found {
+		t.Errorf("a codex reference resolved the claude row: found=%v err=%v status=%+v",
+			found, err, status)
+	}
+	if _, err := archive.Read(ctx, crossed); err == nil {
+		t.Error("reading a codex reference returned the claude row")
+	} else if !errors.Is(err, ErrNotFound) {
+		t.Errorf("reading a codex reference failed with %v, want a not-found answer", err)
+	}
+
+	inspection, err := Inspect(ctx, InspectOptions{
+		Ref:         crossed,
+		Reader:      NewSourceReader(cfg),
+		ArchivePath: archivePath,
+	})
+	if err != nil {
+		t.Fatalf("inspecting: %v", err)
+	}
+	if inspection.Archive != nil {
+		t.Errorf("the inspection reported the claude row for a codex reference: %+v", inspection.Archive)
+	}
+	if !strings.Contains(strings.Join(inspection.Warnings, "\n"),
+		"no readable source session for codex:"+claudeFixtureRef.ID) {
+		t.Errorf("the inspection does not say the codex source was unreadable: %v", inspection.Warnings)
 	}
 }
 

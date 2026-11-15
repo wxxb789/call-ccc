@@ -9,9 +9,17 @@ its record pins -- both read from the working tree, and from git's index where g
 generated build input is checked against the SHA-256 pinned inside the carried snapshot tool, so the
 input is verified against upstream's own pin rather than a second hard-coded copy.
 
+A tree git cannot enumerate -- no git on this host, or a root that is a copy rather than a repository
+-- is reported as ``INCOMPLETE`` and exits 2: the file-list and ignore rules cannot be asked, and the
+gate runs this script as a required step that rejects any non-zero outcome, so an unverified tree is
+never a pass. Everything answerable is still checked first, so real drift in such a tree is a failure
+with its offenders.
+
 Run by the gate as the required ``parity`` step (docs/harness.md); also runnable by hand:
 
     python3 scripts/upstream-parity.py [--root DIR] [--quiet]
+
+Exit codes: 0 the tree is verified, 1 a rule is violated, 2 the check could not be completed here.
 """
 
 from __future__ import annotations
@@ -55,6 +63,22 @@ class Failure(Exception):
         super().__init__(summary)
         self.summary = summary
         self.offenders = offenders
+
+
+class Incomplete(Exception):
+    """Verification this host cannot complete, which is not a pass.
+
+    Distinct from ``Failure``: nothing was found wrong with the tree, the tree could not be *checked*
+    -- a host without git cannot enumerate it. The gate runs this script as a required step and any
+    non-zero outcome fails it, so an incomplete run can never be read as agreement with the pin; the
+    checks that do not need a file list still run first, so real drift is still reported as a failure
+    with its offenders instead of being hidden behind the incompleteness.
+    """
+
+    def __init__(self, summary: str, skipped: list[str]):
+        super().__init__(summary)
+        self.summary = summary
+        self.skipped = skipped
 
 
 def tree_files(root: Path) -> tuple[list[str] | None, list[str]]:
@@ -174,30 +198,39 @@ def present(root: Path, path: str) -> bool:
     return target.exists() or target.is_symlink()
 
 
-def check_files(root: Path, manifest: Manifest, index: dict[str, tuple[str, str]] | None) -> tuple[int, int, int]:
+def carried_paths(manifest: Manifest) -> list[str]:
+    """Every path this tree must hold: the carried files plus the deviations it carries anyway.
+
+    A stored-byte deviation is a carried path like any other for discovery and for the rules about the
+    working tree: only its *bytes* differ, because upstream's blob can never be what that path holds
+    (that is why it is declared). Its digest is checked by :func:`check_deviations`, which is the one
+    place that knows about the allowance; leaving it out of the ignore check (or of the presence check
+    there) would let a normalised carried file be deleted or ignored and still pass.
+    """
+    return [record.path for record in manifest.files] + [
+        record.path for record in manifest.stored_deviations
+    ]
+
+
+def check_files(
+    root: Path, manifest: Manifest, index: dict[str, tuple[str, str]] | None,
+    modified: set[str] | None,
+) -> tuple[int, int, int]:
     """Verify every carried file against the pin.
 
     With git available the check reads the *index* -- what a fresh clone would receive, filters and
-    all -- and asks git which paths differ from it in the working tree. Without git it falls back to
-    hashing the working tree's bytes directly, which is the same answer for a tree whose files were
-    written by the importer.
+    all -- and asks git which paths differ from it in the working tree (``modified``, probed once by
+    the caller and shared with the deviation rule below). Without git it falls back to hashing the
+    working tree's bytes directly, which is the same answer for a tree whose files were written by the
+    importer.
 
-    Returns ``(checked, mode_unverified, symlinks, modified_in_worktree)``.
+    Returns ``(checked, mode_unverified, symlinks_hashed)``.
     """
     missing, drifted, wrong_shape, wrong_mode = [], [], [], []
     size_mismatch: list[str] = []
     mode_unverified = 0
     symlinks_hashed = 0
     dirty: list[str] = []
-    modified = git_modified(root) if index is not None else None
-    if index is not None and modified is None:
-        # A probe that could not answer must not read as "nothing is modified": that is the one answer
-        # which would look like a pass. The ignore probe below fails for the same reason.
-        raise Failure(
-            "could not ask git which carried paths differ from what it stores for them, so the check "
-            "cannot be completed",
-            ["git status --porcelain"],
-        )
     for record in manifest.files:
         if not present(root, record.path):
             missing.append(record.path)
@@ -271,7 +304,12 @@ def check_files(root: Path, manifest: Manifest, index: dict[str, tuple[str, str]
 
 def check_untracked(root: Path, manifest: Manifest, tracked: list[str] | None,
                     others: list[str]) -> int:
-    """Nothing git would add may sit outside the manifest unless this repository owns it."""
+    """Nothing git would add may sit outside the manifest unless this repository owns it.
+
+    A tree git could not enumerate answers ``0`` here -- this function cannot tell "nothing is
+    unexplained" from "nothing was listed" -- and the caller turns that into an incomplete run, which
+    the required gate step rejects.
+    """
     if tracked is None:
         return 0
     # Every path the manifest names is accounted for, whichever record kind names it: a carried file,
@@ -288,10 +326,17 @@ def check_untracked(root: Path, manifest: Manifest, tracked: list[str] | None,
 
 
 def check_not_ignored(root: Path, manifest: Manifest, tracked: list[str] | None) -> None:
-    """A carried file the ignore rules would skip is not carried by a fresh clone either."""
+    """A carried file the ignore rules would skip is not carried by a fresh clone either.
+
+    Every path this tree carries is asked about, a declared deviation carried anyway included: that
+    path is in the tree for the same reason as any other, and an ignore rule that matches it would
+    keep it out of a fresh clone. A tree git could not enumerate is answered by the caller's
+    incomplete verdict; this function says nothing about it, because "nothing is ignored" is the one
+    answer that would look like a pass.
+    """
     if tracked is None:
         return
-    ignored = ignored_paths(root, [record.path for record in manifest.files])
+    ignored = ignored_paths(root, carried_paths(manifest))
     if ignored is None:
         raise Failure(
             "could not ask git which carried paths are ignored, so the check cannot be completed",
@@ -306,7 +351,8 @@ def check_not_ignored(root: Path, manifest: Manifest, tracked: list[str] | None)
 
 
 def check_deviations(
-    root: Path, manifest: Manifest, index: dict[str, tuple[str, str]] | None
+    root: Path, manifest: Manifest, index: dict[str, tuple[str, str]] | None,
+    modified: set[str] | None,
 ) -> tuple[list[str], list[str], list[str]]:
     """Each declared deviation must still differ from upstream, or be carried as it declares.
 
@@ -320,7 +366,11 @@ def check_deviations(
       can never equal (a declared normalisation): the stored bytes are what must hold -- the index
       where git is available, the file's own bytes where it is not. A working-tree copy that still
       holds upstream's pre-normalisation bytes is named, not failed: git itself reads that copy as
-      clean, and what a clone receives is the stored form.
+      clean, and what a clone receives is the stored form. That path is a carried path in every other
+      respect, so the rules that need no byte comparison apply to it too -- its shape and mode from
+      git's index, its presence in the working tree, and a working tree git reports as modified.
+      :func:`check_not_ignored` asks the ignore rules about the same list of paths. The declaration is
+      an allowance for its bytes, never for its absence.
 
     Returns ``(still_differing, stored, pre_normalisation_on_disk)``.
     """
@@ -328,6 +378,7 @@ def check_deviations(
     notes: list[str] = []
     stored_notes: list[str] = []
     on_disk_only: list[str] = []
+    dirty: list[str] = []
     for record in manifest.skips:
         target = root / record.path
         # Only a file or a link has bytes to compare. A directory where the manifest declares a file
@@ -357,6 +408,21 @@ def check_deviations(
                         f"{record.path}: git stores {stored[1]}, the manifest records "
                         f"{record.stored_digest}")
                     continue
+                if stored[0] != record.mode:
+                    stale.append(
+                        f"{record.path}: git stores mode {stored[0]}, the manifest records "
+                        f"{record.mode}")
+                    continue
+                if on_disk is None:
+                    # git's index holding the path is not the working tree holding it, and it is the
+                    # working tree this repository ships: a checkout that lost the file (or turned it
+                    # into a directory) is a carried path that is gone, not a declaration that holds.
+                    stale.append(
+                        f"{record.path}: it is carried, but the working tree holds no file at it")
+                    continue
+                if modified is not None and record.path in modified:
+                    dirty.append(record.path)
+                    continue
             elif on_disk[0] not in (record.stored_digest, record.digest):
                 stale.append(
                     f"{record.path}: the file hashes to {on_disk[0]}, neither the bytes this tree "
@@ -383,6 +449,10 @@ def check_deviations(
                 f"is stale")
             continue
         notes.append(record.path)
+    if dirty:
+        raise Failure(
+            f"{len(dirty)} carried path(s) differ from what git stores for them", dirty
+        )
     if stale:
         raise Failure(
             f"{len(stale)} declared deviation(s) do not hold what the manifest declares",
@@ -453,19 +523,41 @@ def run(root: Path) -> list[str]:
     reported_pin = check_reported_pin(root, manifest)
     tracked, others = tree_files(root)
     index = git_index(root)
-    carried_checked, mode_unverified, symlinks_hashed = check_files(root, manifest, index)
+    modified = git_modified(root) if index is not None else None
+    if index is not None and modified is None:
+        # A probe that could not answer must not read as "nothing is modified": that is the one answer
+        # which would look like a pass. The ignore probe fails for the same reason.
+        raise Failure(
+            "could not ask git which carried paths differ from what it stores for them, so the check "
+            "cannot be completed",
+            ["git status --porcelain"],
+        )
+    carried_checked, mode_unverified, symlinks_hashed = check_files(root, manifest, index, modified)
     check_not_ignored(root, manifest, tracked)
     seen = check_untracked(root, manifest, tracked, others)
-    deviations, stored, on_disk_only = check_deviations(root, manifest, index)
+    deviations, stored, on_disk_only = check_deviations(root, manifest, index, modified)
     inputs = check_inputs(root, manifest)
+    if tracked is None:
+        # Everything answerable has been answered above, so a real violation is reported as a failure
+        # with its paths; what is left over is verification this host cannot perform at all. Returning
+        # zero here -- the shape this script used to have -- let the required gate step print an
+        # unqualified PASS for a tree whose carried files were never even enumerated, and a disclosure
+        # inside a PASS line is not something a required step can reject.
+        raise Incomplete(
+            "git could not enumerate this tree, so the checks that need a file list did not run",
+            [
+                "nothing git would add sits inside the tree unexplained: an unrecorded file inside "
+                "the carried tree would not be listed, so it could not be caught",
+                "no carried path matches this tree's ignore rules: a carried path git would skip on "
+                "add would not be caught",
+            ],
+        )
 
-    scope = "(git-less tree: file-discovery checks skipped)" if tracked is None else ""
     return [
         f"pin {manifest.header['pin']} ({manifest.header.get('describe', '')})",
         f"reported by cmd/ccc: {reported_pin}",
         f"carried: {carried_checked} file(s) identical to the pinned revision"
-        + ("" if index is None else " (compared through git's own object store)")
-        + f" {scope}".rstrip(),
+        + ("" if index is None else " (compared through git's own object store)"),
         f"deviations: {len(manifest.skips)} upstream path(s) declared "
         f"({len(stored)} of them carried with the bytes this tree stores)"
         f" + {len(manifest.inputs)} generated input(s), all present as declared",
@@ -522,6 +614,15 @@ def main(argv: list[str] | None = None) -> int:
         if len(failure.offenders) > MAX_LISTED:
             print(f"  … and {len(failure.offenders) - MAX_LISTED} more")
         return 1
+    except Incomplete as incomplete:
+        # Exit 1 would say "your tree violates parity" about a tree nobody looked at closely enough to
+        # say that; exit 0 would say the opposite. The gate rejects any non-zero outcome of this
+        # required step, so 2 is reported as its own verdict -- the tree is not verified.
+        print(f"parity: INCOMPLETE — {incomplete.summary}")
+        for skipped in incomplete.skipped:
+            print(f"  not checked: {skipped}")
+        print("  the gate's parity step is required and rejects this: an unverified tree is not a pass")
+        return 2
     if not args.quiet:
         for line in lines:
             print(line)

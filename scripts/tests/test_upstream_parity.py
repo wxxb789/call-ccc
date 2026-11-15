@@ -155,21 +155,37 @@ class ParityTree:
         self.write_bytes(path, stored)
         self.write_manifest()
 
+    def git_known_paths(self) -> list[str]:
+        """The file list a scripted git answers for this throw-away tree: the paths the manifest names.
+
+        The tree is not a repository, and a tree git cannot enumerate is now reported as an incomplete
+        run rather than a pass, so a case about another rule has to declare the file list itself. This
+        list is the manifest's own paths: the tree's remaining files (the pin constant, the carried
+        tool, the upstream document) are scaffolding the checks read directly, and listing them would
+        make each of them an unexplained file in a case that is about something else. A case that *is*
+        about the file list, or about a tree nobody can enumerate, passes ``tree_files`` itself.
+        """
+        try:
+            manifest = self.manifest_module.load_manifest(self.root / MANIFEST)
+        except self.manifest_module.ManifestError:
+            return []  # the case under test is the malformed manifest itself
+        return sorted(record.path for record in manifest.records if record.kind != "owned")
+
     def run_parity(self, **patches) -> tuple[int, str]:
         """Run the shipped check against this tree, with optional module seams patched.
 
-        A case that replaces ``tree_files`` is pretending git knows this throw-away tree, so it also
-        gets a git ignore answer unless it supplies one of its own: the two halves are one seam --
-        "what does git say about this tree" -- and a case about something else must not fall into the
-        unanswerable-probe failure by accident. The cases that *are* about the ignore answer or about
-        an unanswerable probe pass ``ignored_paths`` explicitly.
+        The seams are the answers a git-backed run takes from git: the file list, the index and the
+        ignore answer. A case that supplies a scripted ``subprocess`` is asking for the shipped git
+        branch and answers every one of them itself; otherwise each seam defaults to the throw-away
+        tree's own answer -- the manifest's paths for the file list, nothing ignored, and no index, so
+        the byte-hashing half of the check runs -- so that a case about some other rule cannot fall
+        into the unenumerable-tree verdict by accident. The cases that *are* about one of those answers
+        pass the seam explicitly.
         """
-        if "tree_files" in patches and "ignored_paths" not in patches:
-            patches["ignored_paths"] = lambda root, paths: []
-        if not ({"git_index", "tree_files", "subprocess"} & set(patches)):
-            # A throw-away tree is not a repository: the check falls back to hashing its bytes. A case
-            # that supplies a scripted ``subprocess`` is asking for the shipped git branch instead.
-            patches["git_index"] = lambda root: None
+        if "subprocess" not in patches:
+            patches.setdefault("tree_files", lambda root: (self.git_known_paths(), []))
+            patches.setdefault("ignored_paths", lambda root, paths: [])
+            patches.setdefault("git_index", lambda root: None)
         buffer = io.StringIO()
         with mock.patch.multiple(self.parity, **patches) if patches else _no_patch():
             with redirect_stdout(buffer):
@@ -210,6 +226,12 @@ class ParityTreeCase:
         self.assertEqual(code, 1, output)
         self.assertIn("parity: FAIL", output)
         self.assertIn(needle, output)
+
+    def assert_incomplete(self, code: int, output: str) -> None:
+        """A tree git could not enumerate is not verified: its own verdict, and never a pass."""
+        self.assertEqual(code, 2, output)
+        self.assertIn("parity: INCOMPLETE", output)
+        self.assertNotIn("parity: FAIL", output)
 
 
 class ParityCase(ParityTreeCase, unittest.TestCase):
@@ -301,10 +323,19 @@ class ParityCase(ParityTreeCase, unittest.TestCase):
         self.assert_failed(code, output, "differ from what git stores")
         self.assertIn("docs/note.md", output)
 
-    def test_a_gitless_tree_discloses_the_skipped_discovery_checks(self) -> None:
+    def test_a_tree_git_cannot_enumerate_is_incomplete_not_a_pass(self) -> None:
+        """A file list nobody could produce is not verification, so the run is INCOMPLETE.
+
+        Both rules that need the list -- an unrecorded file inside the carried tree, and a carried
+        path the ignore rules would skip -- pass silently without it. The gate's parity step is
+        required and rejects any non-zero outcome, so this verdict can never be quoted as agreement
+        with the pin; the script used to exit zero here and the gate used to print a bare PASS.
+        """
         code, output = self.tree.run_parity(tree_files=lambda root: (None, []))
-        self.assert_clean(code, output)
-        self.assertIn("git-less tree: file-discovery checks skipped", output)
+        self.assert_incomplete(code, output)
+        self.assertIn("did not run", output)
+        self.assertIn("unexplained", output)
+        self.assertIn("ignore rules", output)
 
     def test_an_unanswerable_ignore_probe_fails_instead_of_passing(self) -> None:
         """``ignored_paths`` returning None means "could not ask", which must not read as "fine"."""
@@ -405,7 +436,9 @@ class StoredDeviationCase(ParityTreeCase, unittest.TestCase):
 
     Such a record is the only carried path whose bytes can never equal upstream's blob (upstream's own
     attribute file rewrites its line endings), so the manifest has to pin the stored digest for the
-    checker to verify anything at all.
+    checker to verify anything at all. Only its *bytes* are allowed to differ: the rules that need no
+    byte comparison treat it as the carried path it is -- the ignore rule here, and the index-backed
+    presence, working-tree and mode rules in ``GitBranchCase``.
     """
 
     upstream = b"upstream\r\nreadme\n"
@@ -442,6 +475,19 @@ class StoredDeviationCase(ParityTreeCase, unittest.TestCase):
         self.tree.write_bytes("README.md", self.upstream)
         self.tree.write_manifest()
         self.assert_failed(*self.tree.run_parity(), "carried, not deviated")
+
+    def test_an_ignored_carried_deviation_fails(self) -> None:
+        """The normalised path is a carried path, so the ignore rule is asked about it too.
+
+        The answer here is a filter over the paths the check asks about, so this case fails when the
+        stored-byte deviation is left out of that list -- which is exactly how an ignore rule that
+        would keep the file out of a fresh clone used to pass.
+        """
+        self.tree.add_stored_deviation("README.md", self.upstream, self.stored)
+        code, output = self.tree.run_parity(
+            ignored_paths=lambda root, paths: [path for path in paths if path == "README.md"])
+        self.assert_failed(code, output, "README.md")
+        self.assertIn("ignore rules", output)
 
 
 class ScriptedGit:
@@ -567,6 +613,36 @@ class GitBranchCase(ParityTreeCase, unittest.TestCase):
         self.stage("README.md", StoredDeviationCase.stored)
         self.tree.write_bytes("README.md", b"locally rewritten\n")
         self.assert_failed(*self.run_with_git(), "neither the bytes this tree stores")
+
+    def test_a_carried_normalisation_deleted_from_the_worktree_fails(self) -> None:
+        """git's index holding the path is not the working tree holding it: the file is carried.
+
+        The stored bytes are verified through the index, so a record alone cannot tell a checkout that
+        lost the file from one that has it -- the working tree is what this repository ships, and an
+        absent file there is an absent carried path.
+        """
+        self.tree.add_stored_deviation("README.md", StoredDeviationCase.upstream,
+                                       StoredDeviationCase.stored)
+        self.stage("README.md", StoredDeviationCase.stored)
+        self.tree.remove("README.md")
+        self.assert_failed(*self.run_with_git(), "holds no file at it")
+
+    def test_a_carried_normalisation_modified_in_the_worktree_fails(self) -> None:
+        """A working tree git reports as modified is the same failure as for a carried file."""
+        self.tree.add_stored_deviation("README.md", StoredDeviationCase.upstream,
+                                       StoredDeviationCase.stored)
+        self.stage("README.md", StoredDeviationCase.stored)
+        self.tree.write_bytes("README.md", b"locally rewritten\n")
+        code, output = self.run_with_git(porcelain=b" M README.md\0")
+        self.assert_failed(code, output, "differ from what git stores for them")
+        self.assertIn("README.md", output)
+
+    def test_a_carried_normalisation_whose_index_mode_changed_fails(self) -> None:
+        """Its mode is checked where git answers, exactly as a carried file's mode is."""
+        self.tree.add_stored_deviation("README.md", StoredDeviationCase.upstream,
+                                       StoredDeviationCase.stored)
+        self.stage("README.md", StoredDeviationCase.stored, mode="100755")
+        self.assert_failed(*self.run_with_git(), "git stores mode 100755")
 
 
 class ImportCase(unittest.TestCase):

@@ -333,6 +333,19 @@ func messageFromParsed(parsed parser.ParsedMessage) Message {
 			SkillName:         call.SkillName,
 			SubagentSessionID: call.SubagentSessionID,
 		})
+		// A provider that records a call's outcome as events on the call rather than as a message of
+		// its own -- Codex's function_call_output, a subagent's terminal status -- keeps that outcome
+		// there, and an archive read of the same session shows the same rows. Carrying them is what
+		// keeps a source read from being the narrower of the two.
+		for _, event := range call.ResultEvents {
+			message.ToolResults = append(message.ToolResults, ToolResult{
+				ToolUseID:   event.ToolUseID,
+				Status:      event.Status,
+				Source:      event.Source,
+				ContentRaw:  event.Content,
+				ContentSize: len(event.Content),
+			})
+		}
 	}
 	for _, result := range parsed.ToolResults {
 		message.ToolResults = append(message.ToolResults, ToolResult{

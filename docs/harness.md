@@ -57,7 +57,7 @@ It verifies, in this order:
    claims cannot drift from the revision the manifest describes;
 2. every carried path is what git stores for it (`git ls-files -s`, i.e. what a fresh clone receives,
    with `.gitattributes` filters applied) — or, in a tree without git, what its bytes hash to;
-3. no carried file is modified in the working tree relative to what git stores (`git status`
+3. no carried path is modified in the working tree relative to what git stores (`git status`
    porcelain, worktree column only: a staged-but-uncommitted tree is the normal state here), and a
    `git status` that cannot answer fails the step instead of dropping the rule;
 4. no carried path matches the tree's ignore rules, which would make `git add` skip it in a fresh
@@ -70,9 +70,19 @@ It verifies, in this order:
    disk, and a path carried with a declared line-ending normalisation must still store the bytes its
    record pins, since upstream's own blob can never be what that path holds. A working-tree copy that
    still holds upstream's pre-normalisation bytes is *reported*, not failed: git reads that copy as
-   clean and a checkout writes the declared bytes;
+   clean and a checkout writes the declared bytes. Such a path is a carried path for the rules above
+   as well — present in the working tree, unmodified relative to git's index, and not matched by the
+   ignore rules — because the declaration is an allowance for its *bytes*, never for its absence;
 7. the generated build input hashes to the SHA-256 that the carried snapshot tool pins in its own
    source, so the input is verified against upstream's pin rather than a second hard-coded copy.
+
+A tree git cannot enumerate — no `git` on `PATH`, or a `--root` that is a copy rather than a
+repository — is reported as **INCOMPLETE**, not as a pass: the unexplained-file rule and the ignore
+rule cannot run there, so `upstream-parity.py` prints `parity: INCOMPLETE — …`, names what it did not
+check, and exits `2`. The step is required and any non-zero outcome fails the gate, so such a tree
+can never be quoted as agreement with the pin. Everything that does not need a file list is still
+checked first (carried bytes, deviations, the generated input, the recorded pin), so real drift in
+that tree is reported as `FAIL` with its offenders rather than as `INCOMPLETE`.
 
 `scripts/upstream-compare.py` answers the other half — behaviour — and is deliberately **not** a gate
 step, because it needs network and a second checkout: it fetches the pinned revision into a scratch

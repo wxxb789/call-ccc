@@ -25,7 +25,7 @@
       "sidechain_messages": 0,
       "compact_boundaries": 1,
       "tool_calls": 1,
-      "tool_results": 0
+      "tool_results": 1
     },
     "messages": [
       {
@@ -58,6 +58,14 @@
             "tool_use_id": "call_01Example000000000000000000",
             "input_sha256": "b7002b70e855759e21bac4aafe0e69a2d981d061192467f4d0c051d3314c6cb6",
             "result_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        ],
+        "tool_results": [
+          {
+            "tool_use_id": "call_01Example000000000000000000",
+            "source": "function_call_output",
+            "content_sha256": "26e2b1bdf14d9e911457cf2cf2c644d6e04ca652a82a48858c97e7083c8eab31",
+            "content_size": 51
           }
         ]
       },

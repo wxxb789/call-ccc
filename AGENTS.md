@@ -37,7 +37,9 @@ with their exit codes and counts).
   a disclosure, not a shortcut; a run in which a step was skipped,
   bounded or absent prints `GATE: PASS (partial: …)` naming it, so a partial run can never be quoted
   as a full one. It is the same file CI runs (the runners name the interpreter `python`); never narrow
-  or skip a step to get green — a step that cannot run is disclosed, not silenced. The gate also runs
+  or skip a step to get green — a step that cannot run is disclosed, not silenced, and a required step
+  that cannot *verify* fails: `parity` prints `parity: INCOMPLETE` and exits 2 when git cannot
+  enumerate the tree, instead of a PASS with the disclosure inside its detail line. The gate also runs
   its own regression tests from `scripts/tests/` (the `selftest` step, stdlib only).
 - The harness's own tests are part of that contract: an assertion under `scripts/tests/` must fail
   when the rule it names is broken, and must hold on every platform and every Python 3 the docs name
