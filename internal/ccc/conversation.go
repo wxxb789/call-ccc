@@ -163,8 +163,15 @@ type Counts struct {
 	UserMessages      int `json:"user_messages"`
 	AssistantMessages int `json:"assistant_messages"`
 	SystemMessages    int `json:"system_messages"`
+	// ToolMessages counts messages a provider recorded with the native tool role (parser.RoleTool: a
+	// standalone tool-result record, which the inherited readers preserve -- internal/parser's Devin
+	// reader maps a native `"tool"` record to it and its own test pins that). It is a separate count
+	// because it is a separate role: no record was written as a system message, so a caller that read
+	// the system count alone would report a session shape the source does not have.
+	ToolMessages int `json:"tool_messages"`
 	// SystemRecords counts records the provider flagged as system-injected; those are also counted
-	// under the role they were recorded with, so the two are not disjoint.
+	// under the role they were recorded with, so the two are not disjoint -- and they are not the same
+	// thing as SystemMessages, which counts the records *written with* the system role.
 	SystemRecords     int `json:"system_records"`
 	SidechainMessages int `json:"sidechain_messages"`
 	CompactBoundaries int `json:"compact_boundaries"`
@@ -182,8 +189,10 @@ func Summarize(messages []Message) Counts {
 			counts.UserMessages++
 		case parser.RoleAssistant:
 			counts.AssistantMessages++
-		case parser.RoleSystem, parser.RoleTool:
+		case parser.RoleSystem:
 			counts.SystemMessages++
+		case parser.RoleTool:
+			counts.ToolMessages++
 		}
 		if message.IsSystem {
 			counts.SystemRecords++

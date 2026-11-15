@@ -88,6 +88,13 @@ type Inspection struct {
 // Inspect reads a session through inherited AgentsView code and reports what it found: identity,
 // agent, source, conversation shape, and — when an archive is given — whether that archive holds the
 // same session. It is the entry point the CLI calls, and it takes no CLI type.
+//
+// A source the reader cannot read is a warning rather than an error whenever an archive could still
+// answer the reference: a session recorded on another machine (ErrNoLocalSource), a provider that
+// failed operationally (ErrProviderFailed) and a provider the configuration disables for local
+// ingestion (ErrSourceDisabled) all leave the archive in reach, and each warning carries the reader's
+// own answer so the three are distinguishable. A reference no provider knows, or a failure none of
+// those classifications covers, is returned as an error.
 func Inspect(ctx context.Context, opts InspectOptions) (Inspection, error) {
 	// The configuration answers where each provider keeps its sessions. The reader resolves a relative
 	// filesystem reference against those roots and the archive is opened with the same answer, so both
@@ -160,6 +167,15 @@ func Inspect(ctx context.Context, opts InspectOptions) (Inspection, error) {
 		// a session the source side cannot read may well be one an archive holds.
 		inspection.Warnings = append(inspection.Warnings, fmt.Sprintf(
 			"%v; an archive can still hold the session", err))
+	case errors.Is(err, ErrSourceDisabled):
+		// The configuration disables this provider for local ingestion. That is the provider's own
+		// state, not the session's: the inherited setting ("Disabling Session Providers",
+		// docs/configuration.md) restricts local discovery and ingestion only and keeps previously
+		// archived sessions available, so the archive is still consulted instead of answering the
+		// reference with an error. The warning carries the reader's own phrase, so a caller can tell a
+		// disabled provider from an absent one and from an absent session.
+		inspection.Warnings = append(inspection.Warnings, fmt.Sprintf(
+			"%v; the setting restricts local discovery only, so an archive can still hold the session", err))
 	default:
 		return Inspection{}, err
 	}

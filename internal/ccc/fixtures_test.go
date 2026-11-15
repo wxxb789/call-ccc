@@ -209,6 +209,52 @@ func TestFixtureParseReportsIdentityAndConversation(t *testing.T) {
 	}
 }
 
+// TestSummarizeCountsEachRoleSeparately pins the role classification every counts report rests on:
+// user, assistant, system and tool are four roles, and a message recorded with one of them is counted
+// under that one alone.
+//
+// The committed fixtures exercise the user/assistant pair (and pin their counts), but neither records a
+// system-role or a tool-role message, so the two counts that reach zero in both fixtures were the ones
+// a classifier could fold into another number while every fixture test stayed green -- which is what
+// happened: a standalone tool output (parser.RoleTool, the role the inherited Devin reader preserves a
+// native `"tool"` record as) was counted as a system message, so a tool-only session reported a system
+// message no record ever wrote. The list here is built directly and each message carries exactly one
+// classified property, so every field of Counts is pinned by its own line and no other rule can produce
+// these numbers: three assistant messages against one user-role summary, one system record against one
+// system message (they are not the same rule), one sidechain, one boundary, and *two* tool calls against
+// one tool result -- the one pair the fixtures cannot separate, since both of theirs hold exactly one of
+// each, so a summariser that counted the wrong slice would agree with every fixture count there is. The
+// last message carries a role this core does not classify: it is counted in Messages and in no role
+// field, so a `default` clause that folded an unrecognised role into an existing count -- the way the
+// tool role used to land in the system count -- has to fail here rather than pass as a detail.
+func TestSummarizeCountsEachRoleSeparately(t *testing.T) {
+	messages := []Message{
+		{Ordinal: 0, Role: string(parser.RoleUser), Content: "a question"},
+		{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "an answer",
+			ToolCalls: []ToolCall{
+				{ToolUseID: "toolu_01Count000000000000000000", Name: "Read"},
+				{ToolUseID: "toolu_01Count000000000000000001", Name: "Grep"},
+			}},
+		{Ordinal: 2, Role: string(parser.RoleTool), Content: "the tool's own output",
+			ToolResults: []ToolResult{{ToolUseID: "toolu_01Count000000000000000000",
+				ContentRaw: "the tool's own output"}}},
+		{Ordinal: 3, Role: string(parser.RoleSystem), Content: "a system notice"},
+		{Ordinal: 4, Role: string(parser.RoleAssistant), Content: "an injected notice", IsSystem: true},
+		{Ordinal: 5, Role: string(parser.RoleAssistant), Content: "a sidechain turn", IsSidechain: true},
+		{Ordinal: 6, Role: string(parser.RoleUser), Content: "a compaction summary",
+			IsCompactBoundary: true},
+		{Ordinal: 7, Role: "unrecognised", Content: "a role this core does not classify"},
+	}
+	got := Summarize(messages)
+	want := Counts{
+		Messages: 8, UserMessages: 2, AssistantMessages: 3, SystemMessages: 1, ToolMessages: 1,
+		SystemRecords: 1, SidechainMessages: 1, CompactBoundaries: 1, ToolCalls: 2, ToolResults: 1,
+	}
+	if got != want {
+		t.Errorf("Summarize(messages) = %+v, want %+v", got, want)
+	}
+}
+
 // TestMissingPersistedToolOutputKeepsItsFidelitySignal pins the one place a Claude read can say that a
 // tool result's content is not the tool's output.
 //

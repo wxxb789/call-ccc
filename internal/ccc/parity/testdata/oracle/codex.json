@@ -1,5 +1,5 @@
 {
-  "tool": "call-ccc-parity-oracle/2",
+  "tool": "call-ccc-parity-oracle/3",
   "case": "codex",
   "fixture": {
     "relative_to_root": "2026/05/04/rollout-2026-05-04T09-15-00-0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812.jsonl",
@@ -21,6 +21,7 @@
       "user_messages": 2,
       "assistant_messages": 4,
       "system_messages": 0,
+      "tool_messages": 0,
       "system_records": 1,
       "sidechain_messages": 0,
       "compact_boundaries": 1,
@@ -134,6 +135,7 @@
       "user_messages": 2,
       "assistant_messages": 4,
       "system_messages": 0,
+      "tool_messages": 0,
       "system_records": 1,
       "sidechain_messages": 0,
       "compact_boundaries": 1,

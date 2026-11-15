@@ -28,6 +28,16 @@ var ErrNotFound = errors.New("session not found")
 // report the failure as if nothing were there.
 var ErrProviderFailed = errors.New("provider could not read the source")
 
+// ErrSourceDisabled reports a provider the configuration disables for local ingestion
+// (config.Config.DisabledAgents, "Disabling Session Providers" in docs/configuration.md): the provider
+// exists and its ids still resolve, but the inherited setting keeps it out of local discovery, so this
+// reader has no factory to read its sessions with. It is deliberately not "no such provider" and not
+// "no such session": the setting restricts local ingestion only, and a session the provider recorded
+// earlier remains available from an archive, so a caller that can consult one must keep it in reach
+// instead of reporting the session as unreadable. The message keeps the inherited phrase ("disabled in
+// this configuration") so a reader of the error sees the setting's own words.
+var ErrSourceDisabled = errors.New("disabled in this configuration")
+
 // AmbiguousError reports a reference that matches more than one source. The candidates are returned
 // instead of a guess, which is what the design asks for when an identifier is ambiguous.
 type AmbiguousError struct {
@@ -153,7 +163,11 @@ func (r *SourceReader) resolveFactory(provider string) (parser.AgentDef, parser.
 	}
 	factory, ok := r.factories[def.Type]
 	if !ok {
-		return def, nil, fmt.Errorf("provider %q is disabled in this configuration", provider)
+		// The provider is in the registry, so being absent from the factory map is exactly the
+		// configuration's disabled-agent exclusion: NewSourceReader builds that map from
+		// config.LocalProviderFactories, which drops a provider only when AgentDisabled reports it, and
+		// parser.ProviderFactories panics for a registry entry with no factory of its own.
+		return def, nil, fmt.Errorf("provider %q is %w", provider, ErrSourceDisabled)
 	}
 	return def, factory, nil
 }

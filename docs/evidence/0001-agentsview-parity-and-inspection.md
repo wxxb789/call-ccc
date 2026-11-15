@@ -68,7 +68,8 @@ claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10
       "fingerprint": "2bd510821d4abf83235752eff81e0e9824d0c41b3d2d4b84956d1130992467b6",
       "file_size": 2051
     },
-    "counts": { "messages": 8, "user_messages": 3, "assistant_messages": 5, "system_records": 1,
+    "counts": { "messages": 8, "user_messages": 3, "assistant_messages": 5, "system_messages": 0,
+                "tool_messages": 0, "system_records": 1, "sidechain_messages": 0,
                 "compact_boundaries": 1, "tool_calls": 1, "tool_results": 1 }
   }
 }
@@ -347,6 +348,67 @@ left open are recorded as defaults in [`docs/decisions/OPEN-QUESTIONS.md`](../de
 Q-0001-20 names which archive-side result evidence the reverse direction holds the source to, and
 Q-0001-21 names what the call comparison does and does not compare.
 
+The round-10 fix pass closed two review findings — the reader's state for a provider the configuration
+disables, and the role a standalone tool output is counted under — and was run as a close-out of both
+surfaces, like round 9: every rule the touched code states was enumerated and mutated (twenty-two
+mutations, the test that names each one run, the line restored), and every one of them failed its named
+test after two rules were found unpinned by their own mutation and pinned in this round rather than left
+as arguments (§6 quotes them).
+
+- a **disabled provider does not take an archived session away**. `disabled_agents` is inherited
+  upstream's local-ingestion switch, and this reader dropped a disabled provider's factory, so
+  `resolveFactory` answered an ordinary error and an inspection returned it *before* its archive branch:
+  a session the archive held was reported as a failed read. The reader now answers that state with its
+  own sentinel — `ErrSourceDisabled`, wrapped so the text is unchanged, `provider "claude" is disabled
+  in this configuration` — and `Inspect` classifies it as a warning rather than an error, so the archive
+  is still consulted and the state is distinguishable from an absent provider (the provider's label is
+  still reported) and from an absent session (the warning carries the setting's own words, and an
+  inspection must not say "no readable source session" about a session it never looked for). The
+  restriction itself is unmoved: reading or resolving one still fails with the sentinel, and no source
+  report is produced. `TestInspectArchiveOnlyWhenTheProviderIsDisabled` writes the Claude fixture into
+  an archive first and disables the provider afterwards — the state the setting's own contract
+  describes, "previously archived sessions from a disabled provider remain available and exportable"
+  (`docs/configuration.md`, "Disabling Session Providers") — and requires the archive report, the absent
+  source report, no comparison (no source read happened) and the warning together;
+- a **tool-role message is not a system message**. A standalone tool-result record is preserved as
+  `parser.RoleTool` by the inherited readers — the Devin reader maps a native `"tool"` record to that
+  role (`internal/parser/devin.go:804-805`) and its own database-fallback test asserts it
+  (`internal/parser/devin_test.go:527`) — and both adapters here carried the role unchanged, but
+  `Summarize` grouped it with `RoleSystem`, so a session whose only extra record was tool output
+  reported a *system* message no record ever wrote: the count reaches source reports, archive reports
+  and parity dumps. `Counts.ToolMessages` counts that role now (`tool_messages` in the JSON, a field
+  beside `system_messages` that the human output does not print, so nothing else relabels it), which
+  moves the dump's shape and therefore its tool id to `call-ccc-parity-oracle/3`.
+  `TestSummarizeCountsEachRoleSeparately` pins the whole classification in one message list: the four
+  roles, the system *record* flag (a different rule from the system *role*), sidechain, boundary, and
+  *two* tool calls against one tool result — the pair the committed fixtures cannot separate, because
+  both of theirs hold exactly one of each, so a summariser that summed the wrong slice agreed with every
+  fixture count there was (the mutation that swapped them survived its first run and is pinned by this
+  case since) — plus a message whose role the core does not classify, whose rule is that it is counted
+  in `Messages` and in no role field.
+
+Observed through the built binary, with an archive written while the provider was enabled and the
+configuration then disabling it — `disabled_agents = ["claude"]` in a throw-away `config.toml`, and
+`--data-dir` naming that archive:
+
+```
+$ /tmp/ccc-bin inspect claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --data-dir <dir>      # rc=0
+claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10
+  agent:        Claude Code
+  source:       not readable here (see warnings)
+  archive:      <dir>/sessions.db [tool-payloads]
+  archived id:  9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10
+  archived:     7 message(s), 2 user, 5 assistant, 1 tool call(s), 1 compaction boundary(ies)
+  agreement:    not compared (the source was not readable)
+  warning:      provider "claude" is disabled in this configuration; the setting restricts local discovery only, so an archive can still hold the session
+  carried:      AgentsView 83195c8a6861b8c74a4b6cb87512817fed6f8584, unmodified (scripts/upstream-parity.py)
+```
+
+Before this pass the same command exited 1 with `ccc: provider "claude" is disabled in this
+configuration` on stderr and no archive report: the inspection returned the reader's error before its
+archive branch (the sweep's `inspect-disabled-clause` mutation reproduces that state, and the case
+fails on it).
+
 ## 2. A real source-to-archive parse and a subsequent archive read agree with the pinned implementation
 
 The oracle (`internal/ccc/parity`) parses a fixture, writes it through the inherited sync engine into
@@ -356,17 +418,18 @@ harness runs the *same* oracle source in this tree and in a pristine checkout of
 separately copied fixture bytes and separately created archives.
 
 ```
-$ python3 scripts/upstream-compare.py --record --scratch <tmp>/ccc-compare-0001-r9
+$ python3 scripts/upstream-compare.py --upstream /tmp/agentsview-probe --record --scratch /tmp/ccc-compare-0001-r10
 pin 83195c8a6861b8c74a4b6cb87512817fed6f8584 (v0.47.0-181-g83195c8a) from https://github.com/kenn-io/agentsview
-fetched the pinned revision into <tmp>/ccc-compare-0001-r9/upstream (clean, at the pin)
-- restored internal/pricing/snapshot/litellm_snapshot.json.gz in the pristine tree from upstream's pinned artifact
+using the existing checkout at /tmp/agentsview-probe (clean, at the pin)
 - copied internal/ccc (10 Go source file(s)) from this tree into the pristine checkout: the oracle and its call/ccc wrapper are identical on both sides, so the only variable is which tree the inherited packages come from
-oracle source: 10 file(s), sha256=9ada3ef0ea8c2674b61c4be5528c6405bfbbb80aa17db5e0551a02dc690f4c32 (identical on both sides)
-claude: fixture sha256=2bd510821d4abf83… ours=32244340553137fd… pristine=32244340553137fd… agreement=yes
+oracle source: 10 file(s), sha256=aa8e8f4abde2f594e8bd70383ce04665de42bbcb42e9beeddf9d260d697fe601 (identical on both sides)
+claude: fixture sha256=2bd510821d4abf83… ours=6409a23c502469a3… pristine=6409a23c502469a3… agreement=yes
   recorded internal/ccc/parity/testdata/oracle/claude.json
-codex: fixture sha256=d9957a8d6f5731a3… ours=fe8d542a39799f8f… pristine=fe8d542a39799f8f… agreement=yes
+codex: fixture sha256=d9957a8d6f5731a3… ours=531e5c0fb19fc51a… pristine=531e5c0fb19fc51a… agreement=yes
   recorded internal/ccc/parity/testdata/oracle/codex.json
-RESULT: PASS — 2 case(s) agree byte for byte with the pinned revision      # rc=0, 36 s
+RESULT: PASS — 2 case(s) agree byte for byte with the pinned revision      # rc=0, 5 s
+- removed /tmp/agentsview-probe/internal/ccc from the checkout again
+- /tmp/agentsview-probe is clean
 ```
 
 The oracle source digest moved with the round-9 fix pass and the two dumps did not: the copied sources
@@ -374,6 +437,15 @@ are the four call/ccc files, and the fields that pass added to `Fidelity` and `A
 part of the dumped shape, so `--record` re-derived both committed dumps byte for byte
 (`git status` shows no change under `internal/ccc/parity/testdata/oracle/`) — the adapters' *dumped*
 behaviour is unmoved by a pass that only stops them dropping state.
+
+The round-10 pass did move the dumps, because it moved the dumped *shape*: the counts object gained the
+tool-role count, so each of the four counts blocks in each dump gained one line (`"tool_messages": 0`)
+and the tool id went to `call-ccc-parity-oracle/3` — four added lines per dump, and nothing else
+(`git diff --stat` reports `4 +++-` for each). The zeroes are the honest half of that: no committed
+fixture records a standalone tool row, so the *classification* this round fixed is invisible in these
+bytes, and the change a reader can check here is the shape that carries it. Recording from the pristine
+side again is what keeps the agreement a fact rather than a local edit: both sides reproduced the dump
+byte for byte, the pristine side included.
 
 The same command against an existing clean checkout (`--upstream /path/to/agentsview`) reports the
 same two dump hashes and removes the copy it made (`git status` clean afterwards); a checkout that is
@@ -386,15 +458,15 @@ tree's inherited code stops producing them:
 
 ```
 $ sha256sum internal/ccc/parity/testdata/oracle/*.json
-32244340553137fd9af173c84eb9c17c94d655c055af5e536dee0cc8d2daa712  internal/ccc/parity/testdata/oracle/claude.json
-fe8d542a39799f8fe973cb74b9ca2df86665e5f348c6a00d0e18eebf0e5e9a91  internal/ccc/parity/testdata/oracle/codex.json
+6409a23c502469a3211e86e74d2b7b53761d7739713a0cb11bc8d5fe0333b46b  internal/ccc/parity/testdata/oracle/claude.json
+531e5c0fb19fc51a158c4a393481c5b63a1a6f5bed148fc0a6d996375b8353c3  internal/ccc/parity/testdata/oracle/codex.json
 ```
 
-The Codex dump changed in this increment's fix pass, and only in its `parse` section: the wrapper now
-carries a call's own result events into the conversation (`internal/ccc/reader.go`, the same mapping
-`messageFromArchive` already used), so a Codex `function_call_output` reaches a source read instead of
-being dropped. The pristine side reproduces the change byte for byte, which is the point of recording
-from it: the adapter's correction is visible as agreement, not as a local edit to a dump.
+The Codex dump changed in this increment's round-2 fix pass, and only in its `parse` section: the
+wrapper now carries a call's own result events into the conversation (`internal/ccc/reader.go`, the same
+mapping `messageFromArchive` already used), so a Codex `function_call_output` reaches a source read
+instead of being dropped. The pristine side reproduces the change byte for byte, which is the point of
+recording from it: the adapter's correction is visible as agreement, not as a local edit to a dump.
 
 The dumps carry the archive round trip's shape: for the Claude fixture, parse reports 8 messages with
 1 tool call, 1 tool result and 1 compaction boundary; the archive read reports the same tool call and
@@ -573,14 +645,14 @@ index is required: the archive is the inherited `sessions.db`, opened read-only.
 ## 6. The gate
 
 ```
-$ python3 scripts/gate.py        # rc=0, 26.1 s wall clock, taken on the final tree
+$ python3 scripts/gate.py        # rc=0, 27.4 s wall clock, taken on the final tree
 gate: <repo>
 gate: go=<go>/bin/go targets=./cmd/ccc/... ./internal/ccc/...
   PASS     gofmt    3574 file(s) gofmt-clean
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 135 tests in 5.143s (rc=0)
+  PASS     selftest Ran 135 tests in 5.358s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 25 project-owned prefix(es); files seen by git: 5613 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
   PASS     secrets  no leaks found in 60 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
@@ -625,17 +697,21 @@ fresher-archive direction end to end, the retryable result with its messages, an
 input; `fixtures_test.go` 18 → 19: the summary transcript classification through both reads, with the
 round-9 comparison verdicts added as subtests of the comparison case that already pins that surface),
 `cmd/ccc` unchanged at 10, and the harness's own count unchanged at 135 (no `scripts/tests/` case
-changed).
+changed). The round-10 fix pass moved `internal/ccc` 55 → 58 test functions (`archive_test.go`
+36 → 38: the disabled-provider archive-only inspection and the unclassified-read-error case;
+`fixtures_test.go` 19 → 20: the role-count case), `cmd/ccc` unchanged at 10, and the harness's own count
+unchanged at 135.
 
 Wall clock for the whole gate on this host: 19–21 s with warm caches across the increment's earlier
 runs, 25 s to 156 s across the round-2 fix pass's runs (the 156 s run followed a cold Go build cache, so
 `build`/`vet`/`test` recompiled the inherited packages), 21–23 s across the round-3 runs, 22 s, 26 s and
 53 s across the three round-4 runs, and 21.8–25.0 s across the round-5 runs. The six round-6 runs
 measured 26.5 s, 25.2 s, 45.8 s, 28.3 s, 33.9 s and 31.1 s, the round-7 runs 26.1 s, 28.8 s, 25.2 s and
-55 s, the round-8 runs 33.3 s, 22.7 s, 23.4 s and 24.4 s, and the round-9 runs 27.6 s and 26.1 s (the
-quoted one is the last, whose `selftest` step took 5.143 s, inside the 4.76–6.18 s band this paragraph
-closes on). The block above quotes the round-9 run taken after every code, test and document edit this
-round made, and the only write after it is the sentence that quotes its own number. The round-7 runs' 55 s one was taken last on that round's finished tree — the only write
+55 s, the round-8 runs 33.3 s, 22.7 s, 23.4 s and 24.4 s, the round-9 runs 27.6 s and 26.1 s, and the
+round-10 runs 26.9 s, 25.5 s and 27.4 s (the quoted one is the last, whose `selftest` step took 5.358 s,
+inside the 4.76–6.18 s band this paragraph closes on).
+The block above quotes the round-10 run taken after every code, test and document edit this round made,
+and the only writes after it are this paragraph and the sentence that fixes its own wall clock. The round-7 runs' 55 s one was taken last on that round's finished tree — the only write
 after it is the sentence that quotes its own number, and its `selftest` step took 12.0 s against
 5.5–6.1 s in the three runs before it, so that wall clock is host load and not a slower gate. With
 `selftest` steps between 4.76 s and 6.18 s across them, the wall-clock spread is host load rather than a
@@ -781,6 +857,47 @@ imported by comparing zero-length slices (a form that disabled the rule only by 
 passed an empty key map at the call site, leaving `foldedSources` unused so the tree did not compile; the
 second was re-run as a mutation of `foldedSourceResults` itself, and that is the failure quoted above.
 Every recorded failure came from a tree that built.
+
+The round-10 pass closed two findings with the same rule, one rule at a time: **every rule the touched
+code claims was mutated, and every mutation failed the test that names it** (22 mutations, the whole
+sweep re-run once after two rules were found unpinned by it). The observed failures, grouped by surface:
+
+- the counts a summariser reports (`internal/ccc/conversation.go`, 12 mutations). Dropping each role's
+  increment in turn failed `TestFixtureParseReportsIdentityAndConversation` (user, assistant, system
+  records, compaction boundaries — the last through the CLI's JSON case as well) or
+  `TestSummarizeCountsEachRoleSeparately` (the two roles no fixture reaches: system and tool). The
+  finding's own defect — counting a tool-role message as a system one — failed the focused case, as did
+  counting it nowhere, and so did a `default:` clause folding an unrecognised role into the system count,
+  which is the rule that case's last message exists for. Dropping the sidechain or boundary increment
+  failed the focused case; summing the *results* slice into `tool_calls` (and the calls slice into
+  `tool_results`) failed it too — **the first sweep found both of those unpinned**, because each fixture
+  holds exactly one call and one result, and the case now holds two calls against one result; and
+  reporting no message total failed four cases, `TestIngestThenArchiveRead`'s status comparison among
+  them.
+- the disabled-provider state (`internal/ccc/reader.go`, 3 mutations). Answering a disabled provider with
+  the plain error again — no sentinel — failed `TestInspectArchiveOnlyWhenTheProviderIsDisabled` on its
+  `errors.Is` check, because the inspection returned the error before its archive branch: the finding's
+  own measurement. Re-wording the sentinel failed the same case's check on the setting's own words, and
+  building the reader's factory map from the full registry (`parser.ProviderFactories()`, the
+  disabled-agents filter removed) failed it on the source report that must not exist.
+- the reader-error classification (`internal/ccc/inspect.go`, 7 mutations). Disabling the
+  disabled-provider clause (so the reference falls through to the default) failed the same case — the
+  branch the finding named; shortening its warning failed that case's "why the archive is still
+  consulted" assertion; making the provider-failure, host-qualified and not-found clauses fatal failed,
+  respectively, `TestInspectExposesAProviderFailureAndFallsBackToTheArchive` and
+  `TestInspectKeepsAProviderFailureWhenNoArchiveHoldsTheSession`; `TestHostQualifiedReferenceIsReportedWithoutASource`
+  plus the CLI's `TestNoResultExitKeepsTheDiagnostics` in both spellings; and
+  `TestInspectReportsAnArchiveOnlySession`, `TestDeletedSourcePathFallsBackToTheArchive` plus that CLI
+  case's other diagnostic. Turning the default clause into a warning failed the case this pass added for
+  it (`TestInspectReturnsAnUnclassifiedReadError`), which is what pins "a failure none of those
+  classifications covers is an error" rather than an argument, and dropping the source report failed
+  `TestInspectJSONReportsIdentityAndConversation`.
+
+The two survivors of the first sweep are that paragraph's point rather than an aside: the one pair of
+rules no fixture could tell apart (`tool_calls` against `tool_results`) was unpinned on *every* existing
+count, and the focused case above now separates them. The sweep was then re-run in full on the finished
+tree, where all 22 fail their named test; the driver verifies each file's bytes are back to what they
+were before every next mutation, and every recorded failure came from a tree that built.
 
 ## 7. Measurements that shaped the harness
 
@@ -958,7 +1075,12 @@ indexed query while a source is there.
   `TestInspectKeepsAProviderFailureWhenNoArchiveHoldsTheSession`). A reference
   that resolves to no source at all, and a parse that produced no session without source errors, remain
   `ErrNotFound`. The classification covers the selected session's provider on the read path; a write-side
-  retry policy is not part of this increment.
+  retry policy is not part of this increment. A provider the configuration **disables for local
+  ingestion** is a fourth state: the reader answers it with `ErrSourceDisabled` (the setting's own words,
+  `provider "claude" is disabled in this configuration`) and an inspection reports the archive with a
+  warning rather than the error, while reading or resolving that provider still fails — the setting
+  restricts local discovery, and `docs/configuration.md` keeps previously archived sessions available
+  (`TestInspectArchiveOnlyWhenTheProviderIsDisabled`).
 - **The generated input's index check compares git's blob with the one the file's bytes hash to.** That is
   exact for the snapshot (a binary `.gz`, which git stores as it is) and would report a false difference
   for a future input that the tree's attribute file rewrites on `git add`: such an input would need the

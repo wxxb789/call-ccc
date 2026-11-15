@@ -30,8 +30,10 @@ import (
 )
 
 // ToolID identifies the dump format. It changes when the dumped shape changes, so a stale committed
-// dump cannot be mistaken for an agreement.
-const ToolID = "call-ccc-parity-oracle/2"
+// dump cannot be mistaken for an agreement. It is /3 from the round-10 fix pass, where the counts
+// object gained the tool-role count (a message list's "tool" rows were being reported as system
+// messages, so the dumped counts changed with the classification).
+const ToolID = "call-ccc-parity-oracle/3"
 
 // ExcludedFields names what the dump leaves out and why, so a reader can tell a deliberate exclusion
 // from an omission that hides a difference.

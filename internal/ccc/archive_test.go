@@ -2112,6 +2112,98 @@ func TestInspectKeepsAProviderFailureWhenNoArchiveHoldsTheSession(t *testing.T) 
 	}
 }
 
+// TestInspectArchiveOnlyWhenTheProviderIsDisabled pins both halves of the inherited `disabled_agents`
+// contract ("Disabling Session Providers", docs/configuration.md): the setting keeps the provider out
+// of local discovery, so no source session is read or reported for it, and it does not take away what
+// an archive already holds, because it "applies only to local filesystem discovery" and "previously
+// archived sessions from a disabled provider remain available and exportable".
+//
+// The defect this pins: the reader answered a disabled provider with an ordinary error, and the
+// inspection returned that error before reaching the archive branch, so a session the archive held was
+// reported as a failure instead of as the archived session. Two things must stay distinguishable while
+// the restriction holds -- the provider is *known* (its label is reported, where an unknown provider
+// would be an error) and the state is not absence (the warning carries the setting's own words, and an
+// inspection must not say "no readable source session" about a session that was never looked for).
+func TestInspectArchiveOnlyWhenTheProviderIsDisabled(t *testing.T) {
+	ctx := context.Background()
+	cfg := fixtureConfig(t)
+	claudeFile := fixturePath(t, filepath.Join("claude", "-home-user-code-example-api",
+		claudeFixtureRef.ID+".jsonl"))
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(cfg, archivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	if err := ingestor.IngestPaths(ctx, claudeFile); err != nil {
+		t.Fatalf("ingesting the fixture: %v", err)
+	}
+
+	// The provider is disabled after the archive was written: an archive built earlier is exactly the
+	// state the setting's own contract describes.
+	cfg.DisabledAgents = []parser.AgentType{parser.AgentClaude}
+	reader := NewSourceReader(cfg)
+	if _, readErr := reader.Read(ctx, claudeFixtureRef); !errors.Is(readErr, ErrSourceDisabled) {
+		t.Fatalf("reading a disabled provider's session: err = %v, want %v",
+			readErr, ErrSourceDisabled)
+	} else if !strings.Contains(readErr.Error(), "is disabled in this configuration") {
+		t.Errorf("the reader lost the setting's own words: %v", readErr)
+	}
+	if _, _, err := reader.Resolve(ctx, claudeFixtureRef); !errors.Is(err, ErrSourceDisabled) {
+		t.Errorf("resolving a disabled provider's session: err = %v, want %v", err, ErrSourceDisabled)
+	}
+
+	inspection, err := Inspect(ctx, InspectOptions{
+		Ref: claudeFixtureRef, Config: cfg, Reader: reader, ArchivePath: archivePath,
+	})
+	if err != nil {
+		t.Fatalf("inspecting a disabled provider's session: %v", err)
+	}
+	if inspection.Source != nil {
+		t.Errorf("a disabled provider was read as a source: %+v", inspection.Source)
+	}
+	if inspection.Agent != "Claude Code" {
+		t.Errorf("the disabled provider is reported as unknown: agent = %q", inspection.Agent)
+	}
+	if inspection.Archive == nil {
+		t.Fatalf("the archived session was not reported: warnings %v", inspection.Warnings)
+	}
+	if inspection.Archive.SameMessagesAsSource != nil {
+		t.Errorf("the archive was compared with a source read that did not happen: %v",
+			*inspection.Archive.SameMessagesAsSource)
+	}
+	warnings := strings.Join(inspection.Warnings, "\n")
+	if !strings.Contains(warnings, "is disabled in this configuration") {
+		t.Errorf("the disabled provider is not named: %v", inspection.Warnings)
+	}
+	if !strings.Contains(warnings, "an archive can still hold the session") {
+		t.Errorf("the warning does not say why the archive is consulted: %v", inspection.Warnings)
+	}
+	if strings.Contains(warnings, "no readable source session") {
+		t.Errorf("a disabled provider is reported as absence: %v", inspection.Warnings)
+	}
+}
+
+// TestInspectReturnsAnUnclassifiedReadError pins the switch's last clause: a read failure none of the
+// inspection's classifications covers is returned to the caller, not turned into a warning beside a
+// report. An unknown provider is the shape the core's own API reaches it with -- cmd/ccc refuses that
+// reference while parsing it, but the engine is a public API whose callers can pass any provider name,
+// and answering one with an empty inspection would report "nothing here" about a lookup that never
+// happened.
+func TestInspectReturnsAnUnclassifiedReadError(t *testing.T) {
+	inspection, err := Inspect(context.Background(), InspectOptions{
+		Ref: Ref{Provider: "no-such-provider", ID: "not-a-session"}, Config: fixtureConfig(t),
+	})
+	if err == nil {
+		t.Fatalf("an unknown provider was reported as an inspection: %+v", inspection)
+	}
+	if !strings.Contains(err.Error(), "unknown provider") {
+		t.Errorf("the failure does not name the provider lookup: %v", err)
+	}
+	if inspection.Source != nil || inspection.Archive != nil || inspection.Warnings != nil {
+		t.Errorf("a failed inspection carries a report: %+v", inspection)
+	}
+}
+
 // TestInspectDoesNotCallAStaleArchiveCompleteAfterACallOutcomeArrived pins the comparison's other
 // shape: Codex records a call's output as an event on the call's own row, so an archive written before
 // the output arrived has the same ordinals, roles and content as the later source read -- the *only*
