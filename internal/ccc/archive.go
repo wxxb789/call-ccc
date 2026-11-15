@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -271,28 +272,83 @@ func (a *Archive) sessionIDsByRawSuffix(ctx context.Context, ref Ref, raw string
 	}
 }
 
-// sessionIDsForPaths keeps the ids of sessions stored under any of the spellings a filesystem
-// reference may have (see referencePaths). Order of discovery decides nothing: the caller reports more
-// than one as ambiguous.
+// sessionIDsForPaths answers the ids the archive records under any of the spellings a filesystem
+// reference may have (see referencePaths).
+//
+// A path answers the way the source side does while the source is there: the rows the archive records
+// as that source's *current* members (`ListSessionIDsByFilePath`, which excludes the rows of a source
+// AgentsView has reconciled away -- exactly the rows a current parse of that file would emit). Only
+// when no spelling has any does the archive fall back to the rows it still holds under those paths,
+// read from the archive's own per-provider row listing (`ListSessionPathRecordsForAgents`, which
+// reports each stored row's file path and whether its source is missing). That second step is what
+// makes a reference to a deleted source resolve: reconciliation marks the row source-missing and keeps
+// the conversation, so without it `ccc inspect claude:/path/<gone>.jsonl` reported no session at all
+// while `ccc inspect claude:<id>` read the conversation, and the two spellings of one session
+// disagreed about whether the archive holds it. It is a fallback rather than the only lookup because
+// the listing reads one row per session the provider ever recorded, while the path-keyed lookup is
+// indexed: with 20 000 rows for one provider the listing measures ~27 ms against ~21 µs for the
+// indexed query (docs/evidence/0001-agentsview-parity-and-inspection.md, section 7), and a path
+// reference to a source that is there -- the ordinary case -- has no reason to pay that.
 func (a *Archive) sessionIDsForPaths(
 	ctx context.Context, paths []string, provider string,
 ) ([]string, error) {
-	ids := make([]string, 0, len(paths))
-	seen := make(map[string]struct{}, len(paths))
+	current, err := a.currentSessionIDsForPaths(ctx, paths, provider)
+	if err != nil {
+		return nil, err
+	}
+	if len(current) > 0 {
+		return current, nil
+	}
+	records, err := a.database.ListSessionPathRecordsForAgents(ctx, []string{provider})
+	if err != nil {
+		return nil, err
+	}
+	return pathRecordIDs(records, paths), nil
+}
+
+// currentSessionIDsForPaths asks the archive's path-keyed lookup about every spelling. Each answer is
+// the ids recorded as that source's current members, already ordered by id (the inherited query orders
+// them); a spelling no row records contributes nothing, and the rows of one provider cannot collide
+// because `sessions.id` is the table's primary key and a row matches one stored path at most.
+func (a *Archive) currentSessionIDsForPaths(
+	ctx context.Context, paths []string, provider string,
+) ([]string, error) {
+	var ids []string
 	for _, path := range paths {
 		found, err := a.database.ListSessionIDsByFilePath(ctx, path, provider)
 		if err != nil {
 			return nil, err
 		}
-		for _, id := range found {
-			if _, ok := seen[id]; ok {
-				continue
-			}
-			seen[id] = struct{}{}
-			ids = append(ids, id)
-		}
+		ids = append(ids, found...)
 	}
 	return ids, nil
+}
+
+// pathRecordIDs selects the retained rows a filesystem reference names, and orders them.
+//
+// A row answers when the path it was read from is one of the reference's spellings; a user-trashed row
+// does not, exactly as a trashed row answers no reference that names its stored id (the inherited
+// `GetSession` requires `deleted_at IS NULL`), and a source-missing row does, because the conversation
+// is still in the archive under that very path. The inherited record query does not order its answer,
+// so the ids are sorted here: which candidate list an ambiguous reference reports must not depend on
+// the plan SQLite chose for that query.
+func pathRecordIDs(records []db.SessionPathRecord, paths []string) []string {
+	wanted := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		wanted[path] = struct{}{}
+	}
+	ids := make([]string, 0, len(paths))
+	for _, record := range records {
+		if record.Trashed {
+			continue
+		}
+		if _, ok := wanted[record.FilePath]; !ok {
+			continue
+		}
+		ids = append(ids, record.ID)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // sessionIDsForHost keeps the candidates whose stored id names the requested host.

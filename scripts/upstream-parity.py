@@ -20,6 +20,14 @@ against git's index as well: that input is ignored by the carried ``snapshot/.gi
 that is present on disk but absent from the index is missing from every fresh clone and the carried
 ``go:embed`` cannot compile there.
 
+A carried symlink (a ``120000`` record) is a link, or the regular file holding the link's target text
+that a checkout which does not create symlinks has at that path -- and only where that is what *this*
+checkout does, which git's own ``core.symlinks`` states: the two shapes are the same git object, so
+the shape is the only thing that can tell the pin's link from a file that replaced it, and a checkout
+with symlinks enabled that replaced one would otherwise pass on bytes, index mode and a
+``skip-worktree``-silenced ``git status`` alike. The run says how many such file-form links it
+accepted, so the allowance is visible in its own answer.
+
 Every git query this check makes is required: when git answers the file list but refuses the untracked
 list, the index or the status report, the step fails naming the probe instead of skipping the rule it
 answers for. "Nothing would be added" and "nothing is modified" are the answers that look like a pass,
@@ -163,6 +171,85 @@ def decode_paths(raw: bytes) -> list[str]:
     return [entry for entry in raw.decode("utf-8", "surrogateescape").split("\0") if entry]
 
 
+def git_config_bool(root: Path, key: str) -> tuple[bool | None, bool]:
+    """The boolean git records for ``key`` in a tree, and whether git answered at all.
+
+    ``git config --type=bool --get <key>`` exits ``1`` with no output when the key is set nowhere --
+    a real answer ("the platform's own default applies"), reported here as ``(None, True)`` -- and
+    fails differently when the configuration itself cannot be read. That last shape is
+    ``(None, False)``: a caller holding a git-backed answer for this tree must refuse it rather than
+    read it as the default, or the rule it decides would rest on a question nobody answered.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "config", "--type=bool", "--get", key],
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return None, False
+    if proc.returncode == 0:
+        answer = proc.stdout.strip().decode("utf-8", "surrogateescape").lower()
+        if answer in ("true", "false"):
+            return answer == "true", True
+        return None, False
+    if proc.returncode == 1 and not proc.stdout.strip():
+        return None, True
+    return None, False
+
+
+def platform_name() -> str:
+    """The platform this process runs on, as ``os.name`` spells it (``posix``, ``nt``).
+
+    A named seam rather than a bare ``os.name`` read, because the rule that reads it
+    (:func:`symlinks_unavailable`) has two answers and a case has to be able to pin both: a case that
+    asserts one of them from the host it happens to run on pins nothing about the other, and the
+    suite's own rule is that no case depends on which platform is running it.
+    """
+    return os.name
+
+
+def symlinks_unavailable() -> bool:
+    """Whether this platform's git checkouts cannot create a symlink at all.
+
+    Windows is the platform where they cannot without a privilege and a git build that uses it, which
+    is why Git for Windows records ``core.symlinks=false`` in its system configuration (and
+    ``actions/checkout`` sets it for the same reason): such a checkout has a regular file holding the
+    link's target text where the pin has the link. POSIX platforms create symlinks, so an unset
+    ``core.symlinks`` there means the link is a link.
+    """
+    return platform_name() == "nt"
+
+
+def link_paths_may_be_files(root: Path, git_tree: bool) -> bool:
+    """Whether a carried ``120000`` record may be a regular file holding the link's target text here.
+
+    git stores a symlink as the link's target text, so a checkout that does not create symlinks holds
+    *that* text in a regular file at the path and its bytes are the pin's blob -- the same object. The
+    allowance is for those checkouts only: where links *are* created, a file holding the target text
+    is a shape the pin does not have, and it is indistinguishable from the pin by every other
+    predicate this check makes -- its bytes hash to the recorded blob, its index entry can keep the
+    pinned ``120000`` mode while ``git status`` is silenced by an ``assume-unchanged``/``skip-worktree``
+    flag -- so accepting it unconditionally would pass for a carried path whose working-tree type, and
+    behaviour, had changed.
+
+    git's own answer for the checkout decides when it has one (``core.symlinks=false`` states the
+    representation; an unset key is the platform's default, which :func:`symlinks_unavailable` knows).
+    A tree git is answering for, where the query itself failed, is a failure naming the probe: that
+    answer must not be guessed.
+    """
+    value, answered = git_config_bool(root, "core.symlinks")
+    if not answered and git_tree:
+        raise Failure(
+            "could not ask git whether this checkout creates symlinks, so a carried link's shape "
+            "cannot be verified",
+            ["git config --type=bool --get core.symlinks"],
+        )
+    if value is not None:
+        return value is False
+    return symlinks_unavailable()
+
+
 def git_index(root: Path) -> dict[str, tuple[str, str]] | None:
     """``path -> (mode, blob)`` for everything git has staged or committed, or None without git.
 
@@ -259,7 +346,7 @@ def worktree_mode(root: Path, record: Record) -> tuple[str, bool]:
     return "", False
 
 
-def worktree_state(root: Path, record: Record) -> tuple[str, bool]:
+def worktree_state(root: Path, record: Record, link_files_allowed: bool) -> tuple[str, bool]:
     """How a carried file's *working tree* copy stands against the record the manifest keeps.
 
     Answers ``(problem, mode_unverified)``: ``problem`` is ``""`` when the copy is the pinned bytes in
@@ -268,6 +355,10 @@ def worktree_state(root: Path, record: Record) -> tuple[str, bool]:
     for other bytes than the pinned blob, ``"size"`` for another size, ``"mode"`` for another
     executable bit (see :func:`worktree_mode`). ``mode_unverified`` is True only when the copy is
     otherwise right and this platform has no POSIX mode bits to answer with.
+
+    A ``120000`` record's copy is a link, or a file holding the link's target text where this checkout
+    is known to write links that way (``link_files_allowed``, decided once per run by
+    :func:`link_paths_may_be_files`); anything else at such a path is a shape the pin does not have.
 
     Every carried path is asked this with git as well as without it, because ``git status`` is the one
     answer a path can be configured to suppress: an ``assume-unchanged`` or ``skip-worktree`` index
@@ -279,9 +370,9 @@ def worktree_state(root: Path, record: Record) -> tuple[str, bool]:
     target = root / record.path
     is_link = target.is_symlink()
     if record.mode == "120000":
-        # git stores a link as its target text; a platform that checked it out as a regular file
-        # holding that text hashes to the same blob, which is why only a third shape is a mismatch.
-        if not is_link and not target.is_file():
+        # git stores a link as its target text; only a checkout that does not create symlinks holds
+        # that text in a file, which is the one other shape the pin's link can have.
+        if not is_link and not (link_files_allowed and target.is_file()):
             return "shape", False
     elif is_link or not target.is_file():
         return "shape", False
@@ -295,8 +386,8 @@ def worktree_state(root: Path, record: Record) -> tuple[str, bool]:
 
 def check_files(
     root: Path, manifest: Manifest, index: dict[str, tuple[str, str]] | None,
-    modified: set[str] | None,
-) -> tuple[int, int, int]:
+    modified: set[str] | None, link_files_allowed: bool,
+) -> tuple[int, int, int, int]:
     """Verify every carried file against the pin.
 
     The working tree is verified first and in both branches, by hashing the file this repository
@@ -307,18 +398,21 @@ def check_files(
     the bytes already hashed are the whole answer, which is the same answer for a tree whose files
     were written by the importer.
 
-    Returns ``(checked, mode_unverified, symlinks_hashed)``.
+    Returns ``(checked, mode_unverified, symlinks_hashed, link_files_seen)``, where
+    ``link_files_seen`` counts the carried links this checkout holds as a file with the link's target
+    text: the shapes :func:`link_paths_may_be_files` allowed, which the run discloses.
     """
     missing, drifted, wrong_shape, wrong_mode = [], [], [], []
     size_mismatch: list[str] = []
     mode_unverified = 0
     symlinks_hashed = 0
+    link_files_seen = 0
     dirty: list[str] = []
     for record in manifest.files:
         if not present(root, record.path):
             missing.append(record.path)
             continue
-        problem, mode_unverified_here = worktree_state(root, record)
+        problem, mode_unverified_here = worktree_state(root, record, link_files_allowed)
         if problem == "shape":
             wrong_shape.append(record.path)
             continue
@@ -335,6 +429,8 @@ def check_files(
             mode_unverified += 1
         if record.mode == "120000":
             symlinks_hashed += 1
+            if not (root / record.path).is_symlink():
+                link_files_seen += 1
         if index is None:
             continue
         mode, blob = index.get(record.path, ("", ""))
@@ -369,7 +465,7 @@ def check_files(
         raise Failure(
             f"{len(dirty)} carried file(s) differ from what git stores for them", dirty
         )
-    return len(manifest.files), mode_unverified, symlinks_hashed
+    return len(manifest.files), mode_unverified, symlinks_hashed, link_files_seen
 
 
 def check_untracked(root: Path, manifest: Manifest, tracked: list[str] | None,
@@ -665,7 +761,14 @@ def run(root: Path) -> list[str]:
             "cannot be completed",
             ["git status --porcelain"],
         )
-    carried_checked, mode_unverified, symlinks_hashed = check_files(root, manifest, index, modified)
+    # How a carried link may be held is a property of this checkout, decided once per run and only
+    # when the manifest carries a link: a tree with no 120000 record has no shape question to answer.
+    link_files_allowed = (
+        link_paths_may_be_files(root, git_tree=tracked is not None)
+        if any(record.mode == "120000" for record in manifest.files) else False
+    )
+    carried_checked, mode_unverified, symlinks_hashed, link_files_seen = check_files(
+        root, manifest, index, modified, link_files_allowed)
     check_not_ignored(root, manifest, tracked)
     seen = check_untracked(root, manifest, tracked, others)
     deviations, stored, on_disk_only, stored_mode_unverified = check_deviations(
@@ -701,6 +804,12 @@ def run(root: Path) -> list[str]:
         f"inputs: {'; '.join(inputs)}",
     ] + (
         [f"symlinks hashed by their link target: {symlinks_hashed}"] if symlinks_hashed else []
+    ) + (
+        [
+            f"carried link(s) held as a file with the link's target text: {link_files_seen} "
+            f"(this checkout does not create symlinks)"
+        ]
+        if link_files_seen else []
     ) + (
         [
             f"executable bits not verified for {mode_unverified + stored_mode_unverified} file(s): "

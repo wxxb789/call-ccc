@@ -28,16 +28,19 @@ it: an `assume-unchanged` or `skip-worktree` index flag keeps an edited path out
 the pinned blob stays in the index, so a check that trusted git's own status for the working tree would
 pass for modified carried source; the record's shape, bytes and executable bit are compared directly
 with the file this repository ships, and git's index adds what a stat cannot answer — what a fresh
-clone receives. It then fails if a manifest path is missing or modified in the working tree, if a
-declared deviation has quietly turned back into upstream's copy — staged *or* only written on disk,
-since the gate reads the working tree — or stops holding the stored bytes its record pins (that path is
-a carried path for everything but the byte comparison: it must also be present in the working tree,
-unmodified relative to git's index, its working-tree executable bit must be the record's — checked on
-the file itself, because a checkout with `core.filemode=false` leaves that edit out of git's index and
-status — and it must be matched by no ignore rule), if the generated input stops hashing
-to the value the carried snapshot tool pins or is not what git's index stores for it (presence, mode and
-the blob its own bytes hash to: the carried `snapshot/.gitignore` keeps that path out of every untracked
-listing, so only the index says whether a clone receives it), if `docs/upstream.md` or `cmd/ccc/pin.go`
+clone receives. A carried symlink's shape is part of that comparison: the link and the regular file
+holding its target text are the same git object, so the file form is accepted only where the checkout
+says it stores links that way (`core.symlinks=false`, or a platform that cannot create symlinks), and
+the run reports how many it accepted. It then fails if a manifest path is missing or modified in the
+working tree, if a declared deviation has quietly turned back into upstream's copy — staged *or* only
+written on disk, since the gate reads the working tree — or stops holding the stored bytes its record
+pins (that path is a carried path for everything but the byte comparison: it must also be present in
+the working tree, unmodified relative to git's index, its working-tree executable bit must be the
+record's — checked on the file itself, because a checkout with `core.filemode=false` leaves that edit
+out of git's index and status — and it must be matched by no ignore rule), if the generated input
+stops hashing to the value the carried snapshot tool pins or is not what git's index stores for it
+(presence, mode and the blob its own bytes hash to: the carried `snapshot/.gitignore` keeps that path
+out of every untracked listing, so only the index says whether a clone receives it), if `docs/upstream.md` or `cmd/ccc/pin.go`
 disagree with the manifest about the revision, or if anything git would add sits inside the tree without
 a manifest record or a project-owned prefix. Every git query is required: an untracked-file, index or
 `git status` answer the host could not give fails the check rather than dropping the rule it answers

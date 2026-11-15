@@ -363,3 +363,53 @@ supersede it with a newer one and say which it supersedes.
   succeeded.
 - **Settled by:** whether the operator wants an unattended pipeline to fail when the source side fails
   while an archive answers, or to succeed with the failure named in the report.
+
+## Q-0001-17 — Whether a filesystem reference also reports a conversation whose source is gone
+
+- **Status:** resolved (default taken)
+- **Question:** the round-7 review (finding 1) measured that a path reference reported nothing for a
+  session AgentsView had reconciled away (its row keeps `source_missing_at`, its conversation stays
+  readable by id, and the path-keyed lookup it used excludes exactly those rows). Resolving the
+  retained row is the fix; the open choice is what a path answers when it has *both* current members
+  and retained rows — e.g. a source deleted and re-created at the same path, or a multi-session file
+  whose superseded member was marked missing. The options: answer the current members only, answer the
+  union of both as candidates, or keep the retired lookup's answer (current members) and lose the
+  retained rows again.
+- **Default taken:** the current members answer while the archive records any for the path — the rows a
+  parse of that file emits, which is what the *source* side reports for the same reference, so the two
+  sides cannot disagree about a file that is there — and the rows the archive retained under the path
+  answer only when no spelling has a current member. The retained conversation is never lost: it stays
+  the archive's answer to its own id, and the path answers it once the file it came from is gone. The
+  union was rejected because it reports conversations the source side does not for a file that is
+  present (and because the same conversation can arrive through both tiers, which the close-out's union
+  mutation observes as a duplicate candidate).
+- **Reversal:** one function (`internal/ccc/archive.go`'s `sessionIDsForPaths`): drop the
+  `len(current) > 0` shortcut and return the union of both tiers, deduplicated, which makes a path with
+  a live row and a retained row an ambiguous reference.
+- **Settled by:** whether the operator wants `ccc inspect <provider>:<path>` to answer with every
+  conversation that path ever produced, or with the members the file holds now — the archive route by
+  id already reads the retained one either way.
+
+## Q-0001-18 — Which checkouts may hold a carried symlink as a file
+
+- **Status:** resolved (default taken)
+- **Question:** the round-7 review (finding 3) measured that the parity check accepted a regular file
+  holding the link's target text at *every* `120000` record, because a checkout that cannot create
+  symlinks has exactly that file. On a symlink-enabled checkout that acceptance certifies a carried
+  path whose working-tree type — and behaviour — has changed (the bytes are the pinned blob, git's
+  index keeps the pinned `120000` entry, and `skip-worktree` keeps `git status` silent), which is what
+  the step exists to establish. The open choice is which checkouts may hold the file form.
+- **Default taken:** the file form is accepted where the checkout *states* the representation it uses —
+  git's `core.symlinks=false` for this tree, and, where git cannot be asked at all (a tree without git,
+  a copy), a platform whose checkouts cannot create symlinks. An unset `core.symlinks` on a POSIX host
+  means the link is a link, and a `core.symlinks` query that cannot answer on a tree git *is* answering
+  for fails the step naming the probe. A run that accepted the file form reports how many it accepted.
+- **Reversal:** one function (`link_paths_may_be_files` in `scripts/upstream-parity.py`): return
+  `False` unconditionally (a checkout that stores links as files then fails the step), or `True`
+  unconditionally (back to the state the finding measured). The Windows case is why the platform
+  fallback exists: Git for Windows records `core.symlinks=false` in its system configuration and
+  `actions/checkout` sets it on that runner, so a Windows CI job answers through git rather than through
+  the platform probe.
+- **Settled by:** whether the operator wants a carried link's shape to be required to be a link
+  everywhere (and Windows checkouts to be told to configure `core.symlinks=false`), or the current
+  reading where the checkout's own answer decides.

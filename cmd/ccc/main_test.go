@@ -331,6 +331,71 @@ func TestMissingSessionIsAFailureWithACandidateList(t *testing.T) {
 	}
 }
 
+// TestNoResultExitKeepsTheDiagnostics pins what the CLI prints when neither the source side nor the
+// archive answers a reference: the inspection's own diagnostics reach stderr, and stdout carries
+// nothing, because a failed run has no result to report.
+//
+// The branch used to print "no session found" and nothing else, which discarded the reason the
+// inspection held: an operational provider failure (the Cursor provider's retryable store failure is
+// the inherited shape) reaches an inspection as a warning while the archive is consulted, and with no
+// archive holding the session the operator was told the session does not exist instead of why it could
+// not be read. Both diagnostics this branch can reach without a provider failure are pinned here -- a
+// reference nothing readable answers, and one recorded on another machine -- and both spellings of the
+// command line, so the `--json` path cannot swallow a diagnostic either.
+func TestNoResultExitKeepsTheDiagnostics(t *testing.T) {
+	dataDir := isolatedEnvironment(t)
+	const unknown = "00000000-0000-4000-8000-000000000000"
+	cases := []struct {
+		name     string
+		operand  string
+		diagnose string
+	}{
+		{
+			name:     "nothing readable answers",
+			operand:  "claude:" + unknown,
+			diagnose: "no readable source session for claude:" + unknown,
+		},
+		{
+			name:     "recorded on another machine",
+			operand:  "claude:host-a~" + unknown,
+			diagnose: "was recorded on another machine",
+		},
+	}
+	for _, testCase := range cases {
+		for _, asJSON := range []bool{false, true} {
+			spelling := ""
+			if asJSON {
+				spelling = " --json"
+			}
+			t.Run(testCase.name+spelling, func(t *testing.T) {
+				args := []string{"inspect", testCase.operand, "--data-dir", dataDir}
+				if asJSON {
+					args = append(args, "--json")
+				}
+				code, stdout, stderr := runCLI(t, args...)
+				if code != exitFailure {
+					t.Errorf("ccc %v: exit %d, want %d (stderr %q)", args, code, exitFailure, stderr)
+				}
+				if stdout != "" {
+					t.Errorf("ccc %v: a failed inspection wrote to stdout (%q)", args, stdout)
+				}
+				if !strings.Contains(stderr, testCase.diagnose) {
+					t.Errorf("ccc %v: the inspection's diagnostic %q is missing from stderr: %s",
+						args, testCase.diagnose, stderr)
+				}
+				// The archive is not there either, and that is the other warning the inspection held:
+				// it reaches stderr too rather than being collapsed into "no session found".
+				if !strings.Contains(stderr, "no archive at ") {
+					t.Errorf("ccc %v: the missing-archive diagnostic is absent: %s", args, stderr)
+				}
+				if !strings.Contains(stderr, "no session found for "+testCase.operand) {
+					t.Errorf("ccc %v: the not-found line is absent: %s", args, stderr)
+				}
+			})
+		}
+	}
+}
+
 // TestHelpNeedsNoEnvironment pins that a first-time user can read the usage without a data directory,
 // and that asking `inspect` for it is a help request rather than a command line that could not be
 // understood: the usage text is the answer, so it goes to stdout and the exit code is the success one.

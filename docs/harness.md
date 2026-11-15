@@ -68,7 +68,13 @@ It verifies, in this order:
    with `.gitattributes` filters applied) — or, in a tree without git, what its bytes hash to;
 3. every carried path's **working tree copy** holds the pinned bytes, shape and executable bit — hashed
    and compared to the manifest record in both branches, with git and without it, before git is asked
-   anything. `git status` is the one answer a path can be configured to suppress: an `assume-unchanged`
+   anything. A carried symlink (a `120000` record) is a link, or the regular file holding the link's
+   target text that a checkout which does not create symlinks has there — the two are the same git
+   object, so the shape is the only thing that tells them apart — and the file form is accepted only
+   where the checkout really stores links that way, which git's own `core.symlinks=false` (or a
+   platform that cannot create symlinks) states; a broken `core.symlinks` query on a tree git is
+   answering for fails the step naming the probe, and the run reports how many file-form links it
+   accepted. `git status` is the one answer a path can be configured to suppress: an `assume-unchanged`
    or `skip-worktree` index flag keeps an edited file out of git's report while the pinned blob stays in
    the index, so a check that read "git reports nothing modified" as "the file is the pin's copy" would
    pass for modified carried source. The record's *mode* is additionally compared with git's index

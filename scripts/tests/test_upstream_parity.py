@@ -144,6 +144,15 @@ class ParityTree:
         (self.root / MANIFEST).parent.mkdir(parents=True, exist_ok=True)
         (self.root / MANIFEST).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+    def add_link_record(self, path: str, target: bytes) -> None:
+        """Record a carried symlink at path, whose bytes are the link's target text.
+
+        The caller writes the shape the case is about: the link itself, or a regular file holding the
+        target text (which is what a checkout that does not create symlinks has at that path).
+        """
+        self.carried[path] = ("120000", target)
+        self.write_manifest()
+
     def add_stored_deviation(self, path: str, upstream: bytes, stored: bytes,
                              mode: str = "100644") -> None:
         """Declare a path this tree carries anyway, pinning the bytes it stores for it.
@@ -240,6 +249,9 @@ class ParityTree:
             patches.setdefault("git_index", lambda root: self.index_state())
             patches.setdefault("git_modified", lambda root: set())
             patches.setdefault("ignored_paths", lambda root, paths: [])
+            #: ``core.symlinks`` unset, with git answering: the platform's own default decides how a
+            #: link may be held, and no case shells out to a tool to hear it.
+            patches.setdefault("git_config_bool", lambda root, key: (None, True))
         buffer = io.StringIO()
         with mock.patch.multiple(self.parity, **patches) if patches else _no_patch():
             with redirect_stdout(buffer):
@@ -316,17 +328,90 @@ class ParityCase(ParityTreeCase, unittest.TestCase):
 
     def test_a_symlink_record_hashes_the_link_target(self) -> None:
         """git stores a link as its target text, so the same bytes in a file are the same object."""
+        target = b"a.txt"
         try:
             os.symlink("a.txt", self.tree.root / "src/link")
+            symlinks_unavailable = False
         except (OSError, NotImplementedError):
-            # A platform without symlink support checks the link out as a file holding the target.
-            self.tree.write_bytes("src/link", b"a.txt")
-        target = b"a.txt"
-        self.tree.carried["src/link"] = ("120000", target)
-        self.tree.write_manifest()
-        code, output = self.tree.run_parity()
+            # A platform without symlink support checks the link out as a file holding the target: the
+            # case says so through the platform probe rather than depending on which host it runs on.
+            self.tree.write_bytes("src/link", target)
+            symlinks_unavailable = True
+        self.tree.add_link_record("src/link", target)
+        code, output = self.tree.run_parity(symlinks_unavailable=lambda: symlinks_unavailable)
         self.assert_clean(code, output)
         self.assertIn("symlinks hashed by their link target: 1", output)
+
+    def test_a_link_held_as_a_file_is_a_shape_failure_where_symlinks_are_created(self) -> None:
+        """The link's bytes are also a file's bytes, so only the shape can tell the two apart.
+
+        A regular file holding the link's target text is exactly what a checkout that does not create
+        symlinks has, and it is *not* what a symlink-enabled checkout has: there the pin's link is a
+        link, and this replacement keeps the recorded blob (its bytes are the target text), can keep
+        the pinned ``120000`` mode in git's index while a ``skip-worktree`` flag silences
+        ``git status`` -- the case below pins that through the git branch -- so a check that accepted
+        any file here would certify a carried path whose working-tree type had changed.
+        """
+        self.tree.write_bytes("src/link", b"a.txt")
+        self.tree.add_link_record("src/link", b"a.txt")
+        code, output = self.tree.run_parity(git_config_bool=lambda root, key: (True, True))
+        self.assert_failed(code, output, "changed file type")
+        self.assertIn("src/link", output)
+
+    def test_a_link_held_as_a_file_passes_where_the_checkout_stores_links_that_way(self) -> None:
+        """``core.symlinks=false`` is git saying the file form *is* this checkout's representation.
+
+        The allowance has to stay where it applies -- Git for Windows and a checkout made with
+        ``core.symlinks=false`` hold exactly this file -- and the run says the shape it accepted instead
+        of accepting it silently. The control for the case above: without this, a check that refused
+        every file at a link record would pass the shape rule for the wrong reason.
+        """
+        self.tree.write_bytes("src/link", b"a.txt")
+        self.tree.add_link_record("src/link", b"a.txt")
+        code, output = self.tree.run_parity(git_config_bool=lambda root, key: (False, True))
+        self.assert_clean(code, output)
+        self.assertIn("carried link(s) held as a file with the link's target text: 1", output)
+
+    def test_the_platform_answer_decides_a_link_file_form_when_git_cannot_be_asked(self) -> None:
+        """With no git at all, the platform decides -- and only a platform that cannot link says yes.
+
+        A tree git cannot enumerate still has the shape rule answered from the working tree, so this is
+        where a checkout that cannot create symlinks (and cannot say so through git, having none) is
+        read as holding the link's target in a file, while a host whose checkouts do create links reads
+        the same file as the wrong shape.
+        """
+        self.tree.write_bytes("src/link", b"a.txt")
+        self.tree.add_link_record("src/link", b"a.txt")
+        code, output = self.tree.run_parity(
+            symlinks_unavailable=lambda: True, **self.tree.gitless_answers())
+        # The shape rule passed (the verdict is the missing file list, not a failed comparison); the
+        # disclosure of the shape that was accepted belongs to the git-backed run above, because an
+        # INCOMPLETE verdict prints what was *not* checked instead of the run's own summary lines.
+        self.assert_incomplete(code, output)
+        code, output = self.tree.run_parity(
+            symlinks_unavailable=lambda: False, **self.tree.gitless_answers())
+        self.assert_failed(code, output, "changed file type")
+
+    def test_a_symlink_configuration_query_that_cannot_answer_fails_the_run(self) -> None:
+        """A probe that could not answer must not read as the platform default: that would decide a rule."""
+        self.tree.write_bytes("src/link", b"a.txt")
+        self.tree.add_link_record("src/link", b"a.txt")
+        code, output = self.tree.run_parity(git_config_bool=lambda root, key: (None, False))
+        self.assert_failed(code, output, "could not ask git whether this checkout creates symlinks")
+
+    def test_the_platform_answer_a_link_file_form_is_read_from(self) -> None:
+        """Both answers of the platform probe, without depending on the host the case runs on.
+
+        The probe is what decides a link's file form when git cannot be asked, and it has two answers:
+        a checkout that cannot create symlinks holds the target text in a file, and one that can does
+        not. Asserting the answer the *host* gives would pin only one of them, so the platform name is
+        answered by the case instead.
+        """
+        parity = self.tree.parity
+        with mock.patch.object(parity, "platform_name", lambda: "nt"):
+            self.assertTrue(parity.symlinks_unavailable())
+        with mock.patch.object(parity, "platform_name", lambda: "posix"):
+            self.assertFalse(parity.symlinks_unavailable())
 
     def test_a_symlink_record_whose_path_is_a_directory_is_a_failure(self) -> None:
         """A link's bytes are its target text, so a third shape at the path is not the pin's link."""
@@ -672,12 +757,15 @@ class ScriptedGit:
     the deviation rules run for real on any host.
     """
 
-    def __init__(self, tracked=(), others=(), index=None, porcelain=b"", ignored=()):
+    def __init__(self, tracked=(), others=(), index=None, porcelain=b"", ignored=(), symlinks=None):
         self.tracked = list(tracked)
         self.others = list(others)
         self.index = dict(index or {})
         self.porcelain = porcelain
         self.ignored = list(ignored)
+        #: git's ``core.symlinks`` for this scripted checkout: ``True``/``False`` as git records them,
+        #: or ``None`` for the key being unset (git's own "the platform default applies" answer).
+        self.symlinks = symlinks
 
     def run(self, cmd, input=None, **kwargs):  # noqa: A002 - the signature subprocess.run has
         args = list(cmd[3:])  # drop "git", "-C" and the tree the query runs in
@@ -692,6 +780,12 @@ class ScriptedGit:
             stdout = self.porcelain.decode("utf-8")
         elif args[:1] == ["check-ignore"]:
             stdout = "\0".join(self.ignored)
+        elif args[:1] == ["config"]:
+            if self.symlinks is None:
+                # git exits 1 with no output for a key that is set nowhere: the answer the shipped
+                # reader takes as "the platform's default applies", not as an unanswered question.
+                return tool_result(cmd, 1, b"", b"")
+            stdout = "true" if self.symlinks else "false"
         else:
             raise AssertionError(f"the case does not script this git query: {args}")
         # Bytes, like ``subprocess.run(capture_output=True)`` without ``text=True``: the shipped
@@ -805,6 +899,42 @@ class GitBranchCase(ParityTreeCase, unittest.TestCase):
         code, output = self.run_with_git(porcelain=b"")
         self.assert_failed(code, output, "src/a.txt")
         self.assertIn("differ from the pinned revision", output)
+
+    def test_a_link_replaced_by_a_file_under_a_silent_status_is_still_caught(self) -> None:
+        """A link can be replaced without changing a byte of what git stores, so the shape is the answer.
+
+        ``CLAUDE.md`` is a carried symlink whose blob *is* its target text, so replacing the link with a
+        regular file of exactly that text leaves git's index entry (mode ``120000``, the pinned blob)
+        and every other predicate here agreeing -- and with ``skip-worktree`` set on the path,
+        ``git status`` reports nothing at all. ``core.symlinks=true`` is git saying this checkout
+        creates the link, which is the state the pin is about: a check that accepted a file here would
+        certify a carried path whose working-tree type, and behaviour, had changed.
+        """
+        target = b"a.txt"
+        self.tree.write_bytes("src/link", target)
+        self.tree.add_link_record("src/link", target)
+        self.index = self.tree.index_state()
+        self.tracked = self.tree.git_known_paths()
+        code, output = self.run_with_git(symlinks=True, porcelain=b"")
+        self.assert_failed(code, output, "changed file type")
+        self.assertIn("src/link", output)
+
+    def test_a_link_held_as_a_file_where_git_says_so_is_the_same_file_accepted(self) -> None:
+        """The control for the case above: the same file and the same clean status, one git answer apart.
+
+        A checkout that does not create symlinks holds the link's target text in a file, and git says so
+        with ``core.symlinks=false``; there the file *is* the pin's working-tree copy. Without this
+        control the shape rule could pass by refusing a file at a link record everywhere, including
+        where that is what the checkout is configured to hold.
+        """
+        target = b"a.txt"
+        self.tree.write_bytes("src/link", target)
+        self.tree.add_link_record("src/link", target)
+        self.index = self.tree.index_state()
+        self.tracked = self.tree.git_known_paths()
+        code, output = self.run_with_git(symlinks=False, porcelain=b"")
+        self.assert_clean(code, output)
+        self.assertIn("carried link(s) held as a file with the link's target text: 1", output)
 
     def test_a_worktree_shape_change_git_status_cannot_report_is_still_caught(self) -> None:
         path = self.tree.root / "docs/note.md"

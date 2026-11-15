@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -612,9 +613,41 @@ func TestArchiveReferenceDoesNotCrossProviders(t *testing.T) {
 	}
 }
 
+// TestPathRecordIDsSelectsAndOrdersTheRowsOfAPath pins the selection and the order a filesystem
+// reference resolves through, on the rows the archive answers with rather than on a query plan.
+//
+// The four rules are checked in one place because they compose the answer: a row of another path is not
+// a candidate, a user-trashed row is not an answer while a source-missing (reconciled) row is, and the
+// ids come back sorted although the records do not -- the inherited record query orders nothing, and a
+// candidate list that moved with the plan would change what an ambiguous reference reports.
+func TestPathRecordIDsSelectsAndOrdersTheRowsOfAPath(t *testing.T) {
+	records := []db.SessionPathRecord{
+		{ID: "second-conversation", FilePath: "/sessions/a.jsonl", MessageCount: 3},
+		{ID: "trashed-conversation", FilePath: "/sessions/a.jsonl", Trashed: true},
+		{ID: "another-path", FilePath: "/sessions/b.jsonl"},
+		{ID: "first-conversation", FilePath: "/sessions/a.jsonl"},
+		{ID: "reconciled-conversation", FilePath: "/sessions/a.jsonl", SourceMissing: true},
+	}
+	want := []string{"first-conversation", "reconciled-conversation", "second-conversation"}
+	if got := pathRecordIDs(records, []string{"/sessions/a.jsonl"}); !slices.Equal(got, want) {
+		t.Errorf("pathRecordIDs = %v, want %v", got, want)
+	}
+	// Every spelling answers, and the spellings of one reference are one candidate list, not one per
+	// spelling: the answer stays sorted across the two paths.
+	want = []string{"another-path", "first-conversation", "reconciled-conversation", "second-conversation"}
+	if got := pathRecordIDs(records, []string{"/sessions/a.jsonl", "/sessions/b.jsonl"}); !slices.Equal(got, want) {
+		t.Errorf("pathRecordIDs = %v, want %v", got, want)
+	}
+	// A spelling no row records answers nothing rather than the rows of another path.
+	if got := pathRecordIDs(records, []string{"/sessions/c.jsonl"}); len(got) != 0 {
+		t.Errorf("pathRecordIDs = %v, want no candidate", got)
+	}
+}
+
 // TestDeletedSourcePathFallsBackToTheArchive pins what an inspection does when the source file an
 // archive was written from is gone: the archived session is reported, and the unreadable source is a
-// warning rather than the loss of the whole inspection.
+// warning rather than the loss of the whole inspection -- before and after AgentsView reconciles the
+// disappearance.
 //
 // The provider's changed-path classifier answers for an absent path -- that is what keeps a watcher
 // from dropping a deletion -- so a deleted source used to be reported as a *source* the reference
@@ -622,6 +655,14 @@ func TestArchiveReferenceDoesNotCrossProviders(t *testing.T) {
 // never consulted: the error escaped `Inspect` before the archive was opened. A classification with no
 // file behind it is not a local source, so the reference resolves to nothing readable and the archive
 // answers.
+//
+// The second half is the state a watcher pass leaves behind: the next changed-path pass over the
+// vanished path marks the stored row source-missing (`db.MarkSessionSourceMissing`) and keeps the
+// conversation. The path-keyed lookup the archive used answered only a source's *current* members --
+// it requires `source_missing_at IS NULL` -- so the reconciled row became invisible to the reference
+// that names its path while the same row still answered a reference that names its id: an inspection
+// reported "no session found" for a conversation the archive holds. The row's own path is what makes it
+// this reference's session, whether or not the file it was read from is still there.
 func TestDeletedSourcePathFallsBackToTheArchive(t *testing.T) {
 	// A throw-away provider root: deleting the transcript must not touch the committed fixture.
 	root := t.TempDir()
@@ -655,8 +696,9 @@ func TestDeletedSourcePathFallsBackToTheArchive(t *testing.T) {
 		t.Fatalf("removing the source transcript: %v", err)
 	}
 
+	byPath := Ref{Provider: "claude", ID: source}
 	inspection, err := Inspect(ctx, InspectOptions{
-		Ref:         Ref{Provider: "claude", ID: source},
+		Ref:         byPath,
 		Config:      cfg,
 		Reader:      NewSourceReader(cfg),
 		ArchivePath: archivePath,
@@ -678,6 +720,348 @@ func TestDeletedSourcePathFallsBackToTheArchive(t *testing.T) {
 	warnings := strings.Join(inspection.Warnings, "\n")
 	if !strings.Contains(warnings, "no readable source session for claude:"+source) {
 		t.Errorf("the inspection does not say the source was unreadable: %v", inspection.Warnings)
+	}
+
+	// Now the disappearance is reconciled, which is what a watcher pass does with the vanished path.
+	reconcileVanishedSource(t, ingestor, source)
+	requireSourceMissing(t, archivePath, claudeFixtureRef.ID)
+
+	inspection, err = Inspect(ctx, InspectOptions{
+		Ref:         byPath,
+		Config:      cfg,
+		Reader:      NewSourceReader(cfg),
+		ArchivePath: archivePath,
+	})
+	if err != nil {
+		t.Fatalf("inspecting a reconciled deleted source path: %v", err)
+	}
+	if inspection.Archive == nil {
+		t.Fatalf("the reconciled row was not reported: %v", inspection.Warnings)
+	}
+	if inspection.Archive.Status.SessionID != claudeFixtureRef.ID {
+		t.Errorf("the reconciled path resolved %q, want %q",
+			inspection.Archive.Status.SessionID, claudeFixtureRef.ID)
+	}
+}
+
+// reconcileVanishedSource asks the inherited sync engine to process a source path that no longer
+// exists, the way a watcher's changed-path pass does. AgentsView's answer is the archive state this
+// package reads: the stored row is marked source-missing and its conversation is kept.
+func reconcileVanishedSource(t *testing.T, ingestor *Ingestor, path string) {
+	t.Helper()
+	if err := ingestor.IngestPaths(t.Context(), path); err != nil {
+		t.Fatalf("reconciling the vanished source %s: %v", path, err)
+	}
+}
+
+// requireSourceMissing fails the test unless the archive's row for an id carries the reconciliation's
+// source-missing mark and still records the path it was read from: the rule above is only meaningful
+// in that state, and the recorded path is what a path reference resolves through.
+func requireSourceMissing(t *testing.T, archivePath, id string) {
+	t.Helper()
+	database, err := db.Open(t.Context(), archivePath)
+	if err != nil {
+		t.Fatalf("opening the archive to read the row: %v", err)
+	}
+	defer database.Close()
+	var missing, filePath string
+	if err := database.Reader().QueryRowContext(t.Context(),
+		"SELECT COALESCE(source_missing_at, ''), COALESCE(file_path, '') FROM sessions WHERE id = ?", id).
+		Scan(&missing, &filePath); err != nil {
+		t.Fatalf("reading the row's source-missing mark: %v", err)
+	}
+	if missing == "" {
+		t.Fatalf("the reconciliation did not mark %s source-missing", id)
+	}
+	if filePath == "" {
+		t.Fatalf("the reconciled row for %s no longer records a source path", id)
+	}
+}
+
+// twoRootClaudeFixture writes the committed Claude fixture under the *second* of two configured Claude
+// roots and answers the configuration, both roots, the reference's relative spelling and the file's
+// path. Two roots make a relative reference resolve to more than one spelling (referencePaths), which
+// is the state the cases below ask the archive about.
+func twoRootClaudeFixture(t *testing.T) (cfg config.Config, rootA, rootB, relative, source string) {
+	t.Helper()
+	cfg = fixtureConfig(t)
+	rootA = filepath.Join(t.TempDir(), "claude")
+	rootB = filepath.Join(t.TempDir(), "claude")
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentClaude: {rootA, rootB}}
+	relative = filepath.Join("-home-user-code-example-api", claudeFixtureRef.ID+".jsonl")
+	source = filepath.Join(rootB, relative)
+	data, err := os.ReadFile(fixturePath(t, filepath.Join("claude", relative)))
+	if err != nil {
+		t.Fatalf("reading the committed fixture: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(source), 0o755); err != nil {
+		t.Fatalf("preparing the second provider root: %v", err)
+	}
+	if err := os.WriteFile(source, data, 0o600); err != nil {
+		t.Fatalf("writing the transcript copy: %v", err)
+	}
+	return cfg, rootA, rootB, relative, source
+}
+
+// ingestFile writes one source file into a fresh archive and answers the ingestor that did it.
+func ingestFile(t *testing.T, cfg config.Config, source string) (*Ingestor, string) {
+	t.Helper()
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(cfg, archivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	if err := ingestor.IngestPaths(t.Context(), source); err != nil {
+		t.Fatalf("ingesting the transcript: %v", err)
+	}
+	return ingestor, archivePath
+}
+
+// TestRelativePathReferenceAsksEveryConfiguredRoot pins that a relative filesystem reference is looked
+// up under *every* root the provider is configured with, not only the first.
+//
+// A relative reference is a candidate path under each configured root (referencePaths), and the
+// archive stores the absolute path its row was written with: a lookup that asked about one spelling
+// would report a session absent merely because the file was read from another configured root.
+func TestRelativePathReferenceAsksEveryConfiguredRoot(t *testing.T) {
+	cfg, _, _, relative, source := twoRootClaudeFixture(t)
+	_, archivePath := ingestFile(t, cfg, source)
+	ctx := context.Background()
+	archive, err := openArchive(ctx, archivePath, cfg.AgentDirs)
+	if err != nil {
+		t.Fatalf("opening the archive: %v", err)
+	}
+	defer archive.Close()
+
+	status, found, err := archive.Status(ctx, Ref{Provider: "claude", ID: relative})
+	if err != nil || !found {
+		t.Fatalf("the relative reference answered found=%v err=%v, want the archived row", found, err)
+	}
+	if status.SessionID != claudeFixtureRef.ID {
+		t.Errorf("the relative reference resolved %q, want %q", status.SessionID, claudeFixtureRef.ID)
+	}
+}
+
+// TestRelativePathReferenceAsksEveryRootBeforeFallingBack pins the two tiers against a reference that
+// has more than one spelling: the source's current members are looked for under *every* configured
+// root, and a retained row under one of them does not turn the reference into an ambiguous one.
+//
+// Root A holds a retained row for the reference's relative path (its file is gone), root B holds the
+// file itself. Asking only the first spelling would find no current member and fall back to the rows
+// the archive still holds, reporting both conversations as candidates -- an ambiguity the source side
+// does not have, because it reads only the file that is there. The retained row is not lost: it stays
+// the archive's answer to its own id.
+func TestRelativePathReferenceAsksEveryRootBeforeFallingBack(t *testing.T) {
+	cfg, rootA, _, relative, source := twoRootClaudeFixture(t)
+	_, archivePath := ingestFile(t, cfg, source)
+	ctx := context.Background()
+
+	// The first root's conversation, whose source is gone: the row records the path it was read from,
+	// and the inherited reconciliation's own mark (baseline, then mark) makes it source-missing.
+	stored := filepath.Join(rootA, relative)
+	database, err := db.Open(ctx, archivePath)
+	if err != nil {
+		t.Fatalf("opening the archive to seed the retained row: %v", err)
+	}
+	path := stored
+	dbtest.SeedSessionWithMessages(t, database, "conversation-of-root-a", "example-api",
+		[]db.Message{dbtest.UserMsg("conversation-of-root-a", 0, "the conversation root A lost")},
+		func(session *db.Session) {
+			session.Agent = "claude"
+			session.Machine = "local"
+			session.FilePath = &path
+		})
+	if err := database.BaselineActiveSessionSourcePaths(ctx, "local",
+		[]db.SessionSourcePath{{Agent: "claude", FilePath: stored}}); err != nil {
+		t.Fatalf("baselining the retained row's source: %v", err)
+	}
+	changed, err := database.MarkSessionSourceMissing(ctx, "local", "claude", "conversation-of-root-a", stored)
+	if err != nil || !changed {
+		t.Fatalf("marking the retained row source-missing: changed=%v err=%v", changed, err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("closing the seeded archive: %v", err)
+	}
+
+	archive, err := openArchive(ctx, archivePath, cfg.AgentDirs)
+	if err != nil {
+		t.Fatalf("opening the archive: %v", err)
+	}
+	defer archive.Close()
+	status, found, err := archive.Status(ctx, Ref{Provider: "claude", ID: relative})
+	if err != nil {
+		t.Fatalf("the relative reference failed: %v", err)
+	}
+	if !found {
+		t.Fatalf("the relative reference resolved nothing, want root B's session")
+	}
+	if status.SessionID != claudeFixtureRef.ID || status.Agent != "claude" {
+		t.Errorf("the relative reference resolved %+v, want the file that is there", status)
+	}
+	if _, err := archive.Read(ctx, Ref{Provider: "claude", ID: "conversation-of-root-a"}); err != nil {
+		t.Errorf("the retained row is not readable by id: %v", err)
+	}
+}
+
+// TestPathReferenceDoesNotCrossProviders pins that a filesystem reference is answered only by a row the
+// provider the reference names recorded.
+//
+// The lookup asks the archive's per-provider row listing, whose agent predicate is the whole scope: a
+// path is a source identity only together with the agent that owns it (the same pair the inherited
+// path-keyed lookup took), so a Claude transcript asked for as a Codex session is not this archive's
+// Codex session -- the inspection would report another agent's conversation under the requested label
+// and exit successfully although no Codex session exists there.
+func TestPathReferenceDoesNotCrossProviders(t *testing.T) {
+	cfg := fixtureConfig(t)
+	claudeFile := fixturePath(t, filepath.Join("claude", "-home-user-code-example-api",
+		claudeFixtureRef.ID+".jsonl"))
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(cfg, archivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	ctx := context.Background()
+	if err := ingestor.IngestPaths(ctx, claudeFile); err != nil {
+		t.Fatalf("ingesting the fixture: %v", err)
+	}
+	archive, err := OpenArchive(ctx, archivePath)
+	if err != nil {
+		t.Fatalf("opening the archive: %v", err)
+	}
+	defer archive.Close()
+
+	// The archive holds the Claude session and nothing else: the same path asked for as a Codex session
+	// is not found, and the provider that recorded it still answers.
+	crossed := Ref{Provider: "codex", ID: claudeFile}
+	if status, found, err := archive.Status(ctx, crossed); err != nil || found {
+		t.Errorf("a codex reference resolved the claude row by path: found=%v err=%v status=%+v",
+			found, err, status)
+	}
+	if _, err := archive.Read(ctx, crossed); !errors.Is(err, ErrNotFound) {
+		t.Errorf("reading a codex reference by path answered %v, want a not-found answer", err)
+	}
+	status, found, err := archive.Status(ctx, Ref{Provider: "claude", ID: claudeFile})
+	if err != nil || !found {
+		t.Fatalf("claude:%s answered found=%v err=%v, want the stored row", claudeFile, found, err)
+	}
+	if status.SessionID != claudeFixtureRef.ID || status.Agent != "claude" {
+		t.Errorf("claude:%s resolved %+v, want the claude row it names", claudeFile, status)
+	}
+}
+
+// TestPathReferenceIgnoresATrashedSession pins the deletion half of the path rule: a session the user
+// moved to the trash answers no path reference.
+//
+// The row keeps its file path when it is trashed, so a lookup that only matched the path would report a
+// conversation the user deleted as the session a reference names. A reference that names the stored id
+// answers nothing either (the inherited `GetSession` requires `deleted_at IS NULL`), and the two must
+// not disagree about the same session.
+func TestPathReferenceIgnoresATrashedSession(t *testing.T) {
+	cfg := fixtureConfig(t)
+	claudeFile := fixturePath(t, filepath.Join("claude", "-home-user-code-example-api",
+		claudeFixtureRef.ID+".jsonl"))
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(cfg, archivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	ctx := context.Background()
+	if err := ingestor.IngestPaths(ctx, claudeFile); err != nil {
+		t.Fatalf("ingesting the fixture: %v", err)
+	}
+	database, err := db.Open(ctx, archivePath)
+	if err != nil {
+		t.Fatalf("opening the archive to trash the row: %v", err)
+	}
+	if err := database.SoftDeleteSession(ctx, claudeFixtureRef.ID); err != nil {
+		t.Fatalf("trashing the stored row: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("closing the archive: %v", err)
+	}
+
+	archive, err := OpenArchive(ctx, archivePath)
+	if err != nil {
+		t.Fatalf("opening the archive: %v", err)
+	}
+	defer archive.Close()
+	byPath := Ref{Provider: "claude", ID: claudeFile}
+	if status, found, err := archive.Status(ctx, byPath); err != nil || found {
+		t.Errorf("a trashed row answered a path reference: found=%v err=%v status=%+v", found, err, status)
+	}
+	if _, err := archive.Read(ctx, byPath); !errors.Is(err, ErrNotFound) {
+		t.Errorf("reading a trashed row by path answered %v, want a not-found answer", err)
+	}
+}
+
+// TestPathReferencePrefersTheSourcesCurrentMembers pins the two tiers of the path rule: while the
+// archive records current members for a path, those answer -- a retained (source-missing) row of the
+// same path is not one of them -- and a reference that names the retained row's id still reads it.
+//
+// The tiers mirror the two sides of an inspection. A source that is there is read by its own current
+// members, the rows a parse of that file emits, and a source that is gone has no members at all, so
+// the rows the archive still holds under its path are what answers
+// (`TestDeletedSourcePathFallsBackToTheArchive`). A union of the two would report conversations the
+// source side does not for a file that is present -- the archive and the source would answer one
+// reference with different candidate lists -- which is why the retained rows are the *fallback*, not a
+// second candidate source.
+func TestPathReferencePrefersTheSourcesCurrentMembers(t *testing.T) {
+	dir := dbtest.MkdirTempWithCleanup(t)
+	archivePath := filepath.Join(dir, "sessions.db")
+	database := dbtest.OpenTestDBAt(t, archivePath)
+	shared := filepath.Join(dir, "claude", "shared.jsonl")
+	seed := func(id, content string) {
+		t.Helper()
+		path := shared
+		dbtest.SeedSessionWithMessages(t, database, id, "example-api",
+			[]db.Message{dbtest.UserMsg(id, 0, content)},
+			func(session *db.Session) {
+				session.Agent = "claude"
+				session.FilePath = &path
+			})
+	}
+	seed("live-conversation", "the conversation the source still holds")
+	seed("reconciled-conversation", "the conversation whose source went away")
+
+	// The row that lost its source is marked the way the inherited reconciliation marks one: the exact
+	// ownership is baselined first, then the mark is applied to that machine, agent, id and path.
+	ctx := context.Background()
+	if err := database.BaselineActiveSessionSourcePaths(ctx, "local",
+		[]db.SessionSourcePath{{Agent: "claude", FilePath: shared}}); err != nil {
+		t.Fatalf("baselining the source ownership: %v", err)
+	}
+	changed, err := database.MarkSessionSourceMissing(ctx, "local", "claude", "reconciled-conversation", shared)
+	if err != nil {
+		t.Fatalf("marking the source missing: %v", err)
+	}
+	if !changed {
+		t.Fatalf("the reconciliation mark did not apply to the seeded row")
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("closing the seeded archive: %v", err)
+	}
+
+	archive, err := OpenArchive(ctx, archivePath)
+	if err != nil {
+		t.Fatalf("opening the archive: %v", err)
+	}
+	defer archive.Close()
+	status, found, err := archive.Status(ctx, Ref{Provider: "claude", ID: shared})
+	if err != nil || !found {
+		t.Fatalf("the path answered found=%v err=%v, want the source's current member", found, err)
+	}
+	if status.SessionID != "live-conversation" {
+		t.Errorf("the path resolved %q, want the current member of the source", status.SessionID)
+	}
+
+	// The retained conversation is not lost: it is still the archive's answer to its own id.
+	conversation, err := archive.Read(ctx, Ref{Provider: "claude", ID: "reconciled-conversation"})
+	if err != nil {
+		t.Fatalf("reading the retained row by id: %v", err)
+	}
+	if len(conversation.Messages) != 1 ||
+		!strings.Contains(conversation.Messages[0].Content, "went away") {
+		t.Errorf("the retained row read the wrong conversation: %+v", conversation.Messages)
 	}
 }
 
@@ -1330,6 +1714,62 @@ func TestInspectExposesAProviderFailureAndFallsBackToTheArchive(t *testing.T) {
 	}
 	if strings.Contains(warnings, "no readable source session") {
 		t.Errorf("a provider failure is reported as absence: %v", inspection.Warnings)
+	}
+}
+
+// TestInspectKeepsAProviderFailureWhenNoArchiveHoldsTheSession pins the other half of the provider
+// failure rule: with no archive holding the session, the failure is still what an inspection reports,
+// and it is not turned into "no readable source session".
+//
+// The CLI prints an inspection's warnings when neither report exists, and this is the state it prints
+// them for: a provider that failed operationally and an archive that does not answer. A reader that
+// kept the diagnostics only on the path where a fallback succeeds would leave the operator with the
+// absence claim and none of the reason.
+func TestInspectKeepsAProviderFailureWhenNoArchiveHoldsTheSession(t *testing.T) {
+	ctx := context.Background()
+	cfg := fixtureConfig(t)
+	claudeFile := fixturePath(t, filepath.Join("claude", "-home-user-code-example-api",
+		claudeFixtureRef.ID+".jsonl"))
+	reader, provider := readerOverFixedProvider(t, cfg, parser.AgentClaude)
+	provider.source = parser.SourceRef{
+		Provider:       parser.AgentClaude,
+		DisplayPath:    claudeFile,
+		FingerprintKey: claudeFile,
+	}
+	provider.outcome = parser.ParseOutcome{
+		ResultSetComplete: true,
+		SourceErrors: []parser.SourceError{{
+			SourceKey:   "cursor-state-store",
+			DisplayPath: "/home/user/.cursor/state.db",
+			Err:         errors.New("the store is locked by another reader"),
+			Retryable:   true,
+		}},
+	}
+
+	// A data directory holding no archive at all: the fallback cannot succeed here, so the warnings are
+	// everything the inspection can report.
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	inspection, err := Inspect(ctx, InspectOptions{
+		Ref: claudeFixtureRef, Config: cfg, Reader: reader, ArchivePath: archivePath,
+	})
+	if err != nil {
+		t.Fatalf("inspecting: %v", err)
+	}
+	if inspection.Source != nil {
+		t.Errorf("the failed source read was reported as a source: %+v", inspection.Source)
+	}
+	if inspection.Archive != nil {
+		t.Errorf("an archive was reported although none exists: %+v", inspection.Archive)
+	}
+	warnings := strings.Join(inspection.Warnings, "\n")
+	if !strings.Contains(warnings, "the store is locked by another reader") {
+		t.Errorf("the provider's diagnostics are not exposed: %v", inspection.Warnings)
+	}
+	if strings.Contains(warnings, "no readable source session") {
+		t.Errorf("a provider failure is reported as absence: %v", inspection.Warnings)
+	}
+	if !strings.Contains(warnings, "no archive at ") {
+		t.Errorf("the missing archive is not reported: %v", inspection.Warnings)
 	}
 }
 

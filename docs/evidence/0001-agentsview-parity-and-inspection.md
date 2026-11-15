@@ -391,6 +391,42 @@ answered, and extended the generated input's check to what a clone actually rece
   the rule rejects, and `GitlessCase` pins what the git-less branch still answers: real drift is a
   `FAIL` with its offenders, before the `INCOMPLETE` verdict that says the rest could not be checked.
 
+The round-7 fix pass closed the one shape a carried link can be changed into without changing a byte of
+what git stores. `CLAUDE.md` and the three `.claude/skills/*` paths are `120000` records whose blob *is*
+the link's target text, and the check accepted a regular file holding that text at such a path on every
+checkout — the reasoning being that a checkout which cannot create symlinks has exactly that file. On a
+checkout that *does* create symlinks that reasoning certifies a carried path whose working-tree type,
+and behaviour, has changed: the file's bytes hash to the pinned blob, git's index keeps the pinned
+`120000` entry, and with `skip-worktree` set on the path `git status` reports nothing, so every other
+predicate agrees. The allowance is now limited to checkouts that state the representation — git's own
+`core.symlinks=false` for this tree, or, where git cannot be asked, a platform whose checkouts cannot
+create symlinks — a `core.symlinks` query that cannot answer on a tree git *is* answering for fails the
+step naming the probe, and a run that accepted the file form says so in its own summary
+(`carried link(s) held as a file with the link's target text: N`). Reproduced on this checkout with the
+finding's own silencing flag, before and after the fix:
+
+```
+$ cp -a CLAUDE.md /tmp/CLAUDE.md.link && git update-index --skip-worktree CLAUDE.md
+$ rm CLAUDE.md && printf 'AGENTS.md' > CLAUDE.md        # a file where the pin has a link
+$ git status --porcelain                                # reports nothing (the flag)
+$ python3 /tmp/oldparity/upstream-parity.py --root <repo>   # rc=0 — the pre-fix check accepted it
+$ python3 scripts/upstream-parity.py                        # rc=1
+parity: FAIL — 1 carried path(s) changed file type
+  CLAUDE.md
+$ cp -a /tmp/CLAUDE.md.link CLAUDE.md && git update-index --no-skip-worktree CLAUDE.md
+$ python3 scripts/upstream-parity.py                        # rc=0
+```
+
+The pre-fix run is the previous commit's own script (`git show HEAD:scripts/upstream-parity.py`), given
+`--root <repo>`. Seven cases in `scripts/tests/test_upstream_parity.py` pin the rule set: the finding's
+scenario through the git-backed branch (a clean scripted index — mode `120000`, the pinned blob — and a
+clean status, with the file in place of the link), the same scripted tree with `core.symlinks=false` as
+the control that keeps the allowance where it applies, the file form refused where git says this
+checkout creates links (git's answer `true`), the file form accepted where git says it stores links as
+files, with the disclosure line the run prints, the platform probe's own answer both ways (through the
+`platform_name` seam, so no case depends on the host it runs on), and the `core.symlinks` query that
+cannot answer failing the run. Each fails when the rule it names is mutated away (below).
+
 ## 4. The continuation functionality is callable without CLI types, and the CLI is standalone
 
 Engine packages: `internal/ccc` (Conversation document, `SourceReader`, `Archive`/`Ingestor`,
@@ -415,14 +451,14 @@ index is required: the archive is the inherited `sessions.db`, opened read-only.
 ## 6. The gate
 
 ```
-$ python3 scripts/gate.py        # rc=0, 31.1 s wall clock, taken on the final tree
+$ python3 scripts/gate.py        # rc=0, 25.2 s wall clock, taken on the final tree
 gate: <repo>
 gate: go=<go>/bin/go targets=./cmd/ccc/... ./internal/ccc/...
   PASS     gofmt    3574 file(s) gofmt-clean
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 127 tests in 5.384s (rc=0)
+  PASS     selftest Ran 134 tests in 6.057s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 25 project-owned prefix(es); files seen by git: 5613 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
   PASS     secrets  no leaks found in 60 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
@@ -450,16 +486,25 @@ functions in round 3 (`archive_test.go` 13 → 16, `fixtures_test.go` 4 → 8), 
 distinction, the picker's own verdicts, the configured source machine, and the foreign-root rule with a
 real Antigravity transcript), and to 43 in round 6 (`archive_test.go` 23 → 25, `fixtures_test.go`
 16 → 18: the forked-path ambiguity, the provider-failure classification, the folded-body comparison
-end to end, and the inspection's provider-failure fallback), while `cmd/ccc`'s tests are unchanged and
-the harness's own count stays 127.
+end to end, and the inspection's provider-failure fallback). The round-7 fix pass moved both sides:
+`internal/ccc` went 43 → 50 test functions (`archive_test.go` 25 → 32: the path lookup's selection and
+order on its records, every configured root asked in both tiers, the provider scope of a path answer,
+the trashed-row refusal, the retained-row tier with its current-member preference, the deleted and
+reconciled source path, and the provider failure with no archive to fall back to), `cmd/ccc` went
+9 → 10 (the no-result exit keeping the inspection's diagnostics, in both spellings of the command
+line), and the harness's own count went 127 → 134 (`scripts/tests/test_upstream_parity.py` 94 → 101,
+`test_gate.py` unchanged at 33).
 
 Wall clock for the whole gate on this host: 19–21 s with warm caches across the increment's earlier
 runs, 25 s to 156 s across the round-2 fix pass's runs (the 156 s run followed a cold Go build cache, so
 `build`/`vet`/`test` recompiled the inherited packages), 21–23 s across the round-3 runs, 22 s, 26 s and
 53 s across the three round-4 runs, and 21.8–25.0 s across the round-5 runs. The six round-6 runs
-measured 26.5 s, 25.2 s, 45.8 s, 28.3 s, 33.9 s and 31.1 s (the block above quotes the last, taken on the
-final tree: every code, test, comment and record edit preceded it — nothing was written afterwards —
-and it ran without the built `bin/ccc`, whose own gate run is the 33.9 s one); with `selftest` steps
+measured 26.5 s, 25.2 s, 45.8 s, 28.3 s, 33.9 s and 31.1 s, and the round-7 runs 26.1 s, 28.8 s, 25.2 s
+and 55 s. The block above quotes the 25.2 s run, taken after every code and test edit the round made;
+the 28.8 s run beside it measured the same tree, the 26.1 s one preceded the test-helper refactor, and
+the 55 s one was taken last, on the finished tree — the only write after it is the sentence that quotes
+its own number, and its `selftest` step took 12.0 s against 5.5–6.1 s in the three runs before it, so
+that wall clock is host load and not a slower gate. With `selftest` steps
 between 4.76 s and 6.18 s across them, the wall-clock spread is host load rather than a slower gate (the
 28.3 s run's step was the slowest at 6.18 s, the 45.8 s run's among the fastest at 4.96 s).
 The 53 s round-4 run
@@ -488,6 +533,44 @@ be reported as a different body). Two intermediate edit states were corrected be
 (one left an unused import, one restore dropped a brace); no recorded failure comes from a state that
 did not compile.
 
+The round-7 pass closed three findings with the same rule, one surface at a time: **every rule the
+touched code, document or test claims was mutated, and every mutation failed the test that names it**
+(15 mutations in total, plus one live reproduction of the parity defect on this checkout).
+
+- the path lookup (`internal/ccc/archive.go`, 7 mutations): reverting the retained tier to the
+  inherited current-members-only lookup (`TestDeletedSourcePathFallsBackToTheArchive`,
+  `TestPathReferencePrefersTheSourcesCurrentMembers`), widening the listing's agent scope
+  (`TestPathReferenceDoesNotCrossProviders`), dropping the trashed-row filter (`TestPathRecordIDsSelectsAndOrdersTheRowsOfAPath`,
+  `TestPathReferenceIgnoresATrashedSession`), asking one spelling instead of all of them — in the
+  retained tier and in the current tier separately
+  (`TestPathRecordIDsSelectsAndOrdersTheRowsOfAPath`, `TestRelativePathReferenceAsksEveryConfiguredRoot`,
+  `TestRelativePathReferenceAsksEveryRootBeforeFallingBack`), dropping the sort that keeps a candidate
+  list independent of the query plan (`TestPathRecordIDsSelectsAndOrdersTheRowsOfAPath`), and making
+  the two tiers a union (`TestPathReferencePrefersTheSourcesCurrentMembers`, which observes the union
+  reporting one conversation twice);
+- the CLI's no-result exit (`cmd/ccc/main.go`, 1 mutation): dropping the warnings loop
+  (`TestNoResultExitKeepsTheDiagnostics`);
+- the parity check's link shape (`scripts/upstream-parity.py`, 7 mutations): restoring the
+  unconditional file acceptance (`test_a_link_held_as_a_file_is_a_shape_failure_where_symlinks_are_created`,
+  `test_a_link_replaced_by_a_file_under_a_silent_status_is_still_caught`,
+  `test_the_platform_answer_decides_a_link_file_form_when_git_cannot_be_asked`), accepting the file
+  form unconditionally (`test_a_symlink_configuration_query_that_cannot_answer_fails_the_run`), fixing
+  the platform answer either way (`test_the_platform_answer_a_link_file_form_is_read_from`), ignoring
+  git's own `core.symlinks` answer (`test_a_link_held_as_a_file_passes_where_the_checkout_stores_links_that_way`,
+  `test_a_link_held_as_a_file_where_git_says_so_is_the_same_file_accepted`), and dropping the
+  disclosure line the allowance prints (the same two cases).
+
+One mutation's first form was a no-op rather than a mutation — widening the listing's agent scope with
+the provider the reference already named — so it was re-run widened by the provider that recorded the
+row instead, and that run is the failure quoted above. Two rules were then found unpinned by their own
+mutation and pinned in this round rather than left as arguments. The candidate list's order could not be observed through SQLite (the shipped query's plan
+answers one path's rows in id order anyway), so the selection and the ordering moved into a named
+function (`pathRecordIDs`) the suite drives directly with records in scrambled order; and the platform
+probe's *own* answer could not be asserted without depending on the host running the case, so it now
+reads a named seam (`platform_name`) whose both answers a case patches. Every recorded failure came
+from a compiling tree; the one mutation that did not (dropping `sort.Strings` and leaving the unused
+import) was re-run with the import removed too, which is the failure quoted above.
+
 ## 7. Measurements that shaped the harness
 
 Run in a byte-identical tree (the pin, in a scratch clone) before the gate's targets were narrowed:
@@ -501,6 +584,20 @@ Run in a byte-identical tree (the pin, in a scratch clone) before the gate's tar
 
 The gate therefore targets `./cmd/ccc/... ./internal/ccc/...` and leaves upstream's own suites to
 upstream's CI; `docs/harness.md` states this, and `parity` covers those files at the byte level.
+
+The round-7 path lookup was measured the same way, on this host, with a throw-away test (since removed)
+that seeded 20 000 sessions for one provider through `dbtest`, opened the archive read-only and timed
+20 iterations of each query:
+
+| Query | Mean per call |
+| --- | --- |
+| the inherited path-keyed lookup, `ListSessionIDsByFilePath` | 20.9 µs |
+| the archive's per-provider row listing, `ListSessionPathRecordsForAgents` | 27.5 ms |
+| one lookup answered from the listing (the listing plus its in-memory filter) | 27.9 ms |
+
+The second query reads one row per session that provider has ever recorded, which is why the shipped
+lookup asks it only when no spelling records a current member — the file is gone — and answers from the
+indexed query while a source is there.
 
 ## 8. What this does not claim
 
@@ -533,6 +630,13 @@ upstream's CI; `docs/harness.md` states this, and `parity` covers those files at
   folds the result's length onto the call (`result_size` in the recorded dump, where the source read
   states it on the result row only), which is a difference in how the two reads describe the same
   evidence, not in whether they hold it.
+- **A carried symlink is a link, or the file a checkout that does not create symlinks has at that
+  path — and only where the checkout states that.** The two shapes are the same git object, so the
+  shape is the only predicate that can tell the pin's link from a file that replaced it; the file form
+  is accepted where git answers `core.symlinks=false` for the tree, or, when git cannot be asked, where
+  the platform cannot create symlinks (Windows), and the run reports how many it accepted. A checkout
+  that creates links and holds the file form is a failure (`parity: FAIL — … changed file type`), which
+  is what the pre-fix check accepted on this tree's own `CLAUDE.md` with `skip-worktree` set (§3).
 - **`parity` cannot verify a tree git cannot enumerate.** No `git` on the host, or a root that is a
   copy rather than a repository, leaves the file-list, ignore and generated-input index rules unasked, so
   the step reports `INCOMPLETE` and exits 2 instead of the pass with a disclosure inside its detail line
@@ -575,6 +679,21 @@ upstream's CI; `docs/harness.md` states this, and `parity` covers those files at
   answers "no readable source session" and the archive, if it holds the session, is reported instead of
   a read failing part-way. The predicate is `parser.IsRegularFile`, the same one the inherited providers
   apply to a stored path.
+- **A filesystem reference answers the source's current members, and the rows the archive retained
+  when the source was reconciled away are the fallback.** A path is looked up through the archive's
+  path-keyed query while any row records the source as a current member — the rows a parse of that file
+  emits, which is what the *source* side answers for the same reference, so the two sides cannot
+  disagree about a file that is there — and through the archive's per-provider row listing only when no
+  spelling has one: the file is gone (or its rows are trashed), and the retained conversation is still
+  the archive's answer to its own id, so it has to be its answer to the path too
+  (`TestDeletedSourcePathFallsBackToTheArchive`, `TestRelativePathReferenceAsksEveryRootBeforeFallingBack`).
+  The retired lookup (`ListSessionIDsByFilePath`) required `source_missing_at IS NULL`, which is right
+  for its own callers — parsers tracking a live file — and wrong here. A union of the two tiers was
+  rejected: it reports conversations the source side does not for a file that is present, and the same
+  conversation can arrive through both tiers (the union mutation of this round's close-out fails
+  `TestPathReferencePrefersTheSourcesCurrentMembers` by observing one conversation twice in one
+  candidate list). The fallback is a per-provider listing rather than an indexed lookup (§7 measures
+  the two), which is why it is the fallback and not the only lookup.
 - **A tool result the archive stores only as a call row with neither content nor length cannot be
   recognized as held.** The comparison looks for the result the source row carries by tool-use id and
   content size, in the message's result rows, in the events the archive folded onto the call, and in the
@@ -612,7 +731,10 @@ upstream's CI; `docs/harness.md` states this, and `parity` covers those files at
 - **A provider operation failure is reported as a failure, not as a missing session.** The reader
   classifies an outcome that carries operational `SourceErrors` and no result as `ErrProviderFailed` (the
   inherited Cursor provider's retryable store-enrichment shape) and keeps the provider's own diagnostics
-  in the error; an inspection reports them as a warning and still offers an archived session. A reference
+  in the error; an inspection reports them as a warning and still offers an archived session, and the
+  CLI prints an inspection's warnings when *neither* side answers (no source report and no archive
+  report), so an operational failure is not collapsed into "no session found" (`TestNoResultExitKeepsTheDiagnostics`,
+  `TestInspectKeepsAProviderFailureWhenNoArchiveHoldsTheSession`). A reference
   that resolves to no source at all, and a parse that produced no session without source errors, remain
   `ErrNotFound`. The classification covers the selected session's provider on the read path; a write-side
   retry policy is not part of this increment.
@@ -621,6 +743,17 @@ upstream's CI; `docs/harness.md` states this, and `parity` covers those files at
   for a future input that the tree's attribute file rewrites on `git add`: such an input would need the
   stored-bytes allowance a declared line-ending normalisation gets, which the manifest's `input` record
   does not have.
+
+Observed through the built binary (`CGO_ENABLED=1 go build -tags fts5 -o /tmp/ccc-bin ./cmd/ccc`), the
+no-result exit answers like this — exit 1, stdout empty, the inspection's own diagnostics on stderr
+ahead of the summary line:
+
+```
+$ /tmp/ccc-bin inspect claude:00000000-0000-4000-8000-000000000000 --data-dir <dir>
+ccc: no readable source session for claude:00000000-0000-4000-8000-000000000000
+ccc: no archive at <dir>/sessions.db; reporting source facts only
+ccc: no session found for claude:00000000-0000-4000-8000-000000000000 (providers: aider, amp, …)
+```
 
 ## 9. Re-deriving this record
 

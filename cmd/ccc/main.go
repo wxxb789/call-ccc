@@ -152,6 +152,13 @@ func runInspect(args []string, stdout, stderr io.Writer) int {
 		return exitFailure
 	}
 	if inspection.Source == nil && inspection.Archive == nil {
+		// Neither side answered the reference. The inspection's warnings say why -- a provider that
+		// failed operationally, a session recorded on another machine, an archive that is not there --
+		// and dropping them would report a provider failure as an absent session. They go to stderr
+		// with the failure they explain; stdout carries a result, and there is none.
+		for _, warning := range inspection.Warnings {
+			fmt.Fprintf(stderr, "ccc: %s\n", oneLine(warning))
+		}
 		fmt.Fprintf(stderr, "ccc: no session found for %s:%s (providers: %s)\n",
 			ref.Provider, ref.ID, strings.Join(reader.Providers(), ", "))
 		return exitFailure
