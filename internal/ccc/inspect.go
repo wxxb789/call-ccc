@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/stringutil"
 )
@@ -120,6 +121,26 @@ func Inspect(ctx context.Context, opts InspectOptions) (Inspection, error) {
 		report := reportFrom(conversation)
 		inspection.Source = &report
 		sourceMessages = conversation.Messages
+		if report.Fidelity.NeedsRetry {
+			// The provider returned a conversation *and* said the result is not current: a Codex fork
+			// whose parent page cannot be read keeps the copied parent messages until that parent
+			// resolves, so the messages are reported while their session boundary is named as
+			// unresolved. An inspection that printed the conversation alone would present those copied
+			// parent turns as this session's own recorded history.
+			reason := ""
+			if report.Fidelity.RetryReason != "" {
+				reason = " (" + report.Fidelity.RetryReason + ")"
+			}
+			inspection.Warnings = append(inspection.Warnings, fmt.Sprintf(
+				"the provider classified this read as needing a retry%s; it returned the messages it "+
+					"could read, which may not be the session's complete recorded history",
+				reason))
+		}
+		if report.Fidelity.TranscriptFidelity == parser.TranscriptFidelitySummary {
+			inspection.Warnings = append(inspection.Warnings,
+				"the provider classified this read as a summary transcript: it is a degraded fallback "+
+					"for a source it could not read in full, not the session's recorded transcript")
+		}
 		if report.Fidelity.UnresolvedToolOutputs > 0 {
 			inspection.Warnings = append(inspection.Warnings, fmt.Sprintf(
 				"%d tool result(s) name persisted output this machine could not read; their content is "+
@@ -212,30 +233,40 @@ func archiveReport(
 // are one key, so a pair of different outcomes, or a pair that disagree about whether the call failed,
 // would otherwise pass as agreement.
 //
-// A message both reads have is compared in full: its role, its content, and the tool results it
-// carries. The last of those is the only difference an archive written before a call's outcome arrived
-// can have -- the call's row is the same ordinal, role and text as the later source's, and the outcome
-// is an event *on* that row (Codex's function_call_output) rather than a row of its own, so a comparison
-// that stopped at role and content reported a stale archive as holding the conversation. A result the
-// source records on a row the archive also has must be held by that row, wherever the archive keeps it
-// (a result row of its own, an event, or the call's own content). Where both reads expose a result's
-// body, the bodies are compared too; a body only one of them shows (a blocked category, a writer that
-// stored the length and no text) is not a difference this comparison can see. The outcomes the two reads
-// record for a result are compared wherever the archive shows a row that carries one, in both
-// directions: a read that records an error the other does not is a difference either way round.
+// A message both reads have is compared in full: its role, its content, the tool calls it records, and
+// the tool results it carries. The last of those is the only difference an archive written before a
+// call's outcome arrived can have -- the call's row is the same ordinal, role and text as the later
+// source's, and the outcome is an event *on* that row (Codex's function_call_output) rather than a row
+// of its own, so a comparison that stopped at role and content reported a stale archive as holding the
+// conversation. A result the source records on a row the archive also has must be held by that row,
+// wherever the archive keeps it (a result row of its own, an event, or the call's own content), and a
+// result the archive's own rows record must be held by the source read, so neither read can hold
+// evidence the other lost. Where both reads expose a result's body, the bodies are compared too; a body
+// only one of them shows (a blocked category, a writer that stored the length and no text) is not a
+// difference this comparison can see. The outcomes the two reads record for a result are compared
+// wherever the archive shows a row that carries one, in both directions: a read that records an error
+// the other does not is a difference either way round.
+//
+// A call is compared the same way: both reads keep the provider's own call identities, so a call only
+// the archive holds is a difference, and a call both hold is compared by name and by the input each
+// retained -- a Claude `Edit` renders as `[Edit: <file_path>]` in the message text, so two edits of the
+// same file reach the message comparison identical while the inputs differ.
 func compareMessages(source, archived []Message) (bool, int, []string) {
 	byOrdinal := make(map[int]Message, len(source))
 	for _, message := range source {
 		byOrdinal[message.Ordinal] = message
 	}
 	archivedOrdinals := make(map[int]struct{}, len(archived))
+	for _, message := range archived {
+		archivedOrdinals[message.Ordinal] = struct{}{}
+	}
 	results := archivedResultKeys(archived)
+	foldedSources := foldedSourceResults(source, archivedOrdinals)
 	foldedBodies := archivedResultBodies(archived)
 	foldedStatuses := archivedResultStatuses(archived)
 	same, folded := true, 0
 	var warnings []string
 	for _, message := range archived {
-		archivedOrdinals[message.Ordinal] = struct{}{}
 		origin, ok := byOrdinal[message.Ordinal]
 		if !ok {
 			same = false
@@ -249,11 +280,28 @@ func compareMessages(source, archived []Message) (bool, int, []string) {
 				"archive message #%d differs from the source (role %q/%q)",
 				message.Ordinal, origin.Role, message.Role))
 		}
+		if problems := differingCallProblems(origin.ToolCalls, message.ToolCalls); len(problems) > 0 {
+			same = false
+			warnings = append(warnings, fmt.Sprintf(
+				"archive message #%d disagrees with the source about its tool call(s): %s",
+				message.Ordinal, strings.Join(problems, "; ")))
+		}
 		if missing := unheldResults(
 			origin.ToolResults, archivedResultKeys([]Message{message})); len(missing) > 0 {
 			same = false
 			warnings = append(warnings, fmt.Sprintf(
 				"archive message #%d does not hold the tool result(s) the source records on it: %s",
+				message.Ordinal, strings.Join(missing, ", ")))
+		}
+		if missing := unheldResults(
+			message.ToolResults, heldSourceResults(origin.ToolResults, foldedSources)); len(missing) > 0 {
+			// The other direction, which the loop above cannot see: the archive's own result rows are
+			// evidence this read recorded, and a source that no longer records them is a different
+			// conversation from the archived one -- a transcript whose result row is gone, or one read
+			// from a source that lost the outcome the archive kept.
+			same = false
+			warnings = append(warnings, fmt.Sprintf(
+				"archive message #%d holds the tool result(s) the source read does not: %s",
 				message.Ordinal, strings.Join(missing, ", ")))
 		}
 		if names := differingResultBodyNames(origin.ToolResults, messageResultBodies(message)); len(names) > 0 {
@@ -358,6 +406,120 @@ func resultName(result ToolResult) string {
 		return result.ToolUseID
 	}
 	return fmt.Sprintf("a %d-byte result with no tool-use id", result.ContentSize)
+}
+
+// foldedSourceResults collects the results the source read records on rows the archive keeps no message
+// for: the tool-result-only rows the inherited write path folds onto their call. Those rows have no
+// ordinal in the archive -- it starts at the call that carries their content -- so their evidence can
+// only be recognized by key, wherever the archive keeps the same result. A source row the archive
+// dropped that carries text of its own adds its results here too: the row itself is already a named
+// difference, and its keys only widen what the archive's own rows are accepted against.
+func foldedSourceResults(source []Message, archivedOrdinals map[int]struct{}) map[resultKey]struct{} {
+	keys := make(map[resultKey]struct{})
+	for _, message := range source {
+		if _, ok := archivedOrdinals[message.Ordinal]; ok {
+			continue
+		}
+		for _, result := range message.ToolResults {
+			keys[resultKey{toolUseID: result.ToolUseID, size: result.ContentSize}] = struct{}{}
+		}
+	}
+	return keys
+}
+
+// heldSourceResults is the set of results the source read holds for one archive message: the ones the
+// source records on the message at that ordinal, plus the ones it records on the rows the archive
+// folded away. An archive row's result is compared against both, because folding is exactly where the
+// two reads stop sharing an ordinal.
+func heldSourceResults(onMessage []ToolResult, folded map[resultKey]struct{}) map[resultKey]struct{} {
+	if len(onMessage) == 0 {
+		return folded
+	}
+	held := make(map[resultKey]struct{}, len(folded)+len(onMessage))
+	for key := range folded {
+		held[key] = struct{}{}
+	}
+	for _, result := range onMessage {
+		held[resultKey{toolUseID: result.ToolUseID, size: result.ContentSize}] = struct{}{}
+	}
+	return held
+}
+
+// differingCallProblems names the ways the archived message's tool calls disagree with the source
+// message's, in the same two directions the result comparison reads: a call the archive holds and the
+// source read does not, and -- for a call both reads hold -- a name or an input they disagree about.
+// Identity matters because a call is what a tool result is attached to: a message whose calls differ is
+// a different message even when its rendered text is the same.
+//
+// Calls are paired by the tool-use id both reads carry from the same provider field, so a call is
+// identified by what its provider called it rather than by its position. A provider that records no id
+// leaves position as the only identity there is, so id-less calls are paired in the order each read
+// listed them.
+//
+// The name and the input are compared only where both reads retain them: the storage projection keeps
+// call names and blanks inputs (internal/db's transcriptMessages), so an input the archive does not
+// show is not one it disagrees about, and reading it as a difference would report a difference the
+// archive's own read cannot support. Where both show one, they are compared in the inherited writer's
+// own spelling (db.SanitizeUTF8, the normalisation internal/sync's parsediff applies when it decides
+// whether a stored call still matches its parse), so a control byte the writer stripped is not
+// reported as a changed input.
+func differingCallProblems(source, archived []ToolCall) []string {
+	byKey := make(map[string]ToolCall, len(source))
+	for i, key := range callKeys(source) {
+		byKey[key] = source[i]
+	}
+	var problems []string
+	for i, key := range callKeys(archived) {
+		call := archived[i]
+		origin, ok := byKey[key]
+		if !ok {
+			problems = append(problems, fmt.Sprintf(
+				"the archive holds a tool call the source read does not: %s", callName(call)))
+			continue
+		}
+		if origin.Name != "" && call.Name != "" && origin.Name != call.Name {
+			problems = append(problems, fmt.Sprintf(
+				"tool call %s is named %q in the archive and %q in the source",
+				callName(call), call.Name, origin.Name))
+		}
+		if origin.InputJSON != "" && call.InputJSON != "" &&
+			db.SanitizeUTF8(origin.InputJSON) != db.SanitizeUTF8(call.InputJSON) {
+			problems = append(problems, fmt.Sprintf(
+				"tool call %s carries a different input in the archive than in the source", callName(call)))
+		}
+	}
+	return problems
+}
+
+// callKeys pairs calls the way both reads identify a message's calls: the provider's own tool-use id
+// when the read recorded one, and otherwise the call's position among the message's id-less calls,
+// ordered the way that read ordered them.
+func callKeys(calls []ToolCall) []string {
+	keys := make([]string, len(calls))
+	anonymous := 0
+	for i, call := range calls {
+		if call.ToolUseID != "" {
+			keys[i] = "id:" + call.ToolUseID
+			continue
+		}
+		keys[i] = "at:" + strconv.Itoa(anonymous)
+		anonymous++
+	}
+	return keys
+}
+
+// callName names a tool call for a warning, from whichever of the two fields the provider recorded.
+func callName(call ToolCall) string {
+	switch {
+	case call.ToolUseID != "" && call.Name != "":
+		return call.ToolUseID + " (" + call.Name + ")"
+	case call.ToolUseID != "":
+		return call.ToolUseID
+	case call.Name != "":
+		return fmt.Sprintf("the %s call with no id", call.Name)
+	default:
+		return "a call with no id and no name"
+	}
 }
 
 // messageResultBodies collects the bodies the archived *message itself* carries, keyed by resultKey.
@@ -559,14 +721,20 @@ func outcomeSummary(statuses []string) string {
 // Each warning states what the read shows, never which storage policy wrote the archive: a read-only
 // handle cannot see that policy, so an archive that dropped tool payloads and a session that recorded
 // none read the same way, and a message claiming one of them would report an omission that may never
-// have happened.
+// have happened. The stored transcript classification is the exception, and it is a fact about the row
+// rather than about a policy: the writer recorded what the provider said about the read it stored, and
+// a session whose provider could only produce a degraded fallback reads as that fallback.
 func contentWarnings(report ArchiveReport) []string {
+	var warnings []string
+	if report.Status.TranscriptFidelity == parser.TranscriptFidelitySummary {
+		warnings = append(warnings,
+			"the stored transcript is classified as a summary fallback, so the archive holds a "+
+				"degraded read of this session rather than its recorded transcript")
+	}
 	switch report.ContentShown {
 	case "message-text":
-		return []string{
-			"the archive read shows no tool inputs or results: whether the archive dropped them or " +
-				"the session recorded none is not visible to a read",
-		}
+		return append(warnings, "the archive read shows no tool inputs or results: whether the archive "+
+			"dropped them or the session recorded none is not visible to a read")
 	case "none":
 		warning := "the archive read shows no message text and no tool inputs or results"
 		if report.Status.MessageCount > report.Counts.Messages {
@@ -574,9 +742,9 @@ func contentWarnings(report ArchiveReport) []string {
 				"; it returns %d of the %d message(s) the session row records, so whole messages are "+
 					"not in this archive", report.Counts.Messages, report.Status.MessageCount)
 		}
-		return []string{warning}
+		return append(warnings, warning)
 	default:
-		return nil
+		return warnings
 	}
 }
 

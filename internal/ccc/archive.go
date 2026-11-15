@@ -115,21 +115,25 @@ func (a *Archive) Path() string { return a.path }
 
 // ArchiveStatus is what an archive holds for one session.
 type ArchiveStatus struct {
-	Path             string    `json:"path"`
-	SessionID        string    `json:"session_id"`
-	Agent            string    `json:"agent,omitempty"`
-	AgentLabel       string    `json:"agent_label,omitempty"`
-	Project          string    `json:"project,omitempty"`
-	Cwd              string    `json:"cwd,omitempty"`
-	GitBranch        string    `json:"git_branch,omitempty"`
-	SourcePath       string    `json:"source_path,omitempty"`
-	SourceVersion    string    `json:"source_version,omitempty"`
-	StartedAt        time.Time `json:"started_at,omitempty"`
-	EndedAt          time.Time `json:"ended_at,omitempty"`
-	MessageCount     int       `json:"message_count"`
-	UserMessageCount int       `json:"user_message_count"`
-	MalformedLines   int       `json:"malformed_lines,omitempty"`
-	Truncated        bool      `json:"truncated,omitempty"`
+	Path          string `json:"path"`
+	SessionID     string `json:"session_id"`
+	Agent         string `json:"agent,omitempty"`
+	AgentLabel    string `json:"agent_label,omitempty"`
+	Project       string `json:"project,omitempty"`
+	Cwd           string `json:"cwd,omitempty"`
+	GitBranch     string `json:"git_branch,omitempty"`
+	SourcePath    string `json:"source_path,omitempty"`
+	SourceVersion string `json:"source_version,omitempty"`
+	// TranscriptFidelity is the classification the writer stored for this session
+	// (parser.TranscriptFidelitySummary for a degraded fallback read). Empty means the row records
+	// none, which upstream treats as full.
+	TranscriptFidelity string    `json:"transcript_fidelity,omitempty"`
+	StartedAt          time.Time `json:"started_at,omitempty"`
+	EndedAt            time.Time `json:"ended_at,omitempty"`
+	MessageCount       int       `json:"message_count"`
+	UserMessageCount   int       `json:"user_message_count"`
+	MalformedLines     int       `json:"malformed_lines,omitempty"`
+	Truncated          bool      `json:"truncated,omitempty"`
 }
 
 // resolveSessionID maps a reference onto the archive's stored session id.
@@ -399,20 +403,21 @@ func (a *Archive) Status(ctx context.Context, ref Ref) (ArchiveStatus, bool, err
 		return ArchiveStatus{}, false, err
 	}
 	status := ArchiveStatus{
-		Path:             a.path,
-		SessionID:        session.ID,
-		Agent:            session.Agent,
-		AgentLabel:       session.AgentLabel,
-		Project:          session.Project,
-		Cwd:              session.Cwd,
-		GitBranch:        session.GitBranch,
-		SourceVersion:    session.SourceVersion,
-		StartedAt:        parseTime(session.StartedAt),
-		EndedAt:          parseTime(session.EndedAt),
-		MessageCount:     session.MessageCount,
-		UserMessageCount: session.UserMessageCount,
-		MalformedLines:   session.ParserMalformedLines,
-		Truncated:        session.IsTruncated,
+		Path:               a.path,
+		SessionID:          session.ID,
+		Agent:              session.Agent,
+		AgentLabel:         session.AgentLabel,
+		Project:            session.Project,
+		Cwd:                session.Cwd,
+		GitBranch:          session.GitBranch,
+		SourceVersion:      session.SourceVersion,
+		TranscriptFidelity: session.TranscriptFidelity,
+		StartedAt:          parseTime(session.StartedAt),
+		EndedAt:            parseTime(session.EndedAt),
+		MessageCount:       session.MessageCount,
+		UserMessageCount:   session.UserMessageCount,
+		MalformedLines:     session.ParserMalformedLines,
+		Truncated:          session.IsTruncated,
 	}
 	if session.FilePath != nil {
 		status.SourcePath = *session.FilePath
@@ -479,7 +484,11 @@ func conversationFromArchive(session db.Session, messages []db.Message) Conversa
 			MalformedLines: session.ParserMalformedLines,
 			Truncated:      session.IsTruncated,
 			SourceVersion:  session.SourceVersion,
-			ReadFrom:       "archive",
+			// The classification the writer stored travels with the read: an archive of a session whose
+			// provider could only produce a degraded fallback holds that fallback, and a caller told only
+			// its message count would read it as the session's recorded transcript.
+			TranscriptFidelity: session.TranscriptFidelity,
+			ReadFrom:           "archive",
 		},
 	}
 	for _, archived := range messages {

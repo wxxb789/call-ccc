@@ -117,6 +117,22 @@ type Fidelity struct {
 	MalformedLines int    `json:"malformed_lines,omitempty"`
 	Truncated      bool   `json:"truncated,omitempty"`
 	SourceVersion  string `json:"source_version,omitempty"`
+	// TranscriptFidelity is the provider's own classification of the transcript this read produced:
+	// parser.TranscriptFidelityFull for a transcript read from the source, or
+	// parser.TranscriptFidelitySummary for a degraded fallback that stands in for one the provider
+	// could not read (history rows, a heuristic decode). Empty means the provider signalled nothing,
+	// which upstream's own contract treats as full. A caller that reported a summary read as the
+	// session's recorded transcript would overstate it. Both reads carry it: a source read from the
+	// parse, an archive read from the row the writer stored it on.
+	TranscriptFidelity string `json:"transcript_fidelity,omitempty"`
+	// NeedsRetry and RetryReason are the provider's own answer that the result it returned is not
+	// current for this parser's data version (parser.DataVersionNeedsRetry) and why
+	// (parser.ParseResultOutcome.RetryReason). A result can carry a usable conversation and still need
+	// one: a Codex fork whose parent page cannot be read keeps the copied parent messages until that
+	// parent resolves. The messages are reported *and* this state beside them, never instead of them.
+	// Only a source read can answer it; an archive row stores no such state.
+	NeedsRetry  bool   `json:"needs_retry,omitempty"`
+	RetryReason string `json:"retry_reason,omitempty"`
 	// UnresolvedToolOutputs counts the tool results whose persisted output the provider could not read,
 	// so their content is the placeholder that names it (ToolResult.PersistedOutputUnresolved). The
 	// source said so; the aggregate is here so a summary can report it without walking the messages.

@@ -16,6 +16,7 @@ import (
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/dbtest"
 	"go.kenn.io/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/testjsonl"
 )
 
 // codexStaleCallID is the shell call the stale-archive case's Codex rollout records, and the identity
@@ -1313,6 +1314,7 @@ func TestInspectDoesNotCallAStaleArchiveFolded(t *testing.T) {
 // happens to exercise one of them.
 func TestCompareMessagesNamesEveryDifference(t *testing.T) {
 	const toolUseID = "toolu_01Compared000000000000001"
+	const otherToolUseID = "toolu_01Compared000000000000002"
 	base := []Message{
 		{Ordinal: 0, Role: "user", Content: "summarize the retry policy"},
 		{Ordinal: 1, Role: "assistant", Content: "I will read it first.",
@@ -1484,12 +1486,14 @@ func TestCompareMessagesNamesEveryDifference(t *testing.T) {
 		// The archive can store a *summary* on the call -- several agents' outputs merged, or a
 		// narrowed policy's text -- that the source row's own body was never equal to. Only the
 		// message's own result rows are in scope for a row both reads have; a comparison that read the
-		// summary would report a difference the archive's own read cannot support.
+		// summary would report a difference the archive's own read cannot support. The call's *name* is
+		// the source's own here: an archive that recorded a different call would be a different message,
+		// which the call comparison reports, so this case is about the body alone.
 		source := append([]Message{}, base...)
 		source[1].ToolResults = []ToolResult{
 			{ToolUseID: toolUseID, Source: "function_call_output", ContentRaw: "30\n", ContentSize: 3}}
 		archived := append([]Message{}, base...)
-		archived[1].ToolCalls = []ToolCall{{ToolUseID: toolUseID, Name: "shell",
+		archived[1].ToolCalls = []ToolCall{{ToolUseID: toolUseID, Name: "Read",
 			ResultContent: "agent-1:\n30\n\nagent-2:\n40\n", ResultContentSize: 3}}
 		same, folded, warnings := compareMessages(source, archived)
 		if !same || folded != 0 || len(warnings) != 0 {
@@ -1506,7 +1510,7 @@ func TestCompareMessagesNamesEveryDifference(t *testing.T) {
 			ToolResults: []ToolResult{{ToolUseID: toolUseID, Source: "tool_result",
 				ContentRaw: `"PASS"`, ContentSize: 4}}})
 		archived := append([]Message{}, base...)
-		archived[1].ToolCalls = []ToolCall{{ToolUseID: toolUseID, Name: "Bash",
+		archived[1].ToolCalls = []ToolCall{{ToolUseID: toolUseID, Name: "Read",
 			ResultContent: "FAIL", ResultContentSize: 4}}
 		same, folded, warnings := compareMessages(source, archived)
 		if same || folded != 1 {
@@ -1651,7 +1655,7 @@ func TestCompareMessagesNamesEveryDifference(t *testing.T) {
 			{ToolUseID: toolUseID, Source: "function_call_output", Status: "errored",
 				ContentRaw: "30\n", ContentSize: 3}}
 		archived := append([]Message{}, base...)
-		archived[1].ToolCalls = []ToolCall{{ToolUseID: toolUseID, Name: "shell",
+		archived[1].ToolCalls = []ToolCall{{ToolUseID: toolUseID, Name: "Read",
 			ResultContent: "30\n", ResultContentSize: 3}}
 		same, folded, warnings := compareMessages(source, archived)
 		if !same || folded != 0 || len(warnings) != 0 {
@@ -1681,6 +1685,126 @@ func TestCompareMessagesNamesEveryDifference(t *testing.T) {
 			!strings.Contains(warnings[0], toolUseID) ||
 			!strings.Contains(warnings[0], "of source message #2") {
 			t.Errorf("warnings = %v, want the folded result's outcome named", warnings)
+		}
+	})
+
+	t.Run("a tool call only the archive holds", func(t *testing.T) {
+		// A call is what its results are attached to, so a message whose calls differ is a different
+		// message even when its role and rendered text agree: the archive recorded a call the source
+		// read never saw.
+		archived := append([]Message{}, base...)
+		archived[1].ToolCalls = []ToolCall{
+			{ToolUseID: toolUseID, Name: "Read"},
+			{ToolUseID: otherToolUseID, Name: "Bash"},
+		}
+		same, folded, warnings := compareMessages(base, archived)
+		if same || folded != 0 {
+			t.Errorf("same=%v folded=%d, want the archive-only call to be a difference", same, folded)
+		}
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0], "the archive holds a tool call the source read does not") ||
+			!strings.Contains(warnings[0], otherToolUseID) {
+			t.Errorf("warnings = %v, want the archive-only call named by its id", warnings)
+		}
+	})
+
+	t.Run("a tool call the two reads name differently", func(t *testing.T) {
+		archived := append([]Message{}, base...)
+		archived[1].ToolCalls = []ToolCall{{ToolUseID: toolUseID, Name: "Bash"}}
+		same, folded, warnings := compareMessages(base, archived)
+		if same || folded != 0 {
+			t.Errorf("same=%v folded=%d, want the renamed call to be a difference", same, folded)
+		}
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0], `named "Bash" in the archive and "Read" in the source`) {
+			t.Errorf("warnings = %v, want the name difference named with both reads' names", warnings)
+		}
+	})
+
+	t.Run("a call whose retained input the two reads disagree about", func(t *testing.T) {
+		// The Claude `Edit` shape: the rendered message text names only the file, so two edits of one
+		// file reach the message comparison as the same text while the inputs they carry differ.
+		source := append([]Message{}, base...)
+		source[1].ToolCalls = []ToolCall{{ToolUseID: toolUseID, Name: "Edit",
+			InputJSON: `{"file_path":"/work/project/retry.go","old_string":"cap = 3","new_string":"cap = 5"}`}}
+		archived := append([]Message{}, base...)
+		archived[1].ToolCalls = []ToolCall{{ToolUseID: toolUseID, Name: "Edit",
+			InputJSON: `{"file_path":"/work/project/retry.go","old_string":"cap = 3","new_string":"cap = 9"}`}}
+		same, folded, warnings := compareMessages(source, archived)
+		if same || folded != 0 {
+			t.Errorf("same=%v folded=%d, want the differing input to be a difference", same, folded)
+		}
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0], "carries a different input in the archive than in the source") ||
+			!strings.Contains(warnings[0], toolUseID) {
+			t.Errorf("warnings = %v, want the differing input named", warnings)
+		}
+	})
+
+	t.Run("a call whose input only the archive retains", func(t *testing.T) {
+		// The storage projection keeps call names and blanks inputs, so an input the archive does not
+		// show is not one it disagrees about: reading the empty spelling as a difference would report a
+		// difference the archive's own read cannot support.
+		source := append([]Message{}, base...)
+		source[1].ToolCalls = []ToolCall{{ToolUseID: toolUseID, Name: "Read"}}
+		archived := append([]Message{}, base...)
+		archived[1].ToolCalls = []ToolCall{{ToolUseID: toolUseID, Name: "Read",
+			InputJSON: `{"file_path":"/work/project/retry.go"}`}}
+		same, folded, warnings := compareMessages(source, archived)
+		if !same || folded != 0 || len(warnings) != 0 {
+			t.Errorf("same=%v folded=%d warnings=%v, want the narrowed input accepted",
+				same, folded, warnings)
+		}
+	})
+
+	t.Run("a result the archive holds and the source read does not", func(t *testing.T) {
+		// The reverse of the stale-archive shape: the archive recorded the call's outcome and the
+		// transcript read has none. Every result comparison above is driven by the source's own rows, so
+		// this difference is invisible to them.
+		archived := append([]Message{}, base...)
+		archived[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "function_call_output", ContentRaw: "30\n", ContentSize: 3}}
+		same, folded, warnings := compareMessages(base, archived)
+		if same || folded != 0 {
+			t.Errorf("same=%v folded=%d, want the archive-only result to be a difference", same, folded)
+		}
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0], "holds the tool result(s) the source read does not") ||
+			!strings.Contains(warnings[0], toolUseID) {
+			t.Errorf("warnings = %v, want the archive-only result named by its tool-use id", warnings)
+		}
+	})
+
+	t.Run("a result the archive folded and the source has no row for", func(t *testing.T) {
+		// Claude's folded shape the other way round: the archive kept the result its writer folded onto
+		// the call, and the source read's transcript has neither the result row nor the event.
+		archived := append([]Message{}, base...)
+		archived[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "tool_result", ContentRaw: "PASS", ContentSize: 4}}
+		same, folded, warnings := compareMessages(base, archived)
+		if same || folded != 0 {
+			t.Errorf("same=%v folded=%d, want the folded archive result to be a difference", same, folded)
+		}
+		if len(warnings) != 1 || !strings.Contains(warnings[0], toolUseID) {
+			t.Errorf("warnings = %v, want the folded result named", warnings)
+		}
+	})
+
+	t.Run("an archived result the source holds on a folded row", func(t *testing.T) {
+		// The control the rule above must not break: an archive read materializes a call's result event
+		// as the message's own result row, while the source read of the same session records that result
+		// on the tool-result-only row the archive folded away -- the same evidence at a different
+		// ordinal, which is exactly what folding means.
+		archived := append([]Message{}, base...)
+		archived[1].ToolResults = []ToolResult{
+			{ToolUseID: toolUseID, Source: "tool_result", ContentRaw: "PASS", ContentSize: 4}}
+		source := append(append([]Message{}, base...), Message{Ordinal: 2, Role: "user",
+			ToolResults: []ToolResult{{ToolUseID: toolUseID, Source: "tool_result",
+				ContentRaw: `"PASS"`, ContentSize: 4}}})
+		same, folded, warnings := compareMessages(source, archived)
+		if !same || folded != 1 || len(warnings) != 0 {
+			t.Errorf("same=%v folded=%d warnings=%v, want the source's folded row to hold the result",
+				same, folded, warnings)
 		}
 	})
 }
@@ -2074,6 +2198,363 @@ func TestInspectDoesNotCallAStaleArchiveCompleteAfterACallOutcomeArrived(t *test
 		t.Errorf("the current archive was credited with %d folded tool result(s)",
 			current.FoldedToolResults)
 	}
+}
+
+// TestInspectDoesNotCallAFresherArchiveAgreement pins the comparison in the direction the stale-archive
+// case cannot reach: the *archive* holds the call's outcome and the transcript read no longer does. Every
+// result comparison is driven by the source's own rows -- the result-presence check asks whether the
+// archive holds each source result, and the body and outcome comparisons iterate the source's results --
+// so an archive holding a result the source read does not was reported as *every archived message
+// matching the source read*. The reverse direction asks what each archived row holds.
+//
+// The second half is the control: the same archive read against the transcript it was written from still
+// agrees, so the new answer cannot pass by reporting every archive-written result as extra.
+func TestInspectDoesNotCallAFresherArchiveAgreement(t *testing.T) {
+	ctx := context.Background()
+	cfgFull, fullFile := codexTranscript(t, true)
+	cfgStale, staleFile := codexTranscript(t, false)
+
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(cfgFull, archivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	if err := ingestor.IngestPaths(ctx, fullFile); err != nil {
+		t.Fatalf("ingesting the rollout with its call output: %v", err)
+	}
+
+	inspection, err := Inspect(ctx, InspectOptions{
+		Ref:         codexFixtureRef,
+		Config:      cfgStale,
+		Reader:      NewSourceReader(cfgStale),
+		ArchivePath: archivePath,
+	})
+	if err != nil {
+		t.Fatalf("inspecting the earlier transcript against the archive that has the output: %v", err)
+	}
+	if inspection.Source == nil || inspection.Archive == nil {
+		t.Fatalf("source=%v archive=%v warnings=%v, want both reads reported",
+			inspection.Source != nil, inspection.Archive != nil, inspection.Warnings)
+	}
+	archived := inspection.Archive
+	if archived.SameMessagesAsSource == nil || *archived.SameMessagesAsSource {
+		t.Errorf("an archive holding a result the source read does not was reported as agreeing: "+
+			"same=%v warnings=%v",
+			archived.SameMessagesAsSource != nil && *archived.SameMessagesAsSource, archived.Warnings)
+	}
+	if archived.FoldedToolResults != 0 {
+		t.Errorf("the archive was credited with %d folded tool result(s)", archived.FoldedToolResults)
+	}
+	warnings := strings.Join(inspection.Warnings, "\n")
+	if !strings.Contains(warnings, "holds the tool result(s) the source read does not") {
+		t.Errorf("the archive's extra result is not named: %v", inspection.Warnings)
+	}
+	if !strings.Contains(warnings, codexStaleCallID) {
+		t.Errorf("the archive-only result is not named by its tool-use id: %v", inspection.Warnings)
+	}
+
+	// The control: the same archive against the transcript it was written from.
+	currentInspection, err := Inspect(ctx, InspectOptions{
+		Ref:         codexFixtureRef,
+		Config:      cfgFull,
+		Reader:      NewSourceReader(cfgFull),
+		ArchivePath: archivePath,
+	})
+	if err != nil {
+		t.Fatalf("inspecting the session against its own archive: %v", err)
+	}
+	if currentInspection.Archive == nil {
+		t.Fatalf("the archive was not reported: %v", currentInspection.Warnings)
+	}
+	current := currentInspection.Archive
+	if current.SameMessagesAsSource == nil || !*current.SameMessagesAsSource {
+		t.Errorf("an archive holding the source read's own results was reported as disagreeing: "+
+			"warnings=%v", current.Warnings)
+	}
+	if staleFile == fullFile {
+		t.Fatal("the two transcripts are the same file")
+	}
+}
+
+// TestInspectReportsARetryableResultWithItsMessages pins that a provider's own retry state travels with
+// the conversation it classified. A Codex fork whose copied prefix comes from a page whose parent head is
+// unreadable parses to a result that keeps the copied parent messages *and* says it needs a retry
+// (parser.DataVersionNeedsRetry with a reason naming the fork) -- the inherited
+// TestCodexForkWithOnlyParentPageNeedsRetry pins the provider's half. An inspection that reported only
+// the messages presented copied parent history as the session's own recorded turns, with nothing saying
+// its boundary is unresolved.
+//
+// The second half is the control: once the parent's head is readable the same reference parses to the
+// fork's own turn alone, needs no retry, and the warnings say nothing about one -- so the rule cannot
+// pass by flagging every read.
+func TestInspectReportsARetryableResultWithItsMessages(t *testing.T) {
+	ctx := context.Background()
+	cfg, _ := codexForkRollouts(t, false)
+	inspection, err := Inspect(ctx, InspectOptions{
+		Ref:    Ref{Provider: "codex", ID: codexForkID},
+		Config: cfg,
+		Reader: NewSourceReader(cfg),
+	})
+	if err != nil {
+		t.Fatalf("inspecting the fork whose parent head is unreadable: %v", err)
+	}
+	if inspection.Source == nil {
+		t.Fatalf("the fork was not read: %v", inspection.Warnings)
+	}
+	source := inspection.Source
+	if !source.Fidelity.NeedsRetry {
+		t.Errorf("a result the provider classified as needing a retry was reported without one: %+v",
+			source.Fidelity)
+	}
+	if !strings.Contains(source.Fidelity.RetryReason, "forked from") {
+		t.Errorf("retry reason = %q, want the provider's own explanation", source.Fidelity.RetryReason)
+	}
+	if source.Counts.Messages < 2 {
+		t.Errorf("the copied parent history the retry explains is not reported: %d message(s)",
+			source.Counts.Messages)
+	}
+	warnings := strings.Join(inspection.Warnings, "\n")
+	if !strings.Contains(warnings, "needing a retry") || !strings.Contains(warnings, "forked from") {
+		t.Errorf("the retry and its reason are not reported: %v", inspection.Warnings)
+	}
+
+	// The control: the same reference once the parent's head is readable.
+	resolvedCfg, _ := codexForkRollouts(t, true)
+	resolved, err := Inspect(ctx, InspectOptions{
+		Ref:    Ref{Provider: "codex", ID: codexForkID},
+		Config: resolvedCfg,
+		Reader: NewSourceReader(resolvedCfg),
+	})
+	if err != nil {
+		t.Fatalf("inspecting the fork whose parent head is readable: %v", err)
+	}
+	if resolved.Source == nil {
+		t.Fatalf("the resolved fork was not read: %v", resolved.Warnings)
+	}
+	if resolved.Source.Fidelity.NeedsRetry {
+		t.Errorf("a resolved fork still reports a pending retry: %+v", resolved.Source.Fidelity)
+	}
+	if resolved.Source.Fidelity.RetryReason != "" {
+		t.Errorf("retry reason = %q, want none", resolved.Source.Fidelity.RetryReason)
+	}
+	if strings.Contains(strings.Join(resolved.Warnings, "\n"), "needing a retry") {
+		t.Errorf("a resolved read warns about a retry: %v", resolved.Warnings)
+	}
+	if resolved.Source.Counts.Messages >= source.Counts.Messages {
+		t.Errorf("the resolved read reports %d message(s), the unresolved one %d: the copied prefix "+
+			"should be gone", resolved.Source.Counts.Messages, source.Counts.Messages)
+	}
+}
+
+// codexForkID is the fork in codexForkRollouts; its parent thread is codexForkParentID.
+const (
+	codexForkID       = "7a1f0c34-5b2e-4d61-8f47-9c0a1e2b3d45"
+	codexForkParentID = "2d9b7e10-4c65-4a83-9a12-6f5e0d3c8b47"
+)
+
+// codexForkRollouts writes the missing-parent-page shape under a throw-away Codex root: a fork rollout
+// whose copied prefix names a parent whose only rollout is a history page, and -- with parentHead -- the
+// parent's head rollout that resolves it. The rollouts are built by the inherited internal/testjsonl
+// builders, so the bytes are the shape the pinned revision's own tests use for the same rule
+// (internal/parser's TestCodexForkWithOnlyParentPageNeedsRetry).
+func codexForkRollouts(t *testing.T, parentHead bool) (config.Config, string) {
+	t.Helper()
+	root := t.TempDir()
+	dir := filepath.Join(root, "codex", "2026", "09", "01")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("preparing the provider root: %v", err)
+	}
+	write := func(key string, lines ...string) {
+		t.Helper()
+		path := filepath.Join(dir, "rollout-2026-09-01T10-00-00-"+key+".jsonl")
+		if err := os.WriteFile(path, []byte(testjsonl.JoinJSONL(lines...)), 0o600); err != nil {
+			t.Fatalf("writing %s: %v", path, err)
+		}
+	}
+	// The parent's page: paginated history based on the thread itself, which is only resolvable once
+	// the thread's own head rollout exists.
+	write(codexForkParentID+"_3f7c9d21-0a4b-4e58-9c36-1d2e4f506172",
+		testjsonl.CodexSessionMetaWithFieldsJSON(codexForkParentID, "/work/project", "codex_cli_rs",
+			"2026-09-01T11:00:00Z", map[string]any{
+				"history_mode": "paginated",
+				"history_base": map[string]any{
+					"thread_id":             codexForkParentID,
+					"end_ordinal_exclusive": 3,
+				},
+			}),
+		testjsonl.CodexTurnContextWithIDJSON("gpt-5", "page-turn", "2026-09-01T10:00:00Z"),
+	)
+	if parentHead {
+		write(codexForkParentID,
+			testjsonl.CodexSessionMetaWithFieldsJSON(codexForkParentID, "/work/project", "codex_cli_rs",
+				"2026-09-01T11:00:00Z", map[string]any{"history_mode": "paginated"}),
+			testjsonl.CodexTurnContextWithIDJSON("gpt-5", "head-turn", "2026-09-01T10:00:00Z"),
+		)
+	}
+	write(codexForkID,
+		testjsonl.CodexForkedSessionMetaJSON(codexForkID, codexForkParentID, "/work/project", "user",
+			"2026-09-01T10:00:00Z"),
+		testjsonl.CodexTurnContextWithIDJSON("gpt-5", "head-turn", "2026-09-01T10:00:00Z"),
+		testjsonl.CodexMsgJSON("user", "copied head question", "2026-09-01T10:00:00Z"),
+		testjsonl.CodexTurnContextWithIDJSON("gpt-5", "page-turn", "2026-09-01T10:00:00Z"),
+		testjsonl.CodexMsgJSON("user", "copied page question", "2026-09-01T10:00:00Z"),
+		testjsonl.CodexTurnContextWithIDJSON("gpt-5", "child-turn", "2026-09-01T10:10:00Z"),
+		testjsonl.CodexMsgJSON("user", "child question", "2026-09-01T10:10:00Z"),
+	)
+	cfg := fixtureConfig(t)
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentCodex: {filepath.Join(root, "codex")}}
+	return cfg, filepath.Join(dir, "rollout-2026-09-01T10-00-00-"+codexForkID+".jsonl")
+}
+
+// TestInspectReportsADifferentToolCallInput pins the comparison end to end for the shape the message text
+// cannot show: two Claude transcripts whose `Edit` calls change different values in the same file render
+// to the same `[Edit: <file_path>]` text, so every message comparison agrees while the inputs the two
+// reads retained differ. The inherited renderer is what makes the calls' arguments absent from the text
+// (internal/parser/content.go), and both adapters carry the inputs, so the comparison is the only place
+// that can tell the two reads apart.
+//
+// The second half is the control: the same archive against a transcript that recorded the same edit
+// still agrees, so the new answer cannot pass by reporting every retained input as differing.
+func TestInspectReportsADifferentToolCallInput(t *testing.T) {
+	ctx := context.Background()
+	firstCfg, firstFile := claudeEditTranscript(t, "cap = 5")
+	secondCfg, secondFile := claudeEditTranscript(t, "cap = 9")
+	if firstFile == secondFile {
+		t.Fatal("the two transcripts are the same file")
+	}
+	// The premise: the two reads' message texts are identical, so nothing but the calls' inputs can
+	// separate them.
+	firstRead, err := NewSourceReader(firstCfg).Read(ctx, claudeFixtureRef)
+	if err != nil {
+		t.Fatalf("reading the first transcript: %v", err)
+	}
+	secondRead, err := NewSourceReader(secondCfg).Read(ctx, claudeFixtureRef)
+	if err != nil {
+		t.Fatalf("reading the second transcript: %v", err)
+	}
+	if len(firstRead.Messages) != len(secondRead.Messages) {
+		t.Fatalf("the two transcripts read to %d and %d message(s)",
+			len(firstRead.Messages), len(secondRead.Messages))
+	}
+	for i := range firstRead.Messages {
+		if firstRead.Messages[i].Content != secondRead.Messages[i].Content {
+			t.Fatalf("message #%d differs in text (%q/%q), so this case does not exercise the input",
+				i, firstRead.Messages[i].Content, secondRead.Messages[i].Content)
+		}
+	}
+	if !strings.Contains(firstRead.Messages[1].Content, "[Edit: /work/project/retry.go]") {
+		t.Fatalf("the edit's rendered text is not the file-only rendering: %q",
+			firstRead.Messages[1].Content)
+	}
+	if inputsMatch(firstRead, secondRead) {
+		t.Fatal("the two transcripts retain the same call inputs, so this case has nothing to compare")
+	}
+
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(firstCfg, archivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	if err := ingestor.IngestPaths(ctx, firstFile); err != nil {
+		t.Fatalf("ingesting the first transcript: %v", err)
+	}
+
+	inspection, err := Inspect(ctx, InspectOptions{
+		Ref:         claudeFixtureRef,
+		Config:      secondCfg,
+		Reader:      NewSourceReader(secondCfg),
+		ArchivePath: archivePath,
+	})
+	if err != nil {
+		t.Fatalf("inspecting the second transcript against the archive: %v", err)
+	}
+	if inspection.Archive == nil {
+		t.Fatalf("the archive was not reported: %v", inspection.Warnings)
+	}
+	archived := inspection.Archive
+	if archived.SameMessagesAsSource == nil || *archived.SameMessagesAsSource {
+		t.Errorf("an archive retaining a different edit was reported as agreeing: same=%v warnings=%v",
+			archived.SameMessagesAsSource != nil && *archived.SameMessagesAsSource, archived.Warnings)
+	}
+	warnings := strings.Join(inspection.Warnings, "\n")
+	if !strings.Contains(warnings, "carries a different input in the archive than in the source") {
+		t.Errorf("the differing input is not named: %v", inspection.Warnings)
+	}
+	if !strings.Contains(warnings, claudeEditCallID) {
+		t.Errorf("the differing input is not named by its tool-use id: %v", inspection.Warnings)
+	}
+
+	// The control: the same archive against the transcript it was written from.
+	sameInspection, err := Inspect(ctx, InspectOptions{
+		Ref:         claudeFixtureRef,
+		Config:      firstCfg,
+		Reader:      NewSourceReader(firstCfg),
+		ArchivePath: archivePath,
+	})
+	if err != nil {
+		t.Fatalf("inspecting the first transcript against its own archive: %v", err)
+	}
+	if sameInspection.Archive == nil {
+		t.Fatalf("the archive was not reported: %v", sameInspection.Warnings)
+	}
+	if same := sameInspection.Archive.SameMessagesAsSource; same == nil || !*same {
+		t.Errorf("an archive of the same edit was reported as disagreeing: warnings=%v",
+			sameInspection.Archive.Warnings)
+	}
+}
+
+// inputsMatch reports whether two reads retained the same call inputs, so a case can require that the
+// transcripts it compares really differ in the evidence it means to test.
+func inputsMatch(first, second Conversation) bool {
+	if len(first.Messages) != len(second.Messages) {
+		return false
+	}
+	for i := range first.Messages {
+		firstCalls, secondCalls := first.Messages[i].ToolCalls, second.Messages[i].ToolCalls
+		if len(firstCalls) != len(secondCalls) {
+			return false
+		}
+		for j := range firstCalls {
+			if firstCalls[j].InputJSON != secondCalls[j].InputJSON {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// claudeEditCallID is the `Edit` call claudeEditTranscript records.
+const claudeEditCallID = "toolu_01Edit0000000000000000001"
+
+// claudeEditTranscript writes one small Claude session -- a user turn and an `Edit` call whose two string
+// arguments are the given replacement -- under a throw-away provider root, and returns that root's
+// configuration with the file's path. The rendered message text names only the edited file
+// (internal/parser's Edit rendering), so two transcripts that differ in this argument alone read to the
+// same messages while their calls' retained inputs differ.
+func claudeEditTranscript(t *testing.T, newString string) (config.Config, string) {
+	t.Helper()
+	root := t.TempDir()
+	relative := filepath.Join("-work-project", claudeFixtureRef.ID+".jsonl")
+	path := filepath.Join(root, "claude", relative)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("preparing the provider root: %v", err)
+	}
+	input := `{"file_path":"/work/project/retry.go","old_string":"cap = 3","new_string":` +
+		jsonString(t, newString) + `}`
+	lines := []string{
+		`{"cwd":"/work/project","message":{"content":"Pin the retry cap."},` +
+			`"sessionId":"` + claudeFixtureRef.ID + `","timestamp":"2026-09-01T10:00:00.000Z",` +
+			`"type":"user","version":"1.0.30"}`,
+		`{"message":{"content":[{"id":"` + claudeEditCallID + `","input":` + input + `,` +
+			`"name":"Edit","type":"tool_use"}],"model":"claude-sonnet-4-5"},` +
+			`"timestamp":"2026-09-01T10:00:04.000Z","type":"assistant","version":"1.0.30"}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("writing the transcript: %v", err)
+	}
+	cfg := fixtureConfig(t)
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentClaude: {filepath.Join(root, "claude")}}
+	return cfg, path
 }
 
 // codexTranscript writes one small Codex rollout -- a user turn, a shell call, and with includeOutput

@@ -439,3 +439,53 @@ supersede it with a newer one and say which it supersedes.
 - **Settled by:** whether the operator wants an inspection to say "every archived message matches the
   source read" when the archive and the transcript disagree about whether a tool call failed; today it
   does not.
+
+## Q-0001-20 — Which archive-side result evidence the comparison holds the source read to
+
+- **Status:** resolved (default taken)
+- **Question:** the round-9 review (finding 2) measured that `same_messages_as_source` never asked the
+  reverse direction: every result check was driven by the source's own rows, so an archive holding a
+  call's outcome the transcript read no longer recorded was reported as *every archived message matching
+  the source read*. The requested change — "check archive-only results too, accounting for folded source
+  rows" — leaves the archive-side scope open: every way an archive read can hold a result (a result row of
+  its own, an event folded onto the call, or the call row's own `result_content`), or only the rows that
+  record an individual result.
+- **Default taken:** the archive message's **own result rows** — which, for an archive read, is where the
+  inherited loader materializes a call's `ResultEvents` (`internal/db/messages.go`, `attachToolCalls`).
+  A call row's own `result_content` stays out, exactly as it does for the body comparison: the inherited
+  write path derives it from the call's events and may merge several agents' outputs into one summary
+  (`internal/ingest/tool_results.go`), so its key is not evidence that the source recorded a result — and
+  holding the source to it would report a difference the archive's own write path created. The source side
+  of the check is the results at that ordinal plus those of the rows the archive keeps no message for (the
+  folded tool-result-only rows), because folding is exactly where the two reads stop sharing an ordinal.
+- **Reversal:** one call site (`compareMessages` in `internal/ccc/inspect.go`): pass `nil` (back to the
+  state the finding measured), pass every key `archivedResultKeys` collects for the message (also holds
+  the source to a call's derived summary), or drop `foldedSourceResults` from the source side (reports
+  every real Claude archive as holding an extra result).
+- **Settled by:** whether the operator wants an archive-only result to be reportable when the only trace
+  the archive kept of it is the derived summary on the call; today "every archived message matches the
+  source read" is not claimed for that shape, but neither is a difference reported for it.
+
+## Q-0001-21 — What the comparison compares between two reads' tool calls
+
+- **Status:** resolved (default taken)
+- **Question:** the round-9 review (finding 3) measured that `same_messages_as_source` compared messages
+  by role and rendered text and never by the calls' retained `input_json`: a Claude `Edit` renders as
+  `[Edit: <file_path>]`, so two edits of one file with different arguments read as identical text while
+  both adapters retain different inputs. The requested change — "compare call identity/name and inputs
+  wherever both reads retain them" — leaves both the pairing and the directions open.
+- **Default taken:** calls are paired by the provider's own tool-use id where a read recorded one and by
+  position among a message's id-less calls otherwise; a call only the **archive** holds, a call whose name
+  both reads spell differently, and a call whose input both retain differently are differences. The input
+  comparison is skipped unless both reads retain a non-empty one (the storage projection keeps call names
+  and blanks inputs, `internal/db/archive_content.go`), and it compares the inherited writer's own
+  spelling (`db.SanitizeUTF8`, which is how `internal/sync`'s parsediff decides whether a stored call
+  still matches its parse). A call only the **source** holds is deliberately not compared: a narrowed
+  archive content policy may keep a row and drop its calls, and that narrowing is already reported as what
+  the read shows (`content_shown`, `ArchiveContentUsage` drops payloads and whole rows alike).
+- **Reversal:** one function (`differingCallProblems` in `internal/ccc/inspect.go`): return `nil` (back to
+  the state the finding measured), compare inputs without the both-retain guard (reads a blanked input as
+  a changed one), or pair calls by name and index instead of tool-use id.
+- **Settled by:** whether the operator wants a source-only call reported too — it would make every
+  usage-projection archive differ from its source read — and whether the name comparison should be as
+  strict as the input one; today both name and input serve the same question ("is this the same call?").

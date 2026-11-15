@@ -942,7 +942,7 @@ func TestPickResultRequiresTheReferenceIdentity(t *testing.T) {
 			if found != testCase.found {
 				t.Fatalf("found = %v, want %v", found, testCase.found)
 			}
-			if found && result.Session.ID == "" {
+			if found && result.Result.Session.ID == "" {
 				t.Error("a found result carries no identity")
 			}
 		})
@@ -1003,6 +1003,115 @@ func antigravityBrainTranscript(t *testing.T) (string, string) {
 		t.Fatalf("writing the transcript: %v", err)
 	}
 	return root, id
+}
+
+// TestInspectReportsASummaryTranscriptClassification pins what a provider says about the completeness of
+// the transcript it returned, in both reads. Upstream classifies a read explicitly: a Grok session whose
+// summary survives but whose chat history does not is a `summary` fallback (its source version says
+// `grok-summary-v1` and it synthesizes the opening prompt as its only turn), while a session read from
+// its transcript is `full` and a provider that signals nothing leaves the field empty. Both new adapters
+// dropped the field, so an inspection of a degraded fallback reported the same counts, tools and
+// identity as one of the session's recorded transcript, with nothing saying the difference.
+//
+// The session is also not a retryable one: upstream's own Antigravity CLI cases classify reads as
+// `summary` *and* current, so the classification is a statement of its own and is pinned apart from the
+// retry state (TestInspectReportsARetryableResultWithItsMessages is the other side of that pair).
+func TestInspectReportsASummaryTranscriptClassification(t *testing.T) {
+	ctx := context.Background()
+	cfg, summaryPath, ref := grokSummarySession(t)
+
+	inspection, err := Inspect(ctx, InspectOptions{Ref: ref, Config: cfg})
+	if err != nil {
+		t.Fatalf("inspecting the summary-only session: %v", err)
+	}
+	if inspection.Source == nil {
+		t.Fatalf("the summary-only session was not read: %v", inspection.Warnings)
+	}
+	source := inspection.Source
+	if source.Fidelity.TranscriptFidelity != parser.TranscriptFidelitySummary {
+		t.Errorf("transcript fidelity = %q, want %q",
+			source.Fidelity.TranscriptFidelity, parser.TranscriptFidelitySummary)
+	}
+	if source.Fidelity.SourceVersion != "grok-summary-v1" {
+		t.Errorf("source version = %q, want the provider's own summary spelling",
+			source.Fidelity.SourceVersion)
+	}
+	if source.Fidelity.NeedsRetry {
+		t.Errorf("a current summary read reports a pending retry: %+v", source.Fidelity)
+	}
+	if source.Counts.Messages == 0 {
+		t.Errorf("the summary fallback read to no message(s), so this case pins nothing: %+v", source.Counts)
+	}
+	if warnings := strings.Join(inspection.Warnings, "\n"); !strings.Contains(warnings, "summary transcript") {
+		t.Errorf("the summary classification is not disclosed: %v", inspection.Warnings)
+	}
+
+	// The same classification travels through the archive: the writer stored it on the row and an
+	// archive read reports what the row says.
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(cfg, archivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	if err := ingestor.IngestPaths(ctx, summaryPath); err != nil {
+		t.Fatalf("ingesting the summary-only session: %v", err)
+	}
+	archived, err := Inspect(ctx, InspectOptions{
+		Ref: ref, Config: cfg, Reader: NewSourceReader(cfg), ArchivePath: archivePath,
+	})
+	if err != nil {
+		t.Fatalf("inspecting the summary-only session against its archive: %v", err)
+	}
+	if archived.Archive == nil {
+		t.Fatalf("the archived session was not reported: %v", archived.Warnings)
+	}
+	if got := archived.Archive.Status.TranscriptFidelity; got != parser.TranscriptFidelitySummary {
+		t.Errorf("the archived row's transcript fidelity = %q, want %q",
+			got, parser.TranscriptFidelitySummary)
+	}
+	if warnings := strings.Join(archived.Warnings, "\n"); !strings.Contains(warnings, "summary fallback") {
+		t.Errorf("the stored summary classification is not disclosed: %v", archived.Warnings)
+	}
+
+	// The control: a session read from its own transcript is not classified as a summary, and no warning
+	// claims one -- so the rule cannot pass by warning about every read.
+	fullCfg := fixtureConfig(t)
+	full, err := Inspect(ctx, InspectOptions{Ref: claudeFixtureRef, Config: fullCfg})
+	if err != nil {
+		t.Fatalf("inspecting the transcript fixture: %v", err)
+	}
+	if full.Source == nil {
+		t.Fatalf("the transcript fixture was not read: %v", full.Warnings)
+	}
+	if got := full.Source.Fidelity.TranscriptFidelity; got == parser.TranscriptFidelitySummary {
+		t.Errorf("a transcript read is classified as a summary: %+v", full.Source.Fidelity)
+	}
+	if warnings := strings.Join(full.Warnings, "\n"); strings.Contains(warnings, "summary") {
+		t.Errorf("a transcript read warns about a summary fallback: %v", full.Warnings)
+	}
+}
+
+// grokSummarySession writes one Grok session whose chat history is missing -- only `summary.json` exists,
+// which is the shape upstream's own summary-only cases use -- under a throw-away provider root, and
+// returns that root's configuration, the summary file and the reference to inspect it with.
+func grokSummarySession(t *testing.T) (config.Config, string, Ref) {
+	t.Helper()
+	const id = "3f5c8a21-7d94-4b6e-8a30-5c1e2f4b6d78"
+	root := t.TempDir()
+	path := filepath.Join(root, "grok", "-work-project", id, "summary.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("preparing the provider root: %v", err)
+	}
+	summary := `{"summary":"Pin the retry cap","firstPrompt":"Where is the retry cap configured?",` +
+		`"modelId":"grok-code-fast","createdAt":"2026-09-01T10:00:00Z",` +
+		`"updatedAt":"2026-09-01T10:05:00Z","lastActiveAt":"2026-09-01T10:06:00Z",` +
+		`"numMessages":6,"worktreeLabel":"example-api","gitRootDir":"/work/project"}`
+	if err := os.WriteFile(path, []byte(summary+"\n"), 0o600); err != nil {
+		t.Fatalf("writing the summary: %v", err)
+	}
+	cfg := fixtureConfig(t)
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentGrok: {filepath.Join(root, "grok")}}
+	return cfg, path, Ref{Provider: "grok", ID: id}
 }
 
 // TestReadKeepsAForeignRootForeign pins the other half of the configured mapping: the source a provider

@@ -277,6 +277,76 @@ that names it run, the line restored — ten mutations, each quoted in §6):
   that bit and requires the failure; the pre-existing cases for a `0644` file, the git-backed branch and
   the stored-byte deviation still pin the rule from the other side).
 
+The round-9 fix pass closed four review findings on the two reads and the comparison, with the same
+evidence shape (every rule the touched surface states mutated, the test that names it run, the line
+restored — thirteen mutations, each quoted in §6):
+
+- a result's **retry state travels with the messages the provider returned**. `pickResult` returned only
+  `candidate.Result`, so the provider's own `ParseResultOutcome.DataVersion` and `RetryReason` were
+  dropped even for a usable result: a Codex fork whose copied prefix comes from a page whose parent head
+  is unreadable keeps the copied parent messages *and* says the result needs a retry
+  (`parser.DataVersionNeedsRetry`, the state the inherited `TestCodexForkWithOnlyParentPageNeedsRetry`
+  pins), so an inspection reported copied parent turns as this session's own recorded history with
+  nothing saying its boundary was unresolved. `pickResult` now returns the whole outcome, the source
+  adapter carries `Fidelity.NeedsRetry`/`RetryReason` (`internal/ccc/reader.go`), and an inspection warns
+  with the provider's own reason (`internal/ccc/inspect.go`). `TestInspectReportsARetryableResultWithItsMessages`
+  writes that missing-parent-page shape through the inherited `internal/testjsonl` builders and requires
+  the state, the reason, the *copied messages* and the warning together; with the parent's head readable
+  the same reference reports neither state nor warning and no copied prefix — the control the rule needs,
+  since a flag that fires on every read would satisfy the first half alone;
+- **archive-only tool results are a difference**. Every result comparison was driven by the source's own
+  rows — presence, body and outcome alike — so an archive holding a call's outcome the transcript read no
+  longer records was reported as *every archived message matching the source read*, the exact reverse of
+  the stale-archive shape. Each archived row's own result rows are now held against the source read too
+  (`unheldResults(message.ToolResults, heldSourceResults(...))` in `internal/ccc/inspect.go`), where the
+  source side is the results at that ordinal plus those of the rows the archive keeps no message for —
+  the folded tool-result-only rows, whose evidence has no ordinal of its own (`foldedSourceResults`).
+  That second half is load-bearing rather than generous: dropping it fails four verdicts and both folded
+  end-to-end controls, because a real Claude archive read materializes a folded result as an event on the
+  call row while the source read records it on its own row. `TestInspectDoesNotCallAFresherArchiveAgreement`
+  holds an archive written *with* a Codex call's output against the transcript read without it (its second
+  half: the same archive against the transcript it was written from), and
+  `TestCompareMessagesNamesEveryDifference` pins the verdicts directly — the archive's extra result, the
+  folded archive result, and the control that a source row the archive folded still holds it;
+- **retained tool-call inputs are compared**. The comparison read role, content and results and never the
+  calls' inputs, while a Claude `Edit` renders as `[Edit: <file_path>]` (`internal/parser/content.go`),
+  so two edits of one file with different arguments reached the comparison as identical text and *every
+  archived message matches the source read* covered calls whose retained inputs differ. Calls are now
+  paired by their provider tool-use id (by position among a message's id-less calls), a call only the
+  archive holds is a difference, and a call both reads hold is compared by name and by input — the input
+  only where both retain one, in the inherited writer's own spelling (`db.SanitizeUTF8`, the
+  normalisation `internal/sync`'s parsediff applies when it decides whether a stored call still matches
+  its parse), because the storage projection keeps call names and blanks inputs
+  (`internal/db/archive_content.go`) and an input a read does not show is not one it disagrees about.
+  `TestInspectReportsADifferentToolCallInput` writes two same-file edits, checks its own premise
+  (identical message text, different retained inputs) before it starts, and holds one against the
+  other's archive, with the unchanged edit as the control;
+  `TestCompareMessagesNamesEveryDifference` pins the verdicts directly: the archive-only call, the
+  renamed call, the differing input, and the input only the archive retains;
+- a provider's **transcript classification is preserved through both reads**. Upstream says explicitly
+  whether a read is the session's transcript or a degraded fallback standing in for one
+  (`ParsedSession.TranscriptFidelity`: `full`, `summary`, or empty for "nothing signalled"), stores it on
+  the session row (`sessions.transcript_fidelity`), and its own Grok and Antigravity CLI cases classify
+  summary-only reads as `summary` *and* current — a statement of its own, not a retry. Both new adapters
+  dropped it, so an inspection of a summary-only Grok session (whose source version says
+  `grok-summary-v1` and whose only turn is the synthesized opening prompt) reported the same shape as a
+  transcript read. Both adapters carry `Fidelity.TranscriptFidelity` now, `ArchiveStatus` exposes the
+  stored value to the archive report, and an inspection warns on each side
+  (`TestInspectReportsASummaryTranscriptClassification`: the source read's field, source version,
+  non-retryable state and warning; the archive read's stored value and its warning; the Claude fixture as
+  the control that a transcript read is not classified as a summary and warns about none).
+
+The pass was run as a systematic close-out of the surfaces the findings name: every rule the touched
+code states was enumerated and mutated — thirteen lines, the test that names each one run, the line
+restored — and each mutation failed its named test (§6 quotes them). Three pre-existing comparison
+fixtures spelled a call name the source read never had (`Name: "shell"`/`"Bash"` beside a source call
+named `Read`); the comparison never read names before this pass, so the mismatch was invisible, and the
+cases' assertions and subjects are unchanged — the name is now the source's own, so each still pins
+exactly the body, outcome or call-row allowance it was written for. Two strictness choices the findings
+left open are recorded as defaults in [`docs/decisions/OPEN-QUESTIONS.md`](../decisions/OPEN-QUESTIONS.md):
+Q-0001-20 names which archive-side result evidence the reverse direction holds the source to, and
+Q-0001-21 names what the call comparison does and does not compare.
+
 ## 2. A real source-to-archive parse and a subsequent archive read agree with the pinned implementation
 
 The oracle (`internal/ccc/parity`) parses a fixture, writes it through the inherited sync engine into
@@ -286,18 +356,24 @@ harness runs the *same* oracle source in this tree and in a pristine checkout of
 separately copied fixture bytes and separately created archives.
 
 ```
-$ python3 scripts/upstream-compare.py --record --scratch <tmp>/ccc-compare-0001-r2
+$ python3 scripts/upstream-compare.py --record --scratch <tmp>/ccc-compare-0001-r9
 pin 83195c8a6861b8c74a4b6cb87512817fed6f8584 (v0.47.0-181-g83195c8a) from https://github.com/kenn-io/agentsview
-fetched the pinned revision into <tmp>/ccc-compare-0001-r2/upstream (clean, at the pin)
+fetched the pinned revision into <tmp>/ccc-compare-0001-r9/upstream (clean, at the pin)
 - restored internal/pricing/snapshot/litellm_snapshot.json.gz in the pristine tree from upstream's pinned artifact
 - copied internal/ccc (10 Go source file(s)) from this tree into the pristine checkout: the oracle and its call/ccc wrapper are identical on both sides, so the only variable is which tree the inherited packages come from
-oracle source: 10 file(s), sha256=0080eb0bffb8adb6bbf0d1bf36c70b2c02ddf89b9eeacbc84956a76ee01fbf55 (identical on both sides)
+oracle source: 10 file(s), sha256=9ada3ef0ea8c2674b61c4be5528c6405bfbbb80aa17db5e0551a02dc690f4c32 (identical on both sides)
 claude: fixture sha256=2bd510821d4abf83… ours=32244340553137fd… pristine=32244340553137fd… agreement=yes
   recorded internal/ccc/parity/testdata/oracle/claude.json
 codex: fixture sha256=d9957a8d6f5731a3… ours=fe8d542a39799f8f… pristine=fe8d542a39799f8f… agreement=yes
   recorded internal/ccc/parity/testdata/oracle/codex.json
-RESULT: PASS — 2 case(s) agree byte for byte with the pinned revision      # rc=0, 48 s
+RESULT: PASS — 2 case(s) agree byte for byte with the pinned revision      # rc=0, 36 s
 ```
+
+The oracle source digest moved with the round-9 fix pass and the two dumps did not: the copied sources
+are the four call/ccc files, and the fields that pass added to `Fidelity` and `ArchiveStatus` are not
+part of the dumped shape, so `--record` re-derived both committed dumps byte for byte
+(`git status` shows no change under `internal/ccc/parity/testdata/oracle/`) — the adapters' *dumped*
+behaviour is unmoved by a pass that only stops them dropping state.
 
 The same command against an existing clean checkout (`--upstream /path/to/agentsview`) reports the
 same two dump hashes and removes the copy it made (`git status` clean afterwards); a checkout that is
@@ -497,14 +573,14 @@ index is required: the archive is the inherited `sessions.db`, opened read-only.
 ## 6. The gate
 
 ```
-$ python3 scripts/gate.py        # rc=0, 24.4 s wall clock, taken on the final tree
+$ python3 scripts/gate.py        # rc=0, 26.1 s wall clock, taken on the final tree
 gate: <repo>
 gate: go=<go>/bin/go targets=./cmd/ccc/... ./internal/ccc/...
   PASS     gofmt    3574 file(s) gofmt-clean
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 135 tests in 5.058s (rc=0)
+  PASS     selftest Ran 135 tests in 5.143s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 25 project-owned prefix(es); files seen by git: 5613 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
   PASS     secrets  no leaks found in 60 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
@@ -544,16 +620,22 @@ cases: `internal/ccc` went 50 → 51 test functions (`archive_test.go` 32 → 33
 recorded outcome end to end; the six new verdicts live as subtests of the comparison case that already
 pins that surface), `cmd/ccc` unchanged at 10, and the harness's own count went 134 → 135
 (`scripts/tests/test_upstream_parity.py` 101 → 102: the owner-executable bit that git's mode records).
+The round-9 fix pass moved `internal/ccc` 51 → 55 test functions (`archive_test.go` 33 → 36: the
+fresher-archive direction end to end, the retryable result with its messages, and the differing tool-call
+input; `fixtures_test.go` 18 → 19: the summary transcript classification through both reads, with the
+round-9 comparison verdicts added as subtests of the comparison case that already pins that surface),
+`cmd/ccc` unchanged at 10, and the harness's own count unchanged at 135 (no `scripts/tests/` case
+changed).
 
 Wall clock for the whole gate on this host: 19–21 s with warm caches across the increment's earlier
 runs, 25 s to 156 s across the round-2 fix pass's runs (the 156 s run followed a cold Go build cache, so
 `build`/`vet`/`test` recompiled the inherited packages), 21–23 s across the round-3 runs, 22 s, 26 s and
 53 s across the three round-4 runs, and 21.8–25.0 s across the round-5 runs. The six round-6 runs
 measured 26.5 s, 25.2 s, 45.8 s, 28.3 s, 33.9 s and 31.1 s, the round-7 runs 26.1 s, 28.8 s, 25.2 s and
-55 s, and the round-8 runs 33.3 s, 22.7 s, 23.4 s and 24.4 s (the quoted one is the last, whose
-`selftest` step took 5.058 s, inside the 4.76–6.18 s band this paragraph closes on). The block above
-quotes the round-8 run taken after every code, test and document edit this round made, and the only
-write after it is the sentence that quotes its own number. The round-7 runs' 55 s one was taken last on that round's finished tree — the only write
+55 s, the round-8 runs 33.3 s, 22.7 s, 23.4 s and 24.4 s, and the round-9 runs 27.6 s and 26.1 s (the
+quoted one is the last, whose `selftest` step took 5.143 s, inside the 4.76–6.18 s band this paragraph
+closes on). The block above quotes the round-9 run taken after every code, test and document edit this
+round made, and the only write after it is the sentence that quotes its own number. The round-7 runs' 55 s one was taken last on that round's finished tree — the only write
 after it is the sentence that quotes its own number, and its `selftest` step took 12.0 s against
 5.5–6.1 s in the three runs before it, so that wall clock is host load and not a slower gate. With
 `selftest` steps between 4.76 s and 6.18 s across them, the wall-clock spread is host load rather than a
@@ -655,6 +737,50 @@ mutations). The observed failures, in the order they were run:
 Two mutations needed a second line removed to compile — the folded-row mutation left `foldedStatuses`
 unused, and the skip-rule mutation left `ok` unused — and both were re-run from the compiling state;
 every failure above came from a tree that built.
+
+The round-9 pass closed four findings with the same rule, one rule at a time: **every rule the touched
+code states was mutated, and every mutation failed the test that names it** (13 mutations). The observed
+failures, in the order they were run, each line restored before the next:
+
+- the retry state (`internal/ccc/reader.go`, 2 mutations). Carrying none (`NeedsRetry: false`) failed
+  `TestInspectReportsARetryableResultWithItsMessages`, whose failure prints the read's own fidelity
+  (`NeedsRetry:false RetryReason:could not read the Codex session it was forked from (…)`) and an empty
+  warnings list; carrying the state without the provider's reason (`RetryReason: ""`) failed the same
+  test's reason assertion and its warning check, the warning printed without the parenthetical reason.
+- the retry disclosure (`internal/ccc/inspect.go`, 1 mutation). Disabling the branch failed that test's
+  warning assertion alone — the state, the messages and the reason are asserted separately, so this is
+  the line that pins the disclosure rather than the state.
+- the transcript classification (`internal/ccc/reader.go`, `internal/ccc/archive.go`,
+  `internal/ccc/inspect.go`, 4 mutations). Dropping the source read's field failed
+  `TestInspectReportsASummaryTranscriptClassification` on the field and on the source warning; dropping
+  the stored value (`ArchiveStatus.TranscriptFidelity`) failed the same test on the archive's field and
+  its warning while the source half still passed; disabling either warning failed exactly its own
+  warning assertion, with the other side's warning still in the failure's output.
+- the reverse result direction (`internal/ccc/inspect.go`, 2 mutations). Handing the check no
+  archive-side results (`unheldResults(nil, …)`) failed `a_result_the_archive_holds_and_the_source_read_does_not`,
+  `a_result_the_archive_folded_and_the_source_has_no_row_for` and, end to end,
+  `TestInspectDoesNotCallAFresherArchiveAgreement` — whose failure is the finding's own measurement
+  (`same=true warnings=[]`). Emptying `foldedSourceResults` failed four comparison verdicts
+  (`a_result_row_the_archive_folded_onto_its_call`,
+  `a_folded_result_whose_archive_body_is_an_event_on_the_call`,
+  `a_folded_result_whose_outcome_the_two_reads_disagree_about`,
+  `an_archived_result_the_source_holds_on_a_folded_row`) and both folded end-to-end controls
+  (`TestInspectReportsADifferentFoldedResultBody/unchanged_transcript`,
+  `TestInspectReportsADifferentFoldedResultOutcome/the_transcript_the_archive_was_written_from`), which is
+  what shows the folded keys are required by real Claude archives rather than a generosity.
+- the call comparison (`internal/ccc/inspect.go`, 4 mutations). Comparing a spelling neither read
+  retained (the input rule made a no-op) failed `a_call_whose_retained_input_the_two_reads_disagree_about`
+  and, end to end, `TestInspectReportsADifferentToolCallInput` with `same=true warnings=[]` — the
+  finding's own measurement; dropping the "both reads retain one" guard failed
+  `a_call_whose_input_only_the_archive_retains`; dropping the archive-only-call report failed
+  `a_tool_call_only_the_archive_holds`; and disabling the name comparison failed
+  `a_tool_call_the_two_reads_name_differently`.
+
+Two mutation attempts were corrected before their run and are not among the thirteen: one that kept `db`
+imported by comparing zero-length slices (a form that disabled the rule only by accident), and one that
+passed an empty key map at the call site, leaving `foldedSources` unused so the tree did not compile; the
+second was re-run as a mutation of `foldedSourceResults` itself, and that is the failure quoted above.
+Every recorded failure came from a tree that built.
 
 ## 7. Measurements that shaped the harness
 
@@ -797,7 +923,17 @@ indexed query while a source is there.
   among several under one key is agreement, and a body the archive does not show (a blocked category
   keeps the length and no text) is not a difference. A call stored with neither content nor a length
   stays indistinguishable from a call with no result at all (the bullet above), so the comparison
-  reports that row as a difference by its key.
+  reports that row as a difference by its key. The round-9 pass added the two directions the rule was
+  missing, and they carry limits of their own. The archive's **own** result rows must now be held by the
+  source read too (Q-0001-20), where the archive-side scope is those rows and not a call's own result
+  content: that content is the writer's derived summary of a call's events — it merges several agents'
+  outputs (`internal/ingest/tool_results.go`) — so its key is not evidence that the source recorded a
+  result, and a result the archive kept *only* as a call's own content therefore still cannot be reported
+  as archive-only. Tool **calls** are compared by identity, name and retained input (Q-0001-21), which
+  means a call the *source* holds and the archive does not is not reported as a difference: a narrowed
+  archive policy may keep a row and drop its calls, and that narrowing is already disclosed as what the
+  read shows (`content_shown`). The comparison says nothing about a field neither read carries (a
+  subagent attribution, a token count), by construction.
 - **The reader mirrors the inherited machine lookup instead of importing it.** `internal/sync` resolves a
   source's machine with an unexported `configuredMachineForPath` plus `pathWithinRoot`, so
   `internal/ccc/reader.go` carries its own copy of those two rules (longest configured root containing the

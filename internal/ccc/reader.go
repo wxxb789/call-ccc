@@ -400,23 +400,28 @@ func (r *SourceReader) Read(ctx context.Context, ref Ref) (Conversation, error) 
 // that was asked for. The sync engine makes the same check for the same reason (internal/sync's
 // providerSessionSourceMtime parses the base source and requires the requested session id to appear in
 // the outcome).
-func pickResult(outcome parser.ParseOutcome, ref Ref) (parser.ParseResult, bool) {
+//
+// The whole outcome is returned rather than only its result: a result carries the provider's own retry
+// and data-version state beside its messages (parser.ParseResultOutcome), and dropping it would report
+// a conversation whose session boundary the provider says is unresolved as if it were the session's
+// recorded history.
+func pickResult(outcome parser.ParseOutcome, ref Ref) (parser.ParseResultOutcome, bool) {
 	if len(outcome.Results) == 0 {
-		return parser.ParseResult{}, false
+		return parser.ParseResultOutcome{}, false
 	}
 	if looksLikePath(ref.ID) {
 		if len(outcome.Results) == 1 {
-			return outcome.Results[0].Result, true
+			return outcome.Results[0], true
 		}
-		return parser.ParseResult{}, false
+		return parser.ParseResultOutcome{}, false
 	}
 	_, raw := parser.StripHostPrefix(ref.ID)
 	for _, candidate := range outcome.Results {
 		if sessionIsRef(candidate.Result.Session, ref.ID, raw) {
-			return candidate.Result, true
+			return candidate, true
 		}
 	}
-	return parser.ParseResult{}, false
+	return parser.ParseResultOutcome{}, false
 }
 
 // ambiguousPathResults reports the sessions a path reference's parse failed to single out, or nil when
@@ -498,8 +503,9 @@ func skipReasonText(reason parser.SkipReason) string {
 }
 
 func conversationFromParse(
-	result parser.ParseResult, source parser.SourceRef, fingerprint parser.SourceFingerprint,
+	outcome parser.ParseResultOutcome, source parser.SourceRef, fingerprint parser.SourceFingerprint,
 ) Conversation {
+	result := outcome.Result
 	session := result.Session
 	identity := SourceIdentity{
 		Provider:         string(session.Agent),
@@ -537,10 +543,18 @@ func conversationFromParse(
 		messages = append(messages, messageFromParsed(parsed))
 	}
 	fidelity := Fidelity{
-		MalformedLines: session.MalformedLines,
-		Truncated:      session.IsTruncated,
-		SourceVersion:  session.SourceVersion,
-		ReadFrom:       "source",
+		MalformedLines:     session.MalformedLines,
+		Truncated:          session.IsTruncated,
+		SourceVersion:      session.SourceVersion,
+		TranscriptFidelity: session.TranscriptFidelity,
+		ReadFrom:           "source",
+		// The provider's own retry state travels with the result it classified: a parse that kept a
+		// conversation it cannot fully resolve -- a Codex fork whose parent page is unreadable keeps the
+		// copied parent messages until that parent resolves -- returns those messages *and* says the
+		// result is not current, so the state is carried beside them rather than dropped with the
+		// result's wrapper.
+		NeedsRetry:  outcome.DataVersion == parser.DataVersionNeedsRetry,
+		RetryReason: outcome.RetryReason,
 	}
 	// Counted from the messages this read produced rather than from the parse result, so the summary a
 	// caller reports and the flags it can see on each result cannot disagree.
