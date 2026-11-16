@@ -726,6 +726,143 @@ func TestContinueFallsBackToTheArchiveWhenTheSourceIsGone(t *testing.T) {
 	}
 }
 
+// TestContinueFallsBackToTheArchiveWhenTheSourceCannotBeRead pins the other source-side failure the
+// fallback has to survive: the reader *resolved* the source and then could not read its bytes -- a
+// fingerprint or a parse that failed at the I/O level. The source's identity was answered, so this is
+// not "this machine holds no such session": it is a provider that could not read the source, and an
+// archive that holds the session must still be consulted. Both halves are pinned because both used to
+// escape readForConversion as bare errors, and the report has to name where the answer came from and
+// why, so a reader cannot take the projection for the file.
+func TestContinueFallsBackToTheArchiveWhenTheSourceCannotBeRead(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		fail   func(*fixedSourceProvider)
+		reason string
+	}{
+		{
+			name:   "the fingerprint could not read the file",
+			fail:   func(p *fixedSourceProvider) { p.fingerprintErr = errors.New("input/output error") },
+			reason: "input/output error",
+		},
+		{
+			name:   "the parse could not read the file",
+			fail:   func(p *fixedSourceProvider) { p.parseErr = errors.New("permission denied") },
+			reason: "permission denied",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			cfg := fixtureConfig(t)
+			sourcePath := fixturePath(t, filepath.Join("claude", "-home-user-code-example-api",
+				claudeFixtureRef.ID+".jsonl"))
+			cfg = archiveFixtureCopy(t, cfg, sourcePath,
+				filepath.Join("-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"))
+
+			// The source side resolves the reference to the session's own file and then fails to read
+			// it, which is the shape no committed fixture produces on its own.
+			reader, provider := readerOverFixedProvider(t, cfg, parser.AgentClaude)
+			provider.source = parser.SourceRef{
+				Provider:       parser.AgentClaude,
+				Key:            sourcePath,
+				DisplayPath:    sourcePath,
+				FingerprintKey: sourcePath,
+			}
+			testCase.fail(provider)
+
+			result, err := Continue(context.Background(), ContinueOptions{
+				Ref:          claudeFixtureRef,
+				Target:       TargetCodex,
+				Config:       cfg,
+				Reader:       reader,
+				ArchivePath:  cfg.DBPath,
+				TargetHome:   t.TempDir(),
+				TargetBinary: missingTargetBinary,
+				Verify:       VerifyNone,
+			})
+			if err != nil {
+				t.Fatalf("continuing after the source read failed: %v", err)
+			}
+			if result.Conversion.ReadFrom != "archive" {
+				t.Errorf("read_from = %q, want the archive", result.Conversion.ReadFrom)
+			}
+			warnings := strings.Join(result.Warnings, " ")
+			if !strings.Contains(warnings, "archive") {
+				t.Errorf("warnings = %v, want one naming the archive the session was read from",
+					result.Warnings)
+			}
+			if !strings.Contains(warnings, testCase.reason) {
+				t.Errorf("warnings = %v, want the source's own failure (%q) named beside the archive",
+					result.Warnings, testCase.reason)
+			}
+			if result.Installation.SourceCheckState != SourceCheckNotVerified {
+				t.Errorf("installation = %+v, want an archive read reported as a comparison that did not run",
+					result.Installation)
+			}
+			if result.Verification.Structure.State != VerificationStateVerified {
+				t.Errorf("structure = %+v, want the archived conversion to read back as what was written",
+					result.Verification.Structure)
+			}
+		})
+	}
+
+	// The other half of the obligation: a source that failed at the I/O level does not get to pre-empt the
+	// archive's own answer either. A reference two archive rows answer is the archive's ambiguity, with
+	// both candidate identities in the error, exactly as it is when the source side answered "no such
+	// session" -- the failure a caller is told about is the one the archive gave, because that is the list
+	// of spellings a caller can retry with.
+	t.Run("the archive's own refusal is the reported failure", func(t *testing.T) {
+		ctx := context.Background()
+		cfg := fixtureConfig(t)
+		sourcePath := fixturePath(t, filepath.Join("claude", "-home-user-code-example-api",
+			claudeFixtureRef.ID+".jsonl"))
+		reader, provider := readerOverFixedProvider(t, cfg, parser.AgentClaude)
+		provider.source = parser.SourceRef{
+			Provider:       parser.AgentClaude,
+			Key:            sourcePath,
+			DisplayPath:    sourcePath,
+			FingerprintKey: sourcePath,
+		}
+		provider.fingerprintErr = errors.New("input/output error")
+
+		dir := dbtest.MkdirTempWithCleanup(t)
+		archivePath := filepath.Join(dir, "sessions.db")
+		database := dbtest.OpenTestDBAt(t, archivePath)
+		for _, machine := range []string{"host-a", "host-b"} {
+			dbtest.SeedSession(t, database, machine+"~"+claudeFixtureRef.ID, "example-api",
+				func(session *db.Session) {
+					session.Agent = "claude"
+					session.Machine = machine
+				})
+		}
+		if err := database.Close(); err != nil {
+			t.Fatalf("closing the seeded archive: %v", err)
+		}
+
+		_, err := Continue(ctx, ContinueOptions{
+			Ref:          claudeFixtureRef,
+			Target:       TargetCodex,
+			Config:       cfg,
+			Reader:       reader,
+			ArchivePath:  archivePath,
+			TargetHome:   t.TempDir(),
+			TargetBinary: missingTargetBinary,
+			DryRun:       true,
+			Verify:       VerifyNone,
+		})
+		var ambiguous *AmbiguousError
+		if !errors.As(err, &ambiguous) {
+			t.Fatalf("a source that failed to read and an archive two rows answer returned %v, "+
+				"want the archive's ambiguity report", err)
+		}
+		if len(ambiguous.Candidates) != 2 {
+			t.Errorf("candidates = %v, want both stored copies of the requested session",
+				ambiguous.Candidates)
+		}
+		if errors.Is(err, ErrNotFound) {
+			t.Errorf("the archive's ambiguity is also reported as absence: %v", err)
+		}
+	})
+}
+
 // TestContinueReportsTheArchivesAmbiguityInsteadOfAbsence pins which failure a conversion reports when
 // the source side cannot answer the reference and the archive refuses it as well.
 //

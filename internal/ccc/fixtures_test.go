@@ -788,6 +788,12 @@ type fixedSourceProvider struct {
 	outcome parser.ParseOutcome
 	config  parser.ProviderConfig
 	request parser.ParseRequest
+	// fingerprintErr and parseErr make the stand-in fail the way an unreadable source does: the
+	// provider resolved the source and then could not read it. Either is answered in place of the
+	// constant fingerprint and the fixed outcome, so a case can pin what a caller does with a source
+	// read that failed at the I/O level.
+	fingerprintErr error
+	parseErr       error
 }
 
 func (p *fixedSourceProvider) FindSource(
@@ -799,6 +805,9 @@ func (p *fixedSourceProvider) FindSource(
 func (p *fixedSourceProvider) Fingerprint(
 	context.Context, parser.SourceRef,
 ) (parser.SourceFingerprint, error) {
+	if p.fingerprintErr != nil {
+		return parser.SourceFingerprint{}, p.fingerprintErr
+	}
 	return parser.SourceFingerprint{Key: "fixed"}, nil
 }
 
@@ -806,6 +815,9 @@ func (p *fixedSourceProvider) Parse(
 	_ context.Context, req parser.ParseRequest,
 ) (parser.ParseOutcome, error) {
 	p.request = req
+	if p.parseErr != nil {
+		return parser.ParseOutcome{}, p.parseErr
+	}
 	return p.outcome, nil
 }
 

@@ -48,6 +48,49 @@ repaired and the pin added (§ "Repairs", surface C2/E1/E2/E4).
 
 ---
 
+## Audit repair (2026-11-16) — the four acceptance findings
+
+One authorized acceptance audit read **this file** at candidate head `6fe0d7a` and returned exactly four
+P2 findings; the run stopped for replanning as designed. The repair is on the same branch
+(`feat/0002-claude-to-codex-continuation`, head `6fe0d7a` plus these uncommitted edits) and **only the
+rows it names changed** — A2, A3, C2, E1, E2, E4, E6 and F4. Every other row, and every measurement a row
+records, is the record of the head it was taken on: the `Restored …` digests of untouched files are the
+same at this head, and the two files whose repair is a source change have their new digests stated in
+their rows (`internal/ccc/reader.go` `95e68873…`, `cmd/ccc/main_test.go` `0ea5446a…`).
+
+- Gate on the repaired tree, run by this repair: `python3 scripts/gate.py` → `GATE: PASS` —
+  `gofmt 3582 file(s) gofmt-clean`; `build`/`vet` rc=0; `test 3 package(s) ok`; `selftest Ran 161 tests …
+  (rc=0)`; `parity … carried: 5553 file(s) identical to the pinned revision (compared through
+  git's own object store)`; `secrets no leaks found in 75 file(s) this repository owns`. The two Go
+  packages the repairs touch also ran alone (`go test -tags fts5 -count=1 ./cmd/ccc/... ./internal/ccc/...`
+  → `ok`), and each named test ran alone and passed before its mutation was applied.
+- The four findings, and the obligation each one narrowed:
+  1. `internal/ccc/continue.go:677` — a **source I/O failure** (a fingerprint or a parse that could not
+     read the file) escaped `readForConversion` as a bare error, before the archive was consulted; the
+     A2 row's cited test covers a *deleted* source only → A2, A3.
+  2. `cmd/ccc/main_test.go:1771` — the CLI verification tests handed `continueDocumentOf` the constant
+     `exitOK`, and the resume case left the stub loader's mode unset, so its positive case claimed a
+     success the command had not produced → E1, E2, E4.
+  3. `scripts/codex-native-check.py:388` — the stderr drainer appended every line to an unbounded list;
+     excerpt truncation bounds presentation only, and the cited mutation covers the separate Go buffer →
+     E6.
+  4. `internal/ccc/codex_target_test.go:1113` — the event-envelope assertion compared through this
+     writer's own constant (`codexRecordEventMsg`), so writer and assertion could drift together away
+     from the native `event_msg` spelling → C2.
+- Every repair carries **executed mutations**: finding 1 one per half (the fingerprint wrap and the parse
+  wrap reverted one at a time), finding 2 the detecting run plus the pre-repair shape re-run (which passed
+  while the CLI exited `1`), findings 3 and 4 one each (finding 4 also re-running the pre-repair
+  assertion). Each was applied as a temporary pattern-addressed edit, run with the named test, observed,
+  and restored from a byte-identical copy whose sha256 was compared after the restore.
+  No mutation survived; the tree this file ships with is the unmutated one, and the gate above is on it.
+- No gate step, gate knob, required-step list or carried upstream file was touched:
+  `scripts/gate.py`, `scripts/gate-required.txt`, `scripts/gate-goflags.txt`, `scripts/upstream-parity.py`
+  and `.github/workflows/` are as they were, `parity` still reports 5553 carried files identical to the
+  pinned revision, and no existing assertion, evidence row or disclosed limit was deleted or weakened.
+  `docs/harness.md` gained the sentence that states the new retention bound.
+
+---
+
 ## Surface A — source selection and fidelity
 
 ### A1 — A reference resolves only to the source it names; an ambiguity is reported with candidates
@@ -81,6 +124,42 @@ repaired and the pin added (§ "Repairs", surface C2/E1/E2/E4).
 - **Executed mutation:** `continue.go:683` `if strings.TrimSpace(archivePath) == "" {` → `if true {`
   (the fallback never runs). **Observed:** exit `1`; `FAIL` at
   `continue_test.go:704: continuing from the archive: session not found: …`. Restored `e5be4e8a…`.
+- **Audit repair (2026-11-16, finding 1 of the acceptance audit).** The fallback was reachable only for
+  the classifications `readForConversion` lists, and that list did not cover a source read that failed at
+  the **I/O level**: `internal/ccc/reader.go`'s `Read` wrapped a failed `Fingerprint` or `Parse` as a bare
+  error, the switch fell to its `default`, and the conversion returned before the archive was opened — the
+  cited test above covers a *deleted* source only, which is `ErrNotFound`. Both shapes now travel as
+  `ErrProviderFailed` (the sentinel the accepted set already holds, whose documented meaning is "a
+  provider resolved a source but could not produce a session from it"), the reader's own message and the
+  underlying failure stay in the chain (`reader.go:483-498`), and the set's own comment
+  (`continue.go:677-688`) states why it is the gate. The report is unchanged and now says which answer
+  came from where for this shape too: `read_from: archive` plus a warning naming the archive path and the
+  source's own failure.
+- **Pinned by (audit repair):** `TestContinueFallsBackToTheArchiveWhenTheSourceCannotBeRead`
+  (`internal/ccc/continue_test.go:736`) — three cases: a fingerprint I/O failure, a parse I/O failure, and
+  a source I/O failure whose archive refuses with an ambiguity. They drive the shipped `Read` through a
+  provider that fails at the I/O level (the test-only seam `fixedSourceProvider.fingerprintErr`/`parseErr`
+  in `fixtures_test.go`) and assert the archived read, `source_check_state: not-verified` with its reason,
+  and the warnings naming the archive **and** the source's own failure. The same sentinel is what `Inspect`
+  switches on, so its own documented rule — a source the reader cannot read is a warning rather than an
+  error whenever an archive could still answer the reference (`inspect.go:92-98`) — now covers this shape
+  as well instead of ending the inspection at the reader's error: pinned by
+  `TestUnreadableSourceFallsBackToTheArchive` (`internal/ccc/archive_test.go:748-794`), the sibling of the
+  deletion rule that row already had, executed under the same mutation.
+- **Executed mutations (audit repair, one per half, each run on the repaired test):**
+  1. `reader.go:488` `fmt.Errorf("%w: fingerprinting %s: %w", ErrProviderFailed, source.DisplayPath, err)`
+     → the pre-repair `fmt.Errorf("fingerprinting %s: %w", source.DisplayPath, err)`. Command: the test
+     above. **Observed:** exit `1`; `FAIL` with `the_fingerprint_could_not_read_the_file`
+     (`continue_test.go:782: continuing after the source read failed: fingerprinting <…>/9f2c1d47-….jsonl:
+     input/output error`) and `the_archive's_own_refusal_is_the_reported_failure` failing while the parse
+     case passed; the same mutation and the same edit, run against
+     `TestUnreadableSourceFallsBackToTheArchive`, fails it too
+     (`archive_test.go:778: inspecting a source that could not be read: fingerprinting <…>: input/output
+     error`). Restored `95e68873…` (this file's own digest at the repaired head).
+  2. `reader.go:497` `fmt.Errorf("%w: parsing %s: %w", ErrProviderFailed, source.DisplayPath, err)` → the
+     pre-repair `fmt.Errorf("parsing %s: %w", source.DisplayPath, err)`. **Observed:** exit `1`; `FAIL`
+     with `the_parse_could_not_read_the_file` (`continue_test.go:782: … parsing …: permission denied`)
+     failing while the fingerprint case passed. Restored `95e68873…`.
 
 ### A3 — When both sides refuse, the archive's own answer is the reported failure
 
@@ -94,6 +173,18 @@ repaired and the pin added (§ "Repairs", surface C2/E1/E2/E4).
 - **Executed mutation:** `continue.go:702` `if !errors.Is(readErr, ErrNotFound) {` → `if false {`.
   **Observed:** exit `1`; `FAIL`; `continue_test.go:778: a reference two archive rows answer returned
   session not found … want an ambiguity report`. Restored `e5be4e8a…`.
+- **Audit repair (2026-11-16, finding 1 of the acceptance audit).** "The source read fails" now covers a
+  read that failed at the I/O level as well, and the rule that the archive's own answer is the one
+  reported therefore holds for that shape too — executed, not inferred: the third case of
+  `TestContinueFallsBackToTheArchiveWhenTheSourceCannotBeRead`
+  (`internal/ccc/continue_test.go:812-864`) fails the source at the I/O level, seeds two `host~<id>` rows,
+  and asserts the reported failure is the **archive's** ambiguity with both candidate identities (and that
+  it is not `ErrNotFound`). Before the repair the source's bare error was returned before `archive.Read`
+  ran, so no archive answer could be reported at all.
+- **Executed mutation (audit repair):** the mutation recorded under A2 (the fingerprint wrap reverted to
+  its pre-repair form) fails this case by name —
+  `the_archive's_own_refusal_is_the_reported_failure` — as the A2 row's first observation states. The
+  archive half of the rule above keeps its own mutation, unchanged: `continue.go:702` → `if false {`.
 
 ### A4 — The read's own completeness and the provider's own classification reach the report
 
@@ -362,6 +453,26 @@ repaired and the pin added (§ "Repairs", surface C2/E1/E2/E4).
   `= "item_started"`. **Observed:** exit `1`; `FAIL`;
   `codex_target_test.go:1123: the file holds 0 user_message event(s) for "Ask", want exactly one: the
   harness's own view of the turn is built from that record …`. Restored `f43564af…`.
+- **Audit repair (2026-11-16, finding 4 of the acceptance audit).** The assertion above asked the file's
+  own bytes for the literal `user_message`/`agent_message` kinds but took the **envelope** kinds from this
+  writer's own constants (`codexRecordResponseItem`, `codexRecordEventMsg`), so a rename on the writer's
+  side moved the assertion with it — the drift the literals exist to catch, one level up. Both envelopes
+  are now literals, taken from the native format as the *carried* reader spells it
+  (`internal/parser/codex.go`'s `codexTypeResponseItem`/`codexTypeEventMsg`): `"response_item"` and
+  `"event_msg"` (`internal/ccc/codex_target_test.go:1108` and `:1116`). The inherited dialogue read-back
+  cannot answer this either way: it projects message items and ignores the event records, so nothing but
+  this assertion holds the harness's own view to the native spelling.
+- **Executed mutation (audit repair):** `codex_target.go:206` `codexRecordEventMsg = "event_msg"` →
+  `= "event_msg_drifted"` (the writer's spelling drifts, so the file holds no event record the target
+  reads while every constant-driven comparison still agrees). Command:
+  `CGO_ENABLED=1 go test -tags fts5 -count=1 -run
+  TestCodexRolloutWritesTheTargetsOwnViewRecordForEachMessage ./internal/ccc/...`. **Observed:** exit `1`;
+  `FAIL`; `codex_target_test.go:1126: the file holds 0 user_message event(s) for "Ask", want exactly one …`
+  and the same for `agent_message`. Restored `f43564af…`.
+- **Executed demonstration of the pre-repair shape (audit repair):** with the same drifted writer spelling
+  *and* the assertion put back on `codexRecordEventMsg` — writer and assertion moved together, which is
+  what the finding names — the case **passed** (`exit 0`): the drift was invisible to it. Restored
+  `f43564af…` (writer) and `a0c02e63…` (the repaired test file).
 
 ### C3 — Ordered one-to-one matching, including repeated text
 
@@ -582,6 +693,14 @@ repaired and the pin added (§ "Repairs", surface C2/E1/E2/E4).
      `if false {`. **Observed:** exit `1`; `FAIL`;
      `main_test.go:1746: exit 0, want 1 for a loader that named another file (stderr "")`.
   Restored `b79031c0…` after each.
+- **Audit repair (2026-11-16, finding 2 of the acceptance audit).** The positive case's exit status is now
+  the run's own: `code, stdout, stderr := runCLI(…)` and `continueDocumentOf(t, code, stdout, stderr)`
+  (the constant `exitOK` is what the helper compares against, never what it is handed). Before the repair
+  the helper was passed `exitOK` itself, so "the run exited 0" agreed with the case's own argument — a
+  tautology a failing command could not break. Re-run on the repaired tree:
+  `TestCodexLoadVerificationRequiresTheSessionsOwnRecord` and `TestProviderBindingIsTheTargetsOwnAnswer`
+  (E4) both PASS with the run's own exit code in the assertion, and the mutation that detects the old
+  shape is recorded in E2's row (one temporary edit, its own case).
 
 ### E2 — "Natively resumable" is a real turn that appended to the installed session
 
@@ -600,6 +719,26 @@ repaired and the pin added (§ "Repairs", surface C2/E1/E2/E4).
 - **Executed mutation:** `codex_verify.go:371` `if after <= before {` → `if false {`. **Observed:** exit
   `1`; `FAIL`; `main_test.go:1798: resume = map[… session_bytes_after:3099 session_bytes_before:3099
   state:verified], want not-verified when the session did not grow`. Restored `b79031c0…`.
+- **Audit repair (2026-11-16, finding 2 of the acceptance audit).** Two defects in this case, one of which
+  hid the other. (a) The positive case handed `continueDocumentOf` the constant `exitOK` instead of the
+  status `runCLI` answered, so the helper's "the run exited 0" check compared the case's own argument with
+  itself. (b) The case left the stub loader's mode unset, and a resume verification loads the session
+  *before* it runs the turn — so the run it called a success had in fact failed: the loader refused
+  `thread/resume`, the load block came back `not-verified`, and `continuationExit` answered `1`. The
+  positive case now reads the run's own exit code and sets the loader's mode it needs
+  (`stubLoadModeEnv = stubLoadSelfMode`, `main_test.go:1774`), which makes it the genuinely successful run
+  it claims; the negative half sets the same mode, so it can fail only on the turn that appended nothing.
+- **Executed mutation (audit repair):** the repaired case with the loader's mode removed again (the
+  pre-repair state) — `t.Setenv(stubLoadModeEnv, stubLoadSelfMode)` deleted. Command:
+  `CGO_ENABLED=1 go test -tags fts5 -count=1 -run TestResumeVerificationRequiresTheTurnToAppendToTheSession
+  ./cmd/ccc/...`. **Observed:** exit `1`; `FAIL`;
+  `main_test.go:1778: exit 1, want 0 (stderr "")` — the run's real status, which the pre-repair case could
+  not see because it was not looking at it. Restored `0ea5446a…`.
+- **Executed demonstration of the pre-repair shape (audit repair):** with the same missing loader mode
+  *and* the assertion put back on the constant (`continueDocumentOf(t, exitOK, …)`, plus a temporary
+  `t.Logf` of the status that was being discarded), the case **passed** (`exit 0`) while it logged
+  `the CLI's real exit code: 1`. That is the tautology the finding names, measured: the command failed and
+  the test agreed with itself. Restored `0ea5446a…`.
 
 ### E3 — The turn runs the executable the caller's path resolved to
 
@@ -635,6 +774,12 @@ repaired and the pin added (§ "Repairs", surface C2/E1/E2/E4).
 - **Executed mutation:** `codex_verify.go:140` `…; err == nil {` → `…; err == nil && false {` (the thread
   defaults' answer is never used). **Observed:** exit `1`; `FAIL`;
   `main_test.go:1830: model_provider = <nil>, want the harness's own answer`. Restored `b79031c0…`.
+- **Audit repair (2026-11-16, finding 2 of the acceptance audit).** Both of this row's cases now pass the
+  run's own exit code to `continueDocumentOf` (the constant `exitOK` is what the helper compares against),
+  so the "exit 0" half of each positive case is the command's answer rather than the case's own argument.
+  Re-run on the repaired tree: `TestProviderBindingIsTheTargetsOwnAnswer` PASSes with `code` wired into the
+  assertion; the mutation that detects the old shape (one temporary edit) is recorded in E2's row, which is
+  the case the audit cited.
 
 ### E5 — The reported invocation is the shell's reading of the command that ran
 
@@ -681,6 +826,26 @@ repaired and the pin added (§ "Repairs", surface C2/E1/E2/E4).
 - **Executed mutation:** `codex_verify.go:639` `if remaining := b.max - b.data.Len(); remaining > 0 {` →
   `if remaining := b.max; remaining > 0 {`. **Observed:** exit `1`; `FAIL`;
   `codex_verify_test.go:59: snapshot = "abcdefgh", want the first 4 bytes`. Restored `b79031c0…`.
+- **Audit repair (2026-11-16, finding 3 of the acceptance audit).** This clause's second half was
+  discharged for the Go client's `boundedBuffer` only. `scripts/codex-native-check.py`'s stderr drainer
+  appended every line the app server wrote to an unbounded `list`, and the `[:400]` in `stderr_tail` bounds
+  what a *report* shows, never what the harness retains — a server that logs for the whole run (or floods
+  its diagnostics pipe, which is the drainer's other job) would grow the harness's memory for the length of
+  the run. The drainer now writes into a ring: `APP_SERVER_DIAGNOSTICS_MAX` (`:87-92`),
+  `new_diagnostics`/`drain_diagnostics` (`:354-372`), the sink and the drainer (`:396`, `:413-418`), with
+  `stderr_tail` reading the ring's tail (`:431-434`). Presentation is unchanged (the last `limit` lines,
+  cut to 400 characters), and no credential or conversation-content rule is touched: the sink holds the
+  target server's own diagnostics, which F1's seeding rule never writes a credential into.
+- **Pinned by (audit repair):** `scripts/tests/test_codex_native_check.py`'s `BoundedAppServerDiagnostics`
+  (`:156-198`), three cases through the shipped sink and drainer: a 5000-line stream leaves exactly
+  `APP_SERVER_DIAGNOSTICS_MAX` lines and they are the stream's **last** ones; a stream that fails mid-read
+  keeps the lines that arrived; the reported tail is the end of what was read.
+- **Executed mutation (audit repair):** `codex-native-check.py:360`
+  `return collections.deque(maxlen=APP_SERVER_DIAGNOSTICS_MAX)` → `return collections.deque()` (the bound
+  removed). Command: `python3 -m unittest
+  scripts.tests.test_codex_native_check.BoundedAppServerDiagnostics`. **Observed:** exit `1`; `FAIL:
+  test_retains_only_the_bounded_tail`; `AssertionError: 5000 not less than or equal to 1000 : the drainer
+  retained 5000 lines of a 5000-line stream: the diagnostics are a tail, not a log`. Restored `7d759175…`.
 
 ## Surface F — privacy and test integrity
 
@@ -772,6 +937,11 @@ repaired and the pin added (§ "Repairs", surface C2/E1/E2/E4).
   `FAIL: test_suite_holds_in_a_child_whose_path_holds_no_tools`;
   `AssertionError: 1 != 0 : nested run rc=1: Ran 158 tests in 1.829s | FAILED (errors=1, skipped=2) |
   broken: test_only_tracked_go_files_outside_vendor_reach_gofmt`. Restored `978c7a0a…`.
+- **Audit repair (2026-11-16):** the suite now holds **161** cases — the three added with E6's repair
+  (`BoundedAppServerDiagnostics`) — and both nested runs still hold: the gate's `selftest` step on the
+  repaired tree printed `Ran 161 tests … (rc=0)`, which is the same two child runs (no tools on
+  `PATH`, and the platform probe answering Windows-without-a-compiler) over the larger suite. The earlier
+  `Ran 158 tests in 5.600s (rc=0)` line above and in the header is the close-out head's own measurement.
 
 ### F5 — A required gate step cannot pass by not running
 
@@ -814,6 +984,19 @@ exists to find. Each was repaired by adding the pin, and each new pin has its ow
 The repair is additive: no existing assertion, evidence row, disclosed limit or gate rule was weakened,
 removed or narrowed, and no carried AgentsView file was touched (`parity` proves it).
 
+## Repairs made by the acceptance audit's repair (2026-11-16)
+
+Four findings, four repairs; each row above carries its own mutation and each repair's named test ran
+alone and passed before that mutation was applied.
+
+| Finding | Row | Repair | Pin (and its mutation) |
+| --- | --- | --- | --- |
+| 1 — `continue.go:677`, a source I/O failure bypassed the archive fallback | A2, A3 | `reader.go`: a failed `Fingerprint`/`Parse` travels as `ErrProviderFailed`, the sentinel the accepted set already holds; `continue.go`'s set documents why it is the gate | `TestContinueFallsBackToTheArchiveWhenTheSourceCannotBeRead` (three cases) + `TestUnreadableSourceFallsBackToTheArchive` (the inspection's same sentinel) — both wraps reverted, one at a time, each run failing |
+| 2 — `main_test.go:1771`, the positive cases passed a constant `exitOK`, and the resume case's load was unset | E1, E2, E4 | every positive case reads the run's own exit code; the resume case sets the loader's mode it needs, and its negative half sets it too | `TestResumeVerificationRequiresTheTurnToAppendToTheSession` — the mode removed again fails as `exit 1, want 0`; the pre-repair shape passed while the CLI exited `1` |
+| 3 — `codex-native-check.py:388`, diagnostics retained without a memory bound | E6 | the drainer writes into a ring (`APP_SERVER_DIAGNOSTICS_MAX`, `new_diagnostics`/`drain_diagnostics`), presentation unchanged | `BoundedAppServerDiagnostics` — the `maxlen` removed retains 5000 of 5000 lines |
+| 4 — `codex_target_test.go:1113`, the envelope assertion shared the writer's constant | C2 | both envelope spellings are literals taken from the carried reader (`response_item`, `event_msg`) | `TestCodexRolloutWritesTheTargetsOwnViewRecordForEachMessage` — a drifted writer spelling fails it; sharing the constant again hides the same drift |
+| — (same class, disclosed not found) `codex_target_test.go:128-135`, the record-*kind* list also read the writer's constants | C2 | the list is now the carried reader's own spellings as literals, with the source named in a comment; the operator repaired this one itself | `TestCodexRolloutRecordShape` — a drifted `codexRecordEventMsg` fails it with `record types = […want…]`; the pre-repair form moved with the writer and stayed green (the lane's disclosure, verified by an executed drift mutation and a byte-identical restore) |
+
 ## What this matrix does not claim
 
 - The interactive `codex resume` TUI is still unverified on this host (no TTY); its loader
@@ -827,3 +1010,9 @@ removed or narrowed, and no carried AgentsView file was touched (`parity` proves
 - The native half of surface E (a real turn through the target harness) needs the harness and model access
   and is therefore not a gate step: the evidence for it in this file is one real run, not a gate verdict,
   and the offline pins above are what the gate decides.
+- **Residual, disclosed by the audit repair (2026-11-16).** `internal/ccc/codex_target_test.go`'s
+  record-*order* assertion (`:129-136`) still lists the file's record kinds through this writer's constants
+  (`codexRecordSessionMeta`, `codexRecordResponseItem`, `codexRecordEventMsg`, …), which the audit did not
+  name; it is about the order and the pairing of those records, and the spellings it shares with the writer
+  are now pinned independently by C2's repaired assertion, so a writer rename fails C2 rather than passing
+  both. It was left as it stands rather than widened beyond the finding.

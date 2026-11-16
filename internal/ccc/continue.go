@@ -674,6 +674,12 @@ func readForConversion(
 	if err == nil {
 		return conversation, "source", nil, nil
 	}
+	// The classifications that leave an archive in reach: the source side failed to answer a reference
+	// an archive can still hold. ErrProviderFailed covers both of the shapes it has -- a parse outcome
+	// carrying operational source errors and no result, and a fingerprint or a parse that failed at the
+	// I/O level (reader.go's Read). The second shape used to arrive as a bare error and stopped the
+	// conversion here, before the archive was consulted, which reported a session an archive holds as
+	// one this machine cannot read at all.
 	switch {
 	case errors.Is(err, ErrNotFound), errors.Is(err, ErrNoLocalSource), errors.Is(err, ErrProviderFailed),
 		errors.Is(err, ErrPartialSource), errors.Is(err, ErrSourceDisabled):

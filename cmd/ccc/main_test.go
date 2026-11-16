@@ -121,6 +121,7 @@ const stubMarkerEnv = "CCC_TEST_STUB_MARKER"
 // (stubTurnModeEnv) or answers without touching it.
 const (
 	stubLoadModeEnv       = "CCC_TEST_STUB_LOAD"
+	stubLoadSelfMode      = "self"
 	stubLoadOtherMode     = "other"
 	stubLoadOtherPathMode = "other-path"
 	stubProviderEnv       = "CCC_TEST_STUB_PROVIDER"
@@ -1703,10 +1704,10 @@ func TestCodexLoadVerificationRequiresTheSessionsOwnRecord(t *testing.T) {
 	sessionID, _ := claudeFixture(t)
 	binary := stubTargetBinary(t)
 
-	t.Setenv(stubLoadModeEnv, "self")
-	_, stdout, stderr := runCLI(t, "continue", "claude:"+sessionID, "--to", "codex",
+	t.Setenv(stubLoadModeEnv, stubLoadSelfMode)
+	code, stdout, stderr := runCLI(t, "continue", "claude:"+sessionID, "--to", "codex",
 		"--target-binary", binary, "--verify", "load", "--json")
-	document := continueDocumentOf(t, exitOK, stdout, stderr)
+	document := continueDocumentOf(t, code, stdout, stderr)
 	load := verificationBlock(t, document, "load")
 	if load["state"] != ccc.VerificationStateVerified {
 		t.Fatalf("load = %+v, want verified for a loader that answers with the installed session", load)
@@ -1719,7 +1720,7 @@ func TestCodexLoadVerificationRequiresTheSessionsOwnRecord(t *testing.T) {
 	// The same run with a loader that answers with another session: the check must not call that a load.
 	_, otherHome := continueEnvironment(t)
 	t.Setenv(stubLoadModeEnv, stubLoadOtherMode)
-	code, stdout, stderr := runCLI(t, "continue", "claude:"+sessionID, "--to", "codex",
+	code, stdout, stderr = runCLI(t, "continue", "claude:"+sessionID, "--to", "codex",
 		"--target-binary", binary, "--target-home", otherHome, "--verify", "load", "--json")
 	if code != exitFailure {
 		t.Fatalf("exit %d, want %d for a loader that loaded another session (stderr %q)", code, exitFailure, stderr)
@@ -1767,11 +1768,15 @@ func TestResumeVerificationRequiresTheTurnToAppendToTheSession(t *testing.T) {
 	sessionID, _ := claudeFixture(t)
 	binary := stubTargetBinary(t)
 
+	// The loader answers with the installed session, so the requested resume level is the only thing
+	// this run can still fail on: a resume verification loads the session first, and a load that never
+	// answered would leave the turn unrun instead of pinning the turn rule below.
+	t.Setenv(stubLoadModeEnv, stubLoadSelfMode)
 	t.Setenv(stubTurnModeEnv, stubTurnGrowMode)
-	_, stdout, stderr := runCLI(t, "continue", "claude:"+sessionID, "--to", "codex",
+	code, stdout, stderr := runCLI(t, "continue", "claude:"+sessionID, "--to", "codex",
 		"--target-binary", binary, "--verify", "resume", "--resume-prompt", "answer only from this conversation",
 		"--json")
-	document := continueDocumentOf(t, exitOK, stdout, stderr)
+	document := continueDocumentOf(t, code, stdout, stderr)
 	resume := verificationBlock(t, document, "resume")
 	if resume["state"] != ccc.VerificationStateVerified {
 		t.Fatalf("resume = %+v, want verified for a turn that appended to the session", resume)
@@ -1783,7 +1788,7 @@ func TestResumeVerificationRequiresTheTurnToAppendToTheSession(t *testing.T) {
 
 	_, otherHome := continueEnvironment(t)
 	t.Setenv(stubTurnModeEnv, stubTurnSilentMode)
-	code, stdout, stderr := runCLI(t, "continue", "claude:"+sessionID, "--to", "codex",
+	code, stdout, stderr = runCLI(t, "continue", "claude:"+sessionID, "--to", "codex",
 		"--target-binary", binary, "--target-home", otherHome, "--verify", "resume",
 		"--resume-prompt", "answer only from this conversation", "--json")
 	if code != exitFailure {
@@ -1822,9 +1827,9 @@ func TestProviderBindingIsTheTargetsOwnAnswer(t *testing.T) {
 	binary := stubTargetBinary(t)
 
 	t.Setenv(stubProviderEnv, "a-stub-provider")
-	_, stdout, stderr := runCLI(t, "continue", "claude:"+sessionID, "--to", "codex",
+	code, stdout, stderr := runCLI(t, "continue", "claude:"+sessionID, "--to", "codex",
 		"--target-binary", binary, "--verify", "none", "--json")
-	document := continueDocumentOf(t, exitOK, stdout, stderr)
+	document := continueDocumentOf(t, code, stdout, stderr)
 	target, _ := document["target_session"].(map[string]any)
 	if target["model_provider"] != "a-stub-provider" {
 		t.Fatalf("model_provider = %v, want the harness's own answer", target["model_provider"])
@@ -1843,9 +1848,9 @@ func TestProviderBindingIsTheTargetsOwnAnswer(t *testing.T) {
 	_, otherHome := continueEnvironment(t)
 	t.Setenv(stubProviderEnv, "")
 	t.Setenv(stubConfigProviderEnv, "a-configured-provider")
-	_, stdout, stderr = runCLI(t, "continue", "claude:"+sessionID, "--to", "codex",
+	code, stdout, stderr = runCLI(t, "continue", "claude:"+sessionID, "--to", "codex",
 		"--target-binary", binary, "--target-home", otherHome, "--verify", "none", "--json")
-	document = continueDocumentOf(t, exitOK, stdout, stderr)
+	document = continueDocumentOf(t, code, stdout, stderr)
 	target, _ = document["target_session"].(map[string]any)
 	if target["model_provider"] != "a-configured-provider" {
 		t.Errorf("model_provider = %v, want the harness's configured provider", target["model_provider"])

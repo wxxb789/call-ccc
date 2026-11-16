@@ -125,13 +125,17 @@ func TestCodexRolloutRecordShape(t *testing.T) {
 	for _, line := range lines {
 		types = append(types, line.Type)
 	}
+	// The spellings are literals on purpose: they are the carried reader's own record types
+	// (`internal/parser/codex.go`'s codexTypeSessionMeta / codexTypeTurnContext /
+	// codexTypeResponseItem / codexTypeEventMsg), so a writer whose spelling drifts fails here
+	// instead of moving this assertion with it — the same class the acceptance audit named at :1113.
 	want := []string{
-		codexRecordSessionMeta,
-		codexRecordTurnContext,
-		codexRecordResponseItem, codexRecordEventMsg, // the user turn and its view event
-		codexRecordEventMsg, codexRecordResponseItem, // the assistant's, in the target's own order
-		codexRecordResponseItem,
-		codexRecordResponseItem,
+		"session_meta",
+		"turn_context",
+		"response_item", "event_msg", // the user turn and its view event
+		"event_msg", "response_item", // the assistant's, in the target's own order
+		"response_item",
+		"response_item",
 	}
 	if strings.Join(types, ",") != strings.Join(want, ",") {
 		t.Errorf("record types = %v, want %v", types, want)
@@ -1095,14 +1099,17 @@ func TestCodexRolloutWritesTheTargetsOwnViewRecordForEachMessage(t *testing.T) {
 		// The literals are the target's own record kinds (docs/plans/0002-claude-to-codex-continuation.md
 		// §2.2), named here as the file must spell them rather than through this writer's constants: a
 		// constant renamed on both sides of the comparison would leave the file saying something the
-		// target does not read.
+		// target does not read. The two envelope spellings are pinned the same way, from the carried
+		// reader rather than from this writer: the upstream parser names them `response_item` and
+		// `event_msg` (internal/parser/codex.go's codexTypeResponseItem/codexTypeEventMsg), so a writer
+		// whose spelling drifts fails here instead of moving this assertion with it.
 		role, blockType, eventType := "user", "input_text", "user_message"
 		if item.Kind == ItemAssistant {
 			role, blockType, eventType = "assistant", "output_text", "agent_message"
 		}
 		var modelRecords, eventRecords int
 		for _, one := range parsed {
-			if one.Type == codexRecordResponseItem && one.Payload.Type == codexItemMessage &&
+			if one.Type == "response_item" && one.Payload.Type == "message" &&
 				one.Payload.Role == role {
 				for _, block := range one.Payload.Content {
 					if block.Type == blockType && block.Text == item.Text {
@@ -1110,7 +1117,7 @@ func TestCodexRolloutWritesTheTargetsOwnViewRecordForEachMessage(t *testing.T) {
 					}
 				}
 			}
-			if one.Type == codexRecordEventMsg && one.Payload.Type == eventType &&
+			if one.Type == "event_msg" && one.Payload.Type == eventType &&
 				one.Payload.Message == item.Text {
 				eventRecords++
 			}

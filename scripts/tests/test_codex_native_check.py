@@ -5,7 +5,8 @@ Two halves, both driven in-process with the shipped module imported by path, no 
 on ``PATH``: the check that reads the reported resume invocation back the way a POSIX shell reads it
 (``shell_words``/``reported_invocation``), and the ordering rule that the source session and the planted
 session are compared **after** the harness's own native stages (``main`` driven with its subprocess and
-app-server seams replaced by stubs).
+app-server seams replaced by stubs). A third subject is driven the same way: the app server's diagnostics
+drainer, whose retained lines are bounded (``new_diagnostics``/``drain_diagnostics``).
 
 The resume-invocation check is the harness's own rule about the line a caller pastes or an agent runs: it
 must name the data directory the session was installed into, because Codex takes that directory from
@@ -151,6 +152,50 @@ class ResumeInvocationCheck(unittest.TestCase):
         line = f"CODEX_HOME='codex-home {CODEX} resume {SESSION}"
         self.assertIsNone(NATIVE_CHECK.shell_words(line))
         self.assertFalse(NATIVE_CHECK.reported_invocation(line, Path("codex-home"), RESUME_ARGUMENTS))
+
+
+class BoundedAppServerDiagnostics(unittest.TestCase):
+    """The app server's diagnostics are a bounded tail, not a log this harness keeps for the whole run.
+
+    The drainer has to keep reading the pipe -- a server whose diagnostics nobody reads blocks instead of
+    answering -- but what it *retains* is a ring of the last lines: the failure reports quote that tail
+    (``AppServer.stderr_tail``), and a runaway log must not become this harness's own memory. Both halves
+    are driven through the shipped sink and the shipped drainer, so removing the bound fails here instead
+    of in a review, and the cases keep the two properties the drainer had before it was bounded: a stream
+    that fails mid-read keeps the lines that arrived, and the reported tail is the *end* of the stream.
+    """
+
+    def test_retains_only_the_bounded_tail(self) -> None:
+        retained = NATIVE_CHECK.new_diagnostics()
+        NATIVE_CHECK.drain_diagnostics((f"diagnostic {index}\n" for index in range(5000)), retained)
+        self.assertLessEqual(len(retained), 1000,
+                             f"the drainer retained {len(retained)} lines of a 5000-line stream: the "
+                             f"diagnostics are a tail, not a log")
+        self.assertEqual(len(retained), NATIVE_CHECK.APP_SERVER_DIAGNOSTICS_MAX,
+                         "the shipped bound is not what bounded the sink")
+        self.assertEqual(list(retained)[-1], "diagnostic 4999",
+                         "the retained lines are not the end of the stream")
+        self.assertEqual(list(retained)[0],
+                         f"diagnostic {5000 - NATIVE_CHECK.APP_SERVER_DIAGNOSTICS_MAX}",
+                         "the retained lines do not begin where the bound says they should")
+
+    def test_keeps_the_lines_that_arrived_when_the_stream_ends_badly(self) -> None:
+        def broken():
+            yield "the server's last words\n"
+            raise OSError("the pipe closed mid-line")
+
+        retained = NATIVE_CHECK.new_diagnostics()
+        NATIVE_CHECK.drain_diagnostics(broken(), retained)
+        self.assertEqual(list(retained), ["the server's last words"],
+                         "a stream that failed mid-read lost the diagnostics that did arrive")
+
+    def test_the_reported_tail_is_the_end_of_what_was_read(self) -> None:
+        # The instance is built without its process: the rule is about the sink the drainer fills, and
+        # the tail is read out of a ring, which takes no slice of its own.
+        server = NATIVE_CHECK.AppServer.__new__(NATIVE_CHECK.AppServer)
+        server.diagnostics = NATIVE_CHECK.new_diagnostics()
+        NATIVE_CHECK.drain_diagnostics([f"line {index}\n" for index in range(10)], server.diagnostics)
+        self.assertEqual(server.stderr_tail(), "line 7 | line 8 | line 9")
 
 
 #: A host configuration the seeding case drives the check with: one credential in each shape a real

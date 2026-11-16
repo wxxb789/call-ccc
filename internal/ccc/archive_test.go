@@ -745,6 +745,54 @@ func TestDeletedSourcePathFallsBackToTheArchive(t *testing.T) {
 	}
 }
 
+// TestUnreadableSourceFallsBackToTheArchive pins the sibling of the deletion rule above: a source the
+// reader *resolved* and then could not read -- a fingerprint that failed at the I/O level -- is a
+// warning on the way to the archive, not the end of the inspection. The reader answers such a failure as
+// a provider that could not read the source (ErrProviderFailed), the classification this inspection
+// already reports as a warning; before that it escaped as a bare error and the archived session the
+// reference names was never reported at all.
+func TestUnreadableSourceFallsBackToTheArchive(t *testing.T) {
+	ctx := context.Background()
+	cfg := fixtureConfig(t)
+	sourcePath := fixturePath(t, filepath.Join("claude", "-home-user-code-example-api",
+		claudeFixtureRef.ID+".jsonl"))
+	cfg = archiveFixtureCopy(t, cfg, sourcePath,
+		filepath.Join("-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"))
+
+	reader, provider := readerOverFixedProvider(t, cfg, parser.AgentClaude)
+	provider.source = parser.SourceRef{
+		Provider:       parser.AgentClaude,
+		Key:            sourcePath,
+		DisplayPath:    sourcePath,
+		FingerprintKey: sourcePath,
+	}
+	provider.fingerprintErr = errors.New("input/output error")
+
+	inspection, err := Inspect(ctx, InspectOptions{
+		Ref:         claudeFixtureRef,
+		Config:      cfg,
+		Reader:      reader,
+		ArchivePath: cfg.DBPath,
+	})
+	if err != nil {
+		t.Fatalf("inspecting a source that could not be read: %v", err)
+	}
+	if inspection.Source != nil {
+		t.Errorf("the inspection reported a source it could not read: %+v", inspection.Source.Identity)
+	}
+	if inspection.Archive == nil {
+		t.Fatalf("the archived session was not reported: %v", inspection.Warnings)
+	}
+	if inspection.Archive.Status.SessionID != claudeFixtureRef.ID {
+		t.Errorf("the inspection reports %q, want %q",
+			inspection.Archive.Status.SessionID, claudeFixtureRef.ID)
+	}
+	warnings := strings.Join(inspection.Warnings, "\n")
+	if !strings.Contains(warnings, "input/output error") {
+		t.Errorf("the inspection does not carry the source's own failure: %v", inspection.Warnings)
+	}
+}
+
 // reconcileVanishedSource asks the inherited sync engine to process a source path that no longer
 // exists, the way a watcher's changed-path pass does. AgentsView's answer is the archive state this
 // package reads: the stored row is marked source-missing and its conversation is kept.

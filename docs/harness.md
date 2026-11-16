@@ -233,7 +233,9 @@ says so.
   third Windows answer under Platform boundary below.
   Every app-server request is bounded by the script's own deadline (`APP_SERVER_TIMEOUT`), stdout is
   read by a thread and stderr drained by another, so a server that stops answering or fills its
-  diagnostics pipe is reported as a failed check rather than hanging the run. Every check prints its
+  diagnostics pipe is reported as a failed check rather than hanging the run, and the lines the drainer
+  retains are a bounded tail of the last `APP_SERVER_DIAGNOSTICS_MAX` ones: it keeps the pipe empty, but
+  a server that logs for the whole run cannot grow this harness's memory with it. Every check prints its
   own verdict and the script exits non-zero when one fails, so a run that could not do the native half
   says so instead of reporting a pass.
 

@@ -18,14 +18,17 @@ import (
 // it from a provider failure so an inspection can say "not found" instead of "broken".
 var ErrNotFound = errors.New("session not found")
 
-// ErrProviderFailed reports that a provider resolved a source but could not produce a session from it:
-// the parse outcome carries operational source errors and no result. It is not absence -- the session
-// may well exist; the provider failed to read it -- so a caller reports the provider's own diagnostics
-// instead of "not found". The inherited Cursor provider reports a retryable store-enrichment failure
-// this way (internal/parser's cursor_provider.go carries the operational error in
-// ParseOutcome.SourceErrors with a nil Go error for retry classification, so only the outcome says it
-// happened). An inspection can still fall back to an archive that holds the session, but it must not
-// report the failure as if nothing were there.
+// ErrProviderFailed reports that a provider resolved a source but could not produce a session from it.
+// Two shapes reach it: a parse outcome that carries operational source errors and no result, and a
+// fingerprint or a parse that failed at the I/O level -- a file that moved under a provider that had
+// already classified it, a permission failure, a store the provider could not open -- which Read wraps
+// with this sentinel rather than letting a bare error escape, because the two are the same answer to a
+// caller. It is not absence -- the session may well exist; the provider failed to read it -- so a caller
+// reports the provider's own diagnostics instead of "not found". The inherited Cursor provider reports a
+// retryable store-enrichment failure the first way (internal/parser's cursor_provider.go carries the
+// operational error in ParseOutcome.SourceErrors with a nil Go error for retry classification, so only
+// the outcome says it happened). An inspection can still fall back to an archive that holds the session,
+// but it must not report the failure as if nothing were there.
 var ErrProviderFailed = errors.New("provider could not read the source")
 
 // ErrPartialSource reports a source a provider read only in part: the parse produced at least one
@@ -479,7 +482,11 @@ func (r *SourceReader) Read(ctx context.Context, ref Ref) (Conversation, error) 
 	}
 	fingerprint, err := provider.Fingerprint(ctx, source)
 	if err != nil {
-		return Conversation{}, fmt.Errorf("fingerprinting %s: %w", source.DisplayPath, err)
+		// The source was resolved and could not be read: a provider failure, not absence, so the
+		// sentinel travels with the reader's own message. A bare error here stopped a conversion short
+		// of an archive that holds the session (continue.go's readForConversion).
+		return Conversation{}, fmt.Errorf("%w: fingerprinting %s: %w",
+			ErrProviderFailed, source.DisplayPath, err)
 	}
 	outcome, err := provider.Parse(ctx, parser.ParseRequest{
 		Source:      source,
@@ -487,7 +494,7 @@ func (r *SourceReader) Read(ctx context.Context, ref Ref) (Conversation, error) 
 		Machine:     r.machineForSource(def.Type, source),
 	})
 	if err != nil {
-		return Conversation{}, fmt.Errorf("parsing %s: %w", source.DisplayPath, err)
+		return Conversation{}, fmt.Errorf("%w: parsing %s: %w", ErrProviderFailed, source.DisplayPath, err)
 	}
 	result, ok := pickResult(outcome, ref)
 	if !ok {

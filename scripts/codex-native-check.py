@@ -48,6 +48,7 @@ Go toolchain, a missing fixture).
 from __future__ import annotations
 
 import argparse
+import collections
 import hashlib
 import json
 import os
@@ -61,7 +62,7 @@ import threading
 import time
 import tomllib
 from pathlib import Path
-from typing import NamedTuple
+from typing import Iterable, NamedTuple
 from urllib.parse import urlsplit
 
 #: The provider directory, and the two committed Claude fixtures this harness can convert. The first
@@ -83,6 +84,13 @@ UNRELATED_NAME = "rollout-2026-01-01T00-00-00-00000000-0000-7000-8000-0000000000
 #: One app-server request's deadline. Every call this harness makes is bounded by it: a server that keeps
 #: its output open and stops answering is reported as a failed check rather than blocking the run.
 APP_SERVER_TIMEOUT = 120
+
+#: How many of the app server's diagnostic lines are retained. The drainer has to keep reading the pipe
+#: (a full one blocks the server instead of answering) but what it *keeps* is a ring of the last lines:
+#: the failure reports quote the tail of it, and an unbounded list would make this harness's own memory a
+#: function of the target's output -- a runaway log would be retained for the whole run. The bound is
+#: pinned by ``scripts/tests/test_codex_native_check.py``.
+APP_SERVER_DIAGNOSTICS_MAX = 200
 
 #: The top-level settings the throw-away home's configuration is seeded with, and nothing else. The
 #: target's loader compares a session against the provider its *own* configuration names, so these two
@@ -343,6 +351,28 @@ def run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = No
     return subprocess.run(cmd, cwd=cwd, env=merged, capture_output=True, text=True, timeout=timeout)
 
 
+def new_diagnostics() -> collections.deque[str]:
+    """The bounded sink the stderr drainer writes into: the last lines, not a log.
+
+    A ``deque`` with a ``maxlen`` drops the oldest line as each new one arrives, so what a failure report
+    can quote is bounded while the drainer keeps the pipe empty.
+    """
+    return collections.deque(maxlen=APP_SERVER_DIAGNOSTICS_MAX)
+
+
+def drain_diagnostics(stream: Iterable[str], retained: collections.deque[str]) -> None:
+    """Read a diagnostics stream to its end into ``retained``, whose own ``maxlen`` bounds it.
+
+    The stream ends when the server closes it, and a read that fails mid-stream keeps the lines that did
+    arrive: a diagnostics tail that ends at the failure is worth more than an empty one.
+    """
+    try:
+        for line in stream:
+            retained.append(line.rstrip("\n"))
+    except (OSError, ValueError):
+        pass
+
+
 class AppServer:
     """A minimal client for the target's own app-server protocol over stdio.
 
@@ -350,7 +380,9 @@ class AppServer:
     stdout open and stops answering would otherwise block a synchronous read for ever, and this harness
     promises a bounded verdict for every check. stderr is drained by a second thread for the same
     reason -- a piped stream nobody reads fills up, and a server that blocks writing a diagnostic stops
-    answering -- and the lines it holds are reported with a failure instead of being thrown away.
+    answering -- and the lines it holds are reported with a failure instead of being thrown away. What is
+    reported is the *tail* of them: the drainer retains ``APP_SERVER_DIAGNOSTICS_MAX`` lines and drops
+    the older ones, so a server that logs for the whole run cannot grow this harness's memory with it.
     """
 
     def __init__(self, binary: str, home: Path):
@@ -361,7 +393,7 @@ class AppServer:
             text=True, bufsize=1, env={**os.environ, "CODEX_HOME": str(home)},
         )
         self.responses: queue.Queue[str | None] = queue.Queue()
-        self.diagnostics: list[str] = []
+        self.diagnostics: collections.deque[str] = new_diagnostics()
         self.reader = threading.Thread(target=self._read_stdout, daemon=True)
         self.drainer = threading.Thread(target=self._drain_stderr, daemon=True)
         self.reader.start()
@@ -383,11 +415,7 @@ class AppServer:
         stream = self.process.stderr
         if stream is None:
             return
-        try:
-            for line in stream:
-                self.diagnostics.append(line.rstrip("\n"))
-        except (OSError, ValueError):
-            pass
+        drain_diagnostics(stream, self.diagnostics)
 
     def close(self) -> None:
         try:
@@ -401,7 +429,9 @@ class AppServer:
                 self.process.kill()
 
     def stderr_tail(self, limit: int = 3) -> str:
-        return " | ".join(self.diagnostics[-limit:])[:400]
+        # The sink is a deque (its maxlen is the bound), and a deque takes no slice: the last `limit`
+        # lines are copied out of a ring that is already bounded.
+        return " | ".join(list(self.diagnostics)[-limit:])[:400]
 
     def call(self, method: str, params: dict) -> dict:
         self.next_id += 1
