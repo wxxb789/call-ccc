@@ -441,7 +441,17 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 		return
 	}
 	if message.IsSystem {
+		// A record the provider itself flagged as system-injected (a reminder, a notice). Its own text
+		// is not the conversation: the target has no system role, its developer channel carries the
+		// target's own instructions, and the text is counted as omitted. The record can still carry
+		// tool evidence, though -- the inherited Claude parser keeps a promoted system reminder's tool
+		// results on the message it marks IsSystem (internal/parser's
+		// TestParseClaudeSession_SystemReminderPromotionPreservesToolResults) -- and a result dropped
+		// here would leave the call it answers without its recorded output while the report named only
+		// the record's text. So the text alone is suppressed; the tool evidence travels exactly as a
+		// dialogue record's would, because a call and its output carry no role of their own.
 		b.lossSystemRecords++
+		b.writeToolEvidence(message)
 		return
 	}
 	if len(message.ToolResults) == 0 && len(message.ToolCalls) == 0 && strings.TrimSpace(message.Thinking) != "" &&
@@ -501,6 +511,17 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 		}
 	}
 
+	b.writeToolEvidence(message)
+}
+
+// writeToolEvidence writes the calls and results a record carries: each call, each result paired with
+// the call it answers, and -- for an archive read, where a call's outcome is also held as the derived
+// summary in ResultContent -- that summary only for a call with no recorded result of its own
+// (callHasRecordedResult). It is asked for by a dialogue record and by a record whose own text is not
+// written (a system-injected record), because a call and its output carry no role of their own in the
+// target and dropping real evidence silently is what the report exists to prevent. A record with no
+// tool evidence contributes nothing here.
+func (b *codexRolloutBuilder) writeToolEvidence(message Message) {
 	for index, call := range message.ToolCalls {
 		b.toolCall(message.Ordinal, index, call, message.Timestamp)
 	}
@@ -802,7 +823,9 @@ func (b *codexRolloutBuilder) losses() []Loss {
 			Disposition: DispositionOmitted,
 			Count:       b.lossSystemRecords,
 			Detail: "the target has no system role: its developer channel carries the target's own " +
-				"instructions, and a provider's bookkeeping does not belong there",
+				"instructions, and a provider's bookkeeping text does not belong there. Only the " +
+				"record's own text is omitted; a tool call or result recorded on the same record is " +
+				"written as the tool evidence it is",
 		},
 		{
 			Category:    "tool_role_messages",

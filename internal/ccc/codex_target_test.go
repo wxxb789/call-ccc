@@ -297,6 +297,63 @@ func TestCodexRolloutDoesNotApplyASidechainCompactionBoundary(t *testing.T) {
 	}
 }
 
+// TestCodexRolloutWritesASystemRecordsToolEvidenceWithoutItsText pins the split the writer makes for a
+// record the provider flagged as system-injected: the record's own text is not the conversation, while a
+// tool result recorded on that same record is the recorded output of a call this conversion carried --
+// so suppressing the text must not suppress the output, and the output must not travel twice. The shape
+// is the provider's own rather than a hand-made one: the inherited Claude parser keeps a promoted system
+// reminder's tool results on the message it marks IsSystem
+// (internal/parser's TestParseClaudeSession_SystemReminderPromotionPreservesToolResults), and the
+// committed tooling fixture holds it -- TestToolingFixtureCarriesASystemRemindersToolResult is the same
+// rule read through that fixture's real parse.
+func TestCodexRolloutWritesASystemRecordsToolEvidenceWithoutItsText(t *testing.T) {
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Run it", Dialogue: "Run it"},
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "[Bash: ls]",
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_1", Name: "Bash", InputJSON: `{"command":"ls"}`}}},
+		Message{Ordinal: 2, Role: string(parser.RoleUser), IsSystem: true,
+			Content:     "<system-reminder>remember the workspace state</system-reminder>",
+			ToolResults: []ToolResult{{ToolUseID: "toolu_1", ContentRaw: "the tool's output"}}},
+		Message{Ordinal: 3, Role: string(parser.RoleUser), IsSystem: true,
+			Content: "<system-reminder>a notice with nothing to carry</system-reminder>"},
+	)
+	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	data := string(rollout.Data)
+	for _, absent := range []string{"remember the workspace state", "a notice with nothing to carry"} {
+		if strings.Contains(data, absent) {
+			t.Errorf("the rollout holds %q, the text of a record the provider flagged as system-injected", absent)
+		}
+	}
+	if got := strings.Count(data, "the tool's output"); got != 1 {
+		t.Errorf("the recorded output appears %d time(s) in the rollout, want exactly once, paired with "+
+			"its call", got)
+	}
+	outputs := 0
+	for _, line := range decodeRollout(t, rollout.Data) {
+		if payloadField(t, line, "type") != codexItemFunctionOutput ||
+			payloadField(t, line, "call_id") != "toolu_1" {
+			continue
+		}
+		outputs++
+		if got := payloadField(t, line, "output"); got != "the tool's output" {
+			t.Errorf("the paired output = %q, want the recorded result text", got)
+		}
+	}
+	if outputs != 1 {
+		t.Errorf("function_call_output records for toolu_1 = %d, want exactly one", outputs)
+	}
+	if rollout.Carried.ToolCalls != 1 || rollout.Carried.ToolResults != 1 || rollout.Carried.Messages != 1 {
+		t.Errorf("carried = %+v, want the call, its output once and the one dialogue message", rollout.Carried)
+	}
+	if loss := lossCount(t, rollout.Losses, "system_records"); loss.Count != 2 ||
+		loss.Disposition != DispositionOmitted {
+		t.Errorf("system_records = %+v, want both records' own text counted as omitted", loss)
+	}
+}
+
 // TestCodexRolloutReportsEveryCategoryItKnows pins the report's completeness: a category that is not
 // named cannot be read, and a count that is not reported looks like evidence that travelled.
 func TestCodexRolloutReportsEveryCategoryItKnows(t *testing.T) {

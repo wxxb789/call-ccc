@@ -54,8 +54,9 @@ from pathlib import Path
 
 #: The provider directory, and the two committed Claude fixtures this harness can convert. The first
 #: carries dialogue, a tool call with its result and a compaction boundary; the second (TOOLING_SESSION)
-#: carries a persisted reasoning trace, a subagent turn and an errored tool result, and no compaction
-#: boundary, so a resumed turn still sees its tool calls.
+#: carries a persisted reasoning trace, a subagent turn, an errored tool result and a tool result the
+#: provider recorded on the same line as a system reminder, and no compaction boundary, so a resumed
+#: turn still sees its tool calls.
 SOURCE_PROVIDER = "claude"
 SOURCE_SESSION = "9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10"
 TOOLING_SESSION = "b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef"

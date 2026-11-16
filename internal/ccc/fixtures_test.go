@@ -270,6 +270,77 @@ func TestToolingFixtureCarriesTheShapesTheWriterMustNotMisread(t *testing.T) {
 	}
 }
 
+// TestToolingFixtureCarriesASystemRemindersToolResult pins the mixed native record a conversion has to
+// split rather than suppress: one Claude user line the provider wrote as a system reminder *and* a tool
+// result answering an earlier call, which the inherited parser keeps as one message with IsSystem set and
+// its ToolResults populated (internal/parser's
+// TestParseClaudeSession_SystemReminderPromotionPreservesToolResults). The reminder's own text is not the
+// conversation and must not travel; the result is the recorded output of a call this conversion carried
+// and must travel exactly once -- dropping it would leave the call unanswered while the report counted
+// only the record's text as omitted.
+func TestToolingFixtureCarriesASystemRemindersToolResult(t *testing.T) {
+	cfg := fixtureConfig(t)
+	conversation, err := NewSourceReader(cfg).Read(context.Background(), claudeToolingFixtureRef)
+	if err != nil {
+		t.Fatalf("reading the tooling fixture: %v", err)
+	}
+	const callID = "toolu_01Tooling00000000000000003"
+	const reminder = "the workspace state was restored"
+	sawMixed := false
+	for _, message := range conversation.Messages {
+		if !message.IsSystem {
+			continue
+		}
+		for _, result := range message.ToolResults {
+			if result.ToolUseID != callID {
+				continue
+			}
+			sawMixed = true
+			if !strings.Contains(message.Content, reminder) {
+				t.Errorf("the fixture's mixed record content %q does not hold the reminder text, so the "+
+					"fixture does not model the shape this rule is about", message.Content)
+			}
+		}
+	}
+	if !sawMixed {
+		t.Fatalf("the tooling fixture holds no system-injected record carrying the tool result %s, so "+
+			"nothing pins what a writer must do with one (the fixture carries %d message(s))",
+			callID, len(conversation.Messages))
+	}
+
+	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if got := strings.Count(string(rollout.Data), reminder); got != 0 {
+		t.Errorf("the rollout holds %q %d time(s), the text of a record the provider flagged as "+
+			"system-injected, which is not something the conversation's user said", reminder, got)
+	}
+	outputs := 0
+	holding := 0
+	for _, line := range decodeRollout(t, rollout.Data) {
+		if payloadField(t, line, "type") != codexItemFunctionOutput {
+			continue
+		}
+		if payloadField(t, line, "call_id") != callID {
+			continue
+		}
+		outputs++
+		if got := payloadField(t, line, "output"); got != `"maxBackoffSeconds"` {
+			t.Errorf("the paired output = %q, want the text the tool printed, quotation marks included", got)
+		} else {
+			holding++
+		}
+	}
+	if outputs != 1 || holding != 1 {
+		t.Errorf("function_call_output records for %s = %d (holding the recorded text: %d), want exactly one",
+			callID, outputs, holding)
+	}
+	if loss := lossCount(t, rollout.Losses, "system_records"); loss.Count != 1 {
+		t.Errorf("system_records = %+v, want the mixed record's own text counted once", loss)
+	}
+}
+
 // TestSummarizeCountsEachRoleSeparately pins the role classification every counts report rests on:
 // user, assistant, system and tool are four roles, and a message recorded with one of them is counted
 // under that one alone.

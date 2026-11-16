@@ -17,7 +17,7 @@ below (the same digests; §4 shows the checks that compare them):
 ```
 $ sha256sum internal/ccc/testdata/fixtures/claude/*/*.jsonl internal/ccc/testdata/fixtures/codex/2026/05/04/*.jsonl
 2bd510821d4abf83235752eff81e0e9824d0c41b3d2d4b84956d1130992467b6  internal/ccc/testdata/fixtures/claude/-home-user-code-example-api/9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10.jsonl
-6dd85d06444bb1483f21519a014e803b8c10f03896372a7040834cdb35ffc31a  internal/ccc/testdata/fixtures/claude/-home-user-code-tooling/b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef.jsonl
+415bbc31a6cd541f9bc1ff2b99dc4532abe81f218e14dc5c97c7399f3b212873  internal/ccc/testdata/fixtures/claude/-home-user-code-tooling/b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef.jsonl
 d9957a8d6f5731a3df9ce1f175ffe9e228c71f041cd765b03f743852aad1d68b  internal/ccc/testdata/fixtures/codex/2026/05/04/rollout-2026-05-04T09-15-00-0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812.jsonl
 ```
 
@@ -25,8 +25,9 @@ The first fixture is the one goal 0001 recorded (dialogue, a tool call with its 
 boundary); the second is new here (`internal/ccc/fixturegen`) and carries the shapes a conversion has to
 report: a persisted reasoning trace beside its dialogue and one recorded alone (the provider projects an
 empty dialogue for it while its `Content` renders the trace), three tool calls whose results arrive as
-their own user lines — one marked `is_error`, one whose recorded text is itself a JSON string — a
-subagent turn marked `isSidechain`, and a provider system record.
+their own user lines — one marked `is_error`, one whose recorded text is itself a JSON string and arrives
+on a record the provider wrote as a system reminder (round 4 below) — a subagent turn marked
+`isSidechain`, and a provider system record.
 `TestFixturesMatchTheirGenerator` re-runs the generator and requires the committed bytes.
 
 ## 1. One documented, non-interactive command, with the native identity and resume command
@@ -126,8 +127,8 @@ The three blocks a consumer reads apart: `conversion.state` (`converted`), `inst
 (`installed`), `verification.load`/`verification.resume` (`verified` / `not-verified` /
 `not-requested`), each with its own `method` and `detail`, and `conversion.losses[]` naming every
 omitted or narrowed category with its count and reason (eighteen categories, always present, including the
-zero ones; the count is the one this repair round's §8 records, and a category was added to it there —
-the run blocks above it print seventeen, which is what the writer reported before the fix). The CLI's own
+zero ones — round 3's §8 added `malformed_source_lines`, and the §1 and §2 blocks here were recorded
+before that and print what the writer reported then; §3's runs are this tree's, and print eighteen). The CLI's own
 tests pin each state's wording, the `--json` document's shape and that
 diagnostics stay on stderr (`cmd/ccc/main_test.go`).
 
@@ -147,17 +148,17 @@ $ python3 scripts/codex-native-check.py --model-provider tencent-litellm --model
     --resume-prompt "Answer only from this conversation, one line each: which file did you read, and what was the attempt limit?"
 exit 0
 PASS: ccc builds with the flags upstream ships
-PASS: the conversion reports carried evidence and a non-zero loss category — 5 message(s), 1 tool call(s), 17 loss categories
-PASS: the session is installed under the target's own sessions tree — sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1e225-a986-7372-bf0f-2c51da684752.jsonl [hard-link]
-PASS: the target identity is new and is not the source's — 01a1e225-a986-7372-bf0f-2c51da684752, not one of the 1 id(s) already in the home
+PASS: the conversion reports carried evidence and a non-zero loss category — 5 message(s), 1 tool call(s), 18 loss categories
+PASS: the session is installed under the target's own sessions tree — sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1e272-4e16-70ca-8721-35c19c23a664.jsonl [hard-link]
+PASS: the target identity is new and is not the source's — 01a1e272-4e16-70ca-8721-35c19c23a664, not one of the 1 id(s) already in the home
 PASS: the installed file is one JSON object per line — 3970 bytes (the target's own read of it is the load check)
-PASS: the inherited reader reads the installed file back as what was written — ccc inspect codex:01a1e225-a986-7372-bf0f-2c51da684752: {"messages": 7, "user_messages": 2, "assistant_messages": 5, "system_messages": 0, "tool_messages": 0, "system_records": 1, "sidechain_messages": 0, "compact_boundaries": 1, "tool_calls": 1, "tool_results": 1}; conversion carried: 2 user message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies)
+PASS: the inherited reader reads the installed file back as what was written — ccc inspect codex:01a1e272-4e16-70ca-8721-35c19c23a664: {"messages": 7, "user_messages": 2, "assistant_messages": 5, "system_messages": 0, "tool_messages": 0, "system_records": 1, "sidechain_messages": 0, "compact_boundaries": 1, "tool_calls": 1, "tool_results": 1}; conversion carried: 2 user message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies)
 PASS: the source session is unchanged — sha256 2bd510821d4abf83… (fixture tree identical)
 PASS: the unrelated session in the target home is unchanged — sha256 59ff49ca30baf622…
-PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1e225-a986-7372-bf0f-2c51da684752 [legacy] cwd=/home/user/code/example-api
+PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1e272-4e16-70ca-8721-35c19c23a664 [legacy] cwd=/home/user/code/example-api
 PASS: the target's own view lists the converted turns — 5 item(s) in the reply's own turn list
-PASS: the reported resume command selects the installation home — resume_command='CODEX_HOME=<tmp>/codex-home <codex> resume 01a1e225-a986-7372-bf0f-2c51da684752' environment={'CODEX_HOME': '<tmp>/codex-home'}
-PASS: a real turn continues from the installed session — exit 0, session 3970 -> 70197 bytes
+PASS: the reported resume command selects the installation home — resume_command='CODEX_HOME=<tmp>/codex-home <codex> resume 01a1e272-4e16-70ca-8721-35c19c23a664' exec_resume_command="CODEX_HOME=<tmp>/codex-home <codex> exec resume 01a1e272-4e16-70ca-8721-35c19c23a664 '<prompt>'" environment={'CODEX_HOME': '<tmp>/codex-home'}
+PASS: a real turn continues from the installed session — exit 0, session 3970 -> 69832 bytes
 PASS: no pre-existing session in the target home changed — 0 pre-existing session file(s)
 13 check(s) passed, 0 failed, 0 skipped
 ```
@@ -167,7 +168,7 @@ harness) and the answer its own resume produced:
 
 ```
 the target harness's own view of the installed session:
-    thread 01a1e225-a986-7372-bf0f-2c51da684752 [legacy] provider=tencent-litellm
+    thread 01a1e272-4e16-70ca-8721-35c19c23a664 [legacy] provider=tencent-litellm
       turn rollout-2
         userMessage: Summarize the retry policy in internal/retry/policy.go.
         agentMessage: I will read the retry policy first.
@@ -177,8 +178,8 @@ the target harness's own view of the installed session:
         agentMessage: The cap is configured in internal/retry/config.go as maxBackoffSeconds.
 
 the turn's own output (the target's answer, as the harness printed it):
-    - File read: none — no files were actually read in this conversation (only file names were mentioned: `internal/retry/policy.go` and `internal/retry/config.go`).
-    - Attempt limit: four.
+    - File read: none — no file was actually read in this conversation; the earlier claims came only from user messages, not tool calls.
+    - Attempt limit: four — stated earlier in this conversation, but unverified against any file.
 ```
 
 Why the first fixture's answer has this shape (its own wording varies run to run): the fixture compacts
@@ -186,8 +187,9 @@ after its tool call, the conversion carries that boundary as the target's `compa
 applies that record to its own model-visible history — so the resumed turn continues from the source's
 own active context (the summary and the turns after the boundary), which is why this run could quote the
 attempt limit and the summarized file from the summary's own words and the cap's file from the
-post-boundary turn, while answering that no tool output appears in the conversation it continues — the
-file keeps the turns before the boundary, but the target does not continue from them. An earlier run of
+post-boundary turn, while answering that the earlier claims came from user messages rather than tool
+calls — the file keeps the turns before the boundary with their tool evidence, but the target does not
+continue from them. An earlier run of
 this same check, over a rollout written without the target's `event_msg` message records, could not see
 even the post-boundary turns and answered that no tool call exists in this conversation; that is what
 writing both record kinds buys. The second fixture has no boundary, and there the tool evidence reaches
@@ -199,24 +201,24 @@ $ python3 scripts/codex-native-check.py --session b6d93f07-2f5c-4a11-8e0d-3c7a91
     --resume-prompt "Answer only from this conversation, one line each: which tools appear, what did the first return, and what did the last one return?"
 exit 0
 PASS: ccc builds with the flags upstream ships
-PASS: the conversion reports carried evidence and a non-zero loss category — 5 message(s), 3 tool call(s), 17 loss categories
-PASS: the session is installed under the target's own sessions tree — sessions/2026/05/05/rollout-2026-05-05T10-00-00-01a1e225-b8ec-730d-bcbe-952e42cdf87a.jsonl [hard-link]
-PASS: the target identity is new and is not the source's — 01a1e225-b8ec-730d-bcbe-952e42cdf87a, not one of the 1 id(s) already in the home
+PASS: the conversion reports carried evidence and a non-zero loss category — 5 message(s), 3 tool call(s), 18 loss categories
+PASS: the session is installed under the target's own sessions tree — sessions/2026/05/05/rollout-2026-05-05T10-00-00-01a1e272-66ba-7f1d-99c8-a81ab277366b.jsonl [hard-link]
+PASS: the target identity is new and is not the source's — 01a1e272-66ba-7f1d-99c8-a81ab277366b, not one of the 1 id(s) already in the home
 PASS: the installed file is one JSON object per line — 4611 bytes (the target's own read of it is the load check)
-PASS: the inherited reader reads the installed file back as what was written — ccc inspect codex:01a1e225-b8ec-730d-bcbe-952e42cdf87a: {"messages": 8, "user_messages": 2, "assistant_messages": 6, "system_messages": 0, "tool_messages": 0, "system_records": 0, "sidechain_messages": 0, "compact_boundaries": 0, "tool_calls": 3, "tool_results": 3}; conversion carried: 2 user message(s), 3 tool call(s), 3 tool result(s), 0 boundary(ies)
-PASS: the source session is unchanged — sha256 6dd85d06444bb148… (fixture tree identical)
+PASS: the inherited reader reads the installed file back as what was written — ccc inspect codex:01a1e272-66ba-7f1d-99c8-a81ab277366b: {"messages": 8, "user_messages": 2, "assistant_messages": 6, "system_messages": 0, "tool_messages": 0, "system_records": 0, "sidechain_messages": 0, "compact_boundaries": 0, "tool_calls": 3, "tool_results": 3}; conversion carried: 2 user message(s), 3 tool call(s), 3 tool result(s), 0 boundary(ies)
+PASS: the source session is unchanged — sha256 415bbc31a6cd541f… (fixture tree identical)
 PASS: the unrelated session in the target home is unchanged — sha256 59ff49ca30baf622…
-PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1e225-b8ec-730d-bcbe-952e42cdf87a [legacy] cwd=/home/user/code/tooling
+PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1e272-66ba-7f1d-99c8-a81ab277366b [legacy] cwd=/home/user/code/tooling
 PASS: the target's own view lists the converted turns — 5 item(s) in the reply's own turn list
-PASS: the reported resume command selects the installation home — resume_command='CODEX_HOME=<tmp>/codex-home <codex> resume 01a1e225-b8ec-730d-bcbe-952e42cdf87a' environment={'CODEX_HOME': '<tmp>/codex-home'}
-PASS: a real turn continues from the installed session — exit 0, session 4611 -> 71230 bytes
+PASS: the reported resume command selects the installation home — resume_command='CODEX_HOME=<tmp>/codex-home <codex> resume 01a1e272-66ba-7f1d-99c8-a81ab277366b' exec_resume_command="CODEX_HOME=<tmp>/codex-home <codex> exec resume 01a1e272-66ba-7f1d-99c8-a81ab277366b '<prompt>'" environment={'CODEX_HOME': '<tmp>/codex-home'}
+PASS: a real turn continues from the installed session — exit 0, session 4611 -> 75672 bytes
 PASS: no pre-existing session in the target home changed — 0 pre-existing session file(s)
 13 check(s) passed, 0 failed, 0 skipped
 ```
 
 ```
 the target harness's own view of the installed session:
-    thread 01a1e225-b8ec-730d-bcbe-952e42cdf87a [legacy] provider=tencent-litellm
+    thread 01a1e272-66ba-7f1d-99c8-a81ab277366b [legacy] provider=tencent-litellm
       turn rollout-2
         userMessage: Check the retry policy and tell me the attempt limit.
         agentMessage: I will read the policy file first.
@@ -226,9 +228,9 @@ the target harness's own view of the installed session:
         agentMessage: internal/retry/config.go, as maxBackoffSeconds.
 
 the turn's own output (the target's answer, as the harness printed it):
-    - Tools that appear: `Read` and `Bash`.
-    - First (`Read` on `/home/user/code/tooling/internal/retry/policy.go`) returned `package retry` and `const MaxAttempts = 4`.
-    - Last (`Bash` running `python3 -c 'import json; print(json.dumps("maxBackoffSeconds"))'`) returned `"maxBackoffSeconds"`.
+    - Tools appearing: `Read` (once) and `Bash` (twice).
+    - First returned: the body of `policy.go` — `package retry` followed by `const MaxAttempts = 4`.
+    - Last returned: the exact output `"maxBackoffSeconds"` from the `python3 -c 'import json; print(json.dumps("maxBackoffSeconds"))'` call.
 ```
 
 All three tool calls, the first result's content, the second result's recorded *failure* and the third
@@ -287,7 +289,7 @@ Source facts for the tool-heavy fixture (`ccc inspect … --json`, unchanged fro
 
 ```
 counts:  {"messages": 13, "user_messages": 5, "assistant_messages": 8, "system_messages": 0, "tool_messages": 0,
-          "system_records": 0, "sidechain_messages": 1, "compact_boundaries": 0, "tool_calls": 3, "tool_results": 3}
+          "system_records": 1, "sidechain_messages": 1, "compact_boundaries": 0, "tool_calls": 3, "tool_results": 3}
 tools:   ["Bash", "Read"]
 ```
 
@@ -296,7 +298,7 @@ half:
 
 ```
 the target harness's own view of the installed session:
-    thread 01a1e225-b8ec-730d-bcbe-952e42cdf87a [legacy] provider=tencent-litellm
+    thread 01a1e272-66ba-7f1d-99c8-a81ab277366b [legacy] provider=tencent-litellm
       turn rollout-2
         userMessage: Check the retry policy and tell me the attempt limit.
         agentMessage: I will read the policy file first.
@@ -311,12 +313,12 @@ the target harness's own view of the installed session:
 | user "Check the retry policy and tell me the attempt limit." | `userMessage: Check the retry policy and tell me the attempt limit.` | carried |
 | assistant "I will read the policy file first." (with a persisted reasoning trace) | `agentMessage: I will read the policy file first.` | carried; the reasoning trace omitted (`reasoning_text ×2`, both traces) |
 | the reasoning-only turn (the provider projects an empty dialogue; `Content` renders the trace) | absent, and the trace's own words appear nowhere in the file | omitted (`reasoning_text ×2`); never written as the agent's dialogue |
-| `Read` call + its result ("package retry … MaxAttempts = 4") | reached the resumed turn ("First (`Read` on `/home/user/code/tooling/internal/retry/policy.go`) returned `package retry` and `const MaxAttempts = 4`.") and the file holds the pair | carried (`tool_calls ×3`, `tool_results ×3`) |
+| `Read` call + its result ("package retry … MaxAttempts = 4") | reached the resumed turn ("First returned: the body of `policy.go` — `package retry` followed by `const MaxAttempts = 4`.") and the file holds the pair | carried (`tool_calls ×3`, `tool_results ×3`) |
 | `Bash` call whose result the source marked `is_error` | the file holds the pair, and this run's answer names `Bash` among the tools that appear (its wording does not quote the failure) | carried; the recorded outcome has no target field (`tool_result_outcomes ×1`) |
-| `Bash` call whose result text is a JSON string (`"maxBackoffSeconds"`) | reached the resumed turn as that text, quotation marks included ("Last (`Bash` running `python3 -c 'import json; print(json.dumps("maxBackoffSeconds"))'`) returned `"maxBackoffSeconds"`.") | carried, decoded exactly once |
+| `Bash` call whose result text is a JSON string (`"maxBackoffSeconds"`), recorded on the same record as a system reminder | reached the resumed turn as that text, quotation marks included ("Last returned: the exact output `"maxBackoffSeconds"` …") | carried, decoded exactly once; the record's reminder text is not written (`system_records ×1`, round 4 below) |
 | assistant "The attempt limit is four." | `agentMessage: The attempt limit is four.` | carried |
 | a subagent turn marked `isSidechain` | absent | omitted (`sidechain_messages ×1`) |
-| the provider's `system` record | absent (the inherited reader drops it before the document, too) | `system_records ×0` |
+| the provider's `system` record | absent (the inherited reader drops it before the document, too) | not a message the source read produces, so no writer category counts it |
 | tool names `Read`/`Bash`, arguments verbatim | the calls are in the file with those names and inputs; the target's own tool set is Codex's | carried with caveat (`tool_name_vocabulary ×2`) |
 | the session's provider | recorded as the target's own effective provider | carried with caveat (`provider_binding ×1`) |
 
@@ -354,6 +356,7 @@ ok  	go.kenn.io/agentsview/internal/ccc/parity	2.257s
 | every loss category reported, and truly absent from the file | `TestCodexRolloutReportsEveryCategoryItKnows` |
 | a resume turn runs the executable the caller's path resolved to, even though the turn changes into the session's own working directory | `TestRunCodexTurnResolvesARelativeExecutableBeforeChangingDirectory` |
 | the tool role is never written as dialogue: a paired output travels as `function_call_output` alone, an orphan one travels nowhere | `TestCodexRolloutCarriesAToolRoleMessageOnlyThroughItsResult` |
+| a record the provider flagged as system-injected contributes its own text nowhere, while a tool result it carries travels once, paired with its call — through a hand-built document and through the committed fixture's real parse | `TestCodexRolloutWritesASystemRecordsToolEvidenceWithoutItsText`, `TestToolingFixtureCarriesASystemRemindersToolResult` |
 | id-less calls and results get paired deterministically, or are reported unpaired — for one, two and three outstanding calls | `TestCodexRolloutPairsAnIdLessResultWithItsCall` |
 | the provider binding comes from the caller and is reported | `TestCodexRolloutRecordsTheProviderBindingItIsGiven` |
 | fresh UUID v7 identity, one ordered timestamp run | `TestCodexRolloutGeneratesAFreshIdentity`, `TestCodexRolloutStampsRecordsInOneOrderedRun` |
@@ -378,7 +381,7 @@ gate: go=<home>/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/..
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 151 tests in 8.122s (rc=0)
+  PASS     selftest Ran 151 tests in 7.246s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 26 project-owned prefix(es); files seen by git: 5625 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     secrets  no leaks found in 70 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
@@ -394,8 +397,9 @@ fixture is a new file rather than a change to an existing record, and it is not 
 cases: the committed dumps still describe the same two fixtures, they were not re-recorded, and
 `internal/ccc/parity`'s offline test still compares them byte for byte. A later review round added two
 records to that second fixture — the reasoning-only turn and the tool result whose text is a JSON string
-— and it is still not an oracle case: its new digest (`6dd85d06…`, above) is the one both native runs
-report as `the source session is unchanged`, and `TestDumpMatchesTheRecordedUpstreamAgreement` (in the
+— and a still later one moved that result onto a record the provider wrote as a system reminder (§9);
+it is still not an oracle case: its digest (`415bbc31…`, above) is the one §3's tooling run reports as
+`the source session is unchanged`, and `TestDumpMatchesTheRecordedUpstreamAgreement` (in the
 gate's `test` step) still holds the recorded dumps against the unchanged first fixtures.
 `scripts/upstream-compare.py` itself was **not** re-run here (it needs network and a pristine
 checkout of the pin); its next run is the operator's, and the offline half of the same comparison passes.
@@ -582,9 +586,56 @@ target writer, which never truncates a source, so that line could be read as a c
 commits holds a *complete* malformed line, so its block shows the count without that clause (the CLI case
 asserts both shapes).
 
-The native-check blocks recorded in §3 print `17 loss categories`; they are the runs before this repair,
+The native-check blocks recorded in §3 then printed `17 loss categories`, the runs before this repair,
 and the script's own condition (`any(loss["count"] > 0)`, with the count printed for a reader) is
-unchanged, so a re-run prints eighteen. They were not re-run here: that check needs the Codex binary —
-and, for a real turn, model access — and is deliberately not a gate step. Nothing this round changed
-touches what it verifies (the install, the loader's read-back, the resume invocation and the reported
-commands); its offline half is the gate's `test` step, which passes on this tree (§6).
+unchanged. Round 4 re-ran that check on both fixtures, so §3 now holds this tree's runs and they print
+eighteen; round 3 itself did not re-run it (that check needs the Codex binary — and, for a real turn,
+model access — and is deliberately not a gate step), and nothing round 3 changed touched what the check
+verifies beyond the printed count. Its offline half is the gate's `test` step, which passes on this tree
+(§6).
+
+## 9. Repair round 4 — a system-injected record's tool evidence travels
+
+The round-4 review found one defect: `writeMessage` returned on a record the provider flagged as
+system-injected *before* processing the tool evidence the same record can carry, so the result of an
+earlier carried call disappeared without a tool-result loss category (only `system_records` rose). The
+inherited Claude parser keeps that shape — `internal/parser`'s
+`TestParseClaudeSession_SystemReminderPromotionPreservesToolResults` asserts `IsSystem` *and* a populated
+`ToolResults` on one message — and the writer's branch suppressed both.
+
+`writeMessage` now counts the record's own text as omitted and calls `writeToolEvidence`, the same helper
+the dialogue path calls (extracted from that path unchanged): the text is not written, the calls and
+results the record holds are. `system_records`'s detail says exactly that split. The regression is pinned
+twice: `TestCodexRolloutWritesASystemRecordsToolEvidenceWithoutItsText` on a hand-built document (the
+output travels once, paired with its call; both records' texts are counted) and
+`TestToolingFixtureCarriesASystemRemindersToolResult` through the committed fixture's real parse (the
+third tool result now arrives on the mixed record, and the reminder's own words appear nowhere in the
+rollout).
+
+The second Claude fixture changed with it: its third tool result moved from its own plain user line to a
+`claudeSystemReminderToolResult` record (a text block holding only `<system-reminder>…</system-reminder>`
+plus the `tool_result` block), so the committed bytes exercise the parser's own mixed shape. New digest
+`sha256 415bbc31a6cd541f9bc1ff2b99dc4532abe81f218e14dc5c97c7399f3b212873`, reproduced by
+`TestFixturesMatchTheirGenerator`; the conversion's own bytes are unchanged (4611), because the same
+single `function_call_output` is now written from the mixed record instead of the superseded plain line.
+§3 re-ran the native check on both fixtures on this tree (18 loss categories each; the tooling run's
+resumed turn still quotes the third output, `"maxBackoffSeconds"`, quotation marks included).
+
+Each rule of the touched surface was pinned by executing one mutation, reverting the line, running the
+tests that claim it, and restoring the file from a byte-identical copy (`internal/ccc/codex_target.go`
+`3ab9b891…` and `internal/ccc/fixturegen/main.go` `98b63928…` compared after every restore; the fixture
+regenerated back to `415bbc31…`):
+
+| Rule | Mutation (the fix's line reverted) | Observed |
+| --- | --- | --- |
+| a system-injected record's own text is never written as dialogue | the branch's guard narrowed to `IsSystem && no tool evidence`, so a mixed record fell through to the dialogue path | `TestCodexRolloutWritesASystemRecordsToolEvidenceWithoutItsText` FAIL: `the rollout holds "remember the workspace state"…` plus its carried counts; `TestToolingFixtureCarriesASystemRemindersToolResult` FAIL: `the rollout holds "the workspace state was restored" 2 time(s)…` and `system_records … Count:0 …, want … once` |
+| the tool evidence such a record carries is written, once, paired with its call | `b.writeToolEvidence(message)` dropped from the branch (the pre-fix `return`) | the same two cases FAIL (`the recorded output appears 0 time(s)`, `function_call_output records for toolu_1 = 0`) and `TestContinueKeepsTheSourceAndItsDirectoryIntactForBothFixtures` FAIL: `carried = {… ToolCalls:3 ToolResults:2 …}, want all three calls and all three results` |
+| the record is counted as omitted under `system_records` | `b.lossSystemRecords++` dropped | `TestCodexRolloutWritesASystemRecordsToolEvidenceWithoutItsText` and `TestToolingFixtureCarriesASystemRemindersToolResult` FAIL: `system_records … Count:0` |
+| the adjacent rule the extraction sits beside: an archive summary is written only for a call with no recorded result of its own | `callHasRecordedResult` → `return false` | `TestCodexRolloutWritesAnArchiveSummaryOnlyForACallWithoutResults` FAIL: 6 `function_call_output` records (`toolu_1` twice, the aggregate as its own outcome), want 4; `TestContinueFromTheArchiveWritesEachRecordedOutcomeOnce` FAIL: `carried = {… ToolResults:4 …}` and the structure check names the duplicated and absent results |
+| the committed fixture really holds the mixed shape the regression claims (else the regression passes vacuously) | the generator's mixed-record call reverted to the plain `ClaudeToolResultUserJSON` line, fixtures regenerated | `TestToolingFixtureCarriesASystemRemindersToolResult` FAIL: `the tooling fixture holds no system-injected record carrying the tool result toolu_01Tooling00000000000000003, so nothing pins what a writer must do with one` |
+
+Tests, gate: `internal/ccc` top-level cases 103 → **105** (`cmd/ccc` 20, unchanged; the suite's own
+`selftest` step 151, unchanged). `python3 scripts/gate.py` on the final tree — **exit 0, `GATE: PASS`**
+(not partial; the block is the one in §6). No other number in this record changed: the fixture digests of
+§1's two other files, the target file's byte count for the first fixture, and the recorded §1/§2 runs
+stand as the runs they were.

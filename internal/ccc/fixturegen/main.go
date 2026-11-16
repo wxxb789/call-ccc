@@ -32,9 +32,10 @@ const (
 	claudeVersion   = "1.0.30"
 
 	// The second Claude fixture carries the shapes a conversion has to report: a persisted reasoning
-	// trace, a subagent's turn recorded in the same transcript, a provider system record, and a tool
-	// result the source marked as an error. It carries no compaction boundary, so the ordinary turns a
-	// resumed target reads from it are the whole conversation.
+	// trace, a subagent's turn recorded in the same transcript, a provider system record, a tool result
+	// the source marked as an error, and a tool result the provider wrote on the same record as a system
+	// reminder. It carries no compaction boundary, so the ordinary turns a resumed target reads from it
+	// are the whole conversation.
 	claudeToolingSessionID = "b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef"
 	claudeToolingProject   = "-home-user-code-tooling"
 	claudeToolingCwd       = "/home/user/code/tooling"
@@ -147,7 +148,8 @@ func claudeSession() string {
 // claudeToolingSession is a Claude Code transcript for the tool-heavy shapes a conversion reports: a
 // persisted reasoning trace beside its dialogue, one recorded alone, two tool calls whose results arrive
 // as their own user lines (one of them recorded as an error), a third whose recorded result is itself a
-// JSON string literal, a subagent turn marked isSidechain, and a provider system record.
+// JSON string literal and arrives on a record the provider wrote as a system reminder, a subagent turn
+// marked isSidechain, and a provider system record.
 func claudeToolingSession() string {
 	readCall := []map[string]any{{
 		"type": "tool_use",
@@ -214,11 +216,15 @@ func claudeToolingSession() string {
 			"Then name the file that holds the cap.", "2026-05-05T10:00:12.000Z")).
 		AddRaw(claudeToolUse(jsonCall, "2026-05-05T10:00:12.500Z", "bbbbbbbb-0000-4000-8000-000000000006")).
 		// The tool printed a JSON-encoded value, so the text the result records is itself a JSON string:
-		// a conversion that decoded the already-decoded output would strip these quotation marks.
-		AddRaw(testjsonl.ClaudeToolResultUserJSON(
+		// a conversion that decoded the already-decoded output would strip these quotation marks. This
+		// result also arrives on a record the provider wrote as a system reminder -- the provider's own
+		// mixed shape -- so a conversion that suppressed that record wholesale would drop this output.
+		AddRaw(claudeSystemReminderToolResult(
 			"toolu_01Tooling00000000000000003",
 			`"maxBackoffSeconds"`,
 			"2026-05-05T10:00:12.750Z",
+			"bbbbbbbb-0000-4000-8000-000000000007",
+			"bbbbbbbb-0000-4000-8000-000000000006",
 		)).
 		AddRaw(testjsonl.ClaudeAssistantJSON(
 			[]map[string]any{{"type": "text", "text": "internal/retry/config.go, as maxBackoffSeconds."}},
@@ -287,6 +293,27 @@ func claudeErrorToolResult(toolUseID, resultContent, timestamp string) string {
 				"content":     resultContent,
 				"is_error":    true,
 			}},
+		},
+	})
+}
+
+// claudeSystemReminderToolResult is a Claude user line the provider wrote as one record holding a system
+// reminder and a tool result: the reminder is the record's whole text block, which is what classifies the
+// line as system-injected, and the tool_result block answers a call an earlier line recorded. The
+// inherited parser keeps both on the one message -- IsSystem set with its ToolResults populated
+// (internal/parser's TestParseClaudeSession_SystemReminderPromotionPreservesToolResults) -- so a
+// conversion that suppressed the record wholesale would drop a recorded tool output.
+func claudeSystemReminderToolResult(toolUseID, resultContent, timestamp, uuid, parentUUID string) string {
+	return marshal(map[string]any{
+		"type":       "user",
+		"timestamp":  timestamp,
+		"uuid":       uuid,
+		"parentUuid": parentUUID,
+		"message": map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": "<system-reminder>the workspace state was restored</system-reminder>"},
+				{"type": "tool_result", "tool_use_id": toolUseID, "content": resultContent, "is_error": false},
+			},
 		},
 	})
 }
