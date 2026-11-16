@@ -189,6 +189,56 @@ func TestContinueConvertsInstallsAndReadsBackTheFixture(t *testing.T) {
 	}
 }
 
+// TestContinueReportCarriesNoSourceContent pins the content rule for a conversion's own report: the
+// core design forbids logging conversation bodies, tool arguments or full prompts by default, and the
+// opening prompt's preview the inspection summary carries would put up to 240 bytes of source text — the
+// whole prompt, when it is short — into every continuation report, machine-readable ones included. The
+// preview stays the inspection surface's own field (an inspection is the command that asks to see the
+// session); a conversion report carries identity, shape and losses, never message text.
+func TestContinueReportCarriesNoSourceContent(t *testing.T) {
+	ctx := context.Background()
+	cfg := fixtureConfig(t)
+	conversation, err := NewSourceReader(cfg).Read(ctx, claudeFixtureRef)
+	if err != nil {
+		t.Fatalf("reading the fixture: %v", err)
+	}
+	result, err := Continue(ctx, ContinueOptions{
+		Ref:          claudeFixtureRef,
+		Target:       TargetCodex,
+		Config:       cfg,
+		TargetHome:   t.TempDir(),
+		TargetBinary: missingTargetBinary,
+	})
+	if err != nil {
+		t.Fatalf("continuing: %v", err)
+	}
+	if result.Source == nil {
+		t.Fatal("the report carries no source block")
+	}
+	if result.Source.FirstUserMessage != "" {
+		t.Errorf("the report carries the opening prompt's preview %q", result.Source.FirstUserMessage)
+	}
+	// The rule is about the serialized report: the source's own words are taken from the read, so the
+	// assertion does not repeat fixture content, and it covers every message text the report could have
+	// picked up rather than the preview field alone.
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshalling the report: %v", err)
+	}
+	if strings.Contains(string(encoded), "first_user_message") {
+		t.Errorf("the JSON report carries a first_user_message field:\n%s", encoded)
+	}
+	for _, message := range conversation.Messages {
+		text := strings.TrimSpace(message.Content)
+		if text == "" {
+			continue
+		}
+		if strings.Contains(string(encoded), text) {
+			t.Errorf("the JSON report carries source message text %q:\n%s", text, encoded)
+		}
+	}
+}
+
 // TestContinueKeepsTheSourceAndItsDirectoryIntactForBothFixtures pins the property for a second
 // transcript shape as well: a conversion of a session with thinking, a sidechain turn and an errored
 // tool result must leave the whole fixture tree byte-for-byte as it found it.
@@ -881,6 +931,183 @@ func TestStructureVerificationNamesWhatTheFileDoesNotHold(t *testing.T) {
 	}
 	if !strings.Contains(verification.Detail, "dialogue") {
 		t.Errorf("the difference report does not name the category: %q", verification.Detail)
+	}
+}
+
+// TestContinueOmitsOutputTheInheritedReaderCannotReadBack pins the rule that made an LF-only tool result
+// a false failure: a conversion may only write evidence its own round-trip check can read back, because
+// that check — not the source — is the run's verdict about the installed file. The inherited Codex reader
+// trims a function_call_output's text and records no result at all for an output that holds only
+// whitespace, so such an output is omitted under its own loss category instead of being written and then
+// reported as missing from the file the conversion had just written (which failed the run even with
+// --verify none, since the structural check always runs).
+//
+// The transcript is the native shape: the source reader really parses the LF-only result, so this test
+// fails if either the writer writes it or the reader's normalisation reads as a difference.
+func TestContinueOmitsOutputTheInheritedReaderCannotReadBack(t *testing.T) {
+	cfg, _ := claudeBashTranscript(t, "\n", false)
+	result, err := Continue(context.Background(), ContinueOptions{
+		Ref:          claudeFixtureRef,
+		Target:       TargetCodex,
+		Config:       cfg,
+		TargetHome:   t.TempDir(),
+		TargetBinary: missingTargetBinary,
+		Verify:       VerifyNone,
+	})
+	if err != nil {
+		t.Fatalf("continuing: %v", err)
+	}
+	if result.Conversion.Carried.ToolResults != 0 {
+		t.Errorf("carried = %+v, want no tool result: the recorded output holds only whitespace",
+			result.Conversion.Carried)
+	}
+	if loss := lossCount(t, result.Conversion.Losses, "whitespace_only_tool_results"); loss.Count != 1 ||
+		loss.Disposition != DispositionOmitted {
+		t.Errorf("whitespace_only_tool_results = %+v, want the LF-only output counted as omitted", loss)
+	}
+	if loss := lossCount(t, result.Conversion.Losses, "empty_tool_results"); loss.Count != 0 {
+		t.Errorf("empty_tool_results = %+v, want 0: the read held text, it was only whitespace", loss)
+	}
+	installed, err := os.ReadFile(result.Installation.Path)
+	if err != nil {
+		t.Fatalf("reading the installed session: %v", err)
+	}
+	if strings.Contains(string(installed), codexItemFunctionOutput) {
+		t.Errorf("the installed session holds a %s record the inherited reader cannot read back:\n%s",
+			codexItemFunctionOutput, installed)
+	}
+	if result.Verification.Structure.State != VerificationStateVerified {
+		t.Fatalf("structure = %+v, want the installed file to read back as what was written",
+			result.Verification.Structure)
+	}
+	if got := result.Verification.Structure.ReadBack.ToolResults; got != 0 {
+		t.Errorf("read-back tool results = %d, want none: no result was written", got)
+	}
+	for _, warning := range result.Warnings {
+		if strings.Contains(warning, "does not hold every piece of evidence") {
+			t.Errorf("the report warns that the installed session lacks written evidence: %q", warning)
+		}
+	}
+}
+
+// TestContinueOmitsDialogueTheInheritedReaderReadsAsNothing pins the same rule for dialogue text: the
+// target's own reader reads a message whose text is blank after trimming as no message at all
+// (internal/parser's handleResponseItem returns before appending one), so a whitespace-only dialogue
+// written as a message would be in the file and absent from every read of it — the round-trip check
+// would report the file as missing evidence it holds, and the run would fail on a source whose recorded
+// text was only whitespace. The transcript is the native shape this really arrives in: a tool-result
+// record that also carries a whitespace-only text block (the inherited parser's blank-message guard
+// drops a blank record only while it carries no tool evidence), so the parser keeps that text as the
+// record's dialogue. The text is omitted and named, and the tool evidence on the same record still
+// travels.
+func TestContinueOmitsDialogueTheInheritedReaderReadsAsNothing(t *testing.T) {
+	cfg, _ := writeClaudeTranscript(t, claudeTranscriptShape{resultOutput: "PASS\n", blankDialogue: true})
+	result, err := Continue(context.Background(), ContinueOptions{
+		Ref:          claudeFixtureRef,
+		Target:       TargetCodex,
+		Config:       cfg,
+		TargetHome:   t.TempDir(),
+		TargetBinary: missingTargetBinary,
+		Verify:       VerifyNone,
+	})
+	if err != nil {
+		t.Fatalf("continuing: %v", err)
+	}
+	if loss := lossCount(t, result.Conversion.Losses, "whitespace_only_dialogue"); loss.Count != 1 ||
+		loss.Disposition != DispositionOmitted {
+		t.Errorf("whitespace_only_dialogue = %+v, want the blank dialogue counted as omitted", loss)
+	}
+	if result.Conversion.Carried.Messages != 1 {
+		t.Errorf("carried = %+v, want only the conversation's own first turn written",
+			result.Conversion.Carried)
+	}
+	// The record's tool evidence is not lost with the text it carried: the call and its output are
+	// written, paired, and read back.
+	if result.Conversion.Carried.ToolCalls != 1 || result.Conversion.Carried.ToolResults != 1 {
+		t.Errorf("carried = %+v, want the call and its result written", result.Conversion.Carried)
+	}
+	if result.Verification.Structure.State != VerificationStateVerified {
+		t.Fatalf("structure = %+v, want the installed file to read back as what was written",
+			result.Verification.Structure)
+	}
+}
+
+// TestContinueRoundTripsACompactionSummaryTheReaderTrims pins the last of the target reader's own
+// normalisations on a conversion's evidence: it trims a compacted record's summary (internal/parser's
+// handleCompacted), so a source summary that ends in whitespace is the same evidence to that read as
+// one that does not. The comparison trims both sides, exactly as it does for a result's output, because
+// comparing the untrimmed strings would report the reader's normalisation as a difference the file does
+// not have — a false structural failure for a summary the provider wrote verbatim (the inherited Claude
+// parser joins a compact summary's text blocks without trimming). The summary is carried as recorded;
+// the file is not rewritten, and the check does not fail.
+func TestContinueRoundTripsACompactionSummaryTheReaderTrims(t *testing.T) {
+	const summary = "Summary of the work so far.\n"
+	cfg, _ := writeClaudeTranscript(t, claudeTranscriptShape{
+		resultOutput:   "PASS\n",
+		compactSummary: summary,
+	})
+	result, err := Continue(context.Background(), ContinueOptions{
+		Ref:          claudeFixtureRef,
+		Target:       TargetCodex,
+		Config:       cfg,
+		TargetHome:   t.TempDir(),
+		TargetBinary: missingTargetBinary,
+		Verify:       VerifyNone,
+	})
+	if err != nil {
+		t.Fatalf("continuing: %v", err)
+	}
+	if result.Conversion.Carried.CompactionBoundaries != 1 {
+		t.Fatalf("carried = %+v, want the compaction boundary written", result.Conversion.Carried)
+	}
+	if result.Verification.Structure.State != VerificationStateVerified {
+		t.Fatalf("structure = %+v, want the installed file to read back as what was written",
+			result.Verification.Structure)
+	}
+	installed, err := os.ReadFile(result.Installation.Path)
+	if err != nil {
+		t.Fatalf("reading the installed session: %v", err)
+	}
+	if !strings.Contains(string(installed), `Summary of the work so far.\n`) {
+		t.Errorf("the installed session does not hold the summary exactly as the source recorded it:\n%s",
+			installed)
+	}
+}
+
+// TestCodexRoundTripFoldsAnEmptyArgumentObjectAsNoArguments pins the call-side normalisation of the
+// round-trip comparison: the writer fills a call whose source recorded no input object with "{}" (the
+// target's call record needs an arguments string, and the loss report says the object is an empty one),
+// and the inherited reader drops an empty argument object while reading, so the two spellings are the
+// same evidence to that read and the comparison folds them onto one key. Without the folding, a
+// converted call with an empty recorded input would be reported as a difference the file does not have:
+// the structural check would fail on a conversion that is exactly what the format holds.
+func TestCodexRoundTripFoldsAnEmptyArgumentObjectAsNoArguments(t *testing.T) {
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask"},
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "[Read: /x]",
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_1", Name: "Read"}}},
+		Message{Ordinal: 2, Role: string(parser.RoleUser),
+			ToolResults: []ToolResult{{ToolUseID: "toolu_1", ContentRaw: "the read's output"}}},
+	)
+	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if loss := lossCount(t, rollout.Losses, "empty_tool_inputs"); loss.Count != 1 {
+		t.Fatalf("empty_tool_inputs = %+v, want the call with no recorded input counted", loss)
+	}
+	home := t.TempDir()
+	if _, _, err := InstallCodexRollout(rollout, home); err != nil {
+		t.Fatalf("installing: %v", err)
+	}
+	verification, err := VerifyCodexRolloutStructure(context.Background(),
+		filepath.Join(home, codexSessionsSubdir), rollout, fixtureConfig(t))
+	if err != nil {
+		t.Fatalf("verifying: %v", err)
+	}
+	if verification.State != VerificationStateVerified {
+		t.Fatalf("structure = %+v, want the empty-input call to read back as the call that was written",
+			verification)
 	}
 }
 

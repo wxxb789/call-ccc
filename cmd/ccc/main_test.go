@@ -758,6 +758,52 @@ func TestContinueJSONDistinguishesConversionInstallationAndVerification(t *testi
 	}
 }
 
+// claudeOpeningPrompt reads the first user record's own text out of a Claude transcript: the words a
+// continuation report must not carry. It is read from the fixture rather than repeated here, the way the
+// fixture's id is.
+func claudeOpeningPrompt(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	first, _, _ := strings.Cut(string(data), "\n")
+	var record struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(first), &record); err != nil {
+		t.Fatalf("decoding the transcript's first record: %v", err)
+	}
+	if strings.TrimSpace(record.Message.Content) == "" {
+		t.Fatalf("the transcript's first record carries no user text: %s", first)
+	}
+	return record.Message.Content
+}
+
+// TestContinueJSONCarriesNoSourceContent pins the wire half of the content rule: ordinary `ccc continue
+// --json` output — installed and dry run, the reports a caller collects — must not carry the source's
+// opening prompt. The core design forbids logging conversation bodies or full prompts by default, and the
+// preview `ccc inspect` shows is that command's own field (it is the one that asks to see the session).
+func TestContinueJSONCarriesNoSourceContent(t *testing.T) {
+	continueEnvironment(t)
+	sessionID, path := claudeFixture(t)
+	prompt := claudeOpeningPrompt(t, path)
+	for _, extra := range [][]string{{"--json"}, {"--dry-run", "--json"}} {
+		code, stdout, stderr := runCLI(t, continueArgs(sessionID, extra...)...)
+		if code != exitOK {
+			t.Fatalf("exit %d for %v, stderr: %s", code, extra, stderr)
+		}
+		if strings.Contains(stdout, "first_user_message") {
+			t.Errorf("the %v report carries a first_user_message field:\n%s", extra, stdout)
+		}
+		if strings.Contains(stdout, prompt) {
+			t.Errorf("the %v report carries the source's opening prompt %q:\n%s", extra, prompt, stdout)
+		}
+	}
+}
+
 // TestContinueHumanOutputNamesTheResumeCommand pins the human block: an operator reads the target
 // identity, where it was installed and the command that resumes it without opening the JSON.
 func TestContinueHumanOutputNamesTheResumeCommand(t *testing.T) {

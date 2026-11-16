@@ -825,3 +825,29 @@ supersede it with a newer one and say which it supersedes.
 - **Settled by:** whether the operator prefers the shortest block (the state word alone, or nothing) over
   one that names, on every identity line, that no session was published — at the cost of a reader who
   copies a resume command from a failed run having to notice the installation line above it.
+
+## Q-0002-16 — How a conversion reports text the target's reader reads as nothing
+
+- **Status:** resolved (default taken)
+- **Question:** round 7's review found a Claude tool output that holds only whitespace (`"\n"`) written as
+  a `function_call_output`, counted as carried and expected by the round-trip comparison — while the
+  inherited Codex reader reads an output that is only whitespace as no result at all, so the installed
+  session failed its own structural check and the run exited nonzero even with `--verify none`. An
+  executed probe found the same class twice more on the same surface: a whitespace-only dialogue (a
+  message the reader reads as no message) and a compact summary whose trailing whitespace the reader
+  trims, which the comparison compared untrimmed. Should such text be written anyway — it is what the
+  source recorded, and the target's file format can hold it — with the check disclosing that it cannot be
+  read back, or should it be omitted and named?
+- **Default taken:** text the target's *own* reader reads as nothing is not written and is named: two
+  omitted categories (`whitespace_only_tool_results`, `whitespace_only_dialogue`, both counted only for a
+  result or a record the conversion does not write), and a compaction boundary compared by its trimmed
+  summary exactly as a result is compared by its trimmed output. The alternative leaves the run's "the
+  installed file holds what was written" verdict resting on a comparison that has to skip part of what was
+  written, so the report would count evidence as carried that no read of the file can find — the shape
+  round 5's review already rejected for omitted results.
+- **Reversal:** write the text and report a `carried-with-caveat` category instead ("in the file, absent
+  from every read of it"), with the round-trip comparison excluding those records from the evidence it
+  expects; the writer's counts and the target file change, the states do not.
+- **Settled by:** whether the operator prefers the source's bytes in the file even where the format's own
+  reader cannot see them, at the cost of a structural check whose `verified` no longer covers every record
+  the report counts as carried.

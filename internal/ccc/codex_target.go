@@ -351,23 +351,25 @@ type codexRolloutBuilder struct {
 	// the source was partial.
 	sourceFidelity Fidelity
 
-	lossReasoning         int
-	lossSidechain         int
-	lossSystemRecords     int
-	lossToolRoleMessages  int
-	lossUnclassifiedRoles int
-	lossEmptyUserMessages int
-	lossNonDialogueText   int
-	lossUnpairedResults   int
-	lossUnresolved        int
-	lossOutcomes          int
-	lossPreBoundary       int
-	lossEmptyInputs       int
-	lossGeneratedIDs      int
-	lossEmptyResults      int
-	lossResultBlocks      int
-	foreignToolNames      map[string]struct{}
-	toolNameOrder         []string
+	lossReasoning          int
+	lossSidechain          int
+	lossSystemRecords      int
+	lossToolRoleMessages   int
+	lossUnclassifiedRoles  int
+	lossEmptyUserMessages  int
+	lossWhitespaceDialogue int
+	lossNonDialogueText    int
+	lossUnpairedResults    int
+	lossUnresolved         int
+	lossOutcomes           int
+	lossPreBoundary        int
+	lossEmptyInputs        int
+	lossGeneratedIDs       int
+	lossEmptyResults       int
+	lossWhitespaceResults  int
+	lossResultBlocks       int
+	foreignToolNames       map[string]struct{}
+	toolNameOrder          []string
 
 	// pendingCalls holds the calls this conversion carried that no result has answered yet. It is what
 	// an id-less result may be paired with, and only while exactly one call is outstanding: with two
@@ -491,6 +493,15 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 		}
 	} else {
 		switch text := dialogueText(message); {
+		case text != "" && strings.TrimSpace(text) == "":
+			// The source recorded dialogue text that holds only whitespace. The target's own reader
+			// reads a message whose text is blank after trimming as no message at all (internal/parser's
+			// handleResponseItem returns before appending one), so a written record would be in the file
+			// and absent from every read of it -- including this conversion's own round-trip check,
+			// which would then report the file as missing evidence it holds. The text is not written and
+			// is named here; the record's tool evidence is still written below, because a call and its
+			// output carry no role of their own.
+			b.lossWhitespaceDialogue++
 		case text != "" && role == parser.RoleUser:
 			b.startTurn(message.Timestamp)
 			b.messageItem(ItemUser, codexRoleUser, codexContentInputText, text, message.Timestamp)
@@ -717,11 +728,22 @@ func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time) {
 	}
 	text, blocks := resultText(result)
 	b.lossResultBlocks += blocks
-	if text == "" {
-		// The target's output field carries text; a result with none leaves nothing to write, and an
-		// empty string would read as "the tool returned nothing" rather than "the source recorded no
-		// output text".
-		b.lossEmptyResults++
+	if strings.TrimSpace(text) == "" {
+		if text == "" {
+			// The target's output field carries text; a result with none leaves nothing to write, and an
+			// empty string would read as "the tool returned nothing" rather than "the source recorded no
+			// output text".
+			b.lossEmptyResults++
+		} else {
+			// The read holds text, but every byte of it is whitespace. The inherited Codex reader trims a
+			// function_call_output's text and reads an output that is only whitespace as no result at all
+			// (internal/parser's parseCodexFunctionOutput, whose handler returns before recording a
+			// result), so a written record would be in the file and absent from every read of it --
+			// including this conversion's own round-trip check, which would report the file as missing
+			// evidence it holds. The omission is counted under its own category rather than as a result
+			// that recorded no text.
+			b.lossWhitespaceResults++
+		}
 		return
 	}
 	// The two carried-with-caveat categories are counted here, past every omission guard: a result this
@@ -784,7 +806,8 @@ func (b *codexRolloutBuilder) losses() []Loss {
 		emptyResultsDetail = "the target's function_call_output carries output text only; a result " +
 			"this read holds no text for is not written, because an empty string would read as an " +
 			"empty tool output. A content field can hold no text at all, or hold only blocks this " +
-			"target has no field for (counted above as unrepresentable_result_blocks)"
+			"target has no field for (counted above as unrepresentable_result_blocks); output that " +
+			"holds only whitespace is counted under its own category (whitespace_only_tool_results)"
 	}
 	preBoundaryDetail := "no compaction boundary was carried"
 	if b.sawBoundary {
@@ -864,6 +887,16 @@ func (b *codexRolloutBuilder) losses() []Loss {
 				"words, so the text is not written",
 		},
 		{
+			Category:    "whitespace_only_dialogue",
+			Disposition: DispositionOmitted,
+			Count:       b.lossWhitespaceDialogue,
+			Detail: "the source recorded dialogue text that holds nothing but whitespace; the inherited " +
+				"Codex reader reads a message whose text is blank after trimming as no message at all, " +
+				"so a written record would be in the file but absent from every read of it and the " +
+				"round-trip check would report evidence the file holds as missing. The text is not " +
+				"written, and any tool evidence the same record carries still is",
+		},
+		{
 			Category:    "unpaired_tool_results",
 			Disposition: DispositionOmitted,
 			Count:       b.lossUnpairedResults,
@@ -875,6 +908,17 @@ func (b *codexRolloutBuilder) losses() []Loss {
 			Disposition: DispositionOmitted,
 			Count:       b.lossEmptyResults,
 			Detail:      emptyResultsDetail,
+		},
+		{
+			Category:    "whitespace_only_tool_results",
+			Disposition: DispositionOmitted,
+			Count:       b.lossWhitespaceResults,
+			Detail: "the source recorded output text that holds nothing but whitespace; the inherited " +
+				"Codex reader trims a function_call_output's text and reads an output that is only " +
+				"whitespace as no result at all, so a written record would be in the file but absent " +
+				"from every read of it and the round-trip check would report evidence the file holds " +
+				"as missing. The output is not written, and it is named here rather than reported as a " +
+				"result that recorded no text",
 		},
 		{
 			Category:    "unrepresentable_result_blocks",

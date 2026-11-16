@@ -207,6 +207,20 @@ type ContinueResult struct {
 	Warnings      []string           `json:"warnings,omitempty"`
 }
 
+// conversionSourceReport summarises the source for a conversion's own report.
+//
+// It is reportFrom without the opening prompt's preview. A conversion report is a status report a
+// caller collects, not an inspection of the source's content, and the core design forbids logging
+// conversation bodies, tool arguments or full prompts by default; the preview reportFrom fills (up to
+// firstMessageBytes of source text, the whole prompt when it is short) is display text for the
+// inspection surface, which is the command that asks to see the session. The rule lives here rather
+// than inside reportFrom so an inspection keeps its own documented preview.
+func conversionSourceReport(conversation Conversation) SessionReport {
+	report := reportFrom(conversation)
+	report.FirstUserMessage = ""
+	return report
+}
+
 // Continue converts a source session into a new native session of the target harness, installs it, and
 // reports conversion, installation and native verification as three separate states.
 //
@@ -259,7 +273,7 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 	if err != nil {
 		return ContinueResult{}, err
 	}
-	result.Source = new(reportFrom(conversation))
+	result.Source = new(conversionSourceReport(conversation))
 	result.Warnings = append(result.Warnings, readWarnings...)
 
 	// The source's digest is taken before anything is written and compared again afterwards: the

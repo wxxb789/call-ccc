@@ -229,8 +229,11 @@ func codexReadBack(conversation Conversation) CodexReadBack {
 // compareCodexRoundTrip names every way the file's read-back differs from the target document.
 //
 // The comparison is by evidence, not by record shape: the target's reader pairs a call with its output
-// onto one message, trims a result's text and drops an empty argument object, so those are the reader's
-// own normalisations and not differences in what the file holds. What it cannot normalise is a missing
+// onto one message, trims a result's output, trims a compacted record's summary and drops an empty
+// argument object, so those are the reader's own normalisations and not differences in what the file
+// holds. A message the reader reads as no message at all (its text is blank after trimming) is not one
+// the writer may count as carried: the writer omits such text and names it, and a document that claims
+// one is reported here as the missing message it is. What the comparison cannot normalise is a missing
 // or altered message, call, result or boundary, which is what this reports.
 func compareCodexRoundTrip(rollout CodexRollout, readBack Conversation) []string {
 	var differences []string
@@ -247,7 +250,7 @@ func compareCodexRoundTrip(rollout CodexRollout, readBack Conversation) []string
 		case ItemToolResult:
 			intendedResults = append(intendedResults, roundTripResultKey(item.CallID, item.Text))
 		case ItemCompactionBoundary:
-			intendedBoundaries = append(intendedBoundaries, item.Text)
+			intendedBoundaries = append(intendedBoundaries, roundTripBoundaryKey(item.Text))
 		}
 	}
 
@@ -257,7 +260,7 @@ func compareCodexRoundTrip(rollout CodexRollout, readBack Conversation) []string
 	readBoundaries := []string{}
 	for _, message := range readBack.Messages {
 		if message.IsCompactBoundary {
-			readBoundaries = append(readBoundaries, message.Content)
+			readBoundaries = append(readBoundaries, roundTripBoundaryKey(message.Content))
 			continue
 		}
 		if text := dialogueText(message); strings.TrimSpace(text) != "" {
@@ -300,6 +303,14 @@ func roundTripCallKey(callID, name, inputJSON string) string {
 // inherited reader trims a result's output.
 func roundTripResultKey(callID, text string) string {
 	return callID + "\x00" + strings.TrimSpace(text)
+}
+
+// roundTripBoundaryKey identifies a compaction boundary by its summary text, trimmed the way the
+// inherited reader trims a compacted record's message: a summary that ends in whitespace, or holds
+// nothing but whitespace, is the same evidence once read as one that does not, and comparing the
+// untrimmed strings would report the reader's own normalisation as a difference the file does not have.
+func roundTripBoundaryKey(text string) string {
+	return strings.TrimSpace(text)
 }
 
 // sequenceComparison says how a comparison treats item order: dialogue and compaction boundaries are
