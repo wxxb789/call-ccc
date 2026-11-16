@@ -184,9 +184,9 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         # ``/var/folders/…`` and reads it back as ``/private/var/folders/…`` -- would leave this case's
         # stub answering in a spelling the harness never uses, so the stubbed ``--repo``/``--target-home``
         # commands, the document's own home and the run's recorded checks would all disagree with it on
-        # that host alone, and did: these two cases are the ones that broke on the ``macos-latest`` and
-        # ``windows-latest`` legs at head ``4cd0567``, while ``ubuntu-latest`` passed. Deriving the tree
-        # from the resolved spelling makes this case's paths the harness's own on every host.
+        # that host alone, and did: this is the fixture defect head ``4cd0567``'s ``macos-latest`` leg
+        # broke on. Deriving the tree from the resolved spelling makes this case's paths the harness's
+        # own on every host.
         scratch = Path(tempfile.mkdtemp(prefix="ccc-native-check-case-")).resolve()
         self.addCleanup(shutil.rmtree, scratch, ignore_errors=True)
         repo = scratch / "repo"
@@ -205,10 +205,20 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         installed = (home / "sessions" / "2026" / "05" / "04"
                      / f"rollout-2026-05-04T09-15-00-{thread_id}.jsonl")
         planted = home / "sessions" / "2026" / "01" / "01" / NATIVE_CHECK.UNRELATED_NAME
-        # The assignment the conversion reports is rendered the way the renderer quotes a word, so the
-        # harness's own shell reading of the line accepts it on every host (`shlex.quote` leaves
-        # `codex-home` bare and quotes a Windows path or one with a space).
+        # The two reported command lines are rendered the way the conversion's own renderer spells one
+        # (`internal/ccc/continue.go`'s ``renderResumeCommand``/``shellQuote``: the environment's value,
+        # then every argument word, quoted where a POSIX shell would act on it), because the harness
+        # reads them the way a shell does. Joining the argument words bare left a Windows binary path's
+        # backslashes to that reading -- the host spells the stub ``C:\…\codex`` and the shell reads it
+        # back as ``C:…codex`` -- so the check that answers PASS for a correctly rendered line answered
+        # FAIL for this fixture: the ``windows-latest`` shape head ``1a476e0`` failed, with these two
+        # cases breaking the same way the resolved-root spelling above did on ``macos-latest``.
         assignment = "CODEX_HOME=" + shlex.quote(str(home))
+
+        def rendered(words: list[str]) -> str:
+            """The words as the renderer under test spells them: each quoted where a shell acts."""
+            return " ".join(shlex.quote(word) for word in words)
+
         resume_arguments = [codex, "resume", thread_id]
         exec_resume_arguments = [codex, "exec", "resume", thread_id, "<prompt>"]
         document = {
@@ -225,8 +235,8 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 "session_id": thread_id, "path": str(installed), "binary_found": True,
                 "resume_arguments": resume_arguments, "exec_resume_arguments": exec_resume_arguments,
                 "resume_environment": {"CODEX_HOME": str(home)},
-                "resume_command": f"{assignment} " + " ".join(resume_arguments),
-                "exec_resume_command": f"{assignment} " + " ".join(exec_resume_arguments),
+                "resume_command": f"{assignment} {rendered(resume_arguments)}",
+                "exec_resume_command": f"{assignment} {rendered(exec_resume_arguments)}",
             },
             "verification": {"load": {"state": "verified"}, "resume": {"state": "verified"}},
         }

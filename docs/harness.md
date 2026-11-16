@@ -215,11 +215,13 @@ says so.
   tree from one **resolved** root, because `main` resolves the repository and the home it is handed and
   compares against that spelling: a case spelled through its own temporary root disagrees with the run
   it drives wherever `resolve()` re-spells that root — macOS's `/var/folders/…`, which reads back as
-  `/private/var/folders/…` — so the two `ProtectedArtifactsAfterNativeVerification` cases passed
-  `ubuntu-latest` and failed `macos-latest` and `windows-latest` together at head `4cd0567`, starting
-  with the first stubbed command (`--repo`, `--target-home`). They resolve the root before deriving
-  anything from it — the same rule the homes above follow, taking the platform's own answer instead of
-  assuming this host's.
+  `/private/var/folders/…`, the shape that failed `macos-latest` at head `4cd0567` with the first
+  stubbed command (`--repo`, `--target-home`) filed under a spelling the case's own stub did not
+  recognise. They resolve the root before deriving anything from it — the same rule the homes above
+  follow, taking the platform's own answer instead of assuming this host's — and they spell the two
+  reported command lines the way the renderer does, every word quoted where a shell would act on it;
+  the shape they got wrong there, and the `windows-latest` failure at head `1a476e0` it caused, is the
+  third Windows answer under Platform boundary below.
   Every app-server request is bounded by the script's own deadline (`APP_SERVER_TIMEOUT`), stdout is
   read by a thread and stderr drained by another, so a server that stops answering or fills its
   diagnostics pipe is reported as a failed check rather than hanging the run. Every check prints its
@@ -285,7 +287,19 @@ not the one the rule is about:
   platform — instead of asserting this host's own temp path, which is shell-safe here and shell-unsafe
   there. The Windows-shaped input is exercised on any host by pointing `TMPDIR` at a directory whose
   name holds a backslash: the same two cases then fail against a host-shaped assertion (executed) and
-  pass against the rule.
+  pass against the rule. The rule is per word, and it binds the offline half's *fixture* too: the two
+  `ProtectedArtifactsAfterNativeVerification` cases fabricate the document a conversion reports and
+  spelled those two command lines by joining their argument words bare — which is the renderer's own
+  line only while every word is shell-safe. The stubbed binary is a full path, so on Windows it holds
+  backslashes, the harness's own reading of the line ate them, and the check answered FAIL for a line
+  the fixture had mis-rendered: `gate (windows-latest)` failed the `selftest` step at head `1a476e0`
+  (`FAILED (failures=4)`, its child naming the same two cases the `macos-latest` leg had named at
+  `4cd0567` for its own defect, which that leg's repair fixed). The cases now quote every word the way
+  `renderResumeCommand`/`shellQuote` does, and the shape is reproducible with the same trick:
+  `mkdir -p '/tmp/ccc-win\temp' && TMPDIR='/tmp/ccc-win\temp' python3 -m unittest discover -s
+  scripts/tests` (executed; head `1a476e0`'s own file prints `FAILED (failures=4)` there — the two cases
+  plus the two self-check cases that read the red child, over the same two child names CI printed — and
+  the repaired one `OK`, 153 cases).
 - a path is spelled by the platform that reads it: `pathlib` answers `\tmp\x` for `Path('/tmp/x')` on
   Windows where POSIX answers `/tmp/x`, so a rule whose two sides are "the word a shell reads a rendered
   line back as" and "the home *this host* spells" cannot be pinned by a fixture spelled for one of them.
@@ -300,14 +314,16 @@ not the one the rule is about:
   compares the reported home against the resolved one, so a case that drives `main` and spells its own
   throw-away tree through `tempfile.mkdtemp()` disagrees with the run it drives wherever `resolve()`
   re-spells that root — macOS's temp root is `/var/folders/…`, which `resolve()` reads back as
-  `/private/var/folders/…`. Unresolved, the two `ProtectedArtifactsAfterNativeVerification` cases passed
-  `ubuntu-latest` and failed `macos-latest` and `windows-latest` together at head `4cd0567`, both legs
-  `FAILED (failures=4)` over the same two broken names: the stub recognised only the binary path and the
-  home it had spelled itself, while the run filed the first stubbed command under the resolved spelling —
-  measured on this host below, where both cases fail there, before their own comparisons run. They now
-  resolve the scratch root once, before deriving anything from it, which is this rule applied to the run
-  rather than to a fixture — and the shape is reproducible on any host that can make a symlink, by
-  pointing `TMPDIR` at one: `mkdir -p /tmp/ccc-aliased/private-var/tmp &&
+  `/private/var/folders/…`. Unresolved, the two `ProtectedArtifactsAfterNativeVerification` cases failed
+  the `macos-latest` leg at head `4cd0567` — `FAILED (failures=4)`, the four being the two cases plus
+  the two self-check cases that read the red child — because the stub recognised only the binary path
+  and the home it had spelled itself, while the run filed the first stubbed command under the resolved
+  spelling: measured on this host below, where both cases fail there, before their own comparisons run.
+  (That day's `windows-latest` failure named the same two cases for the other fixture defect, the
+  unquoted words above; resolving the root left it red at head `1a476e0` until that one was repaired
+  too.) They now resolve the scratch root once, before deriving anything from it, which is this rule
+  applied to the run rather than to a fixture — and the shape is reproducible on any host that can make
+  a symlink, by pointing `TMPDIR` at one: `mkdir -p /tmp/ccc-aliased/private-var/tmp &&
   ln -s private-var /tmp/ccc-aliased/var && TMPDIR=/tmp/ccc-aliased/var/tmp python3 -m unittest
   discover -s scripts/tests` (executed; the unresolved spelling is `FAILED (failures=4)` there — the two
   cases plus the two self-check cases that read the red child, CI's own number — and the repaired one

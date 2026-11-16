@@ -473,7 +473,10 @@ test_a_mutation_during_the_resume_stage_is_caught_by_the_last_comparison,
 `test_an_intact_run_passes_the_comparisons` — that is, the two `ProtectedArtifactsAfterNativeVerification`
 cases round 6 added (§11): the ones both red legs really broke (their other two failures are the
 self-check cases reading that red child), and ones the `ubuntu-latest` leg (green, 46 s) does not run
-differently. Their **fixtures** are the defect again, not the shipped harness:
+differently. Both legs were red for defects in those two cases' **fixtures**, never for the shipped
+harness — and the two legs' defects were not the same one: this repair is the macOS spelling below, and
+the Windows leg's own defect, the unquoted words of the same cases' fabricated command lines, is the
+round after it. The macOS one:
 `main` resolves what it is handed (`--repo` always, and `--codex-home` when the caller names one, which
 this case does) and passes that resolved home to the conversion, so the home the document reports is the
 home the harness asked for — while the case derived its whole scratch tree from `tempfile.mkdtemp`'s own
@@ -510,13 +513,47 @@ nothing for a too-early comparison to miss. Executed here:
 | the whole suite under the same `TMPDIR` | `Ran 153 tests in 5.037s` / `OK` |
 | the rule the case pins, on a scratch copy of the repaired case: the two comparisons moved back above the loader and the turn | `Ran 2 tests in 0.011s` / `FAILED (failures=1)` — identical on a plain host and under the aliased `TMPDIR` — with `the mutating run's failures are not exactly the two protected-artifact comparisons: []`, both comparisons having answered on the pre-mutation state |
 
+The fourth red was in the same cases' fixture again, and the macOS leg it had just repaired was green:
+`gate (windows-latest)` failed the `selftest` step at head `1a476e0` — `FAILED (failures=4)`, its child
+printing the same two broken names — while `ubuntu-latest` and `macos-latest` passed. The document
+those cases fabricate spells the two reported command lines by joining their argument words bare
+(`f"{assignment} " + " ".join(resume_arguments)`), which is a line the renderer under test
+(`internal/ccc/continue.go`'s `renderResumeCommand`/`shellQuote`) only ever produces while every word is
+shell-safe; the stubbed binary is a full path, so on Windows it holds backslashes, the check's own
+reading of the line (the rule it exists to apply) eats them, and the check answers FAIL for a line the
+fixture mis-rendered — leaving the mutating case failing its "failures are not exactly the two
+protected-artifact comparisons" assertion and the intact case its "exit 0" one, the added name being
+`the reported resume command selects the installation home`.
+
+Reproduced on this host the way the suite's other Windows answers are, by pointing `TMPDIR` at a
+directory whose name holds a backslash, so every path the case derives holds one as they all do on
+Windows (`mkdir -p '/tmp/ccc-win\temp'`, then `TMPDIR='/tmp/ccc-win\temp' python3 -m unittest discover
+-s scripts/tests`; the module scope is the same command with `-p test_codex_native_check.py`):
+
+| run | observed |
+| --- | --- |
+| head `1a476e0`'s own file, that `TMPDIR`, the module's 8 cases | `Ran 8 tests in 0.177s` / `FAILED (failures=2)` |
+| …the whole suite, that `TMPDIR` | `Ran 153 tests in 12.606s` / `FAILED (failures=4)`: the two cases **and** the two self-check cases that read the red child — CI's own number, over the two child names it printed |
+| the repaired file, same `TMPDIR`, the module's 8 cases | `Ran 8 tests in 0.012s` / `OK` |
+| …the whole suite, same `TMPDIR` | `Ran 153 tests in 5.320s` / `OK` |
+| …the whole suite under the aliased `TMPDIR` above and on a plain host | `Ran 153 tests in 5.227s` / `OK` and `Ran 153 tests in 5.060s` / `OK` |
+
+The repair is the fixture's, like the two before it: the reported lines are rendered the way the
+renderer spells them — the environment's value, then every argument word, quoted where a POSIX shell
+would act on it (`shlex.quote`, the same rule `shellQuote` implements) — and no assertion changed: the
+intact run must still exit 0 with both comparisons `PASS`, and the mutating run must still fail exactly
+those two checks and pass the turn. No platform branch was added for it: the rule's Windows spelling —
+a quoted word holding backslashes reads back as itself — is already asserted on every host by the
+module's `ResumeInvocationCheck` cases, which drive `PureWindowsPath` beside this host's `Path`.
+
 The `selftest` step is 153 cases — the 151 the round-5 block printed, plus the two
-`ProtectedArtifactsAfterNativeVerification` cases round 6 adds (§11) — and this repair changes no count;
-the block above is refreshed from this repair's own run. `docs/harness.md`
+`ProtectedArtifactsAfterNativeVerification` cases round 6 adds (§11) — and none of the repairs after it
+changes the count; the blocks above are refreshed from each repair's own run. `docs/harness.md`
 records all of it: the path-spelling constraint as its Platform boundary section's path bullet, now
-including the scratch root this repair resolves (with the aliased-`TMPDIR` run as that constraint's
-instance on any host), and the dangling line as what the self-check cases read a child's per-case lines
-for.
+including the scratch root the third repair resolves (with the aliased-`TMPDIR` run as that constraint's
+instance on any host), the per-word quoting the fourth repair restored to the same cases' fixture as the
+Windows-backslash bullet's own instance (with the backslash-`TMPDIR` run as its reproduction here), and
+the dangling line as what the self-check cases read a child's per-case lines for.
 
 ## 7. Limits and residual risks
 
