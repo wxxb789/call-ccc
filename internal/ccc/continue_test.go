@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/dbtest"
 	"go.kenn.io/agentsview/internal/parser"
 )
 
@@ -626,6 +628,73 @@ func TestContinueFallsBackToTheArchiveWhenTheSourceIsGone(t *testing.T) {
 	if result.Verification.Structure.State != VerificationStateVerified {
 		t.Errorf("structure = %+v, want the archived conversion to read back as what was written",
 			result.Verification.Structure)
+	}
+}
+
+// TestContinueReportsTheArchivesAmbiguityInsteadOfAbsence pins which failure a conversion reports when
+// the source side cannot answer the reference and the archive refuses it as well.
+//
+// An archive keeps one row per remote copy of a session an AgentsView sync has seen (`<host>~<id>`), so
+// a reference can name several of them: `archive.Read` answers with their identities, and that list is
+// the only spelling a caller can retry with. Returning the source side's error instead replaced it with
+// "the source session was not found" -- a conversion that reported a session absent from a machine
+// whose archive holds it twice, and no candidate to name. The other half is pinned here too: a reference
+// neither side holds still answers with the source's own error, because then the two sides agree and
+// there is no candidate list to offer.
+func TestContinueReportsTheArchivesAmbiguityInsteadOfAbsence(t *testing.T) {
+	ctx := context.Background()
+	cfg := fixtureConfig(t)
+	// The source side reads no session: an empty provider root is what "this machine has no file for
+	// that reference" looks like, and the archive is the only side that can answer.
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentClaude: {t.TempDir()}}
+
+	dir := dbtest.MkdirTempWithCleanup(t)
+	archivePath := filepath.Join(dir, "sessions.db")
+	database := dbtest.OpenTestDBAt(t, archivePath)
+	seedCopy := func(id, machine string) {
+		t.Helper()
+		dbtest.SeedSession(t, database, id, "example-api", func(session *db.Session) {
+			session.Agent = "claude"
+			session.Machine = machine
+		})
+	}
+	// Two remote copies of the requested Claude session: the archive can name both, but not choose.
+	seedCopy("host-a~"+claudeFixtureRef.ID, "host-a")
+	seedCopy("host-b~"+claudeFixtureRef.ID, "host-b")
+	if err := database.Close(); err != nil {
+		t.Fatalf("closing the seeded archive: %v", err)
+	}
+	options := func(ref Ref) ContinueOptions {
+		return ContinueOptions{
+			Ref:          ref,
+			Target:       TargetCodex,
+			Config:       cfg,
+			ArchivePath:  archivePath,
+			TargetHome:   t.TempDir(),
+			TargetBinary: missingTargetBinary,
+			DryRun:       true,
+			Verify:       VerifyNone,
+		}
+	}
+
+	_, err := Continue(ctx, options(claudeFixtureRef))
+	var ambiguous *AmbiguousError
+	if !errors.As(err, &ambiguous) {
+		t.Fatalf("a reference two archive rows answer returned %v, want an ambiguity report", err)
+	}
+	if len(ambiguous.Candidates) != 2 {
+		t.Errorf("candidates = %v, want both stored copies of the requested session", ambiguous.Candidates)
+	}
+
+	// A reference no row answers keeps the source's own answer: both sides say this machine has no such
+	// session, and there is no candidate list an archive could have offered instead.
+	_, err = Continue(ctx, options(Ref{Provider: "claude", ID: "3c1f4b6e-0d2a-4c8f-9e21-77b0a5d43f12"}))
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("a reference neither side holds returned %v, want %v", err, ErrNotFound)
+	}
+	var absent *AmbiguousError
+	if errors.As(err, &absent) {
+		t.Errorf("a reference neither side holds was reported as ambiguous: %v", err)
 	}
 }
 

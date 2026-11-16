@@ -532,6 +532,12 @@ func resolveContinueConfig(opts ContinueOptions) (config.Config, *SourceReader, 
 // answer a reference an archive holds. The fallback is what makes a conversion possible for a session
 // whose file is gone, and it is reported: an archive read is a projection, and its fidelity block says
 // what it could not show.
+//
+// Which failure a caller sees is decided by the archive, not by the source: the source's own error is
+// answered only when the archive holds no match for the reference (the two sides then say the same
+// thing), while an archive that refuses the reference -- several candidate identities, a lookup it
+// could not complete, a query that failed -- is reported as that, because "the source session was not
+// found" would hide the very candidates a caller needs to name the session.
 func readForConversion(
 	ctx context.Context, reader *SourceReader, cfg config.Config, ref Ref, archivePath string,
 ) (Conversation, string, []string, error) {
@@ -558,6 +564,15 @@ func readForConversion(
 	defer archive.Close()
 	archived, readErr := archive.Read(ctx, ref)
 	if readErr != nil {
+		// The archive's own answer, unless it is absence. An ambiguous reference carries the candidate
+		// identities that would resolve it, ErrTruncatedCandidates says the lookup could not complete
+		// the list, and a query failure is the archive's to report -- returning the source side's error
+		// instead would present every one of them as "no session", which is exactly what the source's
+		// answer is not. Only an archive that holds no match leaves the source's failure as the answer,
+		// because then the two sides agree: the reference names no session this machine can read.
+		if !errors.Is(readErr, ErrNotFound) {
+			return Conversation{}, "", nil, readErr
+		}
 		return Conversation{}, "", nil, err
 	}
 	warning := fmt.Sprintf(

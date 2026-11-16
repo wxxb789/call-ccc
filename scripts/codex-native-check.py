@@ -43,6 +43,7 @@ import hashlib
 import json
 import os
 import queue
+import shlex
 import shutil
 import subprocess
 import sys
@@ -128,6 +129,33 @@ def with_top_level_overrides(config: str, overrides: dict[str, str]) -> str:
     replaced = [f'{key} = "{value}"' for key, value in overrides.items()]
     body = "\n".join(kept).strip("\n")
     return "\n".join(replaced) + "\n\n" + body + "\n"
+
+
+def shell_words(command: str) -> list[str] | None:
+    """The words a POSIX shell reads `command` as, or None when it cannot be read as a command line.
+
+    The reported invocation is rendered for a POSIX shell (`internal/ccc/continue.go`'s
+    `renderResumeCommand`/`shellQuote` quote a word exactly where a shell would act on it), so the
+    documented reading of it is a shell's own: split on whitespace outside quotes, then remove the
+    quoting. A check that looked for the literal substring `CODEX_HOME=<home>` would do the opposite of
+    that rule: it rejects every home the renderer correctly quotes -- any home with a space, any Windows
+    path with a backslash -- and accepts an unquoted home whose space a shell reads as two words, which
+    is the defect quoting exists to prevent.
+    """
+    try:
+        return shlex.split(command)
+    except ValueError:
+        # An unbalanced quote: a shell would not read this as the reported invocation at all.
+        return None
+
+
+def reported_invocation(command: str, home: Path, arguments: list[str]) -> bool:
+    """Whether `command` is the shell's reading of the data-directory assignment plus `arguments`.
+
+    Codex takes its data directory from CODEX_HOME alone -- it has no flag for it -- so the assignment
+    being first and exact is what makes a pasted line resume the session this run installed.
+    """
+    return shell_words(command) == [f"CODEX_HOME={home}", *arguments]
 
 
 def run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = None,
@@ -457,18 +485,23 @@ def main(argv: list[str] | None = None) -> int:
 
         # The reported invocation, checked against the directory this run installed into: Codex takes
         # its data directory from CODEX_HOME alone, so a resume command that does not name it opens
-        # whichever home the caller's shell points at.
+        # whichever home the caller's shell points at. Both rendered lines are read the way a shell
+        # reads them (so a home the renderer quotes -- a path with a space, a Windows path -- is
+        # accepted, while an unquoted home a shell would split is not).
         resume_arguments = target.get("resume_arguments") or []
         exec_resume_arguments = target.get("exec_resume_arguments") or []
         resume_environment = target.get("resume_environment") or {}
         resume_command = str(target.get("resume_command") or "")
+        exec_resume_command = str(target.get("exec_resume_command") or "")
         want_resume = [codex, "resume", thread_id]
         want_exec_resume = [codex, "exec", "resume", thread_id, "<prompt>"]
         record("the reported resume command selects the installation home",
                resume_arguments == want_resume and exec_resume_arguments == want_exec_resume
                and resume_environment == {"CODEX_HOME": str(home)}
-               and f"CODEX_HOME={home}" in resume_command and thread_id in resume_command,
-               f"resume_command={resume_command!r} environment={resume_environment}")
+               and reported_invocation(resume_command, home, want_resume)
+               and reported_invocation(exec_resume_command, home, want_exec_resume),
+               f"resume_command={resume_command!r} exec_resume_command={exec_resume_command!r} "
+               f"environment={resume_environment}")
 
         if args.resume_prompt:
             print()

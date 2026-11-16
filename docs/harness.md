@@ -177,8 +177,8 @@ says so.
   and `selftest`. The Go steps are deliberately *not* listed: on Windows without a C compiler they are
   a disclosed platform boundary (below), not a failure.
 - `scripts/upstream-parity.py` — the source-side parity check (above).
-- `scripts/tests/` — the gate's, the parity checker's and the importer's regression tests, run by the
-  `selftest` step.
+- `scripts/tests/` — the gate's, the parity checker's, the importer's and the native check's
+  regression tests, run by the `selftest` step.
 - `CALLCCC_GATE_ROOT` — run the gate against another tree. Most cases in `scripts/tests/` pin a rule
   against a throw-away tree instead of trusting the reader.
 - `scripts/codex-native-check.py` — the target-side native verification for the Claude Code → Codex
@@ -195,6 +195,13 @@ says so.
   Codex's own view of it (`thread/read`), hashes the source, the planted session and every session the
   home already held before and after (removing the planted one again when the run ends), and — with
   `--resume-prompt` — runs one real turn from the reported invocation and prints the target's answer.
+  The two rendered command lines (`resume_command`, `exec_resume_command`) are checked by **reading
+  them the way a POSIX shell reads them**, word by word: a home the renderer quotes — any path holding
+  a space, any Windows path holding a backslash — is accepted, while an unquoted home a shell would
+  split into two words is not. That half is pinned offline, without the Codex binary, by
+  `scripts/tests/test_codex_native_check.py` in the `selftest` step (the renderer's own spelling is
+  pinned by `cmd/ccc`'s tests); the substring form it replaced accepted exactly the line the quoting
+  exists to prevent and rejected correct renderings on Windows.
   Every app-server request is bounded by the script's own deadline (`APP_SERVER_TIMEOUT`), stdout is
   read by a thread and stderr drained by another, so a server that stops answering or fills its
   diagnostics pipe is reported as a failed check rather than hanging the run. Every check prints its

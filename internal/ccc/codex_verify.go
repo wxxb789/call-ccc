@@ -591,7 +591,14 @@ func (s *codexAppServer) stderrExcerpt() string {
 
 // boundedBuffer keeps the first max bytes written to it: a diagnostic's opening lines say what went
 // wrong, and a runaway log must not become the report.
+//
+// It is written by the goroutine os/exec copies a child's stderr with and read by whoever reports a
+// failure, which may be while that child still runs: a verification that fails builds its detail from
+// stderrExcerpt before the deferred Close stops the process, so writes and snapshots are guarded here
+// rather than left to the caller's timing. Unsynchronized, those two are a data race on the buffer's own
+// state and the excerpt in the report would be a torn read.
 type boundedBuffer struct {
+	mu   sync.Mutex
 	max  int
 	data bytes.Buffer
 }
@@ -599,6 +606,8 @@ type boundedBuffer struct {
 func newBoundedBuffer(max int) *boundedBuffer { return &boundedBuffer{max: max} }
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if remaining := b.max - b.data.Len(); remaining > 0 {
 		if len(p) > remaining {
 			b.data.Write(p[:remaining])
@@ -609,7 +618,11 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (b *boundedBuffer) String() string { return b.data.String() }
+func (b *boundedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.data.String()
+}
 
 func stringField(object map[string]any, key string) string {
 	if value, ok := object[key].(string); ok {
