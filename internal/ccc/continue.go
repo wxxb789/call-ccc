@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -126,27 +127,39 @@ type ConversionReport struct {
 
 // TargetReport describes the session that was written and how to resume it.
 type TargetReport struct {
-	Provider          string        `json:"provider"`
-	Format            string        `json:"format"`
-	FormatLimits      []FormatLimit `json:"format_limits"`
-	Home              string        `json:"home"`
-	Binary            string        `json:"binary,omitempty"`
-	BinaryFound       bool          `json:"binary_found"`
-	BinaryVersion     string        `json:"binary_version,omitempty"`
-	BinaryDetail      string        `json:"binary_detail,omitempty"`
-	SessionID         string        `json:"session_id"`
-	FileName          string        `json:"file_name"`
-	Path              string        `json:"path,omitempty"`
-	Cwd               string        `json:"cwd,omitempty"`
-	StartedAt         time.Time     `json:"started_at,omitempty"`
-	CLIVersion        string        `json:"cli_version"`
-	CLIVersionSource  string        `json:"cli_version_source"`
-	ModelProvider     string        `json:"model_provider,omitempty"`
-	ProviderSource    string        `json:"model_provider_source,omitempty"`
-	ProviderDetail    string        `json:"model_provider_detail,omitempty"`
-	Model             string        `json:"model,omitempty"`
-	ResumeCommand     string        `json:"resume_command"`
-	ExecResumeCommand string        `json:"exec_resume_command"`
+	Provider         string        `json:"provider"`
+	Format           string        `json:"format"`
+	FormatLimits     []FormatLimit `json:"format_limits"`
+	Home             string        `json:"home"`
+	Binary           string        `json:"binary,omitempty"`
+	BinaryFound      bool          `json:"binary_found"`
+	BinaryVersion    string        `json:"binary_version,omitempty"`
+	BinaryDetail     string        `json:"binary_detail,omitempty"`
+	SessionID        string        `json:"session_id"`
+	FileName         string        `json:"file_name"`
+	Path             string        `json:"path,omitempty"`
+	Cwd              string        `json:"cwd,omitempty"`
+	StartedAt        time.Time     `json:"started_at,omitempty"`
+	CLIVersion       string        `json:"cli_version"`
+	CLIVersionSource string        `json:"cli_version_source"`
+	ModelProvider    string        `json:"model_provider,omitempty"`
+	ProviderSource   string        `json:"model_provider_source,omitempty"`
+	ProviderDetail   string        `json:"model_provider_detail,omitempty"`
+	Model            string        `json:"model,omitempty"`
+	// ResumeArguments and ExecResumeArguments are the invocation itself, for a caller that runs the
+	// harness rather than pasting a line into a shell: the argument vector that resumes the session,
+	// with the prompt placeholder a caller replaces in the exec form. ResumeEnvironment is the
+	// environment that selects the data directory the session was installed into; Codex has no flag for
+	// that directory (its own loader takes it from CODEX_HOME alone), so a caller that runs the harness
+	// without it resumes whatever home their shell already points at. ResumeCommand and
+	// ExecResumeCommand are the same two invocations rendered as a POSIX shell line -- environment
+	// first, every word quoted where a shell would read it as syntax -- which is what a person or an
+	// agent pastes.
+	ResumeArguments     []string          `json:"resume_arguments"`
+	ExecResumeArguments []string          `json:"exec_resume_arguments"`
+	ResumeEnvironment   map[string]string `json:"resume_environment"`
+	ResumeCommand       string            `json:"resume_command"`
+	ExecResumeCommand   string            `json:"exec_resume_command"`
 }
 
 // InstallationReport is the installation half: whether the session is where the target harness keeps
@@ -274,6 +287,8 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 	}
 	// The printed resume commands name the harness the way the caller asked for it (or "codex"), not the
 	// absolute path the probe resolved: a command a person or an agent pastes must be the one they run.
+	// They name the data directory too, because a resume command without it resumes the caller's default
+	// home rather than the directory this conversion installed into.
 	resumeName := strings.TrimSpace(opts.TargetBinary)
 	if resumeName == "" {
 		resumeName = CodexBinaryDefault
@@ -296,27 +311,35 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 		Losses:         rollout.Losses,
 		SourceFidelity: conversation.Fidelity,
 	}
+	// The invocation is built here, where the session identity exists, and rendered twice: as the
+	// argument vector and environment a caller runs, and as the shell line a person pastes.
+	resumeArguments := []string{resumeName, "resume", rollout.SessionID}
+	execResumeArguments := []string{resumeName, "exec", "resume", rollout.SessionID, resumePromptPlaceholder}
+	resumeEnvironment := map[string]string{codexHomeEnv: home}
 	result.TargetSession = TargetReport{
-		Provider:          target,
-		Format:            CodexTargetFormat,
-		FormatLimits:      codexFormatLimits(),
-		Home:              home,
-		Binary:            probe.Binary,
-		BinaryFound:       probe.Found,
-		BinaryVersion:     probe.Version,
-		BinaryDetail:      probe.Detail,
-		SessionID:         rollout.SessionID,
-		FileName:          rollout.FileName,
-		Cwd:               rollout.Cwd,
-		StartedAt:         rollout.StartedAt,
-		CLIVersion:        rollout.CLIVersion,
-		CLIVersionSource:  cliVersionSource,
-		ModelProvider:     configProbe.Provider,
-		ProviderSource:    providerSource,
-		ProviderDetail:    configProbe.Detail,
-		Model:             configProbe.Model,
-		ResumeCommand:     fmt.Sprintf("%s resume %s", resumeName, rollout.SessionID),
-		ExecResumeCommand: fmt.Sprintf("%s exec resume %s \"<prompt>\"", resumeName, rollout.SessionID),
+		Provider:            target,
+		Format:              CodexTargetFormat,
+		FormatLimits:        codexFormatLimits(),
+		Home:                home,
+		Binary:              probe.Binary,
+		BinaryFound:         probe.Found,
+		BinaryVersion:       probe.Version,
+		BinaryDetail:        probe.Detail,
+		SessionID:           rollout.SessionID,
+		FileName:            rollout.FileName,
+		Cwd:                 rollout.Cwd,
+		StartedAt:           rollout.StartedAt,
+		CLIVersion:          rollout.CLIVersion,
+		CLIVersionSource:    cliVersionSource,
+		ModelProvider:       configProbe.Provider,
+		ProviderSource:      providerSource,
+		ProviderDetail:      configProbe.Detail,
+		Model:               configProbe.Model,
+		ResumeArguments:     resumeArguments,
+		ExecResumeArguments: execResumeArguments,
+		ResumeEnvironment:   resumeEnvironment,
+		ResumeCommand:       renderResumeCommand(resumeArguments, resumeEnvironment),
+		ExecResumeCommand:   renderResumeCommand(execResumeArguments, resumeEnvironment),
 	}
 	verification := VerificationReport{
 		Load:   LoadVerification{State: VerificationStateNotRequested, Method: loadMethod},
@@ -616,14 +639,63 @@ func fileDigest(path string) (string, error) {
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
+// codexHomeEnv is the environment variable that selects the Codex data directory a run reads: Codex has
+// no command-line flag for it, so a resume command that does not set it opens the caller's own default
+// home rather than the directory the session was installed into.
+const codexHomeEnv = "CODEX_HOME"
+
+// resumePromptPlaceholder is where the exec form of the resume invocation takes the caller's turn. It is
+// a word of its own, not quoted shell syntax: a caller replaces it with the prompt's own words.
+const resumePromptPlaceholder = "<prompt>"
+
+// shellUnsafeCharacters are the characters a POSIX shell reads as syntax inside a word, so a word
+// holding any of them has to be quoted; an empty word would vanish, so it is quoted too.
+const shellUnsafeCharacters = " \t\n\r'\"\\$`&|;<>()*?[]{}!~#="
+
+// renderResumeCommand spells one invocation the way a POSIX shell reads it: the environment that selects
+// the target's data directory, then the words. Every word is quoted where a shell would act on it, so a
+// home or a binary path holding a space cannot silently split into two arguments. The environment is
+// spelled as a leading assignment (`CODEX_HOME=… codex resume …`), which is what makes a pasted command
+// resume the session this report installed; the argument vector and environment beside it are the form a
+// caller that runs the harness directly uses.
+func renderResumeCommand(arguments []string, environment map[string]string) string {
+	names := make([]string, 0, len(environment))
+	for name := range environment {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	words := make([]string, 0, len(names)+len(arguments))
+	for _, name := range names {
+		words = append(words, name+"="+shellQuote(environment[name]))
+	}
+	for _, argument := range arguments {
+		words = append(words, shellQuote(argument))
+	}
+	return strings.Join(words, " ")
+}
+
+// shellQuote renders one command-line word so a POSIX shell reads it back as that word: left as it is
+// when it holds nothing a shell would act on, and single-quoted otherwise, with an embedded quote closed
+// and re-opened the way sh spells one.
+func shellQuote(word string) string {
+	if word != "" && !strings.ContainsAny(word, shellUnsafeCharacters) {
+		return word
+	}
+	return "'" + strings.ReplaceAll(word, "'", `'\''`) + "'"
+}
+
 // codexFormatLimits states what the target format cannot express at all, so a consumer reads them as
 // capabilities of the pair rather than as this run's omissions.
 func codexFormatLimits() []FormatLimit {
 	return []FormatLimit{
 		{
 			Category: "attachments",
-			Detail: "the source read carries no attachment or image bytes, so a conversion cannot say " +
-				"whether a session had any, and this report claims no count either way",
+			Detail: "a message's own attachments and images are not in the source read at all: the " +
+				"inherited reader keeps a message's text, so a conversion cannot say whether a " +
+				"message had one and claims no count either way. A tool result is the exception: its " +
+				"content field is read as the provider recorded it, and a block the target's " +
+				"text-only output has no field for is reported by count " +
+				"(unrepresentable_result_blocks)",
 		},
 		{
 			Category: "provider_and_model",

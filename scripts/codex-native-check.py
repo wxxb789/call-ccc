@@ -5,17 +5,21 @@ This harness answers the half of the goal that the gate cannot: whether the inst
 readable by **Codex itself** and whether a **real turn** continues from it. It builds `ccc`, converts a
 committed fixture into an isolated Codex data directory, re-reads the installed file with its own second
 `ccc` invocation (the inherited reader, so the conversion's own verdict about itself decides nothing
-here), asks that directory's own app server to load the session (`thread/resume`), reads the harness's
+here), checks the resume invocation the conversion reported (its arguments name the target binary, the
+resume subcommand and the session, and its environment selects the directory the session is installed
+into), asks that directory's own app server to load the session (`thread/resume`), reads the harness's
 own view of the conversation (`thread/read`), checks that the source session and every other session in
 the target home — the session it plants there and any the home already held — are untouched, and — when
-`--resume-prompt` is given — runs one real turn through `codex exec resume` and reports what the target
+`--resume-prompt` is given — runs one real turn from the reported invocation and reports what the target
 answered. The planted session is removed again when the run ends, so a `--codex-home` the caller named is
 left as it was found apart from the converted session.
 
 It is **not** a gate step: it needs the Codex binary, and a turn needs model access. `scripts/gate.py`
 decides the offline half (round-trip through the inherited reader, install rules, reported losses, CLI
 shape); this script is the re-derivable native evidence, the way `scripts/upstream-compare.py` is for the
-carried tree's behaviour.
+carried tree's behaviour. Every app-server request it makes is bounded by `APP_SERVER_TIMEOUT`, and a
+server that stops answering is reported as a failed check with its own diagnostics rather than blocking
+the run.
 
     python3 scripts/codex-native-check.py
     python3 scripts/codex-native-check.py --resume-prompt "Which file did you read, and why?"
@@ -38,10 +42,12 @@ import argparse
 import hashlib
 import json
 import os
+import queue
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -59,6 +65,10 @@ BINARY = Path("bin", "ccc-native-check")
 #: The unrelated session the harness plants in the target home before converting: a conversion must not
 #: touch a session another agent may already have continued.
 UNRELATED_NAME = "rollout-2026-01-01T00-00-00-00000000-0000-7000-8000-000000000000.jsonl"
+
+#: One app-server request's deadline. Every call this harness makes is bounded by it: a server that keeps
+#: its output open and stops answering is reported as a failed check rather than blocking the run.
+APP_SERVER_TIMEOUT = 120
 
 #: One check's outcome, as the script reports it.
 RESULTS: list[tuple[str, str, str]] = []
@@ -130,7 +140,14 @@ def run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = No
 
 
 class AppServer:
-    """A minimal client for the target's own app-server protocol over stdio."""
+    """A minimal client for the target's own app-server protocol over stdio.
+
+    stdout is read by a thread of its own, so a call's deadline can end it: a server that keeps its
+    stdout open and stops answering would otherwise block a synchronous read for ever, and this harness
+    promises a bounded verdict for every check. stderr is drained by a second thread for the same
+    reason -- a piped stream nobody reads fills up, and a server that blocks writing a diagnostic stops
+    answering -- and the lines it holds are reported with a failure instead of being thrown away.
+    """
 
     def __init__(self, binary: str, home: Path):
         self.next_id = 0
@@ -139,6 +156,34 @@ class AppServer:
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, bufsize=1, env={**os.environ, "CODEX_HOME": str(home)},
         )
+        self.responses: queue.Queue[str | None] = queue.Queue()
+        self.diagnostics: list[str] = []
+        self.reader = threading.Thread(target=self._read_stdout, daemon=True)
+        self.drainer = threading.Thread(target=self._drain_stderr, daemon=True)
+        self.reader.start()
+        self.drainer.start()
+
+    def _read_stdout(self) -> None:
+        stream = self.process.stdout
+        if stream is None:
+            self.responses.put(None)
+            return
+        try:
+            for line in stream:
+                self.responses.put(line)
+        except (OSError, ValueError):
+            pass
+        self.responses.put(None)
+
+    def _drain_stderr(self) -> None:
+        stream = self.process.stderr
+        if stream is None:
+            return
+        try:
+            for line in stream:
+                self.diagnostics.append(line.rstrip("\n"))
+        except (OSError, ValueError):
+            pass
 
     def close(self) -> None:
         try:
@@ -151,6 +196,9 @@ class AppServer:
             except subprocess.TimeoutExpired:
                 self.process.kill()
 
+    def stderr_tail(self, limit: int = 3) -> str:
+        return " | ".join(self.diagnostics[-limit:])[:400]
+
     def call(self, method: str, params: dict) -> dict:
         self.next_id += 1
         request_id = self.next_id
@@ -158,10 +206,18 @@ class AppServer:
         assert self.process.stdin is not None
         self.process.stdin.write(payload + "\n")
         self.process.stdin.flush()
-        deadline = time.time() + 120
-        while time.time() < deadline:
-            line = self.process.stdout.readline() if self.process.stdout else ""
-            if not line:
+        deadline = time.monotonic() + APP_SERVER_TIMEOUT
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(
+                    f"the app server did not answer {method} within {APP_SERVER_TIMEOUT}s"
+                    f"{'; its diagnostics: ' + self.stderr_tail() if self.diagnostics else ''}")
+            try:
+                line = self.responses.get(timeout=remaining)
+            except queue.Empty:
+                continue
+            if line is None:
                 raise RuntimeError(f"the app server closed its output while answering {method}")
             message = json.loads(line)
             if message.get("id") != request_id:
@@ -169,7 +225,6 @@ class AppServer:
             if "error" in message:
                 raise RuntimeError(f"{method} failed: {message['error'].get('message')}")
             return message.get("result") or {}
-        raise RuntimeError(f"the app server did not answer {method} in time")
 
     def notify(self, method: str, params: dict) -> None:
         assert self.process.stdin is not None
@@ -374,6 +429,8 @@ def main(argv: list[str] | None = None) -> int:
                f"sha256 {unrelated_before[:16]}…")
 
         server = AppServer(codex, home)
+        view: list[str] = []
+        item_kinds: list[str] = []
         try:
             server.handshake()
             loaded = server.call("thread/resume", {"threadId": thread_id})
@@ -383,23 +440,51 @@ def main(argv: list[str] | None = None) -> int:
                    f"thread/resume -> {loaded_thread.get('id')} [{loaded_thread.get('historyMode')}] "
                    f"cwd={loaded_thread.get('cwd')}")
             view, item_kinds = thread_view(server, thread_id)
+        except RuntimeError as failure:
+            # A server that stopped answering is a failed check with the harness's own diagnostics, not a
+            # traceback: the protocol is bounded, and so is this run's verdict.
+            record("the target harness's own loader opens the installed session", False, str(failure))
         finally:
             server.close()
-        print()
-        print("the target harness's own view of the installed session:")
-        for line in view:
-            print("   ", line)
+        if view:
+            print()
+            print("the target harness's own view of the installed session:")
+            for line in view:
+                print("   ", line)
         record("the target's own view lists the converted turns",
                "userMessage" in item_kinds and "agentMessage" in item_kinds,
                f"{len(item_kinds)} item(s) in the reply's own turn list")
 
+        # The reported invocation, checked against the directory this run installed into: Codex takes
+        # its data directory from CODEX_HOME alone, so a resume command that does not name it opens
+        # whichever home the caller's shell points at.
+        resume_arguments = target.get("resume_arguments") or []
+        exec_resume_arguments = target.get("exec_resume_arguments") or []
+        resume_environment = target.get("resume_environment") or {}
+        resume_command = str(target.get("resume_command") or "")
+        want_resume = [codex, "resume", thread_id]
+        want_exec_resume = [codex, "exec", "resume", thread_id, "<prompt>"]
+        record("the reported resume command selects the installation home",
+               resume_arguments == want_resume and exec_resume_arguments == want_exec_resume
+               and resume_environment == {"CODEX_HOME": str(home)}
+               and f"CODEX_HOME={home}" in resume_command and thread_id in resume_command,
+               f"resume_command={resume_command!r} environment={resume_environment}")
+
         if args.resume_prompt:
             print()
             session_before = installed.stat().st_size
-            turn = run([
-                codex, "exec", "resume", thread_id, args.resume_prompt,
+            # The turn runs the arguments the conversion reported -- binary, subcommand, identity --
+            # rather than a command line spelled here, so the printed invocation is what this check
+            # exercises. The flags this harness adds are its own isolation (no git repository, a
+            # read-only sandbox, no approvals) and belong to the check, not to the reported command.
+            # A report that did not check out (the check above recorded that) leaves the identity
+            # spelled here, so this turn still answers whether a turn can continue.
+            identity = exec_resume_arguments[1:-1] if exec_resume_arguments == want_exec_resume \
+                else ["exec", "resume", thread_id]
+            turn_command = [codex] + identity + [args.resume_prompt] + [
                 "--skip-git-repo-check", "-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"',
-            ], cwd=repo, env={"CODEX_HOME": str(home)}, timeout=900)
+            ]
+            turn = run(turn_command, cwd=repo, env={"CODEX_HOME": str(home)}, timeout=900)
             session_after = installed.stat().st_size
             record("a real turn continues from the installed session",
                    turn.returncode == 0 and session_after > session_before,

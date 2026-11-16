@@ -761,6 +761,7 @@ func messageFromParsed(parsed parser.ParsedMessage) Message {
 	}
 	if parsed.DialogueText != nil {
 		message.Dialogue = *parsed.DialogueText
+		message.DialogueProjected = true
 	}
 	for _, call := range parsed.ToolCalls {
 		message.ToolCalls = append(message.ToolCalls, ToolCall{
@@ -775,14 +776,16 @@ func messageFromParsed(parsed parser.ParsedMessage) Message {
 		// A provider that records a call's outcome as events on the call rather than as a message of
 		// its own -- Codex's function_call_output, a subagent's terminal status -- keeps that outcome
 		// there, and an archive read of the same session shows the same rows. Carrying them is what
-		// keeps a source read from being the narrower of the two.
+		// keeps a source read from being the narrower of the two. Their content is text the provider
+		// already decided (the parse decodes it where it presents it), not a JSON field to decode.
 		for _, event := range call.ResultEvents {
 			message.ToolResults = append(message.ToolResults, ToolResult{
-				ToolUseID:   event.ToolUseID,
-				Status:      event.Status,
-				Source:      event.Source,
-				ContentRaw:  event.Content,
-				ContentSize: len(event.Content),
+				ToolUseID:      event.ToolUseID,
+				Status:         event.Status,
+				Source:         event.Source,
+				ContentRaw:     event.Content,
+				ContentSize:    len(event.Content),
+				ContentDecoded: true,
 			})
 		}
 	}

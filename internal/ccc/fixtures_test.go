@@ -24,7 +24,10 @@ import (
 // identifier the provider itself reports.
 var (
 	claudeFixtureRef = Ref{Provider: "claude", ID: "9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10"}
-	codexFixtureRef  = Ref{Provider: "codex", ID: "0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812"}
+	// claudeToolingFixtureRef is the second Claude transcript: the tool-heavy shapes a conversion has to
+	// report (a reasoning trace, a subagent turn, an errored tool result).
+	claudeToolingFixtureRef = Ref{Provider: "claude", ID: "b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef"}
+	codexFixtureRef         = Ref{Provider: "codex", ID: "0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812"}
 )
 
 // fixtureRoot is the directory the committed sanitized fixtures live in; each provider subdirectory
@@ -208,6 +211,62 @@ func TestFixtureParseReportsIdentityAndConversation(t *testing.T) {
 	}
 	if report.StartedAt.IsZero() || report.EndedAt.IsZero() || !report.StartedAt.Before(report.EndedAt) {
 		t.Errorf("time range = %s .. %s", report.StartedAt, report.EndedAt)
+	}
+}
+
+// TestToolingFixtureCarriesTheShapesTheWriterMustNotMisread pins the two native records a conversion has
+// to read correctly, through the real parse of the committed bytes rather than a hand-built document.
+//
+// The first is a reasoning-only turn: the provider records its thinking block and no dialogue, so the
+// message's Content is the rendered trace and its dialogue projection is empty. A conversion that fell
+// back to Content would write the reasoning as the agent's own words while the report said the trace was
+// omitted. The second is a tool result whose recorded text is itself a JSON string -- a tool that printed
+// a JSON-encoded value -- which a second decode would change.
+func TestToolingFixtureCarriesTheShapesTheWriterMustNotMisread(t *testing.T) {
+	cfg := fixtureConfig(t)
+	conversation, err := NewSourceReader(cfg).Read(context.Background(), claudeToolingFixtureRef)
+	if err != nil {
+		t.Fatalf("reading the tooling fixture: %v", err)
+	}
+	const reasoning = "Naming it from the constant rather than from memory."
+	sawReasoningOnly := false
+	for _, message := range conversation.Messages {
+		if message.Thinking == reasoning {
+			sawReasoningOnly = true
+			if !message.DialogueProjected || message.Dialogue != "" {
+				t.Errorf("the reasoning-only record's projection = %q (projected %v), want the provider's own "+
+					"empty dialogue", message.Dialogue, message.DialogueProjected)
+			}
+			if !strings.Contains(message.Content, reasoning) {
+				t.Errorf("the reasoning-only record's content %q does not render the trace, so the fixture "+
+					"does not model the shape this rule is about", message.Content)
+			}
+		}
+	}
+	if !sawReasoningOnly {
+		t.Fatalf("the tooling fixture holds no reasoning-only record, so nothing pins what a writer must "+
+			"do with one (the fixture carries %d message(s))", len(conversation.Messages))
+	}
+
+	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if strings.Contains(string(rollout.Data), reasoning) {
+		t.Error("the conversion wrote the reasoning trace as the agent's dialogue")
+	}
+	if loss := lossCount(t, rollout.Losses, "reasoning_text"); loss.Count != 2 {
+		t.Errorf("reasoning_text = %+v, want both persisted traces counted", loss)
+	}
+	outputs := map[string]string{}
+	for _, line := range decodeRollout(t, rollout.Data) {
+		if payloadField(t, line, "type") == codexItemFunctionOutput {
+			outputs[payloadField(t, line, "call_id")] = payloadField(t, line, "output")
+		}
+	}
+	if got := outputs["toolu_01Tooling00000000000000003"]; got != `"maxBackoffSeconds"` {
+		t.Errorf("the JSON-string result was written as %q, want the text the tool printed, quotation "+
+			"marks included", got)
 	}
 }
 

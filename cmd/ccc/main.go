@@ -46,7 +46,8 @@ usage:
   target's own session id and resume command. It never changes the source session and never replaces
   an existing target session. The common invocation is:
       ccc continue claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to codex
-  and the result says which command resumes it (codex resume <session-id>).
+  and the result says which command resumes it (CODEX_HOME=<dir> codex resume <session-id>), naming
+  the data directory the session was installed into as well as the session itself.
 
   inspect reports the session's identity, agent, source and conversation shape. It reads the
   source session through the provider's own reader and, when an archive is present, says what the

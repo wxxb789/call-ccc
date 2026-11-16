@@ -350,6 +350,7 @@ type codexRolloutBuilder struct {
 	lossToolRoleMessages  int
 	lossUnclassifiedRoles int
 	lossEmptyUserMessages int
+	lossNonDialogueText   int
 	lossUnpairedResults   int
 	lossUnresolved        int
 	lossOutcomes          int
@@ -357,12 +358,17 @@ type codexRolloutBuilder struct {
 	lossEmptyInputs       int
 	lossGeneratedIDs      int
 	lossEmptyResults      int
+	lossResultBlocks      int
 	foreignToolNames      map[string]struct{}
 	toolNameOrder         []string
 
-	pendingCallID string
-	sawBoundary   bool
-	turnOpen      bool
+	// pendingCalls holds the calls this conversion carried that no result has answered yet. It is what
+	// an id-less result may be paired with, and only while exactly one call is outstanding: with two
+	// or more, the result could belong to any of them, and that ambiguity must not disappear just
+	// because a further call arrived.
+	pendingCalls map[string]struct{}
+	sawBoundary  bool
+	turnOpen     bool
 }
 
 func (b *codexRolloutBuilder) write(record codexEnvelope) {
@@ -427,10 +433,12 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 		return
 	}
 	if len(message.ToolResults) == 0 && len(message.ToolCalls) == 0 && strings.TrimSpace(message.Thinking) != "" &&
-		strings.TrimSpace(message.Content) == "" {
+		strings.TrimSpace(dialogueText(message)) == "" {
 		// Nothing but a reasoning trace: the target has no record for a persisted reasoning trace that
 		// is not the target's own encrypted artifact (goal 0013 owns that), so it is counted, not
-		// written as a message with empty text.
+		// written as a message with empty text. The test is the same one the message rule below makes,
+		// so a provider that rendered its reasoning into Content cannot smuggle it in as dialogue when
+		// its own projection says the message has none.
 		b.lossReasoning++
 		return
 	}
@@ -467,8 +475,16 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 		case text != "":
 			b.messageItem(ItemAssistant, codexRoleAssistant, codexContentOutputText, text, message.Timestamp)
 		case role == parser.RoleUser && len(message.ToolResults) == 0 && len(message.ToolCalls) == 0:
-			// A user record with no dialogue and no tool evidence carries nothing the target can show.
-			b.lossEmptyUserMessages++
+			// A user record with no dialogue and no tool evidence. Two shapes reach here: a record
+			// holding no text at all, and one whose text the source itself classified as not dialogue
+			// (a tool result the provider recorded with a user role). Writing the second as that user's
+			// turn would state that the user said the tool's words, so it is counted under its own
+			// category rather than reported as an empty record.
+			if strings.TrimSpace(message.Content) == "" {
+				b.lossEmptyUserMessages++
+			} else {
+				b.lossNonDialogueText++
+			}
 			return
 		}
 	}
@@ -479,18 +495,45 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 	for _, result := range message.ToolResults {
 		b.toolResult(result, message.Timestamp)
 	}
-	// An archive read folds a call's outcome onto the call itself; a source read carries it as the
-	// message's own result. Both are the same evidence and both are written.
+	// An archive read folds a call's outcome onto the call itself as well as into the result events
+	// that outcome came from: internal/db restores a summary it dropped from the call's own sole
+	// content-bearing event, so the two are the same evidence. Every event is written above; a summary
+	// is written only when no event of that call already holds it, which is what keeps one recorded
+	// outcome from arriving as two function_call_output records.
 	for _, call := range message.ToolCalls {
 		if strings.TrimSpace(call.ResultContent) == "" && call.ResultContentSize == 0 {
 			continue
 		}
+		if resultEventHoldsText(message.ToolResults, call.ToolUseID, call.ResultContent) {
+			continue
+		}
 		b.toolResult(ToolResult{
-			ToolUseID:   call.ToolUseID,
-			ContentRaw:  call.ResultContent,
-			ContentSize: call.ResultContentSize,
+			ToolUseID:      call.ToolUseID,
+			ContentRaw:     call.ResultContent,
+			ContentSize:    call.ResultContentSize,
+			ContentDecoded: true,
 		}, message.Timestamp)
 	}
+}
+
+// resultEventHoldsText reports whether one of a message's result events already carries a call's
+// summary text, which makes that summary a duplicate of an outcome the conversion writes anyway rather
+// than a second outcome of the same call. The archive's own summary is the sole event's text byte for
+// byte (internal/db's dedup restores a dropped summary from it) or an aggregate of several events, and
+// the reader trims a result's text where it presents it, so the comparison is made in that trimmed
+// namespace. An empty summary is compared the same way: a blocked archive result is stored as an empty
+// summary beside an empty event, and counting it twice would report one dropped outcome as two.
+func resultEventHoldsText(results []ToolResult, callID, text string) bool {
+	trimmed := strings.TrimSpace(text)
+	for _, result := range results {
+		if result.ToolUseID != callID {
+			continue
+		}
+		if content, _ := resultText(result); strings.TrimSpace(content) == trimmed {
+			return true
+		}
+	}
+	return false
 }
 
 // startTurn opens a turn: the target groups records into turns, and a user message is where a turn
@@ -597,21 +640,25 @@ func (b *codexRolloutBuilder) toolCall(ordinal, index int, call ToolCall, at tim
 		},
 	})
 	b.callOwners[callID] = struct{}{}
-	b.notePendingCall(callID)
+	if b.pendingCalls == nil {
+		b.pendingCalls = map[string]struct{}{}
+	}
+	b.pendingCalls[callID] = struct{}{}
 	b.carried.ToolCalls++
 	b.items = append(b.items, TargetItem{Kind: ItemToolCall, CallID: callID, ToolName: name, InputJSON: input})
 }
 
-// notePendingCall remembers the call a later id-less result may belong to. The pairing lasts only until
-// another call arrives: two calls without a recorded result id make the pairing a guess — the result
-// could belong to either one — and dropping the pairing is the only answer that cannot attribute one
-// call's output to another.
-func (b *codexRolloutBuilder) notePendingCall(callID string) {
-	if b.pendingCallID != "" {
-		b.pendingCallID = ""
-		return
+// solePendingCall answers the one call an id-less result may belong to: exactly one carried call with no
+// result yet. Two or more outstanding calls make the pairing a guess -- the result could belong to any
+// of them -- and no outstanding call leaves nothing to pair with.
+func (b *codexRolloutBuilder) solePendingCall() (string, bool) {
+	if len(b.pendingCalls) != 1 {
+		return "", false
 	}
-	b.pendingCallID = callID
+	for callID := range b.pendingCalls {
+		return callID, true
+	}
+	return "", false
 }
 
 func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time) {
@@ -626,11 +673,14 @@ func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time) {
 	}
 	callID := strings.TrimSpace(result.ToolUseID)
 	if callID == "" {
-		callID = b.pendingCallID
-		if callID == "" {
+		pending, ok := b.solePendingCall()
+		if !ok {
+			// No call is outstanding, or several are and the result could belong to any of them: the
+			// source recorded no id, so the pairing would be an invention.
 			b.lossUnpairedResults++
 			return
 		}
+		callID = pending
 		b.lossGeneratedIDs++
 	} else if _, ok := b.callOwners[callID]; !ok {
 		// The result names a call this conversion did not write (the call preceded the source's
@@ -640,7 +690,8 @@ func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time) {
 		b.lossUnpairedResults++
 		return
 	}
-	text := decodeResultText(result)
+	text, blocks := resultText(result)
+	b.lossResultBlocks += blocks
 	if text == "" {
 		// The target's output field carries text; a result with none leaves nothing to write, and an
 		// empty string would read as "the tool returned nothing" rather than "the source recorded no
@@ -648,7 +699,7 @@ func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time) {
 		b.lossEmptyResults++
 		return
 	}
-	b.pendingCallID = ""
+	delete(b.pendingCalls, callID)
 	b.write(codexEnvelope{
 		Timestamp: b.clock.next(at),
 		Type:      codexRecordResponseItem,
@@ -693,8 +744,9 @@ func (b *codexRolloutBuilder) losses() []Loss {
 	emptyResultsDetail := "every carried tool result had recorded output text"
 	if b.lossEmptyResults > 0 {
 		emptyResultsDetail = "the target's function_call_output carries output text only; a result " +
-			"whose source record holds no output text is not written, because an empty string would " +
-			"read as an empty tool output"
+			"this read holds no text for is not written, because an empty string would read as an " +
+			"empty tool output. A content field can hold no text at all, or hold only blocks this " +
+			"target has no field for (counted above as unrepresentable_result_blocks)"
 	}
 	preBoundaryDetail := "no compaction boundary was carried"
 	if b.sawBoundary {
@@ -749,6 +801,15 @@ func (b *codexRolloutBuilder) losses() []Loss {
 				"target can show, so no message is written for it",
 		},
 		{
+			Category:    "non_dialogue_content",
+			Disposition: DispositionOmitted,
+			Count:       b.lossNonDialogueText,
+			Detail: "the source itself classified these records as carrying no dialogue, and their " +
+				"content is not dialogue it rendered either (a tool result the provider recorded with " +
+				"a user role): the target has no message that would not state the user said those " +
+				"words, so the text is not written",
+		},
+		{
 			Category:    "unpaired_tool_results",
 			Disposition: DispositionOmitted,
 			Count:       b.lossUnpairedResults,
@@ -760,6 +821,16 @@ func (b *codexRolloutBuilder) losses() []Loss {
 			Disposition: DispositionOmitted,
 			Count:       b.lossEmptyResults,
 			Detail:      emptyResultsDetail,
+		},
+		{
+			Category:    "unrepresentable_result_blocks",
+			Disposition: DispositionOmitted,
+			Count:       b.lossResultBlocks,
+			Detail: "the target's function_call_output carries text only, and the reader's text " +
+				"channel carries a block's own text (or result text) and nothing else: a block the " +
+				"source recorded with other content (an image payload, a block type this build does " +
+				"not read) is not written. The count is of blocks, not of results, and a block whose " +
+				"text was carried is not counted",
 		},
 		{
 			Category:    "unresolved_tool_outputs",
@@ -834,11 +905,14 @@ func moreNames(more int) string {
 //
 // The source reader's Content is the provider's rendered transcript, which for a message that carries
 // tool calls includes a rendering of the calls themselves (`[Read: <path>]`); the Dialogue projection
-// is the same message without those structured payloads. A message that carries no calls has nothing
-// to duplicate, so its Content is the text, and a message that carries calls contributes only what the
-// provider recorded as dialogue.
+// is the same message without those structured payloads. A message that has dialogue has it: the
+// projection where the source made one, an explicitly empty projection included -- a provider that
+// projected nothing for a message whose Content renders something else (a persisted reasoning trace, a
+// tool call) has said that message has no dialogue to carry, and falling back to the rendering would
+// state words the source never recorded as spoken. A message whose source classified no projection has
+// nothing to duplicate when it carries no calls, so its Content is the text.
 func dialogueText(message Message) string {
-	if text := strings.TrimSpace(message.Dialogue); text != "" {
+	if strings.TrimSpace(message.Dialogue) != "" || message.DialogueProjected {
 		return message.Dialogue
 	}
 	if len(message.ToolCalls) > 0 {
@@ -847,15 +921,75 @@ func dialogueText(message Message) string {
 	return message.Content
 }
 
-// decodeResultText is the text a tool result's recorded content holds. A provider may record the
-// content field as an encoded JSON string (the shape the inherited reader keeps raw and decodes where
-// it presents it), so the decoded text is what the tool produced.
-func decodeResultText(result ToolResult) string {
-	raw := result.ContentRaw
-	if decoded := parser.DecodeContent(raw); decoded != "" {
-		return decoded
+// resultText is the text a tool result contributes to the target, plus the number of blocks its content
+// holds that the target's output field cannot carry.
+//
+// A result the read already decoded -- a result event's content, an archive row -- is text as it
+// stands: decoding it again would strip the quotation marks from a tool whose own output is a JSON
+// string. An encoded content field goes through the inherited reader's text channel instead, and a
+// field that channel carries nothing from is not written as its own JSON: that would put a payload the
+// target cannot express (an image) in the output field as though the tool had said it. When the channel
+// carries nothing and the field is not JSON at all, the field's own bytes are the output, which is the
+// shape a record whose content was never JSON has.
+func resultText(result ToolResult) (string, int) {
+	if result.ContentDecoded {
+		return result.ContentRaw, 0
 	}
-	return raw
+	blocks := unrepresentedResultBlocks(result.ContentRaw)
+	if decoded := parser.DecodeContent(result.ContentRaw); decoded != "" {
+		return decoded, blocks
+	}
+	if json.Valid([]byte(result.ContentRaw)) {
+		return "", blocks
+	}
+	return result.ContentRaw, 0
+}
+
+// unrepresentedResultBlocks counts the blocks in an encoded tool-result content field that hold
+// evidence the target's output field cannot carry.
+//
+// The reader's text channel carries a block's "text" (or its "result") and nothing else, so a block it
+// carries nothing from -- an image payload, a tool reference, a block type this build does not read --
+// is evidence a conversion would otherwise drop without saying so. Blocks the channel carries text from
+// are not counted (their remaining members are the reader's own business), and neither is a block that
+// holds nothing but its own type and the provider's cache marker. A content field that is not a JSON
+// array of objects has no blocks at all.
+func unrepresentedResultBlocks(raw string) int {
+	var blocks []map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &blocks); err != nil || blocks == nil {
+		return 0
+	}
+	count := 0
+	for _, block := range blocks {
+		carried, holds := false, false
+		for name, value := range block {
+			if isJSONEmpty(value) {
+				continue
+			}
+			switch strings.ToLower(name) {
+			case "type", "cache_control":
+				// The block's own kind and a provider's cache marker are not content.
+			case "text", "result":
+				carried = true
+			default:
+				holds = true
+			}
+		}
+		if holds && !carried {
+			count++
+		}
+	}
+	return count
+}
+
+// isJSONEmpty reports whether a raw JSON value carries nothing: a null, an empty string, an empty
+// array or an empty object.
+func isJSONEmpty(value json.RawMessage) bool {
+	switch strings.TrimSpace(string(value)) {
+	case "", "null", `""`, "[]", "{}":
+		return true
+	}
+	return false
 }
 
 // codexRolloutFileName is the name the target's own discovery reads: the date and a uuid, under the

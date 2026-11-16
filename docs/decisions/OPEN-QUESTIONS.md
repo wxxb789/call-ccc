@@ -729,3 +729,27 @@ supersede it with a newer one and say which it supersedes.
 - **Settled by:** whether the operator prefers a dry run whose reported conversion is byte-for-byte what an
   installed run would write (at the cost of touching the home it says it does not touch), or a dry run
   that touches nothing and says which one field differs.
+
+## Q-0002-12 — What a conversion does on a filesystem without hard links
+
+- **Status:** resolved (default taken)
+- **Question:** the installer publishes a converted session by taking its final name with a hard link,
+  which is atomic and exclusive. A filesystem without hard links (some Windows volumes, some network
+  mounts) offers no mechanism here that takes a name *without replacing* whatever is at it: `os.Rename`
+  replaces, so the previous fallback — check that the name is free, then rename — is exclusive only until
+  another installer creates the session in that window, and the rename then replaces that session. The
+  review found this while auditing the unconditional "a conversion never replaces a target session" rule:
+  may such a filesystem be supported by a non-exclusive fallback, or must the installation be refused?
+- **Default taken:** refuse. `InstallCodexRollout` has one publication mechanism, the exclusive hard link;
+  when the filesystem cannot take it the installation fails with `ErrNoExclusiveInstall`, naming the
+  directory and the link error, and leaves no session file, no placeholder and no temporary file behind
+  (`internal/ccc/codex_install.go`). The cost is disclosed rather than hidden: a target data directory on
+  such a filesystem cannot receive a converted session at all until a real no-replace primitive is added.
+- **Reversal:** restore the existence-check-then-rename fallback (one branch in `InstallCodexRollout` and
+  its test), or add a per-platform no-replace primitive — Linux `renameat2(RENAME_NOREPLACE)`, Windows
+  `MoveFileEx` without `REPLACE_EXISTING`, or an `O_EXCL` claim of the name followed by a rename of that
+  own placeholder, which reintroduces a window in which a reader (including the target's own discovery)
+  sees a zero-byte rollout.
+- **Settled by:** whether the operator wants filesystems without hard links supported, and if so by which
+  primitive. Each alternative trades the unconditional exclusive-publication rule for reach or for a
+  visible placeholder window, so the choice is the owner's rather than an unattended default.

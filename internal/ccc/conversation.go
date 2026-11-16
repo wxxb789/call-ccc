@@ -81,6 +81,12 @@ type ToolResult struct {
 	Source      string `json:"source,omitempty"`
 	ContentRaw  string `json:"content_raw,omitempty"`
 	ContentSize int    `json:"content_size,omitempty"`
+	// ContentDecoded says which representation ContentRaw holds. False (the zero value) means the
+	// provider's own content field as it recorded it -- JSON, a string or an array of blocks -- which a
+	// writer decodes once through the inherited reader. True means text a read has already decoded (a
+	// result event's content, an archive row), which must never be decoded again: a tool whose own
+	// output is literally a JSON string would otherwise lose its quotation marks.
+	ContentDecoded bool `json:"content_decoded,omitempty"`
 	// PersistedOutputUnresolved carries the provider's own parse-time answer that this result's content
 	// is the *placeholder* naming a side file the parser could not read, not the output itself
 	// (parser.ParsedToolResult.PersistedOutputUnresolved). ContentRaw then holds the placeholder text,
@@ -95,15 +101,22 @@ type ToolResult struct {
 // persisted reasoning and side text where the source format records them; they are carried as
 // evidence, never as authority to replay anything.
 type Message struct {
-	Ordinal     int          `json:"ordinal"`
-	Role        string       `json:"role"`
-	Content     string       `json:"content,omitempty"`
-	Dialogue    string       `json:"dialogue,omitempty"`
-	Thinking    string       `json:"thinking,omitempty"`
-	Timestamp   time.Time    `json:"timestamp,omitempty"`
-	Model       string       `json:"model,omitempty"`
-	ToolCalls   []ToolCall   `json:"tool_calls,omitempty"`
-	ToolResults []ToolResult `json:"tool_results,omitempty"`
+	Ordinal int    `json:"ordinal"`
+	Role    string `json:"role"`
+	Content string `json:"content,omitempty"`
+	// Dialogue is what the provider said, without the renderings of the blocks that are not dialogue.
+	Dialogue string `json:"dialogue,omitempty"`
+	// DialogueProjected says whether the source answered that question for this message at all. A
+	// provider that classifies its own dialogue answered it, an empty projection included: its Content
+	// then renders blocks that are not dialogue (a persisted reasoning trace, a tool call), and a
+	// writer that fell back to that rendering would state words the source never recorded as spoken.
+	// False means the source classified nothing here and Content is the message's text.
+	DialogueProjected bool         `json:"dialogue_projected,omitempty"`
+	Thinking          string       `json:"thinking,omitempty"`
+	Timestamp         time.Time    `json:"timestamp,omitempty"`
+	Model             string       `json:"model,omitempty"`
+	ToolCalls         []ToolCall   `json:"tool_calls,omitempty"`
+	ToolResults       []ToolResult `json:"tool_results,omitempty"`
 	// IsSystem marks a record the provider itself flagged as system-injected (a compaction summary,
 	// a notice). It is independent of Role: a compaction summary is recorded as an assistant record.
 	IsSystem          bool `json:"is_system,omitempty"`

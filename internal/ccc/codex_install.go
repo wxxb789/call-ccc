@@ -34,6 +34,18 @@ var ErrTargetHomeMissing = errors.New("the target harness has no data directory"
 // creates a new identity, and a taken path is a refusal, never an overwrite.
 var ErrTargetExists = errors.New("a target session already exists at that path")
 
+// ErrNoExclusiveInstall reports that the target filesystem has no exclusive publication mechanism. The
+// installer's only one is a hard link, which takes the session's name atomically and fails when the name
+// is taken; a filesystem without hard links (some Windows volumes, some network mounts) is refused
+// instead of being published with a rename, because a rename replaces whatever is at the destination and
+// would let one conversion replace a session another agent had already continued.
+var ErrNoExclusiveInstall = errors.New("the target filesystem has no exclusive install mechanism")
+
+// linkSession is os.Link, named so the installer's exclusive-publication rule can be exercised on a host
+// whose filesystems all have hard links: a test replaces it to fail the way a filesystem without them
+// does, and the installer must then refuse rather than publish by rename.
+var linkSession = os.Link
+
 // ResolveCodexHome answers the Codex data directory a conversion installs into: the caller's explicit
 // directory, else $CODEX_HOME, else ~/.codex. The boolean reports whether the answer came from the
 // caller, which is what decides whether a missing directory may be created.
@@ -63,10 +75,13 @@ func ResolveCodexHome(explicit string) (string, bool, error) {
 // occupies, plus the mechanism that put it there.
 //
 // Nothing existing is ever replaced: the bytes are written to a sibling temporary file first and the
-// final name is taken either with a hard link (atomic on a filesystem that has them, and exclusive, so
-// a taken name fails instead of being overwritten) or, on a filesystem without hard links, by checking
-// that the name is free and renaming. A reader therefore never sees a half-written session, and a
-// conversion cannot replace a session another agent may already have continued.
+// final name is taken with a hard link, which is atomic on a filesystem that has them and exclusive, so
+// a taken name fails instead of being overwritten. A filesystem without hard links (some Windows
+// volumes, some network mounts) has no exclusive way to publish the finished file here, so the
+// installation is refused (ErrNoExclusiveInstall) rather than published by rename: a rename replaces
+// whatever is at the destination, which is exactly the overwrite this rule forbids. A reader therefore
+// never sees a half-written session, and a conversion cannot replace a session another agent may already
+// have continued.
 func InstallCodexRollout(rollout CodexRollout, home string) (string, string, error) {
 	directory := filepath.Join(home, codexSessionsSubdir, filepath.FromSlash(rollout.Directory))
 	if err := os.MkdirAll(directory, 0o700); err != nil {
@@ -105,26 +120,17 @@ func InstallCodexRollout(rollout CodexRollout, home string) (string, string, err
 		return "", "", fmt.Errorf("closing %s: %w", tempName, err)
 	}
 
-	if err := os.Link(tempName, target); err != nil {
+	if err := linkSession(tempName, target); err != nil {
+		os.Remove(tempName)
 		if errors.Is(err, os.ErrExist) {
-			os.Remove(tempName)
 			return "", "", fmt.Errorf("%w: %s", ErrTargetExists, target)
 		}
-		// A filesystem without hard links (some Windows volumes, some network mounts) cannot take the
-		// exclusive link. The name is still never taken twice: the check above and this one refuse a
-		// path that holds anything, and only then does the rename move the finished file into place.
-		if _, statErr := os.Lstat(target); statErr == nil {
-			os.Remove(tempName)
-			return "", "", fmt.Errorf("%w: %s", ErrTargetExists, target)
-		} else if !errors.Is(statErr, os.ErrNotExist) {
-			os.Remove(tempName)
-			return "", "", fmt.Errorf("checking %s: %w", target, statErr)
-		}
-		if renameErr := os.Rename(tempName, target); renameErr != nil {
-			os.Remove(tempName)
-			return "", "", fmt.Errorf("installing %s: %w", target, renameErr)
-		}
-		return target, "rename-after-existence-check", nil
+		// A filesystem without hard links cannot take the exclusive link, and this installer has no
+		// other mechanism that takes a name without replacing what is there. The conversion is refused
+		// rather than published by a rename, which would be able to replace a session another agent had
+		// already continued.
+		return "", "", fmt.Errorf("%w: %s: %v; install into a filesystem that supports hard links",
+			ErrNoExclusiveInstall, directory, err)
 	}
 	if err := os.Remove(tempName); err != nil {
 		// The session is installed; a temporary file left behind is not a failure of the conversion,
@@ -254,7 +260,8 @@ func compareCodexRoundTrip(rollout CodexRollout, readBack Conversation) []string
 			readCalls = append(readCalls, roundTripCallKey(call.ToolUseID, call.Name, call.InputJSON))
 		}
 		for _, result := range message.ToolResults {
-			readResults = append(readResults, roundTripResultKey(result.ToolUseID, decodeResultText(result)))
+			text, _ := resultText(result)
+			readResults = append(readResults, roundTripResultKey(result.ToolUseID, text))
 		}
 	}
 

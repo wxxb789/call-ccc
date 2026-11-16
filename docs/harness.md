@@ -186,15 +186,20 @@ says so.
   not: it needs the Codex binary installed and, for a real turn, model access. It builds `ccc`,
   converts a committed fixture into an isolated Codex data directory (seeded with the host's own
   `config.toml` — settings, never credentials or sessions), plants an unrelated session there, runs
-  `ccc continue … --json`, re-reads the installed file with its own `ccc inspect` invocation and compares
-  what the inherited reader made of it with what the conversion says it carried (a second process, so the
-  conversion's own round-trip verdict cannot stand in for that read), asks Codex's own app server to load
-  the session (`thread/resume`) and prints Codex's own view of it (`thread/read`), hashes the source, the
-  planted session and every session the home already held
-  before and after (removing the planted one again when the run ends), and — with
-  `--resume-prompt` — runs one real turn through `codex exec resume` and prints the target's answer.
-  Every check prints its own verdict and the script exits non-zero when one fails, so a run that
-  could not do the native half says so instead of reporting a pass.
+  `ccc continue … --json`, checks the resume invocation the conversion reported (its argument vector
+  names the binary, `resume` and the session; its environment selects the data directory the session
+  was installed into, which is the only way Codex is told where to look), re-reads the installed file
+  with its own `ccc inspect` invocation and compares what the inherited reader made of it with what the
+  conversion says it carried (a second process, so the conversion's own round-trip verdict cannot stand
+  in for that read), asks Codex's own app server to load the session (`thread/resume`) and prints
+  Codex's own view of it (`thread/read`), hashes the source, the planted session and every session the
+  home already held before and after (removing the planted one again when the run ends), and — with
+  `--resume-prompt` — runs one real turn from the reported invocation and prints the target's answer.
+  Every app-server request is bounded by the script's own deadline (`APP_SERVER_TIMEOUT`), stdout is
+  read by a thread and stderr drained by another, so a server that stops answering or fills its
+  diagnostics pipe is reported as a failed check rather than hanging the run. Every check prints its
+  own verdict and the script exits non-zero when one fails, so a run that could not do the native half
+  says so instead of reporting a pass.
 
 ## Why the Go steps target a subset
 

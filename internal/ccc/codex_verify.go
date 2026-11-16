@@ -338,7 +338,7 @@ func VerifyCodexResume(ctx context.Context, opts CodexResumeOptions) ResumeVerif
 		"-c", "sandbox_mode=\"read-only\"",
 		"-c", "approval_policy=\"never\"",
 	}
-	verification.Command = strings.Join(append([]string{path}, args...), " ")
+	verification.Command = resumeCommandLine(path, args, opts.Home)
 
 	before, _ := fileSize(opts.SessionPath)
 	output, diagnostics, err := runCodexTurn(ctx, path, opts, timeout, args)
@@ -376,6 +376,18 @@ func VerifyCodexResume(ctx context.Context, opts CodexResumeOptions) ResumeVerif
 	}
 	verification.State = VerificationStateVerified
 	return verification
+}
+
+// resumeCommandLine is the command a resume verification reports: the binary it resolved, the arguments
+// it runs, and the environment that selects the data directory the turn runs against. Codex takes that
+// directory from CODEX_HOME alone (it has no flag for it), so a reader who pastes the reported command
+// without that environment resumes whichever home their shell points at, not the one that was verified.
+func resumeCommandLine(binary string, arguments []string, home string) string {
+	environment := map[string]string{}
+	if home = strings.TrimSpace(home); home != "" {
+		environment[codexHomeEnv] = home
+	}
+	return renderResumeCommand(append([]string{binary}, arguments...), environment)
 }
 
 // runCodexTurn runs one non-interactive turn and returns its answer and its diagnostics separately: the

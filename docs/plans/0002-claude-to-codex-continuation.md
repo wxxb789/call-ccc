@@ -43,7 +43,7 @@ repeated in the evidence record):
 | `codex app-server` + `thread/start {ephemeral:true}` | answers the provider and model a **new** session would use (`openai` and the configured model, on a host whose configuration names no provider explicitly), writing no session file — while `config/read` reports only the *explicit* setting (null there) |
 | A rollout whose messages are only `response_item`s (no `event_msg`) | loads and resumes, but the harness's own `thread/read` view of it is empty: no turns, no preview |
 | The same rollout with the `event_msg` `user_message`/`agent_message` records the harness writes beside them | `thread/read` returns the turns with their messages, and the preview is the first user message |
-| `codex resume <id>` in a terminal | cannot be exercised on this host: no TTY is available (`TERM=dumb…`), so the interactive loader is verified through the same `thread/resume` request its clients use |
+| `codex resume <id>` in a terminal (with `CODEX_HOME` naming the home that holds the session) | cannot be exercised on this host: no TTY is available (`TERM=dumb…`), so the interactive loader is verified through the same `thread/resume` request its clients use |
 
 Consequences taken as the increment's defaults:
 
@@ -128,10 +128,11 @@ disposition, so a consumer never has to infer what was left out.
 - Install path: `<home>/sessions/<YYYY>/<MM>/<DD>/rollout-<stamp>-<new uuid v7>.jsonl`, the layout the
   target's own discovery walks.
 - Creation is exclusive and never replaces anything: the bytes are written to a sibling temporary file
-  (0o600) first, and the final name is taken either with a hard link (atomic and exclusive where the
-  filesystem has them) or, on a filesystem without them, by checking that the name is free and renaming.
-  A reader never sees a partial file, and a collision is reported, never retried into a different
-  identity silently.
+  (0o600) first, and the final name is taken with a hard link (atomic and exclusive where the filesystem
+  has them). A filesystem without hard links has no mechanism here that takes a name without replacing
+  what is at it, so the installation is refused there (`ErrNoExclusiveInstall`) instead of being
+  published by a rename. A reader never sees a partial file, and a collision is reported, never retried
+  into a different identity silently.
 - The source file's own digest (sha256, taken before the conversion and compared after installation) is
   reported (`installation.source_unchanged`); it compares the file's own bytes deliberately, not a
   provider's fingerprint — a provider may fingerprint a parse or a store member, and comparing those
@@ -182,11 +183,11 @@ home.
 The JSON document (one object) carries: `upstream_revision`, `source` (identity, counts, fidelity,
 `read_from`: `source`/`archive`), `target_session` (`provider`, `format`, `format_limits`, `home`, `binary`,
 `binary_found`, `binary_version`, `session_id`, `file_name`, `path`, `cwd`, `started_at`, `cli_version`,
-`cli_version_source`, `model_provider`, `model_provider_source`, `model`, `resume_command`,
-`exec_resume_command`), `conversion` (`state`, `format`, `read_from`, `dry_run`, `carried`, `losses[]`,
-`source_fidelity`), `installation` (`state`, `path`, `mechanism`, `created`, `source_unchanged`,
-`detail`), `verification` (`structure`, `load`, `resume` — each `{state: "verified"|"not-verified"|
-"not-requested", …}`) and `warnings[]`.
+`cli_version_source`, `model_provider`, `model_provider_source`, `model`, `resume_arguments`,
+`exec_resume_arguments`, `resume_environment`, `resume_command`, `exec_resume_command`), `conversion`
+(`state`, `format`, `read_from`, `dry_run`, `carried`, `losses[]`, `source_fidelity`), `installation`
+(`state`, `path`, `mechanism`, `created`, `source_unchanged`, `detail`), `verification` (`structure`,
+`load`, `resume` — each `{state: "verified"|"not-verified"|"not-requested", …}`) and `warnings[]`.
 
 ## 6. Evidence plan
 
@@ -194,7 +195,7 @@ The JSON document (one object) carries: `upstream_revision`, `source` (identity,
 | --- | --- |
 | one documented non-interactive command, with the native resume identity/command shown | `ccc continue claude:9f2c1d47-… --to codex --target-home <isolated> --json` output in the evidence record, plus the same run without `--json`; `ccc help` / `ccc continue -h` text; `internal/ccc/continue_test.go` and `cmd/ccc/main_test.go` |
 | Codex loads the **installed** session and continues with a new turn | `scripts/codex-native-check.py` run on this host: `thread/resume` output (codex's own loader, isolated `CODEX_HOME`) and a real `codex exec resume <id> "<question>"` turn whose answer quotes converted facts; the session file's growth after the turn |
-| a representative transcript keeps supported semantics, unsupported content reported | the `claude` fixture round-trip test (write → parse with the inherited Codex reader → compare), a second fixture/throwaway transcript carrying thinking, a sidechain message, a system record and an errored result — its two tool calls both keep their result, and the unpaired-result case is synthetic in `codex_target_test.go` — (`continue_test.go`), the `losses[]` block in the run's JSON, and the source↔target table in the evidence record |
+| a representative transcript keeps supported semantics, unsupported content reported | the `claude` fixture round-trip test (write → parse with the inherited Codex reader → compare), a second fixture/throwaway transcript carrying thinking (one trace beside its dialogue, one alone), a sidechain message, a system record, an errored result and a result whose text is a JSON string — its three tool calls all keep their result, and the unpaired-result case is synthetic in `codex_target_test.go` — (`continue_test.go`), the `losses[]` block in the run's JSON, and the source↔target table in the evidence record |
 | source unchanged, target identity new, no unrelated session replaced | the harness hashes the source fixture, a pre-existing unrelated Codex session and the target home's session tree before/after; `continue_test.go` asserts the same in-process (`hashTree`, existing-file hash), and the writer's exclusive create is pinned by a test |
 | machine-readable output distinguishes conversion/installation/native-resume; help explains the common invocation | the three JSON blocks above, one test per state (`cmd/ccc/main_test.go`), and the `--help` text in the evidence record |
 

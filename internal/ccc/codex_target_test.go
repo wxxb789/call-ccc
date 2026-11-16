@@ -2,6 +2,7 @@ package ccc
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -294,21 +295,23 @@ func TestCodexRolloutReportsEveryCategoryItKnows(t *testing.T) {
 		count       int
 		disposition string
 	}{
-		"reasoning_text":             {2, DispositionOmitted},
-		"sidechain_messages":         {1, DispositionOmitted},
-		"system_records":             {1, DispositionOmitted},
-		"tool_role_messages":         {1, DispositionOmitted},
-		"unclassified_role_messages": {1, DispositionOmitted},
-		"empty_user_messages":        {1, DispositionOmitted},
-		"unpaired_tool_results":      {2, DispositionOmitted},
-		"empty_tool_results":         {0, DispositionOmitted},
-		"unresolved_tool_outputs":    {1, DispositionCarriedWithCaveat},
-		"tool_result_outcomes":       {1, DispositionCarriedWithCaveat},
-		"empty_tool_inputs":          {1, DispositionCarriedWithCaveat},
-		"generated_call_ids":         {0, DispositionCarriedWithCaveat},
-		"tool_name_vocabulary":       {2, DispositionCarriedWithCaveat},
-		"provider_binding":           {0, DispositionCarriedWithCaveat},
-		"pre_compaction_history":     {0, DispositionCarriedWithCaveat},
+		"reasoning_text":                {2, DispositionOmitted},
+		"sidechain_messages":            {1, DispositionOmitted},
+		"system_records":                {1, DispositionOmitted},
+		"tool_role_messages":            {1, DispositionOmitted},
+		"unclassified_role_messages":    {1, DispositionOmitted},
+		"empty_user_messages":           {1, DispositionOmitted},
+		"non_dialogue_content":          {0, DispositionOmitted},
+		"unpaired_tool_results":         {2, DispositionOmitted},
+		"empty_tool_results":            {0, DispositionOmitted},
+		"unrepresentable_result_blocks": {0, DispositionOmitted},
+		"unresolved_tool_outputs":       {1, DispositionCarriedWithCaveat},
+		"tool_result_outcomes":          {1, DispositionCarriedWithCaveat},
+		"empty_tool_inputs":             {1, DispositionCarriedWithCaveat},
+		"generated_call_ids":            {0, DispositionCarriedWithCaveat},
+		"tool_name_vocabulary":          {2, DispositionCarriedWithCaveat},
+		"provider_binding":              {0, DispositionCarriedWithCaveat},
+		"pre_compaction_history":        {0, DispositionCarriedWithCaveat},
 	} {
 		loss := lossCount(t, rollout.Losses, category)
 		if loss.Count != want.count || loss.Disposition != want.disposition {
@@ -455,6 +458,64 @@ func TestCodexRolloutPairsAnIdLessResultWithItsCall(t *testing.T) {
 		t.Errorf("unpaired_tool_results = %+v, want the ambiguous result counted",
 			lossCount(t, rollout.Losses, "unpaired_tool_results"))
 	}
+
+	// Three outstanding calls: the pairing rule has to survive another call arriving, so the ambiguity
+	// is a property of the calls that have no result yet and not of the last call written.
+	threeCalls := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask"},
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "[Read: /x]",
+			ToolCalls: []ToolCall{{Name: "Read", InputJSON: `{"file_path":"/x"}`},
+				{Name: "Read", InputJSON: `{"file_path":"/y"}`},
+				{Name: "Read", InputJSON: `{"file_path":"/z"}`}}},
+		Message{Ordinal: 2, Role: string(parser.RoleUser),
+			ToolResults: []ToolResult{{ContentRaw: "content of one of the three"}}},
+	)
+	rollout, err = ConvertToCodexRollout(threeCalls, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if rollout.Carried.ToolResults != 0 {
+		t.Errorf("carried %d result(s) for three id-less calls: the result could belong to any of them",
+			rollout.Carried.ToolResults)
+	}
+	if lossCount(t, rollout.Losses, "unpaired_tool_results").Count != 1 {
+		t.Errorf("unpaired_tool_results = %+v, want the ambiguous result counted",
+			lossCount(t, rollout.Losses, "unpaired_tool_results"))
+	}
+
+	// A result that names its own call answers that one and leaves the call that is still outstanding
+	// as the only candidate for an id-less result after it: the source recorded one unanswered call.
+	afterExplicit := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask"},
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "[Read: /x]",
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_a", Name: "Read", InputJSON: `{"file_path":"/x"}`},
+				{ToolUseID: "toolu_b", Name: "Read", InputJSON: `{"file_path":"/y"}`}}},
+		Message{Ordinal: 2, Role: string(parser.RoleUser),
+			ToolResults: []ToolResult{{ToolUseID: "toolu_a", ContentRaw: "content of /x"}}},
+		Message{Ordinal: 3, Role: string(parser.RoleUser),
+			ToolResults: []ToolResult{{ContentRaw: "content of the one that is left"}}},
+	)
+	rollout, err = ConvertToCodexRollout(afterExplicit, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if rollout.Carried.ToolResults != 2 {
+		t.Fatalf("carried = %+v, want both results", rollout.Carried)
+	}
+	for _, line := range decodeRollout(t, rollout.Data) {
+		if payloadField(t, line, "type") != codexItemFunctionOutput {
+			continue
+		}
+		if output := payloadField(t, line, "output"); output == "content of the one that is left" &&
+			payloadField(t, line, "call_id") != "toolu_b" {
+			t.Errorf("the id-less result was paired with %q, want the only call still unanswered",
+				payloadField(t, line, "call_id"))
+		}
+	}
+	if lossCount(t, rollout.Losses, "unpaired_tool_results").Count != 0 {
+		t.Errorf("unpaired_tool_results = %+v, want none: one call was still outstanding",
+			lossCount(t, rollout.Losses, "unpaired_tool_results"))
+	}
 }
 
 // TestCodexRolloutRecordsTheProviderBindingItIsGiven pins that the binding comes from the caller (which
@@ -512,6 +573,213 @@ func TestCodexRolloutGeneratesAFreshIdentity(t *testing.T) {
 	}
 	if first.SessionID == conversation.Source.SessionID {
 		t.Error("the target identity is the source's own session id")
+	}
+}
+
+// TestCodexRolloutKeepsAReasoningOnlyRecordOutOfTheDialogue pins the distinction the writer needs from
+// the source. A provider that classifies its own dialogue projects an empty one for a message whose
+// Content renders a reasoning trace, and such a message has no dialogue in the target: the trace is
+// counted as reasoning_text, never written as the agent's own words beside a report that says it was
+// omitted. A document whose source classified nothing keeps the Content fallback, which is what a
+// caller building a document by hand relies on.
+func TestCodexRolloutKeepsAReasoningOnlyRecordOutOfTheDialogue(t *testing.T) {
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask",
+			DialogueProjected: true},
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant),
+			Content:           "[Thinking]\nPrivate reasoning\n[/Thinking]",
+			DialogueProjected: true,
+			Thinking:          "Private reasoning"},
+	)
+	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if rollout.Carried.Messages != 1 || rollout.Carried.AssistantMessages != 0 {
+		t.Errorf("carried = %+v, want the one user message and no assistant message", rollout.Carried)
+	}
+	if loss := lossCount(t, rollout.Losses, "reasoning_text"); loss.Count != 1 ||
+		loss.Disposition != DispositionOmitted {
+		t.Errorf("reasoning_text = %+v, want the reasoning-only record counted as omitted", loss)
+	}
+	if strings.Contains(string(rollout.Data), "Private reasoning") {
+		t.Error("the rollout holds the reasoning trace the report says is omitted, as the agent's dialogue")
+	}
+
+	// The same shape with the projection the source did not make: nothing classified the message, so its
+	// Content is the message's text.
+	unclassified := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask",
+			DialogueProjected: true},
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "Spoken text"},
+	)
+	rollout, err = ConvertToCodexRollout(unclassified, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if !strings.Contains(string(rollout.Data), "Spoken text") {
+		t.Error("a message whose source classified no projection lost its text")
+	}
+
+	// A record the source classified as carrying no dialogue but holding text, with no tool evidence:
+	// the target has no message that would not state the user said those words, and the report names
+	// that category rather than calling the record empty.
+	nonDialogue := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "the tool's own output",
+			DialogueProjected: true},
+	)
+	rollout, err = ConvertToCodexRollout(nonDialogue, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if strings.Contains(string(rollout.Data), "the tool's own output") {
+		t.Error("a record the source classified as not dialogue was written as the user's own words")
+	}
+	if loss := lossCount(t, rollout.Losses, "non_dialogue_content"); loss.Count != 1 {
+		t.Errorf("non_dialogue_content = %+v, want the record counted", loss)
+	}
+	if loss := lossCount(t, rollout.Losses, "empty_user_messages"); loss.Count != 0 {
+		t.Errorf("empty_user_messages = %+v, want a record whose text was dropped not called empty", loss)
+	}
+}
+
+// TestCodexRolloutDecodesEncodedContentExactlyOnce pins which representation ContentRaw holds: the
+// provider's own content field is JSON and is decoded once, while text a read has already decoded -- a
+// result event, an archive row -- is used exactly as it stands. A tool whose own output is literally the
+// JSON string `"alpha"` would otherwise lose its quotation marks, and a second decode of an
+// already-decoded output is a difference the round-trip check would report as a defect the file does not
+// have.
+func TestCodexRolloutDecodesEncodedContentExactlyOnce(t *testing.T) {
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask"},
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "[Bash: x]",
+			ToolCalls: []ToolCall{
+				{ToolUseID: "toolu_1", Name: "Bash", InputJSON: `{"command":"x"}`},
+				{ToolUseID: "toolu_2", Name: "Bash", InputJSON: `{"command":"y"}`},
+			}},
+		Message{Ordinal: 2, Role: string(parser.RoleUser), ToolResults: []ToolResult{
+			// The provider's encoded content field: the JSON string's own text is the output.
+			{ToolUseID: "toolu_1", ContentRaw: `"a quoted \"output\""`},
+			// A result event: the read decoded this already, and the quotation marks are the tool's own.
+			{ToolUseID: "toolu_2", ContentRaw: `"alpha"`, ContentDecoded: true},
+		}},
+	)
+	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	outputs := map[string]string{}
+	for _, line := range decodeRollout(t, rollout.Data) {
+		if payloadField(t, line, "type") == codexItemFunctionOutput {
+			outputs[payloadField(t, line, "call_id")] = payloadField(t, line, "output")
+		}
+	}
+	if outputs["toolu_1"] != `a quoted "output"` {
+		t.Errorf("encoded content decoded as %q, want the provider's own string", outputs["toolu_1"])
+	}
+	if outputs["toolu_2"] != `"alpha"` {
+		t.Errorf("already-decoded content written as %q, want it unchanged: a second decode strips the "+
+			"quotation marks the tool really printed", outputs["toolu_2"])
+	}
+	if rollout.Carried.ToolResults != 2 {
+		t.Errorf("carried = %+v, want both results", rollout.Carried)
+	}
+}
+
+// TestCodexRolloutReportsToolResultBlocksTheTargetCannotCarry pins the block rule: the target's output
+// field carries text, so a block the reader's text channel carries nothing from is counted -- and a
+// content field holding only such blocks is not written as its own JSON, which would present an image
+// payload as the tool's words.
+func TestCodexRolloutReportsToolResultBlocksTheTargetCannotCarry(t *testing.T) {
+	mixed := `[{"type":"text","text":"the text","cache_control":{"type":"ephemeral"}},` +
+		`{"type":"image","source":{"type":"base64","media_type":"image/png","data":"QUFB"}}]`
+	onlyImage := `[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"QUFB"}}]`
+	plain := `[{"type":"text","text":"just text","cache_control":{"type":"ephemeral"}}]`
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask"},
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "[Bash: x]",
+			ToolCalls: []ToolCall{
+				{ToolUseID: "toolu_1", Name: "Bash", InputJSON: `{"command":"x"}`},
+				{ToolUseID: "toolu_2", Name: "Bash", InputJSON: `{"command":"y"}`},
+				{ToolUseID: "toolu_3", Name: "Bash", InputJSON: `{"command":"z"}`},
+			}},
+		Message{Ordinal: 2, Role: string(parser.RoleUser), ToolResults: []ToolResult{
+			{ToolUseID: "toolu_1", ContentRaw: mixed},
+			{ToolUseID: "toolu_2", ContentRaw: onlyImage},
+			{ToolUseID: "toolu_3", ContentRaw: plain},
+		}},
+	)
+	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	outputs := map[string]string{}
+	for _, line := range decodeRollout(t, rollout.Data) {
+		if payloadField(t, line, "type") == codexItemFunctionOutput {
+			outputs[payloadField(t, line, "call_id")] = payloadField(t, line, "output")
+		}
+	}
+	if outputs["toolu_1"] != "the text" {
+		t.Errorf("mixed content output = %q, want its text", outputs["toolu_1"])
+	}
+	if outputs["toolu_3"] != "just text" {
+		t.Errorf("text block output = %q, want its text", outputs["toolu_3"])
+	}
+	if _, written := outputs["toolu_2"]; written {
+		t.Errorf("a content field holding only an image block was written as %q", outputs["toolu_2"])
+	}
+	// Two blocks the target has no field for (one in each of two results), and one result this read
+	// holds no text for. A block whose text was carried is not counted, cache marker and all.
+	if loss := lossCount(t, rollout.Losses, "unrepresentable_result_blocks"); loss.Count != 2 ||
+		loss.Disposition != DispositionOmitted {
+		t.Errorf("unrepresentable_result_blocks = %+v, want the two image blocks counted", loss)
+	}
+	if loss := lossCount(t, rollout.Losses, "empty_tool_results"); loss.Count != 1 {
+		t.Errorf("empty_tool_results = %+v, want the image-only result counted once", loss)
+	}
+	if strings.Contains(string(rollout.Data), "QUFB") {
+		t.Error("the rollout holds the image payload's bytes, which the report says are not carried")
+	}
+}
+
+// TestCodexRolloutWritesAnArchiveSummaryOnce pins the archive's double exposure of one outcome: such a
+// read carries a call's result as the events the archive kept and as the summary internal/db restored
+// from the call's sole event, and those are the same evidence. The summary is written only when no event
+// of that call already holds its text, so one recorded outcome cannot arrive as two
+// function_call_output records -- while a summary that is a genuinely different stored outcome still is.
+func TestCodexRolloutWritesAnArchiveSummaryOnce(t *testing.T) {
+	// The archive shape: the outcome is folded onto the call's own message, so the events sit beside the
+	// calls they answer (messageFromArchive), and the call's summary is the column the archive restored.
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask"},
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "[Bash: ls]",
+			ToolCalls: []ToolCall{
+				{ToolUseID: "toolu_1", Name: "Bash", InputJSON: `{"command":"ls"}`,
+					ResultContent: "the recorded output", ResultContentSize: 19},
+				{ToolUseID: "toolu_2", Name: "Bash", InputJSON: `{"command":"du"}`,
+					ResultContent: "a distinct outcome", ResultContentSize: 18},
+			},
+			ToolResults: []ToolResult{
+				{ToolUseID: "toolu_1", ContentRaw: "the recorded output", ContentDecoded: true},
+				{ToolUseID: "toolu_2", ContentRaw: "an event outcome", ContentDecoded: true},
+			}},
+	)
+	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	outputs := []string{}
+	for _, line := range decodeRollout(t, rollout.Data) {
+		if payloadField(t, line, "type") == codexItemFunctionOutput {
+			outputs = append(outputs, payloadField(t, line, "call_id")+": "+payloadField(t, line, "output"))
+		}
+	}
+	want := []string{"toolu_1: the recorded output", "toolu_2: an event outcome", "toolu_2: a distinct outcome"}
+	sort.Strings(outputs)
+	sort.Strings(want)
+	if strings.Join(outputs, " | ") != strings.Join(want, " | ") || rollout.Carried.ToolResults != 3 {
+		t.Errorf("function_call_output records = %q (carried %d results), want each recorded outcome once: %q",
+			outputs, rollout.Carried.ToolResults, want)
 	}
 }
 

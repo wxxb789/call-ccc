@@ -2,13 +2,16 @@ package ccc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
+	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/parser"
 )
 
@@ -180,7 +183,7 @@ func TestContinueKeepsTheSourceAndItsDirectoryIntactForBothFixtures(t *testing.T
 	cfg := fixtureConfig(t)
 	before := hashTree(t, fixtureRoot(t))
 	result, err := Continue(context.Background(), ContinueOptions{
-		Ref:          Ref{Provider: "claude", ID: "b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef"},
+		Ref:          claudeToolingFixtureRef,
 		Target:       TargetCodex,
 		Config:       cfg,
 		TargetHome:   t.TempDir(),
@@ -203,8 +206,9 @@ func TestContinueKeepsTheSourceAndItsDirectoryIntactForBothFixtures(t *testing.T
 		}
 	}
 	// The shapes this transcript carries are reported rather than silently carried or dropped.
-	if loss := lossCount(t, result.Conversion.Losses, "reasoning_text"); loss.Count != 1 {
-		t.Errorf("reasoning_text = %+v, want the persisted reasoning trace counted", loss)
+	if loss := lossCount(t, result.Conversion.Losses, "reasoning_text"); loss.Count != 2 {
+		t.Errorf("reasoning_text = %+v, want both persisted reasoning traces counted (the one beside its "+
+			"dialogue and the reasoning-only turn)", loss)
 	}
 	if loss := lossCount(t, result.Conversion.Losses, "sidechain_messages"); loss.Count != 1 {
 		t.Errorf("sidechain_messages = %+v, want the subagent turn counted", loss)
@@ -212,8 +216,8 @@ func TestContinueKeepsTheSourceAndItsDirectoryIntactForBothFixtures(t *testing.T
 	if loss := lossCount(t, result.Conversion.Losses, "tool_result_outcomes"); loss.Count != 1 {
 		t.Errorf("tool_result_outcomes = %+v, want the errored result counted", loss)
 	}
-	if result.Conversion.Carried.ToolCalls != 2 || result.Conversion.Carried.ToolResults != 2 {
-		t.Errorf("carried = %+v, want both calls and both results", result.Conversion.Carried)
+	if result.Conversion.Carried.ToolCalls != 3 || result.Conversion.Carried.ToolResults != 3 {
+		t.Errorf("carried = %+v, want all three calls and all three results", result.Conversion.Carried)
 	}
 }
 
@@ -379,6 +383,86 @@ func TestInstallCodexRolloutNeverReplacesASession(t *testing.T) {
 	}
 }
 
+// TestInstallCodexRolloutRefusesAFilesystemWithoutHardLinks pins what happens when the exclusive link is
+// unavailable: the conversion is refused, nothing is published under the session's name, and no temporary
+// file is left behind. A rename would publish it -- and a rename replaces whatever is at the destination,
+// which is the overwrite the install rule forbids -- so the fallback is a refusal rather than a rename.
+func TestInstallCodexRolloutRefusesAFilesystemWithoutHardLinks(t *testing.T) {
+	cfg := fixtureConfig(t)
+	conversation, err := NewSourceReader(cfg).Read(context.Background(), claudeFixtureRef)
+	if err != nil {
+		t.Fatalf("reading the fixture: %v", err)
+	}
+	rollout, err := ConvertToCodexRollout(conversation, CodexTargetOptions{SessionID: "01a1e000-3333-7000-8000-000000000001"})
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+
+	link := linkSession
+	linkSession = func(_, _ string) error { return errors.New("link: the filesystem does not support it") }
+	defer func() { linkSession = link }()
+
+	home := t.TempDir()
+	path, _, err := InstallCodexRollout(rollout, home)
+	if !errors.Is(err, ErrNoExclusiveInstall) {
+		t.Fatalf("installing onto a filesystem without hard links returned %v, want ErrNoExclusiveInstall", err)
+	}
+	if !strings.Contains(err.Error(), "hard links") {
+		t.Errorf("the refusal does not say what is missing: %v", err)
+	}
+	if path != "" {
+		t.Errorf("the refused install reported the path %q", path)
+	}
+	// The directory the installer created is allowed to exist; a session file or a leftover temporary
+	// file in it is not, because a reader of that home would see a session that cannot be resumed.
+	if entries := hashTree(t, home); len(entries) != 0 {
+		t.Errorf("the refused install left files in the target home: %v", entries)
+	}
+}
+
+// TestContinuePrintsAResumeCommandThatSelectsTheInstallationHome pins the invocation a caller runs: the
+// argument vector and the environment beside it, and the shell line rendered from both. Codex takes its
+// data directory from CODEX_HOME alone (there is no flag for it), so a command without it opens the
+// caller's own default home rather than the one the session was installed into -- and a home or a binary
+// path holding a space has to be quoted, or the pasted line splits into two arguments.
+func TestContinuePrintsAResumeCommandThatSelectsTheInstallationHome(t *testing.T) {
+	cfg := fixtureConfig(t)
+	home := filepath.Join(t.TempDir(), "home with a space")
+	binary := filepath.Join(t.TempDir(), "my tools", "codex")
+	result, err := Continue(context.Background(), ContinueOptions{
+		Ref: claudeFixtureRef, Target: TargetCodex, Config: cfg,
+		TargetHome: home, TargetBinary: binary, Verify: VerifyNone,
+	})
+	if err != nil {
+		t.Fatalf("continuing: %v", err)
+	}
+	sessionID := result.TargetSession.SessionID
+	report := result.TargetSession
+	if !slices.Equal(report.ResumeArguments, []string{binary, "resume", sessionID}) {
+		t.Errorf("resume arguments = %q, want the binary the caller named and the session id",
+			report.ResumeArguments)
+	}
+	if !slices.Equal(report.ExecResumeArguments, []string{binary, "exec", "resume", sessionID, "<prompt>"}) {
+		t.Errorf("exec resume arguments = %q", report.ExecResumeArguments)
+	}
+	if len(report.ResumeEnvironment) != 1 || report.ResumeEnvironment["CODEX_HOME"] != home {
+		t.Errorf("resume environment = %v, want CODEX_HOME pointing at the installation directory",
+			report.ResumeEnvironment)
+	}
+	want := "CODEX_HOME='" + home + "' '" + binary + "' resume " + sessionID
+	if report.ResumeCommand != want {
+		t.Errorf("resume command = %q, want %q", report.ResumeCommand, want)
+	}
+	if wantExec := "CODEX_HOME='" + home + "' '" + binary + "' exec resume " + sessionID + " '<prompt>'"; report.ExecResumeCommand != wantExec {
+		t.Errorf("exec resume command = %q, want %q", report.ExecResumeCommand, wantExec)
+	}
+	// Resolving the home and installing are unchanged by the rendering: the session really is there.
+	if result.Installation.State != InstallationStateInstalled ||
+		!strings.HasPrefix(result.Installation.Path, home+string(filepath.Separator)) {
+		t.Errorf("installation = %+v, want a session below %s", result.Installation, home)
+	}
+}
+
 // TestContinueRequiresAPromptBeforeItRunsATurn pins the rule the CLI also enforces: a resume
 // verification writes a real turn into the session, so its text comes from the caller.
 func TestContinueRequiresAPromptBeforeItRunsATurn(t *testing.T) {
@@ -472,24 +556,20 @@ func TestContinueTargetHomeResolution(t *testing.T) {
 	}
 }
 
-// TestContinueFallsBackToTheArchiveWhenTheSourceIsGone pins the source-side rule: a session whose file
-// the source reader cannot answer is read from the archive instead, and the report says so rather than
-// presenting the projection as the file.
-func TestContinueFallsBackToTheArchiveWhenTheSourceIsGone(t *testing.T) {
-	cfg := fixtureConfig(t)
-	sourcePath := fixturePath(t, filepath.Join("claude", "-home-user-code-example-api",
-		claudeFixtureRef.ID+".jsonl"))
-
-	// A copy of the session, in its own provider root, so the archive can be written from it and the
-	// committed fixture never moves.
-	root := t.TempDir()
-	copyPath := filepath.Join(root, "-home-user-code-example-api", claudeFixtureRef.ID+".jsonl")
-	if err := os.MkdirAll(filepath.Dir(copyPath), 0o700); err != nil {
-		t.Fatalf("creating the copied project directory: %v", err)
-	}
-	data, err := os.ReadFile(sourcePath)
+// archiveFixtureCopy writes a copy of one committed fixture under a provider root of its own, ingests
+// that copy into the configuration's archive and removes the copy again, so the archive is the only place
+// the session exists afterwards. It answers the configuration, whose Claude root now points at the copy's
+// root: the committed fixture never moves.
+func archiveFixtureCopy(t *testing.T, cfg config.Config, fixture, destination string) config.Config {
+	t.Helper()
+	data, err := os.ReadFile(fixture)
 	if err != nil {
 		t.Fatalf("reading the fixture: %v", err)
+	}
+	root := t.TempDir()
+	copyPath := filepath.Join(root, destination)
+	if err := os.MkdirAll(filepath.Dir(copyPath), 0o700); err != nil {
+		t.Fatalf("creating the copied project directory: %v", err)
 	}
 	if err := os.WriteFile(copyPath, data, 0o600); err != nil {
 		t.Fatalf("writing the copy: %v", err)
@@ -505,6 +585,18 @@ func TestContinueFallsBackToTheArchiveWhenTheSourceIsGone(t *testing.T) {
 	if err := os.Remove(copyPath); err != nil {
 		t.Fatalf("removing the copy: %v", err)
 	}
+	return cfg
+}
+
+// TestContinueFallsBackToTheArchiveWhenTheSourceIsGone pins the source-side rule: a session whose file
+// the source reader cannot answer is read from the archive instead, and the report says so rather than
+// presenting the projection as the file.
+func TestContinueFallsBackToTheArchiveWhenTheSourceIsGone(t *testing.T) {
+	cfg := fixtureConfig(t)
+	sourcePath := fixturePath(t, filepath.Join("claude", "-home-user-code-example-api",
+		claudeFixtureRef.ID+".jsonl"))
+	cfg = archiveFixtureCopy(t, cfg, sourcePath,
+		filepath.Join("-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"))
 
 	result, err := Continue(context.Background(), ContinueOptions{
 		Ref:          claudeFixtureRef,
@@ -534,6 +626,113 @@ func TestContinueFallsBackToTheArchiveWhenTheSourceIsGone(t *testing.T) {
 	if result.Verification.Structure.State != VerificationStateVerified {
 		t.Errorf("structure = %+v, want the archived conversion to read back as what was written",
 			result.Verification.Structure)
+	}
+}
+
+// TestContinueFromTheArchiveWritesEachRecordedOutcomeOnce pins the archive half of the duplicate rule
+// with payloads the default configuration does not block. An archive read exposes a call's outcome
+// twice -- as the events the archive kept on the call and as the summary internal/db restored from
+// them -- and one recorded outcome has to reach the target as one function_call_output record. Three of
+// the tooling fixture's results exercise it: its Read result is in a category the default configuration
+// blocks (the archive keeps its length and no text), and its two Bash results are retained -- one an
+// error, one the text of a JSON string -- so each of those would otherwise be written twice.
+func TestContinueFromTheArchiveWritesEachRecordedOutcomeOnce(t *testing.T) {
+	cfg := fixtureConfig(t)
+	sourcePath := fixturePath(t, filepath.Join("claude", "-home-user-code-tooling",
+		claudeToolingFixtureRef.ID+".jsonl"))
+	cfg = archiveFixtureCopy(t, cfg, sourcePath,
+		filepath.Join("-home-user-code-tooling", claudeToolingFixtureRef.ID+".jsonl"))
+
+	result, err := Continue(context.Background(), ContinueOptions{
+		Ref:          claudeToolingFixtureRef,
+		Target:       TargetCodex,
+		Config:       cfg,
+		ArchivePath:  cfg.DBPath,
+		TargetHome:   t.TempDir(),
+		TargetBinary: missingTargetBinary,
+		Verify:       VerifyNone,
+	})
+	if err != nil {
+		t.Fatalf("continuing from the archive: %v", err)
+	}
+	if result.Conversion.ReadFrom != "archive" {
+		t.Fatalf("read_from = %q, want the archive", result.Conversion.ReadFrom)
+	}
+	if result.Conversion.Carried.ToolResults != 2 {
+		t.Errorf("carried = %+v, want the two results the archive retains", result.Conversion.Carried)
+	}
+	if result.Verification.Structure.State != VerificationStateVerified {
+		t.Fatalf("structure = %+v, want the archived conversion to read back as what was written",
+			result.Verification.Structure)
+	}
+	if got := result.Verification.Structure.ReadBack.ToolResults; got != 2 {
+		t.Errorf("read-back tool results = %d, want two", got)
+	}
+	installed, err := os.ReadFile(result.Installation.Path)
+	if err != nil {
+		t.Fatalf("reading the installed session: %v", err)
+	}
+	outputs := 0
+	jsonLiteral := ""
+	for _, line := range strings.Split(strings.TrimSpace(string(installed)), "\n") {
+		var record struct {
+			Type    string `json:"type"`
+			Payload struct {
+				Type   string `json:"type"`
+				Output string `json:"output"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("decoding a rollout line: %v", err)
+		}
+		if record.Type != codexRecordResponseItem || record.Payload.Type != codexItemFunctionOutput {
+			continue
+		}
+		outputs++
+		switch {
+		case strings.Contains(record.Payload.Output, "no such file or directory"):
+		case record.Payload.Output == `"maxBackoffSeconds"`:
+			// The archive stores the result's text, not the provider's content field, so the
+			// conversion must carry those quotation marks unchanged.
+			jsonLiteral = record.Payload.Output
+		default:
+			t.Errorf("an output record holds %q, want one of the archive's retained results",
+				record.Payload.Output)
+		}
+	}
+	if jsonLiteral == "" {
+		t.Error("the JSON-string result lost its quotation marks on the way through the archive")
+	}
+	if outputs != 2 {
+		t.Errorf("the installed session holds %d function_call_output record(s), want two: a summary that "+
+			"repeats the call's own event is the same outcome, not a second one", outputs)
+	}
+	// The blocked category is named rather than silently gone, and the outcome that arrived as both an
+	// event and a summary is counted once.
+	if loss := lossCount(t, result.Conversion.Losses, "empty_tool_results"); loss.Count != 1 {
+		t.Errorf("empty_tool_results = %+v, want the blocked result counted once", loss)
+	}
+}
+
+// TestResumeVerificationCommandNamesTheHomeItRanAgainst pins the command a resume verification reports:
+// it is a line a reader may paste, so it selects the data directory the turn ran against. Codex has no
+// flag for that directory (its loader takes it from CODEX_HOME alone), so a line without the environment
+// resumes the reader's own default home -- and a home or a binary path holding a space has to be quoted
+// or the pasted line splits into two arguments.
+func TestResumeVerificationCommandNamesTheHomeItRanAgainst(t *testing.T) {
+	arguments := []string{"exec", "resume", "01a1e000-4444-7000-8000-000000000001", "a turn's prompt",
+		"--skip-git-repo-check", "-c", `sandbox_mode="read-only"`}
+	got := resumeCommandLine("/opt/my tools/codex", arguments,
+		"/tmp/a home with spaces")
+	want := "CODEX_HOME='/tmp/a home with spaces' '/opt/my tools/codex' exec resume " +
+		"01a1e000-4444-7000-8000-000000000001 " + `'a turn'\''s prompt'` + " " +
+		`--skip-git-repo-check -c 'sandbox_mode="read-only"'`
+	if got != want {
+		t.Errorf("resume command line =\n%s\nwant\n%s", got, want)
+	}
+	// A caller that named no home reports no environment rather than an empty assignment.
+	if got := resumeCommandLine("codex", []string{"resume", "id"}, "  "); got != "codex resume id" {
+		t.Errorf("resume command line without a home = %q, want it to carry no environment", got)
 	}
 }
 

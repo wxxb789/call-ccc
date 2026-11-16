@@ -145,8 +145,9 @@ func claudeSession() string {
 }
 
 // claudeToolingSession is a Claude Code transcript for the tool-heavy shapes a conversion reports: a
-// persisted reasoning trace, two tool calls whose results arrive as their own user lines (one of them
-// recorded as an error), a subagent turn marked isSidechain, and a provider system record.
+// persisted reasoning trace beside its dialogue, one recorded alone, two tool calls whose results arrive
+// as their own user lines (one of them recorded as an error), a third whose recorded result is itself a
+// JSON string literal, a subagent turn marked isSidechain, and a provider system record.
 func claudeToolingSession() string {
 	readCall := []map[string]any{{
 		"type": "tool_use",
@@ -163,6 +164,15 @@ func claudeToolingSession() string {
 		"input": map[string]any{
 			"command":     "grep -rn maxBackoffSeconds internal/retry",
 			"description": "find where the backoff cap is configured",
+		},
+	}}
+	jsonCall := []map[string]any{{
+		"type": "tool_use",
+		"id":   "toolu_01Tooling00000000000000003",
+		"name": "Bash",
+		"input": map[string]any{
+			"command":     "python3 -c 'import json; print(json.dumps(\"maxBackoffSeconds\"))'",
+			"description": "confirm the constant's name as JSON",
 		},
 	}}
 	builder := testjsonl.NewSessionBuilder().
@@ -194,9 +204,22 @@ func claudeToolingSession() string {
 			"2026-05-05T10:00:09.000Z",
 			"The backoff cap is a constant in internal/retry/config.go.",
 		)).
+		AddRaw(claudeReasoningOnlyAssistant(
+			"2026-05-05T10:00:09.500Z",
+			"Naming it from the constant rather than from memory.",
+			"bbbbbbbb-0000-4000-8000-000000000005",
+		)).
 		AddRaw(claudeSystemRecord("2026-05-05T10:00:10.000Z")).
 		AddRaw(claudeToolingUser(
 			"Then name the file that holds the cap.", "2026-05-05T10:00:12.000Z")).
+		AddRaw(claudeToolUse(jsonCall, "2026-05-05T10:00:12.500Z", "bbbbbbbb-0000-4000-8000-000000000006")).
+		// The tool printed a JSON-encoded value, so the text the result records is itself a JSON string:
+		// a conversion that decoded the already-decoded output would strip these quotation marks.
+		AddRaw(testjsonl.ClaudeToolResultUserJSON(
+			"toolu_01Tooling00000000000000003",
+			`"maxBackoffSeconds"`,
+			"2026-05-05T10:00:12.750Z",
+		)).
 		AddRaw(testjsonl.ClaudeAssistantJSON(
 			[]map[string]any{{"type": "text", "text": "internal/retry/config.go, as maxBackoffSeconds."}},
 			"2026-05-05T10:00:13.000Z",
@@ -228,6 +251,24 @@ func claudeThinkingAssistant(timestamp, thinking, text, uuid string) string {
 			"content": []map[string]any{
 				{"type": "thinking", "thinking": thinking, "signature": "sig-tooling"},
 				{"type": "text", "text": text},
+			},
+		},
+	})
+}
+
+// claudeReasoningOnlyAssistant is an assistant line whose content holds a persisted reasoning block and
+// nothing else: the shape a provider writes for a turn that produced no dialogue and no tool call. Its
+// Content renders the trace, so a conversion that fell back to that rendering would carry the reasoning
+// as the agent's own words while reporting the trace as omitted.
+func claudeReasoningOnlyAssistant(timestamp, thinking, uuid string) string {
+	return marshal(map[string]any{
+		"type":      "assistant",
+		"timestamp": timestamp,
+		"uuid":      uuid,
+		"message": map[string]any{
+			"model": "claude-sonnet-4-5",
+			"content": []map[string]any{
+				{"type": "thinking", "thinking": thinking, "signature": "sig-reasoning-only"},
 			},
 		},
 	})

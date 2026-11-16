@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -625,6 +626,9 @@ func TestContinueJSONDistinguishesConversionInstallationAndVerification(t *testi
 				Category string `json:"category"`
 				Detail   string `json:"detail"`
 			} `json:"format_limits"`
+			ResumeArguments     []string          `json:"resume_arguments"`
+			ExecResumeArguments []string          `json:"exec_resume_arguments"`
+			ResumeEnvironment   map[string]string `json:"resume_environment"`
 		} `json:"target_session"`
 		Installation struct {
 			State           string `json:"state"`
@@ -684,6 +688,26 @@ func TestContinueJSONDistinguishesConversionInstallationAndVerification(t *testi
 		!strings.Contains(document.TargetSession.ResumeCommand, document.TargetSession.SessionID) {
 		t.Errorf("the report does not name a resumable identity: %+v", document.TargetSession)
 	}
+	// The invocation is exact, not prose: the argument vector and the environment are what a caller
+	// runs, and both command lines have to select the data directory the session was installed into.
+	// Codex takes that directory from CODEX_HOME alone -- it has no flag for it -- so a line without it
+	// would open the caller's own default home.
+	wantResume := []string{missingTargetBinary, "resume", document.TargetSession.SessionID}
+	wantExecResume := []string{missingTargetBinary, "exec", "resume", document.TargetSession.SessionID, "<prompt>"}
+	if !slices.Equal(document.TargetSession.ResumeArguments, wantResume) {
+		t.Errorf("resume_arguments = %q, want %q", document.TargetSession.ResumeArguments, wantResume)
+	}
+	if !slices.Equal(document.TargetSession.ExecResumeArguments, wantExecResume) {
+		t.Errorf("exec_resume_arguments = %q, want %q", document.TargetSession.ExecResumeArguments, wantExecResume)
+	}
+	if len(document.TargetSession.ResumeEnvironment) != 1 ||
+		document.TargetSession.ResumeEnvironment["CODEX_HOME"] != targetHome {
+		t.Errorf("resume_environment = %v, want CODEX_HOME=%s", document.TargetSession.ResumeEnvironment, targetHome)
+	}
+	if want := "CODEX_HOME=" + targetHome + " " + missingTargetBinary + " resume " +
+		document.TargetSession.SessionID; document.TargetSession.ResumeCommand != want {
+		t.Errorf("resume_command = %q, want %q", document.TargetSession.ResumeCommand, want)
+	}
 	if document.TargetSession.BinaryFound {
 		t.Errorf("the report claims to have found %q", missingTargetBinary)
 	}
@@ -725,8 +749,11 @@ func TestContinueHumanOutputNamesTheResumeCommand(t *testing.T) {
 		"converted:    codex-rollout-jsonl",
 		"installed:    " + targetHome,
 		// The printed command names the harness the caller named (here, the test's own absent one),
-		// so a caller that runs a binary from an unusual path gets that path back.
-		"resume:       " + missingTargetBinary + " resume ",
+		// so a caller that runs a binary from an unusual path gets that path back -- and the data
+		// directory the session was installed into, which Codex otherwise takes from the caller's own
+		// environment rather than from the command line.
+		"resume:       CODEX_HOME=" + targetHome + " " + missingTargetBinary + " resume ",
+		"non-interactive resume: CODEX_HOME=" + targetHome + " " + missingTargetBinary + " exec resume ",
 		"structure:    verified",
 	} {
 		if !strings.Contains(stdout, want) {
