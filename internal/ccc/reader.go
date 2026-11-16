@@ -328,7 +328,26 @@ func resolveWith(
 		return parser.SourceRef{}, false, fmt.Errorf("%w: %s (host %s)", ErrNoLocalSource, ref.ID, host)
 	}
 	request := parser.ProviderFindRequestWithRawSessionID(def, parser.FindSourceRequest{RawSessionID: id})
-	return provider.FindSource(ctx, request)
+	source, found, err := provider.FindSource(ctx, request)
+	if err != nil {
+		return parser.SourceRef{}, false, resolutionFailure(ref.Provider, err)
+	}
+	return source, found, nil
+}
+
+// resolutionFailure classifies a provider's own resolution failure: the reference was offered to the
+// provider, and the provider could not answer which source it names. It travels as ErrProviderFailed --
+// the sentinel readForConversion's fallback gate accepts, whose documented meaning is "a provider was
+// asked for the reference and could not produce a source from it" -- because the source side did not
+// answer and an archive may still hold the session: the same shape as a fingerprint or a parse that
+// could not read the bytes, which used to be returned bare and stopped a conversion short of an
+// archive that holds the session (continue.go's readForConversion, internal/ccc/reader.go's Read).
+//
+// This reader's own answers are not wrapped: an ambiguity is a report the caller resolves the reference
+// with, never a failure to hand to another side, and ErrNoLocalSource already says the source side has
+// no local file for the reference.
+func resolutionFailure(provider string, err error) error {
+	return fmt.Errorf("%w: resolving %s: %w", ErrProviderFailed, provider, err)
 }
 
 // referencePaths returns the filesystem spellings a path reference may be stored under.
@@ -383,7 +402,7 @@ func resolvePathReference(
 	for _, path := range paths {
 		source, found, err := provider.FindSource(ctx, parser.FindSourceRequest{StoredFilePath: path})
 		if err != nil {
-			return parser.SourceRef{}, false, err
+			return parser.SourceRef{}, false, resolutionFailure(ref.Provider, err)
 		}
 		if !found {
 			candidates, err := provider.SourcesForChangedPath(ctx, parser.ChangedPathRequest{
@@ -391,7 +410,7 @@ func resolvePathReference(
 				EventKind: "write",
 			})
 			if err != nil {
-				return parser.SourceRef{}, false, err
+				return parser.SourceRef{}, false, resolutionFailure(ref.Provider, err)
 			}
 			candidates = readableSources(path, candidates)
 			switch len(candidates) {

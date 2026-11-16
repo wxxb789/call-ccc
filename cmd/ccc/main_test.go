@@ -129,6 +129,10 @@ const (
 	stubTurnModeEnv       = "CCC_TEST_STUB_TURN"
 	stubTurnGrowMode      = "grow"
 	stubTurnSilentMode    = "silent"
+	stubTurnFailMode      = "fail"
+	// stubTurnFailCode is the status the failing turn exits with: a value no other answer uses, so a
+	// case can tell the reported exit code from the constant a report might otherwise carry.
+	stubTurnFailCode = 7
 )
 
 // TestMain lets this test binary act as a target harness when a child of it is asked to. One case needs
@@ -294,6 +298,9 @@ func stubTurn(args []string) int {
 	case stubTurnSilentMode:
 		fmt.Println("the stub harness answered without appending to the installed session")
 		return 0
+	case stubTurnFailMode:
+		fmt.Fprintln(os.Stderr, "the stub harness could not continue the session")
+		return stubTurnFailCode
 	default:
 		fmt.Fprintln(os.Stderr, "the stub harness does not implement exec resume")
 		return 2
@@ -907,14 +914,56 @@ func claudeOpeningPrompt(t *testing.T, path string) string {
 	return record.Message.Content
 }
 
+// sourceContentNeedles answers every piece of source content a conversion report and the CLI's wire
+// document must not carry: each message's dialogue and rendered content, every recorded reasoning trace,
+// every tool call's arguments, and every tool result's output. The needles are read out of the
+// conversation the committed fixture makes -- through the same inherited reader the conversion uses --
+// so the assertions do not repeat fixture text and they cover the shapes the rule names, not only the
+// opening prompt.
+func sourceContentNeedles(t *testing.T, cfg config.Config, sessionID string) []string {
+	t.Helper()
+	conversation, err := ccc.NewSourceReader(cfg).Read(context.Background(),
+		ccc.Ref{Provider: "claude", ID: sessionID})
+	if err != nil {
+		t.Fatalf("reading the fixture conversation: %v", err)
+	}
+	var needles []string
+	add := func(text string) {
+		if trimmed := strings.TrimSpace(text); trimmed != "" {
+			needles = append(needles, trimmed)
+		}
+	}
+	for _, message := range conversation.Messages {
+		add(message.Dialogue)
+		add(message.Content)
+		add(message.Thinking)
+		for _, call := range message.ToolCalls {
+			add(call.InputJSON)
+		}
+		for _, result := range message.ToolResults {
+			add(result.ContentRaw)
+		}
+	}
+	if len(needles) == 0 {
+		t.Fatal("the fixture conversation holds no content: the content rule would be asserted vacuously")
+	}
+	return needles
+}
+
 // TestContinueJSONCarriesNoSourceContent pins the wire half of the content rule: ordinary `ccc continue
 // --json` output — installed and dry run, the reports a caller collects — must not carry the source's
-// opening prompt. The core design forbids logging conversation bodies or full prompts by default, and the
-// preview `ccc inspect` shows is that command's own field (it is the one that asks to see the session).
+// opening prompt, its dialogue, its tool arguments or its tool output. The core design forbids logging
+// conversation bodies or full prompts by default, and the preview `ccc inspect` shows is that command's
+// own field (it is the one that asks to see the session).
 func TestContinueJSONCarriesNoSourceContent(t *testing.T) {
 	continueEnvironment(t)
 	sessionID, path := claudeFixture(t)
 	prompt := claudeOpeningPrompt(t, path)
+	cfg, err := config.LoadReadOnly()
+	if err != nil {
+		t.Fatalf("reading the configuration: %v", err)
+	}
+	needles := append(sourceContentNeedles(t, cfg, sessionID), prompt)
 	for _, extra := range [][]string{{"--json"}, {"--dry-run", "--json"}} {
 		code, stdout, stderr := runCLI(t, continueArgs(sessionID, extra...)...)
 		if code != exitOK {
@@ -923,8 +972,41 @@ func TestContinueJSONCarriesNoSourceContent(t *testing.T) {
 		if strings.Contains(stdout, "first_user_message") {
 			t.Errorf("the %v report carries a first_user_message field:\n%s", extra, stdout)
 		}
-		if strings.Contains(stdout, prompt) {
-			t.Errorf("the %v report carries the source's opening prompt %q:\n%s", extra, prompt, stdout)
+		for _, needle := range needles {
+			if strings.Contains(stdout, needle) {
+				t.Errorf("the %v report carries source content %q:\n%s", extra, needle, stdout)
+			}
+		}
+	}
+}
+
+// TestContinueHumanBlockCarriesNoSourceContent pins the same rule for the human block: `ccc continue`
+// without `--json` prints the report to stdout, and a person reading it must not be handed the
+// conversation's words, its tool arguments or its tool output either. The block's own lines are asserted
+// to be there as well, so the case cannot pass by the report being empty.
+func TestContinueHumanBlockCarriesNoSourceContent(t *testing.T) {
+	continueEnvironment(t)
+	sessionID, path := claudeFixture(t)
+	prompt := claudeOpeningPrompt(t, path)
+	cfg, err := config.LoadReadOnly()
+	if err != nil {
+		t.Fatalf("reading the configuration: %v", err)
+	}
+	needles := append(sourceContentNeedles(t, cfg, sessionID), prompt)
+	for _, extra := range [][]string{{}, {"--dry-run"}} {
+		code, stdout, stderr := runCLI(t, continueArgs(sessionID, extra...)...)
+		if code != exitOK {
+			t.Fatalf("exit %d for %v, stderr: %s", code, extra, stderr)
+		}
+		for _, want := range []string{"source file:", "converted:", "structure:"} {
+			if !strings.Contains(stdout, want) {
+				t.Errorf("the %v human block is missing its own line %q:\n%s", extra, want, stdout)
+			}
+		}
+		for _, needle := range needles {
+			if strings.Contains(stdout, needle) {
+				t.Errorf("the %v human block carries source content %q:\n%s", extra, needle, stdout)
+			}
 		}
 	}
 }
@@ -1760,9 +1842,11 @@ func TestCodexLoadVerificationRequiresTheSessionsOwnRecord(t *testing.T) {
 }
 
 // TestResumeVerificationRequiresTheTurnToAppendToTheSession pins the resume rule in both directions: a
-// turn that appends to the installed session is a verified resume, and one that answers without touching
-// the file is not -- a harness that answered a question without continuing the session has not shown
-// that the session is resumable.
+// turn that appends to the installed session is a verified resume -- with the command it ran and the
+// status it exited with reported -- and one that answers without touching the file is not, because a
+// harness that answered a question without continuing the session has not shown that the session is
+// resumable. The last half is a turn the harness could not run: the report still carries the turn's own
+// nonzero status, and the verdict is not-verified.
 func TestResumeVerificationRequiresTheTurnToAppendToTheSession(t *testing.T) {
 	continueEnvironment(t)
 	sessionID, _ := claudeFixture(t)
@@ -1785,6 +1869,23 @@ func TestResumeVerificationRequiresTheTurnToAppendToTheSession(t *testing.T) {
 	if after <= before {
 		t.Errorf("the verified resume reports %v -> %v bytes, want growth", before, after)
 	}
+	// The command and the exit code are the turn's own: the invocation the check ran (its arguments and
+	// the data directory it selected) and the status the harness exited with, both read from the run's
+	// document rather than supplied by this case.
+	target, _ := document["target_session"].(map[string]any)
+	if exit, ok := resume["exit_code"].(float64); !ok || exit != 0 {
+		t.Errorf("resume exit_code = %v, want the turn's own status 0", resume["exit_code"])
+	}
+	command, _ := resume["command"].(string)
+	for _, want := range []string{
+		"exec resume " + target["session_id"].(string),
+		"--skip-git-repo-check",
+		"CODEX_HOME=" + target["home"].(string),
+	} {
+		if !strings.Contains(command, want) {
+			t.Errorf("the reported resume command %q does not name %q", command, want)
+		}
+	}
 
 	_, otherHome := continueEnvironment(t)
 	t.Setenv(stubTurnModeEnv, stubTurnSilentMode)
@@ -1805,6 +1906,33 @@ func TestResumeVerificationRequiresTheTurnToAppendToTheSession(t *testing.T) {
 	if detail, _ := silent["detail"].(string); !strings.Contains(detail, "did not grow") {
 		t.Errorf("the refusal does not name the missing growth: %q", detail)
 	}
+
+	// A turn the harness could not run at all: its own exit status is what the report carries -- the
+	// case asserts the stub's own code, so a report holding a constant instead of the turn's status
+	// fails here, and the verdict stays not-verified with the harness's status named.
+	_, thirdHome := continueEnvironment(t)
+	t.Setenv(stubTurnModeEnv, stubTurnFailMode)
+	code, stdout, stderr = runCLI(t, "continue", "claude:"+sessionID, "--to", "codex",
+		"--target-binary", binary, "--target-home", thirdHome, "--verify", "resume",
+		"--resume-prompt", "answer only from this conversation", "--json")
+	if code != exitFailure {
+		t.Fatalf("exit %d, want %d for a turn that could not run (stderr %q)", code, exitFailure, stderr)
+	}
+	var third map[string]any
+	if err := json.Unmarshal([]byte(stdout), &third); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
+	}
+	failedTurn := verificationBlock(t, third, "resume")
+	if failedTurn["state"] != ccc.VerificationStateNotVerified {
+		t.Errorf("resume = %+v, want not-verified for a turn that exited nonzero", failedTurn)
+	}
+	if exit, ok := failedTurn["exit_code"].(float64); !ok || int(exit) != stubTurnFailCode {
+		t.Errorf("resume exit_code = %v, want the turn's own status %d", failedTurn["exit_code"],
+			stubTurnFailCode)
+	}
+	if detail, _ := failedTurn["detail"].(string); !strings.Contains(detail, fmt.Sprintf("exited %d", stubTurnFailCode)) {
+		t.Errorf("the refusal does not name the harness's own status: %q", detail)
+	}
 }
 
 // numberField reads one JSON number out of a report block.
@@ -1820,7 +1948,9 @@ func numberField(t *testing.T, block map[string]any, key string) float64 {
 // TestProviderBindingIsTheTargetsOwnAnswer pins where the recorded provider comes from: the harness's
 // own answer about a new session of its own (thread/start's thread defaults, or its configuration when
 // that request is not answered) -- never the source's provider, which would be false -- and the written
-// session records that answer, because the harness's loader checks it when the session is resumed.
+// session records that answer, because the harness's loader checks it when the session is resumed. A
+// dry run asks nothing and records none with that reason: the harness is never started against its data
+// directory.
 func TestProviderBindingIsTheTargetsOwnAnswer(t *testing.T) {
 	continueEnvironment(t)
 	sessionID, _ := claudeFixture(t)
@@ -1857,6 +1987,29 @@ func TestProviderBindingIsTheTargetsOwnAnswer(t *testing.T) {
 	}
 	if target["model_provider_source"] != "target-config" {
 		t.Errorf("model_provider_source = %v, want the configuration's own name", target["model_provider_source"])
+	}
+
+	// The dry run's own answer: the harness is never started against the data directory, so no provider
+	// is recorded, the report says which answer that is, and the reason names the dry run -- a caller
+	// must not read the empty field as an answer the harness could not give.
+	_, dryHome := continueEnvironment(t)
+	code, stdout, stderr = runCLI(t, "continue", "claude:"+sessionID, "--to", "codex",
+		"--target-binary", binary, "--target-home", dryHome, "--dry-run", "--verify", "none", "--json")
+	document = continueDocumentOf(t, code, stdout, stderr)
+	target, _ = document["target_session"].(map[string]any)
+	if provider, ok := target["model_provider"]; ok && provider != nil && provider != "" {
+		t.Errorf("a dry run recorded model_provider = %v, want none: it never starts the harness", provider)
+	}
+	if target["model_provider_source"] != "unrecorded" {
+		t.Errorf("model_provider_source = %v, want unrecorded for a dry run", target["model_provider_source"])
+	}
+	if detail, _ := target["model_provider_detail"].(string); !strings.Contains(detail, "dry run") {
+		t.Errorf("the dry run's provider detail %q does not say the dry run is why nothing is recorded", detail)
+	}
+	warnings, _ := document["warnings"].([]any)
+	joined := fmt.Sprint(warnings...)
+	if !strings.Contains(joined, "records no model provider") {
+		t.Errorf("warnings = %v, want one naming the provider a dry run does not record", warnings)
 	}
 }
 

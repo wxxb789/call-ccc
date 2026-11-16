@@ -44,10 +44,6 @@ REPO_ROOT = GATE.parents[1]
 #: instead of nesting a run of their own; nothing else in the suite reads it.
 SELFCHECK = "CALLCCC_SUITE_SELFCHECK"
 
-#: The one case allowed to skip under an isolated ``PATH``: it exercises the
-#: git branch, and no stub bin can hold a git that is not in the tree.
-GIT_CASE = "test_only_tracked_go_files_outside_vendor_reach_gofmt"
-
 #: A tool lookup answered the way a Windows host answers it, for the one
 #: question the gate asks the host about itself: ``go_env()`` asks whether a C
 #: compiler is reachable, because CGO depends on one being installed
@@ -823,42 +819,40 @@ class GateProbeCase(GateTree, unittest.TestCase):
     def test_only_tracked_go_files_outside_vendor_reach_gofmt(self) -> None:
         """The git branch: tracked ``*.go``, minus a top-level ``vendor/``.
 
-        Both non-``main.go`` files have to stay out of ``found`` for a different
-        reason: ``untracked.go`` because ``git ls-files`` never lists it, and
-        ``vendor/vendored.go`` because the vendor filter drops it *after* git
-        listed it -- so the vendor file is staged, and deleting that filter
-        changes the assertions.
+        The case depends on no installed tool: the runner answers ``git ls-files`` with the shape git's
+        own output has (one POSIX-form relative path per line, ``docs/harness.md``), and the stub bin
+        answers ``gofmt``, so the rule under test -- the gate's file selection -- is exercised with no
+        host toolchain. The vendor file has to be dropped *after* the listing for ``found`` to be the
+        one tracked file: ``untracked.go`` is not in the listing, ``vendor/vendored.go`` is and the
+        vendor filter drops it, so deleting that filter changes the assertions. The first recorded
+        command is asserted as well, so a case that quietly took the walk branch instead of the git
+        branch fails here rather than reading as green.
         """
-        git = shutil.which("git")
-        if git is None:
-            self.skipTest("git is not on PATH: this case exercises the git branch")
         self.write("main.go", "package main\n")
         self.write("untracked.go", "package main\n")
         self.write("vendor/vendored.go", "package main\n")
-        for args in (["init", "-q"], ["add", "main.go", "vendor/vendored.go"]):
-            done = subprocess.run([git, *args], cwd=self.root, capture_output=True, text=True)
-            self.assertEqual(done.returncode, 0, f"git {args[0]}: {done.stdout}{done.stderr}")
-
         gate = load_shipped_gate()
         gate.ROOT = self.root
         recorded: list[list[str]] = []
         real_run = gate.run
 
         def recording(cmd, env=None, timeout=1800):
+            if cmd[:2] == ["git", "ls-files"]:
+                recorded.append(list(cmd))
+                return tool_result(cmd, 0, "main.go\nvendor/vendored.go\n", "")
             if cmd[0] == "gofmt":
                 recorded.append(list(cmd))
                 return tool_result(cmd)
             return real_run(cmd, env, timeout)
 
-        path = os.pathsep.join([str(self.stub_bin), str(Path(git).parent)])
-        with mock.patch.dict(os.environ, {"PATH": path}), \
+        with mock.patch.dict(os.environ, {"PATH": str(self.stub_bin)}), \
                 mock.patch.object(gate, "run", side_effect=recording):
             found = gate.tracked_go_files()
             status, detail = gate.step_gofmt(found)
 
+        self.assertEqual(recorded, [["git", "ls-files", "*.go"], ["gofmt", "-l", "main.go"]])
         self.assertEqual(found, ["main.go"])
         self.assertEqual(status, gate.PASS, detail)
-        self.assertEqual(recorded, [["gofmt", "-l", "main.go"]])
 
     def test_tree_without_git_walks_go_files_minus_a_top_level_vendor(self) -> None:
         """The no-git branch drops the same things the git branch drops.
@@ -1047,16 +1041,15 @@ class HostCase(GateTree, unittest.TestCase):
     ) -> None:
         """The nested run's non-``ok`` cases must be exactly the expected skips.
 
-        A skipped case proves nothing, so the two kinds of legitimate skip are
-        named and everything else is a failure of this assertion. The git case
-        cannot run without a host tool -- it exercises ``git ls-files`` against
-        the real binary, by design, and no stub bin holds a git that is not
-        there -- and the child's own copies of this class skip because the guard
-        told them to. That the guard *did* fire is asserted too: if it stopped
-        being set, a child that nested a third run would be the symptom, and
-        this is the case that would notice first.
+        A skipped case proves nothing, so the only legitimate skips are named and everything else is a
+        failure of this assertion: the child's own copies of this class skip because the guard told
+        them to, and no case may skip for any other reason -- a case that needs a host tool the child's
+        ``PATH`` does not hold is the defect these cases exist to catch, and every stub a case needs has
+        to live in the bin inside its own throw-away tree. That the guard *did* fire is asserted too: if
+        it stopped being set, a child that nested a third run would be the symptom, and this is the case
+        that would notice first.
         """
-        expected = sorted({GIT_CASE, *self.GUARDED})
+        expected = sorted(self.GUARDED)
         self.assertEqual(
             sorted(name for name, status in statuses.items() if status != "ok"),
             expected,

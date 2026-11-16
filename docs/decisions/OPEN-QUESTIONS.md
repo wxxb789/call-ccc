@@ -1100,3 +1100,91 @@ supersede it with a newer one and say which it supersedes.
   across the home (paying a home walk on every conversion), or wants the guarantee to stay "fresh id +
   exclusive install", with the home's ids checked by the native verification and the id-uniqueness
   obligation stated at that strength in the matrix.
+
+## Q-0002-25 — Which conditions stop the source check's run, and what the three states answer
+
+- **Status:** resolved (default taken: the row's sentence was corrected to the behaviour the design asks
+  for; no code change).
+- **Question:** obligation A7's frozen sentence read "only a read that names no file at all (or a digest
+  that was never taken) stops the run"
+  ([`docs/evidence/0002-obligation-matrix.md`](../evidence/0002-obligation-matrix.md), A7). The shipped
+  check stops the run on **three** conditions, not two: a read that reported no path at all
+  (`internal/ccc/continue.go`'s `sourceCheckAfter`), a digest that was never taken, and a named file that
+  cannot be **re-read** after the conversion (`sourceCheckAfter`'s `fileDigest` failure, reached through
+  `Continue`'s post-install comparison, whose answer `reportAfterFailure` reports as a run that stopped).
+  Is the third condition a defect — should a file that cannot be re-read instead answer `not-verified`
+  like an archive read or a container member — or is stopping what the design asks for?
+- **Default taken:** the third condition is the design's, and the sentence was the imprecise part. The
+  three `SourceCheck*` states answer questions about the *source's shape* (an archive row has no file, a
+  container member's identity is not a file's name), which the read knows before the conversion and which
+  the report answers with the member's or the archive's own words. A file that was named and then cannot
+  be re-read is the opposite: the read did have a file, the comparison the report exists to make did not
+  happen, and the report may not claim either "unchanged" or "this shape has no file" — the run stops,
+  the installed session's identity stays reported (`reportAfterFailure`), and the failure names the
+  re-read. The check's own doc comment states this reading, and the case that pins it
+  (`TestContinueKeepsTheReportWhenTheSourceVanishesAfterTheInstall`) asserts the report carries
+  `not-verified` with the re-read failure named and does **not** warn that the source moved. The corrected
+  sentence enumerates the three states and the three stop conditions, cites the case for the re-read
+  condition and `reportAfterFailure` for the stopped run's answer, and the never-taken-digest branch is
+  now pinned by `TestSourceCheckStopsAComparisonWhoseDigestWasNeverTaken` (before: no positive case).
+- **Reversal:** make a failed re-read a `not-verified` answer instead — one `switch` in
+  `sourceCheckAfter` (answer `SourceCheckNotVerified` with the re-read failure) and the vanished-source
+  case changes from "the run fails" to "the run succeeds with not-verified" — which would state that a
+  conversion whose source could not be compared is complete rather than unproven.
+- **Settled by:** whether the operator prefers a conversion whose source comparison could not run to fail
+  (today) or to succeed with `not-verified` and the reason (the archive read's shape).
+
+## Q-0002-26 — Which checks a stopped run reports `not-verified`
+
+- **Status:** resolved (default taken: the row's sentence was corrected to the report's actual answers; no
+  code change).
+- **Question:** obligation D5's frozen sentence said "every check that did not run is reported
+  `not-verified` with the reason"
+  ([`docs/evidence/0002-obligation-matrix.md`](../evidence/0002-obligation-matrix.md), D5). The report
+  answers two different things, and deliberately: a check the run's **level asked for** and the run never
+  reached is `not-verified` with "the run stopped before this check ran: …", while a check **no level
+  asked for** stays `not-requested` with its level named (`internal/ccc/continue.go`'s
+  `reportAfterFailure`: the `VerifyNone` and default arms). Folding the second into `not-verified` would
+  make "could not run" and "nobody asked" the same answer, which is exactly what the three verification
+  states exist to keep apart, and the cited case's helper (`stoppedRunChecks`) asserts both answers.
+- **Default taken:** the sentence was too broad, and the behaviour is right. The corrected clause reads:
+  a check the run's level asked for and the run never reached is `not-verified` with the reason; a check
+  no level asked for is `not-requested` with its level named — and the row now cites the helper that
+  asserts both, and the two `reportAfterFailure` arms that produce them.
+- **Reversal:** set `State = not-verified` in the `VerifyNone`/default arms too (two lines in
+  `reportAfterFailure`), then the helper's `Resume.State == not-requested` assertion changes with it and
+  the human block prints "not verified" for a level nobody asked for.
+- **Settled by:** whether the operator wants a stopped run to blur "nobody asked" into "could not run" for
+  the levels the caller did not request; the three states' own documentation says it should not.
+
+## Q-0002-27 — Whether the native check's own `run()` captures are bounded too
+
+- **Status:** resolved (default taken: no code change to `run()`; the residual is declared with its own
+  measurement, and the clause's subject is the target's diagnostics).
+- **Question:** the E6 sweep note recorded a second residual beside the response-stream one (Q-0002-23):
+  `scripts/codex-native-check.py`'s `run()` — the helper the native harness uses for `go build`,
+  `ccc continue`, `ccc inspect` and the resume turn — captures each subprocess's whole stdout and stderr
+  in memory (`subprocess.run(..., capture_output=True)`), so a subprocess that floods either stream is
+  retained in full until it exits. Is that a violation of "Subprocesses are bounded" (E6), or is the
+  clause's subject the *target harness's* diagnostics — the app-server stderr ring and the Go turn's two
+  pipes, both now bounded — while `run()`'s captures are this harness's own call outputs?
+- **Default taken:** the latter, and the residual declared. The clause's word *floods* is about the
+  protocol's diagnostics (both harnesses bound those by bytes now); `run()` is not part of the app-server
+  protocol at all, it is the harness's own subprocess plumbing, and every consumer of its captures reads a
+  bounded piece of them (`build.stderr[:-400]`, `last_meaningful_line(...)`, the parsed JSON documents,
+  the turn's answer lines through the report's own truncation). What bounds the exposure today is the
+  subprocess's own deadline (`run()`'s `timeout`: 600 s for the build/convert/inspect calls, 900 s for the
+  turn) plus the smallness of what those calls answer — measured, not assumed: a throwaway probe over the
+  shipped `run()` driving `python3 -c 'import sys; sys.stdout.write("x" * (64 << 20))'` printed
+  `captured=67108864 byte(s)` — the helper does retain what the child wrote, and the bound is the child's
+  own output and deadline rather than a cap. Bounding it in the helper would have to choose between killing a subprocess whose answer the
+  harness is waiting for and truncating a JSON document the check parses, the same behaviour choice
+  Q-0002-23 records for the response path.
+- **Reversal:** give `run()` a byte bound per stream (read both pipes through bounded readers, mark the
+  capture truncated, and let the callers' own truncation report it), then pin it with a case that drives a
+  stub subprocess over the bound; the build/convert/inspect calls would report a truncated answer instead
+  of an unparsable one only if the parse of a truncated document is made an explicit failure.
+- **Settled by:** whether the operator wants a flooding (or merely enormous) *helper* subprocess answer to
+  be a bounded failure too, and which of "kill it at the bound", "truncate the document" or "leave the
+  subprocess's own deadline as the bound" is the acceptable failure shape.
+

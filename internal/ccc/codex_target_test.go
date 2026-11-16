@@ -701,6 +701,69 @@ func TestCodexRolloutPairsAnIdLessResultWithItsCall(t *testing.T) {
 		t.Errorf("unpaired_tool_results = %+v, want none: one call was still outstanding",
 			lossCount(t, rollout.Losses, "unpaired_tool_results"))
 	}
+
+	// No call is outstanding at all: an id-less result has nothing to pair with, so it is counted and
+	// not written. This is the shape a read takes when the result's call is not in the conversation, and
+	// the pairing rule has to answer it the same way it answers two or three outstanding calls -- the
+	// source recorded no id, and there is no call this conversion wrote for it to belong to.
+	noOutstanding := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask"},
+		Message{Ordinal: 1, Role: string(parser.RoleUser),
+			ToolResults: []ToolResult{{ContentRaw: "NO-CALL-TO-PAIR-WITH"}}},
+	)
+	rollout, err = ConvertToCodexRollout(noOutstanding, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if rollout.Carried.ToolResults != 0 {
+		t.Errorf("carried = %+v, want no result: there was no outstanding call to pair with",
+			rollout.Carried)
+	}
+	if lossCount(t, rollout.Losses, "unpaired_tool_results").Count != 1 {
+		t.Errorf("unpaired_tool_results = %+v, want the result with no call counted",
+			lossCount(t, rollout.Losses, "unpaired_tool_results"))
+	}
+	if lossCount(t, rollout.Losses, "generated_call_ids").Count != 0 {
+		t.Errorf("generated_call_ids = %+v, want none: no id could be generated for a result with no call",
+			lossCount(t, rollout.Losses, "generated_call_ids"))
+	}
+	if strings.Contains(string(rollout.Data), "NO-CALL-TO-PAIR-WITH") {
+		t.Error("the rollout holds a result with no call to pair it with")
+	}
+
+	// The result names a call, and this conversion did not write that call: the recorded id is the
+	// source's own, but no call of that id is in the conversation (the call preceded the read, or the
+	// provider recorded a result whose call it did not carry). An output without its call is not a pair,
+	// and inventing the call would state a tool invocation the source never recorded -- so the result is
+	// omitted and counted, and the call the conversion did write stays outstanding.
+	foreignCall := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask"},
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "[Read: /x]",
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_written", Name: "Read", InputJSON: `{"file_path":"/x"}`}}},
+		Message{Ordinal: 2, Role: string(parser.RoleUser),
+			ToolResults: []ToolResult{{ToolUseID: "toolu_not_written",
+				ContentRaw: "THE WORDS OF A RESULT WHOSE CALL IS NOT HERE"}}},
+	)
+	rollout, err = ConvertToCodexRollout(foreignCall, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if rollout.Carried.ToolCalls != 1 || rollout.Carried.ToolResults != 0 {
+		t.Errorf("carried = %+v, want the call written and the foreign result omitted", rollout.Carried)
+	}
+	if lossCount(t, rollout.Losses, "unpaired_tool_results").Count != 1 {
+		t.Errorf("unpaired_tool_results = %+v, want the result naming an unwritten call counted",
+			lossCount(t, rollout.Losses, "unpaired_tool_results"))
+	}
+	if strings.Contains(string(rollout.Data), "THE WORDS OF A RESULT WHOSE CALL IS NOT HERE") {
+		t.Error("the rollout holds a result whose call this conversion did not write")
+	}
+	for _, line := range decodeRollout(t, rollout.Data) {
+		if payloadField(t, line, "type") == codexItemFunctionOutput {
+			t.Errorf("the rollout holds a %s for a call that was not written: %s", codexItemFunctionOutput,
+				line.Payload)
+		}
+	}
 }
 
 // TestCodexRolloutRecordsTheProviderBindingItIsGiven pins that the binding comes from the caller (which

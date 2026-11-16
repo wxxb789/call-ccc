@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -627,8 +628,36 @@ func TestRelativePathReferenceIgnoresARootThatDoesNotHoldIt(t *testing.T) {
 	}
 }
 
+// The path shapes a committed fixture must not hold, and the invented roots it may be written with.
+//
+// The needles the rule used to carry are this machine's own (its home directory, this repository's
+// absolute path), so a path leaked from *another* host passes them: the string simply is not there to
+// find. A shape is host-independent -- an absolute path is an absolute path whatever machine wrote it --
+// so the scan reads every fixture as text and rejects an absolute path anywhere but the fixtures'
+// invented roots, plus any Windows drive or UNC spelling. The invented roots name no machine and no
+// user: `/home/user/` is the placeholder every host path in these transcripts is rewritten to, and the
+// synthetic Codex rollout records `/tmp` as its working directory.
+var (
+	inventedFixtureRoots = []string{"/home/user/", "/tmp"}
+
+	fixtureAbsolutePathShape = regexp.MustCompile(`(?:^|[\s"':=,(\[])(/[A-Za-z0-9._~-][^\s"']*)`)
+	fixtureWindowsPathShape  = regexp.MustCompile(`(?:^|[\s"':=,(\[])([A-Za-z]:[\\/]|\\\\[^\s"'\\]+\\)`)
+)
+
+// inventedFixturePath reports whether an absolute path is one of the fixtures' invented spellings.
+func inventedFixturePath(path string) bool {
+	for _, root := range inventedFixtureRoots {
+		if path == strings.TrimSuffix(root, "/") || strings.HasPrefix(path, root) {
+			return true
+		}
+	}
+	return false
+}
+
 // TestFixturesCarryNoHostPathsOrSecrets pins the sanitization rule for committed fixtures: they are
-// invented content, so the tree's own root, a home directory, and credential shapes stay out of them.
+// invented content, so the tree's own root, a home directory, and credential shapes stay out of them --
+// and, because the rule has to hold for a leak from a host this check is not running on, so does every
+// absolute path outside the invented roots and every Windows path shape.
 func TestFixturesCarryNoHostPathsOrSecrets(t *testing.T) {
 	root := fixtureRoot(t)
 	home, _ := os.UserHomeDir()
@@ -650,6 +679,15 @@ func TestFixturesCarryNoHostPathsOrSecrets(t *testing.T) {
 			if strings.Contains(string(data), needle) {
 				t.Errorf("%s contains %q", path, needle)
 			}
+		}
+		for _, match := range fixtureAbsolutePathShape.FindAllStringSubmatch(string(data), -1) {
+			if !inventedFixturePath(match[1]) {
+				t.Errorf("%s holds the absolute path %q, which is not one of the invented fixture roots %v",
+					path, match[1], inventedFixtureRoots)
+			}
+		}
+		for _, match := range fixtureWindowsPathShape.FindAllStringSubmatch(string(data), -1) {
+			t.Errorf("%s holds the Windows path shape %q", path, match[1])
 		}
 	}
 	if checked == 0 {
@@ -794,11 +832,18 @@ type fixedSourceProvider struct {
 	// read that failed at the I/O level.
 	fingerprintErr error
 	parseErr       error
+	// findErr makes the stand-in fail before the source is resolved at all: the provider could not
+	// answer which source the reference names. It is the other entry point a source read fails at, and
+	// a caller's rule for a failed read has to cover it as well.
+	findErr error
 }
 
 func (p *fixedSourceProvider) FindSource(
 	context.Context, parser.FindSourceRequest,
 ) (parser.SourceRef, bool, error) {
+	if p.findErr != nil {
+		return parser.SourceRef{}, false, p.findErr
+	}
 	return p.source, true, nil
 }
 

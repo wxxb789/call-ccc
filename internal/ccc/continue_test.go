@@ -455,6 +455,48 @@ func TestInstallCodexRolloutNeverReplacesASession(t *testing.T) {
 	}
 }
 
+// TestInstallCodexRolloutPublishesByTheExclusiveLink pins the publication's *mechanism*, not only its
+// guard: the final name is taken by the exclusive link the installer names (`linkSession`, `os.Link`'s
+// own seam), so the installer cannot be published by a rename behind an intact guard -- the reversal the
+// contract refuses, which the round's mutation showed a guard-only case would stay green under.
+func TestInstallCodexRolloutPublishesByTheExclusiveLink(t *testing.T) {
+	cfg := fixtureConfig(t)
+	conversation, err := NewSourceReader(cfg).Read(context.Background(), claudeFixtureRef)
+	if err != nil {
+		t.Fatalf("reading the fixture: %v", err)
+	}
+	rollout, err := ConvertToCodexRollout(conversation,
+		CodexTargetOptions{SessionID: "01a1e000-2222-7000-8000-000000000001"})
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+
+	link := linkSession
+	var linked [][2]string
+	linkSession = func(oldname, newname string) error {
+		linked = append(linked, [2]string{oldname, newname})
+		return link(oldname, newname)
+	}
+	defer func() { linkSession = link }()
+
+	path, mechanism, err := InstallCodexRollout(rollout, t.TempDir())
+	if err != nil {
+		t.Fatalf("installing: %v", err)
+	}
+	if mechanism != "hard-link" {
+		t.Errorf("mechanism = %q, want the exclusive link", mechanism)
+	}
+	if len(linked) != 1 || linked[0][1] != path {
+		t.Fatalf("the link seam took %v, want exactly one link to the reported path %s", linked, path)
+	}
+	if from := filepath.Base(linked[0][0]); !strings.Contains(from, ".tmp-") {
+		t.Errorf("the link took %q, want the temporary sibling the bytes were written through", linked[0][0])
+	}
+	if _, err := os.Stat(linked[0][0]); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the temporary source of the link survives at %s: %v", linked[0][0], err)
+	}
+}
+
 // TestInstallCodexRolloutRefusesAFilesystemWithoutHardLinks pins what happens when the exclusive link is
 // unavailable: the conversion is refused, nothing is published under the session's name, and no temporary
 // file is left behind. A rename would publish it -- and a rename replaces whatever is at the destination,
@@ -726,11 +768,12 @@ func TestContinueFallsBackToTheArchiveWhenTheSourceIsGone(t *testing.T) {
 	}
 }
 
-// TestContinueFallsBackToTheArchiveWhenTheSourceCannotBeRead pins the other source-side failure the
-// fallback has to survive: the reader *resolved* the source and then could not read its bytes -- a
-// fingerprint or a parse that failed at the I/O level. The source's identity was answered, so this is
-// not "this machine holds no such session": it is a provider that could not read the source, and an
-// archive that holds the session must still be consulted. Both halves are pinned because both used to
+// TestContinueFallsBackToTheArchiveWhenTheSourceCannotBeRead pins the other source-side failures the
+// fallback has to survive: the provider never answered which source the reference names, or it
+// *resolved* the source and then could not read its bytes -- a fingerprint or a parse that failed at the
+// I/O level. Either way the source's identity was asked for and the provider could not produce a session
+// from it, so this is not "this machine holds no such session": it is a provider failure, and an archive
+// that holds the session must still be consulted. Every shape is pinned because all of them used to
 // escape readForConversion as bare errors, and the report has to name where the answer came from and
 // why, so a reader cannot take the projection for the file.
 func TestContinueFallsBackToTheArchiveWhenTheSourceCannotBeRead(t *testing.T) {
@@ -739,6 +782,11 @@ func TestContinueFallsBackToTheArchiveWhenTheSourceCannotBeRead(t *testing.T) {
 		fail   func(*fixedSourceProvider)
 		reason string
 	}{
+		{
+			name:   "the provider could not resolve the reference",
+			fail:   func(p *fixedSourceProvider) { p.findErr = errors.New("the provider store could not be listed") },
+			reason: "the provider store could not be listed",
+		},
 		{
 			name:   "the fingerprint could not read the file",
 			fail:   func(p *fixedSourceProvider) { p.fingerprintErr = errors.New("input/output error") },
@@ -803,6 +851,61 @@ func TestContinueFallsBackToTheArchiveWhenTheSourceCannotBeRead(t *testing.T) {
 			}
 		})
 	}
+
+	// The path half of the same rule: a reference that names a file is offered to the provider as a
+	// stored path (reader.go's resolvePathReference), so a provider that fails *there* has to be
+	// classified the same way -- the sentinel belongs to the provider's resolution whichever question it
+	// was asked, and the archive must still be consulted.
+	t.Run("a path reference whose provider fails still reaches the archive", func(t *testing.T) {
+		ctx := context.Background()
+		cfg := fixtureConfig(t)
+		root := t.TempDir()
+		copyPath := filepath.Join(root, "-home-user-code-example-api", claudeFixtureRef.ID+".jsonl")
+		data, err := os.ReadFile(fixturePath(t, filepath.Join("claude",
+			"-home-user-code-example-api", claudeFixtureRef.ID+".jsonl")))
+		if err != nil {
+			t.Fatalf("reading the fixture: %v", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(copyPath), 0o700); err != nil {
+			t.Fatalf("creating the copied project directory: %v", err)
+		}
+		if err := os.WriteFile(copyPath, data, 0o600); err != nil {
+			t.Fatalf("writing the copy: %v", err)
+		}
+		cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentClaude: {root}}
+		ingestor, err := NewIngestor(cfg, cfg.DBPath)
+		if err != nil {
+			t.Fatalf("building the ingestor: %v", err)
+		}
+		if err := ingestor.IngestPaths(ctx, copyPath); err != nil {
+			t.Fatalf("ingesting the copy: %v", err)
+		}
+
+		reader, provider := readerOverFixedProvider(t, cfg, parser.AgentClaude)
+		provider.findErr = errors.New("the stored-path lookup could not run")
+		result, err := Continue(ctx, ContinueOptions{
+			Ref:          Ref{Provider: "claude", ID: copyPath},
+			Target:       TargetCodex,
+			Config:       cfg,
+			Reader:       reader,
+			ArchivePath:  cfg.DBPath,
+			TargetHome:   t.TempDir(),
+			TargetBinary: missingTargetBinary,
+			Verify:       VerifyNone,
+		})
+		if err != nil {
+			t.Fatalf("continuing after the path lookup failed: %v", err)
+		}
+		if result.Conversion.ReadFrom != "archive" {
+			t.Errorf("read_from = %q, want the archive", result.Conversion.ReadFrom)
+		}
+		warnings := strings.Join(result.Warnings, " ")
+		for _, want := range []string{"archive", "the stored-path lookup could not run"} {
+			if !strings.Contains(warnings, want) {
+				t.Errorf("warnings = %v, want %q named beside the archive", result.Warnings, want)
+			}
+		}
+	})
 
 	// The other half of the obligation: a source that failed at the I/O level does not get to pre-empt the
 	// archive's own answer either. A reference two archive rows answer is the archive's ambiguity, with
@@ -1780,6 +1883,81 @@ func TestSourceCheckComparesTheFileBeforeAndAfter(t *testing.T) {
 	if !strings.Contains(detail, "changed while it was converted") {
 		t.Errorf("the report does not say what happened: %q", detail)
 	}
+	// Both digests are in the report, so a caller can tell which two versions of the file it read: the
+	// digest taken before the conversion, and the file's digest now.
+	after, err := fileDigest(path)
+	if err != nil {
+		t.Fatalf("digesting the changed source: %v", err)
+	}
+	if after == before {
+		t.Fatalf("the changed file digests the same as before (%s): the case's premise does not hold", after)
+	}
+	for _, want := range []string{before, after} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("the changed report %q does not carry the digest %s", detail, want)
+		}
+	}
+}
+
+// TestContinueReportsASourceThatMovedDuringTheConversion pins the warning half of the same rule end to
+// end: a source whose bytes change while it is converted -- the publication is the step between the
+// digest taken before the conversion and the comparison after it -- is answered "changed" with both
+// digests, and the report's own warning channel names the move. The conversion and the installation are
+// real; the file simply no longer holds the bytes they read, and a caller that reads only the warnings
+// must not miss it.
+func TestContinueReportsASourceThatMovedDuringTheConversion(t *testing.T) {
+	cfg := fixtureConfig(t)
+	cfg, sourcePath := sourceFixtureCopy(t, cfg,
+		fixturePath(t, filepath.Join("claude", "-home-user-code-example-api", claudeFixtureRef.ID+".jsonl")),
+		filepath.Join("-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"))
+	before, err := fileDigest(sourcePath)
+	if err != nil {
+		t.Fatalf("digesting the source: %v", err)
+	}
+	moved := "{\"type\":\"user\",\"moved\":true}\n"
+	link := linkSession
+	linkSession = func(oldname, newname string) error {
+		if err := link(oldname, newname); err != nil {
+			return err
+		}
+		return os.WriteFile(sourcePath, []byte(moved), 0o600)
+	}
+	defer func() { linkSession = link }()
+
+	result, err := Continue(context.Background(), ContinueOptions{
+		Ref:          claudeFixtureRef,
+		Target:       TargetCodex,
+		Config:       cfg,
+		Reader:       NewSourceReader(cfg),
+		TargetHome:   t.TempDir(),
+		TargetBinary: missingTargetBinary,
+		Verify:       VerifyNone,
+	})
+	if err != nil {
+		t.Fatalf("continuing after the source moved: %v", err)
+	}
+	if result.Conversion.State != ConversionStateConverted ||
+		result.Installation.State != InstallationStateInstalled {
+		t.Errorf("conversion = %+v, installation = %+v, want the session carried and installed",
+			result.Conversion, result.Installation)
+	}
+	if result.Installation.SourceCheckState != SourceCheckChanged {
+		t.Fatalf("source_check_state = %q, want %q with the file's own bytes changed",
+			result.Installation.SourceCheckState, SourceCheckChanged)
+	}
+	after, err := fileDigest(sourcePath)
+	if err != nil {
+		t.Fatalf("digesting the moved source: %v", err)
+	}
+	for _, want := range []string{before, after} {
+		if !strings.Contains(result.Installation.Detail, want) {
+			t.Errorf("the source check detail %q does not carry the digest %s",
+				result.Installation.Detail, want)
+		}
+	}
+	if warnings := strings.Join(result.Warnings, " "); !strings.Contains(warnings, "changed while it was converted") {
+		t.Errorf("warnings = %v, want the report's own channel to name the source that moved", result.Warnings)
+	}
 }
 
 // TestContinueFromAContainerMemberReportsNoFileToCompare pins the read whose identity is not a file: a
@@ -1869,6 +2047,25 @@ func TestSourceCheckStopsAReadThatNamesNoFileAtAll(t *testing.T) {
 	if _, _, err := sourceCheckAfter(conversation, "source", ""); err == nil ||
 		!strings.Contains(err.Error(), "no path") {
 		t.Fatalf("err = %v, want a stopped run naming the read that reported no path", err)
+	}
+}
+
+// TestSourceCheckStopsAComparisonWhoseDigestWasNeverTaken pins the third stop condition: with a file to
+// compare and no digest taken before the conversion, the comparison cannot run, and the run stops naming
+// the missing digest rather than answering a state nothing observed -- "unchanged" would claim a
+// comparison the run never made, and "not-verified" is for a comparison the source's own shape kept from
+// running (an archive read, a member identity), not for a caller that handed over no digest to compare
+// against.
+func TestSourceCheckStopsAComparisonWhoseDigestWasNeverTaken(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	if err := os.WriteFile(path, []byte("{\"type\":\"user\"}\n"), 0o600); err != nil {
+		t.Fatalf("writing the source: %v", err)
+	}
+	conversation := Conversation{Source: SourceIdentity{Provider: "claude", SourcePath: path}}
+	state, _, err := sourceCheckAfter(conversation, "source", "")
+	if err == nil || !strings.Contains(err.Error(), "was not taken") {
+		t.Fatalf("state = %q, err = %v; want a stopped run naming the digest that was never taken",
+			state, err)
 	}
 }
 
