@@ -441,6 +441,81 @@ func TestCodexRolloutReportsEveryCategoryItKnows(t *testing.T) {
 	}
 }
 
+// TestCodexRolloutDoesNotReportOmittedResultsAsCarried pins the counting rule of the two carried-with-
+// caveat result categories: a result this conversion does not write -- its call is not in the
+// conversation, or it holds no text to write -- carries no output at all, so it is counted as the
+// omission it is and never as evidence that travelled with a caveat. The same two flags on results that
+// are written are counted, which is what makes the zeros above a statement about the omission rather
+// than about the flags being ignored.
+func TestCodexRolloutDoesNotReportOmittedResultsAsCarried(t *testing.T) {
+	omitted := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask"},
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "[Read: /x]",
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_1", Name: "Read", InputJSON: `{"file_path":"/x"}`}}},
+		// A result whose call this conversation does not hold, carrying both flags.
+		Message{Ordinal: 2, Role: string(parser.RoleUser), ToolResults: []ToolResult{
+			{ToolUseID: "toolu_gone", Status: "errored", ContentRaw: "the orphan's recorded text",
+				PersistedOutputUnresolved: true},
+		}},
+		// A result paired with a call that is carried, but with no text to write, carrying both flags.
+		Message{Ordinal: 3, Role: string(parser.RoleUser), ToolResults: []ToolResult{
+			{ToolUseID: "toolu_1", Status: "errored", PersistedOutputUnresolved: true},
+		}},
+	)
+	rollout, err := ConvertToCodexRollout(omitted, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if rollout.Carried.ToolResults != 0 {
+		t.Fatalf("carried = %+v, want no result written", rollout.Carried)
+	}
+	if loss := lossCount(t, rollout.Losses, "unpaired_tool_results"); loss.Count != 1 ||
+		loss.Disposition != DispositionOmitted {
+		t.Errorf("unpaired_tool_results = %+v, want the orphan counted as omitted", loss)
+	}
+	if loss := lossCount(t, rollout.Losses, "empty_tool_results"); loss.Count != 1 ||
+		loss.Disposition != DispositionOmitted {
+		t.Errorf("empty_tool_results = %+v, want the textless result counted as omitted", loss)
+	}
+	for _, category := range []string{"unresolved_tool_outputs", "tool_result_outcomes"} {
+		loss := lossCount(t, rollout.Losses, category)
+		if loss.Count != 0 || loss.Disposition != DispositionCarriedWithCaveat {
+			t.Errorf("%s = %+v, want 0 and %q: a result that was not written carried nothing",
+				category, loss, DispositionCarriedWithCaveat)
+		}
+	}
+	if strings.Contains(string(rollout.Data), "the orphan's recorded text") {
+		t.Error("the rollout holds the orphan's text, which the report says was not carried")
+	}
+
+	written := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask"},
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "[Read: /x]",
+			ToolCalls: []ToolCall{
+				{ToolUseID: "toolu_1", Name: "Read", InputJSON: `{"file_path":"/x"}`},
+				{ToolUseID: "toolu_2", Name: "Read", InputJSON: `{"file_path":"/y"}`},
+			}},
+		Message{Ordinal: 2, Role: string(parser.RoleUser), ToolResults: []ToolResult{
+			{ToolUseID: "toolu_1", Status: "errored", ContentRaw: `"Error: missing"`},
+			{ToolUseID: "toolu_2", ContentRaw: "placeholder for a side file",
+				PersistedOutputUnresolved: true},
+		}},
+	)
+	rollout, err = ConvertToCodexRollout(written, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if rollout.Carried.ToolResults != 2 {
+		t.Fatalf("carried = %+v, want both results written", rollout.Carried)
+	}
+	for category, want := range map[string]int{"unresolved_tool_outputs": 1, "tool_result_outcomes": 1} {
+		if loss := lossCount(t, rollout.Losses, category); loss.Count != want {
+			t.Errorf("%s = %+v, want %d: the flag is on a result whose output was written",
+				category, loss, want)
+		}
+	}
+}
+
 // TestCodexRolloutCarriesAToolRoleMessageOnlyThroughItsResult pins the role rule for the native tool
 // role: a tool-role message is the tool's own output, so its text is never written as a dialogue
 // message. A paired output travels as the target's own function_call_output and nowhere else -- not

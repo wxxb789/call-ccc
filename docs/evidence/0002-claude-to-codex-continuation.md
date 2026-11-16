@@ -128,9 +128,14 @@ The three blocks a consumer reads apart: `conversion.state` (`converted`), `inst
 `not-requested`), each with its own `method` and `detail`, and `conversion.losses[]` naming every
 omitted or narrowed category with its count and reason (eighteen categories, always present, including the
 zero ones — round 3's §8 added `malformed_source_lines`, and the §1 and §2 blocks here were recorded
-before that and print what the writer reported then; §3's runs are this tree's, and print eighteen). The CLI's own
-tests pin each state's wording, the `--json` document's shape and that
-diagnostics stay on stderr (`cmd/ccc/main_test.go`).
+before that and print what the writer reported then; §3's runs are this tree's, and print eighteen).
+
+The source check is three states of its own: `installation.source_check_state` is `unchanged`, `changed`
+or `not-verified` — the comparison did not run, which is what an archive read and a stopped run answer —
+with `detail` carrying that answer's own words. Round 5 replaced the `installation.source_unchanged`
+boolean the §1/§2 blocks above were recorded with, because a boolean answered "did the file move?" for a
+comparison that never ran (§10). The CLI's own tests pin each state's wording, the `--json` document's
+shape and that diagnostics stay on stderr (`cmd/ccc/main_test.go`).
 
 ## 3. Codex loads the installed session and continues from it
 
@@ -255,7 +260,7 @@ verification exercises; the *interactive* surface itself is unverified here.
 | after a real turn (`codex exec resume`) | unchanged | grows again with the turn's own records (§3) |
 
 Nothing else moves: the commit compares the source fixture tree and the unrelated session it plants in
-the target home before and after every run, and the recorded `source_unchanged` flag covers the file the
+the target home before and after every run, and the recorded `source_check_state` covers the file the
 conversation was read from. The appended record is the *target's* own bookkeeping about a session it
 opened, written after the conversion's structure check has already compared the file it wrote, and it is
 valid to the inherited reader (it is an `event_msg` whose payload is the harness's settings).
@@ -264,7 +269,7 @@ valid to the inherited reader (it is an `event_msg` whose payload is the harness
 
 - The two halves of each run above: `the source session is unchanged — … (fixture tree identical)` and
   `the unrelated session in the target home is unchanged`, plus `no pre-existing session in the target
-  home changed` and `source_unchanged: true` in the JSON.
+  home changed` and `source_check_state: "unchanged"` in the JSON.
   The harness digests every file below the fixture root, the unrelated session it plants in the
   target home and every session file the home already held, before the conversion, and compares them
   after it (the planted file is removed again when the run ends);
@@ -369,8 +374,10 @@ ok  	go.kenn.io/agentsview/internal/ccc/parity	2.257s
 | the printed resume invocation names the data directory the session was installed into, quoted where a shell would act on a word, and a resume verification reports the command it ran the same way | `TestContinuePrintsAResumeCommandThatSelectsTheInstallationHome`, `TestResumeVerificationCommandNamesTheHomeItRanAgainst`, `TestContinueHumanOutputNamesTheResumeCommand`, `TestContinueJSONDistinguishesConversionInstallationAndVerification` |
 | exclusive install (a taken name refused, a filesystem without hard links refused rather than renamed over) and dry run writes nothing (no directory for a home the caller named that is not there yet, and the target harness is never started), dry run reports its own states, prompt required, target/level validation, home resolution | `TestInstallCodexRolloutNeverReplacesASession`, `TestInstallCodexRolloutRefusesAFilesystemWithoutHardLinks`, `TestContinueDryRunWritesNothing`, `TestContinueDryRunReportsWhatItVerified`, `TestContinueDryRunInstallsNothingThroughTheCLI`, `TestContinueRequiresAPromptBeforeItRunsATurn`, `TestContinueRefusesAnUnsupportedTargetOrLevel`, `TestContinueTargetHomeResolution` |
 | the round-trip check compares rather than agrees | `TestStructureVerificationNamesWhatTheFileDoesNotHold` |
-| the source's own digest is taken before the conversion and compared after it; a moved source is warned about; a projection says no file was compared | `TestSourceUnchangedComparesTheFileBeforeAndAfter`, `TestSourceChangedWarningsNameTheMove`, `TestSourceUnchangedSaysWhenThereWasNoFileToCompare` |
-| the CLI's three states, human shape, source check, partial-read fidelity line, exit codes, help | `TestContinueJSONDistinguishesConversionInstallationAndVerification`, `TestContinueHumanOutputNamesTheResumeCommand`, `TestContinueHumanOutputReportsTheSourceCheck`, `TestContinueHumanOutputNamesAPartialSourceRead`, `TestContinueUsageErrors`, `TestContinueReportsAFailedVerificationAsAFailure`, `TestContinueRefusesAMissingDataDirectoryNobodyNamed`, `TestContinueHelpIsARequestNotAFailure` |
+| the source's own digest is taken before the conversion and compared after it; a moved source is warned about; a projection and a stopped run answer `not-verified` rather than claiming a comparison | `TestSourceCheckComparesTheFileBeforeAndAfter`, `TestSourceChangedWarningsNameTheMove`, `TestSourceCheckSaysWhenThereWasNoFileToCompare` |
+| a result the conversion does not write is never reported as carried with a caveat, while the same two flags on a result that *is* written are counted | `TestCodexRolloutDoesNotReportOmittedResultsAsCarried` |
+| a failure after the conversion keeps the report it reached — the published installation and identity, the conversion's counts — with every check that did not run `not-verified` and naming the reason: a source that vanished after publication, a temporary file the installer could not remove, a home that could not be created | `TestContinueKeepsTheReportWhenTheSourceVanishesAfterTheInstall`, `TestContinueKeepsTheReportWhenTheTemporaryFileCannotBeRemoved`, `TestContinueKeepsTheConversionReportWhenTheHomeCannotBeCreated` |
+| the CLI's three states, human shape, source check, partial-read fidelity line, exit codes, help, and that a failure carrying a report still writes it (and a failure with none writes nothing) | `TestContinueJSONDistinguishesConversionInstallationAndVerification`, `TestContinueHumanOutputNamesTheResumeCommand`, `TestContinueHumanOutputReportsTheSourceCheck`, `TestContinueHumanOutputNamesAPartialSourceRead`, `TestContinueUsageErrors`, `TestContinueReportsAFailedVerificationAsAFailure`, `TestContinueWritesTheReportOfAFailureAfterPublication`, `TestContinueRefusesAMissingDataDirectoryNobodyNamed`, `TestContinueHelpIsARequestNotAFailure` |
 
 Gate, run on this tree after the last change (`python3 scripts/gate.py`, exit 0):
 
@@ -639,3 +646,86 @@ Tests, gate: `internal/ccc` top-level cases 103 → **105** (`cmd/ccc` 20, uncha
 (not partial; the block is the one in §6). No other number in this record changed: the fixture digests of
 §1's two other files, the target file's byte count for the first fixture, and the recorded §1/§2 runs
 stand as the runs they were.
+
+## 10. Repair round 5 — a failure after publication keeps its report; an omitted result is not "carried"
+
+The round-5 review found two defects, both of the same shape: a report claimed the opposite of what the
+run had done.
+
+**A published session's report was thrown away by a later failure.** `Continue` recorded the installation
+and the new target path, and then discarded the whole report (`ContinueResult{}`) when the post-install
+comparison of the source file's own bytes could no longer run — the session was installed, and the caller
+received neither its path nor its identity, because `cmd/ccc` exits before writing the document when
+`Continue` answers with an error. One level down the same discard existed in the installer: the file is
+published by hard link and a temporary file that cannot be removed is reported *after* publication
+(`InstallCodexRollout`), and its caller dropped the published path with the error.
+
+`Continue` now answers a failure after the conversion with the report it reached, and `reportAfterFailure`
+fills in the checks that have no answer — the check the stop kept from running is `not-verified` and names
+the failure, a check the level never asked for stays `not-requested`, and a check that already answered
+keeps its own state and detail (the dry run's structural read-back runs before the source comparison, so
+`TestContinueKeepsTheDryRunReportWhenItsSourceCheckCannotRun` pins that it is not downgraded). The report's
+`warnings[]` names the stopped run as well, so a caller reading only the warnings cannot miss it. The
+installer's doc comment now states its contract — the returned path and the error are independent answers —
+and its temporary-file removals go through a `removeFile` seam (`var removeFile = os.Remove`, beside the
+existing `linkSession` one) so a cleanup failure is exercisable on any host, not only where a directory
+permission can make a removal fail. `cmd/ccc` writes the report it was handed before it names the failure
+and still exits 1; a failure that produced no conversion writes no document at all.
+
+**Omitted results were reported as carried with a caveat.** `codex_target.go`'s `toolResult` incremented
+`lossUnresolved` and `lossOutcomes` before the pairing and text guards, so a result whose call is not in the
+conversation, or which holds no text to write, was counted as `carried-with-caveat` — the detail even said
+its text "is what was carried" — while `carried.tool_results` stayed 0 and no output record existed. Both
+counters are now incremented at the write site, past every omission guard, and the two categories' details
+state it ("only results that were written are counted here"); the omitted cases keep their own categories
+(`unpaired_tool_results`, `empty_tool_results`).
+
+The source check is three states now, which is what the same class of defect looked like in the
+installation block: `installation.source_check_state` is `unchanged`, `changed` or `not-verified`, the last
+for a comparison that did not run — an archive read has no file of its own, and a run can stop before
+comparing — with `detail` carrying that answer's own words. The boolean it replaces
+(`installation.source_unchanged`, printed by the §1/§2 runs above) answered "did the file move?" for a
+comparison that never ran: the archive read was reported `true` while its own detail said no file was open.
+The human block renders the third state as `not verified (…)` (`cmd/ccc/main.go`'s `sourceCheckWord`).
+
+Each rule of the touched surface was pinned by executing one mutation, reverting the line, running the tests
+that claim it, and restoring the file from a byte-identical copy (`internal/ccc/continue.go`,
+`internal/ccc/codex_target.go`, `cmd/ccc/main.go` compared by SHA-256 after every restore; all 13 restores
+agreed):
+
+| Rule | Mutation (the fix's line reverted) | Observed |
+| --- | --- | --- |
+| a published session is reported even when the install itself reports a cleanup failure | the published-path block and the failure's `reportAfterFailure` replaced by the pre-fix `if err != nil { return ContinueResult{}, err }` | `TestContinueKeepsTheReportWhenTheTemporaryFileCannotBeRemoved` FAIL: `installation = {State: Path: …}, want the published session reported beside the failure` |
+| a source-check failure after publication keeps the report | the same site, reduced to `return ContinueResult{}, err` | `TestContinueKeepsTheReportWhenTheSourceVanishesAfterTheInstall` FAIL: `conversion = {State: …Carried:{Messages:0 …}}` and `installation = {State: …}, want the published session reported` |
+| a failure before publication keeps the conversion report | the home-creation branch back to `return ContinueResult{}, fmt.Errorf(…)` | `TestContinueKeepsTheConversionReportWhenTheHomeCannotBeCreated` FAIL: `installation = {State: …}, want not-installed` and `want the source check reported as not run, naming what stopped it` |
+| a check that already answered is not downgraded by a later failure | `hasAnswer(...)` back to `Detail == ""` in `reportAfterFailure` | `TestContinueKeepsTheDryRunReportWhenItsSourceCheckCannotRun` FAIL: `structure = {State:not-verified … Detail:the run stopped before this check ran …}, want the read-back the dry run completed to keep its verdict` |
+| the CLI writes the report a failure carried (and exits nonzero) | the error branch's report write dropped | `TestContinueWritesTheReportOfAFailureAfterPublication` FAIL (both spellings): `a failure that carried a report wrote nothing to stdout, so the target identity is lost` |
+| a failure with no report writes no document | the branch's `Conversion.State == converted` test forced true | the same case FAIL: `a failure with no report wrote to stdout: "{ "upstream_revision": …"` |
+| an archive read is a comparison that did not run, not "unchanged" | the archive branch back to `return SourceCheckUnchanged, …` | `TestSourceCheckSaysWhenThereWasNoFileToCompare` FAIL: `state = "unchanged" …, want a comparison that did not run`; `TestContinueFallsBackToTheArchiveWhenTheSourceIsGone` FAIL on the installation's state |
+| a comparison that could not run is reported `not-verified`, not as a move | the error branch sets `SourceCheckChanged` before reporting | `TestContinueKeepsTheReportWhenTheSourceVanishesAfterTheInstall` FAIL: `installation = {State:installed …}` and its "nothing observed a move" warning assertion |
+| the moved-source warning is only for a comparison that ran and differed | `state != SourceCheckChanged` → `state == SourceCheckUnchanged` | `TestSourceChangedWarningsNameTheMove` FAIL (a `not-verified` check warned about a move) |
+| an unresolved flag is counted only where the output was written | `lossUnresolved++` moved back above the pairing/text guards | `TestCodexRolloutDoesNotReportOmittedResultsAsCarried` FAIL: `unresolved_tool_outputs = {… Count:2 …}`, want 0 for the omitted cases and 1 for the written one |
+| a recorded outcome is counted only where the output was written | `lossOutcomes++` moved back the same way | the same case FAIL: `tool_result_outcomes = {… Count:2 …}` |
+| a written result with those flags *is* counted | the whole guarded counting block deleted | the same case FAIL (`Count:0` for both) and `TestCodexRolloutReportsEveryCategoryItKnows` FAIL: `tool_result_outcomes … Count:0 …`, `unresolved_tool_outputs … Count:0` |
+| the omitted results are still counted as omissions | `lossUnpairedResults++` dropped from the missing-call branch | the same case FAIL (`unpaired_tool_results … Count:0`, want 1) and `TestCodexRolloutReportsEveryCategoryItKnows` FAIL (`Count:0`, want 2) |
+
+Two regressions sit beside them as documents rather than mutations: the omitted-result case is built in
+`TestCodexRolloutDoesNotReportOmittedResultsAsCarried` (an orphan result and a textless one, both carrying
+both flags, against the same flags on two written results), and the CLI rule is driven through `continueRun`
+— `ccc.Continue` under a name a test can replace — so the CLI's own answer is exercised without a conversion
+that fails after publication.
+
+Tests, gate: `internal/ccc` top-level cases 108 → **112** (`cmd/ccc` 20 → **21**; the suite's own `selftest`
+step 151, unchanged; before = a detached worktree of `d95ebd2`, removed). `python3 scripts/gate.py` on the
+final tree — **exit 0, `GATE: PASS`** (not partial; the block is the one in §6).
+
+`scripts/codex-native-check.py` re-ran on both fixtures on this tree, each with a real turn
+(`--model-provider tencent-litellm --model deepseek-v4.1-flash-fast --resume-prompt …`): **13/13 checks
+passed, 0 failed, 0 skipped** each, `18 loss categories` each, the tooling fixture's installed file still
+4611 bytes with 3 tool calls and 3 results (its resumed turn still quotes `internal/retry/policy.go` and
+`MaxAttempts = 4`), the first fixture's read-back still 7 messages / 1 call / 1 result. No number this
+record states changed; the per-run ids and byte counts of §3 remain that run's.
+
+Docs changed with the code: the plan's §3 (the three source-check states and the post-publication rule),
+§4 (exit codes) and §5 (the document's shape and what a failed run writes), and this record's §2 note, §4 and
+§6 table (`source_check_state`; the renamed tests; the new rules and their pins).

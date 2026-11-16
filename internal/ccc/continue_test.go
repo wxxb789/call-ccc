@@ -101,7 +101,7 @@ func TestContinueConvertsInstallsAndReadsBackTheFixture(t *testing.T) {
 	if result.Installation.State != InstallationStateInstalled || !result.Installation.Created {
 		t.Errorf("installation = %+v, want an installed session", result.Installation)
 	}
-	if !result.Installation.SourceUnchanged {
+	if result.Installation.SourceCheckState != SourceCheckUnchanged {
 		t.Errorf("installation = %+v, want the source reported unchanged", result.Installation)
 	}
 	installed := result.Installation.Path
@@ -353,7 +353,7 @@ func TestContinueDryRunReportsWhatItVerified(t *testing.T) {
 					t.Errorf("%s not-verified detail does not say the dry run is why: %q", block.name, block.detail)
 				}
 			}
-			if !result.Installation.SourceUnchanged {
+			if result.Installation.SourceCheckState != SourceCheckUnchanged {
 				t.Errorf("installation = %+v, want the dry run's comparison to report the source unchanged",
 					result.Installation)
 			}
@@ -601,6 +601,27 @@ func archiveFixtureCopy(t *testing.T, cfg config.Config, fixture, destination st
 	return cfg
 }
 
+// sourceFixtureCopy writes a copy of one committed fixture under a provider root of its own and answers
+// the configuration, whose Claude root now points at that root, plus the copy's path. A test that has to
+// change or remove the source session's file works on the copy: the committed fixture never moves.
+func sourceFixtureCopy(t *testing.T, cfg config.Config, fixture, destination string) (config.Config, string) {
+	t.Helper()
+	data, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatalf("reading the fixture: %v", err)
+	}
+	root := t.TempDir()
+	copyPath := filepath.Join(root, destination)
+	if err := os.MkdirAll(filepath.Dir(copyPath), 0o700); err != nil {
+		t.Fatalf("creating the copied project directory: %v", err)
+	}
+	if err := os.WriteFile(copyPath, data, 0o600); err != nil {
+		t.Fatalf("writing the copy: %v", err)
+	}
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentClaude: {root}}
+	return cfg, copyPath
+}
+
 // TestContinueFallsBackToTheArchiveWhenTheSourceIsGone pins the source-side rule: a session whose file
 // the source reader cannot answer is read from the archive instead, and the report says so rather than
 // presenting the projection as the file.
@@ -626,8 +647,12 @@ func TestContinueFallsBackToTheArchiveWhenTheSourceIsGone(t *testing.T) {
 	if result.Conversion.ReadFrom != "archive" {
 		t.Fatalf("read_from = %q, want the archive", result.Conversion.ReadFrom)
 	}
-	if !result.Installation.SourceUnchanged {
-		t.Errorf("installation = %+v, want no source file reported as changed", result.Installation)
+	if result.Installation.SourceCheckState != SourceCheckNotVerified {
+		t.Errorf("installation = %+v, want an archive read reported as a comparison that did not run",
+			result.Installation)
+	}
+	if !strings.Contains(result.Installation.Detail, "archive") {
+		t.Errorf("installation = %+v, want the reason no file was compared", result.Installation)
 	}
 	if result.Conversion.SourceFidelity.ReadFrom != "archive" {
 		t.Errorf("source fidelity = %+v, want it to say the read came from the archive",
@@ -859,10 +884,10 @@ func TestStructureVerificationNamesWhatTheFileDoesNotHold(t *testing.T) {
 	}
 }
 
-// TestSourceUnchangedComparesTheFileBeforeAndAfter pins the property the installation reports: the
-// source file's own bytes are the same before and after the conversion, and a file that changed while
-// it was converted is reported as changed rather than assumed intact.
-func TestSourceUnchangedComparesTheFileBeforeAndAfter(t *testing.T) {
+// TestSourceCheckComparesTheFileBeforeAndAfter pins the property the installation reports: the source
+// file's own bytes are the same before and after the conversion, and a file that changed while it was
+// converted is reported as changed rather than assumed intact.
+func TestSourceCheckComparesTheFileBeforeAndAfter(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.jsonl")
 	if err := os.WriteFile(path, []byte("{\"type\":\"user\"}\n"), 0o600); err != nil {
 		t.Fatalf("writing the source: %v", err)
@@ -873,12 +898,12 @@ func TestSourceUnchangedComparesTheFileBeforeAndAfter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("digesting the source: %v", err)
 	}
-	state, detail, err := sourceUnchangedAfter(conversation, "source", before)
+	state, detail, err := sourceCheckAfter(conversation, "source", before)
 	if err != nil {
 		t.Fatalf("comparing the source: %v", err)
 	}
-	if !state {
-		t.Errorf("an untouched source was reported as changed: %s", detail)
+	if state != SourceCheckUnchanged {
+		t.Errorf("an untouched source was reported as %q: %s", state, detail)
 	}
 	if !strings.Contains(detail, before) {
 		t.Errorf("the report does not name the digest it compared: %q", detail)
@@ -887,29 +912,31 @@ func TestSourceUnchangedComparesTheFileBeforeAndAfter(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{\"type\":\"user\",\"changed\":true}\n"), 0o600); err != nil {
 		t.Fatalf("changing the source: %v", err)
 	}
-	state, detail, err = sourceUnchangedAfter(conversation, "source", before)
+	state, detail, err = sourceCheckAfter(conversation, "source", before)
 	if err != nil {
 		t.Fatalf("comparing the changed source: %v", err)
 	}
-	if state {
-		t.Fatal("a source that changed during the conversion was reported as unchanged")
+	if state != SourceCheckChanged {
+		t.Fatalf("a source that changed during the conversion was reported as %q, want %q",
+			state, SourceCheckChanged)
 	}
 	if !strings.Contains(detail, "changed while it was converted") {
 		t.Errorf("the report does not say what happened: %q", detail)
 	}
 }
 
-// TestSourceUnchangedSaysWhenThereWasNoFileToCompare pins the archive read's answer: a projection has no
-// file of its own, so the report says the check did not run instead of claiming one.
-func TestSourceUnchangedSaysWhenThereWasNoFileToCompare(t *testing.T) {
+// TestSourceCheckSaysWhenThereWasNoFileToCompare pins the archive read's answer: a projection has no file
+// of its own, so the report says the comparison did not run rather than claiming one -- "unchanged" would
+// be a claim about a file that was never open.
+func TestSourceCheckSaysWhenThereWasNoFileToCompare(t *testing.T) {
 	conversation := Conversation{Source: SourceIdentity{Provider: "claude", SourcePath: "/absent/file.jsonl"}}
 	digest, err := sourceFileDigest(conversation, "archive")
 	if err != nil || digest != "" {
 		t.Fatalf("digest = %q, err = %v; an archive read has no source file to digest", digest, err)
 	}
-	state, detail, err := sourceUnchangedAfter(conversation, "archive", "")
-	if err != nil || !state {
-		t.Fatalf("state = %v, err = %v", state, err)
+	state, detail, err := sourceCheckAfter(conversation, "archive", "")
+	if err != nil || state != SourceCheckNotVerified {
+		t.Fatalf("state = %q, err = %v; want a comparison that did not run", state, err)
 	}
 	if !strings.Contains(detail, "archive") {
 		t.Errorf("the report does not say why no file was compared: %q", detail)
@@ -917,13 +944,255 @@ func TestSourceUnchangedSaysWhenThereWasNoFileToCompare(t *testing.T) {
 }
 
 // TestSourceChangedWarningsNameTheMove pins the report's warning half: a source that moved while it was
-// converted is warned about, not only described in a detail field a reader may never open.
+// converted is warned about, not only described in a detail field a reader may never open -- and a
+// comparison that did not run is not warned about as a move, because nothing observed one.
 func TestSourceChangedWarningsNameTheMove(t *testing.T) {
-	if warnings := sourceChangedWarnings(true); len(warnings) != 0 {
-		t.Errorf("an unchanged source produced warnings: %v", warnings)
+	for _, state := range []string{SourceCheckUnchanged, SourceCheckNotVerified} {
+		if warnings := sourceChangedWarnings(state); len(warnings) != 0 {
+			t.Errorf("a %q source check produced warnings: %v", state, warnings)
+		}
 	}
-	warnings := sourceChangedWarnings(false)
+	warnings := sourceChangedWarnings(SourceCheckChanged)
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "changed while it was converted") {
 		t.Errorf("warnings = %v, want one naming the source that moved", warnings)
+	}
+}
+
+// stoppedRunChecks pins what a report says about the checks a stopped run never reached: the checks the
+// run's level asked for are not-verified and name the failure, and a check nobody asked for stays
+// not-requested -- "could not run" and "nobody asked" stay different answers.
+func stoppedRunChecks(t *testing.T, result ContinueResult) {
+	t.Helper()
+	const reason = "the run stopped before this check ran"
+	for _, block := range []struct{ name, state, detail string }{
+		{"structure", result.Verification.Structure.State, result.Verification.Structure.Detail},
+		{"load", result.Verification.Load.State, result.Verification.Load.Detail},
+	} {
+		if block.state != VerificationStateNotVerified {
+			t.Errorf("%s = %q, want %q", block.name, block.state, VerificationStateNotVerified)
+		}
+		if !strings.Contains(block.detail, reason) {
+			t.Errorf("%s detail = %q, want it to name the stopped run", block.name, block.detail)
+		}
+	}
+	if result.Verification.Resume.State != VerificationStateNotRequested {
+		t.Errorf("resume = %q, want %q: the default level asks for the load check only",
+			result.Verification.Resume.State, VerificationStateNotRequested)
+	}
+	// The report's own channel names it as well, so a caller that reads only the warnings does not have
+	// to infer from a state that the run did not finish.
+	if !strings.Contains(strings.Join(result.Warnings, " "), "the run stopped after the conversion") {
+		t.Errorf("warnings = %v, want one naming the stopped run", result.Warnings)
+	}
+}
+
+// TestContinueKeepsTheReportWhenTheSourceVanishesAfterTheInstall is the post-publication failure the
+// installation has to survive: the session is installed, and the comparison of the source file's own
+// bytes cannot run because the file is gone. The caller still gets the conversion, the installation and
+// the identity the target harness resumes by; what it must not get is a report thrown away, which would
+// leave an installed session with no identity reported for it.
+func TestContinueKeepsTheReportWhenTheSourceVanishesAfterTheInstall(t *testing.T) {
+	cfg := fixtureConfig(t)
+	cfg, sourcePath := sourceFixtureCopy(t, cfg,
+		fixturePath(t, filepath.Join("claude", "-home-user-code-example-api", claudeFixtureRef.ID+".jsonl")),
+		filepath.Join("-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"))
+
+	// The source disappears exactly at publication: the exclusive link is the step before the report's
+	// comparison of the source file, so a link that also removes the source is the failure that
+	// comparison has to answer rather than replace.
+	link := linkSession
+	linkSession = func(oldname, newname string) error {
+		if err := link(oldname, newname); err != nil {
+			return err
+		}
+		return os.Remove(sourcePath)
+	}
+	defer func() { linkSession = link }()
+
+	result, err := Continue(context.Background(), ContinueOptions{
+		Ref:          claudeFixtureRef,
+		Target:       TargetCodex,
+		Config:       cfg,
+		Reader:       NewSourceReader(cfg),
+		TargetHome:   t.TempDir(),
+		TargetBinary: missingTargetBinary,
+	})
+	if err == nil {
+		t.Fatal("a run whose source vanished after the installation reported success")
+	}
+	if !strings.Contains(err.Error(), "re-reading the source session") {
+		t.Errorf("the error does not name the comparison that could not run: %v", err)
+	}
+
+	if result.Conversion.State != ConversionStateConverted || result.Conversion.Carried.Messages == 0 {
+		t.Errorf("conversion = %+v, want the conversion the run completed, with its counts",
+			result.Conversion)
+	}
+	if result.Installation.State != InstallationStateInstalled || result.Installation.Path == "" ||
+		!result.Installation.Created {
+		t.Fatalf("installation = %+v, want the published session reported", result.Installation)
+	}
+	if result.TargetSession.SessionID == "" || result.TargetSession.Path != result.Installation.Path {
+		t.Errorf("target session = %+v, want the identity of the session that is installed",
+			result.TargetSession)
+	}
+	if _, err := os.Stat(result.Installation.Path); err != nil {
+		t.Errorf("the report names an installed session that is not there: %v", err)
+	}
+	// The comparison did not run, so the report says that; it must not read as "the file moved".
+	if result.Installation.SourceCheckState != SourceCheckNotVerified {
+		t.Errorf("installation = %+v, want the source check reported as %q",
+			result.Installation, SourceCheckNotVerified)
+	}
+	if !strings.Contains(result.Installation.Detail, "re-reading the source session") {
+		t.Errorf("the source check's detail does not name what stopped it: %q", result.Installation.Detail)
+	}
+	if warnings := strings.Join(result.Warnings, " "); strings.Contains(warnings, "changed while it was converted") {
+		t.Errorf("warnings claim the source moved, which nothing observed: %v", result.Warnings)
+	}
+	stoppedRunChecks(t, result)
+}
+
+// TestContinueKeepsTheReportWhenTheTemporaryFileCannotBeRemoved pins the installer's own answer when it
+// publishes the session and then cannot remove the temporary file it wrote through: the path and the
+// failure are both returned, and the caller keeps the identity of a session that really is there rather
+// than trading the publication for the cleanup.
+func TestContinueKeepsTheReportWhenTheTemporaryFileCannotBeRemoved(t *testing.T) {
+	cfg := fixtureConfig(t)
+	remove := removeFile
+	removeFile = func(string) error { return errors.New("remove: the file is in use") }
+	defer func() { removeFile = remove }()
+
+	result, err := Continue(context.Background(), ContinueOptions{
+		Ref:          claudeFixtureRef,
+		Target:       TargetCodex,
+		Config:       cfg,
+		Reader:       NewSourceReader(cfg),
+		TargetHome:   t.TempDir(),
+		TargetBinary: missingTargetBinary,
+	})
+	if err == nil {
+		t.Fatal("a run whose temporary file could not be removed reported success")
+	}
+	if !strings.Contains(err.Error(), "removing the temporary file") {
+		t.Errorf("the error does not name the cleanup that failed: %v", err)
+	}
+	if result.Installation.State != InstallationStateInstalled || result.Installation.Path == "" {
+		t.Fatalf("installation = %+v, want the published session reported beside the failure",
+			result.Installation)
+	}
+	if result.TargetSession.SessionID == "" || result.TargetSession.Path != result.Installation.Path {
+		t.Errorf("target session = %+v, want the identity of the session that is installed",
+			result.TargetSession)
+	}
+	data, readErr := os.ReadFile(result.Installation.Path)
+	if readErr != nil {
+		t.Fatalf("the published session is not readable: %v", readErr)
+	}
+	if len(data) != result.Conversion.Carried.Bytes {
+		t.Errorf("the published session holds %d bytes, want the conversion's %d",
+			len(data), result.Conversion.Carried.Bytes)
+	}
+	if !strings.Contains(strings.Join(result.Warnings, " "), "removing the temporary file") {
+		t.Errorf("warnings = %v, want one naming the temporary file left behind", result.Warnings)
+	}
+	stoppedRunChecks(t, result)
+}
+
+// TestContinueKeepsTheConversionReportWhenTheHomeCannotBeCreated pins the same rule one step earlier: a
+// failure that stops the run before anything is installed still hands back the conversion's own report --
+// its state, its counts, its losses -- with the installation saying it is not installed and the checks
+// saying why they did not run.
+func TestContinueKeepsTheConversionReportWhenTheHomeCannotBeCreated(t *testing.T) {
+	cfg := fixtureConfig(t)
+	// A file where the home's parent chain should be: nothing below it can be created.
+	blocker := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(blocker, []byte("not a directory\n"), 0o600); err != nil {
+		t.Fatalf("writing the blocking file: %v", err)
+	}
+	result, err := Continue(context.Background(), ContinueOptions{
+		Ref:          claudeFixtureRef,
+		Target:       TargetCodex,
+		Config:       cfg,
+		Reader:       NewSourceReader(cfg),
+		TargetHome:   filepath.Join(blocker, "home"),
+		TargetBinary: missingTargetBinary,
+	})
+	if err == nil {
+		t.Fatal("a run that could not create its target home reported success")
+	}
+	if result.Conversion.State != ConversionStateConverted || result.Conversion.Carried.Messages == 0 {
+		t.Errorf("conversion = %+v, want the conversion the run completed, with its counts",
+			result.Conversion)
+	}
+	if result.Installation.State != InstallationStateNotInstalled || result.Installation.Path != "" {
+		t.Errorf("installation = %+v, want not-installed", result.Installation)
+	}
+	if result.Installation.SourceCheckState != SourceCheckNotVerified ||
+		!strings.Contains(result.Installation.Detail, "the run stopped before this check ran") {
+		t.Errorf("installation = %+v, want the source check reported as not run, naming what stopped it",
+			result.Installation)
+	}
+	stoppedRunChecks(t, result)
+}
+
+// TestContinueKeepsTheDryRunReportWhenItsSourceCheckCannotRun pins the same rule for the dry run: it
+// installs nothing, so there is no identity to lose, but the conversion it produced is still what the
+// caller asked for, and a failure after it comes back beside that report rather than instead of it. The
+// structural read-back runs before the source comparison and has already answered, so the report keeps
+// its verdict too: a failure later in the run must not downgrade a check that did verify.
+func TestContinueKeepsTheDryRunReportWhenItsSourceCheckCannotRun(t *testing.T) {
+	cfg := fixtureConfig(t)
+	cfg, sourcePath := sourceFixtureCopy(t, cfg,
+		fixturePath(t, filepath.Join("claude", "-home-user-code-example-api", claudeFixtureRef.ID+".jsonl")),
+		filepath.Join("-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"))
+
+	link := linkSession
+	linkSession = func(oldname, newname string) error {
+		if err := link(oldname, newname); err != nil {
+			return err
+		}
+		return os.Remove(sourcePath)
+	}
+	defer func() { linkSession = link }()
+
+	result, err := Continue(context.Background(), ContinueOptions{
+		Ref:          claudeFixtureRef,
+		Target:       TargetCodex,
+		Config:       cfg,
+		Reader:       NewSourceReader(cfg),
+		TargetHome:   t.TempDir(),
+		TargetBinary: missingTargetBinary,
+		DryRun:       true,
+	})
+	if err == nil {
+		t.Fatal("a dry run whose source vanished after its throw-away copy reported success")
+	}
+	if result.Conversion.State != ConversionStateConverted || !result.Conversion.DryRun {
+		t.Errorf("conversion = %+v, want the dry run's conversion reported", result.Conversion)
+	}
+	if result.Installation.State != InstallationStateNotInstalled {
+		t.Errorf("installation = %+v, want not-installed: a dry run writes nothing", result.Installation)
+	}
+	if result.Installation.SourceCheckState != SourceCheckNotVerified ||
+		!strings.Contains(result.Installation.Detail, "the source") {
+		t.Errorf("installation = %+v, want the source check reported as not run", result.Installation)
+	}
+	// The check that did run: the throw-away copy was read back before the comparison failed.
+	if result.Verification.Structure.State != VerificationStateVerified {
+		t.Errorf("structure = %+v, want the read-back the dry run completed to keep its verdict",
+			result.Verification.Structure)
+	}
+	if result.Verification.Load.State != VerificationStateNotVerified ||
+		!strings.Contains(result.Verification.Load.Detail, "a dry run installs nothing") {
+		t.Errorf("load = %+v, want the check the dry run could not run, with its own reason",
+			result.Verification.Load)
+	}
+	if result.Verification.Resume.State != VerificationStateNotRequested {
+		t.Errorf("resume = %q, want %q: the default level asks for the load check only",
+			result.Verification.Resume.State, VerificationStateNotRequested)
+	}
+	if !strings.Contains(strings.Join(result.Warnings, " "), "the run stopped after the conversion") {
+		t.Errorf("warnings = %v, want one naming the stopped run", result.Warnings)
 	}
 }

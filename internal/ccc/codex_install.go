@@ -46,6 +46,12 @@ var ErrNoExclusiveInstall = errors.New("the target filesystem has no exclusive i
 // does, and the installer must then refuse rather than publish by rename.
 var linkSession = os.Link
 
+// removeFile is os.Remove, named so the installer's answer to a temporary file it cannot remove after the
+// session was published (the path and the failure are returned together) can be exercised on any host:
+// making a removal fail through the directory's own permissions would be a POSIX-only test of a rule that
+// holds wherever this installer runs.
+var removeFile = os.Remove
+
 // ResolveCodexHome answers the Codex data directory a conversion installs into: the caller's explicit
 // directory, else $CODEX_HOME, else ~/.codex. The boolean reports whether the answer came from the
 // caller, which is what decides whether a missing directory may be created.
@@ -82,6 +88,12 @@ func ResolveCodexHome(explicit string) (string, bool, error) {
 // whatever is at the destination, which is exactly the overwrite this rule forbids. A reader therefore
 // never sees a half-written session, and a conversion cannot replace a session another agent may already
 // have continued.
+//
+// The returned path and the error are independent answers. A non-empty path means the session is
+// published, and a non-nil error beside it is about something other than the publication itself -- a
+// temporary file that could not be removed, reported rather than left behind in silence. A call that
+// published nothing answers with an empty path, so the caller reads the two apart instead of inferring
+// publication from the error.
 func InstallCodexRollout(rollout CodexRollout, home string) (string, string, error) {
 	directory := filepath.Join(home, codexSessionsSubdir, filepath.FromSlash(rollout.Directory))
 	if err := os.MkdirAll(directory, 0o700); err != nil {
@@ -101,7 +113,7 @@ func InstallCodexRollout(rollout CodexRollout, home string) (string, string, err
 	tempName := temp.Name()
 	cleanup := func() {
 		temp.Close()
-		os.Remove(tempName)
+		removeFile(tempName)
 	}
 	if err := temp.Chmod(codexSessionFileMode); err != nil {
 		cleanup()
@@ -116,12 +128,12 @@ func InstallCodexRollout(rollout CodexRollout, home string) (string, string, err
 		return "", "", fmt.Errorf("flushing %s: %w", tempName, err)
 	}
 	if err := temp.Close(); err != nil {
-		os.Remove(tempName)
+		removeFile(tempName)
 		return "", "", fmt.Errorf("closing %s: %w", tempName, err)
 	}
 
 	if err := linkSession(tempName, target); err != nil {
-		os.Remove(tempName)
+		removeFile(tempName)
 		if errors.Is(err, os.ErrExist) {
 			return "", "", fmt.Errorf("%w: %s", ErrTargetExists, target)
 		}
@@ -132,9 +144,10 @@ func InstallCodexRollout(rollout CodexRollout, home string) (string, string, err
 		return "", "", fmt.Errorf("%w: %s: %v; install into a filesystem that supports hard links",
 			ErrNoExclusiveInstall, directory, err)
 	}
-	if err := os.Remove(tempName); err != nil {
-		// The session is installed; a temporary file left behind is not a failure of the conversion,
-		// but it is not silent either.
+	if err := removeFile(tempName); err != nil {
+		// The session is installed -- the path returned below is the one it occupies -- and a temporary
+		// file left behind is not a failure of the conversion, but it is not silent either, so the
+		// caller gets both answers.
 		return target, "hard-link", fmt.Errorf("removing the temporary file %s: %w", tempName, err)
 	}
 	return target, "hard-link", nil
@@ -172,7 +185,7 @@ func VerifyCodexRolloutStructure(
 ) (StructureVerification, error) {
 	verification := StructureVerification{
 		State:      "not-verified",
-		Method:     "the inherited AgentsView Codex reader over the installed session",
+		Method:     structureMethod,
 		TargetPath: filepath.Join(sessionsDir, filepath.FromSlash(rollout.Directory), rollout.FileName),
 	}
 	readerConfig := cfg

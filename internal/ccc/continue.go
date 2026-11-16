@@ -40,6 +40,17 @@ const (
 	InstallationStateNotInstalled = "not-installed"
 )
 
+// Source-file comparison results: what the source session's own bytes were shown to be after the
+// conversion. There are three answers, not two -- the file was shown to be its same bytes, the file
+// moved while it was converted, or the comparison did not run at all (an archive read has no file of its
+// own, and a run can stop before comparing) -- and folding the third into either of the others would
+// state something the run did not observe.
+const (
+	SourceCheckUnchanged   = "unchanged"
+	SourceCheckChanged     = "changed"
+	SourceCheckNotVerified = "not-verified"
+)
+
 // ErrUnsupportedTarget reports a target harness this build has no writer for.
 var ErrUnsupportedTarget = errors.New("unsupported target harness")
 
@@ -163,14 +174,17 @@ type TargetReport struct {
 }
 
 // InstallationReport is the installation half: whether the session is where the target harness keeps
-// its sessions, and whether anything else moved.
+// its sessions, and what became of the source file's own bytes.
 type InstallationReport struct {
-	State           string `json:"state"`
-	Path            string `json:"path,omitempty"`
-	Mechanism       string `json:"mechanism,omitempty"`
-	Created         bool   `json:"created"`
-	SourceUnchanged bool   `json:"source_unchanged"`
-	Detail          string `json:"detail,omitempty"`
+	State     string `json:"state"`
+	Path      string `json:"path,omitempty"`
+	Mechanism string `json:"mechanism,omitempty"`
+	Created   bool   `json:"created"`
+	// SourceCheckState is one of the SourceCheck* states; Detail carries that state's own words -- the
+	// digest it compared, what moved, or what stopped the run. A not-verified state with an empty Detail
+	// is a comparison that never ran, which is what the report says when a run stops before it.
+	SourceCheckState string `json:"source_check_state"`
+	Detail           string `json:"detail,omitempty"`
 }
 
 // VerificationReport keeps the three answers apart: what the file holds, whether the target harness's
@@ -342,27 +356,38 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 		ExecResumeCommand:   renderResumeCommand(execResumeArguments, resumeEnvironment),
 	}
 	verification := VerificationReport{
-		Load:   LoadVerification{State: VerificationStateNotRequested, Method: loadMethod},
-		Resume: ResumeVerification{State: VerificationStateNotRequested, Method: resumeMethod},
+		Structure: StructureVerification{State: VerificationStateNotVerified, Method: structureMethod},
+		Load:      LoadVerification{State: VerificationStateNotRequested, Method: loadMethod},
+		Resume:    ResumeVerification{State: VerificationStateNotRequested, Method: resumeMethod},
+	}
+	// The installation block exists from here on, whatever the run does next: a run that stops before
+	// publishing anything still answers "is it installed?" -- with not-installed -- and says which checks
+	// it did not reach, instead of handing back a document with an empty block.
+	result.Installation = InstallationReport{
+		State:            InstallationStateNotInstalled,
+		SourceCheckState: SourceCheckNotVerified,
 	}
 
 	if opts.DryRun {
 		// A dry run touches no target directory: the conversion is verified against a throw-away copy of
 		// the same bytes, which is what makes the check comparable with an installed run. The home it
-		// would install into is named but not created, and the report says which state that is.
+		// would install into is named but not created, and the report says which state that is. The
+		// structure check reads that copy, so its method says so before it runs: a run that stops before
+		// the check reports the mechanism it did not use rather than an empty one.
+		verification.Structure.Method = structureMethodDryRun
 		scratch, err := os.MkdirTemp("", "ccc-dry-run-")
 		if err != nil {
-			return ContinueResult{}, fmt.Errorf("creating a scratch directory: %w", err)
+			return reportAfterFailure(result, verification, level, fmt.Errorf("creating a scratch directory: %w", err))
 		}
 		defer os.RemoveAll(scratch)
 		if _, _, err := InstallCodexRollout(rollout, scratch); err != nil {
-			return ContinueResult{}, fmt.Errorf("verifying the conversion: %w", err)
+			return reportAfterFailure(result, verification, level, fmt.Errorf("verifying the conversion: %w", err))
 		}
 		structure, err := VerifyCodexRolloutStructure(ctx, filepath.Join(scratch, codexSessionsSubdir), rollout, cfg)
 		if err != nil {
-			return ContinueResult{}, err
+			return reportAfterFailure(result, verification, level, err)
 		}
-		structure.Method = "the inherited AgentsView Codex reader over a throw-away copy (dry run)"
+		structure.Method = structureMethodDryRun
 		structure.TargetPath = ""
 		verification.Structure = structure
 		switch level {
@@ -385,16 +410,12 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 		result.Verification = verification
 		// The dry run writes nothing, so the source file is compared exactly the way an installed run
 		// compares it: the report claims the check only when it ran.
-		sourceState, sourceDetail, err := sourceUnchangedAfter(conversation, readFrom, sourceDigest)
+		sourceState, sourceDetail, err := sourceCheckAfter(conversation, readFrom, sourceDigest)
 		if err != nil {
-			return ContinueResult{}, err
+			return reportAfterFailure(result, verification, level, err)
 		}
-		result.Installation = InstallationReport{
-			State:           InstallationStateNotInstalled,
-			Created:         false,
-			SourceUnchanged: sourceState,
-			Detail:          sourceDetail,
-		}
+		result.Installation.SourceCheckState = sourceState
+		result.Installation.Detail = sourceDetail
 		result.Warnings = append(result.Warnings, sourceChangedWarnings(sourceState)...)
 		// A dry run's conversion records no provider because the harness was never started against the
 		// home. When there is a harness to ask, an installed run's file differs from this one in that
@@ -418,32 +439,39 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 		// this point (a refused reference, an unreadable source, a dry run) leaves the filesystem as it
 		// found it.
 		if err := os.MkdirAll(home, 0o700); err != nil {
-			return ContinueResult{}, fmt.Errorf("creating %s: %w", home, err)
+			return reportAfterFailure(result, verification, level, fmt.Errorf("creating %s: %w", home, err))
 		}
 	}
 	path, mechanism, err := InstallCodexRollout(rollout, home)
+	if path != "" {
+		// The installer returns the path it published even when it also reports a failure (a temporary
+		// file it could not remove): the report carries the identity the installed session can be resumed
+		// by, and the failure is answered beside it rather than instead of it.
+		result.TargetSession.Path = path
+		result.Installation = InstallationReport{
+			State:            InstallationStateInstalled,
+			Path:             path,
+			Mechanism:        mechanism,
+			Created:          true,
+			SourceCheckState: SourceCheckNotVerified,
+		}
+	}
 	if err != nil {
-		return ContinueResult{}, err
+		// Nothing was published, or a published session's own failure: either way the report answers
+		// "installed?" from the path above, and this error is what the run failed on.
+		return reportAfterFailure(result, verification, level, err)
 	}
-	result.TargetSession.Path = path
-	result.Installation = InstallationReport{
-		State:           InstallationStateInstalled,
-		Path:            path,
-		Mechanism:       mechanism,
-		Created:         true,
-		SourceUnchanged: true,
-	}
-	sourceState, sourceDetail, err := sourceUnchangedAfter(conversation, readFrom, sourceDigest)
+	sourceState, sourceDetail, err := sourceCheckAfter(conversation, readFrom, sourceDigest)
 	if err != nil {
-		return ContinueResult{}, err
+		return reportAfterFailure(result, verification, level, err)
 	}
-	result.Installation.SourceUnchanged = sourceState
+	result.Installation.SourceCheckState = sourceState
 	result.Installation.Detail = sourceDetail
 	result.Warnings = append(result.Warnings, sourceChangedWarnings(sourceState)...)
 
 	structure, err := VerifyCodexRolloutStructure(ctx, filepath.Join(home, codexSessionsSubdir), rollout, cfg)
 	if err != nil {
-		return ContinueResult{}, err
+		return reportAfterFailure(result, verification, level, err)
 	}
 	verification.Structure = structure
 	switch level {
@@ -502,10 +530,72 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 	return result, nil
 }
 
+// What each check reads, named once, so a check that did not run still reports the mechanism it would
+// have used: a reader sees which question went unanswered, not an empty field.
 const (
-	loadMethod   = "the target harness's own loader (codex app-server, thread/resume)"
-	resumeMethod = "one turn in the installed session through the target harness's non-interactive resume"
+	structureMethod       = "the inherited AgentsView Codex reader over the installed session"
+	structureMethodDryRun = "the inherited AgentsView Codex reader over a throw-away copy (dry run)"
+	loadMethod            = "the target harness's own loader (codex app-server, thread/resume)"
+	resumeMethod          = "one turn in the installed session through the target harness's non-interactive resume"
 )
+
+// hasAnswer reports whether a check carries an answer of its own: it verified, or it came back
+// not-verified with its own reason. Every other shape -- including the placeholder a report starts from,
+// a not-verified state with no detail -- is a check that has not answered.
+func hasAnswer(state, detail string) bool {
+	return state == VerificationStateVerified || strings.TrimSpace(detail) != ""
+}
+
+// reportAfterFailure answers a failure that happened after the conversion was written: the report keeps
+// everything the run completed -- the conversion, and the installation with the target identity when the
+// session was published -- and every check the failure kept from running says it did not run, naming what
+// stopped the run. The error is still returned, so the run fails; what it must not do is cost the caller
+// the identity of a session that is already installed, or the loss report of a conversion that is already
+// written.
+//
+// It fills in the checks that have no answer yet and never overwrites one that answered: the dry run's
+// structural read-back runs before the source comparison, so a failure after it must leave its own
+// verdict standing rather than downgrading it to "the run stopped".
+func reportAfterFailure(
+	result ContinueResult, verification VerificationReport, level string, err error,
+) (ContinueResult, error) {
+	reason := "the run stopped before this check ran: " + err.Error()
+	if !hasAnswer(verification.Structure.State, verification.Structure.Detail) {
+		verification.Structure.State = VerificationStateNotVerified
+		verification.Structure.Detail = reason
+	}
+	if !hasAnswer(verification.Load.State, verification.Load.Detail) {
+		if level == VerifyNone {
+			// Nobody asked for the native checks, and a run that stopped is not a reason to blur that
+			// state with "could not run": the three states answer different questions.
+			verification.Load.Detail = "verification was not requested (--verify none)"
+		} else {
+			verification.Load.State = VerificationStateNotVerified
+			verification.Load.Detail = reason
+		}
+	}
+	if !hasAnswer(verification.Resume.State, verification.Resume.Detail) {
+		switch {
+		case level == VerifyResume:
+			verification.Resume.State = VerificationStateNotVerified
+			verification.Resume.Detail = reason
+		case level == VerifyNone:
+			verification.Resume.Detail = "verification was not requested (--verify none)"
+		default:
+			verification.Resume.Detail = "not requested (--verify " + level + ")"
+		}
+	}
+	result.Verification = verification
+	if result.Installation.SourceCheckState == SourceCheckNotVerified && result.Installation.Detail == "" {
+		// The source file was never compared, because the failure came first: the report names what
+		// stopped the run rather than leaving the installation block's reason empty.
+		result.Installation.Detail = reason
+	}
+	// The report's own channel as well: a caller that reads only the warnings must not have to infer
+	// from a state field that the run did not finish.
+	result.Warnings = append(result.Warnings, "the run stopped after the conversion: "+err.Error())
+	return result, err
+}
 
 // resolveContinueConfig answers the configuration and reader a conversion reads with, the same way
 // Inspect does: a caller-supplied reader's own configuration wins over the caller's zero value.
@@ -600,38 +690,43 @@ func sourceFilePath(conversation Conversation) string {
 	return path
 }
 
-// sourceUnchangedAfter compares the source file with the digest taken before the conversion, which is
-// the property the design asks for: the transcript the conversation came from is the same afterwards.
+// sourceCheckAfter compares the source file with the digest taken before the conversion, which is the
+// property the design asks for: the transcript the conversation came from is the same file afterwards.
 // The comparison is of the file's own bytes before and after, not against a provider's fingerprint —
 // those are different hashes for different readers (a provider may fingerprint a parse or a store
 // member), and a check that compared them would report a change that did not happen.
-func sourceUnchangedAfter(conversation Conversation, readFrom, before string) (bool, string, error) {
+//
+// It answers with one of the SourceCheck* states and that state's own words. An error means the
+// comparison could not run at all — a read that named no path, a digest that was never taken, a file that
+// cannot be re-read — and the caller reports that as a stopped run rather than as a state the file earned.
+func sourceCheckAfter(conversation Conversation, readFrom, before string) (string, string, error) {
 	if readFrom != "source" {
-		return true, "the conversion read an archive row, so no source file was open at all", nil
+		return SourceCheckNotVerified, "the conversion read an archive row, so no source file was open at all", nil
 	}
 	path := sourceFilePath(conversation)
 	if strings.TrimSpace(path) == "" {
-		return false, "", errors.New("the source read reported no path, so its digest could not be compared")
+		return "", "", errors.New("the source read reported no path, so its digest could not be compared")
 	}
 	if strings.TrimSpace(before) == "" {
-		return false, "", errors.New("the source digest before the conversion was not taken")
+		return "", "", errors.New("the source digest before the conversion was not taken")
 	}
 	after, err := fileDigest(path)
 	if err != nil {
-		return false, "", fmt.Errorf("re-reading the source session: %w", err)
+		return "", "", fmt.Errorf("re-reading the source session: %w", err)
 	}
 	if after != before {
-		return false, fmt.Sprintf(
+		return SourceCheckChanged, fmt.Sprintf(
 			"the source session changed while it was converted (sha256 %s before, %s after)", before, after), nil
 	}
-	return true, fmt.Sprintf("sha256 %s, taken before and after the conversion", after), nil
+	return SourceCheckUnchanged, fmt.Sprintf("sha256 %s, taken before and after the conversion", after), nil
 }
 
 // sourceChangedWarnings is the report's warning for a source that moved while it was converted: the
 // conversion and the installation are real, but the file no longer holds the bytes they read, and a
-// caller that reads only the warnings must not miss it.
-func sourceChangedWarnings(sourceUnchanged bool) []string {
-	if sourceUnchanged {
+// caller that reads only the warnings must not miss it. A comparison that did not run is not this
+// warning — it is not a claim that the file moved — and the state and its detail already say so.
+func sourceChangedWarnings(state string) []string {
+	if state != SourceCheckChanged {
 		return nil
 	}
 	return []string{"the source session changed while it was converted: the file no longer holds the " +

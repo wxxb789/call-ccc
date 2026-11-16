@@ -135,9 +135,17 @@ disposition, so a consumer never has to infer what was left out.
   published by a rename. A reader never sees a partial file, and a collision is reported, never retried
   into a different identity silently.
 - The source file's own digest (sha256, taken before the conversion and compared after installation) is
-  reported (`installation.source_unchanged`); it compares the file's own bytes deliberately, not a
+  reported as `installation.source_check_state` — `unchanged`, `changed`, or `not-verified` when the
+  comparison did not run at all (an archive read has no file of its own; a run can stop before comparing)
+  — with `detail` carrying that answer's own words. It compares the file's own bytes deliberately, not a
   provider's fingerprint — a provider may fingerprint a parse or a store member, and comparing those
   would report a change that did not happen. Nothing in the pipeline opens the source for writing.
+- A failure after the session is published does not cost the caller the identity it can resume: the
+  report keeps the conversion, the installation and the target identity, every check that did not run is
+  reported `not-verified` with the reason, and the error is returned beside the report rather than
+  instead of it. The installer answers the same way one level down: it returns the path it published
+  together with a cleanup failure (a temporary file it could not remove) rather than trading the
+  publication for the cleanup.
 
 ## 4. Verification: converted ≠ installed ≠ natively resumable
 
@@ -165,6 +173,9 @@ verification that ran and failed, exit 1; a verification that could not run — 
 absent, or a dry run installed nothing — is reported as not verified and does not fail the run (the
 conversation really was converted and installed); `--verify resume` requires `--resume-prompt` (the
 turn it runs becomes part of the user's session, so its text is the caller's, not an invented default).
+A failure *after* the conversion — creating the home, publishing the session, comparing the source's own
+bytes, reading the session back — exits 1 as well, and writes the report it reached (§5) instead of
+throwing it away.
 
 ## 5. CLI and machine-readable output
 
@@ -187,8 +198,13 @@ The JSON document (one object) carries: `upstream_revision`, `source` (identity,
 `cli_version_source`, `model_provider`, `model_provider_source`, `model`, `resume_arguments`,
 `exec_resume_arguments`, `resume_environment`, `resume_command`, `exec_resume_command`), `conversion`
 (`state`, `format`, `read_from`, `dry_run`, `carried`, `losses[]`, `source_fidelity`), `installation`
-(`state`, `path`, `mechanism`, `created`, `source_unchanged`, `detail`), `verification` (`structure`,
+(`state`, `path`, `mechanism`, `created`, `source_check_state`, `detail`), `verification` (`structure`,
 `load`, `resume` — each `{state: "verified"|"not-verified"|"not-requested", …}`) and `warnings[]`.
+
+A run that fails writes the same document for everything it reached — a conversion that is already
+written, and an installation with its identity once the session is published — names the failure on
+stderr and exits 1; a failure before the conversion produced nothing writes no document at all, so a
+consumer reading only stdout never loses the identity of a session that is installed.
 
 ## 6. Evidence plan
 

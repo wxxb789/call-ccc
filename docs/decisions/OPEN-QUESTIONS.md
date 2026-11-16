@@ -781,3 +781,25 @@ supersede it with a newer one and say which it supersedes.
 - **Settled by:** whether the operator wants the printed line to be pasteable on Windows, at the cost of
   a field whose meaning depends on the host that wrote it. Nothing in the conversion, the installation or
   the verification depends on the answer.
+
+## Q-0002-14 — How the source check reports a comparison that did not run
+
+- **Status:** resolved (default taken); supersedes Q-0002-10's field and states, not its default
+- **Question:** the source-file comparison answered with a boolean (`installation.source_unchanged`, its
+  detail beside it, per Q-0002-10). That shape has two answers for three outcomes: a comparison that never
+  ran — an archive read has no file of its own, and a run can stop before comparing — was reported as
+  `true` with a detail saying so, so "the file moved" and "nobody compared the file" were different words
+  under one value, and the human block printed `changed while it was converted` for a run that had
+  observed no change at all (round 5's review read exactly that as a claim). Should the third answer be a
+  wire value of its own, or should the boolean stay with its detail carrying the difference?
+- **Default taken:** the field is `installation.source_check_state` with the states the rest of the
+  document already uses — `unchanged`, `changed`, `not-verified` (the comparison did not run) — with
+  `detail` carrying that state's own words; the human block renders the third as `not verified (…)`
+  (`sourceCheckWord`, `cmd/ccc/main.go`). The plan's §3/§5, the evidence record's §2 note/§4/§6/§10 and
+  `cmd/ccc`'s own test that pins the document's spellings name it. Q-0002-10's decisions stay: a moved
+  source exits 0, is warned about, and is printed.
+- **Reversal:** rename the field back to the boolean and derive it from the state
+  (`source_check_state == "unchanged"`): the three states hold the same information, and only consumers
+  that read the installation block see the difference.
+- **Settled by:** whether the operator prefers the boolean spelling for a consumer already reading it, at
+  the cost of making "did the file move?" unanswerable for a comparison that never ran.

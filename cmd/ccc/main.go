@@ -432,7 +432,7 @@ func runContinue(args []string, stdout, stderr io.Writer) int {
 		return exitFailure
 	}
 
-	result, err := ccc.Continue(context.Background(), ccc.ContinueOptions{
+	result, err := continueRun(context.Background(), ccc.ContinueOptions{
 		Ref:          ref,
 		Target:       *target,
 		Config:       cfg,
@@ -446,28 +446,56 @@ func runContinue(args []string, stdout, stderr io.Writer) int {
 		Stderr:       stderr,
 	})
 	if err != nil {
+		// A run that failed after the conversion is not a run without an answer: the report it came back
+		// with carries what completed — once the session is published, the identity it can be resumed by
+		// — so it is written before the failure is named, and the run still fails. A failure before that
+		// point has no report, and the error is the whole answer.
+		if result.Conversion.State == ccc.ConversionStateConverted {
+			if !writeContinueReport(stdout, stderr, result, *asJSON) {
+				return exitFailure
+			}
+			writeWarnings(stderr, result.Warnings)
+		}
 		fmt.Fprintf(stderr, "ccc: %v\n", err)
 		return exitFailure
 	}
 
-	if *asJSON {
-		if !writeJSONDocument(stdout, stderr, continueDocument{
-			UpstreamRevision: upstreamRevision,
-			ContinueResult:   result,
-		}, "result") {
-			return exitFailure
-		}
-	} else {
-		writeContinuation(stdout, result)
+	if !writeContinueReport(stdout, stderr, result, *asJSON) {
+		return exitFailure
 	}
 
 	if code := continuationExit(result); code != exitOK {
-		for _, warning := range result.Warnings {
-			fmt.Fprintf(stderr, "ccc: %s\n", oneLine(warning))
-		}
+		writeWarnings(stderr, result.Warnings)
 		return code
 	}
 	return exitOK
+}
+
+// continueRun is ccc.Continue, named so the CLI's own rule for a failure that still carries a report can
+// be exercised on its own: the seam is the test's, the rule is the CLI's (a failure that comes back
+// beside a report still writes the report, and still fails the run), and the default is the real
+// conversion.
+var continueRun = ccc.Continue
+
+// writeContinueReport writes one conversion report in the shape the caller asked for, and answers whether
+// it was written.
+func writeContinueReport(stdout, stderr io.Writer, result ccc.ContinueResult, asJSON bool) bool {
+	if !asJSON {
+		writeContinuation(stdout, result)
+		return true
+	}
+	return writeJSONDocument(stdout, stderr, continueDocument{
+		UpstreamRevision: upstreamRevision,
+		ContinueResult:   result,
+	}, "result")
+}
+
+// writeWarnings names a report's warnings on stderr: a caller reading only the exit code, or only the
+// human block's head, must not have to infer them.
+func writeWarnings(stderr io.Writer, warnings []string) {
+	for _, warning := range warnings {
+		fmt.Fprintf(stderr, "ccc: %s\n", oneLine(warning))
+	}
 }
 
 // continuationExit decides the run's exit code from the three states. A verification that could not run
@@ -564,17 +592,28 @@ func writeContinuation(out io.Writer, result ccc.ContinueResult) {
 }
 
 // sourceCheckLine is the human spelling of the installation's source check: the goal asks the run to
-// show that the transcript the conversation came from is its same file afterwards, so the boolean and
-// the detail that says how it was compared are printed rather than left to the JSON.
+// show that the transcript the conversation came from is its same file afterwards, so the state and the
+// detail that says how it was reached are printed rather than left to the JSON.
 func sourceCheckLine(installation ccc.InstallationReport) string {
-	state := "unchanged"
-	if !installation.SourceUnchanged {
-		state = "changed while it was converted"
-	}
+	state := sourceCheckWord(installation.SourceCheckState)
 	if detail := oneLine(installation.Detail); detail != "" {
 		return state + " (" + detail + ")"
 	}
 	return state
+}
+
+// sourceCheckWord spells the source check's state for the human block: the two states that are answers
+// to the question, and "not verified" for everything else — a comparison that did not run, and a report
+// this build did not write — because a check without an answer is not an answer.
+func sourceCheckWord(state string) string {
+	switch state {
+	case ccc.SourceCheckUnchanged:
+		return "unchanged"
+	case ccc.SourceCheckChanged:
+		return "changed while it was converted"
+	default:
+		return "not verified"
+	}
 }
 
 func describeCounts(counts ccc.Counts) string {

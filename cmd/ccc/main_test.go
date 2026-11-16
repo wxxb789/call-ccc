@@ -649,10 +649,10 @@ func TestContinueJSONDistinguishesConversionInstallationAndVerification(t *testi
 			ResumeEnvironment   map[string]string `json:"resume_environment"`
 		} `json:"target_session"`
 		Installation struct {
-			State           string `json:"state"`
-			Created         bool   `json:"created"`
-			SourceUnchanged bool   `json:"source_unchanged"`
-			Mechanism       string `json:"mechanism"`
+			State            string `json:"state"`
+			Created          bool   `json:"created"`
+			SourceCheckState string `json:"source_check_state"`
+			Mechanism        string `json:"mechanism"`
 		} `json:"installation"`
 		Verification struct {
 			Structure struct {
@@ -672,7 +672,8 @@ func TestContinueJSONDistinguishesConversionInstallationAndVerification(t *testi
 	}
 	// The parsed assertions below use the exported state constants; the document's own spellings are the
 	// wire contract the plan records, so they are pinned literally here.
-	for _, spelling := range []string{`"state": "converted"`, `"state": "installed"`} {
+	for _, spelling := range []string{`"state": "converted"`, `"state": "installed"`,
+		`"source_check_state": "unchanged"`} {
 		if !strings.Contains(stdout, spelling) {
 			t.Errorf("the JSON does not spell a state as documented (%s):\n%s", spelling, stdout)
 		}
@@ -696,7 +697,8 @@ func TestContinueJSONDistinguishesConversionInstallationAndVerification(t *testi
 		}
 	}
 	if document.Installation.State != ccc.InstallationStateInstalled || !document.Installation.Created ||
-		!document.Installation.SourceUnchanged || document.Installation.Mechanism == "" {
+		document.Installation.SourceCheckState != ccc.SourceCheckUnchanged ||
+		document.Installation.Mechanism == "" {
 		t.Errorf("installation block = %+v", document.Installation)
 	}
 	if !strings.HasPrefix(document.TargetSession.Path, targetHome) {
@@ -790,8 +792,8 @@ func TestContinueHumanOutputNamesTheResumeCommand(t *testing.T) {
 }
 
 // TestContinueHumanOutputReportsTheSourceCheck pins the human half of the goal's source clause: the
-// block shows whether the transcript the conversation came from is its same file afterwards, and a
-// source that moved while it was converted is named rather than left to the JSON.
+// block shows what became of the transcript the conversation came from — its bytes compared, its bytes
+// moved, or the comparison that did not run — rather than leaving any of the three to the JSON.
 func TestContinueHumanOutputReportsTheSourceCheck(t *testing.T) {
 	_, targetHome := continueEnvironment(t)
 	sessionID, _ := claudeFixture(t)
@@ -803,25 +805,47 @@ func TestContinueHumanOutputReportsTheSourceCheck(t *testing.T) {
 		t.Errorf("the human output does not show the source check:\n%s", stdout)
 	}
 
-	var moved bytes.Buffer
-	writeContinuation(&moved, ccc.ContinueResult{
-		Ref:        ccc.Ref{Provider: "claude", ID: sessionID},
-		Target:     ccc.TargetCodex,
-		Conversion: ccc.ConversionReport{State: ccc.ConversionStateConverted, Format: ccc.CodexTargetFormat},
-		TargetSession: ccc.TargetReport{
-			Home:          targetHome,
-			SessionID:     "01a1e000-0000-7000-8000-000000000001",
-			ResumeCommand: "codex resume 01a1e000-0000-7000-8000-000000000001",
+	for _, testCase := range []struct {
+		name     string
+		check    string
+		detail   string
+		wantLine string
+	}{
+		{
+			name:     "a source that moved while it was converted",
+			check:    ccc.SourceCheckChanged,
+			detail:   "the source session changed while it was converted (sha256 aa before, bb after)",
+			wantLine: "source file:  changed while it was converted (the source session changed",
 		},
-		Installation: ccc.InstallationReport{
-			State:           ccc.InstallationStateInstalled,
-			Path:            filepath.Join(targetHome, "session.jsonl"),
-			SourceUnchanged: false,
-			Detail:          "the source session changed while it was converted (sha256 aa before, bb after)",
+		{
+			name:     "a comparison that did not run",
+			check:    ccc.SourceCheckNotVerified,
+			detail:   "the run stopped before this check ran: re-reading the source session: no such file",
+			wantLine: "source file:  not verified (the run stopped before this check ran",
 		},
-	})
-	if !strings.Contains(moved.String(), "source file:  changed while it was converted (the source session changed") {
-		t.Errorf("a moved source is not named in the human output:\n%s", moved.String())
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			var block bytes.Buffer
+			writeContinuation(&block, ccc.ContinueResult{
+				Ref:        ccc.Ref{Provider: "claude", ID: sessionID},
+				Target:     ccc.TargetCodex,
+				Conversion: ccc.ConversionReport{State: ccc.ConversionStateConverted, Format: ccc.CodexTargetFormat},
+				TargetSession: ccc.TargetReport{
+					Home:          targetHome,
+					SessionID:     "01a1e000-0000-7000-8000-000000000001",
+					ResumeCommand: "codex resume 01a1e000-0000-7000-8000-000000000001",
+				},
+				Installation: ccc.InstallationReport{
+					State:            ccc.InstallationStateInstalled,
+					Path:             filepath.Join(targetHome, "session.jsonl"),
+					SourceCheckState: testCase.check,
+					Detail:           testCase.detail,
+				},
+			})
+			if !strings.Contains(block.String(), testCase.wantLine) {
+				t.Errorf("the human output does not name %s:\n%s", testCase.name, block.String())
+			}
+		})
 	}
 }
 
@@ -1030,6 +1054,120 @@ func TestContinueReportsAFailedVerificationAsAFailure(t *testing.T) {
 	}
 	if !strings.Contains(document.Verification.Load.Detail, "the stub harness refuses thread/resume") {
 		t.Errorf("the refusal does not carry the harness's own message: %q", document.Verification.Load.Detail)
+	}
+}
+
+// TestContinueWritesTheReportOfAFailureAfterPublication pins the CLI's rule for a run that fails after
+// the session was published: the report is what carries the target identity, so it is written before the
+// failure is named, and the run still exits failure. The conversion is replaced here because the failure
+// the rule is about happens inside it (a source that cannot be re-read, a temporary file that cannot be
+// removed); what this test pins is the CLI's answer to a report that comes back beside an error, and that
+// a failure with no report still writes nothing to stdout.
+func TestContinueWritesTheReportOfAFailureAfterPublication(t *testing.T) {
+	_, targetHome := continueEnvironment(t)
+	sessionID, _ := claudeFixture(t)
+	installed := filepath.Join(targetHome, "sessions", "2026", "05", "04",
+		"rollout-2026-05-04T09-15-00-01a1e000-0000-7000-8000-000000000001.jsonl")
+	const session = "01a1e000-0000-7000-8000-000000000001"
+	failure := errors.New("removing the temporary file " + filepath.Join(filepath.Dir(installed), ".rollout.tmp-1") +
+		": remove: the file is in use")
+	warning := "the run stopped after the conversion: " + failure.Error()
+	report := ccc.ContinueResult{
+		Ref:        ccc.Ref{Provider: "claude", ID: sessionID},
+		Target:     ccc.TargetCodex,
+		Conversion: ccc.ConversionReport{State: ccc.ConversionStateConverted, Format: ccc.CodexTargetFormat},
+		TargetSession: ccc.TargetReport{
+			Provider:          ccc.TargetCodex,
+			Home:              targetHome,
+			SessionID:         session,
+			FileName:          filepath.Base(installed),
+			Path:              installed,
+			ResumeCommand:     "codex resume " + session,
+			ExecResumeCommand: "codex exec resume " + session + " <prompt>",
+		},
+		Installation: ccc.InstallationReport{
+			State: ccc.InstallationStateInstalled, Path: installed, Mechanism: "hard-link", Created: true,
+			SourceCheckState: ccc.SourceCheckNotVerified,
+			Detail:           "the run stopped before this check ran: " + failure.Error(),
+		},
+		Verification: ccc.VerificationReport{
+			Structure: ccc.StructureVerification{State: ccc.VerificationStateNotVerified, Detail: "the run stopped"},
+			Load:      ccc.LoadVerification{State: ccc.VerificationStateNotVerified, Detail: "the run stopped"},
+			Resume: ccc.ResumeVerification{
+				State: ccc.VerificationStateNotRequested, Detail: "not requested (--verify load)"},
+		},
+		Warnings: []string{warning},
+	}
+
+	run := continueRun
+	continueRun = func(context.Context, ccc.ContinueOptions) (ccc.ContinueResult, error) {
+		return report, failure
+	}
+	defer func() { continueRun = run }()
+
+	for _, asJSON := range []bool{false, true} {
+		name, args := "report", continueArgs(sessionID)
+		if asJSON {
+			name, args = "report --json", append(args, "--json")
+		}
+		t.Run(name, func(t *testing.T) {
+			code, stdout, stderr := runCLI(t, args...)
+			if code != exitFailure {
+				t.Fatalf("exit %d, want %d (stderr %q)", code, exitFailure, stderr)
+			}
+			if strings.TrimSpace(stdout) == "" {
+				t.Fatal("a failure that carried a report wrote nothing to stdout, so the target identity is lost")
+			}
+			if !strings.Contains(stderr, failure.Error()) {
+				t.Errorf("stderr %q does not name the failure", stderr)
+			}
+			if !strings.Contains(stderr, warning) {
+				t.Errorf("stderr %q does not carry the report's warning", stderr)
+			}
+			if !asJSON {
+				if !strings.Contains(stdout, "resume:       codex resume "+session) ||
+					!strings.Contains(stdout, "installed:    "+installed) {
+					t.Errorf("the human block does not name the installed identity:\n%s", stdout)
+				}
+				return
+			}
+			var document struct {
+				TargetSession struct {
+					SessionID string `json:"session_id"`
+					Path      string `json:"path"`
+				} `json:"target_session"`
+				Installation struct {
+					State            string `json:"state"`
+					SourceCheckState string `json:"source_check_state"`
+				} `json:"installation"`
+			}
+			if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+				t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
+			}
+			if document.TargetSession.SessionID != session || document.TargetSession.Path != installed {
+				t.Errorf("the document does not carry the installed identity: %+v", document.TargetSession)
+			}
+			if document.Installation.State != ccc.InstallationStateInstalled ||
+				document.Installation.SourceCheckState != ccc.SourceCheckNotVerified {
+				t.Errorf("the document does not carry the installation: %+v", document.Installation)
+			}
+		})
+	}
+
+	// The other half of the rule: a failure that produced no conversion has no report to write, and the
+	// error is the whole answer.
+	continueRun = func(context.Context, ccc.ContinueOptions) (ccc.ContinueResult, error) {
+		return ccc.ContinueResult{}, errors.New("no readable source session")
+	}
+	code, stdout, stderr := runCLI(t, continueArgs(sessionID, "--json")...)
+	if code != exitFailure {
+		t.Fatalf("exit %d, want %d (stderr %q)", code, exitFailure, stderr)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Errorf("a failure with no report wrote to stdout: %q", stdout)
+	}
+	if !strings.Contains(stderr, "no readable source session") {
+		t.Errorf("stderr %q does not name the failure", stderr)
 	}
 }
 

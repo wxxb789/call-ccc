@@ -696,15 +696,6 @@ func (b *codexRolloutBuilder) solePendingCall() (string, bool) {
 }
 
 func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time) {
-	if result.PersistedOutputUnresolved {
-		// The source's own parse-time answer that the content is the placeholder naming a side file it
-		// could not read, not the tool's output. The text travels as recorded and the report says what
-		// it is.
-		b.lossUnresolved++
-	}
-	if strings.TrimSpace(result.Status) != "" {
-		b.lossOutcomes++
-	}
 	callID := strings.TrimSpace(result.ToolUseID)
 	if callID == "" {
 		pending, ok := b.solePendingCall()
@@ -732,6 +723,19 @@ func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time) {
 		// output text".
 		b.lossEmptyResults++
 		return
+	}
+	// The two carried-with-caveat categories are counted here, past every omission guard: a result this
+	// conversion does not write carries no output, and counting it as carried (with the caveat that its
+	// text travelled without its recorded outcome, or as an unresolved placeholder) would claim evidence
+	// the file does not hold.
+	if result.PersistedOutputUnresolved {
+		// The source's own parse-time answer that the content is the placeholder naming a side file it
+		// could not read, not the tool's output. The text travels as recorded and the report says what it
+		// is.
+		b.lossUnresolved++
+	}
+	if strings.TrimSpace(result.Status) != "" {
+		b.lossOutcomes++
 	}
 	delete(b.pendingCalls, callID)
 	b.write(codexEnvelope{
@@ -887,14 +891,16 @@ func (b *codexRolloutBuilder) losses() []Loss {
 			Disposition: DispositionCarriedWithCaveat,
 			Count:       b.lossUnresolved,
 			Detail: "the source's own parse said these results are the placeholder naming a side file " +
-				"it could not read, not the tool's output; that text is what was carried",
+				"it could not read, not the tool's output; that text is what was carried, and only " +
+				"results that were written are counted here",
 		},
 		{
 			Category:    "tool_result_outcomes",
 			Disposition: DispositionCarriedWithCaveat,
 			Count:       b.lossOutcomes,
 			Detail: "the target's function_call_output has no outcome field; the result's recorded " +
-				"output text is carried as it was, and its recorded status is not",
+				"output text is carried as it was, and its recorded status is not. Only results that " +
+				"were written are counted here",
 		},
 		{
 			Category:    "empty_tool_inputs",
