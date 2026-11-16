@@ -980,6 +980,13 @@ class HostCase(GateTree, unittest.TestCase):
         ``...`` is its status -- ``ok``, ``FAIL``, or ``skipped '<reason>'``.
         A case that the child never printed is absent from the mapping, which is
         what makes a dropped case fail the count below rather than pass.
+
+        A line with nothing after its ``...`` is not a case line: the verbose
+        runner leaves the case's own line dangling before the indented line of a
+        subtest failure, and the case's status is on those indented lines. Reading
+        the dangling line as a status raised ``IndexError`` in the parent for
+        exactly the child that had a subtest failure to report, so the name never
+        reached the message -- see the case that pins it below.
         """
         statuses: dict[str, str] = {}
         for line in text.splitlines():
@@ -991,7 +998,10 @@ class HostCase(GateTree, unittest.TestCase):
             qualifier, close, _ = rest.partition(")")
             if not close or "." not in qualifier:
                 continue
-            statuses[name.strip()] = rest.rsplit(" ... ", 1)[1].split()[0]
+            status = rest.rsplit(" ... ", 1)[1].split()
+            if not status:
+                continue
+            statuses[name.strip()] = status[0]
         return statuses
 
     def nested_summary(self, proc: subprocess.CompletedProcess) -> str:
@@ -1100,6 +1110,57 @@ class HostCase(GateTree, unittest.TestCase):
         ):
             self.assertEqual(statuses.get(case), "ok", f"{case}: {message}")
         self.assert_only_expected_skips(statuses, message)
+
+    def broken_subtest_child(self) -> subprocess.CompletedProcess:
+        """A child run whose one case fails inside a ``subTest``, executed here.
+
+        The shape is produced by running it, not asserted from memory: the verbose
+        runner prints the case's own line, then -- for a failure that came from a
+        subtest -- an indented line per subtest, so the case's line is left dangling
+        with no status. The runner is started the way ``nested_run`` starts the real
+        one (the interpreter running this case, a tree of this case's own, no host
+        tool needed), and the suite it discovers is written here rather than
+        committed: no case of this suite may fail on purpose to produce the shape.
+        """
+        suite = self.root / "subtest-suite"
+        suite.mkdir()
+        (suite / "test_subtests.py").write_text(
+            "import unittest\n"
+            "\n"
+            "class Case(unittest.TestCase):\n"
+            "    def test_only_reports_come_from_subtests(self):\n"
+            "        for home in ('one', 'two'):\n"
+            "            with self.subTest(home=home):\n"
+            "                self.assertTrue(False, f'{home} broke')\n",
+            encoding="utf-8",
+        )
+        return subprocess.run(
+            [sys.executable, "-m", "unittest", "discover", "-v", "-s", str(suite),
+             "-p", "test_*.py"],
+            capture_output=True, text=True, cwd=str(self.root), timeout=300,
+        )
+
+    def test_a_child_broken_inside_a_subtest_is_reported_by_name(self) -> None:
+        """A child broken inside a subtest fails this suite *naming* the case.
+
+        What a nested run is for is saying which case broke on the host this run
+        cannot watch. The reader used to answer with an ``IndexError`` in the parent
+        instead, for exactly the shape a Windows child had at the head this repair
+        started from: the dangling line the verbose runner leaves when a case's only
+        reports come from subtests. The case is named in the mapping *and* in the
+        message that fails the parent, so the next such child fails the suite with a
+        name to look at rather than an error block with nothing in it.
+        """
+        proc = self.broken_subtest_child()
+        text = proc.stdout + proc.stderr
+        case = "test_only_reports_come_from_subtests"
+        self.assertEqual(proc.returncode, 1, text)
+        statuses = self.nested_statuses(text)
+        self.assertEqual(statuses.get(case), "FAIL", text)
+        self.assertIn(f"broken: {case}", self.nested_summary(proc))
+        with self.assertRaises(AssertionError) as caught:
+            self.assert_nested_green(proc)
+        self.assertIn(f"broken: {case}", str(caught.exception))
 
     def test_the_stub_bin_answers_the_windows_compiler_probe(self) -> None:
         """``go_env()`` under the Windows answer, in both directions, as shipped.

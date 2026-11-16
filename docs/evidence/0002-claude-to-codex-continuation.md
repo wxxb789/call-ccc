@@ -354,7 +354,8 @@ ok  	go.kenn.io/agentsview/internal/ccc/parity	1.062s
 | the archive fallback is used and disclosed | `TestContinueFallsBackToTheArchiveWhenTheSourceIsGone` |
 | which failure a conversion reports when neither side answers: the archive's own answer (candidates, truncation, a failed query) when the source is unreadable and the archive refuses it too, the source's error only when the archive holds no match | `TestContinueReportsTheArchivesAmbiguityInsteadOfAbsence` |
 | the app server's diagnostic buffer is bounded and synchronized: a failure report reads a snapshot, not a race with the goroutine os/exec copies stderr on | `TestBoundedBufferKeepsTheFirstBytes`, `TestBoundedBufferIsSafeForConcurrentWritesAndSnapshots` (the second is the case `go test -race` diagnoses) |
-| the native check reads the two rendered resume-command lines the way a POSIX shell reads them, so a home the renderer quotes is accepted and an unquoted one a shell would split is not | `scripts/tests/test_codex_native_check.py` (the `selftest` step) |
+| the native check reads the two rendered resume-command lines the way a POSIX shell reads them, on both `pathlib` flavours, so a home the renderer quotes is accepted and an unquoted one a shell would split is not | `scripts/tests/test_codex_native_check.py` (the `selftest` step) |
+| a nested run that breaks inside a subtest is named by the case that read the child, not raised as an `IndexError` in the reader itself | `test_a_child_broken_inside_a_subtest_is_reported_by_name` |
 | the printed resume invocation names the data directory the session was installed into, quoted where a shell would act on a word, and a resume verification reports the command it ran the same way | `TestContinuePrintsAResumeCommandThatSelectsTheInstallationHome`, `TestResumeVerificationCommandNamesTheHomeItRanAgainst`, `TestContinueHumanOutputNamesTheResumeCommand`, `TestContinueJSONDistinguishesConversionInstallationAndVerification` |
 | exclusive install (a taken name refused, a filesystem without hard links refused rather than renamed over) and dry run writes nothing (no directory for a home the caller named that is not there yet, and the target harness is never started), dry run reports its own states, prompt required, target/level validation, home resolution | `TestInstallCodexRolloutNeverReplacesASession`, `TestInstallCodexRolloutRefusesAFilesystemWithoutHardLinks`, `TestContinueDryRunWritesNothing`, `TestContinueDryRunReportsWhatItVerified`, `TestContinueDryRunInstallsNothingThroughTheCLI`, `TestContinueRequiresAPromptBeforeItRunsATurn`, `TestContinueRefusesAnUnsupportedTargetOrLevel`, `TestContinueTargetHomeResolution` |
 | the round-trip check compares rather than agrees | `TestStructureVerificationNamesWhatTheFileDoesNotHold` |
@@ -366,13 +367,13 @@ Gate, run on this tree after the last change (`python3 scripts/gate.py`, exit 0)
 ```
 gate: <repo>
 gate: go=<home>/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
-  PASS     gofmt    3580 file(s) gofmt-clean
+  PASS     gofmt    3581 file(s) gofmt-clean
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 144 tests in 7.564s (rc=0)
-  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 26 project-owned prefix(es); files seen by git: 5623 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
-  PASS     secrets  no leaks found in 68 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+  PASS     selftest Ran 151 tests in 7.860s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 26 project-owned prefix(es); files seen by git: 5625 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 70 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
 
@@ -405,7 +406,45 @@ cases failed against the old expectation with
 while the rest of the package was green in both shapes; three mutations of the renderer — drop the
 `CODEX_HOME=` assignment, never quote a word, quote every word — each turned both cases red, and the
 mutated file was restored byte-identical (`sha256 fb2a59a2…`). `docs/harness.md` states the quoting as
-the third Windows answer its Platform boundary section pins.
+one of the Windows answers its Platform boundary section pins.
+
+The next red was the same kind, one layer inside the harness's own tests: `gate (windows-latest)` failed
+the `selftest` step at head `524a20f` — `FAILED (failures=3, errors=2)`, the three failures all
+`a correct rendering was rejected` for the homes `…/codex home/.codex` and `…/it's home/.codex`, and the
+two errors the self-check cases that re-run this suite in a child. Both halves are the *fixtures* of the
+offline half of the native check, not its shipped behaviour: the resume-command reader compares the words
+a shell reads back with the home **as this host spells it** (`f"CODEX_HOME={home}"`, the same string the
+conversion was handed), and the cases spelled their homes `/tmp/…` — which `Path` spells `\tmp\…` on
+Windows, where the literal rendering in the case still said `/tmp/…`. On this host the same head is
+green, so the shape was reproduced here the way the suite's other platform answers are: a scratch copy
+with those call sites driven by `PureWindowsPath` (the class `Path` *is* on Windows) printed
+`Ran 150 tests in 7.318s` / `FAILED (failures=3, errors=2)` — CI's own numbers. The two errors were the
+second defect: the reader that maps a child's per-case lines took the dangling `<case> (…qualifier…) ... `
+line the verbose runner leaves when a case's only reports come from subtests for a status line and raised
+`IndexError`, so the child's broken cases were never named in the parent — the one message that exists to
+say which case broke on a host nobody can watch.
+
+The repair keeps the reader (it is the rule) and fixes both ends around it: the fixtures now name homes
+**both `pathlib` flavours give back unchanged** (`codex-home`, `codex home`, `C:\Users\a b\.codex`,
+`it's home`) and every case drives both flavours, so a fixture that holds on one platform alone fails
+here; the rejection cases assert the shell's own reading first (`CODEX_HOME=codex` + `home`, another
+home, another session, no assignment), so a rejection can no longer pass for a spelling accident. The
+reader skips a line with no status, and a new case runs that child shape and requires the name to reach
+the parent's message. Executed here, each mutation of the repaired tree:
+
+| mutation | observed |
+| --- | --- |
+| `scripts/codex-native-check.py`: the substring form (`f"CODEX_HOME={home}" in command`) | `FAILED (failures=12)` — every quoted home rejected, the split home and the other session accepted |
+| `…`: `shell_words` = `command.split()` (no shell reading) | `FAILED (failures=11)` — every rendering rejected (the quoted `<prompt>` alone is enough), an unreadable line read as words |
+| `…`: `reported_invocation` = "any readable line" | `FAILED (failures=10)` — every rejection case red |
+| `scripts/tests/test_gate.py`: the empty-status guard removed | that case **ERRORs** (`IndexError`), the parent reporting no case name |
+| `scripts/tests/test_codex_native_check.py`: one fixture back to `/tmp/…` + a literal to match | `FAILED (failures=3)`: the accept case at `flavour='PureWindowsPath'` — the original defect now fails here, on the host that used to be blind to it — plus the two self-check cases the red child trips (their design) |
+
+The `selftest` step is 151 cases — the `144` the previously recorded gate run printed, the six
+native-check cases the round before this one added (a count that never reached the recorded block), and
+the one this repair adds; the block above is refreshed from this repair's own run. `docs/harness.md`
+records both halves: the path-spelling constraint as a fourth Windows answer its Platform boundary
+section pins, and the dangling line as what the self-check cases read a child's per-case lines for.
 
 ## 7. Limits and residual risks
 

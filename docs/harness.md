@@ -49,7 +49,11 @@ platform probe answering the way Windows answers without a C compiler (`sys.plat
 suite's own Windows-shaped tool lookup) — and assert that every case still ran and none flipped. The
 child's copies of those two cases skip, keyed on `CALLCCC_SUITE_SELFCHECK`, so a nested run does not
 nest a third. A case that reaches for a tool this host happens to have, or that reads the platform it
-runs on, therefore fails in the selftest step instead of only in the one CI job nobody can watch; the
+runs on, therefore fails in the selftest step instead of only in the one CI job nobody can watch; a
+child that breaks is named by the case that read it — the verbose runner leaves a case's own line
+dangling, with no status after its `...`, when the case's only reports come from subtests, and that
+line is not a case line: reading it as one raised `IndexError` in the parent and the broken child's
+name never reached the gate's log (a case here runs that shape and pins that the case is named); the
 Windows answer is a simulation executed on the running host, never an assertion from memory about a
 machine nobody in the loop has.
 
@@ -201,7 +205,10 @@ says so.
   split into two words is not. That half is pinned offline, without the Codex binary, by
   `scripts/tests/test_codex_native_check.py` in the `selftest` step (the renderer's own spelling is
   pinned by `cmd/ccc`'s tests); the substring form it replaced accepted exactly the line the quoting
-  exists to prevent and rejected correct renderings on Windows.
+  exists to prevent and rejected correct renderings on Windows. Its fixtures spell every home so both
+  `pathlib` flavours give it back unchanged, and each case drives both of them — the constraint the
+  last bullet under Platform boundary below states — so a fixture that holds on one platform alone
+  fails the suite on any host.
   Every app-server request is bounded by the script's own deadline (`APP_SERVER_TIMEOUT`), stdout is
   read by a thread and stderr drained by another, so a server that stops answering or fills its
   diagnostics pipe is reported as a failed check rather than hanging the run. Every check prints its
@@ -245,7 +252,7 @@ mode the installer *requests* (`codexSessionFileMode`) on Windows, and compares 
 own bits with that request where the platform reports them: a widened mode must fail on the platform
 where the answer is visible, so the two halves are asserted by one platform-aware branch.
 
-Three more Windows answers the tree pins rather than tolerates, all because the platform's own answer is
+Four more Windows answers the tree pins rather than tolerates, all because the platform's own answer is
 not the one the rule is about:
 
 - a missing binary raises `FileNotFoundError` **without a filename** on Windows — `CreateProcess`'s
@@ -268,6 +275,15 @@ not the one the rule is about:
   there. The Windows-shaped input is exercised on any host by pointing `TMPDIR` at a directory whose
   name holds a backslash: the same two cases then fail against a host-shaped assertion (executed) and
   pass against the rule.
+- a path is spelled by the platform that reads it: `pathlib` answers `\tmp\x` for `Path('/tmp/x')` on
+  Windows where POSIX answers `/tmp/x`, so a rule whose two sides are "the word a shell reads a rendered
+  line back as" and "the home *this host* spells" cannot be pinned by a fixture spelled for one of them.
+  The native check's offline half (`scripts/tests/test_codex_native_check.py`) therefore spells every
+  home so both flavours give it back unchanged — a Windows-shaped path, or a single-segment name — and
+  drives both, this host's `Path` and `PureWindowsPath` (what `Path` *is* on Windows), on every host.
+  Fixtures spelled `/tmp/…` passed the `ubuntu-latest` and `macos-latest` legs and failed
+  `windows-latest` at head `524a20f`: the literal rendering and the comparison disagreed there alone,
+  and the three failing subtests reported it as `a correct rendering was rejected`.
 
 ## CI
 
