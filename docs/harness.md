@@ -82,7 +82,11 @@ It verifies, in this order:
    where the checkout really stores links that way, which git's own `core.symlinks=false` (or a
    platform that cannot create symlinks) states; a broken `core.symlinks` query on a tree git is
    answering for fails the step naming the probe, and the run reports how many file-form links it
-   accepted. A link whose target the *platform* re-spells is compared in that spelling: Git for
+   accepted. The shape answer itself is read through a named seam (`symlink_target`), so a case can put
+   the file form at a link record and say what target the link holds on a host whose checkouts cannot
+   create one; "is anything at this path?" and "what bytes does it hold?" stay with the filesystem,
+   because git stores a link as its target text and the file form's bytes are that same content. A link
+   whose target the *platform* re-spells is compared in that spelling: Git for
    Windows cannot create a symlink whose target holds `/` (its `mingw_create_symlink` rewrites each
    separator to `\`), so the link a checkout there creates for the pin's `../../x` reads back as
    `..\..\x` — the same destination, hashing to no blob the manifest holds. Only the separators are
@@ -277,8 +281,11 @@ not the one the rule is about:
   carried `120000` record reads back in that spelling and hashes to no blob the manifest holds. See the
   `parity` section above: the separators alone are folded, only for a link, only on the platform whose
   symlink layer does it, and the run names how many links needed it. The Windows-shaped tree is
-  simulated on any host through the check's own seam (`platform_name`) and, where the host can create
-  one, by writing the link's target in that spelling — the shapes are pinned by cases that run here.
+  simulated on any host through the check's own seams (`platform_name`, and `symlink_target` for the
+  shape of the link itself): the cases run both shapes a host can hold a link in — the file form, with
+  `symlink_target` answering the target the link holds, and the host's own real symlink where it can
+  create one — so a host whose checkouts cannot create a symlink pins the fold and the exemption
+  instead of falling back to asserting the file form's own failure.
 - a Windows path holds backslashes, which a POSIX shell reads as syntax, so the resume line a
   continuation prints quotes the data directory it names there (`CODEX_HOME='C:\…\codex home' codex
   resume …`) where a POSIX path of the same shape stands bare. The rule is "quote where a shell would

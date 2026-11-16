@@ -231,6 +231,25 @@ def symlinks_unavailable() -> bool:
     return platform_name() == "nt"
 
 
+def symlink_target(root: Path, path: str) -> str | None:
+    """The target text a carried path is held by when it is a symlink, else ``None``.
+
+    The one shape question the carried-link rules ask, and a named seam because those rules -- that a
+    ``120000`` record's copy is the link, that a file at such a path is counted and disclosed instead,
+    and that the link's target may be compared in this platform's own separator spelling -- have to be
+    exercisable on every supported host: a case on a host whose checkouts cannot create a symlink writes
+    the file form and tells this seam what target the link holds, so those rules are still tested there.
+    The answer is the same either way for everything else the check reads: git stores a link as its
+    target text, so the file form's bytes *are* the link's content (:func:`hashed_path` compares digests
+    for exactly that reason), which is why "is anything at this path?" and "what bytes does it hold?"
+    stay with the filesystem and only the shape is asked here.
+    """
+    target = root / path
+    if not target.is_symlink():
+        return None
+    return os.readlink(target)
+
+
 def separators_respelled() -> bool:
     """Whether this platform's symlink layer stores a link's target in its own separator spelling.
 
@@ -407,7 +426,7 @@ def worktree_state(
     answer alike; only the index adds what a stat cannot answer, namely what a fresh clone receives.
     """
     target = root / record.path
-    is_link = target.is_symlink()
+    is_link = symlink_target(root, record.path) is not None
     if record.mode == "120000":
         # git stores a link as its target text; only a checkout that does not create symlinks holds
         # that text in a file, which is the one other shape the pin's link can have.
@@ -491,7 +510,7 @@ def check_files(
             respelled_links += 1
         if record.mode == "120000":
             symlinks_hashed += 1
-            if not (root / record.path).is_symlink():
+            if symlink_target(root, record.path) is None:
                 link_files_seen += 1
         if index is None:
             continue

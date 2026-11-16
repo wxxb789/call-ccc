@@ -422,6 +422,7 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 			}
 		}
 		result.Verification = verification
+		result.Warnings = append(result.Warnings, structureWarnings(structure)...)
 		// The dry run writes nothing, so the source file is compared exactly the way an installed run
 		// compares it: the report claims the check only when it ran.
 		sourceState, sourceDetail, err := sourceCheckAfter(conversation, readFrom, sourceDigest)
@@ -537,11 +538,27 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 		}
 	}
 	result.Verification = verification
+	result.Warnings = append(result.Warnings, structureWarnings(structure)...)
 	if verification.Structure.State != VerificationStateVerified {
 		result.Warnings = append(result.Warnings, "the installed session does not hold every piece of "+
 			"evidence the conversion wrote: "+verification.Structure.Detail)
 	}
 	return result, nil
+}
+
+// structureWarnings answers what the structural check found, for the report's own channel: a caller that
+// reads only the exit code, or only the human block's head, must not take "verified" as "the target's own
+// read of the session shows every message", and a written message the inherited reader reads no dialogue
+// for is exactly that case. A check that did not verify is answered where it failed, by the warning that
+// names what the file does not hold.
+func structureWarnings(structure StructureVerification) []string {
+	if structure.State != VerificationStateVerified || structure.NotReadBackAsDialogue == 0 {
+		return nil
+	}
+	return []string{fmt.Sprintf("the installed session holds %d written message(s) the inherited Codex "+
+		"reader reads no dialogue for (verification.not_read_back_as_dialogue): the file holds their "+
+		"text verbatim, so the conversion carried them and the reader's own projection of the file is "+
+		"what does not show them", structure.NotReadBackAsDialogue)}
 }
 
 // What each check reads, named once, so a check that did not run still reports the mechanism it would

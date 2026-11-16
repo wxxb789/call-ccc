@@ -804,6 +804,152 @@ func TestContinueJSONCarriesNoSourceContent(t *testing.T) {
 	}
 }
 
+// agentsMDPromptTranscript writes one native-shaped Claude session whose user turn opens with
+// `# AGENTS.md` -- the prefix Codex writes for the AGENTS.md context it injects, which its own reader
+// therefore classifies as injected context rather than as a turn -- under a throw-away project root, and
+// points CLAUDE_PROJECTS_DIR at it. It returns the session id, which is the file's own name.
+func agentsMDPromptTranscript(t *testing.T) string {
+	t.Helper()
+	const (
+		sessionID = "01a1e000-3333-7000-8000-00000000000a"
+		prompt    = "# AGENTS.md\nThe retry policy lives in internal/retry/policy.go."
+	)
+	root := t.TempDir()
+	directory := filepath.Join(root, "claude", "-home-user-code-example-api")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatalf("preparing the provider root: %v", err)
+	}
+	lines := []string{
+		`{"cwd":"/home/user/code/example-api","message":{"content":` + mustJSON(t, prompt) + `},` +
+			`"sessionId":"` + sessionID + `","timestamp":"2026-05-04T09:15:00.000Z","type":"user",` +
+			`"version":"1.0.30"}`,
+		`{"message":{"content":[{"text":"I read the policy.","type":"text"}],` +
+			`"model":"claude-sonnet-4-5"},"timestamp":"2026-05-04T09:15:04.000Z","type":"assistant",` +
+			`"version":"1.0.30"}`,
+	}
+	path := filepath.Join(directory, sessionID+".jsonl")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("writing the transcript: %v", err)
+	}
+	t.Setenv("CLAUDE_PROJECTS_DIR", filepath.Join(root, "claude"))
+	return sessionID
+}
+
+// mustJSON is one string as a JSON literal.
+func mustJSON(t *testing.T, text string) string {
+	t.Helper()
+	encoded, err := json.Marshal(text)
+	if err != nil {
+		t.Fatalf("encoding %q: %v", text, err)
+	}
+	return string(encoded)
+}
+
+// TestContinueInstallsAPromptTheReaderProjectsAway pins the run that a post-fix review found failing: a
+// valid Claude prompt that opens with `# AGENTS.md` is carried into the installed session verbatim, but
+// the inherited Codex reader reads such a text block as injected context and so reads *no message* for
+// it. The structural check compared the document against that read and reported the message as missing
+// from the file that holds it, so the run exited nonzero -- with `--verify none` too, because the
+// structural check always runs.
+//
+// The fix keeps the message in the file and counts it: the check asks the file's own bytes whether it
+// holds the text, and reports the reader's projection instead of a loss. This case is end to end and
+// native-shaped -- a real transcript, read by the inherited parser, converted, installed, and read back
+// by the inherited Codex reader -- and it runs each way the check can: installed, installed with
+// `--verify none` (the spelling the finding names, since the structural check runs whatever level was
+// asked for) and a dry run. It asserts the three things that matter in each: the run succeeds, the
+// report says which messages the read-back does not show, and the file really holds the prompt.
+func TestContinueInstallsAPromptTheReaderProjectsAway(t *testing.T) {
+	isolatedEnvironment(t) // HOME, AGENTSVIEW_DATA_DIR and the committed fixture roots
+	sessionID := agentsMDPromptTranscript(t)
+	t.Setenv("CODEX_HOME", t.TempDir())
+	// The prompt the fixture wrote, spelled here as the assertion's own value: the case is about a text
+	// this file controls, and the file holds it verbatim.
+	const prompt = "# AGENTS.md\nThe retry policy lives in internal/retry/policy.go."
+
+	for _, testCase := range []struct {
+		name      string
+		extra     []string
+		installed bool
+	}{
+		{name: "installed", extra: []string{"--json"}, installed: true},
+		// The finding's own spelling: the structural check runs whatever level was asked for, so
+		// `--verify none` is the shape in which the failure was reported as a run that verified nothing.
+		{name: "installed, --verify none", extra: []string{"--verify", "none", "--json"}, installed: true},
+		{name: "dry run", extra: []string{"--dry-run", "--json"}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			code, stdout, stderr := runCLI(t, continueArgs(sessionID, testCase.extra...)...)
+			if code != exitOK {
+				t.Fatalf("exit %d, want %d: the file holds what the report claims it carried\nstderr: %s",
+					code, exitOK, stderr)
+			}
+			var document struct {
+				Conversion struct {
+					State   string `json:"state"`
+					Carried struct {
+						UserMessages int `json:"user_messages"`
+					} `json:"carried"`
+					Losses []struct {
+						Category string `json:"category"`
+						Count    int    `json:"count"`
+					} `json:"losses"`
+				} `json:"conversion"`
+				TargetSession struct {
+					Path string `json:"path"`
+				} `json:"target_session"`
+				Verification struct {
+					Structure struct {
+						State                 string `json:"state"`
+						NotReadBackAsDialogue int    `json:"not_read_back_as_dialogue"`
+					} `json:"structure"`
+				} `json:"verification"`
+				Warnings []string `json:"warnings"`
+			}
+			if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+				t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
+			}
+			if document.Conversion.State != ccc.ConversionStateConverted {
+				t.Errorf("conversion = %+v, want %s", document.Conversion, ccc.ConversionStateConverted)
+			}
+			// The message is carried, not omitted: it is in the file, and no loss category claims it.
+			if document.Conversion.Carried.UserMessages != 1 {
+				t.Errorf("carried = %+v, want the prompt carried as a user message", document.Conversion.Carried)
+			}
+			if document.Verification.Structure.State != "verified" {
+				t.Fatalf("structure = %+v, want the reader's projection accounted for, not a failure",
+					document.Verification.Structure)
+			}
+			if document.Verification.Structure.NotReadBackAsDialogue != 1 {
+				t.Errorf("not_read_back_as_dialogue = %d, want 1: the read-back shows no message for it",
+					document.Verification.Structure.NotReadBackAsDialogue)
+			}
+			warning := ""
+			for _, candidate := range document.Warnings {
+				if strings.Contains(candidate, "not_read_back_as_dialogue") {
+					warning = candidate
+				}
+			}
+			if warning == "" {
+				t.Errorf("no warning names the projection; warnings = %q", document.Warnings)
+			}
+			if !testCase.installed {
+				return
+			}
+			// The count is only honest if the file holds the text. A record carries text as a JSON
+			// string, so the prompt is in the file in the writer's own spelling of it (the newline
+			// escaped), which is the literal a read of the file gives back.
+			installed, err := os.ReadFile(document.TargetSession.Path)
+			if err != nil {
+				t.Fatalf("reading the installed session: %v", err)
+			}
+			if !strings.Contains(string(installed), mustJSON(t, prompt)) {
+				t.Errorf("the installed session does not hold the prompt verbatim:\n%s", installed)
+			}
+		})
+	}
+}
+
 // TestContinueHumanOutputNamesTheResumeCommand pins the human block: an operator reads the target
 // identity, where it was installed and the command that resumes it without opening the JSON.
 func TestContinueHumanOutputNamesTheResumeCommand(t *testing.T) {

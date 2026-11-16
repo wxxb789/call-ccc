@@ -851,3 +851,31 @@ supersede it with a newer one and say which it supersedes.
 - **Settled by:** whether the operator prefers the source's bytes in the file even where the format's own
   reader cannot see them, at the cost of a structural check whose `verified` no longer covers every record
   the report counts as carried.
+
+## Q-0002-17 — How a conversion reports a message the target's reader reads as injected context
+
+- **Status:** resolved (default taken); narrows Q-0002-16's reach, not its default
+- **Question:** round 8's review found a valid Claude prompt whose text opens with `# AGENTS.md`. The
+  writer carries it verbatim, but the inherited Codex reader reads such a user text block as the context
+  Codex itself injects and so reads *no message* for it (`internal/parser/codex.go`'s
+  `preprocessCodexUserTextBlocks`): the read-back showed the message missing from the file that holds it,
+  and the run exited nonzero even with `--verify none`, because the structural check always runs. Should
+  such a message be dropped the way Q-0002-16 drops text the reader reads as nothing, or carried with the
+  check disclosing what it cannot read back?
+- **Default taken:** carried, counted and disclosed. The writer cannot make this call without
+  reimplementing the reader's own classification (a privately maintained predicate over the text, which
+  the carry rule forbids) and without discarding user-authored evidence; the reader's rule is
+  *content-dependent* — meaningful words start it — where Q-0002-16's blank text is content-independent
+  and can never be a message. The check therefore asks the installed file's own bytes whether it holds the
+  text (`fileHoldsText`, matching the JSON string a record carries it in): the file holds it → the item is
+  counted in `verification.structure.not_read_back_as_dialogue` and warned about; the file does not → the
+  item stays in the ordered comparison and is reported as the missing message it is. `conversion.losses[]`
+  is unchanged, because nothing was omitted, and the target harness's own view of a session may still show
+  the message (`event_msg`/`user_message` is the record that view is built from).
+- **Reversal:** treat it like Q-0002-16's blank text — omit the message and count it under its own
+  `omitted` category — or accept the read-back's silence without asking the file, which would accept a
+  message the conversion never wrote.
+- **Settled by:** whether the operator prefers the source's words in the installed file, with the
+  structural check's `verified` clearly counting (and naming) the messages its reader cannot show, or a
+  conversion that discards a real user turn because the target's own reader classifies its prefix as
+  injected context.

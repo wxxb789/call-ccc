@@ -343,10 +343,10 @@ summary and must be written once).
 
 ```
 $ CGO_ENABLED=1 go test -tags fts5 -count=1 ./cmd/ccc/... ./internal/ccc/...     # rc=0
-ok  	go.kenn.io/agentsview/cmd/ccc	2.510s
-ok  	go.kenn.io/agentsview/internal/ccc	9.501s
+ok  	go.kenn.io/agentsview/cmd/ccc	3.850s
+ok  	go.kenn.io/agentsview/internal/ccc	10.644s
 ?   	go.kenn.io/agentsview/internal/ccc/fixturegen	[no test files]
-ok  	go.kenn.io/agentsview/internal/ccc/parity	1.584s
+ok  	go.kenn.io/agentsview/internal/ccc/parity	2.059s
 ?   	go.kenn.io/agentsview/internal/ccc/parity/oracle	[no test files]
 ```
 
@@ -361,8 +361,11 @@ ok  	go.kenn.io/agentsview/internal/ccc/parity	1.584s
 | a subagent record that also carries the source's compaction marker is omitted as a sidechain message, not applied as the main conversation's `compacted` boundary | `TestCodexRolloutDoesNotApplyASidechainCompactionBoundary` |
 | the read's own malformed-line count travels into the loss report, with the unfinished tail named | `TestCodexRolloutReportsTheSourceLinesItsReadCouldNotProduce`, `TestContinueConvertsInstallsAndReadsBackTheFixture` |
 | every loss category reported, and truly absent from the file | `TestCodexRolloutReportsEveryCategoryItKnows` |
-| text the target's reader reads as nothing is never written and is named — a whitespace-only tool result, a whitespace-only dialogue (whose record's tool evidence still travels), and a compact summary the reader trims | `TestContinueOmitsOutputTheInheritedReaderCannotReadBack`, `TestContinueOmitsDialogueTheInheritedReaderReadsAsNothing`, `TestContinueRoundTripsACompactionSummaryTheReaderTrims` |
+| text the target's reader reads as *nothing at all* is never written and is named — a whitespace-only tool result, a whitespace-only dialogue (whose record's tool evidence still travels), and a compact summary the reader trims | `TestContinueOmitsOutputTheInheritedReaderCannotReadBack`, `TestContinueOmitsDialogueTheInheritedReaderReadsAsNothing`, `TestContinueRoundTripsACompactionSummaryTheReaderTrims` |
+| text the target's reader *projects away* although it is a real message is carried, is counted, and is never confused with a loss: the check asks the installed file's own bytes, the count reaches `verification.structure.not_read_back_as_dialogue` and a warning, and text the file does not hold stays a missing message | `TestContinueInstallsAPromptTheReaderProjectsAway` (`cmd/ccc`, a native Claude transcript whose turn opens with `# AGENTS.md`), `TestCodexRoundTripCountsWhatTheReaderProjectsAway` |
+| a difference report identifies its items — category, ordinal, kind, call, tool, size, SHA-256 — and never carries the dialogue, arguments or output it compared | `TestCodexRoundTripReportNamesDifferencesWithoutTheirText`, `TestStructureVerificationNamesWhatTheFileDoesNotHold` |
 | the round-trip comparison folds the reader's own normalisations — a trimmed result output, a trimmed compact summary, an empty argument object (the last was unpinned until its mutation went unnoticed and this round pinned it) | `TestContinueConvertsInstallsAndReadsBackTheFixture`, `TestContinueRoundTripsACompactionSummaryTheReaderTrims`, `TestCodexRoundTripFoldsAnEmptyArgumentObjectAsNoArguments` |
+| the carried-link rules run on every host: the separator fold and the modified-link exemption are exercised against a real symlink *and* through the module's `symlink_target` seam, so a host whose checkouts cannot create a link still pins them | `scripts/tests/test_upstream_parity.py`'s `ParityCase` link cases (`link_shape_runs`, `selftest` step) |
 | a conversion report carries no source conversation content, in the core and on the CLI's wire document (installed and dry run) | `TestContinueReportCarriesNoSourceContent`, `TestContinueJSONCarriesNoSourceContent` |
 | a resume turn runs the executable the caller's path resolved to, even though the turn changes into the session's own working directory | `TestRunCodexTurnResolvesARelativeExecutableBeforeChangingDirectory` |
 | the tool role is never written as dialogue: a paired output travels as `function_call_output` alone, an orphan one travels nowhere | `TestCodexRolloutCarriesAToolRoleMessageOnlyThroughItsResult` |
@@ -394,11 +397,16 @@ gate: go=<home>/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/..
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 153 tests in 5.481s (rc=0)
-  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 26 project-owned prefix(es); files seen by git: 5625 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
-  PASS     secrets  no leaks found in 73 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+  PASS     selftest Ran 153 tests in 5.114s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 26 project-owned prefix(es); files seen by git: 5626 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 74 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
+
+`gofmt` counts the *tracked* `*.go` files (`git ls-files '*.go'`, minus a top-level `vendor/`), so
+`internal/ccc/codex_install_test.go` — added this round and untracked until the operator commits — is
+outside its 3581 and shows in the walk instead: 3582 `*.go` files on disk, and `git`'s own file count in
+the parity line rose with it (5625 → 5626).
 
 The file this increment adds outside the Go packages, `scripts/codex-native-check.py`, is inside a
 prefix the carry manifest calls project-owned (added to `scripts/upstream-import.py`'s `OWNED` and to the
@@ -988,3 +996,110 @@ is omitted rather than carried. `AGENTS.md` is unchanged: no repository layout, 
 order or agent rule moved this round (the report states it). Goal bookkeeping: 0002 is still
 `Implemented …; awaiting operator acceptance`, so nothing moves to `docs/goals/archive/` and
 `docs/goals/README.md`'s row is already accurate.
+
+## 13. Repair round 8 — a message the reader projects away; a failure report without content; link rules on a host that cannot link
+
+Round 8's review left three P2 findings, all fixed here. Its carried-tree parity audit again found no
+increment-attributable defect (the stored bytes agree with the trusted manifest, the working tree is
+hashed directly, ignore rules and failed git probes fail or go INCOMPLETE), so nothing in the carry
+changed; its one note about the manifest — that agreement with the manifest is not an independent
+authentication of the manifest against an upstream checkout — is what `scripts/upstream-compare.py` and
+the recorded comparison are for, unchanged.
+
+**1 — valid Claude dialogue could fail the structural check** (`internal/ccc/codex_install.go`,
+`internal/ccc/continue.go`). The inherited Codex reader reads *no message* for a user text block that
+opens with `# AGENTS.md`: `preprocessCodexUserTextBlocks` classifies such a block as the context Codex
+itself injects (`internal/parser/codex.go`). A Claude transcript may hold a genuine prompt with that
+prefix, and the writer carries it verbatim — so the read-back showed the message missing from the file
+that holds it, and the run exited nonzero **even with `--verify none`**, because the structural check
+always runs. The fix keeps the message and makes the check ask the file:
+
+- `compareCodexRoundTrip` now takes the installed file's own bytes. A written dialogue item the read-back
+  shows no message for is resolved by `fileHoldsText`: the file holds the text as the JSON string a record
+  carries it in (spelled with the writer's own encoder settings, and an unescaped quote can only open a
+  string in a well-formed line, so a match is a string token whose value is exactly that text) → the item
+  is counted in `not_read_back_as_dialogue`; otherwise it stays in the ordered comparison and is named
+  there as the missing message it is. The rule is scoped to dialogue because that is where the reader's
+  projection applies — a call, a result and a boundary are compared through keys the reader derives from
+  the record itself;
+- the count reaches `verification.structure.not_read_back_as_dialogue` (a new, additive JSON field) and
+  `structureWarnings`, so a caller that reads only the exit code or the human block's head is told that
+  the read-back shows fewer messages than the file holds. The conversion's `losses[]` is untouched: the
+  message *is* carried, and the disclosure belongs to the verification, not to a loss the writer did not
+  make. Q-0002-17 records the decision and the reversal. The regression is native-shaped and end to end —
+  a real Claude transcript whose turn opens with `# AGENTS.md`, converted and installed through the CLI —
+  and runs the three ways the check can: installed, installed with `--verify none` (the finding's own
+  spelling) and a dry run (`TestContinueInstallsAPromptTheReaderProjectsAway`, plus the unit-level
+  `TestCodexRoundTripCountsWhatTheReaderProjectsAway` for the file-holds-it / file-does-not split).
+
+**2 — structural failure reports exposed source content** (`internal/ccc/codex_install.go`).
+`summariseItem` returned up to 120 bytes of the item itself — dialogue, tool arguments, tool outputs — and
+`compareSequences` embeds that in `Structure.Detail`, which is serialized into the JSON document and
+printed as a warning. `describeItem`/`describeText` replace it: a difference now names the category, the
+ordinal, the kind or the call and tool it belongs to, and identifies the text by its size and its SHA-256
+(64 hex digits, taken over the text as the comparison holds it). An item whose whole text fits is no
+longer quoted either, so there is no "short item" arm left to leak through.
+
+**3 — positive symlink regressions depended on host privileges**
+(`scripts/upstream-parity.py`, `scripts/tests/test_upstream_parity.py`). `make_link` fell back to writing
+a regular file where `os.symlink` is unavailable or denied, and the positive cases then asserted *failure*
+instead — so on such a host, removing the separator fold, or the modified-link exemption, satisfied them.
+The shape question now goes through a named seam, `symlink_target(root, path)` (the filesystem answers it
+by default), and the cases run **both** shapes their host can hold a link in: the file form with the seam
+answering the target it holds, and, where the host really can create one, the real symlink. "Is anything
+at this path?" and "what bytes does it hold?" stay with the filesystem, because git stores a link as its
+target text and the file form's bytes *are* the link's content.
+
+Every rule of the touched surface was pinned by executing one mutation, running the test that claims the
+rule, and restoring the file from a byte-identical copy (`/tmp/mut/*`, taken before the first mutation;
+`sha256sum -c` OK after every restore for `internal/ccc/codex_install.go`, `internal/ccc/continue.go` and
+`scripts/upstream-parity.py`, the three mutated sources). The one mutation on a test file — the simulated
+no-symlink host in `scripts/tests/test_upstream_parity.py` — was reverted by hand and the suite re-run
+green (110 cases) before the next mutation:
+
+| Rule | Mutation (the line reverted) | Observed |
+| --- | --- | --- |
+| a message the read-back does not show, which the file holds, is counted rather than reported missing | `fileHoldsText` → `return false` | `TestContinueInstallsAPromptTheReaderProjectsAway` FAIL **on the exit code the finding named**, in all three arms: `[installed] exit 1, want 0`, `[installed, --verify none] exit 1, want 0`, `[dry run] exit 1, want 0`; `TestCodexRoundTripCountsWhatTheReaderProjectsAway` FAIL `notReadBackAsDialogue = 0, want 1` |
+| … and a message the file does *not* hold is still a missing message | `fileHoldsText` → `return true` | `TestStructureVerificationNamesWhatTheFileDoesNotHold` FAIL `the structure check accepted a report the file does not support`; the unit control FAIL `differences = [], want the written message named by its own size and digest` |
+| the file must hold the text as a record's JSON string, not as a byte run | `fileHoldsText`'s encoded containment → `strings.Contains(string(installed), text)` | `TestCodexRoundTripCountsWhatTheReaderProjectsAway` FAIL twice: `the_file_holds_the_text` (`differences = ["dialogue 1 differs (written user_message (63 bytes, sha256 …), read back assistant_message …)"]`) and `the_text_is_in_the_file,_but_not_as_a_record's_own_string` (`notReadBackAsDialogue:1`, `want the message reported missing`) |
+| a difference report carries no compared content | `describeText` gained `, %q` | `TestCodexRoundTripReportNamesDifferencesWithoutTheirText` FAIL ×4 (`the difference report carries the source content it compared: "summarize the retry policy in internal/retry/policy.go"`, `… "internal/retry/client.go"`, `… "the credential file's own private contents"`, `… "another private tool output, of the same shape"`); `TestStructureVerificationNamesWhatTheFileDoesNotHold` FAIL with `dialogue 6 … assistant_message (32 bytes, sha256 …, \"a message the file does not hold\")` |
+| the projection reaches the report | `structureWarnings` → `return nil` | `TestContinueInstallsAPromptTheReaderProjectsAway` FAIL both arms: `no warning names the projection; warnings = []` (dry run), the PATH warning only (installed) |
+| … including on the dry-run branch | the dry-run branch's `structureWarnings` call removed | the same case FAIL on `[dry run]` only (`warnings = []`), the installed arm green — the mutation was scoped |
+| a link's target is folded in the platform's own separator spelling | the fold branch made unreachable (`if False:`) | `test_a_link_target_in_the_platforms_own_spelling_is_matched` and `test_a_respelled_link_git_reports_changed_is_not_a_second_failure` FAIL in **both** shapes: `parity: FAIL — 1 carried file(s) differ from the pinned revision` |
+| a respelled link git reports changed is not a second failure | `and not respelled` dropped from the modified-path rule | `test_a_respelled_link_git_reports_changed_is_not_a_second_failure` FAIL in both shapes: `1 carried file(s) differ from what git stores for them` |
+| the shape rule consumes the link seam | `is_link = symlink_target(…) is not None` → `target.is_symlink()` | `test_a_symlink_record_hashes_the_link_target` and `test_a_link_target_that_platform_does_not_respell_is_drift` FAIL in the file-form shape: `1 carried path(s) changed file type` |
+| the file-form disclosure is the seam's answer too | the counter's `symlink_target(…) is None` → `not (root / record.path).is_symlink()` | `test_a_symlink_record_hashes_the_link_target` FAIL: `'carried link(s) held as a file' unexpectedly found in "… symlinks hashed by their link target: 1\ncarried link(s) held as a file with the link's tar…"` |
+
+Finding 3's own claim — that the *pre-fix* cases pass on a host that cannot create symlinks whether or not
+the rule holds — was executed rather than argued: with `os.symlink` replaced by a function that raises
+`NotImplementedError`, the pre-fix test file (read out of `HEAD` into a throw-away module) is **green both
+with and without the fold rule** (`verdict: green — the rule is unpinned here`), while the fix's cases
+under the same simulation are **red** with the fold mutation and green on the fixed checker (the 43
+`ParityCase` cases pass). The first version of the new helper collected both shapes' patches up front and
+left the *real* symlink on disk for both runs, which masked the shape-seam mutation — the helper is a
+lazily-yielding generator for exactly that reason, and the mutation above is what proved it.
+
+Tests, gate: top-level `--- PASS` cases 141 → **144** across `./cmd/ccc/... ./internal/ccc/...` (before:
+`internal/ccc` 115, `./internal/ccc/...` 118, `cmd/ccc` 23; after: `internal/ccc` **117**,
+`./internal/ccc/...` **120**, `cmd/ccc` **24**; `go test -tags fts5 -count=1 -v`, `--- PASS` lines at top
+level). The Python suite's own `selftest` step is **153**, unchanged: this round rewrote existing link
+cases and added no test method, and `test_upstream_parity` alone is 110 cases.
+
+The native harness did **not** re-run, and its §3 numbers stand: it reads `conversion.carried`, the
+installation block and its own `ccc inspect` read-back, none of which this increment changes, and the
+projection disclosure is empty for both of its fixtures — measured, not assumed: `ccc continue --json`
+over `9f2c1d47-…` and `b6d93f07-…` (the two sessions `scripts/codex-native-check.py` uses) exits 0,
+prints `structure: verified` with no `not_read_back_as_dialogue` field and no projection warning, and
+reports the same carried counts as §5/§3 record (5 messages; 1 and 3 tool calls).
+
+Docs changed with the code: this record's §6 (the refreshed `go test` and gate blocks, the note on what
+`gofmt` counts, and four table rows — the reader-projection rule, the no-content rule, and the
+host-independent link rules) and this §13; `docs/harness.md`'s `parity` section (the shape answer is a
+named seam now) and its Windows-answers list (the link bullet said the re-spelled shape was pinned "where
+the host can create one", which was the dependency the finding named). `docs/decisions/OPEN-QUESTIONS.md`
+gains **Q-0002-17** (how a conversion reports a message the reader reads as injected context, and why it
+differs from Q-0002-16's blank text). `AGENTS.md` is unchanged: no repository layout, gate step, command,
+read order or agent rule moved this round (the new file is a test inside an existing package, and the seam
+is inside an existing script), which the stage report states. Goal bookkeeping: 0002 is still
+`Implemented …; awaiting operator acceptance`, so nothing moves to `docs/goals/archive/` and
+`docs/goals/README.md`'s row stays as it is.

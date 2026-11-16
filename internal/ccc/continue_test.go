@@ -932,6 +932,16 @@ func TestStructureVerificationNamesWhatTheFileDoesNotHold(t *testing.T) {
 	if !strings.Contains(verification.Detail, "dialogue") {
 		t.Errorf("the difference report does not name the category: %q", verification.Detail)
 	}
+	// The difference report is the failure path a caller reads (it is serialized into the JSON document
+	// and printed beside the failure), so it identifies the item rather than quoting it: the text of the
+	// evidence the file does not hold is never in the report, and what names it is its size and digest.
+	missing := "a message the file does not hold"
+	if strings.Contains(verification.Detail, missing) {
+		t.Errorf("the difference report carries the evidence it could not match: %q", verification.Detail)
+	}
+	if !strings.Contains(verification.Detail, describeText(missing)) {
+		t.Errorf("the difference report does not identify the missing evidence: %q", verification.Detail)
+	}
 }
 
 // TestContinueOmitsOutputTheInheritedReaderCannotReadBack pins the rule that made an LF-only tool result

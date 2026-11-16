@@ -153,31 +153,50 @@ class ParityTree:
         self.carried[path] = ("120000", target)
         self.write_manifest()
 
-    def make_link(self, path: str, target: bytes) -> bool:
-        """Place ``target`` at ``path`` the way this host's own checkouts would hold a link.
+    def link_shape_runs(self, path: str, target: bytes):
+        """Each way this host can hold ``target`` at ``path`` as a link, as a lazy ``(name, patches)``.
 
-        A symlink is written where the host can create one; a host that cannot -- and a git checkout
-        there, which writes the link as a file holding the target text -- gets the file form. Answers
-        whether a link was created, so a case asks the platform seam for the answer that describes the
-        shape it just made instead of the one its author's host happens to give.
+        The link rules -- the shape a ``120000`` record's copy must have, and the separator spelling
+        this platform's symlink layer stores a link's target in -- are rules of the *link*, and a host
+        whose checkouts cannot create one must still test them: the file form holds exactly the bytes an
+        ``os.readlink`` of the link would answer (git stores a link as its target text), so the first
+        shape writes that file and tells the module's ``symlink_target`` seam what target the link
+        holds. Where this host can create a real symlink, that shape follows, so the seam is exercised
+        against the real thing too. A case asserts the same rules for every shape it is given.
+
+        A generator because the two shapes replace each other in one tree, and each is written only when
+        the case asks for it: run the returned patches before asking for the next shape. The file
+        *form*'s own rejection is a different rule with its own cases; these patches say "this path is
+        the link" and must not be used for it.
         """
+        self.write_bytes(path, target)
+        yield "file form, with the link seam answering the target it holds", {
+            "symlink_target": self.link_seam({path: target.decode("utf-8")})}
+        link = self.root / path
+        link.unlink()
         try:
-            os.symlink(target.decode("utf-8"), self.root / path)
-            return True
+            os.symlink(target.decode("utf-8"), link)
         except (OSError, NotImplementedError):
+            # This host cannot create a link: the file form above is the whole of what it can hold, and
+            # the case's seam answers the target that link holds.
             self.write_bytes(path, target)
-            return False
+            return
+        yield "this host's own symlink", {}
 
-    def link_answers(self, linked: bool, **patches) -> dict:
-        """The seam answers of a tree whose link shape is this host's own.
+    def link_seam(self, targets: dict[str, str]):
+        """A link-reading seam answering ``targets``, deferring to the filesystem for everything else.
 
-        ``symlinks_unavailable`` is only consumed where the file form has to be allowed -- git's own
-        ``core.symlinks`` answers it when it is set, which the default scripted answer does not -- so a
-        case about the file form says the platform cannot link exactly when this host could not.
+        The filesystem's own answer is read once, before the seam is patched in, so deferring cannot
+        recurse into this seam.
         """
-        if not linked:
-            patches.setdefault("symlinks_unavailable", lambda: True)
-        return patches
+        filesystem = self.parity.symlink_target
+
+        def seam(root: Path, path: str) -> str | None:
+            if path in targets:
+                return targets[path]
+            return filesystem(root, path)
+
+        return seam
 
     def add_stored_deviation(self, path: str, upstream: bytes, stored: bytes,
                              mode: str = "100644") -> None:
@@ -353,20 +372,21 @@ class ParityCase(ParityTreeCase, unittest.TestCase):
         self.assert_failed(*self.tree.run_parity(), "changed file type")
 
     def test_a_symlink_record_hashes_the_link_target(self) -> None:
-        """git stores a link as its target text, so the same bytes in a file are the same object."""
+        """git stores a link as its target text, so the same bytes in a file are the same object.
+
+        Every shape this host can hold a link in is run: the file form the seam declares the link for,
+        and the host's own real symlink where it can create one, so the rule holds on a host that
+        cannot -- and neither shape is what the *file* cases below put at such a path, which is a file
+        the run must refuse.
+        """
         target = b"a.txt"
-        try:
-            os.symlink("a.txt", self.tree.root / "src/link")
-            symlinks_unavailable = False
-        except (OSError, NotImplementedError):
-            # A platform without symlink support checks the link out as a file holding the target: the
-            # case says so through the platform probe rather than depending on which host it runs on.
-            self.tree.write_bytes("src/link", target)
-            symlinks_unavailable = True
         self.tree.add_link_record("src/link", target)
-        code, output = self.tree.run_parity(symlinks_unavailable=lambda: symlinks_unavailable)
-        self.assert_clean(code, output)
-        self.assertIn("symlinks hashed by their link target: 1", output)
+        for name, patches in self.tree.link_shape_runs("src/link", target):
+            with self.subTest(shape=name):
+                code, output = self.tree.run_parity(**patches)
+                self.assert_clean(code, output)
+                self.assertIn("symlinks hashed by their link target: 1", output)
+                self.assertNotIn("carried link(s) held as a file", output)
 
     def test_a_link_held_as_a_file_is_a_shape_failure_where_symlinks_are_created(self) -> None:
         """The link's bytes are also a file's bytes, so only the shape can tell the two apart.
@@ -447,22 +467,17 @@ class ParityCase(ParityTreeCase, unittest.TestCase):
         ``../../.agents/skills/x`` reads back as ``..\\..\\.agents\\skills\\x`` -- the same
         destination, hashing to no blob the manifest holds. Reading that as drift would fail a correct
         checkout on that platform alone; the fold is the whole allowance, and the run names the links
-        it needed it for.
+        it needed it for. Both link shapes this host can hold are run, so a host whose checkouts cannot
+        create a symlink tests the fold too -- and a *file* at this path is a different rule, whose own
+        cases below pin that the fold is not applied to it.
         """
         pinned, respelled = b"../../.agents/skills/x", b"..\\..\\.agents\\skills\\x"
         self.tree.add_link_record("src/link", pinned)
-        linked = self.tree.make_link("src/link", respelled)
-        code, output = self.tree.run_parity(
-            platform_name=lambda: "nt", **self.tree.link_answers(linked))
-        if linked:
-            self.assert_clean(code, output)
-            self.assertIn("matched in this platform's own spelling: 1", output)
-            return
-        # This host's checkouts cannot create a link, so the shape just written is the file form --
-        # which git fills with the pin's bytes verbatim. The fold is a *link* rule, so the same bytes
-        # are drift here: the case below pins that side of the allowance for the file form.
-        self.assert_failed(code, output, "differ from the pinned revision")
-        self.assertIn("src/link", output)
+        for name, patches in self.tree.link_shape_runs("src/link", respelled):
+            with self.subTest(shape=name):
+                code, output = self.tree.run_parity(platform_name=lambda: "nt", **patches)
+                self.assert_clean(code, output)
+                self.assertIn("matched in this platform's own spelling: 1", output)
 
     def test_a_respelled_link_git_reports_changed_is_not_a_second_failure(self) -> None:
         """git on such a host spells that link the same way, so its own comparison decides nothing new.
@@ -477,19 +492,12 @@ class ParityCase(ParityTreeCase, unittest.TestCase):
         """
         pinned, respelled = b"../../.agents/skills/x", b"..\\..\\.agents\\skills\\x"
         self.tree.add_link_record("src/link", pinned)
-        linked = self.tree.make_link("src/link", respelled)
-        code, output = self.tree.run_parity(
-            platform_name=lambda: "nt", git_modified=lambda root: {"src/link"},
-            **self.tree.link_answers(linked))
-        if linked:
-            self.assert_clean(code, output)
-            self.assertIn("matched in this platform's own spelling: 1", output)
-            return
-        # A host that cannot create a link writes the file form, and the fold is a link rule: those
-        # bytes are the re-spelled text rather than the pin's, so the run fails on them -- not on
-        # git's answer, which this case is about and which such a host cannot be asked for.
-        self.assert_failed(code, output, "differ from the pinned revision")
-        self.assertIn("src/link", output)
+        for name, patches in self.tree.link_shape_runs("src/link", respelled):
+            with self.subTest(shape=name):
+                code, output = self.tree.run_parity(
+                    platform_name=lambda: "nt", git_modified=lambda root: {"src/link"}, **patches)
+                self.assert_clean(code, output)
+                self.assertIn("matched in this platform's own spelling: 1", output)
 
     def test_a_carried_file_git_reports_changed_is_still_a_failure_on_that_platform(self) -> None:
         """The control for the case above: the exemption is the respelled link's, not the platform's.
@@ -511,11 +519,11 @@ class ParityCase(ParityTreeCase, unittest.TestCase):
         """
         pinned, respelled = b"../../.agents/skills/x", b"..\\..\\.agents\\skills\\x"
         self.tree.add_link_record("src/link", pinned)
-        linked = self.tree.make_link("src/link", respelled)
-        code, output = self.tree.run_parity(
-            platform_name=lambda: "posix", **self.tree.link_answers(linked))
-        self.assert_failed(code, output, "differ from the pinned revision")
-        self.assertIn("src/link", output)
+        for name, patches in self.tree.link_shape_runs("src/link", respelled):
+            with self.subTest(shape=name):
+                code, output = self.tree.run_parity(platform_name=lambda: "posix", **patches)
+                self.assert_failed(code, output, "differ from the pinned revision")
+                self.assertIn("src/link", output)
 
     def test_a_link_target_that_changed_more_than_its_separators_is_drift(self) -> None:
         """Folding separators is the whole allowance: another destination is still drift.
@@ -526,11 +534,11 @@ class ParityCase(ParityTreeCase, unittest.TestCase):
         """
         pinned, elsewhere = b"../../.agents/skills/x", b"..\\..\\.agents\\skills\\other"
         self.tree.add_link_record("src/link", pinned)
-        linked = self.tree.make_link("src/link", elsewhere)
-        code, output = self.tree.run_parity(
-            platform_name=lambda: "nt", **self.tree.link_answers(linked))
-        self.assert_failed(code, output, "differ from the pinned revision")
-        self.assertIn("src/link", output)
+        for name, patches in self.tree.link_shape_runs("src/link", elsewhere):
+            with self.subTest(shape=name):
+                code, output = self.tree.run_parity(platform_name=lambda: "nt", **patches)
+                self.assert_failed(code, output, "differ from the pinned revision")
+                self.assertIn("src/link", output)
 
     def test_a_file_holding_a_links_respelled_target_is_not_the_link_where_the_host_can_tell(
         self,
