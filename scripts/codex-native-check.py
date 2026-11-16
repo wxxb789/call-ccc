@@ -8,11 +8,14 @@ committed fixture into an isolated Codex data directory, re-reads the installed 
 here), checks the resume invocation the conversion reported (its arguments name the target binary, the
 resume subcommand and the session, and its environment selects the directory the session is installed
 into), asks that directory's own app server to load the session (`thread/resume`), reads the harness's
-own view of the conversation (`thread/read`), checks that the source session and every other session in
-the target home — the session it plants there and any the home already held — are untouched, and — when
-`--resume-prompt` is given — runs one real turn from the reported invocation and reports what the target
-answered. The planted session is removed again when the run ends, so a `--codex-home` the caller named is
-left as it was found apart from the converted session.
+own view of the conversation (`thread/read`), and — when `--resume-prompt` is given — runs one real turn
+from the reported invocation and reports what the target answered. Only then — after the loader and the
+turn, and before the cleanup that removes the planted session — does it compare the source session and
+every other session in the target home (the session it plants there and any the home already held)
+against the bytes they had before the conversion, so a mutation during either native stage is answered by
+the comparison that runs last rather than by an earlier verdict standing in for it. The planted session is
+removed again when the run ends, so a `--codex-home` the caller named is left as it was found apart from
+the converted session.
 
 It is **not** a gate step: it needs the Codex binary, and a turn needs model access. `scripts/gate.py`
 decides the offline half (round-trip through the inherited reader, install rules, reported losses, CLI
@@ -450,12 +453,6 @@ def main(argv: list[str] | None = None) -> int:
         if readback.returncode != 0:
             detail += f"; inspect rc={readback.returncode}: {last_meaningful_line(readback.stderr)}"
         record("the inherited reader reads the installed file back as what was written", agreed, detail)
-        record("the source session is unchanged",
-               tree_digest(fixture_root) == fixture_before,
-               f"sha256 {sha256(source)[:16]}… (fixture tree identical)")
-        record("the unrelated session in the target home is unchanged",
-               sha256(unrelated) == unrelated_before,
-               f"sha256 {unrelated_before[:16]}…")
 
         server = AppServer(codex, home)
         view: list[str] = []
@@ -531,6 +528,24 @@ def main(argv: list[str] | None = None) -> int:
             record("a real turn continues from the installed session", False,
                    "not attempted: pass --resume-prompt to run one", skipped=True)
 
+        # Every promise about files this run must not change is answered here, after the loader and —
+        # when it ran — the real turn: a comparison recorded beside the read-back above would let a
+        # mutation during either native stage stand on an earlier verdict, and the planted session is
+        # only deleted once this block has run.
+        fixture_after = tree_digest(fixture_root)
+        moved = sorted([name for name, digest in fixture_before.items()
+                        if fixture_after.get(name) != digest]
+                       + [name for name in fixture_after if name not in fixture_before])
+        record("the source session is unchanged",
+               not moved,
+               f"sha256 {sha256(source)[:16]}… (fixture tree identical)" if not moved
+               else f"the fixture tree changed: {', '.join(moved)}")
+        planted_unchanged = unrelated.is_file() and sha256(unrelated) == unrelated_before
+        record("the unrelated session in the target home is unchanged",
+               planted_unchanged,
+               f"sha256 {unrelated_before[:16]}…" if planted_unchanged
+               else f"sha256 {unrelated_before[:16]}… before, "
+                    + (f"{sha256(unrelated)[:16]}… after" if unrelated.is_file() else "missing after"))
         # Every session file the home held before the conversion, compared again now: the planted
         # unrelated one is checked above, and this covers a real --codex-home's own sessions too.
         changed = [str(path.relative_to(home)) for path, digest in existing_sessions.items()

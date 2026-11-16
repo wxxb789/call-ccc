@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-"""Regression tests for the resume-invocation check in scripts/codex-native-check.py.
+"""Regression tests for the checks in scripts/codex-native-check.py that need no Codex binary.
 
-That check is the harness's own rule about the line a caller pastes or an agent runs: it must name the
-data directory the session was installed into, because Codex takes that directory from CODEX_HOME alone
-and has no flag for it. The line is *rendered* for a POSIX shell, so a check written against a literal
+Two halves, both driven in-process with the shipped module imported by path, no subprocess and no tool
+on ``PATH``: the check that reads the reported resume invocation back the way a POSIX shell reads it
+(``shell_words``/``reported_invocation``), and the ordering rule that the source session and the planted
+session are compared **after** the harness's own native stages (``main`` driven with its subprocess and
+app-server seams replaced by stubs).
+
+The resume-invocation check is the harness's own rule about the line a caller pastes or an agent runs: it
+must name the data directory the session was installed into, because Codex takes that directory from
+CODEX_HOME alone and has no flag for it. The line is *rendered* for a POSIX shell, so a check written
+against a literal
 ``CODEX_HOME=<home>`` substring answers the opposite of the rule in both directions: it accepts an
 unquoted home whose space a shell reads as two words -- the defect the quoting exists to prevent -- and
 it rejects every home the renderer correctly quotes, which is every home with a space and every Windows
@@ -29,9 +36,17 @@ quote -- never about the separator this host happens to use.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
+import json
+import shlex
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path, PureWindowsPath
+from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 
@@ -135,6 +150,157 @@ class ResumeInvocationCheck(unittest.TestCase):
         line = f"CODEX_HOME='codex-home {CODEX} resume {SESSION}"
         self.assertIsNone(NATIVE_CHECK.shell_words(line))
         self.assertFalse(NATIVE_CHECK.reported_invocation(line, Path("codex-home"), RESUME_ARGUMENTS))
+
+
+#: The checks the ordering rule below is about, named as the harness records them.
+PROTECTED_CHECKS = ("the source session is unchanged",
+                    "the unrelated session in the target home is unchanged")
+
+
+class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
+    """The source session and the planted session are compared again after the harness's own native
+    stages, not before them.
+
+    The native half cannot run offline -- it needs the Codex binary and, for a turn, model access -- so
+    these cases drive the shipped ``main`` with the seams that half stands on replaced: the subprocess
+    runner, the app server and the harness's own view call, plus ``shutil.which`` for the two tools. The
+    stub for ``ccc continue`` installs a real file into a throw-away home, and the stub for the resume
+    turn answers like a turn that continued (the installed file grows) while it changes both protected
+    artifacts. With the comparisons at the end of the run, the mutating case must FAIL exactly those two
+    checks and PASS the turn; if the comparisons move back above the loader and the turn -- the defect
+    this pins -- they run before the mutation and both cases below fail. The intact run is the control: a
+    comparison that answered FAIL for its own reasons could not pass it, and the mutating run asserts the
+    two protected checks are its **only** failures, so nothing else was already red.
+    """
+
+    def drive(self, mutate_during_resume: bool) -> tuple[int, dict[str, tuple[str, str]]]:
+        """One run of the shipped ``main`` against stubs; answers its exit code and its recorded checks."""
+        scratch = Path(tempfile.mkdtemp(prefix="ccc-native-check-case-"))
+        self.addCleanup(shutil.rmtree, scratch, ignore_errors=True)
+        repo = scratch / "repo"
+        fixture = (repo / NATIVE_CHECK.FIXTURE_ROOT / NATIVE_CHECK.SOURCE_PROVIDER
+                   / "-fake-project" / f"{NATIVE_CHECK.SOURCE_SESSION}.jsonl")
+        fixture.parent.mkdir(parents=True)
+        fixture.write_text(json.dumps({"type": "user"}) + "\n")
+        home = scratch / "codex-home"
+        home.mkdir()
+        # The two tools the harness resolves: names it only compares and runs through the stub below,
+        # so no binary has to exist for this case.
+        codex = str(scratch / "codex")
+        go = str(scratch / "go")
+
+        thread_id = "01a1e000-0000-7000-8000-000000000002"
+        installed = (home / "sessions" / "2026" / "05" / "04"
+                     / f"rollout-2026-05-04T09-15-00-{thread_id}.jsonl")
+        planted = home / "sessions" / "2026" / "01" / "01" / NATIVE_CHECK.UNRELATED_NAME
+        # The assignment the conversion reports is rendered the way the renderer quotes a word, so the
+        # harness's own shell reading of the line accepts it on every host (`shlex.quote` leaves
+        # `codex-home` bare and quotes a Windows path or one with a space).
+        assignment = "CODEX_HOME=" + shlex.quote(str(home))
+        resume_arguments = [codex, "resume", thread_id]
+        exec_resume_arguments = [codex, "exec", "resume", thread_id, "<prompt>"]
+        document = {
+            "conversion": {
+                "state": "converted", "format": "codex-rollout-jsonl",
+                "carried": {"messages": 3, "user_messages": 1, "tool_calls": 1, "tool_results": 1,
+                            "compaction_boundaries": 0},
+                "losses": [{"category": "reasoning", "disposition": "omitted", "count": 1,
+                            "detail": "the stub's one loss"}],
+            },
+            "installation": {"state": "installed", "path": str(installed), "mechanism": "hard-link",
+                             "created": True, "source_check_state": "unchanged"},
+            "target_session": {
+                "session_id": thread_id, "path": str(installed), "binary_found": True,
+                "resume_arguments": resume_arguments, "exec_resume_arguments": exec_resume_arguments,
+                "resume_environment": {"CODEX_HOME": str(home)},
+                "resume_command": f"{assignment} " + " ".join(resume_arguments),
+                "exec_resume_command": f"{assignment} " + " ".join(exec_resume_arguments),
+            },
+            "verification": {"load": {"state": "verified"}, "resume": {"state": "verified"}},
+        }
+
+        def fake_run(cmd, cwd=None, env=None, timeout=600):
+            command = [str(part) for part in cmd]
+            if command[0] == go:
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            if command[0] == str(repo / NATIVE_CHECK.BINARY):
+                if command[1] == "continue":
+                    installed.parent.mkdir(parents=True, exist_ok=True)
+                    installed.write_text(json.dumps({"type": "session_meta"}) + "\n")
+                    return subprocess.CompletedProcess(cmd, 0, json.dumps(document), "")
+                if command[1] == "inspect":
+                    counts = {"user_messages": 1, "tool_calls": 1, "tool_results": 1,
+                              "compact_boundaries": 0}
+                    return subprocess.CompletedProcess(
+                        cmd, 0, json.dumps({"source": {"counts": counts}}), "")
+            if command[0] == codex and command[1] == "exec":
+                # The resume stage: a turn that continued (the installed file grows) and, when this case
+                # asks for it, the mutation both protected artifacts have to survive.
+                installed.write_text(installed.read_text() + json.dumps({"type": "turn"}) + "\n")
+                if mutate_during_resume:
+                    fixture.write_text(fixture.read_text() + json.dumps({"type": "assistant"}) + "\n")
+                    planted.write_text(planted.read_text() + json.dumps({"type": "session_meta"}) + "\n")
+                return subprocess.CompletedProcess(cmd, 0, "the stub turn answered\n", "")
+            raise AssertionError(f"the case's stub was asked for an unexpected command: {command}")
+
+        class FakeAppServer:
+            """The app server this case never starts: it answers the loader with the installed file."""
+
+            def __init__(self, binary, home):
+                self.binary, self.home = binary, home
+
+            def handshake(self) -> None:
+                pass
+
+            def call(self, method: str, params: dict) -> dict:
+                if method != "thread/resume":
+                    raise AssertionError(f"the case's stub was asked for {method}")
+                return {"thread": {"id": thread_id, "path": str(installed), "historyMode": "legacy",
+                                   "cwd": "/tmp"}}
+
+            def close(self) -> None:
+                pass
+
+        def fake_thread_view(server, thread):
+            return [f"thread {thread} (the case's stub's own view)"], ["userMessage", "agentMessage"]
+
+        def fake_which(name, *args, **kwargs):
+            return codex if name == "codex" else go
+
+        before = len(NATIVE_CHECK.RESULTS)
+        with mock.patch.object(NATIVE_CHECK, "run", fake_run), \
+                mock.patch.object(NATIVE_CHECK, "AppServer", FakeAppServer), \
+                mock.patch.object(NATIVE_CHECK, "thread_view", fake_thread_view), \
+                mock.patch("shutil.which", fake_which), \
+                contextlib.redirect_stdout(io.StringIO()):
+            code = NATIVE_CHECK.main(["--repo", str(repo), "--codex", "codex",
+                                      "--codex-home", str(home),
+                                      "--resume-prompt", "answer only from this conversation"])
+        results = {name: (state, detail) for name, state, detail in NATIVE_CHECK.RESULTS[before:]}
+        del NATIVE_CHECK.RESULTS[before:]
+        return code, results
+
+    def test_a_mutation_during_the_resume_stage_is_caught_by_the_last_comparison(self) -> None:
+        code, results = self.drive(mutate_during_resume=True)
+        self.assertEqual(results.get("a real turn continues from the installed session", ("", ""))[0],
+                         "PASS",
+                         f"the stub's turn did not run, so its mutation would not be what the "
+                         f"comparisons catch: {results}")
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed, sorted(PROTECTED_CHECKS),
+                         f"the mutating run's failures are not exactly the two protected-artifact "
+                         f"comparisons: {results}")
+        self.assertEqual(code, 1, f"exit {code} for a run with failed checks: {results}")
+        self.assertIn("the fixture tree changed:", results[PROTECTED_CHECKS[0]][1])
+        self.assertIn(" before, ", results[PROTECTED_CHECKS[1]][1])
+        self.assertIn(" after", results[PROTECTED_CHECKS[1]][1])
+
+    def test_an_intact_run_passes_the_comparisons(self) -> None:
+        code, results = self.drive(mutate_during_resume=False)
+        for name in PROTECTED_CHECKS:
+            state, detail = results.get(name, ("missing", ""))
+            self.assertEqual(state, "PASS", f"{name}: {state} — {detail}; all results: {results}")
+        self.assertEqual(code, 0, f"exit {code} for an intact run: {results}")
 
 
 if __name__ == "__main__":

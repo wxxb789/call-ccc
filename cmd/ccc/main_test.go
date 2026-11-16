@@ -786,6 +786,21 @@ func TestContinueHumanOutputNamesTheResumeCommand(t *testing.T) {
 			t.Errorf("human output is missing %q:\n%s", want, stdout)
 		}
 	}
+	// The installation line names the session's own file below the home and the mechanism the
+	// installation reported (`hard-link` is the installer's only publication mechanism: a filesystem
+	// that cannot take one refuses the install rather than publishing by rename, Q-0002-12).
+	installedLine := ""
+	for _, line := range strings.Split(stdout, "\n") {
+		if strings.HasPrefix(line, "  installed:    ") {
+			installedLine = line
+		}
+	}
+	if !strings.HasPrefix(installedLine, "  installed:    "+
+		filepath.Join(targetHome, "sessions")+string(filepath.Separator)) ||
+		!strings.HasSuffix(installedLine, " [hard-link]") {
+		t.Errorf("the installed line does not name the session's own path under the home and its mechanism: %q",
+			installedLine)
+	}
 	if strings.Contains(stdout, "{") {
 		t.Errorf("the human output carries JSON:\n%s", stdout)
 	}
@@ -907,6 +922,27 @@ func TestContinueDryRunInstallsNothingThroughTheCLI(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("a dry run wrote into the target home: %v", entries)
+	}
+
+	// The same dry run without `--json`: the block says what the run did — the dry-run line — and marks
+	// each identity line it generated as proposed, because a dry run published none of it. A reader who
+	// greps the block for an installation finds no `installed:` line at all.
+	code, stdout, stderr = runCLI(t, continueArgs(sessionID, "--dry-run")...)
+	if code != exitOK {
+		t.Fatalf("exit %d for a dry run's human block (stderr %q)", code, stderr)
+	}
+	if !strings.Contains(stdout, "installation: dry run, nothing written to "+targetHome) {
+		t.Errorf("the dry run's human block does not say it wrote nothing:\n%s", stdout)
+	}
+	if got := strings.Count(stdout, "(proposed; nothing was installed)"); got != 3 {
+		t.Errorf("identity lines marked as proposed = %d, want 3 (target id, resume, "+
+			"non-interactive resume):\n%s", got, stdout)
+	}
+	if strings.Contains(stdout, "\n  installed:") {
+		t.Errorf("the dry run's human block carries an `installed:` line:\n%s", stdout)
+	}
+	if entries, err := os.ReadDir(targetHome); err != nil || len(entries) != 0 {
+		t.Errorf("the dry run's human block wrote into the target home: %v (err %v)", entries, err)
 	}
 
 	// The same dry run with a harness that is present: the level was asked for and cannot run (nothing
@@ -1168,6 +1204,74 @@ func TestContinueWritesTheReportOfAFailureAfterPublication(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "no readable source session") {
 		t.Errorf("stderr %q does not name the failure", stderr)
+	}
+}
+
+// TestContinueHumanOutputReportsAPrePublicationFailure pins the human block of a run that converted and
+// then stopped before publishing anything (this one's target home cannot be created): the installation
+// line is the report's own state, `not-installed`, rather than an `installed:` line naming a session no
+// harness can open, and the identity the conversion generated — target id, resume, non-interactive
+// resume — is marked proposed, because the run published none of it. The same run's document is
+// asserted beside it, so the block and the JSON answer "is it installed?" the same way.
+func TestContinueHumanOutputReportsAPrePublicationFailure(t *testing.T) {
+	continueEnvironment(t)
+	sessionID, _ := claudeFixture(t)
+	// A file where the home's parent chain should be: nothing below it can be created.
+	blocker := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(blocker, []byte("not a directory\n"), 0o600); err != nil {
+		t.Fatalf("writing the blocking file: %v", err)
+	}
+	blockedHome := filepath.Join(blocker, "home")
+	const proposed = " (proposed; nothing was installed)"
+
+	code, stdout, stderr := runCLI(t, continueArgs(sessionID, "--target-home", blockedHome)...)
+	if code != exitFailure {
+		t.Fatalf("exit %d, want %d (stderr %q)", code, exitFailure, stderr)
+	}
+	for _, want := range []string{
+		"converted:    codex-rollout-jsonl",
+		"installed:    " + ccc.InstallationStateNotInstalled + " (nothing was published under " +
+			blockedHome + ")",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("the human block is missing %q:\n%s", want, stdout)
+		}
+	}
+	if strings.Contains(stdout, "installed:    "+blockedHome) {
+		t.Errorf("the human block reports an installation the run never made:\n%s", stdout)
+	}
+	if got := strings.Count(stdout, proposed); got != 3 {
+		t.Errorf("identity lines marked as proposed = %d, want 3 (target id, resume, "+
+			"non-interactive resume):\n%s", got, stdout)
+	}
+	if !strings.Contains(stderr, "creating "+blockedHome) {
+		t.Errorf("stderr %q does not name what stopped the run", stderr)
+	}
+
+	// The document of the same failure: the state the human line renders, and no path.
+	code, stdout, stderr = runCLI(t, continueArgs(sessionID, "--target-home", blockedHome, "--json")...)
+	if code != exitFailure {
+		t.Fatalf("exit %d for the JSON spelling, want %d (stderr %q)", code, exitFailure, stderr)
+	}
+	var document struct {
+		TargetSession struct {
+			SessionID string `json:"session_id"`
+			Path      string `json:"path"`
+		} `json:"target_session"`
+		Installation struct {
+			State string `json:"state"`
+			Path  string `json:"path"`
+		} `json:"installation"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
+	}
+	if document.Installation.State != ccc.InstallationStateNotInstalled || document.Installation.Path != "" {
+		t.Errorf("installation = %+v, want not-installed with no path", document.Installation)
+	}
+	if document.TargetSession.SessionID == "" || document.TargetSession.Path != "" {
+		t.Errorf("target session = %+v, want the proposed identity with no installed path",
+			document.TargetSession)
 	}
 }
 

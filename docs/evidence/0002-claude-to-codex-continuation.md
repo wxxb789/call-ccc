@@ -154,16 +154,16 @@ $ python3 scripts/codex-native-check.py --model-provider tencent-litellm --model
 exit 0
 PASS: ccc builds with the flags upstream ships
 PASS: the conversion reports carried evidence and a non-zero loss category — 5 message(s), 1 tool call(s), 18 loss categories
-PASS: the session is installed under the target's own sessions tree — sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1e272-4e16-70ca-8721-35c19c23a664.jsonl [hard-link]
-PASS: the target identity is new and is not the source's — 01a1e272-4e16-70ca-8721-35c19c23a664, not one of the 1 id(s) already in the home
+PASS: the session is installed under the target's own sessions tree — sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1e29c-5f5e-70bd-ab5e-262b3fbcdbf9.jsonl [hard-link]
+PASS: the target identity is new and is not the source's — 01a1e29c-5f5e-70bd-ab5e-262b3fbcdbf9, not one of the 1 id(s) already in the home
 PASS: the installed file is one JSON object per line — 3970 bytes (the target's own read of it is the load check)
-PASS: the inherited reader reads the installed file back as what was written — ccc inspect codex:01a1e272-4e16-70ca-8721-35c19c23a664: {"messages": 7, "user_messages": 2, "assistant_messages": 5, "system_messages": 0, "tool_messages": 0, "system_records": 1, "sidechain_messages": 0, "compact_boundaries": 1, "tool_calls": 1, "tool_results": 1}; conversion carried: 2 user message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies)
+PASS: the inherited reader reads the installed file back as what was written — ccc inspect codex:01a1e29c-5f5e-70bd-ab5e-262b3fbcdbf9: {"messages": 7, "user_messages": 2, "assistant_messages": 5, "system_messages": 0, "tool_messages": 0, "system_records": 1, "sidechain_messages": 0, "compact_boundaries": 1, "tool_calls": 1, "tool_results": 1}; conversion carried: 2 user message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies)
+PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1e29c-5f5e-70bd-ab5e-262b3fbcdbf9 [legacy] cwd=/home/user/code/example-api
+PASS: the target's own view lists the converted turns — 5 item(s) in the reply's own turn list
+PASS: the reported resume command selects the installation home — resume_command='CODEX_HOME=<tmp>/codex-home <codex> resume 01a1e29c-5f5e-70bd-ab5e-262b3fbcdbf9' exec_resume_command="CODEX_HOME=<tmp>/codex-home <codex> exec resume 01a1e29c-5f5e-70bd-ab5e-262b3fbcdbf9 '<prompt>'" environment={'CODEX_HOME': '<tmp>/codex-home'}
+PASS: a real turn continues from the installed session — exit 0, session 3970 -> 75593 bytes
 PASS: the source session is unchanged — sha256 2bd510821d4abf83… (fixture tree identical)
 PASS: the unrelated session in the target home is unchanged — sha256 59ff49ca30baf622…
-PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1e272-4e16-70ca-8721-35c19c23a664 [legacy] cwd=/home/user/code/example-api
-PASS: the target's own view lists the converted turns — 5 item(s) in the reply's own turn list
-PASS: the reported resume command selects the installation home — resume_command='CODEX_HOME=<tmp>/codex-home <codex> resume 01a1e272-4e16-70ca-8721-35c19c23a664' exec_resume_command="CODEX_HOME=<tmp>/codex-home <codex> exec resume 01a1e272-4e16-70ca-8721-35c19c23a664 '<prompt>'" environment={'CODEX_HOME': '<tmp>/codex-home'}
-PASS: a real turn continues from the installed session — exit 0, session 3970 -> 69832 bytes
 PASS: no pre-existing session in the target home changed — 0 pre-existing session file(s)
 13 check(s) passed, 0 failed, 0 skipped
 ```
@@ -173,7 +173,7 @@ harness) and the answer its own resume produced:
 
 ```
 the target harness's own view of the installed session:
-    thread 01a1e272-4e16-70ca-8721-35c19c23a664 [legacy] provider=tencent-litellm
+    thread 01a1e29c-5f5e-70bd-ab5e-262b3fbcdbf9 [legacy] provider=tencent-litellm
       turn rollout-2
         userMessage: Summarize the retry policy in internal/retry/policy.go.
         agentMessage: I will read the retry policy first.
@@ -183,8 +183,10 @@ the target harness's own view of the installed session:
         agentMessage: The cap is configured in internal/retry/config.go as maxBackoffSeconds.
 
 the turn's own output (the target's answer, as the harness printed it):
-    - File read: none — no file was actually read in this conversation; the earlier claims came only from user messages, not tool calls.
-    - Attempt limit: four — stated earlier in this conversation, but unverified against any file.
+    - File read: none — this conversation contains no file read (no tool call, no file contents); `internal/retry/policy.go` was only named in the prior summary text, and `internal/retry/config.go` only in the follow-up claim.
+    - Attempt limit: four, per that summary text — unverified here, since no file was actually read.
+
+    Want me to open `internal/retry/policy.go` and `internal/retry/config.go` now and confirm both against the real code?
 ```
 
 Why the first fixture's answer has this shape (its own wording varies run to run): the fixture compacts
@@ -192,8 +194,8 @@ after its tool call, the conversion carries that boundary as the target's `compa
 applies that record to its own model-visible history — so the resumed turn continues from the source's
 own active context (the summary and the turns after the boundary), which is why this run could quote the
 attempt limit and the summarized file from the summary's own words and the cap's file from the
-post-boundary turn, while answering that the earlier claims came from user messages rather than tool
-calls — the file keeps the turns before the boundary with their tool evidence, but the target does not
+post-boundary turn, while answering that the earlier claims came from the summary text rather than a
+tool call — the file keeps the turns before the boundary with their tool evidence, but the target does not
 continue from them. An earlier run of
 this same check, over a rollout written without the target's `event_msg` message records, could not see
 even the post-boundary turns and answered that no tool call exists in this conversation; that is what
@@ -207,23 +209,23 @@ $ python3 scripts/codex-native-check.py --session b6d93f07-2f5c-4a11-8e0d-3c7a91
 exit 0
 PASS: ccc builds with the flags upstream ships
 PASS: the conversion reports carried evidence and a non-zero loss category — 5 message(s), 3 tool call(s), 18 loss categories
-PASS: the session is installed under the target's own sessions tree — sessions/2026/05/05/rollout-2026-05-05T10-00-00-01a1e272-66ba-7f1d-99c8-a81ab277366b.jsonl [hard-link]
-PASS: the target identity is new and is not the source's — 01a1e272-66ba-7f1d-99c8-a81ab277366b, not one of the 1 id(s) already in the home
+PASS: the session is installed under the target's own sessions tree — sessions/2026/05/05/rollout-2026-05-05T10-00-00-01a1e29c-82bd-7c27-9ba6-f456957c33dd.jsonl [hard-link]
+PASS: the target identity is new and is not the source's — 01a1e29c-82bd-7c27-9ba6-f456957c33dd, not one of the 1 id(s) already in the home
 PASS: the installed file is one JSON object per line — 4611 bytes (the target's own read of it is the load check)
-PASS: the inherited reader reads the installed file back as what was written — ccc inspect codex:01a1e272-66ba-7f1d-99c8-a81ab277366b: {"messages": 8, "user_messages": 2, "assistant_messages": 6, "system_messages": 0, "tool_messages": 0, "system_records": 0, "sidechain_messages": 0, "compact_boundaries": 0, "tool_calls": 3, "tool_results": 3}; conversion carried: 2 user message(s), 3 tool call(s), 3 tool result(s), 0 boundary(ies)
+PASS: the inherited reader reads the installed file back as what was written — ccc inspect codex:01a1e29c-82bd-7c27-9ba6-f456957c33dd: {"messages": 8, "user_messages": 2, "assistant_messages": 6, "system_messages": 0, "tool_messages": 0, "system_records": 0, "sidechain_messages": 0, "compact_boundaries": 0, "tool_calls": 3, "tool_results": 3}; conversion carried: 2 user message(s), 3 tool call(s), 3 tool result(s), 0 boundary(ies)
+PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1e29c-82bd-7c27-9ba6-f456957c33dd [legacy] cwd=/home/user/code/tooling
+PASS: the target's own view lists the converted turns — 5 item(s) in the reply's own turn list
+PASS: the reported resume command selects the installation home — resume_command='CODEX_HOME=<tmp>/codex-home <codex> resume 01a1e29c-82bd-7c27-9ba6-f456957c33dd' exec_resume_command="CODEX_HOME=<tmp>/codex-home <codex> exec resume 01a1e29c-82bd-7c27-9ba6-f456957c33dd '<prompt>'" environment={'CODEX_HOME': '<tmp>/codex-home'}
+PASS: a real turn continues from the installed session — exit 0, session 4611 -> 74390 bytes
 PASS: the source session is unchanged — sha256 415bbc31a6cd541f… (fixture tree identical)
 PASS: the unrelated session in the target home is unchanged — sha256 59ff49ca30baf622…
-PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1e272-66ba-7f1d-99c8-a81ab277366b [legacy] cwd=/home/user/code/tooling
-PASS: the target's own view lists the converted turns — 5 item(s) in the reply's own turn list
-PASS: the reported resume command selects the installation home — resume_command='CODEX_HOME=<tmp>/codex-home <codex> resume 01a1e272-66ba-7f1d-99c8-a81ab277366b' exec_resume_command="CODEX_HOME=<tmp>/codex-home <codex> exec resume 01a1e272-66ba-7f1d-99c8-a81ab277366b '<prompt>'" environment={'CODEX_HOME': '<tmp>/codex-home'}
-PASS: a real turn continues from the installed session — exit 0, session 4611 -> 75672 bytes
 PASS: no pre-existing session in the target home changed — 0 pre-existing session file(s)
 13 check(s) passed, 0 failed, 0 skipped
 ```
 
 ```
 the target harness's own view of the installed session:
-    thread 01a1e272-66ba-7f1d-99c8-a81ab277366b [legacy] provider=tencent-litellm
+    thread 01a1e29c-82bd-7c27-9ba6-f456957c33dd [legacy] provider=tencent-litellm
       turn rollout-2
         userMessage: Check the retry policy and tell me the attempt limit.
         agentMessage: I will read the policy file first.
@@ -233,9 +235,11 @@ the target harness's own view of the installed session:
         agentMessage: internal/retry/config.go, as maxBackoffSeconds.
 
 the turn's own output (the target's answer, as the harness printed it):
-    - Tools appearing: `Read` (once) and `Bash` (twice).
-    - First returned: the body of `policy.go` — `package retry` followed by `const MaxAttempts = 4`.
-    - Last returned: the exact output `"maxBackoffSeconds"` from the `python3 -c 'import json; print(json.dumps("maxBackoffSeconds"))'` call.
+    - Tools: `Read` and `Bash`.
+    - First (`Read` of `/home/user/code/tooling/internal/retry/policy.go`) returned the file: `package retry` / `const MaxAttempts = 4`.
+    - Last (`Bash`: `python3 -c 'import json; print(json.dumps("maxBackoffSeconds"))'`) returned `"maxBackoffSeconds"`.
+
+    Note: that last call only echoed the string I passed it — nothing in this conversation shows the cap lives in `internal/retry/config.go`; the one search of that directory errored out.
 ```
 
 All three tool calls, the first result's content, the second result's recorded *failure* and the third
@@ -267,12 +271,15 @@ valid to the inherited reader (it is an `event_msg` whose payload is the harness
 
 ## 4. The source is unchanged, the identity is new, no other session moves
 
-- The two halves of each run above: `the source session is unchanged — … (fixture tree identical)` and
-  `the unrelated session in the target home is unchanged`, plus `no pre-existing session in the target
-  home changed` and `source_check_state: "unchanged"` in the JSON.
-  The harness digests every file below the fixture root, the unrelated session it plants in the
-  target home and every session file the home already held, before the conversion, and compares them
-  after it (the planted file is removed again when the run ends);
+- The three halves of each run above: `the source session is unchanged — … (fixture tree identical)`,
+  `the unrelated session in the target home is unchanged` and `no pre-existing session in the target
+  home changed`, plus `source_check_state: "unchanged"` in the JSON. The harness digests every file below
+  the fixture root, the unrelated session it plants in the target home and every session file the home
+  already held before the conversion, and compares them **after the loader and the real turn have run**
+  (round 6 moved the first two comparisons there; the planted file is removed only once they have run),
+  so a mutation during either native stage is answered by the comparison that runs last rather than by an
+  earlier verdict standing in for it — pinned offline by
+  `scripts/tests/test_codex_native_check.py`'s `ProtectedArtifactsAfterNativeVerification`;
   `TestContinueKeepsTheSourceAndItsDirectoryIntactForBothFixtures`
   does the same in-process over the whole fixture tree.
 - New identity: the target id is a UUID v7 that is neither the source's session id nor any id already in
@@ -341,10 +348,10 @@ summary and must be written once).
 
 ```
 $ CGO_ENABLED=1 go test -tags fts5 -count=1 ./cmd/ccc/... ./internal/ccc/...     # rc=0
-ok  	go.kenn.io/agentsview/cmd/ccc	3.331s
-ok  	go.kenn.io/agentsview/internal/ccc	13.377s
+ok  	go.kenn.io/agentsview/cmd/ccc	1.772s
+ok  	go.kenn.io/agentsview/internal/ccc	9.696s
 ?   	go.kenn.io/agentsview/internal/ccc/fixturegen	[no test files]
-ok  	go.kenn.io/agentsview/internal/ccc/parity	2.257s
+ok  	go.kenn.io/agentsview/internal/ccc/parity	1.236s
 ?   	go.kenn.io/agentsview/internal/ccc/parity/oracle	[no test files]
 ```
 
@@ -370,6 +377,7 @@ ok  	go.kenn.io/agentsview/internal/ccc/parity	2.257s
 | which failure a conversion reports when neither side answers: the archive's own answer (candidates, truncation, a failed query) when the source is unreadable and the archive refuses it too, the source's error only when the archive holds no match | `TestContinueReportsTheArchivesAmbiguityInsteadOfAbsence` |
 | the app server's diagnostic buffer is bounded and synchronized: a failure report reads a snapshot, not a race with the goroutine os/exec copies stderr on | `TestBoundedBufferKeepsTheFirstBytes`, `TestBoundedBufferIsSafeForConcurrentWritesAndSnapshots` (the second is the case `go test -race` diagnoses) |
 | the native check reads the two rendered resume-command lines the way a POSIX shell reads them, on both `pathlib` flavours, so a home the renderer quotes is accepted and an unquoted one a shell would split is not | `scripts/tests/test_codex_native_check.py` (the `selftest` step) |
+| the native check compares the source tree and the planted session **after** the loader and the real turn, so a mutation during either stage fails the run — and an intact run passes the same comparisons | `scripts/tests/test_codex_native_check.py`'s `ProtectedArtifactsAfterNativeVerification` |
 | a nested run that breaks inside a subtest is named by the case that read the child, not raised as an `IndexError` in the reader itself | `test_a_child_broken_inside_a_subtest_is_reported_by_name` |
 | the printed resume invocation names the data directory the session was installed into, quoted where a shell would act on a word, and a resume verification reports the command it ran the same way | `TestContinuePrintsAResumeCommandThatSelectsTheInstallationHome`, `TestResumeVerificationCommandNamesTheHomeItRanAgainst`, `TestContinueHumanOutputNamesTheResumeCommand`, `TestContinueJSONDistinguishesConversionInstallationAndVerification` |
 | exclusive install (a taken name refused, a filesystem without hard links refused rather than renamed over) and dry run writes nothing (no directory for a home the caller named that is not there yet, and the target harness is never started), dry run reports its own states, prompt required, target/level validation, home resolution | `TestInstallCodexRolloutNeverReplacesASession`, `TestInstallCodexRolloutRefusesAFilesystemWithoutHardLinks`, `TestContinueDryRunWritesNothing`, `TestContinueDryRunReportsWhatItVerified`, `TestContinueDryRunInstallsNothingThroughTheCLI`, `TestContinueRequiresAPromptBeforeItRunsATurn`, `TestContinueRefusesAnUnsupportedTargetOrLevel`, `TestContinueTargetHomeResolution` |
@@ -377,9 +385,9 @@ ok  	go.kenn.io/agentsview/internal/ccc/parity	2.257s
 | the source's own digest is taken before the conversion and compared after it; a moved source is warned about; a projection and a stopped run answer `not-verified` rather than claiming a comparison | `TestSourceCheckComparesTheFileBeforeAndAfter`, `TestSourceChangedWarningsNameTheMove`, `TestSourceCheckSaysWhenThereWasNoFileToCompare` |
 | a result the conversion does not write is never reported as carried with a caveat, while the same two flags on a result that *is* written are counted | `TestCodexRolloutDoesNotReportOmittedResultsAsCarried` |
 | a failure after the conversion keeps the report it reached — the published installation and identity, the conversion's counts — with every check that did not run `not-verified` and naming the reason: a source that vanished after publication, a temporary file the installer could not remove, a home that could not be created | `TestContinueKeepsTheReportWhenTheSourceVanishesAfterTheInstall`, `TestContinueKeepsTheReportWhenTheTemporaryFileCannotBeRemoved`, `TestContinueKeepsTheConversionReportWhenTheHomeCannotBeCreated` |
-| the CLI's three states, human shape, source check, partial-read fidelity line, exit codes, help, and that a failure carrying a report still writes it (and a failure with none writes nothing) | `TestContinueJSONDistinguishesConversionInstallationAndVerification`, `TestContinueHumanOutputNamesTheResumeCommand`, `TestContinueHumanOutputReportsTheSourceCheck`, `TestContinueHumanOutputNamesAPartialSourceRead`, `TestContinueUsageErrors`, `TestContinueReportsAFailedVerificationAsAFailure`, `TestContinueWritesTheReportOfAFailureAfterPublication`, `TestContinueRefusesAMissingDataDirectoryNobodyNamed`, `TestContinueHelpIsARequestNotAFailure` |
+| the CLI's three states, human shape, source check, partial-read fidelity line, exit codes, help, that a failure carrying a report still writes it (and a failure with none writes nothing), that a run which stopped before publishing renders the report's own `not-installed` state with its identity marked proposed, that a dry run's block says it wrote nothing and marks its identity proposed, and that the installed line names the session's own path and its mechanism | `TestContinueJSONDistinguishesConversionInstallationAndVerification`, `TestContinueHumanOutputNamesTheResumeCommand`, `TestContinueHumanOutputReportsTheSourceCheck`, `TestContinueHumanOutputNamesAPartialSourceRead`, `TestContinueUsageErrors`, `TestContinueReportsAFailedVerificationAsAFailure`, `TestContinueWritesTheReportOfAFailureAfterPublication`, `TestContinueHumanOutputReportsAPrePublicationFailure`, `TestContinueDryRunInstallsNothingThroughTheCLI`, `TestContinueRefusesAMissingDataDirectoryNobodyNamed`, `TestContinueHelpIsARequestNotAFailure` |
 
-Gate, run on this tree after the last change (`python3 scripts/gate.py`, exit 0):
+Gate, run on this tree (`python3 scripts/gate.py`, exit 0):
 
 ```
 gate: <repo>
@@ -388,9 +396,9 @@ gate: go=<home>/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/..
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 151 tests in 7.246s (rc=0)
+  PASS     selftest Ran 153 tests in 5.597s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 26 project-owned prefix(es); files seen by git: 5625 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
-  PASS     secrets  no leaks found in 70 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+  PASS     secrets  no leaks found in 73 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
 
@@ -458,9 +466,9 @@ the parent's message. Executed here, each mutation of the repaired tree:
 | `scripts/tests/test_gate.py`: the empty-status guard removed | that case **ERRORs** (`IndexError`), the parent reporting no case name |
 | `scripts/tests/test_codex_native_check.py`: one fixture back to `/tmp/…` + a literal to match | `FAILED (failures=3)`: the accept case at `flavour='PureWindowsPath'` — the original defect now fails here, on the host that used to be blind to it — plus the two self-check cases the red child trips (their design) |
 
-The `selftest` step is 151 cases — the `144` the previously recorded gate run printed, the six
-native-check cases the round before this one added (a count that never reached the recorded block), and
-the one this repair adds; the block above is refreshed from this repair's own run. `docs/harness.md`
+The `selftest` step is 153 cases — the 151 the round-5 block printed, plus the two
+`ProtectedArtifactsAfterNativeVerification` cases round 6 adds (§11); the block above is refreshed from
+round 6's own run. `docs/harness.md`
 records both halves: the path-spelling constraint as a fourth Windows answer its Platform boundary
 section pins, and the dangling line as what the self-check cases read a child's per-case lines for.
 
@@ -724,8 +732,83 @@ final tree — **exit 0, `GATE: PASS`** (not partial; the block is the one in §
 passed, 0 failed, 0 skipped** each, `18 loss categories` each, the tooling fixture's installed file still
 4611 bytes with 3 tool calls and 3 results (its resumed turn still quotes `internal/retry/policy.go` and
 `MaxAttempts = 4`), the first fixture's read-back still 7 messages / 1 call / 1 result. No number this
-record states changed; the per-run ids and byte counts of §3 remain that run's.
+record states changed at that round; §3's per-run ids and byte counts were re-recorded in round 6 (§11),
+whose runs are the ones the blocks above now hold.
 
 Docs changed with the code: the plan's §3 (the three source-check states and the post-publication rule),
 §4 (exit codes) and §5 (the document's shape and what a failed run writes), and this record's §2 note, §4 and
 §6 table (`source_check_state`; the renamed tests; the new rules and their pins).
+
+## 11. Repair round 6 — a failed install is reported as such; the native check's integrity comparisons run last
+
+Round 6's review left two findings, both P2 and both fixed here; its carried-tree parity audit found no
+increment-attributable defect, so nothing in the carry changed.
+
+**1 — the human block tells the truth about a failed installation** (`cmd/ccc/main.go`). `writeContinuation`
+branched only on `Conversion.DryRun`, so a non-dry run that stopped before publication printed
+`installed: []` — an empty path where an installed path belongs — followed by a target id and two resume
+commands, although `Installation.State` was `not-installed` (a home that cannot be created is exactly this
+shape: `internal/ccc/continue.go` keeps `not-installed`, and
+`TestContinueKeepsTheConversionReportWhenTheHomeCannotBeCreated` already pinned the core's truthfulness;
+the CLI's failure-report case covered only an already-published session). The block now renders the
+report's own state — `installed:    not-installed (nothing was published under <home>)` — for any run
+whose installation is not `installed`, and marks the three identity lines (`target id`, `resume`,
+`non-interactive resume`) with `(proposed; nothing was installed)`: the conversion generated an identity,
+but printing it the way an installed one is printed offers a session no harness can open. A dry run's
+identity carries the same marker, for the same reason. Regression:
+`TestContinueHumanOutputReportsAPrePublicationFailure` drives the real engine through the CLI into a home
+whose parent chain is a file (so publication cannot happen), asserting the state line, the marker on each
+of the three identity lines, that no `installed: <path>` line appears, and — through `--json` on the same
+run — that the document says `not-installed` with no path while the proposed identity is still reported.
+
+**2 — the native check's integrity comparisons run after every native stage**
+(`scripts/codex-native-check.py`). The harness compared the source fixture tree and the planted session
+right after its read-back check — that is, before `thread/resume` and before the real resume turn — and
+the final `existing_sessions` comparison excludes the planted session by construction, so a mutation
+during the load or the turn would have left the earlier `PASS` standing. Both comparisons now sit in the
+block that runs after the loader *and* the turn and before the cleanup that unlinks the planted session,
+and a failing comparison's detail names what moved (`the fixture tree changed: <paths>` /
+`<digest> before, <digest> after`) instead of repeating the unchanged-tree wording. The ordering is
+pinned offline, without the Codex binary, by `ProtectedArtifactsAfterNativeVerification` in
+`scripts/tests/test_codex_native_check.py`: it drives the shipped `main` with its subprocess runner, app
+server, `thread_view` call and `shutil.which` replaced by stubs, a stub `ccc continue` that installs a
+real file into a throw-away home, and a stub resume turn that changes both protected artifacts while it
+runs — the run must fail exactly those two checks (and pass the turn), while the same drive without the
+mutation must exit 0 and pass both. That control is what stops a comparison that answers `FAIL` for its
+own reasons from satisfying the pin.
+
+Every rule of the touched surface was pinned by executing one mutation, running the test that claims it,
+and restoring the file from a byte-identical copy (`cmd/ccc/main.go` and `scripts/codex-native-check.py`
+compared by SHA-256 after every one of the seven restores; all agreed with the copies taken before the
+first). The first two rules are the finding's; the rest are the arms and details of the same block, so a
+regression in any of them is red rather than silently accepted:
+
+| Rule | Mutation (the fix's line reverted) | Observed |
+| --- | --- | --- |
+| a run that stopped before publication renders `not-installed`, not an empty installed path | the installation `switch`'s `default` branch merged back into the pre-fix `else` (`installed: %s [%s]`) | `TestContinueHumanOutputReportsAPrePublicationFailure` FAIL: `the human block is missing "installed:    not-installed (nothing was published under …)"`, and the block it printed carries `installed:     []` — the finding's own shape |
+| the identity lines of an unpublished run are marked proposed | the `if !published` assignment dropped | the same case FAIL: `identity lines marked as proposed = 0, want 3 (target id, resume, non-interactive resume)` |
+| a dry run's block says it wrote nothing and carries no `installed:` line | the dry-run arm replaced by the installed spelling | `TestContinueDryRunInstallsNothingThroughTheCLI` FAIL: `the dry run's human block does not say it wrote nothing` |
+| the installed line names the mechanism the installation reported | the `[%s]` mechanism dropped from the installed arm | `TestContinueHumanOutputNamesTheResumeCommand` FAIL: `the installed line does not name the session's own path under the home and its mechanism: "  installed:    …/rollout-….jsonl"` |
+| the integrity comparisons run after the loader and the turn | the two `record` calls moved back to the read-back site (the pre-fix order) | `ProtectedArtifactsAfterNativeVerification` FAIL: `the mutating run's failures are not exactly the two protected-artifact comparisons: []` — both comparisons had answered `PASS` on the pre-mutation state |
+| a failed comparison names what moved | the source check's `else` detail replaced by the unchanged-tree wording | the same case FAIL: `'the fixture tree changed:' not found in 'sha256 0af93f098a46ad99… (fixture tree identical)'` |
+| the comparisons can fail (the case is not a tautology) | the source check's verdict forced to `False` | the same case's control FAIL: `'FAIL' != 'PASS'` — the intact run no longer passes |
+
+Tests, gate: `cmd/ccc` 21 → **22** and `internal/ccc` 113 → **113** top-level `--- PASS` cases
+(`go test -v` per package; before = a detached worktree of `389179e`, removed); the suite's own `selftest`
+step 151 → **153** (the two new cases). `python3 scripts/gate.py` on the final tree — **exit 0,
+`GATE: PASS`** (not partial; the block is the one in §6).
+
+The native harness re-ran on both fixtures after the change, each with a real turn
+(`--model-provider tencent-litellm --model deepseek-v4.1-flash-fast --resume-prompt …`): **13/13 checks
+passed, 0 failed, 0 skipped** each, exit 0, with the two integrity lines printed after the turn — the
+ordering this round is about, observed in a real run and not only in the offline pin. §3's two blocks are
+those runs.
+
+Docs changed with the code: this record's §3 (both runs re-recorded in the new order), §4 and §6 (the
+ordering rule and its offline pin; the refreshed `go test` and gate blocks; the CLI row's new test), and
+`docs/harness.md`'s native-harness entry (the "before and after" guarantee now says after the loader and
+the turn). `docs/decisions/OPEN-QUESTIONS.md` gains `Q-0002-15`, the human block's spelling of a
+not-installed report and of a proposed identity. `AGENTS.md` is unchanged: no repository layout, gate
+step, command, read order or agent rule moved this round. Goal bookkeeping: 0002 is still
+`Implemented …; awaiting operator acceptance`, so nothing moves to `docs/goals/archive/` and
+`docs/goals/README.md`'s row is already accurate.

@@ -195,10 +195,13 @@ says so.
   was installed into, which is the only way Codex is told where to look), re-reads the installed file
   with its own `ccc inspect` invocation and compares what the inherited reader made of it with what the
   conversion says it carried (a second process, so the conversion's own round-trip verdict cannot stand
-  in for that read), asks Codex's own app server to load the session (`thread/resume`) and prints
-  Codex's own view of it (`thread/read`), hashes the source, the planted session and every session the
-  home already held before and after (removing the planted one again when the run ends), and — with
-  `--resume-prompt` — runs one real turn from the reported invocation and prints the target's answer.
+  in for that read), asks Codex's own app server to load the session (`thread/resume`), prints Codex's
+  own view of it (`thread/read`), runs — with `--resume-prompt` — one real turn from the reported
+  invocation and prints the target's answer, and only then hashes the source, the planted session and
+  every session the home already held against their bytes before the conversion (the planted session is
+  removed once every comparison has run), so a mutation during the loader or the turn is answered by the
+  comparison that runs last rather than by an earlier verdict — an ordering the native check's own cases
+  pin offline.
   The two rendered command lines (`resume_command`, `exec_resume_command`) are checked by **reading
   them the way a POSIX shell reads them**, word by word: a home the renderer quotes — any path holding
   a space, any Windows path holding a backslash — is accepted, while an unquoted home a shell would

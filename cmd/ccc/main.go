@@ -558,18 +558,34 @@ func writeContinuation(out io.Writer, result ccc.ContinueResult) {
 		}
 		fmt.Fprintf(out, "  %-13s %s ×%d\n", loss.Disposition+":", loss.Category, loss.Count)
 	}
-	if result.Conversion.DryRun {
+	// Whether this report claims a session the target harness holds, asked once: the identity lines
+	// below are the resume information of an installed session, and a run that published nothing — a
+	// dry run, or a run that stopped before publication — still generated an identity. Printing that
+	// identity the way an installed one is printed would offer a session no harness can open.
+	published := result.Installation.State == ccc.InstallationStateInstalled
+	proposed := ""
+	if !published {
+		proposed = " (proposed; nothing was installed)"
+	}
+	switch {
+	case result.Conversion.DryRun:
 		fmt.Fprintf(out, "  installation: dry run, nothing written to %s\n", result.TargetSession.Home)
-	} else {
+	case published:
 		fmt.Fprintf(out, "  installed:    %s [%s]\n", result.Installation.Path, result.Installation.Mechanism)
+	default:
+		// The report's own state, spelled the way the JSON spells it: a run that stopped before
+		// publishing answers "is it installed?" with not-installed, not with an empty path that reads
+		// like an installation whose location was lost.
+		fmt.Fprintf(out, "  installed:    %s (nothing was published under %s)\n",
+			ccc.InstallationStateNotInstalled, result.TargetSession.Home)
 	}
 	fmt.Fprintf(out, "  source file:  %s\n", sourceCheckLine(result.Installation))
-	fmt.Fprintf(out, "  target id:    %s\n", result.TargetSession.SessionID)
+	fmt.Fprintf(out, "  target id:    %s%s\n", result.TargetSession.SessionID, proposed)
 	if result.TargetSession.Cwd != "" {
 		fmt.Fprintf(out, "  working dir:  %s\n", result.TargetSession.Cwd)
 	}
-	fmt.Fprintf(out, "  resume:       %s\n", result.TargetSession.ResumeCommand)
-	fmt.Fprintf(out, "  non-interactive resume: %s\n", result.TargetSession.ExecResumeCommand)
+	fmt.Fprintf(out, "  resume:       %s%s\n", result.TargetSession.ResumeCommand, proposed)
+	fmt.Fprintf(out, "  non-interactive resume: %s%s\n", result.TargetSession.ExecResumeCommand, proposed)
 	fmt.Fprintf(out, "  cli_version:  %s (%s)\n", result.TargetSession.CLIVersion, result.TargetSession.CLIVersionSource)
 	fmt.Fprintf(out, "  structure:    %s (%s)\n", result.Verification.Structure.State, result.Verification.Structure.Method)
 	fmt.Fprintf(out, "  native load:  %s (%s)\n", result.Verification.Load.State, result.Verification.Load.Method)

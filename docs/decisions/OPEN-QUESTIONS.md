@@ -803,3 +803,25 @@ supersede it with a newer one and say which it supersedes.
   that read the installation block see the difference.
 - **Settled by:** whether the operator prefers the boolean spelling for a consumer already reading it, at
   the cost of making "did the file move?" unanswerable for a comparison that never ran.
+
+## Q-0002-15 — How the human block spells a report that published nothing
+
+- **Status:** resolved (default taken)
+- **Question:** the JSON document has always carried `installation.state` (`installed` / `not-installed`),
+  but the human block branched only on `--dry-run` (round 6's review, finding 1): a run that converted and
+  then failed before publication — a target home that could not be created is the reproducible shape —
+  printed `installed: []` with a target id and two resume commands under it, so the one line a reader
+  scans for "is it installed?" answered with an empty path where a published session's path belongs, and
+  the identity beneath it read as a session a harness could open. Should the block print the document's
+  own state for that case, and should the identity it did generate be marked as provisional?
+- **Default taken:** the block renders the report's state — `installed:    not-installed (nothing was
+  published under <home>)` whenever `installation.state` is not `installed` and the run was not a dry run —
+  and each of the three identity lines (`target id`, `resume`, `non-interactive resume`) carries
+  `(proposed; nothing was installed)` whenever the state is not `installed`, a dry run included. The JSON
+  is unchanged, and `TestContinueHumanOutputReportsAPrePublicationFailure` pins the block and the document
+  together; the evidence record's §11 records it.
+- **Reversal:** drop the marker and/or print the state only in the JSON: both are presentation-only, and a
+  reader of the JSON sees the same facts either way.
+- **Settled by:** whether the operator prefers the shortest block (the state word alone, or nothing) over
+  one that names, on every identity line, that no session was published — at the cost of a reader who
+  copies a resume command from a failed run having to notice the installation line above it.
