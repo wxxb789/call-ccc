@@ -168,14 +168,26 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
     turn answers like a turn that continued (the installed file grows) while it changes both protected
     artifacts. With the comparisons at the end of the run, the mutating case must FAIL exactly those two
     checks and PASS the turn; if the comparisons move back above the loader and the turn -- the defect
-    this pins -- they run before the mutation and both cases below fail. The intact run is the control: a
-    comparison that answered FAIL for its own reasons could not pass it, and the mutating run asserts the
-    two protected checks are its **only** failures, so nothing else was already red.
+    this pins -- they answer on the pre-mutation state, so the mutating case below fails over an empty
+    failure list while the intact control still passes: the ordering defect breaks the catching, not the
+    passing. The intact run is the control for the other direction -- a comparison that answered
+    FAIL for its own reasons could not pass it -- and the mutating run asserts the two protected checks
+    are its **only** failures, so nothing else was already red.
     """
 
     def drive(self, mutate_during_resume: bool) -> tuple[int, dict[str, tuple[str, str]]]:
         """One run of the shipped ``main`` against stubs; answers its exit code and its recorded checks."""
-        scratch = Path(tempfile.mkdtemp(prefix="ccc-native-check-case-"))
+        # The scratch root is resolved before anything is derived from it, because the shipped ``main``
+        # resolves what it is handed (``--repo`` always, and ``--codex-home`` when the caller names one,
+        # which this case does): a host whose temporary root is reached through a symlink, or whose
+        # ``resolve()`` answers a canonical spelling of it -- macOS spells the temp root
+        # ``/var/folders/…`` and reads it back as ``/private/var/folders/…`` -- would leave this case's
+        # stub answering in a spelling the harness never uses, so the stubbed ``--repo``/``--target-home``
+        # commands, the document's own home and the run's recorded checks would all disagree with it on
+        # that host alone, and did: these two cases are the ones that broke on the ``macos-latest`` and
+        # ``windows-latest`` legs at head ``4cd0567``, while ``ubuntu-latest`` passed. Deriving the tree
+        # from the resolved spelling makes this case's paths the harness's own on every host.
+        scratch = Path(tempfile.mkdtemp(prefix="ccc-native-check-case-")).resolve()
         self.addCleanup(shutil.rmtree, scratch, ignore_errors=True)
         repo = scratch / "repo"
         fixture = (repo / NATIVE_CHECK.FIXTURE_ROOT / NATIVE_CHECK.SOURCE_PROVIDER

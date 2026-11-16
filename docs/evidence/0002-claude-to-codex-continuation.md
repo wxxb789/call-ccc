@@ -396,7 +396,7 @@ gate: go=<home>/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/..
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 153 tests in 5.597s (rc=0)
+  PASS     selftest Ran 153 tests in 5.133s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 26 project-owned prefix(es); files seen by git: 5625 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     secrets  no leaks found in 73 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
@@ -466,11 +466,57 @@ the parent's message. Executed here, each mutation of the repaired tree:
 | `scripts/tests/test_gate.py`: the empty-status guard removed | that case **ERRORs** (`IndexError`), the parent reporting no case name |
 | `scripts/tests/test_codex_native_check.py`: one fixture back to `/tmp/…` + a literal to match | `FAILED (failures=3)`: the accept case at `flavour='PureWindowsPath'` — the original defect now fails here, on the host that used to be blind to it — plus the two self-check cases the red child trips (their design) |
 
+The third red was the same kind again, one layer further in: `gate (macos-latest)` and
+`gate (windows-latest)` failed the `selftest` step at head `4cd0567` — both legs `FAILED (failures=4)`,
+their child runs printing `failures=2, skipped=3 | broken:
+test_a_mutation_during_the_resume_stage_is_caught_by_the_last_comparison,
+`test_an_intact_run_passes_the_comparisons` — that is, the two `ProtectedArtifactsAfterNativeVerification`
+cases round 6 added (§11): the ones both red legs really broke (their other two failures are the
+self-check cases reading that red child), and ones the `ubuntu-latest` leg (green, 46 s) does not run
+differently. Their **fixtures** are the defect again, not the shipped harness:
+`main` resolves what it is handed (`--repo` always, and `--codex-home` when the caller names one, which
+this case does) and passes that resolved home to the conversion, so the home the document reports is the
+home the harness asked for — while the case derived its whole scratch tree from `tempfile.mkdtemp`'s own
+spelling. On macOS that spelling is reached through a symlink (`/var` → `private/var`), so `resolve()`
+reads `/var/folders/…` back as `/private/var/folders/…`, and the case's stub then answered a
+`ccc-native-check continue` command filed under the resolved path while it recognised only its own
+unresolved one: both cases failed at their first stubbed command.
+
+Reproduced on this host by giving `tempfile` a root reached through a symlink — `TMPDIR` pointing at a
+directory whose name is one (`/tmp/cccrepro/var/tmp`, `var` → `private-var`) — where head `4cd0567`'s own
+file, discovering that module's eight cases, printed `Ran 8 tests in 0.011s` / `FAILED (failures=2)`, the
+first failure's detail being
+`AssertionError: the case's stub was asked for an unexpected command:
+['/tmp/cccrepro/private-var/tmp/ccc-native-check-case-…/repo/bin/ccc-native-check', 'continue',
+'claude:9f2c1d47-…', '--to', 'codex', '--target-home',
+'/tmp/cccrepro/private-var/tmp/…/codex-home', '--target-binary', …, '--json']` — the macOS shape, on a
+host that was blind to it.
+
+The repair fixes the case, not the harness (the harness is self-consistent: it compares against the home
+it resolved and gave the conversion). The scratch root is resolved once, before anything is derived from
+it, so every path the case creates, hands over and compares against holds the harness's own spelling on
+every host. No assertion changed — the intact run must still exit 0 with both comparisons `PASS`, and
+the mutating run must still fail exactly those two checks and pass the turn. The class's own docstring
+was corrected where it stated the *other* direction ("both cases below fail" under the
+moved-comparisons defect): measured, only the mutating case fails there, because the intact run has
+nothing for a too-early comparison to miss. Executed here:
+
+| run / mutation | observed |
+| --- | --- |
+| head `4cd0567`'s own file, `TMPDIR` through a symlink (the macOS shape; that module's 8 cases) | `Ran 8 tests in 0.011s` / `FAILED (failures=2)` — the stub's own unresolved spelling against the run's resolved one |
+| the repaired file with that one line reverted, under the same `TMPDIR` (the class's 2 cases) | `Ran 2 tests in 0.008s` / `FAILED (failures=2)` |
+| …and the same revert over the whole suite, under the same `TMPDIR` | `Ran 153 tests in 5.095s` / `FAILED (failures=4)`: the two cases **and** the two self-check cases that read the red child — the number and the broken names both CI legs printed. Restored byte-identical afterwards (`sha256 79d972bd…`, the digest taken before the revert) |
+| the repaired case under the same `TMPDIR` (module scope) | `Ran 8 tests in 0.012s` / `OK` |
+| the whole suite under the same `TMPDIR` | `Ran 153 tests in 5.037s` / `OK` |
+| the rule the case pins, on a scratch copy of the repaired case: the two comparisons moved back above the loader and the turn | `Ran 2 tests in 0.011s` / `FAILED (failures=1)` — identical on a plain host and under the aliased `TMPDIR` — with `the mutating run's failures are not exactly the two protected-artifact comparisons: []`, both comparisons having answered on the pre-mutation state |
+
 The `selftest` step is 153 cases — the 151 the round-5 block printed, plus the two
-`ProtectedArtifactsAfterNativeVerification` cases round 6 adds (§11); the block above is refreshed from
-round 6's own run. `docs/harness.md`
-records both halves: the path-spelling constraint as a fourth Windows answer its Platform boundary
-section pins, and the dangling line as what the self-check cases read a child's per-case lines for.
+`ProtectedArtifactsAfterNativeVerification` cases round 6 adds (§11) — and this repair changes no count;
+the block above is refreshed from this repair's own run. `docs/harness.md`
+records all of it: the path-spelling constraint as its Platform boundary section's path bullet, now
+including the scratch root this repair resolves (with the aliased-`TMPDIR` run as that constraint's
+instance on any host), and the dangling line as what the self-check cases read a child's per-case lines
+for.
 
 ## 7. Limits and residual risks
 

@@ -211,7 +211,15 @@ says so.
   exists to prevent and rejected correct renderings on Windows. Its fixtures spell every home so both
   `pathlib` flavours give it back unchanged, and each case drives both of them — the constraint the
   last bullet under Platform boundary below states — so a fixture that holds on one platform alone
-  fails the suite on any host.
+  fails the suite on any host. The cases that drive this script's `main` derive their whole scratch
+  tree from one **resolved** root, because `main` resolves the repository and the home it is handed and
+  compares against that spelling: a case spelled through its own temporary root disagrees with the run
+  it drives wherever `resolve()` re-spells that root — macOS's `/var/folders/…`, which reads back as
+  `/private/var/folders/…` — so the two `ProtectedArtifactsAfterNativeVerification` cases passed
+  `ubuntu-latest` and failed `macos-latest` and `windows-latest` together at head `4cd0567`, starting
+  with the first stubbed command (`--repo`, `--target-home`). They resolve the root before deriving
+  anything from it — the same rule the homes above follow, taking the platform's own answer instead of
+  assuming this host's.
   Every app-server request is bounded by the script's own deadline (`APP_SERVER_TIMEOUT`), stdout is
   read by a thread and stderr drained by another, so a server that stops answering or fills its
   diagnostics pipe is reported as a failed check rather than hanging the run. Every check prints its
@@ -287,6 +295,23 @@ not the one the rule is about:
   Fixtures spelled `/tmp/…` passed the `ubuntu-latest` and `macos-latest` legs and failed
   `windows-latest` at head `524a20f`: the literal rendering and the comparison disagreed there alone,
   and the three failing subtests reported it as `a correct rendering was rejected`.
+  The same boundary applies to a *path the run itself re-spells*: `scripts/codex-native-check.py`'s
+  `main` resolves what it is handed (`--repo` always, `--codex-home` when the caller names one) and
+  compares the reported home against the resolved one, so a case that drives `main` and spells its own
+  throw-away tree through `tempfile.mkdtemp()` disagrees with the run it drives wherever `resolve()`
+  re-spells that root — macOS's temp root is `/var/folders/…`, which `resolve()` reads back as
+  `/private/var/folders/…`. Unresolved, the two `ProtectedArtifactsAfterNativeVerification` cases passed
+  `ubuntu-latest` and failed `macos-latest` and `windows-latest` together at head `4cd0567`, both legs
+  `FAILED (failures=4)` over the same two broken names: the stub recognised only the binary path and the
+  home it had spelled itself, while the run filed the first stubbed command under the resolved spelling —
+  measured on this host below, where both cases fail there, before their own comparisons run. They now
+  resolve the scratch root once, before deriving anything from it, which is this rule applied to the run
+  rather than to a fixture — and the shape is reproducible on any host that can make a symlink, by
+  pointing `TMPDIR` at one: `mkdir -p /tmp/ccc-aliased/private-var/tmp &&
+  ln -s private-var /tmp/ccc-aliased/var && TMPDIR=/tmp/ccc-aliased/var/tmp python3 -m unittest
+  discover -s scripts/tests` (executed; the unresolved spelling is `FAILED (failures=4)` there — the two
+  cases plus the two self-check cases that read the red child, CI's own number — and the repaired one
+  `OK`, 153 cases).
 
 ## CI
 
