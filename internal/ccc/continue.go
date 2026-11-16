@@ -548,17 +548,18 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 
 // structureWarnings answers what the structural check found, for the report's own channel: a caller that
 // reads only the exit code, or only the human block's head, must not take "verified" as "the target's own
-// read of the session shows every message", and a written message the inherited reader reads no dialogue
-// for is exactly that case. A check that did not verify is answered where it failed, by the warning that
+// read of the session shows every message with the text the file holds", and a written message the
+// inherited reader reads no message for -- or reads only the text an injected-context envelope preceded
+// -- is exactly that case. A check that did not verify is answered where it failed, by the warning that
 // names what the file does not hold.
 func structureWarnings(structure StructureVerification) []string {
-	if structure.State != VerificationStateVerified || structure.NotReadBackAsDialogue == 0 {
+	if structure.State != VerificationStateVerified || structure.NotReadBackVerbatim == 0 {
 		return nil
 	}
 	return []string{fmt.Sprintf("the installed session holds %d written message(s) the inherited Codex "+
-		"reader reads no dialogue for (verification.not_read_back_as_dialogue): the file holds their "+
-		"text verbatim, so the conversion carried them and the reader's own projection of the file is "+
-		"what does not show them", structure.NotReadBackAsDialogue)}
+		"reader does not read their own text for (verification.not_read_back_verbatim): their dialogue "+
+		"records are in the file, so the conversion carried them and the reader's own projection of the "+
+		"file is what the read-back shows instead", structure.NotReadBackVerbatim)}
 }
 
 // What each check reads, named once, so a check that did not run still reports the mechanism it would

@@ -343,10 +343,10 @@ summary and must be written once).
 
 ```
 $ CGO_ENABLED=1 go test -tags fts5 -count=1 ./cmd/ccc/... ./internal/ccc/...     # rc=0
-ok  	go.kenn.io/agentsview/cmd/ccc	3.850s
-ok  	go.kenn.io/agentsview/internal/ccc	10.644s
+ok  	go.kenn.io/agentsview/cmd/ccc	8.837s
+ok  	go.kenn.io/agentsview/internal/ccc	24.911s
 ?   	go.kenn.io/agentsview/internal/ccc/fixturegen	[no test files]
-ok  	go.kenn.io/agentsview/internal/ccc/parity	2.059s
+ok  	go.kenn.io/agentsview/internal/ccc/parity	3.580s
 ?   	go.kenn.io/agentsview/internal/ccc/parity/oracle	[no test files]
 ```
 
@@ -362,7 +362,8 @@ ok  	go.kenn.io/agentsview/internal/ccc/parity	2.059s
 | the read's own malformed-line count travels into the loss report, with the unfinished tail named | `TestCodexRolloutReportsTheSourceLinesItsReadCouldNotProduce`, `TestContinueConvertsInstallsAndReadsBackTheFixture` |
 | every loss category reported, and truly absent from the file | `TestCodexRolloutReportsEveryCategoryItKnows` |
 | text the target's reader reads as *nothing at all* is never written and is named — a whitespace-only tool result, a whitespace-only dialogue (whose record's tool evidence still travels), and a compact summary the reader trims | `TestContinueOmitsOutputTheInheritedReaderCannotReadBack`, `TestContinueOmitsDialogueTheInheritedReaderReadsAsNothing`, `TestContinueRoundTripsACompactionSummaryTheReaderTrims` |
-| text the target's reader *projects away* although it is a real message is carried, is counted, and is never confused with a loss: the check asks the installed file's own bytes, the count reaches `verification.structure.not_read_back_as_dialogue` and a warning, and text the file does not hold stays a missing message | `TestContinueInstallsAPromptTheReaderProjectsAway` (`cmd/ccc`, a native Claude transcript whose turn opens with `# AGENTS.md`), `TestCodexRoundTripCountsWhatTheReaderProjectsAway` |
+| text the target's reader *projects away* although it is a real message is carried, is counted, and is never confused with a loss: the check asks the installed file's own dialogue record, the count reaches `verification.structure.not_read_back_verbatim` and a warning, and text the file does not hold stays a missing message — for both shapes of the projection, the envelope alone and the envelope followed by text | `TestContinueInstallsPromptsTheReaderReadsDifferently` (`cmd/ccc`, native Claude transcripts, one per shape), `TestCodexRoundTripCountsWhatTheReaderProjectsAway` |
+| the file is asked for the message's own dialogue record — its record type, the payload's message type, the role, the content block's own type and text — counted so one record answers for one written message, and a read-back message is accounted for only by a written message's own text or by a run of it under that message's own kind, in the file's own order | `TestCodexRoundTripAsksTheFileForItsOwnDialogueRecord`, `TestCodexRoundTripCountsARecordOncePerWrittenMessage`, `TestCodexRoundTripReportsAMessageTheFileOnlyHoldsAsNoMessage`, `TestCodexRoundTripReportsReadBackDialogueNoWrittenMessageAccountsFor`, `TestStructureVerificationAsksTheFileForTheMessageRecord` |
 | a difference report identifies its items — category, ordinal, kind, call, tool, size, SHA-256 — and never carries the dialogue, arguments or output it compared | `TestCodexRoundTripReportNamesDifferencesWithoutTheirText`, `TestStructureVerificationNamesWhatTheFileDoesNotHold` |
 | the round-trip comparison folds the reader's own normalisations — a trimmed result output, a trimmed compact summary, an empty argument object (the last was unpinned until its mutation went unnoticed and this round pinned it) | `TestContinueConvertsInstallsAndReadsBackTheFixture`, `TestContinueRoundTripsACompactionSummaryTheReaderTrims`, `TestCodexRoundTripFoldsAnEmptyArgumentObjectAsNoArguments` |
 | the carried-link rules run on every host: the separator fold and the modified-link exemption are exercised against a real symlink *and* through the module's `symlink_target` seam, so a host whose checkouts cannot create a link still pins them | `scripts/tests/test_upstream_parity.py`'s `ParityCase` link cases (`link_shape_runs`, `selftest` step) |
@@ -393,20 +394,19 @@ Gate, run on this tree (`python3 scripts/gate.py`, exit 0):
 ```
 gate: <repo>
 gate: go=<home>/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
-  PASS     gofmt    3581 file(s) gofmt-clean
+  PASS     gofmt    3582 file(s) gofmt-clean
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 153 tests in 5.114s (rc=0)
+  PASS     selftest Ran 153 tests in 6.770s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 26 project-owned prefix(es); files seen by git: 5626 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     secrets  no leaks found in 74 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
 
-`gofmt` counts the *tracked* `*.go` files (`git ls-files '*.go'`, minus a top-level `vendor/`), so
-`internal/ccc/codex_install_test.go` — added this round and untracked until the operator commits — is
-outside its 3581 and shows in the walk instead: 3582 `*.go` files on disk, and `git`'s own file count in
-the parity line rose with it (5625 → 5626).
+`gofmt` counts the *tracked* `*.go` files (`git ls-files '*.go'`, minus a top-level `vendor/`): 3 582,
+which is every `*.go` file on disk as well, because the test file round 8 added and left untracked until
+the operator committed is tracked now.
 
 The file this increment adds outside the Go packages, `scripts/codex-native-check.py`, is inside a
 prefix the carry manifest calls project-owned (added to `scripts/upstream-import.py`'s `OWNED` and to the
@@ -1102,4 +1102,120 @@ differs from Q-0002-16's blank text). `AGENTS.md` is unchanged: no repository la
 read order or agent rule moved this round (the new file is a test inside an existing package, and the seam
 is inside an existing script), which the stage report states. Goal bookkeeping: 0002 is still
 `Implemented …; awaiting operator acceptance`, so nothing moves to `docs/goals/archive/` and
+`docs/goals/README.md`'s row stays as it is.
+
+## 14. Repair round 9 — the question the check asks the file; both shapes of the reader's projection; the reading relation
+
+Round 9's review left two P2 findings, both about what round 8's fix asked the installed file, and both
+fixed here. Its carried-tree parity audit found no increment-attributable defect again — the checker's own
+mechanisms are the same ones round 8's §13 audited, and this round touched no carried file at all, which
+the gate's `parity` step proves (5 553 carried files still byte-identical to the pin).
+
+**1 — a session whose model-visible record was gone verified** (`internal/ccc/codex_install.go`). The
+target writes every message twice: the `response_item` its model history is built from, and an `event_msg`
+carrying the same text, which is what its own view of the conversation is built from — and the inherited
+reader reads no message from the event. Round 8's `fileHoldsText` asked the file for the text as a JSON
+string *anywhere in it*, so a message whose `response_item` had been dropped, with its event left in place,
+was accepted: the event held the words, and the check reported the session verified while the target's
+model history no longer held the message. A text quoted by a tool output answered the same way, and a
+single occurrence of the text answered for every written message that had it. The oracle is now the file's
+own dialogue record. `installedDialogueRecords` walks the installed bytes and counts, per identity, every
+`response_item` whose payload is a message, whose role is the user's or the assistant's, and whose content
+holds a block of the type this writer writes for that role carrying the message's own text
+(`codexInstalledRecord.dialogueMessage`); the count is consumed as the comparison resolves messages, so one
+record answers for one written message and a second message with the same text needs a second record. A
+record with another record type, another payload type, another role, another block type, or an empty text
+is not the message, and a line the walk cannot read is skipped rather than ending the walk.
+
+**2 — a prompt that carried text after an envelope failed a correct run**. The inherited reader removes the
+injected-context envelopes a user text block opens with (`preprocessCodexUserTextBlocks`), so a prompt
+written verbatim as `<INSTRUCTIONS>quoted rules</INSTRUCTIONS>\nReview the changes` is read back as
+`Review the changes`. Round 8 resolved the written message away — the file held its text — and then
+compared the reader's *shorter* reading against the document, where it stood as evidence the file held a
+message the conversion had not written: two differences, exit 1, in every arm (`--verify none` and
+`--dry-run` included, because the structural check always runs). The comparison is now an ordered walk over
+the written dialogue and the read-back (`compareDialogue`): a read-back message is accounted for by a
+written message when it is that message's own text, or the reader's reading of it — a run of the message's
+characters in their own order and under the message's own kind, the file still holding the message's record
+(a reading is evidence about a message the file has; `pairReadBackMessage`, `readsAsDialogueMessage`,
+`holdsTextInOrder`) — and the written messages the walk passes over are
+resolved by the file: counted as the reader's projection where their record is there, reported missing
+where it is not. A read-back message no written message accounts for is
+reported as dialogue the document does not hold, unless the written message the walk stands on is missing
+from the file too, in which case the two are reported as the same item altered. The relation is a
+*structural* property of a deletion-based reading, not a copy of the reader's envelope list: the check
+still does not re-implement `preprocessCodexUserTextBlocks`, which the carry rule forbids. The count's name
+follows its meaning: `verification.structure.not_read_back_verbatim`, previously `not_read_back_as_dialogue`
+(a partial projection *is* read back, just not verbatim).
+
+Both findings were reproduced before the fix, in a copy of the review head (`18d8fbe`, `/tmp/prefix-r9`)
+carrying this round's test files with the count's field renamed back to the pre-fix name so they compile
+against the pre-fix code:
+
+| Finding | Executed against the pre-fix code | Observed |
+| --- | --- | --- |
+| 1, unit | `go test -tags fts5 -count=1 -run TestCodexRoundTripCountsWhatTheReaderProjectsAway ./internal/ccc` | `…/the_reader_reads_the_text_the_envelope_preceded` FAIL `differences = ["dialogue 1 differs (written assistant_message (18 bytes, sha256 e46d83c1…), read back user_message (18 bytes, sha256 797fac90…))" "dialogue 2 is in the file but was not written: assistant_message (18 bytes, sha256 e46d83c1…)"], want none` — the shorter reading reported as unwritten evidence, and the message after it misreported with it |
+| 1, end to end (`cmd/ccc`) | `go test -tags fts5 -count=1 -run TestContinueInstallsPromptsTheReaderReadsDifferently ./cmd/ccc` | all three arms of `[the prompt carries text after the envelope]`: `[installed] exit 1, want 0`, `[installed, --verify none] exit 1, want 0`, `[dry run] exit 1, want 0`; stderr: `the installed session does not hold the evidence in the target document: dialogue 1 differs (written assistant_message …), …; dialogue 2 is in the file but was not written: assistant_message …` |
+| 2, unit | the same unit command | `…/the_text_is_only_in_the_turn's_own_event` FAIL `notReadBackVerbatim = 1, want 0: the file does not hold the message's record` and `differences = [], want the written message named by its own size and digest`; the same two lines for `…/the_record's_role_is_the_assistant's` and `…/the_content_block_is_the_type_this_writer_writes_for_the_other_role` |
+| 2, occurrence | the same unit command | `TestCodexRoundTripCountsARecordOncePerWrittenMessage` FAIL `notReadBackVerbatim = 2, want 1` — one record answered for both written messages |
+| 2, file level | `go test -tags fts5 -count=1 -run TestStructureVerificationAsksTheFileForTheMessageRecord ./internal/ccc` | `the structure check accepted a session whose message record is gone` |
+
+Every rule of the touched surface was then pinned by executing one mutation in a scratch copy of this
+working tree (`/tmp/mut-r9`, whose `internal/ccc/codex_install.go` and `internal/ccc/continue.go` were
+hashed against this tree before the first mutation, and restored and re-hashed after each run: byte-identical
+every time), running the test that claims the rule, and recording the failure:
+
+| Rule | Mutation (the line reverted) | Observed |
+| --- | --- | --- |
+| a written message the read-back does not show verbatim is counted when the file's record holds it, and stays a missing message when it does not | `installedDialogueRecords` → `return map[string]int{}` (the file is never asked) | `TestCodexRoundTripCountsWhatTheReaderProjectsAway` FAIL in both projection rows and the leading-line row (`differences = ["dialogue 1 is in the target document but not in the file: user_message (63 bytes, sha256 ced7dc71…)"], want none`, `notReadBackVerbatim = 0, want 1`), `TestCodexRoundTripCountsARecordOncePerWrittenMessage` FAIL, `TestCodexRoundTripReportsReadBackDialogueNoWrittenMessageAccountsFor` FAIL ×6; `TestContinueInstallsPromptsTheReaderReadsDifferently` FAIL in **all six arms** (`exit 1, want 0`) |
+| …and it is the *record*, not the text anywhere: the record's own type | `record.Type != codexRecordResponseItem` dropped | `…/the_record_is_another_kind_of_record` FAIL `notReadBackVerbatim = 1, want 0` |
+| …the payload's message type | `record.Payload.Type != codexItemMessage` dropped | `…/the_payload_is_another_kind_of_message` FAIL, same two lines |
+| …the role | assistant records read as the user's message | `…/the_record's_role_is_the_assistant's` FAIL, same two lines |
+| …the content block's type, which is the writer's for that role | the user role's content type swapped for the assistant's | `…/the_content_block_is_the_type_this_writer_writes_for_the_other_role` FAIL, same two lines (plus 12 other cases) |
+| …and an empty text is no message | `block.Text != ""` dropped | `TestCodexRoundTripReportsAMessageTheFileOnlyHoldsAsNoMessage` FAIL `notReadBackVerbatim = 1, want 0: an empty block is no message` |
+| one record answers for one written message | `holdDialogueRecord` consumes nothing | `TestCodexRoundTripCountsARecordOncePerWrittenMessage` FAIL `notReadBackVerbatim = 2, want 1` |
+| a read-back message is a written message's reading only as a run of its characters, in order, under its own kind | `readsAsDialogueMessage` → `return true` | `TestCodexRoundTripReportsReadBackDialogueNoWrittenMessageAccountsFor` FAIL: the three negative rows *and* the order row report no difference |
+| …under its own kind | `readKind != kind` dropped | `…/the_reading_is_recorded_under_the_written_message's_own_kind` FAIL: `differences = []` where the message under another role must be unaccounted for |
+| a reading is only evidence about a message the file holds | `records[key] == 0` dropped from the pairing | `…/the_shorter_reading_does_not_stand_in_for_a_missing_record` FAIL: `differences = []`, `notReadBackVerbatim = 1` — the reading stood in for a record the file does not hold |
+| the walk pairs in the file's own order | `pairReadBackMessage(intended, cursor, …)` → `0` | `…/the_read-back's_order_is_the_file's_own_order` FAIL `differences = ["dialogue 2 is in the target document but not in the file: assistant_message (18 bytes, sha256 e46d83c1…)"], want the out-of-place read-back message named` |
+| a line the walk cannot read is skipped, not the end of the walk | `json.Unmarshal` error → `return records` | `…/a_line_that_is_not_a_record_comes_first` FAIL `differences = ["dialogue 1 is in the target document but not in the file: …"], want none` |
+| the count reaches the verification detail | `detail()` → `""` | `TestCodexRoundTripCountsWhatTheReaderProjectsAway` FAIL ×3: `the verification detail = "", want the count named and no content` |
+| the count reaches the report's warnings | `structureWarnings` never fires | `TestContinueInstallsPromptsTheReaderReadsDifferently` FAIL in all six arms: `no warning names the projection` |
+
+Two of the mutations first written for this table were *not* valid experiments and are recorded as such
+rather than as pins: replacing `holdDialogueRecord`'s body left `pairReadBackMessage` reading the same map
+directly (an internally inconsistent mutation, which made the partial-projection arms pass), and dropping
+the content-type *comparison* left the `contentType` variable unread (a build failure, not a test result).
+The first was replaced by emptying the map (`installedDialogueRecords`), and it also exposed a real
+sharpening: the projection branch now counts only where `holdDialogueRecord` consumed the record
+(`if held := holdDialogueRecord(…); held && projected`), so the count is always backed by a record the file
+was asked for; the second by swapping the role's content type, which is the same rule stated as a bug a
+writer could have.
+
+The native harness (`scripts/codex-native-check.py`) was not re-run: it needs the target harness installed
+and, for a real turn, model access, and its inputs are the ones this round did not touch — the conversion's
+carried counts, the installation block, and its own `ccc inspect` read-back — so §3's numbers stand. That
+the projection disclosure is empty for both of its fixtures was measured rather than assumed: `ccc continue
+--json` over `9f2c1d47-…` and `b6d93f07-…` (throw-away `HOME`, `AGENTSVIEW_DATA_DIR` and `CODEX_HOME`, the
+fixture tree as the source, and a target binary no host has) exits 0 for both, prints `structure: verified`
+with the `not_read_back_verbatim` field absent and no projection warning — the one warning each run carries
+is the missing target harness — and reports the carried counts §5/§3 record (5 messages; 1 and 3 tool
+calls).
+
+Tests, gate: top-level `--- PASS` cases 144 → **149** across `./cmd/ccc/... ./internal/ccc/...` (before:
+`internal/ccc` 117, `./internal/ccc/...` 120, `cmd/ccc` 24, `parity` 3 — a detached `git archive` checkout
+of `18d8fbe` in `/tmp/head-r9`; after: `internal/ccc` **122**, `./internal/ccc/...` **125**, `cmd/ccc`
+**24** (the CLI case was rewritten in place, not added), `parity` **3**; `go test -tags fts5 -count=1 -v`,
+`--- PASS` lines at top level, `--- FAIL` 0). The Python suite's own `selftest` step is **153**, unchanged
+(this round touched no `scripts/` file). `python3 scripts/gate.py` on this tree — **exit 0, `GATE: PASS`**
+(not partial; the block is the one in §6).
+
+Docs changed with the code: this record's §6 (the refreshed `go test` and gate blocks and the note on what
+`gofmt` counts — the round-8 test file is committed now, so tracked and on-disk counts agree at 3 582) and
+this §14, plus two rows of §6's rule table (the projection rule now names both shapes and the record oracle,
+and a new row names the record shape, the occurrence count and the reading relation). `docs/decisions/OPEN-QUESTIONS.md`
+gains **Q-0002-18** (what the check asks the file, and how a partial projection resolves; it supersedes the
+mechanism half of Q-0002-17, not its default). `AGENTS.md` is unchanged: no repository layout, gate step,
+command, read order or agent rule moved this round, which the stage report states. Goal bookkeeping: 0002 is
+still `Implemented …; awaiting operator acceptance`, so nothing moves to `docs/goals/archive/` and
 `docs/goals/README.md`'s row stays as it is.

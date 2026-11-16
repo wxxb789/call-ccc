@@ -85,90 +85,370 @@ func TestCodexRoundTripReportNamesDifferencesWithoutTheirText(t *testing.T) {
 	}
 }
 
-// TestCodexRoundTripCountsWhatTheReaderProjectsAway pins the two answers a written dialogue message the
-// read-back shows no message for can have, and what tells them apart: the installed file's own bytes.
+// TestCodexRoundTripCountsWhatTheReaderProjectsAway pins the two shapes of a written dialogue message
+// the read-back does not show with its own text, and what separates them from a loss: the installed
+// file's own dialogue record.
 //
-// The inherited Codex reader reads no message for a user text block that opens with `# AGENTS.md` -- it
-// reads that envelope as injected context rather than as a turn -- so a genuine prompt with that prefix
-// is written by the conversion and then absent from every read of the file. Reporting it as a missing
-// message failed a correct run; accepting it unconditionally would accept a message the file does not
-// hold. The file is therefore asked, and the answers are counted apart: the text is the reader's
-// projection where the file holds it, and a loss where it does not.
+// The inherited Codex reader removes the injected-context envelopes a user text block may open with
+// before the block is a turn (internal/parser's preprocessCodexUserTextBlocks). A genuine user prompt
+// can therefore be written verbatim and read back as no message at all (the whole prompt was the
+// envelope), or read back shorter (the prompt carried text after the envelope, and the reader reads
+// that text). Reporting either as a missing message failed a correct run -- the second shape was
+// reported as evidence the file did not hold, because the reader's shorter reading stood in the ordered
+// comparison where the written message had been resolved away -- and accepting a message the file does
+// not hold would accept a loss. The file's own record is what tells the two apart, and both shapes
+// resolve to the same count.
 func TestCodexRoundTripCountsWhatTheReaderProjectsAway(t *testing.T) {
-	const projected = "# AGENTS.md\nThe retry policy lives in internal/retry/policy.go."
+	const envelopeOnly = "# AGENTS.md\nThe retry policy lives in internal/retry/policy.go."
+	const enveloped = "<INSTRUCTIONS>quoted rules</INSTRUCTIONS>\nReview the changes"
+	const readAfterEnvelope = "Review the changes"
 	const assistant = "I read the policy."
-	rollout := CodexRollout{Items: []TargetItem{
-		{Kind: ItemUser, Text: projected},
-		{Kind: ItemAssistant, Text: assistant},
-	}}
-	// The read-back the inherited reader really produces for such a file: the projected message is gone
-	// and the assistant's is there.
-	readBack := Conversation{Messages: []Message{
-		{Role: string(parser.RoleAssistant), Content: assistant},
-	}}
 
-	t.Run("the file holds the text", func(t *testing.T) {
-		// The bytes are the record this writer writes for a user message, taken from the writer's own
-		// encoding of the text so the case pins the check and not a hand-spelled literal.
-		installed := []byte(`{"type":"response_item","payload":{"role":"user","content":[{"type":` +
-			`"input_text","text":` + codexJSONString(t, projected) + `}]}}`)
-		roundTrip := compareCodexRoundTrip(rollout, readBack, installed)
-		if len(roundTrip.differences) != 0 {
-			t.Errorf("differences = %q, want none: the file holds the text the read-back does not show",
-				roundTrip.differences)
-		}
-		if roundTrip.notReadBackAsDialogue != 1 {
-			t.Errorf("notReadBackAsDialogue = %d, want 1", roundTrip.notReadBackAsDialogue)
-		}
-		if detail := roundTrip.detail(); !strings.Contains(detail, "1 written message(s)") ||
-			strings.Contains(detail, projected) {
-			t.Errorf("the verification detail = %q, want the count named and no content", detail)
-		}
-	})
+	for _, testCase := range []struct {
+		name     string
+		prompt   string
+		leading  string
+		messages []Message
+	}{
+		{
+			name:   "the reader reads no message for the prompt",
+			prompt: envelopeOnly,
+			messages: []Message{
+				{Role: string(parser.RoleAssistant), Content: assistant},
+			},
+		},
+		{
+			name:   "the reader reads the text the envelope preceded",
+			prompt: enveloped,
+			messages: []Message{
+				{Role: string(parser.RoleUser), Content: readAfterEnvelope},
+				{Role: string(parser.RoleAssistant), Content: assistant},
+			},
+		},
+		{
+			// The walk reads the file's own bytes, and a line it cannot read as a record is skipped
+			// rather than ending the walk: a session whose first line is not a record still has the
+			// records below it counted.
+			name:     "a line that is not a record comes first",
+			prompt:   envelopeOnly,
+			leading:  "not a record at all\n",
+			messages: []Message{{Role: string(parser.RoleAssistant), Content: assistant}},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			rollout := CodexRollout{Items: []TargetItem{
+				{Kind: ItemUser, Text: testCase.prompt},
+				{Kind: ItemAssistant, Text: assistant},
+			}}
+			// The file is the writer's own records for both messages, so the case pins the check against
+			// the shape a conversion really installs.
+			installed := []byte(testCase.leading +
+				codexDialogueRecord(t, ItemUser, testCase.prompt) +
+				codexDialogueRecord(t, ItemAssistant, assistant))
+			roundTrip := compareCodexRoundTrip(rollout, Conversation{Messages: testCase.messages}, installed)
+			if len(roundTrip.differences) != 0 {
+				t.Errorf("differences = %q, want none: the file's record holds the message the read-back "+
+					"does not show with its own text", roundTrip.differences)
+			}
+			if roundTrip.notReadBackVerbatim != 1 {
+				t.Errorf("notReadBackVerbatim = %d, want 1", roundTrip.notReadBackVerbatim)
+			}
+			if detail := roundTrip.detail(); !strings.Contains(detail, "1 written message(s)") ||
+				strings.Contains(detail, testCase.prompt) {
+				t.Errorf("the verification detail = %q, want the count named and no content", detail)
+			}
+		})
+	}
 
-	t.Run("the file does not hold the text", func(t *testing.T) {
-		// The control: the same document and the same read-back, with a file that never held the text.
-		// This is the mutation the projection resolution must not swallow -- a writer that dropped the
-		// message would otherwise pass.
-		installed := []byte(`{"type":"response_item","payload":{"role":"user","content":[]}}`)
+	// The control for the second shape: the same document and the same read-back, with a file that never
+	// held the message. The reader's shorter reading must not stand in for the message's own record --
+	// that is the mutation the projection resolution must not swallow.
+	t.Run("the shorter reading does not stand in for a missing record", func(t *testing.T) {
+		rollout := CodexRollout{Items: []TargetItem{
+			{Kind: ItemUser, Text: enveloped},
+			{Kind: ItemAssistant, Text: assistant},
+		}}
+		installed := []byte(codexDialogueRecord(t, ItemAssistant, assistant))
+		readBack := Conversation{Messages: []Message{
+			{Role: string(parser.RoleUser), Content: readAfterEnvelope},
+			{Role: string(parser.RoleAssistant), Content: assistant},
+		}}
 		roundTrip := compareCodexRoundTrip(rollout, readBack, installed)
-		if roundTrip.notReadBackAsDialogue != 0 {
-			t.Errorf("notReadBackAsDialogue = %d, want 0: the file does not hold the text",
-				roundTrip.notReadBackAsDialogue)
+		if roundTrip.notReadBackVerbatim != 0 {
+			t.Errorf("notReadBackVerbatim = %d, want 0: the file does not hold the message's record",
+				roundTrip.notReadBackVerbatim)
 		}
 		report := strings.Join(roundTrip.differences, "; ")
 		if len(roundTrip.differences) == 0 ||
-			!strings.Contains(report, "dialogue 1 differs") ||
-			!strings.Contains(report, describeText(projected)) {
-			t.Errorf("differences = %q, want the written message named by its own size and digest",
-				roundTrip.differences)
+			!strings.Contains(report, describeText(enveloped)) ||
+			!strings.Contains(report, describeText(readAfterEnvelope)) {
+			t.Errorf("differences = %q, want the written message and the reader's shorter reading each "+
+				"named by size and digest", roundTrip.differences)
 		}
+		// A comparison with a difference reports no count: the count says "in the file, not shown", and
+		// nothing about this file says the message is in it.
 		if detail := roundTrip.detail(); detail != "" {
 			t.Errorf("a comparison with a difference reports a verification detail: %q", detail)
 		}
 	})
+}
 
-	t.Run("the text is in the file, but not as a record's own string", func(t *testing.T) {
-		// The check looks for a JSON string, which is the shape every message text is written in. A byte
-		// run that merely contains the words -- an unescapable spelling, a text appended to another
-		// field -- is not a record carrying them, and it must not read as the message being present.
-		installed := []byte(projected + "\n")
-		roundTrip := compareCodexRoundTrip(rollout, readBack, installed)
-		if roundTrip.notReadBackAsDialogue != 0 || len(roundTrip.differences) == 0 {
-			t.Errorf("round trip = %+v, want the message reported missing: raw bytes are not a record",
+// TestCodexRoundTripAsksTheFileForItsOwnDialogueRecord pins what the check asks the installed file: the
+// dialogue record a conversion writes for the message -- the record's own type, the payload's message
+// type, the role, and the content block the writer writes for that role -- counted, so one record
+// answers for one written message.
+//
+// Every mutation below is a file a correct conversion would never write, and each holds the message's
+// text *somewhere*: the target writes every message twice (the response_item its model history is built
+// from, and the event its own view of the conversation is built from, which the inherited reader reads
+// no message from), a tool output can quote the text, and raw bytes can spell it. A check that asked
+// the file for the text anywhere would accept the first of those -- a session the target can load while
+// the message is not in it.
+func TestCodexRoundTripAsksTheFileForItsOwnDialogueRecord(t *testing.T) {
+	const prompt = "# AGENTS.md\nThe retry policy lives in internal/retry/policy.go."
+	rollout := CodexRollout{Items: []TargetItem{{Kind: ItemUser, Text: prompt}}}
+	// The read-back the inherited reader really produces for such a file: the prompt is read as injected
+	// context, so no message comes back for it.
+	readBack := Conversation{}
+
+	for _, testCase := range []struct {
+		name      string
+		installed []byte
+	}{
+		{name: "the file holds no record at all"},
+		{
+			name:      "the text is only in the turn's own event",
+			installed: []byte(codexUserEventRecord(t, prompt)),
+		},
+		{
+			name: "the record is another kind of record",
+			installed: []byte(codexInstalledLine(t, codexRecordTurnContext, codexMessagePayload{
+				Type:    codexItemMessage,
+				Role:    codexRoleUser,
+				Content: []codexContent{{Type: codexContentInputText, Text: prompt}},
+			})),
+		},
+		{
+			name: "the payload is another kind of message",
+			installed: []byte(codexInstalledLine(t, codexRecordResponseItem, codexMessagePayload{
+				Type:    "reasoning",
+				Role:    codexRoleUser,
+				Content: []codexContent{{Type: codexContentInputText, Text: prompt}},
+			})),
+		},
+		{
+			name:      "the record's role is the assistant's",
+			installed: []byte(codexDialogueRecord(t, ItemAssistant, prompt)),
+		},
+		{
+			name: "the content block is the type this writer writes for the other role",
+			installed: []byte(codexInstalledLine(t, codexRecordResponseItem, codexMessagePayload{
+				Type:    codexItemMessage,
+				Role:    codexRoleUser,
+				Content: []codexContent{{Type: codexContentOutputText, Text: prompt}},
+			})),
+		},
+		{
+			name: "the record carries no content block with the text",
+			installed: []byte(codexInstalledLine(t, codexRecordResponseItem, codexMessagePayload{
+				Type:    codexItemMessage,
+				Role:    codexRoleUser,
+				Content: []codexContent{{Type: codexContentInputText, Text: ""}},
+			})),
+		},
+		{
+			name:      "the text is a raw byte run",
+			installed: []byte(prompt + "\n"),
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			roundTrip := compareCodexRoundTrip(rollout, readBack, testCase.installed)
+			if roundTrip.notReadBackVerbatim != 0 {
+				t.Errorf("notReadBackVerbatim = %d, want 0: the file does not hold the message's record",
+					roundTrip.notReadBackVerbatim)
+			}
+			report := strings.Join(roundTrip.differences, "; ")
+			if len(roundTrip.differences) == 0 || !strings.Contains(report, categoryDialogue) ||
+				!strings.Contains(report, describeText(prompt)) {
+				t.Errorf("differences = %q, want the written message named by its own size and digest",
+					roundTrip.differences)
+			}
+		})
+	}
+}
+
+// TestCodexRoundTripReportsAMessageTheFileOnlyHoldsAsNoMessage pins the other side of a record's shape:
+// the writer never writes a message whose text is empty, and the target's own reader reads a block whose
+// text is blank as no message at all (internal/parser's handleResponseItem drops it) -- so a document
+// claiming such a message is a difference whatever the file holds, and an empty content block does not
+// answer for it.
+func TestCodexRoundTripReportsAMessageTheFileOnlyHoldsAsNoMessage(t *testing.T) {
+	rollout := CodexRollout{Items: []TargetItem{{Kind: ItemUser, Text: ""}}}
+	roundTrip := compareCodexRoundTrip(rollout, Conversation{}, []byte(codexDialogueRecord(t, ItemUser, "")))
+	if roundTrip.notReadBackVerbatim != 0 {
+		t.Errorf("notReadBackVerbatim = %d, want 0: an empty block is no message", roundTrip.notReadBackVerbatim)
+	}
+	report := strings.Join(roundTrip.differences, "; ")
+	if len(roundTrip.differences) != 1 || !strings.Contains(report, "not in the file") ||
+		!strings.Contains(report, describeText("")) {
+		t.Errorf("differences = %q, want the empty message named by its size and digest",
+			roundTrip.differences)
+	}
+}
+
+// TestCodexRoundTripCountsARecordOncePerWrittenMessage pins the count: one record answers for one
+// written message. A source can record the same prompt twice (a re-ask), and both messages are carried
+// -- so a single record must not be what both of them resolve against.
+func TestCodexRoundTripCountsARecordOncePerWrittenMessage(t *testing.T) {
+	const prompt = "# AGENTS.md\nThe retry policy lives in internal/retry/policy.go."
+	rollout := CodexRollout{Items: []TargetItem{{Kind: ItemUser, Text: prompt}, {Kind: ItemUser, Text: prompt}}}
+	// The same read-back shape as the single-message case: the reader reads no message for the text.
+	roundTrip := compareCodexRoundTrip(rollout, Conversation{}, []byte(codexDialogueRecord(t, ItemUser, prompt)))
+	if roundTrip.notReadBackVerbatim != 1 {
+		t.Errorf("notReadBackVerbatim = %d, want 1", roundTrip.notReadBackVerbatim)
+	}
+	report := strings.Join(roundTrip.differences, "; ")
+	if len(roundTrip.differences) != 1 || !strings.Contains(report, "dialogue 2") ||
+		!strings.Contains(report, describeText(prompt)) {
+		t.Errorf("differences = %q, want the second written message named by its own size and digest",
+			roundTrip.differences)
+	}
+}
+
+// TestCodexRoundTripReportsReadBackDialogueNoWrittenMessageAccountsFor pins the read-back's side of the
+// comparison: a message the read-back shows, which no written message accounts for, is evidence the file
+// holds dialogue the conversion did not write.
+//
+// What a written message accounts for is the reader's own reading of it: the reader deletes the segments
+// it classifies away (a leading injected-context envelope, a plugin envelope in the middle of a block)
+// and never invents characters, so what it reads for a record is a run of that record's own characters
+// in their own order. A message that is not such a run is not that message's reading -- neither text it
+// does not hold, nor characters out of order -- and a run with a gap in it is, because a middle deletion
+// is one of the reader's own shapes.
+func TestCodexRoundTripReportsReadBackDialogueNoWrittenMessageAccountsFor(t *testing.T) {
+	const written = "Review <recommended_plugins>the plugin list</recommended_plugins>the changes"
+	const gaps = "Review the changes"
+	const assistant = "I read the policy."
+	document := CodexRollout{Items: []TargetItem{{Kind: ItemUser, Text: written}, {Kind: ItemAssistant, Text: assistant}}}
+	installed := []byte(codexDialogueRecord(t, ItemUser, written) +
+		codexDialogueRecord(t, ItemAssistant, assistant))
+	message := func(role parser.RoleType, content string) Message {
+		return Message{Role: string(role), Content: content}
+	}
+
+	t.Run("the reader's reading of the message is accounted for", func(t *testing.T) {
+		readBack := Conversation{Messages: []Message{
+			message(parser.RoleUser, gaps),
+			message(parser.RoleAssistant, assistant),
+		}}
+		roundTrip := compareCodexRoundTrip(document, readBack, installed)
+		if len(roundTrip.differences) != 0 || roundTrip.notReadBackVerbatim != 1 {
+			t.Errorf("round trip = %+v, want the written message counted and no difference",
 				roundTrip)
+		}
+	})
+
+	for _, testCase := range []struct {
+		name     string
+		readText string
+	}{
+		{name: "the read-back text holds characters the message does not", readText: gaps + "!"},
+		{name: "the read-back text is another turn", readText: "an entirely other turn"},
+		{name: "the read-back text holds the message's characters out of order",
+			readText: "changes the Review"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			readBack := Conversation{Messages: []Message{
+				message(parser.RoleUser, testCase.readText),
+				message(parser.RoleAssistant, assistant),
+			}}
+			roundTrip := compareCodexRoundTrip(document, readBack, installed)
+			report := strings.Join(roundTrip.differences, "; ")
+			if len(roundTrip.differences) != 1 || !strings.Contains(report, "was not written") ||
+				!strings.Contains(report, describeText(testCase.readText)) {
+				t.Errorf("differences = %q, want the read-back message named by its own size and digest",
+					roundTrip.differences)
+			}
+		})
+	}
+
+	t.Run("the reading is recorded under the written message's own kind", func(t *testing.T) {
+		// The text is a run of the written user message's own text, but the reader recorded it under the
+		// assistant's role: a message the reader puts in another role is not this message's reading, so
+		// the read-back message is unaccounted for and the written message is still resolved by its
+		// record.
+		readBack := Conversation{Messages: []Message{
+			message(parser.RoleAssistant, gaps),
+			message(parser.RoleAssistant, assistant),
+		}}
+		roundTrip := compareCodexRoundTrip(document, readBack, installed)
+		report := strings.Join(roundTrip.differences, "; ")
+		if len(roundTrip.differences) != 1 || !strings.Contains(report, "was not written") ||
+			!strings.Contains(report, describeText(gaps)) || roundTrip.notReadBackVerbatim != 1 {
+			t.Errorf("round trip = %+v, want the reading under another role unaccounted for and the "+
+				"written message counted", roundTrip)
+		}
+	})
+
+	t.Run("the read-back's order is the file's own order", func(t *testing.T) {
+		// The two messages swapped: the read-back shows each text, but at the other message's place. The
+		// walk pairs in the file's own order, so the message the read-back shows last is the one no
+		// written message accounts for where it stands.
+		readBack := Conversation{Messages: []Message{
+			message(parser.RoleAssistant, assistant),
+			message(parser.RoleUser, written),
+		}}
+		roundTrip := compareCodexRoundTrip(document, readBack, installed)
+		report := strings.Join(roundTrip.differences, "; ")
+		if len(roundTrip.differences) != 1 || !strings.Contains(report, "was not written") ||
+			!strings.Contains(report, describeText(written)) {
+			t.Errorf("differences = %q, want the out-of-place read-back message named", roundTrip.differences)
 		}
 	})
 }
 
-// codexJSONString spells text the way the writer's own encoder writes it inside a record.
-func codexJSONString(t *testing.T, text string) string {
+// codexInstalledLine spells one installed rollout line the way the writer writes one -- from the
+// writer's own record types and encoder -- so a case about the file's records holds the shape a
+// conversion really installs instead of a literal that can drift from it.
+func codexInstalledLine(t *testing.T, recordType string, payload any) string {
 	t.Helper()
 	var encoded strings.Builder
 	encoder := json.NewEncoder(&encoded)
 	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(text); err != nil {
-		t.Fatalf("encoding %q: %v", text, err)
+	if err := encoder.Encode(codexEnvelope{
+		Timestamp: "2026-05-04T09:15:00Z",
+		Type:      recordType,
+		Payload:   payload,
+	}); err != nil {
+		t.Fatalf("encoding an installed line: %v", err)
 	}
-	return strings.TrimSuffix(encoded.String(), "\n")
+	return encoded.String()
+}
+
+// codexDialogueRecord is the record this writer writes for one dialogue message: the model-visible
+// response_item the target's history is built from.
+func codexDialogueRecord(t *testing.T, kind TargetItemKind, text string) string {
+	t.Helper()
+	role, contentType := codexRoleUser, codexContentInputText
+	if kind == ItemAssistant {
+		role, contentType = codexRoleAssistant, codexContentOutputText
+	}
+	return codexInstalledLine(t, codexRecordResponseItem, codexMessagePayload{
+		Type:    codexItemMessage,
+		Role:    role,
+		Content: []codexContent{{Type: contentType, Text: text}},
+	})
+}
+
+// codexUserEventRecord is the record this writer writes for the target's own view of a user turn: the
+// event the harness's conversation view is built from, which the inherited reader reads no message from.
+func codexUserEventRecord(t *testing.T, text string) string {
+	t.Helper()
+	return codexInstalledLine(t, codexRecordEventMsg, codexUserMessagePayload{
+		Type:         codexEventUserMessage,
+		Message:      text,
+		Images:       []any{},
+		LocalImages:  []any{},
+		TextElements: []any{},
+	})
 }

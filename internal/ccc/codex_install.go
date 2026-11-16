@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/parser"
@@ -166,14 +167,16 @@ type StructureVerification struct {
 	Detail     string        `json:"detail,omitempty"`
 	TargetPath string        `json:"target_path,omitempty"`
 	ReadBack   CodexReadBack `json:"read_back,omitempty"`
-	// NotReadBackAsDialogue counts the written dialogue messages the installed file holds verbatim and
-	// the read-back shows no message for. The inherited reader reads no message for some text a file
-	// holds: a user text block that opens with `# AGENTS.md` (or another injected-context envelope) is
-	// read as that context rather than as a turn (internal/parser's preprocessCodexUserTextBlocks), and
-	// a Claude transcript may hold a genuine prompt with that prefix. Such a message is in the file, so
-	// the run counts it here and warns, instead of reporting a loss the conversion did not make; the
-	// check establishes the file really holds it, so a message the file does not hold stays a failure.
-	NotReadBackAsDialogue int `json:"not_read_back_as_dialogue,omitempty"`
+	// NotReadBackVerbatim counts the written dialogue messages the read-back does not show with their own
+	// text and the installed file's own dialogue record holds. The inherited reader reads some text a file
+	// holds differently: a user text block that opens with `# AGENTS.md` (or another injected-context
+	// envelope) is read as that context rather than as a turn (internal/parser's
+	// preprocessCodexUserTextBlocks), so the reader reads no message for the whole prompt, or reads only
+	// the text the envelope preceded. A Claude transcript may hold a genuine prompt with that prefix, and
+	// such a message is in the file, so the run counts it here and warns instead of reporting a loss the
+	// conversion did not make; the file's record is what establishes that, so a message the file does not
+	// hold stays a failure.
+	NotReadBackVerbatim int `json:"not_read_back_verbatim,omitempty"`
 }
 
 // CodexReadBack is what the inherited reader made of the target file.
@@ -223,7 +226,7 @@ func VerifyCodexRolloutStructure(
 		return verification, nil
 	}
 	roundTrip := compareCodexRoundTrip(rollout, conversation, installed)
-	verification.NotReadBackAsDialogue = roundTrip.notReadBackAsDialogue
+	verification.NotReadBackVerbatim = roundTrip.notReadBackVerbatim
 	if len(roundTrip.differences) > 0 {
 		verification.Detail = "the installed session does not hold the evidence in the target document: " +
 			strings.Join(roundTrip.differences, "; ")
@@ -252,23 +255,24 @@ type codexRoundTrip struct {
 	// differences names every item one side holds and the other does not, each by what identifies it
 	// rather than by its text.
 	differences []string
-	// notReadBackAsDialogue counts the written dialogue messages the file holds verbatim and the
-	// read-back shows no message for: the reader's own projection of the target format, not a loss.
-	notReadBackAsDialogue int
+	// notReadBackVerbatim counts the written dialogue messages the read-back does not show with their own
+	// text and the installed file's records hold: the reader's own projection of the target format, not a
+	// loss.
+	notReadBackVerbatim int
 }
 
 // detail is the verification detail of a comparison the file satisfied: empty when the read-back showed
-// every written item, and otherwise the one thing a caller has to be told before reading "verified" as
-// "the read-back shows every message".
+// every written item verbatim, and otherwise the one thing a caller has to be told before reading
+// "verified" as "the read-back shows every message with the text the file holds".
 func (roundTrip codexRoundTrip) detail() string {
-	if roundTrip.notReadBackAsDialogue == 0 {
+	if roundTrip.notReadBackVerbatim == 0 {
 		return ""
 	}
 	return fmt.Sprintf(
-		"%d written message(s) are in the installed session and the inherited Codex reader reads no "+
-			"message for their text: the file holds them verbatim, so the conversion carried them and "+
-			"the reader's own projection of the file is what does not show them",
-		roundTrip.notReadBackAsDialogue)
+		"%d written message(s) are in the installed session and the inherited Codex reader does not read "+
+			"their own text from it: the file's dialogue records hold them, so the conversion carried them "+
+			"and the reader's own projection of the file is what the read-back shows instead",
+		roundTrip.notReadBackVerbatim)
 }
 
 // compareCodexRoundTrip names every way the file's read-back differs from the target document.
@@ -281,15 +285,15 @@ func (roundTrip codexRoundTrip) detail() string {
 // one is reported here as the missing message it is. What the comparison cannot normalise is a missing
 // or altered message, call, result or boundary, which is what this reports.
 //
-// One absence is neither: the reader reads no message for some text a file holds, because a user text
-// block that opens with an injected-context envelope is read as that context rather than as a turn
-// (internal/parser's preprocessCodexUserTextBlocks). A written dialogue message the read-back does not
-// show is therefore not reported until the installed file has been asked, and `installed` is that file's
-// own bytes: text the file holds is the reader's projection and is counted in notReadBackAsDialogue,
-// while text the file does not hold is the missing message it looks like. The file is asked about
-// dialogue only, because that is where the reader's projection applies: a call, a result and a boundary
-// are compared through keys the reader derives from the record itself, and a difference there is a
-// difference in what the file holds.
+// One reading is neither: the reader reads user text blocks through the injected-context classification,
+// because a block that opens with an envelope is that context rather than a turn (internal/parser's
+// preprocessCodexUserTextBlocks), so a written message can come back as no message at all or with the
+// text the envelope preceded. Dialogue is therefore walked against the installed file's own dialogue
+// records rather than through a set membership test, which is what lets both shapes resolve to the same
+// count (compareDialogue); what tells a projection from a loss is the record, not the read-back's
+// silence. The file is asked about dialogue only, because that is where the reader's projection applies:
+// a call, a result and a boundary are compared through keys the reader derives from the record itself,
+// and a difference there is a difference in what the file holds.
 func compareCodexRoundTrip(rollout CodexRollout, readBack Conversation, installed []byte) codexRoundTrip {
 	var roundTrip codexRoundTrip
 	intendedDialogue := []string{}
@@ -336,30 +340,9 @@ func compareCodexRoundTrip(rollout CodexRollout, readBack Conversation, installe
 		}
 	}
 
-	// A written dialogue message the read-back shows no message for is the one item whose absence is not
-	// yet a difference: where the file holds its text, its absence is the reader's own projection (a user
-	// text block that opens with an injected-context envelope is read as that context, not as a turn),
-	// and it is counted rather than reported; where the file does not hold the text, the item stays in
-	// the comparison and is named there as the difference it is. The items the read-back does show are
-	// compared in order as before.
-	shown := make(map[string]struct{}, len(readDialogue))
-	for _, key := range readDialogue {
-		shown[key] = struct{}{}
-	}
-	compared := make([]string, 0, len(intendedDialogue))
-	for _, key := range intendedDialogue {
-		if _, ok := shown[key]; !ok {
-			_, text, _ := strings.Cut(key, "\x00")
-			if fileHoldsText(installed, text) {
-				roundTrip.notReadBackAsDialogue++
-				continue
-			}
-		}
-		compared = append(compared, key)
-	}
-
-	roundTrip.differences = append(roundTrip.differences,
-		compareSequences(categoryDialogue, compareInOrder, compared, readDialogue)...)
+	dialogue := compareDialogue(intendedDialogue, readDialogue, installedDialogueRecords(installed))
+	roundTrip.differences = append(roundTrip.differences, dialogue.differences...)
+	roundTrip.notReadBackVerbatim = dialogue.notReadBackVerbatim
 	roundTrip.differences = append(roundTrip.differences,
 		compareSequences(categoryToolCall, compareAsMultiset, intendedCalls, readCalls)...)
 	roundTrip.differences = append(roundTrip.differences,
@@ -376,28 +359,223 @@ func dialogueKey(kind, text string) string {
 	return kind + "\x00" + text
 }
 
-// fileHoldsText reports whether the installed file's own bytes hold text verbatim, as the JSON string
-// one of its records carries it in.
+// installedDialogueRecords counts the dialogue the installed file's own records hold: for every rollout
+// record that is a dialogue message written the way this writer writes one -- a response_item whose
+// payload is a message, whose role is the user's or the assistant's, and whose content holds a block of
+// the type this writer writes for that role carrying the message's own text -- the identity the
+// comparison uses (which role recorded it and the text itself), counted.
 //
-// This is the question a read-back through the inherited reader cannot answer for a message that
-// reader's projection reads no message for, and it is asked of the bytes read from the installed file --
-// not of the document the writer kept in memory -- so the answer is about what is on disk. The text is
-// spelled with the writer's own encoder settings (html escaping off), so the literal searched for is the
-// literal that was written; and because an unescaped quote in a well-formed JSON line can only open a
-// string, a match is a string token whose value is exactly this text. An empty text is answered as not
-// held: the writer never writes one, so a document claiming an empty message is a difference whatever
-// the file holds.
-func fileHoldsText(installed []byte, text string) bool {
-	if text == "" {
+// The question is this narrow on purpose. The same text is also written into the target's own event for
+// the turn, because that is what the harness's view of the conversation is built from, and the text of
+// one message can appear in another message's tool output; asking the file whether it holds a text
+// *somewhere* would answer for records that are not the message, and a session whose model-visible
+// record is gone would verify against the copy its own view keeps. The walk asks what the target's model
+// history is built from, and the count is what makes one record answer for one written message.
+//
+// A line that is not one readable record is skipped: the file's own bytes are being read, and the
+// failure this walk answers for is an absent record, not a malformed one.
+func installedDialogueRecords(installed []byte) map[string]int {
+	records := map[string]int{}
+	for _, line := range bytes.Split(installed, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var record codexInstalledRecord
+		if err := json.Unmarshal(line, &record); err != nil {
+			continue
+		}
+		kind, text, ok := record.dialogueMessage()
+		if !ok {
+			continue
+		}
+		records[dialogueKey(string(kind), text)]++
+	}
+	return records
+}
+
+// codexInstalledRecord is the part of one installed line this walk reads: the record's own type and, for
+// a dialogue message, its payload's type, role and content blocks. It is the writer's shape read from
+// the file's bytes rather than from the document the writer kept in memory, and it declares no field for
+// the payloads the walk does not ask about (a tool output, a call's arguments), so reading a large
+// session does not copy them.
+type codexInstalledRecord struct {
+	Type    string `json:"type"`
+	Payload struct {
+		Type    string `json:"type"`
+		Role    string `json:"role"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	} `json:"payload"`
+}
+
+// dialogueMessage answers the identity of the message this record holds, when it holds one the way this
+// writer writes it: the record type, the payload's message type, the role and the content block's own
+// type are each asked, because a record is the message's model-visible evidence only where every one of
+// them is the shape the writer writes. A record whose content holds no such block (an empty text, or a
+// different block type) is not the message.
+func (record codexInstalledRecord) dialogueMessage() (TargetItemKind, string, bool) {
+	if record.Type != codexRecordResponseItem || record.Payload.Type != codexItemMessage {
+		return "", "", false
+	}
+	var kind TargetItemKind
+	var contentType string
+	switch record.Payload.Role {
+	case codexRoleUser:
+		kind, contentType = ItemUser, codexContentInputText
+	case codexRoleAssistant:
+		kind, contentType = ItemAssistant, codexContentOutputText
+	default:
+		return "", "", false
+	}
+	for _, block := range record.Payload.Content {
+		if block.Type == contentType && block.Text != "" {
+			return kind, block.Text, true
+		}
+	}
+	return "", "", false
+}
+
+// dialogueWalk is what walking the written dialogue and the read-back together found.
+type dialogueWalk struct {
+	// differences names every written message the file does not hold and every read-back message no
+	// written message accounts for, each by what identifies it rather than by its text.
+	differences []string
+	// notReadBackVerbatim counts the written messages the read-back does not show with their own text and
+	// the installed file's records hold.
+	notReadBackVerbatim int
+}
+
+// compareDialogue walks the written dialogue and the read-back together, in the file's own order, and
+// names what they differ by.
+//
+// A written message is accounted for by the read-back's message that is its own text, or by the reader's
+// reading of it: the reader deletes the segments it classifies away from a text block (a leading
+// injected-context envelope; a plugin envelope in the middle of the block) and never invents characters,
+// so what it reads for a written text is a run of that text's own characters in their own order. Where
+// the read-back shows a written message's own text, that reading is the file's evidence for the message
+// and the walk does not ask its own record walk again — the reader is the target's own view of the file.
+// The walk pairs the read-back's messages with the written messages they account for, in order, and the
+// written messages left between them are resolved by the file: counted where its records hold the
+// message (the reader's projection, not a loss -- nothing else can explain a record the reader does not
+// show), and reported missing where they do not. A read-back message no written message accounts for is
+// evidence the file holds dialogue the conversion did not write, unless the written message the walk
+// stands on is missing from the file too -- then the two are reported as the same item altered, which is
+// what a reader is told when a message's text or its record changed.
+//
+// `records` is consumed as the walk resolves messages, so one record answers for one written message:
+// the same prompt recorded twice in the source needs two records in the file.
+func compareDialogue(intended, read []string, records map[string]int) dialogueWalk {
+	var walk dialogueWalk
+	resolve := func(ordinal int) {
+		if holdDialogueRecord(records, intended[ordinal]) {
+			walk.notReadBackVerbatim++
+			return
+		}
+		walk.differences = append(walk.differences, fmt.Sprintf(
+			"%s %d is in the target document but not in the file: %s",
+			categoryDialogue, ordinal+1, describeItem(categoryDialogue, intended[ordinal])))
+	}
+	cursor := 0
+	for index, readKey := range read {
+		paired, projected := pairReadBackMessage(intended, cursor, readKey, records)
+		switch {
+		case paired >= 0:
+			// The record is what the count is about: the pairing already asked the file for one, so this
+			// is the message's own record being consumed, and a reading is only counted where it was.
+			if held := holdDialogueRecord(records, intended[paired]); held && projected {
+				walk.notReadBackVerbatim++
+			}
+			for skipped := cursor; skipped < paired; skipped++ {
+				resolve(skipped)
+			}
+			cursor = paired + 1
+		case cursor < len(intended) && records[intended[cursor]] == 0:
+			walk.differences = append(walk.differences, fmt.Sprintf(
+				"%s %d differs (written %s, read back %s)", categoryDialogue, cursor+1,
+				describeItem(categoryDialogue, intended[cursor]), describeItem(categoryDialogue, readKey)))
+			cursor++
+		default:
+			walk.differences = append(walk.differences, fmt.Sprintf(
+				"%s %d is in the file but was not written: %s",
+				categoryDialogue, index+1, describeItem(categoryDialogue, readKey)))
+		}
+	}
+	for ordinal := cursor; ordinal < len(intended); ordinal++ {
+		resolve(ordinal)
+	}
+	return walk
+}
+
+// pairReadBackMessage answers the written message the read-back's message accounts for: the first written
+// message at or after `from` whose own text it is, or whose reading it is -- a run of that message's
+// characters in their own order, where the installed file still holds a record for it (the reader reads
+// a written message only as far as the file holds it, so a reading is evidence about a message the file
+// has). The boolean reports whether the pairing is the reader's reading rather than the message's own
+// text; a message neither relation answers for has -1.
+func pairReadBackMessage(intended []string, from int, readKey string, records map[string]int) (int, bool) {
+	for index := from; index < len(intended); index++ {
+		key := intended[index]
+		if key == readKey {
+			return index, false
+		}
+		if records[key] == 0 {
+			continue
+		}
+		kind, text, _ := strings.Cut(key, "\x00")
+		if readsAsDialogueMessage(kind, text, readKey) {
+			return index, true
+		}
+	}
+	return -1, false
+}
+
+// readsAsDialogueMessage reports whether the read-back's message is the reader's own reading of a written
+// message: a run of the written message's characters in their own order, recorded under the message's own
+// kind. A read-back message the reader recorded under another role is not this message's reading, and a
+// text equal to the message's own is the message itself rather than a reading of it (the walk pairs that
+// case first).
+func readsAsDialogueMessage(kind, written, readKey string) bool {
+	readKind, readText, _ := strings.Cut(readKey, "\x00")
+	if readKind != kind || readText == "" || readText == written {
 		return false
 	}
-	var encoded bytes.Buffer
-	encoder := json.NewEncoder(&encoded)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(text); err != nil {
+	return holdsTextInOrder(written, readText)
+}
+
+// holdsTextInOrder reports whether every rune of read occurs in written, in read's own order. A run with
+// gaps in it is what a deletion of segments leaves behind, which is how the reader reads a block it
+// classifies part of away; characters the written text does not hold, or the same characters out of
+// their order, are not a run of it.
+func holdsTextInOrder(written, read string) bool {
+	position := 0
+	for _, character := range read {
+		found := false
+		for position < len(written) {
+			next, size := utf8.DecodeRuneInString(written[position:])
+			position += size
+			if next == character {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// holdDialogueRecord takes one of the file's records for a written message, if it still holds one. The
+// record is what a written message resolves against, so a message is only ever answered by a record no
+// other message has consumed.
+func holdDialogueRecord(records map[string]int, key string) bool {
+	if records[key] <= 0 {
 		return false
 	}
-	return bytes.Contains(installed, bytes.TrimSuffix(encoded.Bytes(), []byte("\n")))
+	records[key]--
+	return true
 }
 
 // roundTripCallKey identifies a call the way both sides spell it. An empty argument object and no

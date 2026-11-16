@@ -169,6 +169,14 @@ func TestContinueConvertsInstallsAndReadsBackTheFixture(t *testing.T) {
 	if readBack.ToolCalls != 1 || readBack.ToolResults != 1 || readBack.CompactionBoundaries != 1 {
 		t.Errorf("read-back = %+v, want the carried tool call, result and boundary", readBack)
 	}
+	// The fixture's dialogue is written and read back as itself, so no message needs the projection
+	// allowance. The count is what a run reports for a message the reader does not read with its own text,
+	// so a conversion that counted ordinary messages would be telling its caller the read-back shows
+	// fewer messages than the file holds.
+	if result.Verification.Structure.NotReadBackVerbatim != 0 {
+		t.Errorf("not_read_back_verbatim = %d, want 0 for a fixture the reader reads as written",
+			result.Verification.Structure.NotReadBackVerbatim)
+	}
 	if result.Verification.Load.State != VerificationStateNotVerified {
 		t.Errorf("load = %+v, want an explicit not-verified when the harness is absent", result.Verification.Load)
 	}
@@ -941,6 +949,108 @@ func TestStructureVerificationNamesWhatTheFileDoesNotHold(t *testing.T) {
 	}
 	if !strings.Contains(verification.Detail, describeText(missing)) {
 		t.Errorf("the difference report does not identify the missing evidence: %q", verification.Detail)
+	}
+}
+
+// TestStructureVerificationAsksTheFileForTheMessageRecord pins the question the structural check asks the
+// installed file about a written dialogue message, by mutating the file the way a review's finding did.
+//
+// The target writes every message twice: a response_item, which is what its model history is built from,
+// and an event_msg holding the same text, which is what its own view of the conversation is built from --
+// and the inherited reader reads no message from the event. A file whose response_item was dropped while
+// its event stayed is therefore a session the target can load with the message missing from its model
+// history, and its own reader agrees there is no message; a check that asked the file whether it held the
+// text *somewhere* found the words in the event and reported that session verified.
+func TestStructureVerificationAsksTheFileForTheMessageRecord(t *testing.T) {
+	cfg := fixtureConfig(t)
+	conversation, err := NewSourceReader(cfg).Read(context.Background(), claudeFixtureRef)
+	if err != nil {
+		t.Fatalf("reading the fixture: %v", err)
+	}
+	rollout, err := ConvertToCodexRollout(conversation,
+		CodexTargetOptions{SessionID: "01a1e000-2222-7000-8000-000000000002"})
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	home := t.TempDir()
+	path, _, err := InstallCodexRollout(rollout, home)
+	if err != nil {
+		t.Fatalf("installing: %v", err)
+	}
+	sessions := filepath.Join(home, codexSessionsSubdir)
+	verification, err := VerifyCodexRolloutStructure(context.Background(), sessions, rollout, cfg)
+	if err != nil {
+		t.Fatalf("verifying: %v", err)
+	}
+	if verification.State != VerificationStateVerified {
+		t.Fatalf("an unchanged rollout did not verify: %+v", verification)
+	}
+
+	// The message to drop: the first user message the conversion wrote. Its record and its event both
+	// hold the text, so the file still holds every word after the mutation.
+	dropped := ""
+	for _, item := range rollout.Items {
+		if item.Kind == ItemUser {
+			dropped = item.Text
+			break
+		}
+	}
+	if dropped == "" {
+		t.Fatalf("the fixture holds no user message to drop: %d item(s)", len(rollout.Items))
+	}
+	installed, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the installed session: %v", err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(installed), "\n"), "\n")
+	mutated := make([]string, 0, len(lines))
+	removed := false
+	for _, line := range lines {
+		var record struct {
+			Type    string `json:"type"`
+			Payload struct {
+				Role    string `json:"role"`
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("the installed session holds a line that is not a record: %v\n%s", err, line)
+		}
+		if !removed && record.Type == "response_item" && record.Payload.Role == "user" &&
+			len(record.Payload.Content) > 0 && record.Payload.Content[0].Text == dropped {
+			removed = true
+			continue
+		}
+		mutated = append(mutated, line)
+	}
+	if !removed {
+		t.Fatalf("the installed session holds no user response_item for %q", dropped)
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(mutated, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("writing the mutated session: %v", err)
+	}
+	// The file really does still hold the text: the event the mutation kept is the only thing that does.
+	if !strings.Contains(strings.Join(mutated, "\n"), dropped) {
+		t.Fatalf("the mutated session no longer holds %q, so it does not pin this rule", dropped)
+	}
+
+	verification, err = VerifyCodexRolloutStructure(context.Background(), sessions, rollout, cfg)
+	if err != nil {
+		t.Fatalf("verifying: %v", err)
+	}
+	if verification.State == VerificationStateVerified {
+		t.Fatal("the structure check accepted a session whose message record is gone")
+	}
+	if !strings.Contains(verification.Detail, "dialogue") {
+		t.Errorf("the difference report does not name the category: %q", verification.Detail)
+	}
+	if !strings.Contains(verification.Detail, describeText(dropped)) {
+		t.Errorf("the difference report does not identify the missing message: %q", verification.Detail)
+	}
+	if strings.Contains(verification.Detail, dropped) {
+		t.Errorf("the difference report carries the evidence it could not match: %q", verification.Detail)
 	}
 }
 

@@ -879,3 +879,42 @@ supersede it with a newer one and say which it supersedes.
   structural check's `verified` clearly counting (and naming) the messages its reader cannot show, or a
   conversion that discards a real user turn because the target's own reader classifies its prefix as
   injected context.
+
+## Q-0002-18 — What the structural check asks the installed file about a message the reader reads differently
+
+- **Status:** resolved (default taken); supersedes the *mechanism* half of Q-0002-17 (what the check asks
+  the file), not its default (such a message is carried, counted and warned about) and not Q-0002-16's
+  (text the reader reads as nothing at all is still omitted and named).
+- **Question:** round 9's review found two defects in the question round 8's fix asked. `fileHoldsText`
+  accepted a message's text *anywhere* in the installed file, so a session whose model-visible
+  `response_item` had been dropped verified against the copy the target's own `event_msg` view keeps (and a
+  text quoted by a tool output, or one occurrence answering for several written messages, did the same);
+  and it resolved a written message away whenever the file held its text, so a prompt carrying text *after*
+  an injected-context envelope — read back by the inherited reader with the envelope stripped — left the
+  reader's shorter reading in the ordered comparison and failed a correct run, with `--verify none` and
+  `--dry-run` too, because the structural check always runs. Should the check keep asking the file for the
+  text, and how does a partial projection resolve?
+- **Default taken:** the check asks the file for the message's own dialogue record: a `response_item` whose
+  payload is a message, whose role is the message's, and whose content holds a block of the type this writer
+  writes for that role carrying the message's own text — counted, so one record answers for one written
+  message, and with the other record types, payload types, block types and an empty text all rejected. A
+  written message the read-back does not show with its own text is counted
+  (`verification.structure.not_read_back_verbatim`, renamed from `not_read_back_as_dialogue` because a
+  partial projection *is* read back, just not verbatim) where that record is in the file and stays a missing
+  message where it is not; a read-back message is accounted for by a written message only when it is that
+  message's own text or the reader's reading of it — a run of the message's characters in their own order,
+  under the message's own kind, and only where the file still holds the message's record — and is otherwise
+  reported as dialogue the document does not hold. The walk pairs in the file's own order, so a read-back
+  (or install) whose order contradicts the document is reported rather than folded away. Nothing here
+  re-implements `preprocessCodexUserTextBlocks`: the relation is the structural property every
+  deletion-based reading has (a run of the record's own characters in the record's own order), not a copy
+  of the reader's envelope list, which the carry rule forbids.
+- **Reversal:** ask the file for the text again (a search over its bytes) and let a resolved message be
+  compared positionally against the read-back; both defects come back, and the two regressions this
+  increment adds — the file whose message record was dropped while its event stayed, and the prompt that
+  carries text after an envelope — fail (measured on the pre-fix head in
+  `docs/evidence/0002-claude-to-codex-continuation.md` §14).
+- **Settled by:** whether the operator prefers the check to hold a conversion to the target's model-visible
+  records or only to the words somewhere in the file; a text the reader projects and a text the file does
+  not hold are the same bytes to a search, and a partial projection is only distinguishable from a loss by
+  which records the file holds.
