@@ -1848,7 +1848,11 @@ func TestCodexLoadVerificationRequiresTheSessionsOwnRecord(t *testing.T) {
 // resumable. The last half is a turn the harness could not run: the report still carries the turn's own
 // nonzero status, and the verdict is not-verified.
 func TestResumeVerificationRequiresTheTurnToAppendToTheSession(t *testing.T) {
-	continueEnvironment(t)
+	continueEnvironment(t) // the fixture tree as the source and an isolated data directory
+	// The home holds a space (shellUnsafeHome), so the resume line quotes the data directory it names on
+	// every host: the command assertions below pin the quoted spelling the field's contract gives a word
+	// a POSIX shell would act on, instead of whichever arm this host's own temp path spells.
+	shellUnsafeHome(t)
 	sessionID, _ := claudeFixture(t)
 	binary := stubTargetBinary(t)
 
@@ -1880,7 +1884,7 @@ func TestResumeVerificationRequiresTheTurnToAppendToTheSession(t *testing.T) {
 	for _, want := range []string{
 		"exec resume " + target["session_id"].(string),
 		"--skip-git-repo-check",
-		"CODEX_HOME=" + target["home"].(string),
+		"CODEX_HOME='" + target["home"].(string) + "'",
 	} {
 		if !strings.Contains(command, want) {
 			t.Errorf("the reported resume command %q does not name %q", command, want)

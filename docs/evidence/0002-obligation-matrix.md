@@ -938,7 +938,7 @@ obligation's number and place in the list are unchanged.)*
   code and the session file's growth; a turn that answered without appending the session is
   `not-verified` (a harness that answered a question has not shown the session can continue), and no prompt
   is ever invented (`--verify resume` requires `--resume-prompt`).
-- **Discharged:** `internal/ccc/codex_verify.go:314-384` (`VerifyCodexResume`: `:371` the growth rule),
+- **Discharged:** `internal/ccc/codex_verify.go:314-384` (`VerifyCodexResume`: `:374` the growth rule),
   `:402-438` (`runCodexTurn`), `internal/ccc/continue.go:63-100` (the prompt requirement).
 - **Positive evidence:** the native run — `PASS: a real turn continues from the installed session — exit 0,
   session 3970 -> 67991 bytes` — plus `TestContinueRequiresAPromptBeforeItRunsATurn` for the prompt rule.
@@ -947,9 +947,11 @@ obligation's number and place in the list are unchanged.)*
   turn that appends verifies (exit 0, `session_bytes_after > session_bytes_before`, with the reported
   command and exit code asserted); a turn that answers without appending is `not-verified` + exit 1 with
   "did not grow" in the detail; a turn the harness cannot run reports the harness's own nonzero status.
-- **Executed mutation:** `codex_verify.go:371` `if after <= before {` → `if false {`. **Observed:** exit
-  `1`; `FAIL`; `main_test.go:1904: resume = map[… session_bytes_after:3099 session_bytes_before:3099
-  state:verified], want not-verified when the session did not grow`. Restored `b79031c0…`.
+- **Executed mutation:** `codex_verify.go:374` `if after <= before {` → `if false {`. **Observed:** exit
+  `1`; `FAIL`; `main_test.go:1900: exit 0, want 1 for a turn that appended nothing (stderr "")` — with the
+  growth rule gone the silent turn's run succeeds, so the case's own exit-status assertion catches it
+  before the state assertion below it is reached (that assertion's evidence is the passing run, which
+  asserts `state == not-verified` for the turn that appended nothing). Restored `b79031c0…`.
 - **Audit repair (2026-11-16, finding 2 of the acceptance audit).** Two defects in this case, one of which
   hid the other. (a) The positive case handed `continueDocumentOf` the constant `exitOK` instead of the
   status `runCLI` answered, so the helper's "the run exited 0" check compared the case's own argument with
@@ -957,13 +959,13 @@ obligation's number and place in the list are unchanged.)*
   *before* it runs the turn — so the run it called a success had in fact failed: the loader refused
   `thread/resume`, the load block came back `not-verified`, and `continuationExit` answered `1`. The
   positive case now reads the run's own exit code and sets the loader's mode it needs
-  (`stubLoadModeEnv = stubLoadSelfMode`, `main_test.go:1858`), which makes it the genuinely successful run
+  (`stubLoadModeEnv = stubLoadSelfMode`, `main_test.go:1862`), which makes it the genuinely successful run
   it claims; the negative half sets the same mode, so it can fail only on the turn that appended nothing.
 - **Executed mutation (audit repair):** the repaired case with the loader's mode removed again (the
   pre-repair state) — `t.Setenv(stubLoadModeEnv, stubLoadSelfMode)` deleted. Command:
   `CGO_ENABLED=1 go test -tags fts5 -count=1 -run TestResumeVerificationRequiresTheTurnToAppendToTheSession
   ./cmd/ccc/...`. **Observed:** exit `1`; `FAIL`;
-  `main_test.go:1863: exit 1, want 0 (stderr "")` — the run's real status, which the pre-repair case could
+  `main_test.go:1867: exit 1, want 0 (stderr "")` — the run's real status, which the pre-repair case could
   not see because it was not looking at it. Restored `0ea5446a…` (`b10f8417…` after this lane's repair).
 - **Executed demonstration of the pre-repair shape (audit repair):** with the same missing loader mode
   *and* the assertion put back on the constant (`continueDocumentOf(t, exitOK, …)`, plus a temporary
@@ -972,23 +974,45 @@ obligation's number and place in the list are unchanged.)*
   the test agreed with itself. Restored `0ea5446a…`.
 - **Repair (2026-11-16, this lane — the sweep's declared E2: the reported `command` and `exit_code` were
   asserted by no case).** `TestResumeVerificationRequiresTheTurnToAppendToTheSession`
-  (`cmd/ccc/main_test.go:1850-1963`) now reads both fields out of the run's own document: the verified half
+  (`cmd/ccc/main_test.go:1850-1940`) now reads both fields out of the run's own document: the verified half
   asserts `exit_code == 0` and that `command` names `exec resume <the document's session id>`,
-  `--skip-git-repo-check` and `CODEX_HOME=<the document's home>`; the new third half drives the stub
-  harness's `fail` mode (a new `stubTurnFailMode`, exiting `stubTurnFailCode` = 7) and asserts the reported
-  `exit_code` is that code and the detail names it. The values are the turn's own — the stub's status and
-  the invocation the check ran — not constants the case hands to the report.
-- **Executed mutations (this lane):**
+  `--skip-git-repo-check` and `CODEX_HOME='<the document's home>'` — the home's own spelling from the
+  document, quoted the way the field's contract renders a word a shell would act on; the new third half
+  drives the stub harness's `fail` mode (a new `stubTurnFailMode`, exiting `stubTurnFailCode` = 7) and
+  asserts the reported `exit_code` is that code and the detail names it. The values are the turn's own —
+  the stub's status and the invocation the check ran — not constants the case hands to the report.
+- **Executed mutations (this lane, re-run on the tree of this repair — the case's own assertions moved four
+  lines down; see the CI repair below):**
   1. `codex_verify.go:354` `verification.ExitCode = &exitCode` → `verification.ExitCode = new(int)` (a
      constant 0 in place of the turn's status). Command:
      `GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 -run
      TestResumeVerificationRequiresTheTurnToAppendToTheSession ./cmd/ccc/`. **Observed:** exit `1`; `FAIL`;
-     `main_test.go:1930: resume exit_code = 0, want the turn's own status 7`. Restored `fb9a0a18…`.
+     `main_test.go:1934: resume exit_code = 0, want the turn's own status 7`. Restored `fb9a0a18…`.
   2. `codex_verify.go:341` `verification.Command = resumeCommandLine(path, args, opts.Home)` →
      `verification.Command = ""`. Command: the test above. **Observed:** exit `1`; `FAIL`;
-     `main_test.go:1886: the reported resume command "" does not name "exec resume
-     01a1e51c-e04f-797a-a126-c8fa87d60703"` and the same line for `--skip-git-repo-check` and
-     `CODEX_HOME=…`. Restored `fb9a0a18…`.
+     `main_test.go:1890: the reported resume command "" does not name "exec resume
+     01a1e52f-4d87-7670-97bf-149a3f508554"`, the same line for `--skip-git-repo-check`, and the same line
+     for `CODEX_HOME='…/codex home'` — the third word is the quoted spelling the CI repair below pins.
+     Restored `fb9a0a18…`.
+  3. The renderer's own rule (E5's side of the same case, executed with this repair): `continue.go:851`'s
+     `shellUnsafeCharacters` with the space dropped (a word holding one is left bare). Command: the test
+     above. **Observed:** exit `1`; `FAIL`;
+     `main_test.go:1890: the reported resume command "CODEX_HOME=…/codex home …" does not name
+     "CODEX_HOME='…/codex home'"`. Restored `e5be4e8a…`.
+- **CI repair (2026-11-17, the red at head `37c0a10` — `gate (windows-latest)`, the `test` step).** The
+  command assertion this lane added spelled the data directory as *this host's* temp path
+  (`"CODEX_HOME=" + target["home"]`), and the renderer quotes a Windows path — a temp path there holds
+  backslashes and a `~` — so the assertion failed against a line that was right. That is the class
+  **Q-0002-13**'s default moves the test for, not the renderer. The case now installs into a home whose
+  name holds a space (`shellUnsafeHome`, `cmd/ccc/main_test.go:1855`) and asserts the quoted spelling
+  (`:1887`): one expectation for every host instead of whichever arm this host spells. Executed here: with
+  `TMPDIR` pointing at a directory whose name holds a space (the same shape — a home the rule quotes) the
+  pre-repair assertion failed with `main_test.go:1886: the reported resume command "CODEX_HOME='…'" does
+  not name "CODEX_HOME=…"` and the repaired case passes, while `TestContinueJSONDistinguishes…` and
+  `TestContinueHumanOutputNamesTheResumeCommand` — the two cases the first CI repair fixed the same way —
+  stayed green; mutation 3 above is the rule's own direction. The evidence record's §6 carries the run
+  table and the whole-package runs. This row's anchors were recomputed to this tree (every line of the case
+  from the insertion down, +4).
 
 ### E3 — The turn runs the executable the caller's path resolved to
 
@@ -1023,7 +1047,7 @@ obligation's number and place in the list are unchanged.)*
   configuration answers `target-config`.
 - **Executed mutation:** `codex_verify.go:140` `…; err == nil {` → `…; err == nil && false {` (the thread
   defaults' answer is never used). **Observed:** exit `1`; `FAIL`;
-  `main_test.go:1965: model_provider = <nil>, want the harness's own answer`. Restored `b79031c0…`.
+  `main_test.go:1969: model_provider = <nil>, want the harness's own answer`. Restored `b79031c0…`.
 - **Audit repair (2026-11-16, finding 2 of the acceptance audit).** Both of this row's cases now pass the
   run's own exit code to `continueDocumentOf` (the constant `exitOK` is what the helper compares against),
   so the "exit 0" half of each positive case is the command's answer rather than the case's own argument.
@@ -1031,7 +1055,7 @@ obligation's number and place in the list are unchanged.)*
   assertion; the mutation that detects the old shape (one temporary edit) is recorded in E2's row, which is
   the case the audit cited.
 - **Repair (2026-11-16, this lane — the sweep's declared E4: the dry-run half was asserted by no case).**
-  `TestProviderBindingIsTheTargetsOwnAnswer` (`cmd/ccc/main_test.go:1954-2012`) now ends with the dry run's
+  `TestProviderBindingIsTheTargetsOwnAnswer` (`cmd/ccc/main_test.go:1958-2018`) now ends with the dry run's
   own answer: `--dry-run --verify none` (with the stub harness available to be asked) records no
   `model_provider`, reports `model_provider_source: unrecorded`, names the dry run in
   `model_provider_detail`, and the report's warnings carry the sentence that a dry run records no provider
@@ -1039,9 +1063,9 @@ obligation's number and place in the list are unchanged.)*
 - **Executed mutation (this lane):** `continue.go:306` `if opts.DryRun {` → `if opts.DryRun && false {`
   (the dry run falls into the probe branch and starts the harness). Command:
   `GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 -run TestProviderBindingIsTheTargetsOwnAnswer
-  ./cmd/ccc/`. **Observed:** exit `1`; `FAIL`; `main_test.go:2001: a dry run recorded model_provider =
-  a-configured-provider, want none: it never starts the harness`; `:2004: model_provider_source =
-  target-config, want unrecorded for a dry run`; `:2007: the dry run's provider detail "" does not say the
+  ./cmd/ccc/`. **Observed:** exit `1`; `FAIL`; `main_test.go:2005: a dry run recorded model_provider =
+  a-configured-provider, want none: it never starts the harness`; `:2008: model_provider_source =
+  target-config, want unrecorded for a dry run`; `:2011: the dry run's provider detail "" does not say the
   dry run is why nothing is recorded`. Restored `44d8e65e…`.
 
 ### E5 — The reported invocation is the shell's reading of the command that ran
@@ -1506,6 +1530,15 @@ D3 `:1640`→`:1880`; D5 `:1838`→`:2172`; E1 `main_test.go:1725`/`:1746`→`:1
 `:1904`, `:1771`/`:1774`/`:1778`→`:1855`/`:1858`/`:1863`; E4 `:1830`→`:1965`; E5 `continue_test.go:895`→
 `:1135`; F3 `fixtures_test.go:651`→`:680`; and F4's case/`HostCase` ranges. Rows whose anchors the sweep
 called safe and this lane did not touch keep their numbers, which were re-checked against this tree.
+
+**Anchors the CI repair (2026-11-17, head `37c0a10`) moved:** that repair inserts four lines at the top of
+`TestResumeVerificationRequiresTheTurnToAppendToTheSession`, so every `cmd/ccc/main_test.go` anchor from
+that point down was recomputed to this tree: E2's `:1855`/`:1858`/`:1863`→`:1859`/`:1862`/`:1867`, `:1886`→
+`:1890`, `:1904`→`:1908`, `:1930`→`:1934`, and the case's range `1850-1963`→`1850-1940` (the old end ran
+past the case, through `numberField`, into the next one); E4's `:1965`→`:1969`, `:2001`/`:2004`/`:2007`→
+`:2005`/`:2008`/`:2011`, and its range `1954-2012`→`1958-2018`. The two E2 mutation records whose observed
+lines are quoted were re-executed rather than shifted (E2's row), and the growth rule's own anchor was
+measured (`codex_verify.go:371`→`:374`).
 
 ## What this matrix does not claim
 

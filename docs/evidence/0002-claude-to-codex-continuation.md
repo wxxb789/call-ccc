@@ -354,10 +354,10 @@ summary and must be written once).
 
 ```
 $ GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 ./cmd/ccc/... ./internal/ccc/...     # rc=0
-ok  	go.kenn.io/agentsview/cmd/ccc	2.081s
-ok  	go.kenn.io/agentsview/internal/ccc	10.432s
+ok  	go.kenn.io/agentsview/cmd/ccc	2.827s
+ok  	go.kenn.io/agentsview/internal/ccc	10.081s
 ?   	go.kenn.io/agentsview/internal/ccc/fixturegen	[no test files]
-ok  	go.kenn.io/agentsview/internal/ccc/parity	0.901s
+ok  	go.kenn.io/agentsview/internal/ccc/parity	0.838s
 ?   	go.kenn.io/agentsview/internal/ccc/parity/oracle	[no test files]
 ```
 
@@ -396,7 +396,7 @@ ok  	go.kenn.io/agentsview/internal/ccc/parity	0.901s
 | the native check compares the source tree and the planted session **after** the loader and the real turn, so a mutation during either stage fails the run — and an intact run passes the same comparisons | `scripts/tests/test_codex_native_check.py`'s `ProtectedArtifactsAfterNativeVerification` |
 | the native check's throw-away home is seeded with settings that cannot hold a credential — never with a copy of the host's `config.toml` — and its report line names what was copied and what was left behind (round 12) | `scripts/tests/test_codex_native_check.py`'s `SeededHostConfiguration` |
 | a nested run that breaks inside a subtest is named by the case that read the child, not raised as an `IndexError` in the reader itself | `test_a_child_broken_inside_a_subtest_is_reported_by_name` |
-| the printed resume invocation names the data directory the session was installed into, quoted where a shell would act on a word, and a resume verification reports the command it ran the same way | `TestContinuePrintsAResumeCommandThatSelectsTheInstallationHome`, `TestResumeVerificationCommandNamesTheHomeItRanAgainst`, `TestContinueHumanOutputNamesTheResumeCommand`, `TestContinueJSONDistinguishesConversionInstallationAndVerification` |
+| the printed resume invocation names the data directory the session was installed into, quoted where a shell would act on a word, and a resume verification reports the command it ran the same way — the case that reads it back does so from a home whose name holds a space, so the quoted spelling is asserted on every host (the fifth red) | `TestContinuePrintsAResumeCommandThatSelectsTheInstallationHome`, `TestResumeVerificationCommandNamesTheHomeItRanAgainst`, `TestContinueHumanOutputNamesTheResumeCommand`, `TestContinueJSONDistinguishesConversionInstallationAndVerification`, `TestResumeVerificationRequiresTheTurnToAppendToTheSession` |
 | exclusive install (a taken name refused, a filesystem without hard links refused rather than renamed over) and dry run writes nothing (no directory for a home the caller named that is not there yet, and the target harness is never started), dry run reports its own states, prompt required, target/level validation, home resolution | `TestInstallCodexRolloutNeverReplacesASession`, `TestInstallCodexRolloutRefusesAFilesystemWithoutHardLinks`, `TestContinueDryRunWritesNothing`, `TestContinueDryRunReportsWhatItVerified`, `TestContinueDryRunInstallsNothingThroughTheCLI`, `TestContinueRequiresAPromptBeforeItRunsATurn`, `TestContinueRefusesAnUnsupportedTargetOrLevel`, `TestContinueTargetHomeResolution` |
 | the round-trip check compares rather than agrees | `TestStructureVerificationNamesWhatTheFileDoesNotHold` |
 | the structural check reads the file it was handed (the installed path), never a same-id copy the target's own sessions-tree lookup would prefer (round 12) | `TestStructureVerificationReadsTheInstalledPathItWasGiven` |
@@ -414,9 +414,9 @@ gate: go=<home>/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/..
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 158 tests in 4.861s (rc=0)
-  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 26 project-owned prefix(es); files seen by git: 5626 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
-  PASS     secrets  no leaks found in 74 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+  PASS     selftest Ran 164 tests in 5.205s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 26 project-owned prefix(es); files seen by git: 5627 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 76 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
 
@@ -441,8 +441,8 @@ gate's `test` step) still holds the recorded dumps against the unchanged first f
 `scripts/upstream-compare.py` itself was **not** re-run here (it needs network and a pristine
 checkout of the pin); its next run is the operator's, and the offline half of the same comparison passes.
 
-The last repair to this increment came from CI rather than from a clause: `gate (windows-latest)` failed
-in the `test` step on the two CLI cases that read the resume line back. The line is rendered the way a
+The first repair to this increment that came from CI rather than from a clause: `gate (windows-latest)` failed
+in the `test` step on the two CLI cases that then read the resume line back. The line is rendered the way a
 POSIX shell reads it, and a Windows temp path holds backslashes a shell would act on, so the line quotes
 the data directory there — while those two cases had been written against *this* host's temp path, which
 is shell-safe and stands bare. They now install into `<tmp>/…/codex home`, a word the rule quotes on
@@ -568,13 +568,49 @@ those two checks and pass the turn. No platform branch was added for it: the rul
 a quoted word holding backslashes reads back as itself — is already asserted on every host by the
 module's `ResumeInvocationCheck` cases, which drive `PureWindowsPath` beside this host's `Path`.
 
-The `selftest` step is 153 cases — the 151 the round-5 block printed, plus the two
-`ProtectedArtifactsAfterNativeVerification` cases round 6 adds (§11) — and none of the repairs after it
-changes the count; the blocks above are refreshed from each repair's own run. `docs/harness.md`
+The fifth red is this increment's own case, added by the sweep: `gate
+(windows-latest)` failed the `test` step at head `37c0a10` on
+`TestResumeVerificationRequiresTheTurnToAppendToTheSession` — `main_test.go:1886: the reported resume command
+"CODEX_HOME='C:\Users\RUNNER~1\…\002' …" does not name "CODEX_HOME=C:\Users\RUNNER~1\…\002"`. The assertion
+the sweep added to read the reported command out of the run's own document spelled the data directory as
+*this host's* temp path (`"CODEX_HOME=" + target["home"]`), and a Windows temp path holds backslashes and a
+`~`, which the rule quotes: the reported line was right and the expectation was host-shaped — the defect the
+first red above repaired in the two cases that existed then, now in the third CLI case to read that line back
+(Q-0002-13's default moves the test, not the renderer). The case installs into a home whose name holds a
+space (`shellUnsafeHome`) and asserts the quoted spelling, exactly as those two do.
+
+Reproduced on this host with a temp root whose name holds a space — a home the rule quotes on every host, and
+the shape a Windows temp path has for this rule (a word it quotes) — rather than with the backslash-bearing
+root the two cases above use: this
+case's stub harness looks the installed session up with `filepath.Glob` over the home, and on a POSIX host a
+backslash in the pattern is an escape, so a backslash-shaped `TMPDIR` fails the case for a reason the rule is
+not about (measured on the repaired tree: `main_test.go:1867: exit 1, want 0 (stderr "the stub harness found
+no installed session for …")`).
+
+| run | observed |
+| --- | --- |
+| head `37c0a10`'s own case, `TMPDIR='/tmp/ccc quoted temp'` | `FAIL` — `main_test.go:1886: the reported resume command "CODEX_HOME='/tmp/ccc quoted temp/TestResume…/002' …" does not name "CODEX_HOME=/tmp/ccc quoted temp/TestResume…/002"` |
+| the repaired case, that `TMPDIR` | `ok` |
+| the repaired `cmd/ccc` package, that `TMPDIR` | `ok  	go.kenn.io/agentsview/cmd/ccc	1.830s` |
+| the repaired case, a plain host | `ok` |
+| the repaired case with the rule mutated (`continue.go:851`'s `shellUnsafeCharacters` with the space dropped, so a word holding one is left bare) | `FAIL` — `main_test.go:1890: the reported resume command "CODEX_HOME=…/codex home …" does not name "CODEX_HOME='…/codex home'"` |
+
+The case's own mutations were re-executed on this tree rather than renumbered, and the anchors every
+insertion in it moved are recorded with them: the matrix's E2 row carries all three (`main_test.go:1890` for
+the reported-command mutation, `:1934` for the exit-code one, and the growth rule's `codex_verify.go:374` →
+`main_test.go:1900`, now caught by the case's own exit-status assertion because the loader mode its audit
+repair sets lets the unmutated run reach exit 0). `docs/harness.md` states the third case beside the two,
+with the reason a backslash-shaped root cannot stand in for it here.
+
+The `selftest` step is **164** cases on this tree — the 153 that sentence once counted, plus the cases the
+later rounds and the sweep's `scripts/tests/test_gate.py` changes added (round 12's block records 158) — and
+the blocks above are refreshed from each repair's own run. `docs/harness.md`
 records all of it: the path-spelling constraint as its Platform boundary section's path bullet, now
 including the scratch root the third repair resolves (with the aliased-`TMPDIR` run as that constraint's
 instance on any host), the per-word quoting the fourth repair restored to the same cases' fixture as the
-Windows-backslash bullet's own instance (with the backslash-`TMPDIR` run as its reproduction here), and
+Windows-backslash bullet's own instance (with the backslash-`TMPDIR` run as its reproduction here), the
+third CLI case to read a rendered line back as that bullet's newest instance (with the quoted-`TMPDIR` run
+and the limit of the backslash trick for it), and
 the dangling line as what the self-check cases read a child's per-case lines for.
 
 ## 7. Limits and residual risks

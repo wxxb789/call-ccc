@@ -300,12 +300,20 @@ not the one the rule is about:
 - a Windows path holds backslashes, which a POSIX shell reads as syntax, so the resume line a
   continuation prints quotes the data directory it names there (`CODEX_HOME='C:\…\codex home' codex
   resume …`) where a POSIX path of the same shape stands bare. The rule is "quote where a shell would
-  act on the word", not "print the path as this host spells it", so the two CLI cases that read that
+  act on the word", not "print the path as this host spells it", so the CLI cases that read that
   line back install into a directory whose name holds a space — a word the rule quotes on every
   platform — instead of asserting this host's own temp path, which is shell-safe here and shell-unsafe
   there. The Windows-shaped input is exercised on any host by pointing `TMPDIR` at a directory whose
-  name holds a backslash: the same two cases then fail against a host-shaped assertion (executed) and
-  pass against the rule. The rule is per word, and it binds the offline half's *fixture* too: the two
+  name holds a backslash: the two cases that first did this then fail against a host-shaped assertion
+  (executed) and pass against the rule. The third case to read the line back — the resume verification's
+  own command assertion the sweep added — is exercised with a temp root whose name holds a **space**, for
+  the same reason and with the same result: `gate (windows-latest)` failed the `test` step at head
+  `37c0a10` because that assertion spelled this host's temp path, and it now installs into the same
+  shell-unsafe home. A backslash-shaped root cannot stand in for that case on this host (measured: the
+  stub harness finds the installed session with `filepath.Glob` over the home, and a backslash in the
+  pattern is an escape there, so the case fails with `the stub harness found no installed session` for a
+  reason that is not this rule); the quoted-temp-root runs are in `docs/evidence/`. The rule is per word,
+  and it binds the offline half's *fixture* too: the two
   `ProtectedArtifactsAfterNativeVerification` cases fabricate the document a conversion reports and
   spelled those two command lines by joining their argument words bare — which is the renderer's own
   line only while every word is shell-safe. The stubbed binary is a full path, so on Windows it holds

@@ -771,7 +771,11 @@ supersede it with a newer one and say which it supersedes.
   CLI cases that read the line back now install into a directory whose name holds a space, which the rule
   quotes on every host, so one assertion holds everywhere instead of a platform branch
   (`shellUnsafeHome` in `cmd/ccc/main_test.go`; `docs/harness.md` states the quoting as the third Windows
-  answer the tree pins). The rendering rule is already the documented contract of the field, a caller
+  answer the tree pins). A third case joined them when the sweep added the resume verification's own
+  command assertion and spelled this host's temp path: `gate (windows-latest)` failed the `test` step at
+  head `37c0a10` for it, and it now uses the same home and the same quoted spelling (the fifth CI red,
+  `docs/evidence/0002-claude-to-codex-continuation.md` §6) — a case added to this rule, not a new answer
+  to the question above. The rendering rule is already the documented contract of the field, a caller
   that runs the harness directly uses the `resume_arguments`/`resume_environment` fields beside it, and a
   per-platform dialect would make the same field mean two things; changing product behaviour to fit a
   test would be the larger move.
