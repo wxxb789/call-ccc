@@ -753,3 +753,31 @@ supersede it with a newer one and say which it supersedes.
 - **Settled by:** whether the operator wants filesystems without hard links supported, and if so by which
   primitive. Each alternative trades the unconditional exclusive-publication rule for reach or for a
   visible placeholder window, so the choice is the owner's rather than an unattended default.
+
+## Q-0002-13 — Which shell dialect the printed resume line speaks on Windows
+
+- **Status:** resolved (default taken)
+- **Question:** a continuation prints the invocation that resumes the installed session as one line a
+  reader may paste (`resume:` in the human block, `resume_command` in the JSON), rendered as a POSIX
+  shell line: a leading `CODEX_HOME=<dir>` assignment, then the words, each quoted where a shell would
+  act on it (`renderResumeCommand`, `internal/ccc/continue.go`). That spelling is not what PowerShell or
+  `cmd` accept — there the same directory is set with `$env:CODEX_HOME='…'` before the command — so on
+  Windows the printed line names the right directory in a form that shell cannot paste. CI's
+  `gate (windows-latest)` found the consequence: a Windows temp path holds backslashes, which a POSIX
+  shell reads as syntax, so the line quotes the directory there while the CLI test asserted this host's
+  bare temp path and failed. Should the line be rendered per platform (`$env:` on Windows, POSIX
+  elsewhere), be accompanied by a platform note, or stay one POSIX line?
+- **Default taken:** it stays one POSIX shell line on every platform, and the test moved instead: the two
+  CLI cases that read the line back now install into a directory whose name holds a space, which the rule
+  quotes on every host, so one assertion holds everywhere instead of a platform branch
+  (`shellUnsafeHome` in `cmd/ccc/main_test.go`; `docs/harness.md` states the quoting as the third Windows
+  answer the tree pins). The rendering rule is already the documented contract of the field, a caller
+  that runs the harness directly uses the `resume_arguments`/`resume_environment` fields beside it, and a
+  per-platform dialect would make the same field mean two things; changing product behaviour to fit a
+  test would be the larger move.
+- **Reversal:** render by platform in `renderResumeCommand` (a dialect argument from the target
+  resolver), or leave the line alone and add a `format_limits`/warning entry saying which shell it is for
+  — the second is compatible with every consumer that reads the fields rather than the line.
+- **Settled by:** whether the operator wants the printed line to be pasteable on Windows, at the cost of
+  a field whose meaning depends on the host that wrote it. Nothing in the conversion, the installation or
+  the verification depends on the answer.

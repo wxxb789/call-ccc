@@ -238,7 +238,7 @@ mode the installer *requests* (`codexSessionFileMode`) on Windows, and compares 
 own bits with that request where the platform reports them: a widened mode must fail on the platform
 where the answer is visible, so the two halves are asserted by one platform-aware branch.
 
-Two more Windows answers the tree pins rather than tolerates, both because the platform's own answer is
+Three more Windows answers the tree pins rather than tolerates, all because the platform's own answer is
 not the one the rule is about:
 
 - a missing binary raises `FileNotFoundError` **without a filename** on Windows — `CreateProcess`'s
@@ -252,6 +252,15 @@ not the one the rule is about:
   symlink layer does it, and the run names how many links needed it. The Windows-shaped tree is
   simulated on any host through the check's own seam (`platform_name`) and, where the host can create
   one, by writing the link's target in that spelling — the shapes are pinned by cases that run here.
+- a Windows path holds backslashes, which a POSIX shell reads as syntax, so the resume line a
+  continuation prints quotes the data directory it names there (`CODEX_HOME='C:\…\codex home' codex
+  resume …`) where a POSIX path of the same shape stands bare. The rule is "quote where a shell would
+  act on the word", not "print the path as this host spells it", so the two CLI cases that read that
+  line back install into a directory whose name holds a space — a word the rule quotes on every
+  platform — instead of asserting this host's own temp path, which is shell-safe here and shell-unsafe
+  there. The Windows-shaped input is exercised on any host by pointing `TMPDIR` at a directory whose
+  name holds a backslash: the same two cases then fail against a host-shaped assertion (executed) and
+  pass against the rule.
 
 ## CI
 

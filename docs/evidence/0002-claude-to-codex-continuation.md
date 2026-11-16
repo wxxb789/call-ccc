@@ -330,10 +330,10 @@ summary and must be written once).
 
 ```
 $ CGO_ENABLED=1 go test -tags fts5 -count=1 ./cmd/ccc/... ./internal/ccc/...     # rc=0
-ok  	go.kenn.io/agentsview/cmd/ccc	2.285s
-ok  	go.kenn.io/agentsview/internal/ccc	10.984s
+ok  	go.kenn.io/agentsview/cmd/ccc	1.712s
+ok  	go.kenn.io/agentsview/internal/ccc	9.803s
 ?   	go.kenn.io/agentsview/internal/ccc/fixturegen	[no test files]
-ok  	go.kenn.io/agentsview/internal/ccc/parity	1.963s
+ok  	go.kenn.io/agentsview/internal/ccc/parity	1.062s
 ?   	go.kenn.io/agentsview/internal/ccc/parity/oracle	[no test files]
 ```
 
@@ -367,7 +367,7 @@ gate: go=<home>/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/..
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 144 tests in 7.323s (rc=0)
+  PASS     selftest Ran 144 tests in 7.564s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 26 project-owned prefix(es); files seen by git: 5623 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     secrets  no leaks found in 68 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
@@ -388,6 +388,21 @@ report as `the source session is unchanged`, and `TestDumpMatchesTheRecordedUpst
 gate's `test` step) still holds the recorded dumps against the unchanged first fixtures.
 `scripts/upstream-compare.py` itself was **not** re-run here (it needs network and a pristine
 checkout of the pin); its next run is the operator's, and the offline half of the same comparison passes.
+
+The last repair to this increment came from CI rather than from a clause: `gate (windows-latest)` failed
+in the `test` step on the two CLI cases that read the resume line back. The line is rendered the way a
+POSIX shell reads it, and a Windows temp path holds backslashes a shell would act on, so the line quotes
+the data directory there — while those two cases had been written against *this* host's temp path, which
+is shell-safe and stands bare. They now install into `<tmp>/…/codex home`, a word the rule quotes on
+every platform, and assert the quoted spelling: one assertion for both hosts instead of a platform
+branch. Executed on this host: with `TMPDIR` pointed at a directory whose name holds a backslash (a
+Windows-shaped temp root; e.g. `TMPDIR='/tmp/win\sim' go test -tags fts5 -count=1 ./cmd/ccc/...`) the two
+cases failed against the old expectation with
+`resume_command = "CODEX_HOME='…\…' ccc-no-such-target-harness resume …"` and pass against the new one,
+while the rest of the package was green in both shapes; three mutations of the renderer — drop the
+`CODEX_HOME=` assignment, never quote a word, quote every word — each turned both cases red, and the
+mutated file was restored byte-identical (`sha256 fb2a59a2…`). `docs/harness.md` states the quoting as
+the third Windows answer its Platform boundary section pins.
 
 ## 7. Limits and residual risks
 

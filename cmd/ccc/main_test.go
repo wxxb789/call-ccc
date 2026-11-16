@@ -578,6 +578,23 @@ func continueEnvironment(t *testing.T) (dataDir, targetHome string) {
 	return dataDir, targetHome
 }
 
+// shellUnsafeHome answers a target data directory whose path a POSIX shell would act on — it holds a
+// space — and points the CLI at it. The resume line is rendered the way a POSIX shell reads it, so a
+// home like this one is quoted on every host, while a host's own temp path is spelled differently:
+// bare where nothing in it is shell syntax (POSIX) and quoted where it holds backslashes (Windows). An
+// assertion written against the host's own home therefore pins whichever arm that host happens to
+// spell and fails on the other, which is not the rule: the rule is that the line selects the directory
+// the session was installed into, quoted exactly when a shell would otherwise act on the word.
+func shellUnsafeHome(t *testing.T) string {
+	t.Helper()
+	home := filepath.Join(t.TempDir(), "codex home")
+	if err := os.Mkdir(home, 0o700); err != nil {
+		t.Fatalf("creating the target home: %v", err)
+	}
+	t.Setenv("CODEX_HOME", home)
+	return home
+}
+
 // continueArgs is the common invocation every continuation test starts from.
 func continueArgs(sessionID string, extra ...string) []string {
 	args := []string{"continue", "claude:" + sessionID, "--to", "codex", "--target-binary", missingTargetBinary}
@@ -591,7 +608,8 @@ const missingTargetBinary = "ccc-no-such-target-harness"
 // machine-readable clause: one JSON object on stdout reports what was converted, where it was
 // installed, and which verification actually ran — three states a reader can tell apart.
 func TestContinueJSONDistinguishesConversionInstallationAndVerification(t *testing.T) {
-	_, targetHome := continueEnvironment(t)
+	continueEnvironment(t) // the fixture tree as the source and an isolated data directory
+	targetHome := shellUnsafeHome(t)
 	sessionID, _ := claudeFixture(t)
 	code, stdout, stderr := runCLI(t, continueArgs(sessionID, "--json")...)
 	if code != exitOK {
@@ -704,7 +722,10 @@ func TestContinueJSONDistinguishesConversionInstallationAndVerification(t *testi
 		document.TargetSession.ResumeEnvironment["CODEX_HOME"] != targetHome {
 		t.Errorf("resume_environment = %v, want CODEX_HOME=%s", document.TargetSession.ResumeEnvironment, targetHome)
 	}
-	if want := "CODEX_HOME=" + targetHome + " " + missingTargetBinary + " resume " +
+	// The home is single-quoted because of the space in it (the renderer quotes a word exactly when a
+	// POSIX shell would act on it); the harness name and the session id hold nothing a shell would act
+	// on, so both stand bare.
+	if want := "CODEX_HOME='" + targetHome + "' " + missingTargetBinary + " resume " +
 		document.TargetSession.SessionID; document.TargetSession.ResumeCommand != want {
 		t.Errorf("resume_command = %q, want %q", document.TargetSession.ResumeCommand, want)
 	}
@@ -738,7 +759,8 @@ func TestContinueJSONDistinguishesConversionInstallationAndVerification(t *testi
 // TestContinueHumanOutputNamesTheResumeCommand pins the human block: an operator reads the target
 // identity, where it was installed and the command that resumes it without opening the JSON.
 func TestContinueHumanOutputNamesTheResumeCommand(t *testing.T) {
-	_, targetHome := continueEnvironment(t)
+	continueEnvironment(t) // the fixture tree as the source and an isolated data directory
+	targetHome := shellUnsafeHome(t)
 	sessionID, _ := claudeFixture(t)
 	code, stdout, stderr := runCLI(t, continueArgs(sessionID)...)
 	if code != exitOK {
@@ -751,9 +773,11 @@ func TestContinueHumanOutputNamesTheResumeCommand(t *testing.T) {
 		// The printed command names the harness the caller named (here, the test's own absent one),
 		// so a caller that runs a binary from an unusual path gets that path back -- and the data
 		// directory the session was installed into, which Codex otherwise takes from the caller's own
-		// environment rather than from the command line.
-		"resume:       CODEX_HOME=" + targetHome + " " + missingTargetBinary + " resume ",
-		"non-interactive resume: CODEX_HOME=" + targetHome + " " + missingTargetBinary + " exec resume ",
+		// environment rather than from the command line. That directory is quoted because of the space
+		// above; the harness name and the session id hold nothing a shell would act on, so they stand
+		// as they are.
+		"resume:       CODEX_HOME='" + targetHome + "' " + missingTargetBinary + " resume ",
+		"non-interactive resume: CODEX_HOME='" + targetHome + "' " + missingTargetBinary + " exec resume ",
 		"structure:    verified",
 	} {
 		if !strings.Contains(stdout, want) {
