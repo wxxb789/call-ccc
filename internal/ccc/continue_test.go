@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -99,8 +100,20 @@ func TestContinueConvertsInstallsAndReadsBackTheFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the installed session is not there: %v", err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Errorf("the installed session's permissions are %v, want 0600", info.Mode().Perm())
+	// The rule is that the installed session is readable and writable by its owner and by nobody else.
+	// Where the filesystem reports POSIX mode bits, that is the installed file's own mode, and it must
+	// be exactly what the installer asked for. Windows reports none — every stat answers -rw-rw-rw-
+	// there, whatever mode the file was opened with — so what is checkable on such a host is the
+	// request itself, which is why the installer names it (codexSessionFileMode); a conversion that
+	// widened the mode must still fail on the platform where the answer is invisible.
+	if runtime.GOOS == "windows" {
+		if codexSessionFileMode.Perm() != 0o600 {
+			t.Errorf("the installer asks for mode %v, want 0600 (Windows reports no POSIX mode bits, "+
+				"so the request is the half of the rule that is checkable here)", codexSessionFileMode)
+		}
+	} else if perm := info.Mode().Perm(); perm != codexSessionFileMode.Perm() || perm&0o077 != 0 {
+		t.Errorf("the installed session's permissions are %v, want %o — the mode the installer asked "+
+			"for, with nothing for group or other", perm, codexSessionFileMode.Perm())
 	}
 	if len(result.TargetSession.FormatLimits) == 0 {
 		t.Error("the report states no format limits, so a consumer cannot tell what the pair cannot express")

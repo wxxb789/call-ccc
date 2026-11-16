@@ -78,12 +78,21 @@ It verifies, in this order:
    where the checkout really stores links that way, which git's own `core.symlinks=false` (or a
    platform that cannot create symlinks) states; a broken `core.symlinks` query on a tree git is
    answering for fails the step naming the probe, and the run reports how many file-form links it
-   accepted. `git status` is the one answer a path can be configured to suppress: an `assume-unchanged`
+   accepted. A link whose target the *platform* re-spells is compared in that spelling: Git for
+   Windows cannot create a symlink whose target holds `/` (its `mingw_create_symlink` rewrites each
+   separator to `\`), so the link a checkout there creates for the pin's `../../x` reads back as
+   `..\..\x` — the same destination, hashing to no blob the manifest holds. Only the separators are
+   folded, only for a link, and only on the platform whose symlink layer does it, so a POSIX checkout
+   and a target that changed by anything else are still failures; the run names how many links it
+   matched that way. `git status` is the one answer a path can be configured to suppress: an `assume-unchanged`
    or `skip-worktree` index flag keeps an edited file out of git's report while the pinned blob stays in
    the index, so a check that read "git reports nothing modified" as "the file is the pin's copy" would
    pass for modified carried source. The record's *mode* is additionally compared with git's index
    (what a fresh clone receives), and a `git status` answer saying the file differs from the index is
-   still a failure — a `git status` that cannot answer fails the step instead of dropping the rule;
+   still a failure — except for a link whose target was matched in this platform's spelling: git there
+   spells that link the same way and reports a checkout the pin itself creates, so its answer about that
+   one link adds nothing to the shape and index rules around it — and a `git status` that cannot answer
+   fails the step instead of dropping the rule;
 4. no carried path matches the tree's ignore rules, which would make `git add` skip it in a fresh
    clone;
 5. nothing git would add sits inside the tree unexplained: a tracked or untracked-but-not-ignored
@@ -219,7 +228,25 @@ which platform is running it.
 Windows has no POSIX mode bits, so `parity` declines to check a carried file's — or a stored-byte
 deviation's — working-tree owner-executable bit there and says so in its output instead of failing every
 executable file; the *stored* mode still comes from git's own index, which records it on every
-platform.
+platform. For the same reason the Go test that pins an installed session's permissions asks for the
+mode the installer *requests* (`codexSessionFileMode`) on Windows, and compares the installed file's
+own bits with that request where the platform reports them: a widened mode must fail on the platform
+where the answer is visible, so the two halves are asserted by one platform-aware branch.
+
+Two more Windows answers the tree pins rather than tolerates, both because the platform's own answer is
+not the one the rule is about:
+
+- a missing binary raises `FileNotFoundError` **without a filename** on Windows — `CreateProcess`'s
+  error carries a WinError only, where the POSIX error names the file it could not find — so the gate's
+  step result names the command itself (`rc=127`, and the command in the detail) and the suite pins the
+  Windows shape by raising exactly that error on any host, instead of reading the platform's message;
+- a link's target is re-spelled: Git for Windows cannot create a symlink whose target holds `/`
+  (`mingw_create_symlink` rewrites each separator to `\`), so the link a checkout there creates for a
+  carried `120000` record reads back in that spelling and hashes to no blob the manifest holds. See the
+  `parity` section above: the separators alone are folded, only for a link, only on the platform whose
+  symlink layer does it, and the run names how many links needed it. The Windows-shaped tree is
+  simulated on any host through the check's own seam (`platform_name`) and, where the host can create
+  one, by writing the link's target in that spelling — the shapes are pinned by cases that run here.
 
 ## CI
 

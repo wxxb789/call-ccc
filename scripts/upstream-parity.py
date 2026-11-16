@@ -28,6 +28,16 @@ with symlinks enabled that replaced one would otherwise pass on bytes, index mod
 ``skip-worktree``-silenced ``git status`` alike. The run says how many such file-form links it
 accepted, so the allowance is visible in its own answer.
 
+A link whose target this platform's own symlink layer re-spells is compared in that spelling too. Git
+for Windows cannot create a link whose target holds a forward slash -- its ``mingw_create_symlink``
+rewrites every ``/`` in the target to ``\\`` before calling ``CreateSymbolicLinkW`` -- so the link that
+checkout created for the pin's ``../../x`` reads back as ``..\\..\\x``: the same destination, spelled the
+way that platform spells a path, hashing to no blob the manifest holds. Only the separators are folded,
+and only for a link, on a platform whose symlink layer does this: a target that differs by anything else
+is drift, a checkout that holds the link as a file writes the pin's bytes verbatim, and on POSIX, where
+a backslash is a character in a filename rather than a separator, nothing is folded at all. The run says
+how many links it matched that way.
+
 Every git query this check makes is required: when git answers the file list but refuses the untracked
 list, the index or the status report, the step fails naming the probe instead of skipping the rule it
 answers for. "Nothing would be added" and "nothing is modified" are the answers that look like a pass,
@@ -221,6 +231,22 @@ def symlinks_unavailable() -> bool:
     return platform_name() == "nt"
 
 
+def separators_respelled() -> bool:
+    """Whether this platform's symlink layer stores a link's target in its own separator spelling.
+
+    Git for Windows cannot create a link whose target holds a forward slash: ``mingw_create_symlink``
+    rewrites every ``/`` in the target to ``\\`` before calling ``CreateSymbolicLinkW``, so the link
+    such a checkout creates for the pin's ``../../.agents/skills/x`` holds
+    ``..\\..\\.agents\\skills\\x`` -- the same destination, spelled the way that platform spells a
+    path -- and reading the link back answers that spelling. POSIX stores the target text as the pin
+    holds it, so a backslash there is a different destination rather than a spelling of the same one.
+
+    A named seam rather than a bare platform read, for the reason :func:`platform_name` is one: the
+    rule reading it has two answers and a case has to be able to pin both, on either host.
+    """
+    return platform_name() == "nt"
+
+
 def link_paths_may_be_files(root: Path, git_tree: bool) -> bool:
     """Whether a carried ``120000`` record may be a regular file holding the link's target text here.
 
@@ -355,15 +381,19 @@ def worktree_mode(root: Path, record: Record) -> tuple[str, bool]:
     return "", False
 
 
-def worktree_state(root: Path, record: Record, link_files_allowed: bool) -> tuple[str, bool]:
+def worktree_state(
+    root: Path, record: Record, link_files_allowed: bool
+) -> tuple[str, bool, bool]:
     """How a carried file's *working tree* copy stands against the record the manifest keeps.
 
-    Answers ``(problem, mode_unverified)``: ``problem`` is ``""`` when the copy is the pinned bytes in
-    the shape and mode the record names, and otherwise the first rule it breaks -- ``"shape"`` for a
-    path that is a directory, or a link where the pin carries a file (or the reverse), ``"drifted"``
-    for other bytes than the pinned blob, ``"size"`` for another size, ``"mode"`` for another
-    owner-executable bit (see :func:`worktree_mode`). ``mode_unverified`` is True only when the copy is
-    otherwise right and this platform has no POSIX mode bits to answer with.
+    Answers ``(problem, mode_unverified, respelled)``: ``problem`` is ``""`` when the copy is the
+    pinned bytes in the shape and mode the record names, and otherwise the first rule it breaks --
+    ``"shape"`` for a path that is a directory, or a link where the pin carries a file (or the
+    reverse), ``"drifted"`` for other bytes than the pinned blob, ``"size"`` for another size,
+    ``"mode"`` for another owner-executable bit (see :func:`worktree_mode`). ``mode_unverified`` is
+    True only when the copy is otherwise right and this platform has no POSIX mode bits to answer
+    with. ``respelled`` is True when the copy is a ``120000`` record's link whose target this
+    platform's own spelling accounts for (see :func:`separators_respelled`), which the run discloses.
 
     A ``120000`` record's copy is a link, or a file holding the link's target text where this checkout
     is known to write links that way (``link_files_allowed``, decided once per run by
@@ -382,21 +412,34 @@ def worktree_state(root: Path, record: Record, link_files_allowed: bool) -> tupl
         # git stores a link as its target text; only a checkout that does not create symlinks holds
         # that text in a file, which is the one other shape the pin's link can have.
         if not is_link and not (link_files_allowed and target.is_file()):
-            return "shape", False
+            return "shape", False, False
     elif is_link or not target.is_file():
-        return "shape", False
-    digest, size, _ = hashed_path(root, record.path)
+        return "shape", False, False
+    digest, size, data = hashed_path(root, record.path)
+    respelled = False
+    if digest != record.digest and is_link and separators_respelled():
+        # A platform that creates a link with its own separators (Git for Windows rewrites every '/'
+        # in the target to '\') stores the pin's target *as that platform spells it*, so the link this
+        # checkout created reads back with backslashes and hashes to no blob the manifest holds.
+        # Folding the separators is the whole allowance: a target that differs by anything else --
+        # another path, another component -- still fails, and POSIX, where a backslash is a character
+        # in a filename rather than a separator, is not folded at all. The file form is not folded
+        # either: a checkout that writes the link as a file writes the pin's bytes verbatim (git's own
+        # ``write_file_entry``), so a backslash in such a file is its content, not a spelling.
+        if blob_sha1(data.replace(b"\\", b"/")) == record.digest:
+            digest, respelled = record.digest, True
     if digest != record.digest:
-        return "drifted", False
+        return "drifted", False, False
     if size != record.size:
-        return "size", False
-    return worktree_mode(root, record)
+        return "size", False, False
+    problem, mode_unverified = worktree_mode(root, record)
+    return problem, mode_unverified, respelled
 
 
 def check_files(
     root: Path, manifest: Manifest, index: dict[str, tuple[str, str]] | None,
     modified: set[str] | None, link_files_allowed: bool,
-) -> tuple[int, int, int, int]:
+) -> tuple[int, int, int, int, int]:
     """Verify every carried file against the pin.
 
     The working tree is verified first and in both branches, by hashing the file this repository
@@ -407,21 +450,29 @@ def check_files(
     the bytes already hashed are the whole answer, which is the same answer for a tree whose files
     were written by the importer.
 
-    Returns ``(checked, mode_unverified, symlinks_hashed, link_files_seen)``, where
+    Returns ``(checked, mode_unverified, symlinks_hashed, link_files_seen, respelled_links)``, where
     ``link_files_seen`` counts the carried links this checkout holds as a file with the link's target
-    text: the shapes :func:`link_paths_may_be_files` allowed, which the run discloses.
+    text -- the shapes :func:`link_paths_may_be_files` allowed -- and ``respelled_links`` the links
+    whose target matched only once this platform's separator spelling was folded
+    (:func:`separators_respelled`); the run discloses both. A link counted in ``respelled_links`` is
+    also the one path on which git's own *working-tree* comparison is not a second failure: git on
+    such a host spells that link's content the same way, so its answer is "differs from the index" for
+    a checkout the pin itself creates there -- see the loop below. Its index entry -- the pinned mode
+    and blob, what a fresh clone receives -- is still required to be the pin's.
     """
     missing, drifted, wrong_shape, wrong_mode = [], [], [], []
     size_mismatch: list[str] = []
     mode_unverified = 0
     symlinks_hashed = 0
     link_files_seen = 0
+    respelled_links = 0
     dirty: list[str] = []
     for record in manifest.files:
         if not present(root, record.path):
             missing.append(record.path)
             continue
-        problem, mode_unverified_here = worktree_state(root, record, link_files_allowed)
+        problem, mode_unverified_here, respelled = worktree_state(
+            root, record, link_files_allowed)
         if problem == "shape":
             wrong_shape.append(record.path)
             continue
@@ -436,6 +487,8 @@ def check_files(
             continue
         if mode_unverified_here:
             mode_unverified += 1
+        if respelled:
+            respelled_links += 1
         if record.mode == "120000":
             symlinks_hashed += 1
             if not (root / record.path).is_symlink():
@@ -453,7 +506,15 @@ def check_files(
         if mode != record.mode:
             wrong_mode.append(record.path)
             continue
-        if modified is not None and record.path in modified:
+        if modified is not None and record.path in modified and not respelled:
+            # A link whose target this platform's own symlink layer re-spelled has already been
+            # verified against the pin in that spelling, and git on such a host compares the same
+            # link as the same bytes: its own answer is "differs from the index" for a checkout the
+            # pin *creates on that platform*, so the probe adds no information about that link that
+            # the two rules around it do not already hold -- the shape is the pin's shape, and the
+            # index still holds the pinned mode and blob, which is what a fresh clone receives. Every
+            # other path, and every other difference, keeps this rule: a reported difference is a
+            # failure unless the link's own target was verified in the platform's spelling here.
             dirty.append(record.path)
     if missing:
         raise Failure(f"{len(missing)} carried file(s) are absent", missing)
@@ -475,7 +536,7 @@ def check_files(
         raise Failure(
             f"{len(dirty)} carried file(s) differ from what git stores for them", dirty
         )
-    return len(manifest.files), mode_unverified, symlinks_hashed, link_files_seen
+    return len(manifest.files), mode_unverified, symlinks_hashed, link_files_seen, respelled_links
 
 
 def check_untracked(root: Path, manifest: Manifest, tracked: list[str] | None,
@@ -778,7 +839,7 @@ def run(root: Path) -> list[str]:
         link_paths_may_be_files(root, git_tree=tracked is not None)
         if any(record.mode == "120000" for record in manifest.files) else False
     )
-    carried_checked, mode_unverified, symlinks_hashed, link_files_seen = check_files(
+    carried_checked, mode_unverified, symlinks_hashed, link_files_seen, respelled_links = check_files(
         root, manifest, index, modified, link_files_allowed)
     check_not_ignored(root, manifest, tracked)
     seen = check_untracked(root, manifest, tracked, others)
@@ -821,6 +882,14 @@ def run(root: Path) -> list[str]:
             f"(this checkout does not create symlinks)"
         ]
         if link_files_seen else []
+    ) + (
+        [
+            f"carried link(s) matched in this platform's own spelling: {respelled_links} "
+            f"(its symlink layer stores a link's target with backslashes, so the pin's target was "
+            f"folded to compare; git's own working-tree comparison of those links is the same "
+            f"spelling, and their index entries are still the pin's)"
+        ]
+        if respelled_links else []
     ) + (
         [
             f"owner-executable bits not verified for {mode_unverified + stored_mode_unverified} "

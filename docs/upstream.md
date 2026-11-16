@@ -31,7 +31,14 @@ mode records, `S_IXUSR`) are compared directly with the file this repository shi
 what a stat cannot answer — what a fresh clone receives. A carried symlink's shape is part of that
 comparison: the link and the regular file holding its target text are the same git object, so the file
 form is accepted only where the checkout says it stores links that way (`core.symlinks=false`, or a
-platform that cannot create symlinks), and the run reports how many it accepted. It then fails if a
+platform that cannot create symlinks), and the run reports how many it accepted. A link whose target
+this platform's own symlink layer re-spells is compared in that spelling: Git for Windows cannot create
+a link whose target holds `/` (its `mingw_create_symlink` rewrites each separator to `\`), so the link a
+checkout there creates for the pin's `../../x` reads back as `..\..\x` — the same destination, hashing
+to no blob the manifest holds, and what a correct checkout on that platform looks like. Only the
+separators are folded, only for a link, and only on the platform whose symlink layer does it, so a POSIX
+checkout and a target that changed by anything else are still drift; the run names how many links it
+matched that way. It then fails if a
 manifest path is missing or modified in the working tree, if a declared deviation has quietly turned
 back into upstream's copy — staged *or* only
 written on disk, since the gate reads the working tree — or stops holding the stored bytes its record

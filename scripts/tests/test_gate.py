@@ -701,7 +701,12 @@ class GateProbeCase(GateTree, unittest.TestCase):
         self.assertIsNone(on_posix)
 
     def test_missing_binary_is_a_step_result_not_a_crash(self) -> None:
-        """``run()`` answers rc=127 when the binary is not on PATH at all."""
+        """``run()`` answers rc=127 when the binary is not on PATH at all, and names it.
+
+        The launch is the host's own, so this is the platform's error shape for a missing executable
+        -- and the platform's message does not hold the program on every platform (see the case below
+        for the Windows one), which is why the step result names it and this asserts it here.
+        """
         gate = load_shipped_gate()
         gate.ROOT = self.root
         missing = "ccc-no-such-binary-3f9a2b"
@@ -709,6 +714,29 @@ class GateProbeCase(GateTree, unittest.TestCase):
         self.assertEqual(proc.returncode, 127, proc.stderr)
         self.assertEqual(proc.stdout, "")
         self.assertIn(missing, proc.stderr)
+
+    def test_a_windows_shaped_missing_binary_is_a_named_step_result(self) -> None:
+        """The Windows error carries no filename, so ``run()`` has to name the command itself.
+
+        A Windows host raises this error through ``CreateProcess``: ``PyErr_SetFromWindowsErr`` gives
+        ``FileNotFoundError`` a ``winerror`` and no filename, so ``str(exc)`` is "[WinError 2] The
+        system cannot find the file specified" -- no program in it -- while the POSIX error names the
+        file it could not find. A step result that only echoed the platform's message therefore lost
+        the tool's name on Windows alone, which is the failure this case pins: the raising is the
+        Windows shape, so the case runs it on any host instead of asserting from memory what Windows
+        does, and it launches nothing, so no stub has to exist for it.
+        """
+        gate = load_shipped_gate()
+        gate.ROOT = self.root
+        missing = "ccc-no-such-binary-3f9a2b"
+        with mock.patch.object(gate.subprocess, "run",
+                               side_effect=FileNotFoundError(
+                                   2, "The system cannot find the file specified")):
+            proc = gate.run([missing])
+        self.assertEqual(proc.returncode, 127, proc.stderr)
+        self.assertEqual(proc.stdout, "")
+        self.assertIn(missing, proc.stderr)
+        self.assertIn("The system cannot find the file specified", proc.stderr)
 
     def test_secrets_step_scans_this_repositorys_own_files(self) -> None:
         """The carried tree is the parity step's to verify; the leak scan reads what is ours.

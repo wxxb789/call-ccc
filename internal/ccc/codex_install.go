@@ -18,6 +18,13 @@ import (
 // The target's own discovery walks it as <home>/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl.
 const codexSessionsSubdir = "sessions"
 
+// codexSessionFileMode is the mode the installer asks the OS to give a session file it writes:
+// readable and writable by its owner, by nobody else. It is named because the *request* is the
+// checkable half of that rule on a host without POSIX mode bits — Windows answers every os.Stat with
+// -rw-rw-rw- for a file this installer asked to be 0600 — so the test that pins the rule asserts this
+// constant there and the installed file's own bits where the platform reports them.
+const codexSessionFileMode os.FileMode = 0o600
+
 // ErrTargetHomeMissing reports a target data directory that does not exist. call/ccc never invents one:
 // a conversion that wrote sessions into a directory the target harness does not use would look
 // installed while nothing could resume it.
@@ -81,7 +88,7 @@ func InstallCodexRollout(rollout CodexRollout, home string) (string, string, err
 		temp.Close()
 		os.Remove(tempName)
 	}
-	if err := temp.Chmod(0o600); err != nil {
+	if err := temp.Chmod(codexSessionFileMode); err != nil {
 		cleanup()
 		return "", "", fmt.Errorf("restricting %s: %w", tempName, err)
 	}
