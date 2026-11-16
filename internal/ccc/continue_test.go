@@ -1,6 +1,7 @@
 package ccc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -949,6 +950,107 @@ func TestStructureVerificationNamesWhatTheFileDoesNotHold(t *testing.T) {
 	}
 	if !strings.Contains(verification.Detail, describeText(missing)) {
 		t.Errorf("the difference report does not identify the missing evidence: %q", verification.Detail)
+	}
+}
+
+// TestStructureVerificationReadsTheInstalledPathItWasGiven pins which file the structural check reads:
+// the path it was handed (TargetPath), never whichever copy of the session's id the target's own
+// sessions tree would resolve to. The inherited reader's id lookup walks every dated directory under
+// the root and prefers the lexically first copy of a UUID, so a target home that already holds another
+// copy of the id -- or merely a long history of unrelated sessions -- would otherwise decide what the
+// check compares, and how much of the home it walks, although the check knows the installed file's path
+// (review round 12's finding 2).
+//
+// The decoy is planted where that lookup prefers it -- an earlier dated directory under the same
+// sessions root, holding the same identity and one different model-visible message -- and the premise is
+// asserted first: asked for the id, the same reader the check builds answers with the decoy. A check that
+// resolved the id would read the decoy and report the installed file as missing the message the document
+// writes; the mutation recorded for this rule showed exactly that.
+func TestStructureVerificationReadsTheInstalledPathItWasGiven(t *testing.T) {
+	ctx := context.Background()
+	cfg := fixtureConfig(t)
+	conversation, err := NewSourceReader(cfg).Read(ctx, claudeFixtureRef)
+	if err != nil {
+		t.Fatalf("reading the fixture: %v", err)
+	}
+	const sessionID = "01a1e000-2222-7000-8000-000000000006"
+	rollout, err := ConvertToCodexRollout(conversation, CodexTargetOptions{SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	home := t.TempDir()
+	installed, _, err := InstallCodexRollout(rollout, home)
+	if err != nil {
+		t.Fatalf("installing: %v", err)
+	}
+	sessions := filepath.Join(home, codexSessionsSubdir)
+
+	// The decoy's conversation is the installed one with one model-visible text replaced, so it is
+	// certainly a readable session of the same id whose read-back cannot equal the document. The text is
+	// taken from the document and required to be in the file's own bytes, so the replacement is the one
+	// this case means to make.
+	marker := "a decoy session another agent wrote"
+	replaced := ""
+	for _, item := range rollout.Items {
+		if item.Kind == ItemAssistant && strings.TrimSpace(item.Text) != "" &&
+			bytes.Contains(rollout.Data, []byte(item.Text)) {
+			replaced = item.Text
+			break
+		}
+	}
+	if replaced == "" {
+		t.Fatalf("no assistant text the conversion wrote is present in the file's own bytes, so this "+
+			"case cannot plant a different conversation (%d item(s))", len(rollout.Items))
+	}
+	decoyBytes := bytes.ReplaceAll(rollout.Data, []byte(replaced), []byte(marker))
+	if bytes.Equal(decoyBytes, rollout.Data) {
+		t.Fatal("the decoy holds the installed bytes: it would not tell an id-based read-back from a path-based one")
+	}
+	decoy := filepath.Join(sessions, "2001", "01", "01", "rollout-2001-01-01T00-00-00-"+sessionID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(decoy), 0o700); err != nil {
+		t.Fatalf("creating the decoy's directory: %v", err)
+	}
+	if err := os.WriteFile(decoy, decoyBytes, 0o600); err != nil {
+		t.Fatalf("writing the decoy: %v", err)
+	}
+
+	// The premise: the reader this check builds, asked for the session's id -- the resolution the check
+	// must not make -- answers with the decoy's own conversation rather than with the installed file's. A
+	// reader that stopped preferring the decoy would leave this case pinning nothing, so the premise is
+	// asserted, not assumed.
+	premise := cfg
+	premiseDirs := make(map[parser.AgentType][]string, len(cfg.AgentDirs)+1)
+	for agent, roots := range cfg.AgentDirs {
+		premiseDirs[agent] = roots
+	}
+	premiseDirs[parser.AgentCodex] = []string{sessions}
+	premise.AgentDirs = premiseDirs
+	premise.DisabledAgents = nil
+	byID, err := NewSourceReader(premise).Read(ctx, Ref{Provider: string(parser.AgentCodex), ID: sessionID})
+	if err != nil {
+		t.Fatalf("reading the decoy by id: %v", err)
+	}
+	decoyRead := false
+	for _, message := range byID.Messages {
+		if strings.Contains(message.Content, marker) || strings.Contains(message.Dialogue, marker) {
+			decoyRead = true
+			break
+		}
+	}
+	if !decoyRead {
+		t.Fatalf("the reader's id lookup did not answer with the decoy's own conversation: this case " +
+			"pins the read path only while that lookup prefers the decoy")
+	}
+
+	verification, err := VerifyCodexRolloutStructure(ctx, sessions, rollout, cfg)
+	if err != nil {
+		t.Fatalf("verifying: %v", err)
+	}
+	if verification.TargetPath != installed {
+		t.Errorf("the verification names %s, want the installed file %s", verification.TargetPath, installed)
+	}
+	if verification.State != VerificationStateVerified {
+		t.Fatalf("the check read something other than the installed file: %+v", verification)
 	}
 }
 

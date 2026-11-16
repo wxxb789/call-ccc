@@ -44,6 +44,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path, PureWindowsPath
 from unittest import mock
@@ -150,6 +151,131 @@ class ResumeInvocationCheck(unittest.TestCase):
         line = f"CODEX_HOME='codex-home {CODEX} resume {SESSION}"
         self.assertIsNone(NATIVE_CHECK.shell_words(line))
         self.assertFalse(NATIVE_CHECK.reported_invocation(line, Path("codex-home"), RESUME_ARGUMENTS))
+
+
+#: A host configuration the seeding case drives the check with: one credential in each shape a real
+#: configuration can hold it -- a provider's authorization header written out, a query parameter carrying
+#: a token, another provider's definition, and an MCP server's environment table. The values are
+#: sanitized fixtures (no real token, no prefix any secret scanner looks for), which is all the case
+#: needs: the rule is about the *name* of the setting, so a copied value is a copied value whatever it
+#: says.
+HOST_TOKENS = {
+    "header": "a-fixture-header-token",
+    "query": "a-fixture-query-token",
+    "other": "a-fixture-other-provider-token",
+    "mcp": "a-fixture-mcp-environment-token",
+    "url_user": "a-fixture-url-user",
+    "url_password": "a-fixture-url-password",
+}
+
+HOST_CONFIGURATION = f"""\
+model = "a-host-model"
+model_provider = "a-proxy"
+model_reasoning_effort = "high"
+
+[model_providers.a-proxy]
+name = "A Proxy"
+base_url = "https://proxy.example/v1"
+wire_api = "responses"
+env_key = "A_PROXY_KEY"
+http_headers = {{ Authorization = "Bearer {HOST_TOKENS['header']}" }}
+query_params = {{ token = "{HOST_TOKENS['query']}" }}
+
+[model_providers.other]
+name = "Other"
+base_url = "https://other.example/v1"
+http_headers = {{ Authorization = "Bearer {HOST_TOKENS['other']}" }}
+
+[mcp_servers.a-server]
+command = "a-server"
+env = {{ A_TOKEN = "{HOST_TOKENS['mcp']}" }}
+
+[projects."/a/project"]
+trust_level = "trusted"
+"""
+
+
+class SeededHostConfiguration(unittest.TestCase):
+    """The throw-away Codex home is seeded with settings, never with the host's configuration file.
+
+    The rule this class pins: a setting whose value can hold a credential -- a provider's authorization
+    header, a query parameter, another provider's definition, an MCP server's environment table -- never
+    crosses into the throw-away home, and the report line says what was copied and what was left behind
+    instead of claiming that nothing credential-bearing was copied while copying everything. Both halves
+    are checked against the *bytes* the home receives (by reading them back as TOML) and against the
+    report, because a sanitizer whose report is wrong states something untrue either way.
+    """
+
+    def seeded(self, text: str = HOST_CONFIGURATION, **overrides: str) -> tuple[dict, str, str]:
+        """One seeding: the document the home receives, parsed back, its bytes, and the report line."""
+        seeding = NATIVE_CHECK.seed_configuration(text, dict(overrides))
+        document = tomllib.loads(seeding.text) if seeding.text else {}
+        return document, seeding.text, seeding.report()
+
+    def assert_no_credential(self, rendered: str, line: str) -> None:
+        """No fixture token is in the bytes the home receives, or in the report about them."""
+        for name, token in HOST_TOKENS.items():
+            with self.subTest(credential=name):
+                self.assertNotIn(token, rendered, f"the {name} credential was copied into the home")
+                self.assertNotIn(token, line, f"the {name} credential is quoted in the report")
+
+    def test_copies_only_the_settings_that_cannot_hold_a_credential(self) -> None:
+        document, rendered, report = self.seeded()
+        self.assertEqual(document, {
+            "model": "a-host-model",
+            "model_provider": "a-proxy",
+            "model_providers": {"a-proxy": {
+                "name": "A Proxy", "base_url": "https://proxy.example/v1",
+                "wire_api": "responses", "env_key": "A_PROXY_KEY"}},
+        }, f"the seeded document is not the settings that cannot hold a credential: {rendered!r}")
+        self.assert_no_credential(rendered, report)
+        # The report names both halves: what was copied, and every host setting that was left behind --
+        # including the ones the case above removed from the document, by name and not by value.
+        self.assertIn("copied model, model_provider, "
+                      "[model_providers.a-proxy].name, [model_providers.a-proxy].base_url, "
+                      "[model_providers.a-proxy].wire_api, [model_providers.a-proxy].env_key", report)
+        for left in ("[model_providers.a-proxy].http_headers", "[model_providers.a-proxy].query_params",
+                     "[model_providers.other]", "[mcp_servers]", "[projects]", "model_reasoning_effort"):
+            with self.subTest(left_behind=left):
+                self.assertIn(left, report, report)
+
+    def test_does_not_copy_a_provider_whose_url_holds_a_credential(self) -> None:
+        host = HOST_CONFIGURATION.replace(
+            "https://proxy.example/v1",
+            f"https://{HOST_TOKENS['url_user']}:{HOST_TOKENS['url_password']}@proxy.example/v1")
+        document, rendered, report = self.seeded(host)
+        self.assertNotIn("model_providers", document,
+                         f"a provider definition holding a credential was copied: {rendered!r}")
+        self.assert_no_credential(rendered, report)
+        self.assertIn("[model_providers.a-proxy]", report,
+                      "the report does not name the provider definition it left behind")
+
+    def test_the_command_line_still_decides_what_the_home_answers_with(self) -> None:
+        document, rendered, report = self.seeded(model_provider="other", model="a-named-model")
+        self.assertEqual(document.get("model"), "a-named-model")
+        self.assertEqual(document.get("model_provider"), "other")
+        # The definition copied is the one the home now names, and its own credential-bearing settings
+        # are still left behind.
+        self.assertEqual(document.get("model_providers"),
+                         {"other": {"name": "Other", "base_url": "https://other.example/v1"}},
+                         f"the seeded document does not hold the named provider's definition: {rendered!r}")
+        self.assert_no_credential(rendered, report)
+        self.assertIn("[model_providers.other].http_headers", report, report)
+
+    def test_a_configuration_it_cannot_read_is_not_copied(self) -> None:
+        document, rendered, report = self.seeded("[this is not toml")
+        self.assertEqual((document, rendered), ({}, ""),
+                         "a configuration the check cannot read was copied anyway")
+        self.assertIn("not readable as TOML", report, report)
+        # The command line is still honoured: it is this check's own answer, not the host's.
+        document, rendered, _ = self.seeded("[this is not toml", model="a-named-model")
+        self.assertEqual(document, {"model": "a-named-model"})
+
+    def test_a_configuration_with_nothing_to_seed_says_so(self) -> None:
+        document, rendered, report = self.seeded("[mcp_servers.a-server]\ncommand = \"a-server\"\n")
+        self.assertEqual((document, rendered), ({}, ""))
+        self.assertTrue(report.startswith("nothing was copied"), report)
+        self.assertIn("[mcp_servers]", report, "the report does not name the table it left behind")
 
 
 #: The checks the ordering rule below is about, named as the harness records them.

@@ -33,7 +33,13 @@ the run.
 `--model-provider`/`--model` name what the throw-away Codex configuration should use, because the
 target's loader checks a session against the provider *its* configuration names: the load check only
 needs a configured provider, while `--resume-prompt` needs one that can actually answer on this host
-(its key comes from the environment, never from a copied credential).
+(its key comes from the environment, never from a copied credential). That throw-away configuration is
+built from the settings of the host's own `config.toml`, which is never copied as a document: it is
+seeded with that file's model settings and the named provider's definition, and never with a setting
+whose value can hold a credential -- a provider's authorization headers, an MCP server's environment
+table, a credential written into a URL -- because a configuration is exactly where those live. The
+report line names the settings that were copied and the ones that were left behind, so a provider whose
+credential is written into the configuration has to take it from the environment instead.
 
 Exit codes: 0 every check that ran passed; 1 a check failed; 2 the harness could not run (no Codex, no
 Go toolchain, a missing fixture).
@@ -53,7 +59,10 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 from pathlib import Path
+from typing import NamedTuple
+from urllib.parse import urlsplit
 
 #: The provider directory, and the two committed Claude fixtures this harness can convert. The first
 #: carries dialogue, a tool call with its result and a compaction boundary; the second (TOOLING_SESSION)
@@ -74,6 +83,25 @@ UNRELATED_NAME = "rollout-2026-01-01T00-00-00-00000000-0000-7000-8000-0000000000
 #: One app-server request's deadline. Every call this harness makes is bounded by it: a server that keeps
 #: its output open and stops answering is reported as a failed check rather than blocking the run.
 APP_SERVER_TIMEOUT = 120
+
+#: The top-level settings the throw-away home's configuration is seeded with, and nothing else. The
+#: target's loader compares a session against the provider its *own* configuration names, so these two
+#: answer the question the seed exists for; the host configuration's other top-level settings (approval
+#: policy, reasoning effort, project trust, the TUI) are not that question, and the tables below them --
+#: `[mcp_servers.*]` with its `env` table, `[model_providers.*]` with its `http_headers` -- are where a
+#: configuration holds credentials.
+SEEDED_TOP_LEVEL = ("model", "model_provider")
+
+#: The provider-definition settings that are copied: a display name, an endpoint, a wire protocol, and
+#: the *names* of the environment variables a credential is read from (`env_key`, `env_http_headers` --
+#: this harness requires environment-backed authentication). A provider setting whose value can be a
+#: credential itself (`http_headers`, `http_headers_helper`, `query_params`, a provider's `auth` block) is
+#: deliberately not in this list, so it is never copied; what is not copied is named in the report.
+SEEDED_PROVIDER_SETTINGS = ("name", "base_url", "wire_api", "env_key", "env_http_headers")
+
+#: How many setting names the seeded-configuration report lists before it counts the rest: the report is
+#: a diagnostic line, and a host configuration can hold more settings than a line can usefully name.
+REPORTED_NAME_LIMIT = 8
 
 #: One check's outcome, as the script reports it.
 RESULTS: list[tuple[str, str, str]] = []
@@ -111,28 +139,172 @@ def last_meaningful_line(text: str) -> str:
     return lines[-1][:300] if lines else "(no diagnostics)"
 
 
-def with_top_level_overrides(config: str, overrides: dict[str, str]) -> str:
-    """The host configuration with the named top-level keys replaced.
+#: The control characters TOML's basic strings have a named escape for. Every other character below
+#: space is written as `\uXXXX`.
+NAMED_ESCAPES = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
 
-    TOML keys after a table header belong to that table, so the replacements go above every header and
-    the host's own copies of those keys (which are only the top-level ones, before the first header) are
-    dropped: a duplicate key is a configuration error the target refuses to start with, and appending the
-    replacement at the end would silently change a section instead.
+
+def toml_string(value: str) -> str:
+    """One TOML basic string holding `value` unchanged.
+
+    The values are the host's own settings, copied without interpretation, so a quote, a backslash or a
+    control character in one of them must not change the document's shape. TOML's basic strings accept
+    every escape written here and need no other, so what this returns is the same string when read back.
     """
-    kept: list[str] = []
-    in_table = False
-    for line in config.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("["):
-            in_table = True
-        if not in_table:
-            key = stripped.split("=", 1)[0].strip() if "=" in stripped else ""
-            if key in overrides:
+    escaped: list[str] = []
+    for char in value:
+        if char in ('"', "\\"):
+            escaped.append("\\" + char)
+        elif char in NAMED_ESCAPES:
+            escaped.append(NAMED_ESCAPES[char])
+        elif char < " " or char == "\x7f":
+            escaped.append(f"\\u{ord(char):04x}")
+        else:
+            escaped.append(char)
+    return '"' + "".join(escaped) + '"'
+
+
+def toml_key(name: str) -> str:
+    """One TOML key: bare where the key's own characters allow it, quoted otherwise."""
+    if name and all(char.isascii() and (char.isalnum() or char in "_-") for char in name):
+        return name
+    return toml_string(name)
+
+
+def credential_free_url(url: str) -> bool:
+    """Whether a base URL is one this check copies: an endpoint with no userinfo, query or fragment.
+
+    A username or a password in a URL is a credential written into the configuration, and a query can
+    hold one too (`?api_key=…` is what a provider's `query_params` setting would otherwise carry). A URL
+    the standard library cannot read at all is not one this check can vouch for.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    return not (parts.username or parts.password or parts.query or parts.fragment)
+
+
+def bounded_names(names: list[str]) -> str:
+    """The setting names, comma-separated, with the ones past the report's limit counted rather than named."""
+    if len(names) <= REPORTED_NAME_LIMIT:
+        return ", ".join(names)
+    return ", ".join(names[:REPORTED_NAME_LIMIT]) + f" and {len(names) - REPORTED_NAME_LIMIT} more"
+
+
+class SeededConfiguration(NamedTuple):
+    """What the throw-away Codex home's configuration was seeded with, and what it was not.
+
+    `text` is the document the home is given -- empty when the host configuration contributed nothing of
+    its own -- `copied` and `not_copied` name the settings the host configuration holds, in document
+    order, and `problem` is non-empty when the host configuration exists but could not be read at all.
+    """
+
+    text: str
+    copied: list[str]
+    not_copied: list[str]
+    problem: str
+
+    def report(self) -> str:
+        """What was seeded, as one line, naming settings and never a setting's value."""
+        if self.problem:
+            return (f"nothing was copied from it ({self.problem}); the throw-away home holds only the "
+                    f"settings named on the command line, if any")
+        head = ("copied " + ", ".join(self.copied)) if self.copied else \
+            "nothing was copied: it holds none of the settings this check seeds"
+        if self.not_copied:
+            head += ("; not copied (the throw-away home is not a copy of the host's configuration: it is "
+                     "seeded with the settings that answer the loader's question, never with one that can "
+                     "hold a credential, so a provider whose credential is written there must take it "
+                     "from the environment): " + bounded_names(self.not_copied))
+        return head
+
+
+def seed_configuration(host_text: str, overrides: dict[str, str]) -> SeededConfiguration:
+    """The throw-away home's configuration, built from the settings of the host's own configuration.
+
+    The host's `config.toml` is *not* copied: a configuration is where credentials live -- provider
+    authorization headers, an MCP server's `env` table, a token in a query parameter -- and this run
+    writes that file into a directory it reports about and, with `--keep`, leaves on disk. Only settings
+    whose value cannot be a credential cross over, and the report names both what was copied and what was
+    left behind. The host configuration's own `model`/`model_provider` are replaced by `overrides` when
+    the caller names them, so `--model-provider`/`--model` still decide what the home answers with.
+
+    A document this function cannot read as TOML is not one it copies from: it contributes nothing and
+    the caller is told, rather than having its bytes written out unexamined.
+    """
+    problem = ""
+    document: dict[str, object] = {}
+    if host_text.strip():
+        try:
+            document = tomllib.loads(host_text)
+        except tomllib.TOMLDecodeError as failure:
+            problem = f"it is not readable as TOML: {failure}"
+
+    values: dict[str, str] = {}
+    copied: list[str] = []
+    not_copied: list[str] = []
+    for key in SEEDED_TOP_LEVEL:
+        value = overrides.get(key, document.get(key))
+        if isinstance(value, str) and value.strip():
+            values[key] = value
+            copied.append(key)
+    provider_name = values.get("model_provider", "")
+
+    definitions = document.get("model_providers")
+    provider_table: dict[str, object] = {}
+    if provider_name and isinstance(definitions, dict):
+        named = definitions.get(provider_name)
+        if isinstance(named, dict):
+            provider_table = named
+    provider_settings: dict[str, str] = {}
+    env_headers: dict[str, str] = {}
+    base_url = provider_table.get("base_url")
+    if provider_table and isinstance(base_url, str) and not credential_free_url(base_url):
+        # The definition stays whole rather than losing only its endpoint: half a provider definition
+        # would send the harness to the provider's default address instead of the one the host named.
+        not_copied.append(f"[model_providers.{provider_name}]")
+    elif provider_table:
+        for key in SEEDED_PROVIDER_SETTINGS:
+            value = provider_table.get(key)
+            if key == "env_http_headers" and isinstance(value, dict):
+                env_headers = {header: target for header, target in value.items() if isinstance(target, str)}
+                if env_headers:
+                    copied.append(f"[model_providers.{provider_name}].env_http_headers")
+            elif isinstance(value, str) and value:
+                provider_settings[key] = value
+                copied.append(f"[model_providers.{provider_name}].{key}")
+        for key in provider_table:
+            if key in provider_settings or (key == "env_http_headers" and env_headers):
                 continue
-        kept.append(line)
-    replaced = [f'{key} = "{value}"' for key, value in overrides.items()]
-    body = "\n".join(kept).strip("\n")
-    return "\n".join(replaced) + "\n\n" + body + "\n"
+            not_copied.append(f"[model_providers.{provider_name}].{key}")
+
+    if isinstance(definitions, dict):
+        for name in definitions:
+            if name != provider_name or not provider_table:
+                not_copied.append(f"[model_providers.{name}]")
+    for key in document:
+        if key in SEEDED_TOP_LEVEL or key == "model_providers":
+            continue
+        not_copied.append(f"[{key}]" if isinstance(document[key], dict) else key)
+
+    lines: list[str] = []
+    for key in SEEDED_TOP_LEVEL:
+        if key in values:
+            lines.append(f"{key} = {toml_string(values[key])}")
+    if provider_settings or env_headers:
+        lines.append("")
+        lines.append(f"[model_providers.{toml_key(provider_name)}]")
+        for key in SEEDED_PROVIDER_SETTINGS:
+            if key in provider_settings:
+                lines.append(f"{key} = {toml_string(provider_settings[key])}")
+        if env_headers:
+            lines.append("")
+            lines.append(f"[model_providers.{toml_key(provider_name)}.env_http_headers]")
+            for header, target in env_headers.items():
+                lines.append(f"{toml_key(header)} = {toml_string(target)}")
+    text = "\n".join(lines) + "\n" if lines else ""
+    return SeededConfiguration(text, copied, not_copied, problem)
 
 
 def shell_words(command: str) -> list[str] | None:
@@ -330,28 +502,29 @@ def main(argv: list[str] | None = None) -> int:
     scratch = Path(tempfile.mkdtemp(prefix="ccc-native-check-"))
     home = args.codex_home.resolve() if args.codex_home else scratch / "codex-home"
     home.mkdir(parents=True, exist_ok=True)
-    seeded = ""
+    seeded_report = ""
     if not args.codex_home:
-        # The target's loader checks a session against the provider its *configuration* names, so the
-        # throw-away home needs that configuration: the host's own config.toml is copied (settings, not
-        # credentials — auth.json and every session file stay where they are), and the script says so
-        # rather than presenting a bare home as the user's.
+        # The target's loader checks a session against the provider its *configuration* names, so a bare
+        # home would be answered by the harness's own default and the load check would be about a home the
+        # caller does not have. The throw-away home is therefore seeded with the settings that answer that
+        # question and nothing else: the host's `config.toml` itself is never copied, because a
+        # configuration is where credentials live (provider authorization headers, an MCP server's env
+        # table, a token in a URL), and the report says what was copied and what was left behind.
         host_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
         host_config = host_home / "config.toml"
-        if host_config.is_file():
-            seeded = str(host_config)
-            home_config = host_config.read_text()
-        else:
-            home_config = ""
         overrides = {}
         if args.model_provider:
             overrides["model_provider"] = args.model_provider
         if args.model:
             overrides["model"] = args.model
-        if overrides:
-            home_config = with_top_level_overrides(home_config, overrides)
-        if home_config:
-            (home / "config.toml").write_text(home_config)
+        seeding = seed_configuration(host_config.read_text() if host_config.is_file() else "", overrides)
+        if seeding.text:
+            (home / "config.toml").write_text(seeding.text)
+        if host_config.is_file():
+            seeded_report = f"seeded from: {host_config} — {seeding.report()}"
+        elif seeding.text:
+            seeded_report = (f"seeded from: the command line (no configuration at {host_config}) — "
+                             f"{seeding.report()}")
     sessions = home / "sessions" / "2026" / "01" / "01"
     sessions.mkdir(parents=True, exist_ok=True)
     unrelated = sessions / UNRELATED_NAME
@@ -365,8 +538,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"repo:        {repo}")
     print(f"codex:       {codex}")
     print(f"codex home:  {home}")
-    if seeded:
-        print(f"seeded from: {seeded} (config.toml only; no credentials and no sessions were copied)")
+    if seeded_report:
+        print(seeded_report)
     print(f"source:      {source.relative_to(repo)}")
     print(f"scratch:     {scratch}")
     print()

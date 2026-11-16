@@ -195,6 +195,13 @@ type CodexReadBack struct {
 // compares it, item by item, with what the writer intended to carry. sessionsDir is the target's
 // sessions directory; cfg supplies the provider configuration (its Codex roots are replaced, never
 // mutated: the map is copied).
+//
+// The read-back is the file this call names (TargetPath: the path the conversion published, or the dry
+// run's copy of the same bytes), read through the inherited reader's own path reference. The check never
+// resolves the session's id through the target's sessions tree: that lookup enumerates every dated
+// directory under the root and prefers the lexically first copy of the id, so an unrelated copy of the
+// id -- or simply a home with a long history -- would decide what is compared and how much of the home
+// is walked, for a file whose path the check was handed (review round 12's finding 2).
 func VerifyCodexRolloutStructure(
 	ctx context.Context, sessionsDir string, rollout CodexRollout, cfg config.Config,
 ) (StructureVerification, error) {
@@ -212,7 +219,11 @@ func VerifyCodexRolloutStructure(
 	readerConfig.AgentDirs = dirs
 	readerConfig.DisabledAgents = nil
 
-	conversation, err := NewSourceReader(readerConfig).Read(ctx, Ref{Provider: string(parser.AgentCodex), ID: rollout.SessionID})
+	// The reader is asked for the exact file this check names (a path reference resolves to that source
+	// alone, internal/ccc's resolvePathReference), not for the session id: the id lookup would walk the
+	// whole sessions tree and could answer with another copy of the id.
+	conversation, err := NewSourceReader(readerConfig).Read(ctx,
+		Ref{Provider: string(parser.AgentCodex), ID: verification.TargetPath})
 	if err != nil {
 		verification.Detail = "the inherited Codex reader could not read the installed session back: " + err.Error()
 		return verification, nil

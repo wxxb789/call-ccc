@@ -164,6 +164,13 @@ disposition, so a consumer never has to infer what was left out.
 | `load` | `codex app-server` (`--listen stdio://`) + `initialize` + `thread/resume {threadId}`, requiring the returned thread's id/sessionId and path to be ours | offline, needs the target binary | `verification.load` |
 | `resume` | `codex exec resume <id> --resume-prompt <text>` in the target home; the command's output is captured, its exit status reported, and the session file's growth recorded | one model turn | `verification.resume` |
 
+The structure level reads the file the conversion published — the exact path the check was handed —
+through the inherited reader's own path reference, never by resolving the session's id through the
+target's sessions tree: that lookup walks every dated directory under the root and prefers the lexically
+first copy of an id, so an unrelated copy of the id (or merely a home with a long history) would
+otherwise decide what the check compares, and how much of the home it walks, for a file whose path the
+check already knows (round 12's finding 2; `TestStructureVerificationReadsTheInstalledPathItWasGiven`).
+
 `load` was chosen over `codex migrate-rollouts --thread <id>` because the latter is a *metadata* query:
 it reported a rollout with a deliberately corrupt line as `eligible`, while `thread/resume` rejects a
 rollout Codex cannot read (measured on the missing `cli_version`) and returns the loaded thread for one
@@ -264,7 +271,14 @@ it already runs.
 - **Interactive launch of Codex, pickers, TUI automation**: the goal asks for non-interactive
   conversion; the resume command is printed for the caller to run.
 - **Copying auth/login state into an isolated home**: the design forbids it; the native check runs a
-  real turn only when the host already has model access configured, and says so when it does not.
+  real turn only when the host already has model access configured, and says so when it does not. Its
+  throw-away `config.toml` is **seeded setting by setting** from the host's own configuration — the
+  model settings that answer the target loader's question and the named provider's definition, whose
+  credential is read from the environment (`env_key`/`env_http_headers`) — and never with a setting
+  whose value can hold a credential (a provider's `http_headers`/`http_headers_helper`/`query_params`/
+  `auth` block, an MCP server's `env` table, a credential written into a URL), and never by copying the
+  configuration document; the run's `seeded from:` line names what was copied and what was left behind
+  (round 12's finding 1; `scripts/tests/test_codex_native_check.py`'s `SeededHostConfiguration`).
 - **A second Codex source parser or a second session index**: the source side stays the inherited
   AgentsView reader, and the round-trip check uses it rather than a new one.
 - **Codex→Claude (0003), repeatable/evolving handoffs (0004), Pi (0005)**: separate goals.

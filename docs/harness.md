@@ -192,8 +192,13 @@ says so.
 - `scripts/codex-native-check.py` — the target-side native verification for the Claude Code → Codex
   route, and **deliberately not a gate step** for the same reason `scripts/upstream-compare.py` is
   not: it needs the Codex binary installed and, for a real turn, model access. It builds `ccc`,
-  converts a committed fixture into an isolated Codex data directory (seeded with the host's own
-  `config.toml` — settings, never credentials or sessions), plants an unrelated session there, runs
+  converts a committed fixture into an isolated Codex data directory whose `config.toml` is **seeded
+  from the host's own configuration, setting by setting, never copied as a document**: the model
+  settings that answer the loader's question and the named provider's definition, and never a setting
+  whose value can hold a credential (a provider's authorization headers, an MCP server's environment
+  table, a credential written into a URL). Its report line names what was copied and what was left
+  behind, and a provider whose credential is written into the host configuration must take it from the
+  environment. The script plants an unrelated session in that home, runs
   `ccc continue … --json`, checks the resume invocation the conversion reported (its argument vector
   names the binary, `resume` and the session; its environment selects the data directory the session
   was installed into, which is the only way Codex is told where to look), re-reads the installed file

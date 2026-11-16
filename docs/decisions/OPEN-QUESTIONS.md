@@ -973,3 +973,34 @@ supersede it with a newer one and say which it supersedes.
   one report for this source family.
 - **Settled by:** whether the operator prefers the third state (no comparison ran, the reason named) or a
   container-level digest as the nearest available file evidence for a member read.
+
+## Q-0002-21 — Which settings the native check seeds into its throw-away Codex home
+
+- **Status:** resolved (default taken)
+- **Question:** `scripts/codex-native-check.py` wrote the host's whole `config.toml` into the throw-away
+  home the native verification runs against, changing only the two top-level keys
+  `--model-provider`/`--model` name, while its report line said no credentials were copied. A real
+  configuration is where credentials live — provider authorization headers (`http_headers`,
+  `http_headers_helper`), a provider's `query_params` or `auth` block, an MCP server's `env` table, a
+  credential written into a URL — and the home is a directory the run reports about and, with `--keep`,
+  leaves on disk. Should the check seed an allowlist of settings, copy the document with the
+  credential-bearing settings stripped, or refuse to seed a credential-bearing configuration at all?
+- **Default taken:** an allowlist, so safety is the default for a setting the target adds tomorrow rather
+  than something a strip-list has to notice. `seed_configuration` (`scripts/codex-native-check.py`) reads the
+  host configuration as TOML and copies only `model`, `model_provider` and the *named* provider's definition
+  through `name`/`base_url`/`wire_api`/`env_key`/`env_http_headers`; the last two hold the *names* of
+  environment variables, which is the environment-backed authentication the boundary asks for. Everything
+  else — the host's other top-level settings and tables, every other provider definition, the named
+  provider's credential-bearing settings — is left behind and named in the run's `seeded from:` line. A
+  provider whose `base_url` carries a username, a password, a query or a fragment is left behind *whole*
+  (half a definition would send the harness to the provider's default endpoint instead of the one the host
+  named), and a configuration that cannot be read as TOML contributes nothing and says so. The rule reaches
+  `docs/harness.md` and the plan's §8 bullet; the evidence record's §17 carries the mutations that pin it.
+- **Reversal:** copy the document with a denylist of credential-capable keys removed, or require
+  `--model-provider`/`--model` and seed nothing from the host configuration at all.
+  `SeededHostConfiguration`'s cases fail on the first arm (its fixture's `http_headers` token and its
+  URL's own credential are in the bytes, and the document-equality assertion holds extra settings) and on
+  the second (the seeding cases assert the copied settings and the report's own names).
+- **Settled by:** whether the operator wants the throw-away verification home to carry more of the host
+  configuration than the loader's question needs — a denylist, at the price of copying settings whose
+  values nothing vetted — or only the settings this check names.

@@ -143,7 +143,10 @@ shape and that diagnostics stay on stderr (`cmd/ccc/main_test.go`).
 
 `scripts/codex-native-check.py` re-derives all of it; the blocks below are two real runs of this tree
 (target-harness diagnostics that are not verdicts — its sandbox probe and PATH-alias warnings — are
-dropped here, and the script's own `NOISE` filter keeps them out of its summaries). Every run mints its
+dropped here, and the script's own `NOISE` filter keeps them out of its summaries; the `seeded from:`
+line each run prints is kept, because it is what says the throw-away home was built from named settings
+rather than from a copy of the host's `config.toml`). Host paths are written the way the harness's
+summaries abbreviate them (`<codex>`, `<tmp>/codex-home`, `~/.codex/config.toml`). Every run mints its
 own session identity, and the resumed turn's own words and byte counts differ per run, so the ids and
 numbers below are that one run's. The read-back line in each block is the script's own `ccc inspect`
 invocation reading the installed file, not the conversion's verdict about itself (the gate holds the
@@ -154,16 +157,17 @@ Both fixtures, with a real turn each:
 $ python3 scripts/codex-native-check.py --model-provider tencent-litellm --model deepseek-v4.1-flash-fast \
     --resume-prompt "Answer only from this conversation, one line each: which file did you read, and what was the attempt limit?"
 exit 0
+seeded from: ~/.codex/config.toml — copied model, model_provider, [model_providers.tencent-litellm].name, [model_providers.tencent-litellm].base_url, [model_providers.tencent-litellm].wire_api, [model_providers.tencent-litellm].env_key; not copied (the throw-away home is not a copy of the host's configuration: it is seeded with the settings that answer the loader's question, never with one that can hold a credential, so a provider whose credential is written there must take it from the environment): model_reasoning_effort, plan_mode_reasoning_effort, approvals_reviewer, model_post_turn_compact_threshold_percent, model_auto_compact_token_limit, [projects], [features], [tui]
 PASS: ccc builds with the flags upstream ships
 PASS: the conversion reports carried evidence and a non-zero loss category — 5 message(s), 1 tool call(s), 22 loss categories
-PASS: the session is installed under the target's own sessions tree — sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1e324-fa37-73f0-b646-8973626bf724.jsonl [hard-link]
-PASS: the target identity is new and is not the source's — 01a1e324-fa37-73f0-b646-8973626bf724, not one of the 1 id(s) already in the home
+PASS: the session is installed under the target's own sessions tree — sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1e354-eccc-7119-8434-50a197d0b8b6.jsonl [hard-link]
+PASS: the target identity is new and is not the source's — 01a1e354-eccc-7119-8434-50a197d0b8b6, not one of the 1 id(s) already in the home
 PASS: the installed file is one JSON object per line — 3970 bytes (the target's own read of it is the load check)
-PASS: the inherited reader reads the installed file back as what was written — ccc inspect codex:01a1e324-fa37-73f0-b646-8973626bf724: {"messages": 7, "user_messages": 2, "assistant_messages": 5, "system_messages": 0, "tool_messages": 0, "system_records": 1, "sidechain_messages": 0, "compact_boundaries": 1, "tool_calls": 1, "tool_results": 1}; conversion carried: 2 user message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies)
-PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1e324-fa37-73f0-b646-8973626bf724 [legacy] cwd=/home/user/code/example-api
+PASS: the inherited reader reads the installed file back as what was written — ccc inspect codex:01a1e354-eccc-7119-8434-50a197d0b8b6: {"messages": 7, "user_messages": 2, "assistant_messages": 5, "system_messages": 0, "tool_messages": 0, "system_records": 1, "sidechain_messages": 0, "compact_boundaries": 1, "tool_calls": 1, "tool_results": 1}; conversion carried: 2 user message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies)
+PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1e354-eccc-7119-8434-50a197d0b8b6 [legacy] cwd=/home/user/code/example-api
 PASS: the target's own view lists the converted turns — 5 item(s) in the reply's own turn list
-PASS: the reported resume command selects the installation home — resume_command='CODEX_HOME=<tmp>/codex-home <codex> resume 01a1e324-fa37-73f0-b646-8973626bf724' exec_resume_command="CODEX_HOME=<tmp>/codex-home <codex> exec resume 01a1e324-fa37-73f0-b646-8973626bf724 '<prompt>'" environment={'CODEX_HOME': '<tmp>/codex-home'}
-PASS: a real turn continues from the installed session — exit 0, session 3970 -> 73595 bytes
+PASS: the reported resume command selects the installation home — resume_command='CODEX_HOME=<tmp>/codex-home <codex> resume 01a1e354-eccc-7119-8434-50a197d0b8b6' exec_resume_command="CODEX_HOME=<tmp>/codex-home <codex> exec resume 01a1e354-eccc-7119-8434-50a197d0b8b6 '<prompt>'" environment={'CODEX_HOME': '<tmp>/codex-home'}
+PASS: a real turn continues from the installed session — exit 0, session 3970 -> 68533 bytes
 PASS: the source session is unchanged — sha256 2bd510821d4abf83… (fixture tree identical)
 PASS: the unrelated session in the target home is unchanged — sha256 59ff49ca30baf622…
 PASS: no pre-existing session in the target home changed — 0 pre-existing session file(s)
@@ -175,7 +179,7 @@ harness) and the answer its own resume produced:
 
 ```
 the target harness's own view of the installed session:
-    thread 01a1e324-fa37-73f0-b646-8973626bf724 [legacy] provider=tencent-litellm
+    thread 01a1e354-eccc-7119-8434-50a197d0b8b6 [legacy] provider=tencent-litellm
       turn rollout-2
         userMessage: Summarize the retry policy in internal/retry/policy.go.
         agentMessage: I will read the retry policy first.
@@ -185,37 +189,39 @@ the target harness's own view of the installed session:
         agentMessage: The cap is configured in internal/retry/config.go as maxBackoffSeconds.
 
 the turn's own output (the target's answer, as the harness printed it):
-    - File: `internal/retry/policy.go` (only the summary above exists in this conversation; no file was actually read here).
-    - Attempt limit: four.
+    - I did not read any file in this conversation.
+    - The attempt limit is four.
+
+    (Note: the earlier replies claiming `internal/retry/policy.go`, `internal/retry/config.go`, and `maxBackoffSeconds` were not backed by any file read here, so those claims are unverified.)
 ```
 
 Why the first fixture's answer has this shape (its own wording varies run to run): the fixture compacts
 after its tool call, the conversion carries that boundary as the target's `compacted` record, and Codex
 applies that record to its own model-visible history — so the resumed turn continues from the source's
-own active context (the summary and the turns after the boundary), which is why this run could still state
-the attempt limit (four, from the summary's own words) while saying that the file it named is in the
-conversation only as the summary's own claim and that nothing was actually read. The file keeps the turns
-before the boundary with their tool evidence, but the target does not continue from them. An earlier run of
-this same check, over a rollout written without the target's `event_msg` message records, could not see
-even the post-boundary turns and answered that no tool call exists in this conversation; that is what
-writing both record kinds buys. The second fixture has no boundary, and there the tool evidence reaches
-the resumed turn:
+own active context (the summary and the turns after the boundary). That is why this run could still state
+the attempt limit (four, from the summary's own words) while saying it read no file here and that the
+replies' claims about the files are unverified: those turns are in the file the conversion wrote, and the
+target does not continue from them. An earlier run of this same check, over a rollout written without the
+target's `event_msg` message records, could not see even the post-boundary turns and answered that no tool
+call exists in this conversation; that is what writing both record kinds buys. The second fixture has no
+boundary, and there the tool evidence reaches the resumed turn:
 
 ```
 $ python3 scripts/codex-native-check.py --session b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef \
     --model-provider tencent-litellm --model deepseek-v4.1-flash-fast \
     --resume-prompt "Answer only from this conversation, one line each: which tools appear, what did the first return, and what did the last one return?"
 exit 0
+seeded from: ~/.codex/config.toml — copied model, model_provider, [model_providers.tencent-litellm].name, [model_providers.tencent-litellm].base_url, [model_providers.tencent-litellm].wire_api, [model_providers.tencent-litellm].env_key; not copied (the throw-away home is not a copy of the host's configuration: it is seeded with the settings that answer the loader's question, never with one that can hold a credential, so a provider whose credential is written there must take it from the environment): model_reasoning_effort, plan_mode_reasoning_effort, approvals_reviewer, model_post_turn_compact_threshold_percent, model_auto_compact_token_limit, [projects], [features], [tui]
 PASS: ccc builds with the flags upstream ships
 PASS: the conversion reports carried evidence and a non-zero loss category — 5 message(s), 3 tool call(s), 22 loss categories
-PASS: the session is installed under the target's own sessions tree — sessions/2026/05/05/rollout-2026-05-05T10-00-00-01a1e325-2174-7f1f-98f6-edd9d0cc48e4.jsonl [hard-link]
-PASS: the target identity is new and is not the source's — 01a1e325-2174-7f1f-98f6-edd9d0cc48e4, not one of the 1 id(s) already in the home
+PASS: the session is installed under the target's own sessions tree — sessions/2026/05/05/rollout-2026-05-05T10-00-00-01a1e355-0846-7016-88ff-a3579a47b8e0.jsonl [hard-link]
+PASS: the target identity is new and is not the source's — 01a1e355-0846-7016-88ff-a3579a47b8e0, not one of the 1 id(s) already in the home
 PASS: the installed file is one JSON object per line — 4611 bytes (the target's own read of it is the load check)
-PASS: the inherited reader reads the installed file back as what was written — ccc inspect codex:01a1e325-2174-7f1f-98f6-edd9d0cc48e4: {"messages": 8, "user_messages": 2, "assistant_messages": 6, "system_messages": 0, "tool_messages": 0, "system_records": 0, "sidechain_messages": 0, "compact_boundaries": 0, "tool_calls": 3, "tool_results": 3}; conversion carried: 2 user message(s), 3 tool call(s), 3 tool result(s), 0 boundary(ies)
-PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1e325-2174-7f1f-98f6-edd9d0cc48e4 [legacy] cwd=/home/user/code/tooling
+PASS: the inherited reader reads the installed file back as what was written — ccc inspect codex:01a1e355-0846-7016-88ff-a3579a47b8e0: {"messages": 8, "user_messages": 2, "assistant_messages": 6, "system_messages": 0, "tool_messages": 0, "system_records": 0, "sidechain_messages": 0, "compact_boundaries": 0, "tool_calls": 3, "tool_results": 3}; conversion carried: 2 user message(s), 3 tool call(s), 3 tool result(s), 0 boundary(ies)
+PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1e355-0846-7016-88ff-a3579a47b8e0 [legacy] cwd=/home/user/code/tooling
 PASS: the target's own view lists the converted turns — 5 item(s) in the reply's own turn list
-PASS: the reported resume command selects the installation home — resume_command='CODEX_HOME=<tmp>/codex-home <codex> resume 01a1e325-2174-7f1f-98f6-edd9d0cc48e4' exec_resume_command="CODEX_HOME=<tmp>/codex-home <codex> exec resume 01a1e325-2174-7f1f-98f6-edd9d0cc48e4 '<prompt>'" environment={'CODEX_HOME': '<tmp>/codex-home'}
-PASS: a real turn continues from the installed session — exit 0, session 4611 -> 84635 bytes
+PASS: the reported resume command selects the installation home — resume_command='CODEX_HOME=<tmp>/codex-home <codex> resume 01a1e355-0846-7016-88ff-a3579a47b8e0' exec_resume_command="CODEX_HOME=<tmp>/codex-home <codex> exec resume 01a1e355-0846-7016-88ff-a3579a47b8e0 '<prompt>'" environment={'CODEX_HOME': '<tmp>/codex-home'}
+PASS: a real turn continues from the installed session — exit 0, session 4611 -> 69230 bytes
 PASS: the source session is unchanged — sha256 415bbc31a6cd541f… (fixture tree identical)
 PASS: the unrelated session in the target home is unchanged — sha256 59ff49ca30baf622…
 PASS: no pre-existing session in the target home changed — 0 pre-existing session file(s)
@@ -224,7 +230,7 @@ PASS: no pre-existing session in the target home changed — 0 pre-existing sess
 
 ```
 the target harness's own view of the installed session:
-    thread 01a1e325-2174-7f1f-98f6-edd9d0cc48e4 [legacy] provider=tencent-litellm
+    thread 01a1e355-0846-7016-88ff-a3579a47b8e0 [legacy] provider=tencent-litellm
       turn rollout-2
         userMessage: Check the retry policy and tell me the attempt limit.
         agentMessage: I will read the policy file first.
@@ -234,18 +240,21 @@ the target harness's own view of the installed session:
         agentMessage: internal/retry/config.go, as maxBackoffSeconds.
 
 the turn's own output (the target's answer, as the harness printed it):
-    Tools that appear: `Read` (first call) and `Bash` (two calls: `grep`, then `python3`).
-    First return: the contents of `/home/user/code/tooling/internal/retry/policy.go` — `package retry` followed by `const MaxAttempts = 4`.
-    Last return: `"maxBackoffSeconds"` — stdout of the `python3 -c 'import json; print(json.dumps("maxBackoffSeconds"))'` call.
+    Tools: `exec_command` (twice, as shell commands).
+    First return: `Error: no such file or directory` — the `grep -rn maxBackoffSeconds internal/retry` search found nothing.
+    Last return: `"maxBackoffSeconds"` — the Python/json check printed the constant's name.
 ```
 
-All three tool calls, the first result's content, the second result's recorded *failure* and the third
-result's text reached the resumed turn through the conversion — written as
+All three recorded tool calls reached the installed session through the conversion — written as
 `function_call`/`function_call_output` records with the source's own tool names, its recorded arguments
-verbatim and the result text decoded from the source's own content field. The third result is the one
-that shows the decode happens once: the tool printed a JSON value, the source recorded the text
-`"maxBackoffSeconds"` — quotation marks included — and the target's own answer quotes it in that
-spelling, where a second decode would have dropped the quotes.
+verbatim and the result text decoded from the source's own content field — and this run's answer quotes
+two of their outcomes in its own words: the `grep` call's recorded *failure* and the third call's text
+`"maxBackoffSeconds"`. The third result is the one that shows the decode happens once: the tool printed a
+JSON value, the source recorded the text `"maxBackoffSeconds"` — quotation marks included — and the
+target's own answer quotes it in that spelling, where a second decode would have dropped the quotes. Which
+call the answer counts as the first is the model's own reading of the conversation (it names the shell
+calls, not the `Read` before them); the records the conversion wrote are what the file holds, and the
+gate's round-trip comparison is what checks those.
 
 **Limit, stated rather than papered over:** `codex resume` (the interactive TUI) could not be driven on
 this host — no TTY is available (`ERROR: TERM is set to "dumb"…`), and the harness does not fake one.
@@ -307,7 +316,7 @@ half:
 
 ```
 the target harness's own view of the installed session:
-    thread 01a1e325-2174-7f1f-98f6-edd9d0cc48e4 [legacy] provider=tencent-litellm
+    thread 01a1e355-0846-7016-88ff-a3579a47b8e0 [legacy] provider=tencent-litellm
       turn rollout-2
         userMessage: Check the retry policy and tell me the attempt limit.
         agentMessage: I will read the policy file first.
@@ -385,10 +394,12 @@ ok  	go.kenn.io/agentsview/internal/ccc/parity	0.901s
 | the app server's diagnostic buffer is bounded and synchronized: a failure report reads a snapshot, not a race with the goroutine os/exec copies stderr on | `TestBoundedBufferKeepsTheFirstBytes`, `TestBoundedBufferIsSafeForConcurrentWritesAndSnapshots` (the second is the case `go test -race` diagnoses) |
 | the native check reads the two rendered resume-command lines the way a POSIX shell reads them, on both `pathlib` flavours, so a home the renderer quotes is accepted and an unquoted one a shell would split is not | `scripts/tests/test_codex_native_check.py` (the `selftest` step) |
 | the native check compares the source tree and the planted session **after** the loader and the real turn, so a mutation during either stage fails the run — and an intact run passes the same comparisons | `scripts/tests/test_codex_native_check.py`'s `ProtectedArtifactsAfterNativeVerification` |
+| the native check's throw-away home is seeded with settings that cannot hold a credential — never with a copy of the host's `config.toml` — and its report line names what was copied and what was left behind (round 12) | `scripts/tests/test_codex_native_check.py`'s `SeededHostConfiguration` |
 | a nested run that breaks inside a subtest is named by the case that read the child, not raised as an `IndexError` in the reader itself | `test_a_child_broken_inside_a_subtest_is_reported_by_name` |
 | the printed resume invocation names the data directory the session was installed into, quoted where a shell would act on a word, and a resume verification reports the command it ran the same way | `TestContinuePrintsAResumeCommandThatSelectsTheInstallationHome`, `TestResumeVerificationCommandNamesTheHomeItRanAgainst`, `TestContinueHumanOutputNamesTheResumeCommand`, `TestContinueJSONDistinguishesConversionInstallationAndVerification` |
 | exclusive install (a taken name refused, a filesystem without hard links refused rather than renamed over) and dry run writes nothing (no directory for a home the caller named that is not there yet, and the target harness is never started), dry run reports its own states, prompt required, target/level validation, home resolution | `TestInstallCodexRolloutNeverReplacesASession`, `TestInstallCodexRolloutRefusesAFilesystemWithoutHardLinks`, `TestContinueDryRunWritesNothing`, `TestContinueDryRunReportsWhatItVerified`, `TestContinueDryRunInstallsNothingThroughTheCLI`, `TestContinueRequiresAPromptBeforeItRunsATurn`, `TestContinueRefusesAnUnsupportedTargetOrLevel`, `TestContinueTargetHomeResolution` |
 | the round-trip check compares rather than agrees | `TestStructureVerificationNamesWhatTheFileDoesNotHold` |
+| the structural check reads the file it was handed (the installed path), never a same-id copy the target's own sessions-tree lookup would prefer (round 12) | `TestStructureVerificationReadsTheInstalledPathItWasGiven` |
 | the source's own digest is taken before the conversion and compared after it; a moved source is warned about; a projection, a read whose identity is a *member* inside a container (round 11) and a stopped run answer `not-verified` rather than claiming a comparison, while a read that names no path at all still stops the run | `TestSourceCheckComparesTheFileBeforeAndAfter`, `TestSourceChangedWarningsNameTheMove`, `TestSourceCheckSaysWhenThereWasNoFileToCompare`, `TestContinueFromAContainerMemberReportsNoFileToCompare`, `TestSourceCheckStopsAReadThatNamesNoFileAtAll` |
 | a result the conversion does not write is never reported as carried with a caveat, while the same two flags on a result that *is* written are counted | `TestCodexRolloutDoesNotReportOmittedResultsAsCarried` |
 | a failure after the conversion keeps the report it reached — the published installation and identity, the conversion's counts — with every check that did not run `not-verified` and naming the reason: a source that vanished after publication, a temporary file the installer could not remove, a home that could not be created | `TestContinueKeepsTheReportWhenTheSourceVanishesAfterTheInstall`, `TestContinueKeepsTheReportWhenTheTemporaryFileCannotBeRemoved`, `TestContinueKeepsTheConversionReportWhenTheHomeCannotBeCreated` |
@@ -403,7 +414,7 @@ gate: go=<home>/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/..
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 153 tests in 5.181s (rc=0)
+  PASS     selftest Ran 158 tests in 4.861s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 26 project-owned prefix(es); files seen by git: 5626 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     secrets  no leaks found in 74 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
@@ -1437,3 +1448,99 @@ moved this round — the changes live in existing package files and test files �
 states. Goal bookkeeping: 0002 is still `Implemented on feat/0002-claude-to-codex-continuation; awaiting
 operator acceptance`, so nothing moves to `docs/goals/archive/` and `docs/goals/README.md`'s row stays as it
 is.
+
+## 17. Repair round 12 — the check reads the file it was handed; the throw-away home is seeded, not cloned
+
+Round 12's review left two findings, both P2, both fixed here and both reproduced by execution before the
+fix (Table A). Its carried-tree parity audit found no increment-attributable defect again — the supplied
+patch changes no carried `file`/`skip` record and no upstream-owned source path, which the gate's `parity`
+step proves (5 553 carried files still byte-identical to the pin, and the one prefix this increment added to
+the manifest still names `scripts/codex-native-check.py`) — and its own verification limit was that the
+audit was static: no rehash, build, test or reproduction ran on its side. Two of its notes are carried
+rather than fixed, because neither is this increment's: `check_files` establishes agreement with the
+manifest rather than an independent authentication of the manifest against upstream, and `check_deviations`
+still has its pre-existing symlink-shape gap for the normalized `skip` record. The round also asked for a
+systematic close-out instead of one finding at a time, so Table A is per *rule* of the surface this round
+touched, with one executed mutation each.
+
+**1 — the throw-away Codex home was seeded with the host's whole `config.toml`**
+(`scripts/codex-native-check.py`). The script read the host's configuration and wrote it into the
+throw-away home, changing only the two top-level keys `--model-provider`/`--model` name, while the line it
+printed said "no credentials … were copied". A real `config.toml` can hold credentials: provider
+authorization headers written out under `http_headers`, MCP servers' `env` tables, a token in a provider's
+`query_params`, a credential in a URL. The seeding now copies **settings, never the document**:
+`seed_configuration` parses the host configuration as TOML and carries only the settings this check has a
+job for — `model`, `model_provider`, and the *named* provider's definition through an allowlist of
+`name`/`base_url`/`wire_api`/`env_key`/`env_http_headers` — where `env_key` and `env_http_headers` hold the
+*names* of environment variables, which is the environment-backed authentication the boundary asks for.
+Everything else is left behind and named in the report line: the host's other top-level settings and tables,
+every other provider definition, and the named provider's own credential-bearing settings. A provider whose
+`base_url` carries a username or a password is left behind *whole* (half a definition would send the harness
+to the provider's default endpoint instead of the one the host named), and a configuration that cannot be
+read as TOML contributes nothing and says so. The run's line is now
+`seeded from: … — copied …; not copied (…): …`, which is what §3's two runs print, and `docs/harness.md`
+and the plan's §8 state the same rule.
+
+**2 — the mandatory structural check resolved the session's id through the target's sessions tree**
+(`internal/ccc/codex_install.go`). `VerifyCodexRolloutStructure` builds `verification.TargetPath` from the
+path the conversion published, but read the file back with `Ref{ID: rollout.SessionID}`: that lookup goes
+through the inherited `codexSourceSet.findSourceFile`, which enumerates every dated directory under the
+sessions root, matches by the UUID in the file name, and prefers the lexically first copy — and
+`canonicalSource` repeats that lookup. A target home that already held another copy of the id (or merely a
+long history of unrelated sessions) therefore decided what the check compared and how much of the home it
+walked, at every `--verify` level, although TargetPath already identified the installed file. The check now
+asks the inherited reader for `verification.TargetPath`: a path reference resolves to that exact source
+(`FindSource(StoredFilePath: …)` with `RequireFreshSource` unset), so neither `findSourceFile` nor
+`canonicalSource` runs.
+`TestStructureVerificationReadsTheInstalledPathItWasGiven` plants a decoy where that lookup prefers it — an
+earlier dated directory under the same root, holding the same identity and one different model-visible
+message — asserts the premise that the id lookup answers with the decoy, and requires the check to verify
+the installed file anyway.
+
+### Table A — every rule of the touched surface, one executed mutation each
+
+Each mutation was applied to this working tree by a throw-away harness outside the repository (it lives in
+`/tmp`, never in the tree), the tests that claim the rule were run, and every file was restored from a
+byte-identical copy with the restore checked: `path.read_text()` equality for the script, and for the Go
+file the reviewed head's own blob against the restored file (`git show HEAD:internal/ccc/codex_install.go`,
+whose diff against the restored file holds only this round's lines) plus the green tests and the gate run
+below.
+
+| Rule | Mutation (the fix's line reverted) | Observed |
+| --- | --- | --- |
+| 1 the structural check reads the file it was handed | `codex_install.go`: the reader is asked for `rollout.SessionID` again (the reviewed head's own line) | `go test -tags fts5 -count=1 -run TestStructureVerificationReadsTheInstalledPathItWasGiven ./internal/ccc` FAIL — `the check read something other than the installed file: {State:not-verified … Detail:the installed session does not hold the evidence in the target document: dialogue 2 is in the file but was not written: assistant_message (35 bytes, sha256 ced7502d…)}` |
+| 2 the host's configuration document is never copied (finding 1's own defect) | `codex-native-check.py`: the seeded text answers the host's own bytes (`text = host_text`) | `python3 -m unittest scripts.tests.test_codex_native_check` rc=1 — `FAIL: test_copies_only_the_settings_that_cannot_hold_a_credential`, `AssertionError: {'mod… 'model_reasoning_effort': 'high', 'model_providers': {'a-proxy': {… 'http_headers': {'Authorization': 'Bearer a-fixture-header-token'}, …}}}` (the copied bytes hold the credential); `ERROR: test_a_configuration_it_cannot_read_is_not_copied`; `FAIL: test_the_command_line_still_decides_what_the_home_answers_with`; `FAIL: test_does_not_copy_a_provider_whose_url_holds_a_credential` |
+| 2 a credential written into a provider URL is not copied | `codex-native-check.py`: `credential_free_url` answers `True` | rc=1 — `FAIL: test_does_not_copy_a_provider_whose_url_holds_a_credential`, `AssertionError: 'model_providers' unexpectedly found in {… 'base_url': 'https://a-fixture-url-user:a-fixture-url-password@proxy.example/v1' …}` |
+| 2 the command line still decides what the home answers with | `codex-native-check.py`: `overrides.get(key, document.get(key))` → `document.get(key)` | rc=1 — `FAIL: test_the_command_line_still_decides_what_the_home_answers_with`, `AssertionError: 'a-host-model' != 'a-named-model'`; `FAIL: test_a_configuration_it_cannot_read_is_not_copied` |
+| 2 the report names what was left behind | `codex-native-check.py`: the report's `not_copied` clause dropped (`if self.not_copied:` → `if False:`) | rc=1 — `FAIL: test_copies_only_the_settings_that_cannot_hold_a_credential` (`[model_providers.a-proxy].http_headers` not in the line); `FAIL: test_a_configuration_with_nothing_to_seed_says_so` |
+| 2 a configuration that cannot be read as TOML is not copied, and is reported | `codex-native-check.py`: the decode failure reports no problem (`problem = ""`) | rc=1 — `FAIL: test_a_configuration_it_cannot_read_is_not_copied`, `AssertionError: 'not readable as TOML' not found in 'nothing was copied: it holds none of the settings this check seeds'` |
+| 2 the copied bytes are a TOML document holding exactly the copied settings | `codex-native-check.py`: `toml_string` answers the raw value (`" ".join(escaped)`) | rc=1 — `ERROR: test_copies_only_the_settings_that_cannot_hold_a_credential`, `ERROR: test_does_not_copy_a_provider_whose_url_holds_a_credential`, `ERROR: test_a_configuration_it_cannot_read_is_not_copied` (the seeded document does not parse) |
+
+Tests, gate: top-level `--- PASS` cases **156 → 157** across `./cmd/ccc/... ./internal/ccc/...` (before:
+`internal/ccc` 129, `./internal/ccc/...` 132, `cmd/ccc` 24 — the counts §16 recorded for the reviewed head;
+after: `internal/ccc` **130**, `./internal/ccc/...` **133**, `cmd/ccc` **24**, `--- FAIL` 0;
+`go test -tags fts5 -count=1 -v`, `--- PASS` lines at top level). The one new top-level case is the
+installed-path read above. The Python suite's own `selftest` step is **153 → 158**:
+`python3 -m unittest -v scripts.tests.test_codex_native_check` runs 13 cases, the five the seeding class
+adds, and the gate's step ran `Ran 158 tests in 4.861s (rc=0)`. `python3 scripts/gate.py` on this tree —
+**exit 0, `GATE: PASS`** (not partial; the block is the one in §6, re-recorded by the run on the tree as
+delivered — only documentation changed after the code, tests and scripts).
+
+The native harness **was** re-run, and it is this round's measured consumer: finding 1 changes what its
+throw-away home is built from, so both §3 runs were re-executed against the fixed script and their blocks
+replaced (`codex-cli 0.169.0`, `--model-provider tencent-litellm --model deepseek-v4.1-flash-fast`, a real
+turn each; exit 0, `13 check(s) passed, 0 failed, 0 skipped` in both). The numbers those runs moved are the
+run's own minted identity and byte counts, which §3 states are per-run; the counts §5's table reads (carried
+messages, tool calls, boundaries) and the tooling fixture's digest `415bbc31…` are unchanged, and the
+`seeded from:` line the fixed script prints is kept in both blocks.
+
+Docs changed with the code: this §17, §3 (both run blocks and the two view/answer blocks re-recorded, and
+their interpretations re-stated in the answers' own new words), §5's target-view id (it names the same run
+as §3's second half), §6 (the gate block re-recorded and two rule rows), `docs/harness.md` (the seeding
+rule) and the plan (§4's structure-level paragraph and §8's "copying auth/login state" bullet).
+`docs/decisions/OPEN-QUESTIONS.md` gains **Q-0002-21** (which settings the native check seeds, and why an
+allowlist rather than a copy with redaction). `AGENTS.md` is unchanged: no repository layout, gate step,
+command, read order or agent rule moved this round — the changes live in existing package, script and test
+files — which the stage report states. Goal bookkeeping: 0002 is still `Implemented on
+feat/0002-claude-to-codex-continuation; awaiting operator acceptance`, so nothing moves to
+`docs/goals/archive/` and `docs/goals/README.md`'s row stays as it is.
