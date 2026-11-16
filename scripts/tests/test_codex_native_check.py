@@ -154,6 +154,73 @@ class ResumeInvocationCheck(unittest.TestCase):
         self.assertFalse(NATIVE_CHECK.reported_invocation(line, Path("codex-home"), RESUME_ARGUMENTS))
 
 
+class PipeShapedStream:
+    """A text pipe over fixed text: ``readline(size)`` answers at most ``size`` characters of one line.
+
+    This is how a pipe hands lines to a reader (``io.TextIOWrapper.readline``): up to ``size``
+    characters, stopping at a newline, and shorter than ``size`` only at the end of the text. The
+    iterator protocol hands out what is left as one line, because that is what iterating a stream means:
+    the drainer under test has to read a line to its end, so a case that drove only ``readline`` would
+    not notice a reader that kept a whole enormous line. ``sizes`` records what the reader asked for, so
+    "what one read may accumulate" is measured rather than assumed.
+    """
+
+    def __init__(self, text: str) -> None:
+        self.text, self.at = text, 0
+        self.sizes: list[int] = []
+
+    def readline(self, size: int = -1) -> str:
+        if size is None or size < 0:
+            raise AssertionError("the drainer asked for a whole line: an unending one would be "
+                                 "retained in full, so the read itself has to be bounded")
+        self.sizes.append(size)
+        chunk = self.text[self.at:self.at + size]
+        newline = chunk.find("\n")
+        if newline >= 0:
+            chunk = chunk[:newline + 1]
+        self.at += len(chunk)
+        return chunk
+
+    def __iter__(self):
+        rest, self.at = self.text[self.at:], len(self.text)
+        if rest:
+            yield rest
+
+
+class UnterminatedLine:
+    """A diagnostics stream whose single line is never ended, and whose bytes arrive in pieces.
+
+    The stream serves ``flood`` characters and then fails the way a pipe fails when the server behind it
+    dies, so a case drives it to completion instead of hanging; what the case then measures is memory --
+    the pieces the drainer asked for against what it kept. An unbounded read is refused rather than
+    answered, because answering it would mean holding the whole line here instead of in the drainer.
+    """
+
+    def __init__(self, flood: int) -> None:
+        self.remaining = flood
+        self.sizes: list[int] = []
+
+    def _piece(self, size: int) -> str:
+        if self.remaining <= 0:
+            raise OSError("the flooded diagnostics pipe broke")
+        take = min(size, self.remaining)
+        self.remaining -= take
+        return "x" * take
+
+    def readline(self, size: int = -1) -> str:
+        if size is None or size < 0:
+            raise AssertionError("the drainer asked for a whole line: an unending one would be "
+                                 "retained in full, so the read itself has to be bounded")
+        self.sizes.append(size)
+        return self._piece(size)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> str:
+        return self._piece(1 << 20)
+
+
 class BoundedAppServerDiagnostics(unittest.TestCase):
     """The app server's diagnostics are a bounded tail, not a log this harness keeps for the whole run.
 
@@ -196,6 +263,69 @@ class BoundedAppServerDiagnostics(unittest.TestCase):
         server.diagnostics = NATIVE_CHECK.new_diagnostics()
         NATIVE_CHECK.drain_diagnostics([f"line {index}\n" for index in range(10)], server.diagnostics)
         self.assertEqual(server.stderr_tail(), "line 7 | line 8 | line 9")
+
+    def test_an_oversized_line_is_cut_and_its_remainder_read_away(self) -> None:
+        # One line far past the per-line bound, and a line that fits after it: the bound must cut the
+        # long one (keeping its head, not its tail), and the rest of it must still be read -- a drainer
+        # that stopped at the cut would leave the pipe full, which is the other half of its job.
+        stream = PipeShapedStream("a" * 1_000_000 + "\nthe line after the oversized one\n")
+        retained = NATIVE_CHECK.new_diagnostics()
+        NATIVE_CHECK.drain_diagnostics(stream, retained)
+        kept = list(retained)
+        self.assertEqual(len(kept), 2, f"the drainer kept {kept!r}")
+        self.assertEqual(kept[0], "a" * NATIVE_CHECK.APP_SERVER_DIAGNOSTICS_LINE_MAX
+                         + NATIVE_CHECK.DIAGNOSTICS_TRUNCATED,
+                         "the oversized line was not kept as its head, marked as cut")
+        self.assertEqual(kept[1], "the line after the oversized one",
+                         "the line after the oversized one was not read")
+        self.assertLessEqual(sum(len(line) for line in kept),
+                             NATIVE_CHECK.APP_SERVER_DIAGNOSTICS_MAX
+                             * (NATIVE_CHECK.APP_SERVER_DIAGNOSTICS_LINE_MAX + 64),
+                             f"the drainer kept {sum(len(line) for line in kept)} characters")
+        self.assertEqual(stream.at, len(stream.text),
+                         "the drainer left part of the stream in the pipe: a full pipe blocks the "
+                         "server it is draining")
+        self.assertLessEqual(max(stream.sizes or [0]), NATIVE_CHECK.APP_SERVER_DIAGNOSTICS_LINE_MAX,
+                             "the drainer read a piece larger than the per-line bound")
+        self.assertTrue(stream.sizes, "the drainer never asked for a bounded piece of the stream")
+
+    def test_an_already_split_line_is_cut_to_the_bound_too(self) -> None:
+        # The drainer's other reading: a sequence of lines someone else split. An element of it can be
+        # far larger than the per-line bound (the pipe did not split this one), and what the sink keeps
+        # is bounded by bytes there too.
+        retained = NATIVE_CHECK.new_diagnostics()
+        NATIVE_CHECK.drain_diagnostics(["a" * 1_000_000 + "\n", "the line after\n"], retained)
+        kept = list(retained)
+        self.assertEqual(len(kept), 2, f"the drainer kept {len(kept)} line(s)")
+        self.assertEqual(kept[0], "a" * NATIVE_CHECK.APP_SERVER_DIAGNOSTICS_LINE_MAX
+                         + NATIVE_CHECK.DIAGNOSTICS_TRUNCATED,
+                         "an oversized element was not kept as its head, marked as cut")
+        self.assertEqual(kept[1], "the line after")
+        self.assertLessEqual(sum(len(line) for line in kept),
+                             NATIVE_CHECK.APP_SERVER_DIAGNOSTICS_MAX
+                             * (NATIVE_CHECK.APP_SERVER_DIAGNOSTICS_LINE_MAX + 64),
+                             f"the drainer kept {sum(len(line) for line in kept)} characters")
+
+    def test_an_unterminated_stream_is_read_away_without_being_retained(self) -> None:
+        # A server that never writes a newline, and then dies: the drainer must keep reading (the pipe
+        # must stay empty) while what it retains stays inside the bound -- a single line a server never
+        # ends is exactly the shape a count-only bound does not answer.
+        stream = UnterminatedLine(flood=3 << 20)
+        retained = NATIVE_CHECK.new_diagnostics()
+        NATIVE_CHECK.drain_diagnostics(stream, retained)
+        kept = list(retained)
+        self.assertEqual(len(kept), 1, f"the drainer kept {len(kept)} line(s) of one unending line")
+        self.assertEqual(kept[0], "x" * NATIVE_CHECK.APP_SERVER_DIAGNOSTICS_LINE_MAX
+                         + NATIVE_CHECK.DIAGNOSTICS_TRUNCATED,
+                         "the unending line was not kept as its head, marked as cut")
+        self.assertLessEqual(sum(len(line) for line in kept),
+                             NATIVE_CHECK.APP_SERVER_DIAGNOSTICS_MAX
+                             * (NATIVE_CHECK.APP_SERVER_DIAGNOSTICS_LINE_MAX + 64),
+                             f"the drainer kept {sum(len(line) for line in kept)} characters of a "
+                             f"stream the server never ended")
+        self.assertLessEqual(max(stream.sizes or [0]), NATIVE_CHECK.APP_SERVER_DIAGNOSTICS_LINE_MAX,
+                             "the drainer read a piece larger than the per-line bound")
+        self.assertTrue(stream.sizes, "the drainer never asked for a bounded piece of the stream")
 
 
 #: A host configuration the seeding case drives the check with: one credential in each shape a real
@@ -285,15 +415,23 @@ class SeededHostConfiguration(unittest.TestCase):
                 self.assertIn(left, report, report)
 
     def test_does_not_copy_a_provider_whose_url_holds_a_credential(self) -> None:
-        host = HOST_CONFIGURATION.replace(
-            "https://proxy.example/v1",
-            f"https://{HOST_TOKENS['url_user']}:{HOST_TOKENS['url_password']}@proxy.example/v1")
-        document, rendered, report = self.seeded(host)
-        self.assertNotIn("model_providers", document,
-                         f"a provider definition holding a credential was copied: {rendered!r}")
-        self.assert_no_credential(rendered, report)
-        self.assertIn("[model_providers.a-proxy]", report,
-                      "the report does not name the provider definition it left behind")
+        # All three shapes a credential can take in a URL, because each one is a branch of the rule
+        # (`credential_free_url`): userinfo, a query parameter, and a fragment. A case with only the
+        # first would stay green with the other two branches removed.
+        shapes = {
+            "userinfo": f"https://{HOST_TOKENS['url_user']}:{HOST_TOKENS['url_password']}@proxy.example/v1",
+            "query": f"https://proxy.example/v1?token={HOST_TOKENS['query']}",
+            "fragment": f"https://proxy.example/v1#token={HOST_TOKENS['query']}",
+        }
+        for shape, url in shapes.items():
+            with self.subTest(credential_in="the url's " + shape):
+                document, rendered, report = self.seeded(
+                    HOST_CONFIGURATION.replace("https://proxy.example/v1", url))
+                self.assertNotIn("model_providers", document,
+                                 f"a provider definition holding a credential was copied: {rendered!r}")
+                self.assert_no_credential(rendered, report)
+                self.assertIn("[model_providers.a-proxy]", report,
+                              "the report does not name the provider definition it left behind")
 
     def test_the_command_line_still_decides_what_the_home_answers_with(self) -> None:
         document, rendered, report = self.seeded(model_provider="other", model="a-named-model")
@@ -325,25 +463,39 @@ class SeededHostConfiguration(unittest.TestCase):
 
 #: The checks the ordering rule below is about, named as the harness records them.
 PROTECTED_CHECKS = ("the source session is unchanged",
-                    "the unrelated session in the target home is unchanged")
+                    "the unrelated session in the target home is unchanged",
+                    "no pre-existing session in the target home changed")
+
+#: The session this case's home already holds before the run starts: the third comparison's subject.
+#: It is kept as a *name* here, so the assertion on the run's own report holds whatever separator the
+#: host spells paths with.
+PRE_EXISTING_NAME = "rollout-2025-12-31T23-59-00-01a1e000-0000-7000-8000-000000000003.jsonl"
 
 
 class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
-    """The source session and the planted session are compared again after the harness's own native
-    stages, not before them.
+    """The source session, the planted session and every session the home already held are compared
+    again after the harness's own native stages, not before them.
 
     The native half cannot run offline -- it needs the Codex binary and, for a turn, model access -- so
     these cases drive the shipped ``main`` with the seams that half stands on replaced: the subprocess
     runner, the app server and the harness's own view call, plus ``shutil.which`` for the two tools. The
     stub for ``ccc continue`` installs a real file into a throw-away home, and the stub for the resume
-    turn answers like a turn that continued (the installed file grows) while it changes both protected
-    artifacts. With the comparisons at the end of the run, the mutating case must FAIL exactly those two
-    checks and PASS the turn; if the comparisons move back above the loader and the turn -- the defect
-    this pins -- they answer on the pre-mutation state, so the mutating case below fails over an empty
-    failure list while the intact control still passes: the ordering defect breaks the catching, not the
-    passing. The intact run is the control for the other direction -- a comparison that answered
-    FAIL for its own reasons could not pass it -- and the mutating run asserts the two protected checks
+    turn answers like a turn that continued (the installed file grows) while it changes all three
+    protected artifacts. With the comparisons at the end of the run, the mutating case must FAIL exactly
+    those three checks and PASS the turn; if the comparisons move back above the loader and the turn --
+    the defect this pins -- they answer on the pre-mutation state, so the mutating case below fails over
+    an empty failure list while the intact control still passes: the ordering defect breaks the catching,
+    not the passing. The intact run is the control for the other direction -- a comparison that answered
+    FAIL for its own reasons could not pass it -- and the mutating run asserts the three protected checks
     are its **only** failures, so nothing else was already red.
+
+    The home carries a session of its own (``PRE_EXISTING_NAME``) besides the one the harness plants, and
+    that is what makes the third comparison's evidence non-vacuous rather than a restatement: with an
+    empty capture, "no pre-existing session in the target home changed" would iterate nothing, so
+    neutering the capture altogether would keep it green. Here the intact run has to report the capture
+    it compared (a count of one) and the mutating run has to name the file it caught changing, so a
+    capture that is never taken, or a comparison that never runs, fails these cases instead of agreeing
+    with itself.
     """
 
     def drive(self, mutate_during_resume: bool) -> tuple[int, dict[str, tuple[str, str]]]:
@@ -376,6 +528,12 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         installed = (home / "sessions" / "2026" / "05" / "04"
                      / f"rollout-2026-05-04T09-15-00-{thread_id}.jsonl")
         planted = home / "sessions" / "2026" / "01" / "01" / NATIVE_CHECK.UNRELATED_NAME
+        # A session the home already held before this run started, besides the one the harness plants:
+        # the third comparison's subject. The harness only digests it, so a metadata line is all it needs
+        # to be, and its id is neither the source's nor the conversion's.
+        pre_existing = home / "sessions" / "2025" / "12" / "31" / PRE_EXISTING_NAME
+        pre_existing.parent.mkdir(parents=True)
+        pre_existing.write_text(json.dumps({"type": "session_meta"}) + "\n")
         # The two reported command lines are rendered the way the conversion's own renderer spells one
         # (`internal/ccc/continue.go`'s ``renderResumeCommand``/``shellQuote``: the environment's value,
         # then every argument word, quoted where a POSIX shell would act on it), because the harness
@@ -433,6 +591,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 if mutate_during_resume:
                     fixture.write_text(fixture.read_text() + json.dumps({"type": "assistant"}) + "\n")
                     planted.write_text(planted.read_text() + json.dumps({"type": "session_meta"}) + "\n")
+                    pre_existing.write_text(pre_existing.read_text() + json.dumps({"type": "turn"}) + "\n")
                 return subprocess.CompletedProcess(cmd, 0, "the stub turn answered\n", "")
             raise AssertionError(f"the case's stub was asked for an unexpected command: {command}")
 
@@ -481,18 +640,27 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                          f"comparisons catch: {results}")
         failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
         self.assertEqual(failed, sorted(PROTECTED_CHECKS),
-                         f"the mutating run's failures are not exactly the two protected-artifact "
+                         f"the mutating run's failures are not exactly the three protected-artifact "
                          f"comparisons: {results}")
         self.assertEqual(code, 1, f"exit {code} for a run with failed checks: {results}")
         self.assertIn("the fixture tree changed:", results[PROTECTED_CHECKS[0]][1])
         self.assertIn(" before, ", results[PROTECTED_CHECKS[1]][1])
         self.assertIn(" after", results[PROTECTED_CHECKS[1]][1])
+        # The session the home already held is named as the one that changed: a comparison reading an
+        # empty capture, or not running, could not report this file.
+        self.assertIn("changed:", results[PROTECTED_CHECKS[2]][1])
+        self.assertIn(PRE_EXISTING_NAME, results[PROTECTED_CHECKS[2]][1])
 
     def test_an_intact_run_passes_the_comparisons(self) -> None:
         code, results = self.drive(mutate_during_resume=False)
         for name in PROTECTED_CHECKS:
             state, detail = results.get(name, ("missing", ""))
             self.assertEqual(state, "PASS", f"{name}: {state} — {detail}; all results: {results}")
+        # The third comparison's own evidence: it says what it compared, so a capture that was never
+        # taken (an empty one would answer PASS for every mutation) is red here rather than green.
+        self.assertIn("1 pre-existing session file(s)", results[PROTECTED_CHECKS[2]][1],
+                      "the run's pre-existing-session comparison did not name the session the home "
+                      "already held: a capture that never happened agrees with itself")
         self.assertEqual(code, 0, f"exit {code} for an intact run: {results}")
 
 

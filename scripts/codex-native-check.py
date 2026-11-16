@@ -22,7 +22,8 @@ decides the offline half (round-trip through the inherited reader, install rules
 shape); this script is the re-derivable native evidence, the way `scripts/upstream-compare.py` is for the
 carried tree's behaviour. Every app-server request it makes is bounded by `APP_SERVER_TIMEOUT`, and a
 server that stops answering is reported as a failed check with its own diagnostics rather than blocking
-the run.
+the run; those diagnostics are a bounded tail of bounded lines, read in bounded pieces, so a server that
+floods that pipe cannot grow this harness's memory either.
 
     python3 scripts/codex-native-check.py
     python3 scripts/codex-native-check.py --resume-prompt "Which file did you read, and why?"
@@ -62,7 +63,7 @@ import threading
 import time
 import tomllib
 from pathlib import Path
-from typing import Iterable, NamedTuple
+from typing import Callable, Iterable, NamedTuple
 from urllib.parse import urlsplit
 
 #: The provider directory, and the two committed Claude fixtures this harness can convert. The first
@@ -85,12 +86,21 @@ UNRELATED_NAME = "rollout-2026-01-01T00-00-00-00000000-0000-7000-8000-0000000000
 #: its output open and stops answering is reported as a failed check rather than blocking the run.
 APP_SERVER_TIMEOUT = 120
 
-#: How many of the app server's diagnostic lines are retained. The drainer has to keep reading the pipe
-#: (a full one blocks the server instead of answering) but what it *keeps* is a ring of the last lines:
-#: the failure reports quote the tail of it, and an unbounded list would make this harness's own memory a
-#: function of the target's output -- a runaway log would be retained for the whole run. The bound is
-#: pinned by ``scripts/tests/test_codex_native_check.py``.
+#: How many of the app server's diagnostic lines are retained, and how many characters of one line. The
+#: drainer has to keep reading the pipe (a full one blocks the server instead of answering) but what it
+#: *keeps* is a ring of the last lines, each cut to its own bound: the failure reports quote the tail of
+#: it, and neither many lines nor one endless line can make this harness's own memory a function of the
+#: target's output -- a runaway log would be retained for the whole run. Retaining the ring also bounds
+#: the *bytes* kept: at most ``APP_SERVER_DIAGNOSTICS_MAX * (APP_SERVER_DIAGNOSTICS_LINE_MAX +
+#: len(DIAGNOSTICS_TRUNCATED))`` characters, because a line the bound cuts is kept as its head while the
+#: rest of it is read and dropped. Both bounds are pinned by ``scripts/tests/test_codex_native_check.py``.
 APP_SERVER_DIAGNOSTICS_MAX = 200
+APP_SERVER_DIAGNOSTICS_LINE_MAX = 2000
+
+#: What a retained line says where the per-line bound cut it: a report quotes the head of a line that
+#: was longer, and a reader of the report is told the line continued instead of being shown a shortened
+#: line as though it were the server's whole line.
+DIAGNOSTICS_TRUNCATED = " …[the rest of this line was dropped]"
 
 #: The top-level settings the throw-away home's configuration is seeded with, and nothing else. The
 #: target's loader compares a session against the provider its *own* configuration names, so these two
@@ -354,21 +364,73 @@ def run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = No
 def new_diagnostics() -> collections.deque[str]:
     """The bounded sink the stderr drainer writes into: the last lines, not a log.
 
-    A ``deque`` with a ``maxlen`` drops the oldest line as each new one arrives, so what a failure report
-    can quote is bounded while the drainer keeps the pipe empty.
+    A ``deque`` with a ``maxlen`` drops the oldest line as each new one arrives, and the drainer cuts
+    every line it keeps to the per-line bound, so what a failure report can quote is bounded by count
+    *and* by bytes while the drainer keeps the pipe empty.
     """
     return collections.deque(maxlen=APP_SERVER_DIAGNOSTICS_MAX)
 
 
-def drain_diagnostics(stream: Iterable[str], retained: collections.deque[str]) -> None:
-    """Read a diagnostics stream to its end into ``retained``, whose own ``maxlen`` bounds it.
+def retained_line(line: str, cut: bool = False) -> str:
+    """One diagnostic line as the sink keeps it: at most ``APP_SERVER_DIAGNOSTICS_LINE_MAX`` characters.
 
-    The stream ends when the server closes it, and a read that fails mid-stream keeps the lines that did
-    arrive: a diagnostics tail that ends at the failure is worth more than an empty one.
+    ``cut`` says the line continues past what was read, so a shortened line is marked as shortened
+    rather than presented as the server's whole line.
+    """
+    if len(line) > APP_SERVER_DIAGNOSTICS_LINE_MAX:
+        line, cut = line[:APP_SERVER_DIAGNOSTICS_LINE_MAX], True
+    return line + DIAGNOSTICS_TRUNCATED if cut else line
+
+
+def discard_line_remainder(read: Callable[[int], str]) -> bool:
+    """Read and drop the rest of a line the bound cut short; True when the line ended, not the stream.
+
+    The remainder is read rather than left in the pipe -- a full pipe blocks the server instead of
+    answering -- but it is read in bounded pieces and thrown away, so an enormous line is kept out of
+    this reader's own buffer. A stream that fails inside the remainder reports the line as *not* ended:
+    what the server said before the failure is still worth keeping, and it is a cut line either way.
+    """
+    while True:
+        try:
+            chunk = read(APP_SERVER_DIAGNOSTICS_LINE_MAX)
+        except (OSError, ValueError):
+            return True
+        if chunk == "":
+            return False
+        if chunk.endswith("\n"):
+            return True
+
+
+def drain_diagnostics(stream: Iterable[str], retained: collections.deque[str]) -> None:
+    """Read a diagnostics stream to its end into ``retained``, bounded on both of its axes.
+
+    ``retained``'s own ``maxlen`` bounds how many lines are kept, and every kept line is cut to
+    ``APP_SERVER_DIAGNOSTICS_LINE_MAX`` characters, so the tail a failure report can quote is bounded by
+    bytes as well as by count. What one read may accumulate is bounded too: a stream is read in bounded
+    pieces (``readline(size)``, as a text pipe bounds it), and a line that does not end inside that bound
+    has its head kept while the rest of it is read and dropped -- a server that writes one enormous line,
+    or never writes a newline at all, must not be able to make this reader's memory a function of its own
+    output. The stream ends when the server closes it, and a read that fails mid-stream keeps the lines
+    that did arrive: a diagnostics tail that ends at the failure is worth more than an empty one.
     """
     try:
-        for line in stream:
-            retained.append(line.rstrip("\n"))
+        read = getattr(stream, "readline", None)
+        if read is None:
+            # A sequence of already-split lines (the test seam): each element is one line, and it is
+            # still cut to the per-line bound before it is kept.
+            for line in stream:
+                retained.append(retained_line(line.rstrip("\n")))
+            return
+        while True:
+            line = read(APP_SERVER_DIAGNOSTICS_LINE_MAX)
+            if line == "":
+                return
+            if line.endswith("\n"):
+                retained.append(retained_line(line.rstrip("\n")))
+                continue
+            # The bound cut this line (or ended the stream): keep its head, drain the remainder.
+            cut = discard_line_remainder(read)
+            retained.append(retained_line(line, cut))
     except (OSError, ValueError):
         pass
 
@@ -381,8 +443,9 @@ class AppServer:
     promises a bounded verdict for every check. stderr is drained by a second thread for the same
     reason -- a piped stream nobody reads fills up, and a server that blocks writing a diagnostic stops
     answering -- and the lines it holds are reported with a failure instead of being thrown away. What is
-    reported is the *tail* of them: the drainer retains ``APP_SERVER_DIAGNOSTICS_MAX`` lines and drops
-    the older ones, so a server that logs for the whole run cannot grow this harness's memory with it.
+    reported is the *tail* of them: the drainer retains ``APP_SERVER_DIAGNOSTICS_MAX`` lines, each cut to
+    ``APP_SERVER_DIAGNOSTICS_LINE_MAX`` characters and read in bounded pieces, so a server that logs for
+    the whole run -- or writes one line it never ends -- cannot grow this harness's memory with it.
     """
 
     def __init__(self, binary: str, home: Path):

@@ -1043,3 +1043,60 @@ supersede it with a newer one and say which it supersedes.
   one) continues, which is the signal this entry records.
 - **Settled by:** the acceptance audit's own verdict on the frozen list — which is why the list was frozen
   **before** the audit runs and is a file rather than a summary in a pull-request comment.
+
+## Q-0002-23 — Whether the response stream is bounded too, and by what
+
+- **Status:** open (default taken: no change to the response path; a measured limitation is recorded).
+- **Question:** the sweep of 2026-11-16 (see
+  [`docs/evidence/0002-obligation-matrix.md`](../evidence/0002-obligation-matrix.md), E6) bounded the
+  *diagnostics* both harnesses keep — the Go client's app-server stderr and the resume turn's two pipes,
+  the native check's stderr ring — but the **response** stream is bounded by count only, or not at all:
+  `scripts/codex-native-check.py`'s `_read_stdout` appends every line it reads to an unbounded
+  `queue.Queue` (measured: 100 001 retained items for a 100 000-line flood), and
+  `internal/ccc/codex_verify.go`'s client bounds the number of decoded messages (`lines chan []byte`,
+  64 slots) but not the size of one message. Should either harness bound the response path as well, and by
+  count, by bytes, or both? The clause in the matrix says "a protocol that stalls or floods is reported as
+  a failed check rather than blocking or exhausting the run"; for responses, only the *stall* half is
+  enforced today by the per-request deadline.
+- **Default taken:** no code change, and the limitation declared with its own measurement. A bound on the
+  response path is not a free repair: a bounded queue must either block the reader (which stops the reader
+  draining the pipe and can stall a server that is answering) or drop messages (which drops the answer a
+  call is waiting for), turning a flood into a *timeout* — a behaviour choice about which failure a caller
+  prefers, and one an operator should make rather than an unattended lane. The two harnesses also differ
+  in consequence: the Go client is gate-covered and serves the shipped CLI, while the Python harness is
+  the re-derivable native evidence and runs against the operator's own target binary.
+- **Reversal:** bound the queue (a `maxsize` with a blocking put keeps every message and stops the reader
+  at the bound) and bound a single line (`readline(size)` with the remainder dropped, the same shape the
+  diagnostics drainer now uses), then pin both with a case that drives the reader over a flood; in Go,
+  either cap one decoded message or decode through a bounded reader and answer `not-verified` with the
+  harness's own message when the bound is hit.
+- **Settled by:** whether the operator wants a flooding (or merely enormous) target answer to be a
+  bounded failure rather than this process's memory, and which of "block the reader", "drop the answer" or
+  "cap the message size" is the acceptable failure shape for the CLI they will run.
+
+## Q-0002-24 — Whether a conversion reserves its new identity against the target home's own ids
+
+- **Status:** open (default taken: the claim was corrected to what is enforced; no code change).
+- **Question:** obligation D1's frozen sentence read "the target session id is a fresh UUID v7, never the
+  source's session id and never an id already present in the target home"
+  ([`docs/evidence/0002-obligation-matrix.md`](../evidence/0002-obligation-matrix.md), D1). The shipped
+  conversion never consults the home: `ConvertToCodexRollout` mints a fresh v7 when it is handed no id
+  (`internal/ccc/codex_target.go`), `Continue` hands it none, and the exclusive install refuses a taken
+  *file name* (`ErrTargetExists`) — which does not cover an id the home already holds under another day or
+  timestamp. The ids the home held are compared *after* the install by the native harness's own check
+  (`scripts/codex-native-check.py`), not by the conversion. Should a conversion reserve its identity
+  against the ids the home holds (a second walk of the target sessions tree, plus an injectable id source
+  so a collision can be tested), or is "a fresh v7 plus an exclusive install" the guarantee the project
+  wants — with a v7 collision treated as unrepairable-and-unreviewed?
+- **Default taken:** the claim was corrected to what the three checks enforce, and the residual declared.
+  The goal's own clause asks for "the target identity is new and an unrelated existing Codex session is not
+  replaced", both of which hold; reserving against the home is new behaviour, on the conversion path the
+  gate covers, for a collision whose probability is that of a v7 collision (and whose detection the native
+  harness already performs on the home it runs against).
+- **Reversal:** enumerate the home's `rollout-*.jsonl` ids before converting, pass them to the writer, and
+  regenerate while the drawn id is in the set; then assert it through an id-source seam, with the mutation
+  "the reservation removed" and a home that already holds the id the seam draws first.
+- **Settled by:** whether the operator wants the conversion to be the place that guarantees id uniqueness
+  across the home (paying a home walk on every conversion), or wants the guarantee to stay "fresh id +
+  exclusive install", with the home's ids checked by the native verification and the id-uniqueness
+  obligation stated at that strength in the matrix.

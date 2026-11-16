@@ -209,6 +209,15 @@ their rows (`internal/ccc/reader.go` `95e68873…`, `cmd/ccc/main_test.go` `0ea5
   2. `codex_target.go:1023` `Count: flagCount(b.sourceFidelity.NeedsRetry),` → `Count: 0,`. **Observed:**
      exit `1`; `FAIL`; `continue_test.go:2109: source_needs_retry = {… Count:0 …}, want the read's state
      counted once, carried with a caveat`. Restored `f43564af…`.
+- **Sweep execution (2026-11-16): the third half had a test but no mutation.** The clause's "a read the
+  provider classified as a summary fallback … is reported in the losses" was pinned only by
+  `TestContinueDisclosesASummaryTranscriptRead` passing; the sweep executed the mutation the row was
+  missing: `codex_target.go:1017`
+  `Count: flagCount(b.sourceFidelity.TranscriptFidelity == parser.TranscriptFidelitySummary),` → `Count: 0,`.
+  Command: `GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 -run
+  TestContinueDisclosesASummaryTranscriptRead ./internal/ccc/`. **Observed:** exit `1`; `FAIL`;
+  `continue_test.go:2182: summary_transcript = {… Count:0 …}, want the provider's classification reported`.
+  Restored `f43564af…` (byte-identical to the digest this file already records for `codex_target.go`).
 
 ### A5 — A subagent (sidechain) record never stands for the main conversation
 
@@ -530,10 +539,19 @@ their rows (`internal/ccc/reader.go` `95e68873…`, `cmd/ccc/main_test.go` `0ea5
 
 ## Surface D — installation and outcomes
 
-### D1 — A conversion writes a fresh identity that no id in the home holds
+### D1 — A conversion writes a fresh identity, and the install replaces no name the home holds
 
-- **Clause:** the target session id is a fresh UUID v7, never the source's session id and never an id
-  already present in the target home; the file name and the reported identity agree.
+*(Heading corrected by the sweep of 2026-11-16: it read "A conversion writes a fresh identity that no id in
+the home holds", which is the claim the section's last bullet below narrows to what is enforced. The
+obligation's number and place in the list are unchanged.)*
+
+- **Clause (as frozen):** the target session id is a fresh UUID v7, never the source's session id and never
+  an id already present in the target home; the file name and the reported identity agree.
+- **Clause (corrected by the sweep of 2026-11-16 — what is enforced, with the record below):** the target
+  session id is a fresh UUID v7 — never the source's, never one a previous conversion of the same run used
+  — and no file the home already holds is replaced under any name; the ids the home held are compared
+  *after* the install by the native harness's own identity check, and whether the conversion itself should
+  reserve against them is `Q-0002-24`.
 - **Discharged:** `internal/ccc/codex_target.go:230-250` (`ConvertToCodexRollout`'s identity),
   `:1149-1157` (the file name and dated directory), `internal/ccc/continue.go` (the rounded report).
 - **Positive evidence:** `TestCodexRolloutGeneratesAFreshIdentity`,
@@ -544,6 +562,32 @@ their rows (`internal/ccc/reader.go` `95e68873…`, `cmd/ccc/main_test.go` `0ea5
   native check's own identity comparison.
 - **Executed mutation:** `codex_target.go:241` `if sessionID == "" {` → `if false {`. **Observed:** exit
   `1`; `FAIL`; `codex_target_test.go:744: two conversions produced the same id ""`. Restored `f43564af…`.
+- **Sweep correction (2026-11-16): the claim as frozen was broader than the implementation.** The sentence
+  above ended "…and never an id already present in the target home". Nothing in the shipped conversion
+  consults the home's ids: `ConvertToCodexRollout` mints a fresh UUID v7 whenever it is handed no id
+  (`codex_target.go:236-244`), `Continue` hands it none (`continue.go:331-337`), and the exclusive install
+  refuses a taken *name* (`codex_install.go:107-112`, `:146-160`) — which is a different guarantee, since
+  an id already in the home under another day or timestamp would take a different name. What does hold,
+  and is what this row now claims:
+  1. the id is a fresh UUID v7, never the source's and never one a previous conversion of the same run
+     used (pinned by `TestCodexRolloutGeneratesAFreshIdentity`, mutation above);
+  2. no *file* is replaced, under any name (`ErrTargetExists`, row D2);
+  3. the ids the home already held **are** compared after the install, by the native harness's own check
+     (`codex-native-check.py`'s `"the target identity is new and is not the source's"`, against
+     `existing_ids` collected from `home.rglob("rollout-*.jsonl")` before the conversion) — a real check on
+     a real home, but one that runs in the non-gate harness, and on a home that holds the session the
+     harness plants (1 id) rather than a home with a history.
+  The claim is corrected rather than the implementation widened, and the decision is recorded: reserving
+  the id against the home would mean a second walk of the target sessions tree on every conversion and an
+  injectable id source to make the collision testable — new behaviour the goal's `Done when` clause does
+  not require ("the target identity is new and an unrelated existing Codex session is not replaced"). It
+  is `Q-0002-24` in [`docs/decisions/OPEN-QUESTIONS.md`](../decisions/OPEN-QUESTIONS.md), left open for the
+  operator, with the residual declared: a v7 collision with an id already present in the home is not
+  *checked* by the conversion, only astronomically unlikely and not repaired by any shipped check.
+- **Sweep correction evidence (executed):** the two checks the corrected sentence rests on ran as part of
+  this lane's gate (`GATE: PASS`, `test 3 package(s) ok`) and of the `selftest` step
+  (`Ran 164 tests … (ok)`), and the third is the native harness's own check, whose placement and capture the
+  D4 row's sweep repair now pins with two mutations.
 
 ### D2 — Publication is exclusive: nothing existing is ever replaced
 
@@ -599,6 +643,32 @@ their rows (`internal/ccc/reader.go` `95e68873…`, `cmd/ccc/main_test.go` `0ea5
   test_a_mutation_during_the_resume_stage_is_caught_by_the_last_comparison`;
   `AssertionError: Lists differ: ['the…changed'] != ['the…changed', 'the unrelated session in the target
   home is unchanged']`. Restored `7cf87ee9…`.
+- **Sweep repair (2026-11-16, Part 1 of the systematic sweep — the round-14 finding that this row's
+  evidence was vacuous).** The third comparison's capture (`existing_sessions`) had no subject in any
+  case: the shipped native run reported `0 pre-existing session file(s)`, and this row's case built a home
+  that held only the planted session, so "no pre-existing session in the target home changed" iterated an
+  empty dict — disabling the capture, or the comparison, would have gone undetected while the case stayed
+  green. The case's home now holds a session of its own before the run starts
+  (`PRE_EXISTING_NAME`, a fourth file under the home's own sessions tree) besides the one the harness
+  plants, the mutating half changes it during the resume stage, and the two halves assert the comparison
+  rather than its mere absence: the intact run has to report the capture it compared
+  (`1 pre-existing session file(s)`, so a capture that was never taken is red), and the mutating run has to
+  name the file it caught changing (`changed: …<PRE_EXISTING_NAME>`) as one of exactly the three protected
+  checks that failed. The planted-session comparison, the ordering (`finally`), and every other row's
+  measurement are unchanged.
+- **Executed mutations (sweep repair, two — one per half of the capture):**
+  1. The capture neutered: `existing_sessions = {path: sha256(path) for path in home.rglob("rollout-*.jsonl") if path != unrelated}`
+     → `existing_sessions = {}`. Command (both cases of the class):
+     `python3 -m unittest scripts.tests.test_codex_native_check.ProtectedArtifactsAfterNativeVerification`.
+     **Observed:** exit `1`; `FAIL` both cases — the mutating one over
+     `Lists differ: ['the source session is unchanged', 'the unrelated session in the target home is
+     unchanged'] != [ … 'no pre-existing session in the target home changed']`, and the intact one over
+     `AssertionError: '1 pre-existing session file(s)' not found in '0 pre-existing session file(s)'`.
+     Restored `ba6fda4b…`.
+  2. The comparison neutered: `changed = [str(path.relative_to(home)) for path, digest in
+     existing_sessions.items() if not path.is_file() or sha256(path) != digest]` → `changed = []`. Same
+     command. **Observed:** exit `1`; `FAIL: test_a_mutation_during_the_resume_stage_is_caught_by_the_last_comparison`
+     — the check answered PASS while the session the home already held had changed. Restored `ba6fda4b…`.
 
 ### D5 — A failure after publication keeps the report it reached
 
@@ -840,12 +910,84 @@ their rows (`internal/ccc/reader.go` `95e68873…`, `cmd/ccc/main_test.go` `0ea5
   (`:156-198`), three cases through the shipped sink and drainer: a 5000-line stream leaves exactly
   `APP_SERVER_DIAGNOSTICS_MAX` lines and they are the stream's **last** ones; a stream that fails mid-read
   keeps the lines that arrived; the reported tail is the end of what was read.
-- **Executed mutation (audit repair):** `codex-native-check.py:360`
-  `return collections.deque(maxlen=APP_SERVER_DIAGNOSTICS_MAX)` → `return collections.deque()` (the bound
-  removed). Command: `python3 -m unittest
-  scripts.tests.test_codex_native_check.BoundedAppServerDiagnostics`. **Observed:** exit `1`; `FAIL:
-  test_retains_only_the_bounded_tail`; `AssertionError: 5000 not less than or equal to 1000 : the drainer
-  retained 5000 lines of a 5000-line stream: the diagnostics are a tail, not a log`. Restored `7d759175…`.
+- **Sweep repair (2026-11-16, Part 1 of the systematic sweep).** The bound above is a bound on the
+  *number* of retained lines, and a line is not bounded by it: `for line in stream` accumulated a line the
+  server had not ended before yielding it, so one enormous line — or a line that never ends at all — grew
+  the harness's memory while the ring stayed satisfied (the round-14 finding's own class, one axis out).
+  `scripts/codex-native-check.py` now bounds both axes: `APP_SERVER_DIAGNOSTICS_LINE_MAX` (2000 characters)
+  cuts every retained line (`retained_line`, with `DIAGNOSTICS_TRUNCATED` naming the cut), the drainer
+  reads through `readline(bound)` and reads-and-drops a line's remainder in bounded pieces
+  (`discard_line_remainder`, which stays on the pipe so the server cannot block on a full one), and the
+  retained bytes are therefore at most `200 × (2000 + len(" …[the rest of this line was dropped]"))`
+  = 407 200 characters. The live presentation is unchanged (`stderr_tail` still joins the last 3 retained
+  lines and cuts to 400 characters) and no credential/source-content rule is touched.
+- **Also repaired by the sweep (the same clause, the Go half).** "No unbounded diagnostics" held for the
+  app server's stderr (`boundedBuffer`, first 4096 bytes) but not for the *other* subprocess this harness
+  runs: `runCodexTurn` accumulated the resume turn's stdout and stderr in plain `bytes.Buffer`s, grown by
+  os/exec's copiers for the whole turn. Both pipes are now `boundedBuffer`s —
+  `codexTurnOutputMax` (1 MiB) and `codexTurnDiagnosticsMax` (4096) — with `boundedBuffer.Truncated()`
+  recording that a write was cut, and `VerifyCodexResume` marking `output_truncated` when the answer
+  buffer is what cut the answer. The live stream to the caller's own `opts.Stderr` writer is untouched, and
+  what a report quotes does not change: the answer is quoted through `boundedText` (8192 bytes by default),
+  so an answer large enough to hit the 1 MiB buffer was already reported truncated.
+- **Pinned by (sweep repairs):**
+  `scripts/tests/test_codex_native_check.py`'s `BoundedAppServerDiagnostics`
+  (`test_an_oversized_line_is_cut_and_its_remainder_read_away`,
+  `test_an_already_split_line_is_cut_to_the_bound_too`,
+  `test_an_unterminated_stream_is_read_away_without_being_retained`, with the three cases the audit repair
+  added); `internal/ccc/codex_verify_test.go`'s `TestCodexTurnBoundsTheOutputItRetains`, which runs this
+  test binary as a stub harness that writes more than either bound to both pipes
+  (`TestCodexTurnStubFloodsItsOutput` is its child half, skipped in the parent suite) and asserts the two
+  buffers hold exactly their bounds and that the caller is told the answer is an excerpt.
+  **What that case does not pin, stated rather than implied:** `VerifyCodexResume`'s one-line composition
+  of the buffer's flag into `output_truncated` is reachable only for a *library* caller that sets
+  `MaxOutput` above 1 MiB — the CLI never sets it (nothing in `cmd/ccc` or `internal/ccc` assigns the
+  field, so the report is always quoted through `boundedText`'s 8192-byte default, which marks an answer
+  that large truncated on its own). The case pins the flag's source (`runCodexTurn`'s third return value)
+  and the bound; the composition is defensive, and it is disclosed as not having a case of its own.
+- **Executed mutations (sweep repairs, four):**
+  1. `drain_diagnostics` reverted to its pre-repair body (`for line in stream: retained.append(line.rstrip("\n"))`).
+     Command: `python3 -m unittest scripts.tests.test_codex_native_check.BoundedAppServerDiagnostics`.
+     **Observed:** exit `1`; `FAIL: test_an_oversized_line_is_cut_and_its_remainder_read_away` (`1 != 2 :
+     the drainer kept [<the 1 000 000-character line>…]`) and
+     `FAIL: test_an_unterminated_stream_is_read_away_without_being_retained` (`3 != 1 : the drainer kept 3
+     line(s) of one unending line`). Restored `ba6fda4b…`.
+  2. `new_diagnostics`' `collections.deque(maxlen=APP_SERVER_DIAGNOSTICS_MAX)` → `collections.deque()` (the
+     count bound removed). Same command. **Observed:** exit `1`;
+     `FAIL: test_retains_only_the_bounded_tail`; `AssertionError: 5000 not less than or equal to 1000 : the
+     drainer retained 5000 lines of a 5000-line stream`. Restored `ba6fda4b…`.
+  3. `retained_line`'s cut neutralized (`if len(line) > APP_SERVER_DIAGNOSTICS_LINE_MAX {` → `if False {`).
+     Same command. **Observed:** exit `1`; `FAIL: test_an_already_split_line_is_cut_to_the_bound_too`;
+     `'aaaa…[997955 chars]aaaa' != 'aaaa…aaaaa …[the rest of this line was dropped]' : an oversized element
+     was not kept as its head, marked as cut`. Restored `ba6fda4b…`.
+  4. The turn's two buffers widened to `1 << 40` (the pre-repair shape: unbounded). Command:
+     `GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 -run TestCodexTurnBoundsTheOutputItRetains
+     ./internal/ccc/`. **Observed:** exit `1`; `FAIL`; `codex_verify_test.go:158: the turn's answer holds
+     1052678 byte(s) of a flood, want the bound (1048576)`; `:162: the turn's diagnostics hold 1052673
+     byte(s) of a flood, want the bound (4096)`; `:166: the answer filled the bound and the caller was not
+     told it is an excerpt`. Restored `fb9a0a18…`.
+- **Open limitations this row carries after the sweep (declared, not deleted).** The clause's word
+  *floods* is now true of the **diagnostics** both harnesses keep, and of the Go client's per-message
+  deadline; it is **not** true of the response stream either harness reads:
+  1. `scripts/codex-native-check.py`'s stdout reader (`_read_stdout`) puts every line it reads into
+     `self.responses`, a `queue.Queue` with no `maxsize`, and reads with `for line in stream` (so one
+     unterminated stdout line is accumulated whole). Measured with a throwaway probe — an
+     `AppServer.__new__(AppServer)` whose `responses` is a plain `queue.Queue` and whose
+     `process.stdout` is a stream of 100 000 notification lines, then `responses.qsize()` —
+     printed: `stdout notifications written=1000: items retained=1001`;
+     `written=100000: items retained=100001` — one item per line, no bound. What limits the damage today
+     is that `call()` drains the queue while a request is in flight (a flood that outruns the consumer, or
+     one between calls, is retained in full).
+  2. `internal/ccc/codex_verify.go`'s app-server client bounds the *number* of decoded messages
+     (`lines chan []byte`, 64 slots) but not the size of one message: `json.Decoder.Decode` accumulates a
+     single message until it ends. The response path is bounded by count and by the per-request deadline
+     only.
+  3. The turn's own answer is bounded by bytes now (1 MiB) but the *live* stream to the caller's
+     `opts.Stderr` writer is the caller's own memory to bound, by construction.
+  Whether the response streams should be bounded too — and by count, by bytes, or both — is an owner
+  decision recorded as `Q-0002-23` in [`docs/decisions/OPEN-QUESTIONS.md`](../decisions/OPEN-QUESTIONS.md):
+  a bound there can drop an answer the caller is waiting for (turning a flood into a timeout), so it is a
+  behaviour choice rather than a defect repair.
 
 ## Surface F — privacy and test integrity
 
@@ -996,6 +1138,81 @@ alone and passed before that mutation was applied.
 | 3 — `codex-native-check.py:388`, diagnostics retained without a memory bound | E6 | the drainer writes into a ring (`APP_SERVER_DIAGNOSTICS_MAX`, `new_diagnostics`/`drain_diagnostics`), presentation unchanged | `BoundedAppServerDiagnostics` — the `maxlen` removed retains 5000 of 5000 lines |
 | 4 — `codex_target_test.go:1113`, the envelope assertion shared the writer's constant | C2 | both envelope spellings are literals taken from the carried reader (`response_item`, `event_msg`) | `TestCodexRolloutWritesTheTargetsOwnViewRecordForEachMessage` — a drifted writer spelling fails it; sharing the constant again hides the same drift |
 | — (same class, disclosed not found) `codex_target_test.go:128-135`, the record-*kind* list also read the writer's constants | C2 | the list is now the carried reader's own spellings as literals, with the source named in a comment; the operator repaired this one itself | `TestCodexRolloutRecordShape` — a drifted `codexRecordEventMsg` fails it with `record types = […want…]`; the pre-repair form moved with the writer and stayed green (the lane's disclosure, verified by an executed drift mutation and a byte-identical restore) |
+
+## Sweep (2026-11-16) — the "claim does not hold as stated" class, row by row
+
+A bounded author lane re-read every one of the 40 obligations above **as a claim**, with the two questions
+the two acceptance audits asked: *is the claim as broad as its wording?* (a bound of count is not a bound of
+bytes or of time; *compared*, *checked*, *detected*, *preserved*, *never replaced* each name something the
+code has to do, not something near it) and *would the cited evidence fail if the behaviour were removed?*
+The head this section is taken on is `fe7b802` plus the lane's own uncommitted repairs below; the gate run
+recorded in the lane's report is on that tree.
+
+**Ground rules the sweep held to:** no claim was weakened to match the implementation. Two were
+**corrected with the decision recorded** (D1's identity sentence, E6's word *floods*) and one implementation
+was **widened** to match its claim (E6's Go half — the resume turn's two pipes). Every row the sweep
+touched carries two-way evidence: a valid case accepted *and* an invalid case rejected by an **executed**
+mutation (edit → command → observed failure → exit status → byte-identical restore, digests in the rows).
+Rows the sweep did not touch keep the measurements their rows record; they were re-read, not re-measured,
+and the reason each is safe is below.
+
+### The rows the sweep changed
+
+| Row | Verdict | Change | Evidence (command → observed) |
+| --- | --- | --- | --- |
+| E6 | `SUSPECT` → repaired twice | the diagnostics ring bounded **count**, not size: `APP_SERVER_DIAGNOSTICS_LINE_MAX` + read-and-drop now bound bytes and per-read accumulation; and "no unbounded diagnostics" held for the app server's stderr but **not** for the resume turn's two pipes, now `boundedBuffer`s (`codexTurnOutputMax`, `codexTurnDiagnosticsMax`) with `Truncated()` | `python3 -m unittest scripts.tests.test_codex_native_check.BoundedAppServerDiagnostics` under three mutations → rc=1 each; `GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 -run TestCodexTurnBoundsTheOutputItRetains ./internal/ccc/` under one → rc=1 |
+| E6 | `SUSPECT` → claim corrected | the response stream is *not* bounded by bytes in either harness; the word *floods* is narrowed to the diagnostics and the residual is declared with its own measurement (`Q-0002-23`) | throwaway probe over the shipped `_read_stdout`: 100 000-line flood → 100 001 retained items; `wait view` of the row |
+| D4 | `SUSPECT` → repaired | the claim was right, its *evidence* was vacuous: the third comparison's capture had no subject in any case (the shipped run reported `0 pre-existing session file(s)`), so neutering the capture stayed green. The case's home now holds a session of its own (`PRE_EXISTING_NAME`), the mutating half changes it, and both halves assert the comparison | `python3 -m unittest scripts.tests.test_codex_native_check.ProtectedArtifactsAfterNativeVerification` under two mutations (capture neutered, comparison neutered) → rc=1 each |
+| D1 | `SUSPECT` → claim corrected | "never an id already present in the target home" is not what the conversion does: it mints a fresh v7 and the exclusive install refuses a taken *name*; the home's ids are compared after the install by the native harness's own check. Heading and clause corrected, residual declared, `Q-0002-24` | the row's own executed mutation (`if sessionID == "" {` → `if false {`, exit 1) plus the corrected sentence's three checks (gate `test` step, `selftest`, the native check's own identity line) |
+| A4 | `SUSPECT` → evidence repaired | the clause's third half ("a read the provider classified as a summary fallback … is reported in the losses") had a passing test and no mutation; the sweep executed the missing one | `GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 -run TestContinueDisclosesASummaryTranscriptRead ./internal/ccc/` under `Count: flagCount(…TranscriptFidelitySummary)` → `Count: 0` → rc=1 (`continue_test.go:2182`), restored `f43564af…` |
+| F1 | `SUSPECT` → evidence repaired | the clause names three URL shapes a credential hides in (userinfo, query, fragment) and the case exercised one; the case now drives all three | `python3 -m unittest scripts.tests.test_codex_native_check.SeededHostConfiguration` under `credential_free_url`'s `or parts.query or parts.fragment` removed → rc=1, two failing subtests (`…url's query`, `…url's fragment`), restored `ba6fda4b…` |
+
+### Rows judged safe, with the reason (one line each)
+
+- **A1** — path/classification code does what the clause says (`reader.go`'s path-reference resolution and `ambiguousPathResults`), and the cited case fails when the ambiguity answer is replaced by `nil` (`TestReadReportsAForkedPathAsAmbiguous`, exit 1). *(Citation defect only: the row's second `:266-275` anchor is mislabelled — it is the round-trip struct, not a path check.)*
+- **A3** — both halves hold: the accepted-sentinel gate is read (`continue.go:689-714`) and the archive's own ambiguity is reported; the cited mutation (`if !errors.Is(readErr, ErrNotFound)` → `if false`) fails the cited case at rc=1.
+- **A5** — the sidechain guard really runs before the boundary rule, and the cited case fails when the pre-round-3 condition is restored (rc=1, the subagent's summary becomes the target's boundary). *(Anchors `:884-893` are stale; the code is at `864-872`.)*
+- **A6** — the cited case asserts *both* halves of the clause, including that the turns before the boundary stay in the file (`codex_target_test.go:252` `strings.Contains(string(rollout.Data), "Old question")`), so the clause's "remain in the written file" is not only counted as carried-with-caveat.
+- **B1, B2, B4, B5, B6, B7, B8, B9** — each clause's behaviour is present at the cited implementation site and at least one cited case fails if it is deleted, and each row's mutation is in the function its clause names (verified against `codex_target.go`'s write sites: the role gate, the reasoning-only guard, the clock, the archive-summary gate, the decode-once rule, the category table, the system-record branch, the dialogue projection). **Citation defects only:** `codex_target_test.go` line numbers in the "Observed" notes are 4 lines early at this head (e.g. B1 `:543`→`:547`), B7's `continue_test.go:1454`→`:1591`, and several `Discharged` ranges name a neighbouring category (`:895-902` is `unclassified_role_messages`/`empty_user_messages`, not `tool_role_messages`).
+- **B3 — `SUSPECT`, declared not repaired.** The clause's last half ("a result naming a call this conversion did not write is omitted and counted") is in the code (`codex_target.go:724-731`) but in no fixture: the cited case's four inputs never feed it, so deleting that guard would leave the cited evidence green. The clause's "none [outstanding calls] leaves nothing to pair with" sub-case also has no fixture anywhere in `internal/ccc`, and the row's mutation (`!= 1` → `== 0`) is an equivalent mutant on that input. Corrected claim: *an id-less result pairs only with exactly one outstanding call; a result naming a call the conversion did not write is omitted and counted — the first half is pinned, the second is implemented but unexercised.*
+- **C1** — the check reads the exact path it was handed (`codex_install.go:211`, `:226`, `:235`) and the cited case's premise is asserted (a same-id decoy really is what the id lookup prefers) before the mutation is applied. *(Citation defect: the row's `:266-275` anchor is mislabelled.)*
+- **C2** — the repaired assertion asks the file's own bytes for the literal kinds and envelopes; the drift mutation and the pre-repair demonstration are both recorded in the row.
+- **C3** — all five parts of the clause are implemented (`installedDialogueRecords`, the queue's `consume`, `readBackTexts`); **mutation-coverage note:** the row's single mutation pins one part (one record answers for one message), the others are asserted by the cited cases without a mutation of their own.
+- **C4** — two-way: the overstated report is `not-verified` with the difference named (mutation rc=1) and the intact report is `verified`; the unit case catches a silently permissive `compareSequences`.
+- **C5** — the count, the warning and "a message the file does not hold stays a failure" are each pinned; the warning half's end-to-end pin is the `cmd/ccc` case cited in Positive evidence.
+- **D2** — the guard, the temp-then-link publication, the `ErrExist` answer and the `ErrNoExclusiveInstall` refusal are all in the code read, and the row's three-edit mutation (replacing mechanism *and* guard) fails the cited case. **Open limitation:** that mutation does not *isolate* the "publication is the exclusive hard link" half — a rename behind an intact guard would leave the cited cases green — so the claim is true of the implementation (`codex_install.go:51` `var linkSession = os.Link`) but the evidence for that half is the code read, not a mutation.
+- **D3** — the state half is two-way (`changed` with the mutation `if after != before` → `if false` failing the cited case). **Open limitation:** "with both digests" and "warns in its own channel as well" are asserted by no cited case (the warning case asserts the *move* is named, not that the digests are), so those two halves rest on the cited tests' names and on the code read.
+- **D4** — repaired above; otherwise the ordering (`finally`), the planted-session comparison and the `--keep`/`--codex-home` promises are as the row states.
+- **D5 — `SUSPECT`, declared not repaired.** "every check that did not run is reported `not-verified`" is not what the report answers for a check *nobody's level asked for*: those stay `not-requested` with their own detail (`continue.go:610`, `:616-625`), and the cited case's helper asserts exactly that (`continue_test.go:1925-1928`). The rest of the row holds: the completed conversion, the installation and the identity survive the failure, and the error accompanies the report (the row's mutation fails the cited case). Corrected claim: *a check the run's level asked for and the run never reached is `not-verified` with the reason; a check no level asked for is `not-requested` with its level named.*
+- **D6, D7, D8** — each clause's behaviour is implemented at the cited site and each row's mutation is in that implementation with the cited case failing (stage-driven exit status; explicit/env/refused home resolution; the dry run's scratch install and its `not-verified` levels). D8's "no harness was started" half is pinned by the stub's own marker file.
+- **E1** — the id rule and the path rule are both mutated and both caught; the promised relation is the report's own path (`main_test.go:1716` compares the loaded path with the target's), not a constant. *(The one branch no case exercises — a loader answer with no path at all — is wording-only.)*
+- **E2 — `SUSPECT`, declared not repaired.** "reports its command, exit code and the session file's growth" — no case in the repository reads the reported `exit_code` or `command`; deleting those two assignments (`codex_verify.go:347`, `:354`) leaves every cited assertion green. The growth rule itself is two-way (the row's mutation fails the cited case, and the repaired positive case reads the run's own status). Corrected claim: *the turn's growth decides the verdict and is pinned; the command and the exit code are reported (read in the native run's own output) but no offline case asserts them.*
+- **E3** — the relative-spelling mutation is caught by the cited case, and the plausible variants die on it too (a bare path, an absolute path, a directory change before resolution).
+- **E4 — `SUSPECT`, declared not repaired.** The clause's last half, "a dry run records none with that reason", is asserted by no cited case and by no case in the repository (`continue.go:305-309`); the probe's two answers (`target-thread-defaults`, `target-config`) are pinned. Corrected claim: *the recorded provider is the harness's own answer, asked of it, and both of that answer's sources are pinned; the dry run's "none, with the reason" is implemented and read only in a native run.*
+- **E5** — both sides of the shell-reading rule are mutated and caught, and the reader is exercised in both directions over four renderings × two path flavours.
+- **E6** — repaired and corrected above (both harnesses' diagnostics bounded by bytes, the Go turn's two pipes bounded, the response-stream residual declared). **Also found by this lane's own read and left declared:** `codex-native-check.py`'s `run()` captures whole subprocess outputs in memory (a `ccc` build's stdout, the turn's output) with no byte bound; what keeps that bounded is the turn's own deadline and the answer's smallness, not a cap.
+- **F5** — every behaviour the sentence names is in `gate.py`/`upstream-parity.py` and each is pinned by a named case (`GateCase`, the unknown-name case, the partial-disclosure case, the parity script's `INCOMPLETE`); **mutation-coverage note:** the row records one executed mutation (required+SKIP), the other halves are asserted without one.
+
+### Rows this lane found over-claiming and did **not** repair (declared, with the corrected claim)
+
+Time-boxed out rather than judged safe. Each is an obligation whose sentence is broader than what the
+cited code or evidence proves; the sentence below is what the row's evidence supports today, and each is
+listed as an open limitation a further increment (or the operator) must either implement or accept.
+
+| Row | What the claim as frozen says | What the cited evidence proves | Corrected claim / next action |
+| --- | --- | --- | --- |
+| A2 | "a source-side read failure falls back to the archive" (universal) | only the five sentinels in `continue.go:689-714` fall back; a provider failure raised during **resolution** (`reader.go:386-396`) is returned bare, before the archive is opened | narrowed: *a read failure the front door classifies as one of its accepted sentinels falls back* — the resolution-level shape is the same finding the acceptance audit repaired one level down, and is left named, not fixed |
+| A7 | "only a read that names no file at all (or a digest that was never taken) stops the run" | a named file that cannot be **re-read** also stops the run (`continue.go:801-803` → `486-488`), pinned by an uncited case (`continue_test.go:1965-1971`); the third named answer ("a run that stopped") has no cited discharge line and the "digest never taken" branch has no positive test | narrowed to the three states the report actually answers, with the stop conditions enumerated; the row's `Discharged` list needs the `reportAfterFailure` site and its case |
+| F2 | "no report or CLI document carries source conversation content" (human **and** `--json`, installed **and** dry run) | the `--json` document is pinned for the opening prompt and for dialogue carried in `message.Content`; the **human block is read by no test at all**; tool-call arguments and tool results are asserted absent only in the **difference report**, and the row's executed mutation touches `describeItem` — a different implementation from the clause's first half | split the row: the `--json`/difference-report half is pinned; the human block and the tool-argument/output half need their own case (evidence, not implementation, is what is missing) |
+| F3 | "no absolute host path" in any committed fixture | the needles are *this machine's* home directory, *this repository's* absolute path and five literal credential prefixes (`fixtures_test.go:635-641`), so an absolute path leaked from another host passes | narrowed: *no path of the machine running the check and no credential-shaped string*; a host-independent rule (a path-shape scan) is not implemented |
+| F4 | "no case depends on a tool being installed" | `test_only_tracked_go_files_outside_vendor_reach_gofmt` needs a real `git` and skips without one (`test_gate.py:832-834`), and that skip is counted as *expected* (`:1059`) — the suite is green while the dependence exists; the Windows-forced child also reaches only in-process cases, because the gate subprocesses it starts run a fresh interpreter on the real platform | narrowed: *no case depends on a tool being installed **except the git case, whose absence is an expected, disclosed skip**, and the platform answer is forced for the cases that run in-process* |
+| A2 | "a source-side read failure falls back to the archive" (universal) | the fallback gate is a five-sentinel list (`continue.go:689-714`); a provider failure raised during **resolution** (`reader.go:386-396`) is returned bare, before the archive is opened — the shape the acceptance audit repaired one level down (fingerprint/parse) is still open here | narrowed: *a read failure the front door classifies as one of its accepted sentinels falls back*; next action: extend the accepted set or classify resolution failures as `ErrProviderFailed`, then execute the mutation against `TestContinueFallsBackToTheArchiveWhenTheSourceCannotBeRead`'s sibling |
+| A7 | "only a read that names no file at all (or a digest that was never taken) stops the run" | a named file that cannot be **re-read** also stops the run (`continue.go:801-803` → `486-488`), pinned by an uncited case (`continue_test.go:1965-1971`); the third named answer ("a run that stopped") has no cited discharge site (it is `reportAfterFailure`, `continue.go:628-631`) and the "digest never taken" branch has no positive test | narrowed: the three answered states plus the enumerated stop conditions; next action: cite the stop-condition case and the `reportAfterFailure` site, and pin the never-taken-digest branch |
+| B3 | "a result naming a call this conversion did not write is omitted and counted" | the guard exists (`codex_target.go:724-731`) but no fixture feeds it: deleting it leaves the cited case green; "none outstanding leaves nothing to pair with" has no fixture anywhere, and the row's mutation is an equivalent mutant on that input | narrowed: *an id-less result pairs only with exactly one outstanding call (pinned); a result naming a call this conversion did not write is omitted and counted (implemented, unexercised)* — the next action is one fixture per sub-case |
+| D5 | "every check that did not run is reported `not-verified` with the reason" | a check no level asked for stays `not-requested` with its level named (`continue.go:610`, `:616-625`), and the cited helper asserts that | narrowed as in the row's sweep line: *asked-for-and-unreached → `not-verified`; unasked → `not-requested`* |
+| E2 | "reports its command, exit code and the session file's growth" | no case in the repository reads the reported `exit_code` or `command`; deleting both assignments leaves every cited assertion green | narrowed: *the growth decides the verdict (pinned, two-way); the command and exit code are reported but asserted nowhere offline* — the next action is one assertion in the existing resume case |
+| E4 | "…and a dry run records none with that reason" | the dry-run half is asserted by no case in the repository (`continue.go:305-309`); both sources of the harness's own answer are pinned | narrowed: *the recorded provider is the harness's own answer, both of its sources pinned; the dry run's "none, with the reason" is read only in a native run* |
+| F1 | "a provider whose base URL holds userinfo, a query or a fragment is left behind whole" | **repaired in this lane**: the case now drives all three shapes, and removing either non-userinfo branch fails it | claim as frozen, evidence extended (see "The rows the sweep changed") |
 
 ## What this matrix does not claim
 

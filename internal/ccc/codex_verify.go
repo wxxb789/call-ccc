@@ -341,7 +341,7 @@ func VerifyCodexResume(ctx context.Context, opts CodexResumeOptions) ResumeVerif
 	verification.Command = resumeCommandLine(path, args, opts.Home)
 
 	before, _ := fileSize(opts.SessionPath)
-	output, diagnostics, err := runCodexTurn(ctx, path, opts, timeout, args)
+	output, diagnostics, answerTruncated, err := runCodexTurn(ctx, path, opts, timeout, args)
 	exitCode := 0
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -353,6 +353,9 @@ func VerifyCodexResume(ctx context.Context, opts CodexResumeOptions) ResumeVerif
 	}
 	verification.ExitCode = &exitCode
 	verification.Output, verification.OutputTruncated = boundedText(output, opts.MaxOutput)
+	// The answer buffer is bounded too (codexTurnOutputMax): a turn whose output filled it answered with
+	// an excerpt, and the report says so rather than presenting what fits as the whole answer.
+	verification.OutputTruncated = verification.OutputTruncated || answerTruncated
 	verification.SessionBytesBefore = before
 	if err != nil {
 		detail := fmt.Sprintf("the target harness exited %d", exitCode)
@@ -390,6 +393,19 @@ func resumeCommandLine(binary string, arguments []string, home string) string {
 	return renderResumeCommand(append([]string{binary}, arguments...), environment)
 }
 
+// codexTurnOutputMax bounds what one resume turn's stdout may add to this process's memory. The answer
+// the harness reports is quoted out of it, cut to boundedText's own limit (8192 bytes by default), so a
+// turn whose output fills this buffer has already been reported truncated; the bound is here so that a
+// harness flooding its stdout is answered by the turn's deadline and an excerpt instead of by growing
+// this process with every byte it writes.
+const codexTurnOutputMax = 1 << 20
+
+// codexTurnDiagnosticsMax bounds what one resume turn's stderr may add to this process's memory, the way
+// the app server's own diagnostics are bounded (it keeps its first 4096 bytes): a failure's detail quotes
+// the opening lines from here, and the live stream to the caller is untouched. A turn writing more than
+// this is a runaway log, and it does not become this process's memory.
+const codexTurnDiagnosticsMax = 4096
+
 // runCodexTurn runs one non-interactive turn and returns its answer and its diagnostics separately: the
 // answer is what the harness wrote to stdout, the diagnostics everything it wrote to stderr.
 //
@@ -399,10 +415,10 @@ func resumeCommandLine(binary string, arguments []string, home string) string {
 // different executable, or none, even though the probe that found it ran from the caller's directory.
 // The reported command (VerifyCodexResume's own Command field and the conversation's resume lines) keeps
 // the caller's requested spelling.
-func runCodexTurn(ctx context.Context, binary string, opts CodexResumeOptions, timeout time.Duration, args []string) (string, string, error) {
+func runCodexTurn(ctx context.Context, binary string, opts CodexResumeOptions, timeout time.Duration, args []string) (string, string, bool, error) {
 	executable, err := resolveCodexExecutable(binary)
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -416,18 +432,26 @@ func runCodexTurn(ctx context.Context, binary string, opts CodexResumeOptions, t
 	// The turn's answer is what the harness writes to stdout; its progress and warnings go to stderr,
 	// which the caller sees as they arrive and which is kept separately — a failed turn's reason is
 	// reported from there, and a successful one's answer is not mixed with its own chatter.
-	var answer, diagnostics bytes.Buffer
-	command.Stdout = &answer
+	//
+	// Both pipes are bounded, and the turn's own deadline bounds it in time as well: a harness that
+	// floods either one is answered by a bounded excerpt (a failure's reason quotes a few hundred
+	// characters of it anyway) and, if it never stops, by the timeout -- rather than by this process's
+	// memory growing with its output. The live stream to opts.Stderr is untouched: that is the caller's
+	// own writer.
+	answer := newBoundedBuffer(codexTurnOutputMax)
+	diagnostics := newBoundedBuffer(codexTurnDiagnosticsMax)
+	command.Stdout = answer
 	if opts.Stderr != nil {
-		command.Stderr = io.MultiWriter(&diagnostics, opts.Stderr)
+		command.Stderr = io.MultiWriter(diagnostics, opts.Stderr)
 	} else {
-		command.Stderr = &diagnostics
+		command.Stderr = diagnostics
 	}
 	err = command.Run()
 	if runCtx.Err() != nil && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-		return answer.String(), diagnostics.String(), fmt.Errorf("timed out after %s", timeout)
+		return answer.String(), diagnostics.String(), answer.Truncated(),
+			fmt.Errorf("timed out after %s", timeout)
 	}
-	return answer.String(), diagnostics.String(), err
+	return answer.String(), diagnostics.String(), answer.Truncated(), err
 }
 
 // resolveCodexExecutable answers the path a command will run: exec.LookPath's answer, made absolute
@@ -626,9 +650,10 @@ func (s *codexAppServer) stderrExcerpt() string {
 // rather than left to the caller's timing. Unsynchronized, those two are a data race on the buffer's own
 // state and the excerpt in the report would be a torn read.
 type boundedBuffer struct {
-	mu   sync.Mutex
-	max  int
-	data bytes.Buffer
+	mu      sync.Mutex
+	max     int
+	dropped int
+	data    bytes.Buffer
 }
 
 func newBoundedBuffer(max int) *boundedBuffer { return &boundedBuffer{max: max} }
@@ -639,11 +664,22 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 	if remaining := b.max - b.data.Len(); remaining > 0 {
 		if len(p) > remaining {
 			b.data.Write(p[:remaining])
+			b.dropped += len(p) - remaining
 		} else {
 			b.data.Write(p)
 		}
+	} else {
+		b.dropped += len(p)
 	}
 	return len(p), nil
+}
+
+// Truncated reports whether a write was cut short by the bound, so a caller that reports the buffer's
+// content can say it is an excerpt instead of presenting it as the whole of what was written.
+func (b *boundedBuffer) Truncated() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.dropped > 0
 }
 
 func (b *boundedBuffer) String() string {

@@ -33,7 +33,7 @@ func TestRunCodexTurnResolvesARelativeExecutableBeforeChangingDirectory(t *testi
 	t.Chdir(filepath.Dir(executable))
 	relative := "." + string(filepath.Separator) + filepath.Base(executable)
 
-	_, diagnostics, err := runCodexTurn(context.Background(), relative, CodexResumeOptions{
+	_, diagnostics, _, err := runCodexTurn(context.Background(), relative, CodexResumeOptions{
 		WorkingDir: t.TempDir(),
 		Home:       t.TempDir(),
 	}, 2*time.Minute, []string{"-test.run=^$"})
@@ -115,5 +115,54 @@ func TestBoundedBufferIsSafeForConcurrentWritesAndSnapshots(t *testing.T) {
 	if snapshot := buffer.String(); len(snapshot) != bound {
 		t.Errorf("after %d write(s) the buffer holds %d byte(s), want the bound (%d)",
 			writers*rounds, len(snapshot), bound)
+	}
+}
+
+// turnFloodEnv tells the child half below that it is the stub harness for the case next to it.
+const turnFloodEnv = "CCC_TEST_TURN_FLOOD"
+
+// TestCodexTurnStubFloodsItsOutput is the child half of TestCodexTurnBoundsTheOutputItRetains: with the
+// environment set it writes more than either bound to both pipes and exits 0 -- the shape a harness whose
+// diagnostics are a runaway log (or whose answer is enormous) has.
+func TestCodexTurnStubFloodsItsOutput(t *testing.T) {
+	if os.Getenv(turnFloodEnv) == "" {
+		t.Skip("this is the child half of TestCodexTurnBoundsTheOutputItRetains")
+	}
+	flood := strings.Repeat("x", codexTurnOutputMax+codexTurnDiagnosticsMax+1)
+	os.Stdout.WriteString(flood)
+	os.Stderr.WriteString(flood)
+}
+
+// TestCodexTurnBoundsTheOutputItRetains pins what one resume turn may add to this process's memory: the
+// subprocess is bounded by its own deadline *and* by what the caller keeps of its two pipes. A harness
+// that floods them was retained in full before this bound existed (one bytes.Buffer per pipe, grown by
+// os/exec's copiers), so a turn's answer and its runaway diagnostics were this process's memory for the
+// length of the turn; now the opening bytes are kept, the excerpt is what a report quotes, and the
+// caller is told the answer was cut (which a report of it must not present as the whole answer).
+//
+// The stub is this test binary run with the filter above and the environment the child half reads, so the
+// pipes really are a subprocess's.
+func TestCodexTurnBoundsTheOutputItRetains(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolving the test binary: %v", err)
+	}
+	t.Setenv(turnFloodEnv, "1")
+	answer, diagnostics, truncated, err := runCodexTurn(context.Background(), executable, CodexResumeOptions{
+		Home: t.TempDir(),
+	}, 2*time.Minute, []string{"-test.run=^TestCodexTurnStubFloodsItsOutput$"})
+	if err != nil {
+		t.Fatalf("running the flooding stub: %v", err)
+	}
+	if len(answer) != codexTurnOutputMax {
+		t.Errorf("the turn's answer holds %d byte(s) of a flood, want the bound (%d)",
+			len(answer), codexTurnOutputMax)
+	}
+	if len(diagnostics) != codexTurnDiagnosticsMax {
+		t.Errorf("the turn's diagnostics hold %d byte(s) of a flood, want the bound (%d)",
+			len(diagnostics), codexTurnDiagnosticsMax)
+	}
+	if !truncated {
+		t.Error("the answer filled the bound and the caller was not told it is an excerpt")
 	}
 }

@@ -233,11 +233,15 @@ says so.
   third Windows answer under Platform boundary below.
   Every app-server request is bounded by the script's own deadline (`APP_SERVER_TIMEOUT`), stdout is
   read by a thread and stderr drained by another, so a server that stops answering or fills its
-  diagnostics pipe is reported as a failed check rather than hanging the run, and the lines the drainer
-  retains are a bounded tail of the last `APP_SERVER_DIAGNOSTICS_MAX` ones: it keeps the pipe empty, but
-  a server that logs for the whole run cannot grow this harness's memory with it. Every check prints its
-  own verdict and the script exits non-zero when one fails, so a run that could not do the native half
-  says so instead of reporting a pass.
+  diagnostics pipe is reported as a failed check rather than hanging the run. The lines that drainer
+  retains are a bounded tail — the last `APP_SERVER_DIAGNOSTICS_MAX` (200) of them, each cut to
+  `APP_SERVER_DIAGNOSTICS_LINE_MAX` (2000) characters, so at most
+  `200 × (2000 + len(" …[the rest of this line was dropped]"))` characters stay in memory — and it reads
+  in bounded pieces: a line that does not end inside that bound is kept as its head while its remainder
+  is read and dropped, so neither many lines, nor one enormous line, nor a stream the server never ends
+  can grow this harness's memory with it, while the pipe stays empty so the server cannot block on it.
+  Every check prints its own verdict and the script exits non-zero when one fails, so a run that could
+  not do the native half says so instead of reporting a pass.
 
 ## Why the Go steps target a subset
 
