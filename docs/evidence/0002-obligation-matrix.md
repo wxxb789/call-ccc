@@ -123,6 +123,54 @@ production behaviour changed anywhere else, no carried upstream file was touched
 carried half), no gate step, gate knob or required-step list changed, and no existing assertion, evidence
 row or disclosed limit was deleted or weakened.
 
+---
+
+## Audit repair (2026-11-17, round 15) — the three acceptance findings
+
+A third acceptance audit read this file at head `37c0a10` (clean) and returned three P2 findings. All three
+land inside the code the previous lanes added or changed, and all three are corrections: no needle set or
+scanning rule was enlarged, and no assertion, evidence row, disclosed limit or gate step was weakened. No
+clause's wording was wrong, so no `OPEN-QUESTIONS.md` entry accompanies this repair; the three rows that
+carry the findings — B3, F2 and F3 — now record the finding, the correction and the mutation that detects
+it. The run is on the same branch (`feat/0002-claude-to-codex-continuation`, `37c0a10` plus these
+uncommitted edits).
+
+| Finding | Row | Correction | Mutation that now detects it |
+| --- | --- | --- | --- |
+| an omitted result (empty, whitespace only, or only blocks the output field cannot carry) returned before retiring its call, so a later id-less result could be attributed to an answered call, or refused as ambiguous while every call it could belong to was answered | B3 | `codex_target.go:732-734`: the call is retired as soon as the result is recognised as one of this conversion's, before the representability guard; the omission counting is unchanged | three executed mutations on the three new sequences (`codex_target_test.go:1206-1340`): the reported bug restored (rc=1 — and the pre-existing pairing case was green under it, so the sequences were genuinely unpinned), the counters neutered (rc=1), the over-retiring wrong fix (rc=1) |
+| the `--json` content needles were searched in the **serialized** document, where a quoted tool argument or a multiline output is escaped (`\"`, `\n`, `\u003c`) and never matches its raw needle | F2 | the document is decoded and its **string values** are searched (`assertNoSourceContent`/`jsonStrings`, `cmd/ccc/main_test.go:2063`/`:2081`); the needle list is unchanged, and the case now runs over both committed Claude fixtures — the ordinary one and the reasoning-bearing tooling fixture — with `sourceContentNeedles` answering the reasoning traces so the case can require one | three executed leaks, each failing the case at rc=1: a tool argument, a multiline output, and a reasoning trace (the tooling fixture only); for the first two, a captured `--json` document holds the raw needle `0` times while the decoded-value search finds it |
+| the allowed-root test accepted any string that **began with** a root, and `/tmp` is a root without a separator, so a foreign absolute path under a sibling directory (`/tmp-elsewhere/…`, `/home/user-evil/…`) evaded the sanitizer | F3 | the roots are compared component-wise (`fixtures_test.go:644`, `:651-658`): the path equals the root or continues past it at a separator, so a sibling is never "below" a root | `/tmp-elsewhere/code/tooling` and `/home/user-evil/code/tooling` appended to a fixture each fail the scan at rc=1 (`fixtures_test.go:688`), while the pre-fix rule passes `/tmp-elsewhere/…` (`ok`, rc=0 — the evasion the audit reported) and the naive prefix fix passes both (`ok`, rc=0) |
+
+Every mutation above was applied as a temporary edit, run with the named test, observed (the exit status
+and the failure text in each row), and restored from a byte-identical copy whose sha256 was compared after
+the restore; no mutation survived. Files this lane changed: `internal/ccc/codex_target.go` (`2c3a92ba…`),
+`internal/ccc/codex_target_test.go` (`b0668d26…`), `internal/ccc/fixtures_test.go` (`4e07fa58…`),
+`cmd/ccc/main_test.go` (`f9d9ed54…`), and this record. `cmd/ccc/main.go` (`76dbd342…`),
+`internal/ccc/continue.go` (`44d8e65e…`) and the committed fixtures (`415bbc31…`) are the bytes they
+already were — the mutations that touched them were restored and verified too.
+
+**Anchors this lane's insertions moved, recomputed to this tree.** The code edits add 2 lines to
+`internal/ccc/codex_target.go` and 3 to `internal/ccc/fixtures_test.go`; the F2 case and its helpers add 16
+lines to `cmd/ccc/main_test.go` above the E-surface cases, and the new B3 case is appended at the end of
+`codex_target_test.go` (nothing below it). Every anchor at or below those points was recomputed by its
+file's own delta and verified by content identity at the new line (the `HEAD` line and the new line are
+byte-identical at all checked sites); the line numbers inside earlier lanes' *observed* failure text were
+recomputed the same way — the F2 and F3 rows' older mutation records were additionally re-executed on this
+tree, so those two rows' observed lines are freshly measured, while the E2-era records the CI repair had
+re-executed were not re-run again here. The rows whose anchors moved are A1, A4–A6, B1–B3, B6–B9, D1, D6,
+E1, E2, E4 and F2/F3; their numbers now read this tree.
+
+- Gate on the repaired tree, run by this lane: `python3 scripts/gate.py` → `GATE: PASS` —
+  `gofmt 3582 file(s) gofmt-clean`; `build`/`vet` rc=0; `test 3 package(s) ok`;
+  `selftest Ran 164 tests in 5.178s (rc=0)` (a second run on this record's final tree printed
+  `Ran 164 tests in 4.931s (rc=0)`; the count and the exit status are the stable part);
+  `parity … carried: 5553 file(s) identical to the pinned revision (compared through git's own object
+  store) … deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) +
+  1 generated input(s), all present as declared`; `secrets no leaks found in 76 file(s) this repository
+  owns (the carried upstream tree is covered by the parity step, not by this scan)`. The two Go packages
+  this lane touches also ran whole (`go test -tags fts5 -count=1 ./cmd/ccc/... ./internal/ccc/...` → `ok`),
+  and each named test ran alone and passed before its mutation was applied.
+
 ## Surface A — source selection and fidelity
 
 ### A1 — A reference resolves only to the source it names; an ambiguity is reported with candidates
@@ -139,7 +187,7 @@ row or disclosed limit was deleted or weakened.
 - **Executed mutation:** `reader.go:632` `return &AmbiguousError{Ref: ref, Candidates: candidates}` →
   `return nil` (a path ambiguity resolves the way an unambiguous reference does). Command: the test above.
   **Observed:** exit `1`; `FAIL: TestReadReportsAForkedPathAsAmbiguous`;
-  `fixtures_test.go:1050: reading a forked transcript by path answered session not found: … , want an
+  `fixtures_test.go:1053: reading a forked transcript by path answered session not found: … , want an
   ambiguity report`. Restored `ad2a15ce85f7a3549b7da800917798ca57788d7f1a31d61c6a0806fdbf18932b`.
 
 ### A2 — A source that cannot be read falls back to the archive, and the report says so
@@ -257,8 +305,8 @@ row or disclosed limit was deleted or weakened.
   provider classified as a summary fallback or as needing a retry is reported in the losses *and* in the
   run's warnings — a consumer that read only "converted" must not believe it holds the session's recorded
   transcript.
-- **Discharged:** `internal/ccc/codex_target.go:818-836` (the read-completeness reason, the truncated
-  suffix, the two classification reasons), `:1008-1027` (the three entries), `internal/ccc/continue.go:279`
+- **Discharged:** `internal/ccc/codex_target.go:820-838` (the read-completeness reason, the truncated
+  suffix, the two classification reasons), `:1010-1029` (the three entries), `internal/ccc/continue.go:279`
   (`fidelityWarnings` into the run's warnings), `:562-583` (their wording).
 - **Positive evidence:** gate `test` step; `TestCodexRolloutReportsTheSourceLinesItsReadCouldNotProduce`,
   `TestCodexRolloutReportsEveryCategoryItKnows`, `TestContinueDisclosesASummaryTranscriptRead`,
@@ -267,16 +315,16 @@ row or disclosed limit was deleted or weakened.
   count, and the truncated tail named in the read's own words); `TestContinueDisclosesARetryableRead` /
   `TestContinueDisclosesASummaryTranscriptRead` (classification in the warnings *and* the losses).
 - **Executed mutations (two, one per half):**
-  1. `codex_target.go:1011` `Count: b.sourceFidelity.MalformedLines,` → `Count: 0,`. **Observed:** exit
+  1. `codex_target.go:1013` `Count: b.sourceFidelity.MalformedLines,` → `Count: 0,`. **Observed:** exit
      `1`; `FAIL`; `codex_target_test.go:1066: malformed_source_lines = {… Count:0 …}, want the read's own
      count as an omission`. Restored `f43564af…`.
-  2. `codex_target.go:1023` `Count: flagCount(b.sourceFidelity.NeedsRetry),` → `Count: 0,`. **Observed:**
+  2. `codex_target.go:1025` `Count: flagCount(b.sourceFidelity.NeedsRetry),` → `Count: 0,`. **Observed:**
      exit `1`; `FAIL`; `continue_test.go:2443: source_needs_retry = {… Count:0 …}, want the read's state
      counted once, carried with a caveat`. Restored `f43564af…`.
 - **Sweep execution (2026-11-16): the third half had a test but no mutation.** The clause's "a read the
   provider classified as a summary fallback … is reported in the losses" was pinned only by
   `TestContinueDisclosesASummaryTranscriptRead` passing; the sweep executed the mutation the row was
-  missing: `codex_target.go:1017`
+  missing: `codex_target.go:1019`
   `Count: flagCount(b.sourceFidelity.TranscriptFidelity == parser.TranscriptFidelitySummary),` → `Count: 0,`.
   Command: `GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 -run
   TestContinueDisclosesASummaryTranscriptRead ./internal/ccc/`. **Observed:** exit `1`; `FAIL`;
@@ -289,7 +337,7 @@ row or disclosed limit was deleted or weakened.
   conversation's own turn — including a subagent record that also carries the source's compaction marker,
   whose summary must not be applied as the main conversation's `compacted` boundary.
 - **Discharged:** `internal/ccc/codex_target.go:421-434` (the sidechain guard *before* the boundary rule),
-  `:865-872` (`sidechain_messages`).
+  `:867-874` (`sidechain_messages`).
 - **Positive evidence:** `TestCodexRolloutDoesNotApplyASidechainCompactionBoundary`,
   `TestCodexRolloutReportsEveryCategoryItKnows` pass.
 - **Pinned by:** `TestCodexRolloutDoesNotApplyASidechainCompactionBoundary` (round 3, finding 1's rule: the
@@ -305,7 +353,7 @@ row or disclosed limit was deleted or weakened.
   and the turns before it remain in the written file while being counted as carried-with-caveat
   (`pre_compaction_history`), because the target applies the boundary to its model-visible history.
 - **Discharged:** `internal/ccc/codex_target.go:435-450` (the boundary record, the pre-boundary count),
-  `:1030-1037` (`pre_compaction_history` and its reason).
+  `:1032-1039` (`pre_compaction_history` and its reason).
 - **Positive evidence:** `TestCodexRolloutCarriesACompactionBoundaryAndKeepsTheHistoryBeforeIt` passes; the
   native run's target view showed the post-boundary turns and the resumed turn continued from the summary.
 - **Pinned by:** `TestCodexRolloutCarriesACompactionBoundaryAndKeepsTheHistoryBeforeIt`.
@@ -358,8 +406,8 @@ row or disclosed limit was deleted or weakened.
 - **Clause:** a record whose role is not the user's or the assistant's is never written as either; a
   tool-role record's text is carried only as the `function_call_output` paired with its call, and a record
   with nothing but its role is counted under its own category.
-- **Discharged:** `internal/ccc/codex_target.go:466-487` (the role gate), `:882-889` (`tool_role_messages`),
-  `:891-897` (`unclassified_role_messages`), `:905-912` (`non_dialogue_content`).
+- **Discharged:** `internal/ccc/codex_target.go:466-487` (the role gate), `:884-891` (`tool_role_messages`),
+  `:893-899` (`unclassified_role_messages`), `:907-914` (`non_dialogue_content`).
 - **Positive evidence:** gate `test` step; `TestCodexRolloutCarriesAToolRoleMessageOnlyThroughItsResult`,
   `TestCodexRolloutReportsEveryCategoryItKnows` pass.
 - **Pinned by:** `TestCodexRolloutCarriesAToolRoleMessageOnlyThroughItsResult` (the output is carried once,
@@ -374,14 +422,14 @@ row or disclosed limit was deleted or weakened.
 - **Clause:** `Thinking` is omitted and counted (`reasoning_text`); a record the provider projected as
   having no dialogue but whose `Content` renders its reasoning is never written as the agent's words, and
   the writer never falls back to the rendering when the source's own projection says the message has none.
-- **Discharged:** `internal/ccc/codex_target.go:451-465` (the reasoning-only guard), `:1066-1085`
-  (`dialogueText`, the explicit-empty-projection rule), `:858-864` (`reasoning_text`).
+- **Discharged:** `internal/ccc/codex_target.go:451-465` (the reasoning-only guard), `:1068-1087`
+  (`dialogueText`, the explicit-empty-projection rule), `:860-866` (`reasoning_text`).
 - **Positive evidence:** `TestCodexRolloutKeepsAReasoningOnlyRecordOutOfTheDialogue`,
   `TestToolingFixtureCarriesTheShapesTheWriterMustNotMisread` pass; in the native run the trace's words
   appear nowhere in the installed file.
 - **Pinned by:** `TestCodexRolloutKeepsAReasoningOnlyRecordOutOfTheDialogue` (the trace is counted and is
   not in the file as dialogue).
-- **Executed mutation:** `codex_target.go:1067` `if strings.TrimSpace(message.Dialogue) != "" ||
+- **Executed mutation:** `codex_target.go:1069` `if strings.TrimSpace(message.Dialogue) != "" ||
   message.DialogueProjected {` → `if strings.TrimSpace(message.Dialogue) != "" {` (an explicitly empty
   projection falls back to `Content`). **Observed:** exit `1`; `FAIL`;
   `codex_target_test.go:850: the rollout holds the reasoning trace the report says is omitted, as the
@@ -393,8 +441,8 @@ row or disclosed limit was deleted or weakened.
   names; an id-less result pairs only with exactly one outstanding call (two or more make the pairing a
   guess, none leaves nothing to pair with); a result naming a call this conversion did not write is
   omitted and counted.
-- **Discharged:** `internal/ccc/codex_target.go:702-711` (`solePendingCall`), `:712-778` (`toolResult`,
-  both omission guards), `:924-930` (`unpaired_tool_results`), `:981-987` (`generated_call_ids`).
+- **Discharged:** `internal/ccc/codex_target.go:702-711` (`solePendingCall`), `:712-780` (`toolResult`,
+  both omission guards), `:926-932` (`unpaired_tool_results`), `:983-989` (`generated_call_ids`).
 - **Positive evidence:** `TestCodexRolloutPairsAnIdLessResultWithItsCall` (one, two and three outstanding
   calls) passes.
 - **Pinned by:** `TestCodexRolloutPairsAnIdLessResultWithItsCall`.
@@ -433,6 +481,50 @@ row or disclosed limit was deleted or weakened.
   neither its message nor its result was carried` and `:583: unpaired_tool_results = {… Count:0 …}, want
   the orphan result counted`, restored `f43564af…`. The sweep found the B3 row's own evidence did not
   exercise the guard; both rows do now.
+- **Repair (2026-11-17, round 15 — the third audit's B3 finding: an omitted result left its call
+  pending).** The finding: `toolResult` returned before `delete(b.pendingCalls, callID)` whenever the
+  output was not representable (empty, whitespace only, or only blocks the output field cannot carry), so
+  a recorded result did not retire its call — a later id-less result could then be attributed to a call
+  that already had an answer, or refused as ambiguous while every call it could belong to was answered.
+  The correction: the call is retired as soon as the result is recognised as one of this conversion's,
+  before the representability guard (`codex_target.go:732-734`), and the counting is unchanged — the guard
+  below still counts `empty_tool_results`, `whitespace_only_tool_results` and
+  `unrepresentable_result_blocks`, and returns without writing.
+- **Pins (this lane):** `TestCodexRolloutRetiresACallWhenItsResultIsOmitted`
+  (`internal/ccc/codex_target_test.go:1206-1340`) covers the three sequences the finding names:
+  (a) an omitted result followed by an id-less result — three omitted shapes (no text, whitespace only, an
+  image block only): the id-less result is counted under `unpaired_tool_results` and its text is not in
+  the file; (b) two results for the same call, one omitted, in both orders — the omitted one is still
+  counted and the representable one is still written under the same call (retirement must not make a
+  written call's own later result foreign); (c) an omitted result for one of two outstanding calls — the
+  id-less result after it pairs with the call that really has no result instead of being refused as
+  ambiguous.
+- **Executed mutations (this lane, this tree — one per half, plus the wrong fix the component rule
+  forbids):**
+  1. the reported bug restored: the retirement removed from `codex_target.go:732-734` and
+     `delete(b.pendingCalls, callID)` put back below the guard, before the `function_call_output` write.
+     Command: `GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 -run
+     TestCodexRolloutRetiresACallWhenItsResultIsOmitted ./internal/ccc/`. **Observed:** exit `1`; `FAIL`;
+     `codex_target_test.go:1236: (no text at all) carried = {… ToolResults:1 …}, want no result: the call
+     the id-less result could pair with was answered by the omitted result` (the same at `:1236` for
+     "whitespace only" and "an image block only"), `:1246: unpaired_tool_results = {… Count:0 …}` and
+     `:1250: the rollout attributes the id-less result to the call whose own result is recorded`;
+     `:1322: carried = {… ToolResults:0 …}, want the id-less result paired with the one call that has
+     none`, `:1325: unpaired_tool_results = {… Count:1 …}, want none: one call was still unanswered` and
+     `:1342: the rollout holds 0 function_call_output record(s), want exactly one under toolu_b` (the
+     two-outstanding-calls sequence). Restored `2c3a92ba…`.
+     **The pre-existing case was green under this mutation:** `-run
+     TestCodexRolloutPairsAnIdLessResultWithItsCall` → `ok` (exit `0`) — the sequences were unpinned,
+     which is why the audit found this.
+  2. the counting half removed — `b.lossEmptyResults++` and `b.lossWhitespaceResults++` → `+= 0`.
+     Command: the case above. **Observed:** exit `1`; `FAIL`; `codex_target_test.go:1240` (the three
+     omitted shapes) and `:1281` (both same-call orders) on the count assertions. Restored `2c3a92ba…`.
+  3. the over-retiring wrong fix — `delete(b.callOwners, callID)` added beside the retirement (the call
+     dropped from the identity set once answered). Command: the case above. **Observed:** exit `1`;
+     `FAIL`; `codex_target_test.go:1278: (the omitted result first) carried = {… ToolResults:0 …}, want the
+     one representable result written`, `:1281`, `:1284: unpaired_tool_results = {… Count:1 …}, want none:
+     the second result names the call this conversion wrote`, `:1300` — the same-call sequence only.
+     Restored `2c3a92ba…`.
 
 ### B4 — Records are stamped in one ordered run
 
@@ -467,12 +559,12 @@ row or disclosed limit was deleted or weakened.
 - **Clause:** text the read already decoded (a result event, an archive row) is written as it stands; an
   encoded content field goes through the reader's decode once — a second decode strips the quotation marks
   a tool really printed.
-- **Discharged:** `internal/ccc/codex_target.go:1086-1108` (`resultText`), `:1109-1137`
+- **Discharged:** `internal/ccc/codex_target.go:1088-1110` (`resultText`), `:1111-1139`
   (`unrepresentedResultBlocks`).
 - **Positive evidence:** `TestCodexRolloutDecodesEncodedContentExactlyOnce` passes; the native run's
   resumed turn quoted the third tool's `"maxBackoffSeconds"` with its quotation marks.
 - **Pinned by:** `TestCodexRolloutDecodesEncodedContentExactlyOnce`.
-- **Executed mutation:** `codex_target.go:1087` `if result.ContentDecoded {` → `if false {`.
+- **Executed mutation:** `codex_target.go:1089` `if result.ContentDecoded {` → `if false {`.
   **Observed:** exit `1`; `FAIL`; `codex_target_test.go:929: already-decoded content written as "alpha",
   want it unchanged: a second decode strips the quotation marks the tool really printed`.
   Restored `f43564af…`.
@@ -484,9 +576,9 @@ row or disclosed limit was deleted or weakened.
   `function_call_output` cannot carry a content block that only holds an image payload (counted as blocks),
   and text the inherited reader reads as *nothing at all* (whitespace-only output, whitespace-only
   dialogue) is never written and is named under its own category.
-- **Discharged:** `internal/ccc/codex_target.go:792-1030` (the fixed category table), `:712-778` (the
-  whitespace and empty guards before the caveat counters), `:1109-1137` (block counting), `:500-513` and
-  `:931-947` (whitespace categories).
+- **Discharged:** `internal/ccc/codex_target.go:794-1032` (the fixed category table), `:712-780` (the
+  whitespace and empty guards before the caveat counters), `:1111-1139` (block counting), `:500-513` and
+  `:933-949` (whitespace categories).
 - **Positive evidence:** `TestCodexRolloutReportsEveryCategoryItKnows` (all 22 categories present and
   truthful), `TestCodexRolloutDoesNotReportOmittedResultsAsCarried`,
   `TestCodexRolloutReportsToolResultBlocksTheTargetCannotCarry`,
@@ -494,13 +586,13 @@ row or disclosed limit was deleted or weakened.
   ReadsAsNothing` all pass.
 - **Pinned by:** those four tests, each naming the rule in its own name.
 - **Executed mutations (three):**
-  1. `codex_target.go:891` `Category: "unclassified_role_messages",` →
+  1. `codex_target.go:893` `Category: "unclassified_role_messages",` →
      `Category: "unclassified_roles_renamed",`. **Observed:** exit `1`; `FAIL`;
      `codex_target_test.go:422: the report does not name the "unclassified_role_messages" category`.
-  2. `codex_target.go:1130` `if holds && !carried {` → `if holds && carried {`. **Observed:** exit `1`;
+  2. `codex_target.go:1132` `if holds && !carried {` → `if holds && carried {`. **Observed:** exit `1`;
      `FAIL`; `codex_target_test.go:979: unrepresentable_result_blocks = {… Count:0 …}, want the two image
      blocks counted`.
-  3. `codex_target.go:734` `if strings.TrimSpace(text) == "" {` → `if text == "" {`. **Observed:** exit
+  3. `codex_target.go:737` `if strings.TrimSpace(text) == "" {` → `if text == "" {`. **Observed:** exit
      `1`; `FAIL`; `continue_test.go:1694: carried = {… ToolResults:1 …}, want no tool result: the recorded
      output holds only whitespace`.
   Restored `f43564af…` after each.
@@ -511,7 +603,7 @@ row or disclosed limit was deleted or weakened.
   result recorded on that same record is real evidence of a call this conversion carried, so it is written
   once, paired with its call — dropping it would leave the call unanswered while the report named only the
   record's text.
-- **Discharged:** `internal/ccc/codex_target.go:452-461` (the `IsSystem` branch) and `:955-971`
+- **Discharged:** `internal/ccc/codex_target.go:452-461` (the `IsSystem` branch) and `:957-973`
   (`system_records`' own wording).
 - **Positive evidence:** `TestCodexRolloutWritesASystemRecordsToolEvidenceWithoutItsText`,
   `TestToolingFixtureCarriesASystemRemindersToolResult` pass; the tooling fixture's third result (recorded
@@ -527,10 +619,10 @@ row or disclosed limit was deleted or weakened.
 - **Clause:** a message that carries tool calls contributes only its dialogue projection as text: the
   reader's `Content` renders the calls (`[Read: <path>]`), and writing both would duplicate the call in the
   target's history.
-- **Discharged:** `internal/ccc/codex_target.go:1066-1085` (`dialogueText`, the tool-call rule).
+- **Discharged:** `internal/ccc/codex_target.go:1068-1087` (`dialogueText`, the tool-call rule).
 - **Positive evidence:** `TestCodexRolloutKeepsTheDialogueProjection` passes.
 - **Pinned by:** `TestCodexRolloutKeepsTheDialogueProjection`.
-- **Executed mutation:** `codex_target.go:1070` `if len(message.ToolCalls) > 0 {` → `if false {`.
+- **Executed mutation:** `codex_target.go:1072` `if len(message.ToolCalls) > 0 {` → `if false {`.
   **Observed:** exit `1`; `FAIL`; `codex_target_test.go:205: dialogue items = ["Ask" "And now the answer."
   "[Bash: list files]"], want the two recorded texts and no rendering of the calls`. Restored `f43564af…`.
 
@@ -666,7 +758,7 @@ obligation's number and place in the list are unchanged.)*
   *after* the install by the native harness's own identity check, and whether the conversion itself should
   reserve against them is `Q-0002-24`.
 - **Discharged:** `internal/ccc/codex_target.go:230-250` (`ConvertToCodexRollout`'s identity),
-  `:1149-1157` (the file name and dated directory), `internal/ccc/continue.go` (the rounded report).
+  `:1151-1159` (the file name and dated directory), `internal/ccc/continue.go` (the rounded report).
 - **Positive evidence:** `TestCodexRolloutGeneratesAFreshIdentity`,
   `TestContinueConvertsInstallsAndReadsBackTheFixture` pass; the native run reported
   `the target identity is new and is not the source's — 01a1e365-…, not one of the 1 id(s) already in
@@ -864,7 +956,7 @@ obligation's number and place in the list are unchanged.)*
   a failure, while an absent harness is not).
 - **Executed mutation:** `cmd/ccc/main.go:506` (first statement of `continuationExit`) → inserted
   `return exitOK`. **Observed:** exit `1`; `FAIL`;
-  `main_test.go:1305: exit 0, want 1 for a verification that ran and failed (stderr "")`. Restored
+  `main_test.go:1321: exit 0, want 1 for a verification that ran and failed (stderr "")`. Restored
   `76dbd342…`.
 
 ### D7 — The target data directory is resolved, never invented
@@ -918,10 +1010,10 @@ obligation's number and place in the list are unchanged.)*
   was the non-gate native harness.
 - **Executed mutations (two):**
   1. `codex_verify.go:256` `if loadedID != opts.SessionID {` → `if false {`. **Observed:** exit `1`;
-     `FAIL`; `main_test.go:1808: exit 0, want 1 for a loader that loaded another session (stderr "")`.
+     `FAIL`; `main_test.go:1824: exit 0, want 1 for a loader that loaded another session (stderr "")`.
   2. `codex_verify.go:270` `if opts.ExpectedPath != "" && !sameFile(loadedPath, opts.ExpectedPath) {` →
      `if false {`. **Observed:** exit `1`; `FAIL`;
-     `main_test.go:1829: exit 0, want 1 for a loader that named another file (stderr "")`.
+     `main_test.go:1845: exit 0, want 1 for a loader that named another file (stderr "")`.
   Restored `b79031c0…` after each.
 - **Audit repair (2026-11-16, finding 2 of the acceptance audit).** The positive case's exit status is now
   the run's own: `code, stdout, stderr := runCLI(…)` and `continueDocumentOf(t, code, stdout, stderr)`
@@ -948,7 +1040,7 @@ obligation's number and place in the list are unchanged.)*
   command and exit code asserted); a turn that answers without appending is `not-verified` + exit 1 with
   "did not grow" in the detail; a turn the harness cannot run reports the harness's own nonzero status.
 - **Executed mutation:** `codex_verify.go:374` `if after <= before {` → `if false {`. **Observed:** exit
-  `1`; `FAIL`; `main_test.go:1900: exit 0, want 1 for a turn that appended nothing (stderr "")` — with the
+  `1`; `FAIL`; `main_test.go:1916: exit 0, want 1 for a turn that appended nothing (stderr "")` — with the
   growth rule gone the silent turn's run succeeds, so the case's own exit-status assertion catches it
   before the state assertion below it is reached (that assertion's evidence is the passing run, which
   asserts `state == not-verified` for the turn that appended nothing). Restored `b79031c0…`.
@@ -959,13 +1051,13 @@ obligation's number and place in the list are unchanged.)*
   *before* it runs the turn — so the run it called a success had in fact failed: the loader refused
   `thread/resume`, the load block came back `not-verified`, and `continuationExit` answered `1`. The
   positive case now reads the run's own exit code and sets the loader's mode it needs
-  (`stubLoadModeEnv = stubLoadSelfMode`, `main_test.go:1862`), which makes it the genuinely successful run
+  (`stubLoadModeEnv = stubLoadSelfMode`, `main_test.go:1878`), which makes it the genuinely successful run
   it claims; the negative half sets the same mode, so it can fail only on the turn that appended nothing.
 - **Executed mutation (audit repair):** the repaired case with the loader's mode removed again (the
   pre-repair state) — `t.Setenv(stubLoadModeEnv, stubLoadSelfMode)` deleted. Command:
   `CGO_ENABLED=1 go test -tags fts5 -count=1 -run TestResumeVerificationRequiresTheTurnToAppendToTheSession
   ./cmd/ccc/...`. **Observed:** exit `1`; `FAIL`;
-  `main_test.go:1867: exit 1, want 0 (stderr "")` — the run's real status, which the pre-repair case could
+  `main_test.go:1883: exit 1, want 0 (stderr "")` — the run's real status, which the pre-repair case could
   not see because it was not looking at it. Restored `0ea5446a…` (`b10f8417…` after this lane's repair).
 - **Executed demonstration of the pre-repair shape (audit repair):** with the same missing loader mode
   *and* the assertion put back on the constant (`continueDocumentOf(t, exitOK, …)`, plus a temporary
@@ -974,7 +1066,7 @@ obligation's number and place in the list are unchanged.)*
   the test agreed with itself. Restored `0ea5446a…`.
 - **Repair (2026-11-16, this lane — the sweep's declared E2: the reported `command` and `exit_code` were
   asserted by no case).** `TestResumeVerificationRequiresTheTurnToAppendToTheSession`
-  (`cmd/ccc/main_test.go:1850-1940`) now reads both fields out of the run's own document: the verified half
+  (`cmd/ccc/main_test.go:1866-1956`) now reads both fields out of the run's own document: the verified half
   asserts `exit_code == 0` and that `command` names `exec resume <the document's session id>`,
   `--skip-git-repo-check` and `CODEX_HOME='<the document's home>'` — the home's own spelling from the
   document, quoted the way the field's contract renders a word a shell would act on; the new third half
@@ -987,27 +1079,27 @@ obligation's number and place in the list are unchanged.)*
      constant 0 in place of the turn's status). Command:
      `GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 -run
      TestResumeVerificationRequiresTheTurnToAppendToTheSession ./cmd/ccc/`. **Observed:** exit `1`; `FAIL`;
-     `main_test.go:1934: resume exit_code = 0, want the turn's own status 7`. Restored `fb9a0a18…`.
+     `main_test.go:1950: resume exit_code = 0, want the turn's own status 7`. Restored `fb9a0a18…`.
   2. `codex_verify.go:341` `verification.Command = resumeCommandLine(path, args, opts.Home)` →
      `verification.Command = ""`. Command: the test above. **Observed:** exit `1`; `FAIL`;
-     `main_test.go:1890: the reported resume command "" does not name "exec resume
+     `main_test.go:1906: the reported resume command "" does not name "exec resume
      01a1e52f-4d87-7670-97bf-149a3f508554"`, the same line for `--skip-git-repo-check`, and the same line
      for `CODEX_HOME='…/codex home'` — the third word is the quoted spelling the CI repair below pins.
      Restored `fb9a0a18…`.
   3. The renderer's own rule (E5's side of the same case, executed with this repair): `continue.go:851`'s
      `shellUnsafeCharacters` with the space dropped (a word holding one is left bare). Command: the test
      above. **Observed:** exit `1`; `FAIL`;
-     `main_test.go:1890: the reported resume command "CODEX_HOME=…/codex home …" does not name
+     `main_test.go:1906: the reported resume command "CODEX_HOME=…/codex home …" does not name
      "CODEX_HOME='…/codex home'"`. Restored `e5be4e8a…`.
 - **CI repair (2026-11-17, the red at head `37c0a10` — `gate (windows-latest)`, the `test` step).** The
   command assertion this lane added spelled the data directory as *this host's* temp path
   (`"CODEX_HOME=" + target["home"]`), and the renderer quotes a Windows path — a temp path there holds
   backslashes and a `~` — so the assertion failed against a line that was right. That is the class
   **Q-0002-13**'s default moves the test for, not the renderer. The case now installs into a home whose
-  name holds a space (`shellUnsafeHome`, `cmd/ccc/main_test.go:1855`) and asserts the quoted spelling
-  (`:1887`): one expectation for every host instead of whichever arm this host spells. Executed here: with
+  name holds a space (`shellUnsafeHome`, `cmd/ccc/main_test.go:1871`) and asserts the quoted spelling
+  (`:1903`): one expectation for every host instead of whichever arm this host spells. Executed here: with
   `TMPDIR` pointing at a directory whose name holds a space (the same shape — a home the rule quotes) the
-  pre-repair assertion failed with `main_test.go:1886: the reported resume command "CODEX_HOME='…'" does
+  pre-repair assertion failed with `main_test.go:1902: the reported resume command "CODEX_HOME='…'" does
   not name "CODEX_HOME=…"` and the repaired case passes, while `TestContinueJSONDistinguishes…` and
   `TestContinueHumanOutputNamesTheResumeCommand` — the two cases the first CI repair fixed the same way —
   stayed green; mutation 3 above is the rule's own direction. The evidence record's §6 carries the run
@@ -1035,7 +1127,7 @@ obligation's number and place in the list are unchanged.)*
   (`target-thread-defaults` / `target-config` / `unrecorded`), and a dry run records none with that reason.
 - **Discharged:** `internal/ccc/codex_verify.go:100-165` (`ProbeCodexConfig`), `internal/ccc/continue.go
   :296-318` (the probe call and `providerSource`), `internal/ccc/codex_target.go:390-412`
-  (`sessionMeta`'s `ModelProvider`), `:1018-1027` (`provider_binding`).
+  (`sessionMeta`'s `ModelProvider`), `:1020-1029` (`provider_binding`).
 - **Positive evidence:** the native run — `provider=tencent-litellm` from a session whose recorded provider
   came from the harness's own answer (`model_provider "tencent-litellm" (source "target-thread-defaults")`
   in the round-2 record) — and the offline `TestCodexRolloutRecordsTheProviderBindingItIsGiven` for the
@@ -1047,7 +1139,7 @@ obligation's number and place in the list are unchanged.)*
   configuration answers `target-config`.
 - **Executed mutation:** `codex_verify.go:140` `…; err == nil {` → `…; err == nil && false {` (the thread
   defaults' answer is never used). **Observed:** exit `1`; `FAIL`;
-  `main_test.go:1969: model_provider = <nil>, want the harness's own answer`. Restored `b79031c0…`.
+  `main_test.go:1985: model_provider = <nil>, want the harness's own answer`. Restored `b79031c0…`.
 - **Audit repair (2026-11-16, finding 2 of the acceptance audit).** Both of this row's cases now pass the
   run's own exit code to `continueDocumentOf` (the constant `exitOK` is what the helper compares against),
   so the "exit 0" half of each positive case is the command's answer rather than the case's own argument.
@@ -1055,7 +1147,7 @@ obligation's number and place in the list are unchanged.)*
   assertion; the mutation that detects the old shape (one temporary edit) is recorded in E2's row, which is
   the case the audit cited.
 - **Repair (2026-11-16, this lane — the sweep's declared E4: the dry-run half was asserted by no case).**
-  `TestProviderBindingIsTheTargetsOwnAnswer` (`cmd/ccc/main_test.go:1958-2018`) now ends with the dry run's
+  `TestProviderBindingIsTheTargetsOwnAnswer` (`cmd/ccc/main_test.go:1974-2034`) now ends with the dry run's
   own answer: `--dry-run --verify none` (with the stub harness available to be asked) records no
   `model_provider`, reports `model_provider_source: unrecorded`, names the dry run in
   `model_provider_detail`, and the report's warnings carry the sentence that a dry run records no provider
@@ -1063,9 +1155,9 @@ obligation's number and place in the list are unchanged.)*
 - **Executed mutation (this lane):** `continue.go:306` `if opts.DryRun {` → `if opts.DryRun && false {`
   (the dry run falls into the probe branch and starts the harness). Command:
   `GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 -run TestProviderBindingIsTheTargetsOwnAnswer
-  ./cmd/ccc/`. **Observed:** exit `1`; `FAIL`; `main_test.go:2005: a dry run recorded model_provider =
-  a-configured-provider, want none: it never starts the harness`; `:2008: model_provider_source =
-  target-config, want unrecorded for a dry run`; `:2011: the dry run's provider detail "" does not say the
+  ./cmd/ccc/`. **Observed:** exit `1`; `FAIL`; `main_test.go:2021: a dry run recorded model_provider =
+  a-configured-provider, want none: it never starts the harness`; `:2024: model_provider_source =
+  target-config, want unrecorded for a dry run`; `:2027: the dry run's provider detail "" does not say the
   dry run is why nothing is recorded`. Restored `44d8e65e…`.
 
 ### E5 — The reported invocation is the shell's reading of the command that ran
@@ -1269,27 +1361,59 @@ obligation's number and place in the list are unchanged.)*
 - **Repair (2026-11-16, this lane — the sweep's declared F2: the human block and the tool-content half were
   unpinned).** The row is split into its two halves, and each is now read by a case:
   - *the `--json` document and the difference report* — `TestContinueJSONCarriesNoSourceContent`
-    (`cmd/ccc/main_test.go:958`) now asserts absence of **every** piece of source content the committed
+    (`cmd/ccc/main_test.go:964`) now asserts absence of **every** piece of source content the committed
     fixture makes — each message's `Dialogue`/`Content`, the recorded `Thinking`, every tool call's
     `InputJSON` and every tool result's `ContentRaw`, read out of the same inherited reader the conversion
-    uses (`sourceContentNeedles`, `:923`) — for the installed and the dry-run document, the difference
+    uses (`sourceContentNeedles`, `:924`) — for the installed and the dry-run document, the difference
     report keeping its own mutation above;
-  - *the human block* — `TestContinueHumanBlockCarriesNoSourceContent` (`:987`), new in this lane, runs
+  - *the human block* — `TestContinueHumanBlockCarriesNoSourceContent` (`:1002`), new in this lane, runs
     `ccc continue` installed and `--dry-run` without `--json` and asserts the same needles absent from
     stdout, with the block's own lines asserted present so the case cannot pass vacuously.
-- **Executed mutations (this lane, one per half):**
+- **Executed mutations (2026-11-16, one per half; re-executed 2026-11-17 on this tree, whose case shape
+  the round-15 repair below changed — the observed lines are this tree's call sites):**
   1. `continue.go:219-223` `conversionSourceReport` made to return `reportFrom(conversation)` (the preview
      kept). Command: `GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 -run
      TestContinueJSONCarriesNoSourceContent ./cmd/ccc/`. **Observed:** exit `1`; `FAIL`;
-     `main_test.go:973: the [--json] report carries a first_user_message field`; `:977: the [--json]
-     report carries source content "Summarize the retry policy in internal/retry/policy.go."`. Restored
-     `44d8e65e…`.
+     `main_test.go:988: the [--json] report for -home-user-code-example-api carries a first_user_message
+     field` and twelve findings at `:990` (`the [--json] report for … carries source content "Summarize
+     the retry policy in internal/retry/policy.go." as the value …`) across the four documents (both
+     fixtures × installed and dry run). Restored `44d8e65e…`.
   2. the same `conversionSourceReport` edit **and** one added line in `writeContinuation`
-     (`cmd/ccc/main.go:540`, `fmt.Fprintf(out, "  prompt:       %s\n", source.FirstUserMessage)` — a
+     (`cmd/ccc/main.go:542`, `fmt.Fprintf(out, "  prompt:       %s\n", source.FirstUserMessage)` — a
      leak a human block could plausibly grow). Command: the human case. **Observed:** exit `1`; `FAIL`;
-     `main_test.go:1008: the [] human block carries source content "Summarize the retry policy in
+     `main_test.go:1024: the [] human block carries source content "Summarize the retry policy in
      internal/retry/policy.go."`. Restored `44d8e65e…` and `cmd/ccc/main.go` to its HEAD bytes
      (`76dbd342…`).
+- **Repair (2026-11-17, round 15 — the third audit's F2 finding: escaped payloads were invisible to the
+  `--json` check).** The finding: the needles were searched in the **serialized** document, where a quoted
+  tool argument or a multiline output appears escaped (`\"`, `\n`, `\u003c`) and never matches its raw
+  needle, so the check was blind to exactly the payloads the clause names; the cited mutation only
+  exercised an ordinary prompt (a plain text the raw search does see). The correction: the case decodes the
+  document and searches the **values** (`assertNoSourceContent` and `jsonStrings`,
+  `cmd/ccc/main_test.go:2063`/`:2081`), the needle list is unchanged, and the case now runs over **both**
+  committed Claude fixtures — the ordinary one and the reasoning-bearing tooling fixture — with
+  `sourceContentNeedles` answering the reasoning traces on their own so the case can require the fixture
+  set to carry one (`:924-954`): the decoded path is exercised on a `Thinking` needle as well as on the
+  prompt, the tool arguments and the multiline output.
+- **Executed mutations (this lane, this tree — the leaks the raw search could not have seen):**
+  1. a tool-argument leak — `continue.go:277-282` appending every `ToolCall.InputJSON` to
+     `result.Warnings` (serialized into the document). Command: `GOFLAGS=-mod=mod CGO_ENABLED=1 go test
+     -tags fts5 -count=1 -run TestContinueJSONCarriesNoSourceContent ./cmd/ccc/`. **Observed:** exit `1`;
+     `FAIL`; `main_test.go:990: the [--json] report for -home-user-code-example-api carries source content
+     "{\"file_path\":\"/home/user/code/example-api/internal/retry/policy.go\"}" as the value …` (eight
+     findings, both fixtures × installed and dry run). **Blindness executed too:** with the same mutation
+     `ccc continue … --json` was captured to a file and the raw needle occurs `0` times in the serialized
+     document while the decoded-value search finds it — the search the case used before this repair could
+     not have failed. Restored `44d8e65e…`.
+  2. a multiline output leak — the same line appending every `ToolResult.ContentRaw`. Command: the case
+     above. **Observed:** exit `1`; `FAIL`; `main_test.go:990: … carries source content
+     "\"package retry\\n\\nconst MaxAttempts = 4\\n\"" as the value …`; the raw needle occurs `0` times in
+     the captured document, the decoded-value search finds it. Restored `44d8e65e…`.
+  3. a reasoning-trace leak — the same line appending every non-empty `Message.Thinking`. Command: the
+     case above. **Observed:** exit `1`; `FAIL`; `main_test.go:990: the [--json] report for
+     -home-user-code-tooling carries source content "Reading the policy before answering." as the value …`
+     and `"Naming it from the constant rather than from memory."` — the tooling fixture only, which is the
+     reasoning needle being exercised rather than vacuous. Restored `44d8e65e…`.
 
 ### F3 — The committed fixtures carry no host path and no credential
 
@@ -1301,33 +1425,59 @@ obligation's number and place in the list are unchanged.)*
 - **Positive evidence:** `TestFixturesCarryNoHostPathsOrSecrets` and `TestFixturesMatchTheirGenerator` pass;
   the gate's `secrets` step found no leaks in the 74 project-owned files.
 - **Pinned by:** `TestFixturesCarryNoHostPathsOrSecrets`.
-- **Executed mutation (altered fixture, at the sweep's head — the needle half):** appended one line to
+- **Executed mutation (altered fixture, the needle half; re-executed 2026-11-17 on this tree, so the
+  failure line is this tree's call site):** appended one line to
   `internal/ccc/testdata/fixtures/claude/-home-user-code-tooling/b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef.jsonl`
   whose content named the repository root as an absolute path below the builder's home (written `<home>` in
   this file's own convention, as every host path here is). **Observed:** exit `1`; `FAIL`;
-  `fixtures_test.go:651: claude/-home-user-code-tooling/b6d93f07-…jsonl contains "/home/<user>"` (the
-  builder's home directory's first segment, as the scan itself spells it).
+  `fixtures_test.go:683: claude/-home-user-code-tooling/b6d93f07-…jsonl contains
+  "/home/<user>/repos/call-ccc/internal"` (the repository-root needle; the home needle is spelled the same
+  way in the file the scan reads) — with the host-independent shape check failing beside it at `:688`, since
+  the appended path is outside the invented roots as well.
   Restored `415bbc31a6cd541f9bc1ff2b99dc4532abe81f218e14dc5c97c7399f3b212873` (the digest the evidence
   record also reports for that fixture).
 - **Repair (2026-11-16, this lane — the sweep's declared F3: a leak from another host passed).** The scan
   now carries a host-independent *shape* rule beside the machine-specific needles:
-  `fixtures_test.go:631-655` declares the fixtures' invented roots (`/home/user/`, the sanitized home
+  `fixtures_test.go:631-658` declares the fixtures' invented roots (`/home/user`, the sanitized home
   placeholder, and `/tmp`, the synthetic Codex rollout's working directory) and two shapes — an absolute
   POSIX path at a token boundary (`fixtureAbsolutePathShape`) and a Windows drive or UNC spelling
-  (`fixtureWindowsPathShape`) — and `TestFixturesCarryNoHostPathsOrSecrets` (`:661`) fails, naming the file
+  (`fixtureWindowsPathShape`) — and `TestFixturesCarryNoHostPathsOrSecrets` (`:664`) fails, naming the file
   and the string, for any absolute path outside those roots. The machine-specific needles stay (they catch
   a *value* leak the shape rule does not describe), so nothing the check caught before is dropped: the rule
   only adds the shapes that do not depend on which host runs it. The needles are what the sweep measured
   cannot see another host's home; the shape rule is what now does.
-- **Executed mutation (this lane, host-independent shape):** the same fixture given two lines of foreign
-  host paths — `"cwd":"/Users/someone-else/code/tooling"` and `"cwd":"C:\\Users\\someone-else\\code"` (the
-  second is the JSON spelling `C:\\Users\\someone-else\\code`). Command:
+- **Executed mutation (this lane, host-independent shape; re-executed 2026-11-17 on this tree):** the same
+  fixture given two lines of foreign host paths — `"cwd":"/Users/someone-else/code/tooling"` and
+  `"cwd":"C:\\Users\\someone-else\\code"` (the second is the JSON spelling `C:\\Users\\someone-else\\code`).
+  Command:
   `GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 -run
   'TestFixturesCarryNoHostPathsOrSecrets|TestFixturesMatchTheirGenerator' ./internal/ccc/`. **Observed:**
-  exit `1`; `FAIL`; `fixtures_test.go:685: …jsonl holds the absolute path "/Users/someone-else/code/tooling",
-  which is not one of the invented fixture roots [/home/user/ /tmp]`; `:690: …jsonl holds the Windows path
-  shape "C:\\"` (and `TestFixturesMatchTheirGenerator` fails beside it, as an altered fixture must).
-  Restored to the digest above (`sha256sum -c`: OK).
+  exit `1`; `FAIL`; `fixtures_test.go:688: …jsonl holds the absolute path "/Users/someone-else/code/tooling",
+  which is not one of the invented fixture roots [/home/user /tmp]`; `:693: …jsonl holds the Windows path
+  shape "C:\\"` (and `TestFixturesMatchTheirGenerator` fails beside it at `:114`, as an altered fixture
+  must). Restored to the digest above (`sha256sum -c`: OK).
+- **Repair (2026-11-17, round 15 — the third audit's F3 finding: allowed-root matching accepted sibling
+  path prefixes).** The finding: `inventedFixturePath` accepted any string that **began with** a root, and
+  `/tmp` is a root without a trailing separator, so a foreign absolute path under a sibling directory that
+  merely shares the root's prefix (`/tmp-elsewhere/…`, and — once the roots are spelled without the
+  separator — `/home/user-evil/…`) evaded the sanitizer. The correction: the roots are compared
+  component-wise (`fixtures_test.go:644`, `:651-658`) — a path is the root itself or continues past it at a
+  separator (`path == root || strings.HasPrefix(path, root+"/")`), and the roots are spelled without their
+  trailing separator so the test does not depend on which spelling a root happens to carry.
+- **Executed mutations (this lane, this tree — the sibling-prefix class, the case the finding names):**
+  1. `/tmp-elsewhere/code/tooling` appended to the tooling fixture (a `cwd` field). Command:
+     `GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 -run
+     TestFixturesCarryNoHostPathsOrSecrets ./internal/ccc/`. **Observed:** exit `1`; `FAIL`;
+     `fixtures_test.go:688: …jsonl holds the absolute path "/tmp-elsewhere/code/tooling", which is not one
+     of the invented fixture roots [/home/user /tmp]`. **Two-way:** with the **pre-fix** rule restored
+     (`inventedFixtureRoots = []string{"/home/user/", "/tmp"}` and the prefix test
+     `path == strings.TrimSuffix(root, "/") || strings.HasPrefix(path, root)`), the same fixture passes —
+     `ok` (exit `0`) — which is the evasion the audit reported; and the **naive fix** (roots without the
+     separator, plain `strings.HasPrefix(path, root)`) also passes `/tmp-elsewhere/…` (`ok`).
+  2. `/home/user-evil/code/tooling` appended beside it: under the fixed rule the scan fails naming it
+     (`fixtures_test.go:688`, same command, exit `1`), while the naive fix passes it (`ok`, exit `0`) — so
+     the component boundary, not a shorter root spelling, is what closes the sibling hole.
+  Restored the fixture to `415bbc31…` (byte-identical; verified) after each run.
 
 ### F4 — The harness's tests hold on every host, and the suite proves it from outside
 
@@ -1478,7 +1628,7 @@ and the reason each is safe is below.
 - **D4** — repaired above; otherwise the ordering (`finally`), the planted-session comparison and the `--keep`/`--codex-home` promises are as the row states.
 - **D5 — corrected with a recorded decision (see the declared-row table below).** "every check that did not run is reported `not-verified`" was not what the report answers for a check *nobody's level asked for*: those stay `not-requested` with their own detail (`continue.go:610`, `:616-625`), and the cited case's helper asserts exactly that (`continue_test.go:2108-2131`). The clause was narrowed to the two answers (`Q-0002-26`); the rest of the row holds, and the error accompanies the report instead of replacing it.
 - **D6, D7, D8** — each clause's behaviour is implemented at the cited site and each row's mutation is in that implementation with the cited case failing (stage-driven exit status; explicit/env/refused home resolution; the dry run's scratch install and its `not-verified` levels). D8's "no harness was started" half is pinned by the stub's own marker file.
-- **E1** — the id rule and the path rule are both mutated and both caught; the promised relation is the report's own path (`main_test.go:1798` compares the loaded path with the target's), not a constant. *(The one branch no case exercises — a loader answer with no path at all — is wording-only.)*
+- **E1** — the id rule and the path rule are both mutated and both caught; the promised relation is the report's own path (`main_test.go:1814` compares the loaded path with the target's), not a constant. *(The one branch no case exercises — a loader answer with no path at all — is wording-only.)*
 - **E2 — repaired to a decided state (see the declared-row table below).** The sweep measured that no case read the reported `exit_code` or `command`; both are now read out of the run's own document in `TestResumeVerificationRequiresTheTurnToAppendToTheSession` — `command` against the invocation the turn ran, `exit_code` against the turn's own status (the new failing-turn mode) — and two executed mutations fail those assertions (recorded in the row). The growth rule remains two-way.
 - **E3** — the relative-spelling mutation is caught by the cited case, and the plausible variants die on it too (a bare path, an absolute path, a directory change before resolution).
 - **E4 — repaired to a decided state (see the declared-row table below).** The clause's last half, "a dry run records none with that reason", is now asserted offline by `TestProviderBindingIsTheTargetsOwnAnswer`'s dry-run half — no provider, `unrecorded`, the reason naming the dry run, and the warning in the report's channel — with an executed mutation that makes the dry run start the probe (recorded in the row).

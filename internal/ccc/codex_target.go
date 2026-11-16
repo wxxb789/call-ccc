@@ -729,6 +729,9 @@ func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time) {
 		b.lossUnpairedResults++
 		return
 	}
+	// The recorded result answers its call here, whatever its output turns out to be below: a call whose
+	// result arrived leaves the outstanding set, so a later id-less result cannot be attributed to it.
+	delete(b.pendingCalls, callID)
 	text, blocks := resultText(result)
 	b.lossResultBlocks += blocks
 	if strings.TrimSpace(text) == "" {
@@ -762,7 +765,6 @@ func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time) {
 	if strings.TrimSpace(result.Status) != "" {
 		b.lossOutcomes++
 	}
-	delete(b.pendingCalls, callID)
 	b.write(codexEnvelope{
 		Timestamp: b.clock.next(at),
 		Type:      codexRecordResponseItem,

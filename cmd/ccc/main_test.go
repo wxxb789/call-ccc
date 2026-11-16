@@ -916,18 +916,18 @@ func claudeOpeningPrompt(t *testing.T, path string) string {
 
 // sourceContentNeedles answers every piece of source content a conversion report and the CLI's wire
 // document must not carry: each message's dialogue and rendered content, every recorded reasoning trace,
-// every tool call's arguments, and every tool result's output. The needles are read out of the
-// conversation the committed fixture makes -- through the same inherited reader the conversion uses --
-// so the assertions do not repeat fixture text and they cover the shapes the rule names, not only the
-// opening prompt.
-func sourceContentNeedles(t *testing.T, cfg config.Config, sessionID string) []string {
+// every tool call's arguments, and every tool result's output. It answers the reasoning traces on their
+// own as well, so a case can require the fixtures it checks to carry one: a check over an ordinary prompt
+// would never exercise the thinking needle. The needles are read out of the conversation the committed
+// fixture makes -- through the same inherited reader the conversion uses -- so the assertions do not
+// repeat fixture text and they cover the shapes the rule names, not only the opening prompt.
+func sourceContentNeedles(t *testing.T, cfg config.Config, sessionID string) (needles, traces []string) {
 	t.Helper()
 	conversation, err := ccc.NewSourceReader(cfg).Read(context.Background(),
 		ccc.Ref{Provider: "claude", ID: sessionID})
 	if err != nil {
 		t.Fatalf("reading the fixture conversation: %v", err)
 	}
-	var needles []string
 	add := func(text string) {
 		if trimmed := strings.TrimSpace(text); trimmed != "" {
 			needles = append(needles, trimmed)
@@ -936,7 +936,10 @@ func sourceContentNeedles(t *testing.T, cfg config.Config, sessionID string) []s
 	for _, message := range conversation.Messages {
 		add(message.Dialogue)
 		add(message.Content)
-		add(message.Thinking)
+		if trimmed := strings.TrimSpace(message.Thinking); trimmed != "" {
+			needles = append(needles, trimmed)
+			traces = append(traces, trimmed)
+		}
 		for _, call := range message.ToolCalls {
 			add(call.InputJSON)
 		}
@@ -947,36 +950,48 @@ func sourceContentNeedles(t *testing.T, cfg config.Config, sessionID string) []s
 	if len(needles) == 0 {
 		t.Fatal("the fixture conversation holds no content: the content rule would be asserted vacuously")
 	}
-	return needles
+	return needles, traces
 }
 
 // TestContinueJSONCarriesNoSourceContent pins the wire half of the content rule: ordinary `ccc continue
 // --json` output — installed and dry run, the reports a caller collects — must not carry the source's
 // opening prompt, its dialogue, its tool arguments or its tool output. The core design forbids logging
 // conversation bodies or full prompts by default, and the preview `ccc inspect` shows is that command's
-// own field (it is the one that asks to see the session).
+// own field (it is the one that asks to see the session). The needles are searched in the decoded
+// document's string values, not in the serialized text: a quoted tool argument or a multiline output is
+// escaped in the wire form (`\"`, `\n`, `\u003c`), and a search over the raw bytes would read the escape
+// and never the content the clause names.
 func TestContinueJSONCarriesNoSourceContent(t *testing.T) {
 	continueEnvironment(t)
-	sessionID, path := claudeFixture(t)
-	prompt := claudeOpeningPrompt(t, path)
 	cfg, err := config.LoadReadOnly()
 	if err != nil {
 		t.Fatalf("reading the configuration: %v", err)
 	}
-	needles := append(sourceContentNeedles(t, cfg, sessionID), prompt)
-	for _, extra := range [][]string{{"--json"}, {"--dry-run", "--json"}} {
-		code, stdout, stderr := runCLI(t, continueArgs(sessionID, extra...)...)
-		if code != exitOK {
-			t.Fatalf("exit %d for %v, stderr: %s", code, extra, stderr)
+	// Both committed Claude fixtures: the ordinary conversation and the tooling one, which carries
+	// recorded reasoning traces, so the decoded path is exercised on a thinking needle as well as on an
+	// opening prompt, tool arguments and a multiline output.
+	reasoning := false
+	for _, project := range []string{"-home-user-code-example-api", "-home-user-code-tooling"} {
+		fixture, ok := claudeFixtures(t)[project]
+		if !ok {
+			t.Fatalf("the committed fixtures hold no %s project", project)
 		}
-		if strings.Contains(stdout, "first_user_message") {
-			t.Errorf("the %v report carries a first_user_message field:\n%s", extra, stdout)
-		}
-		for _, needle := range needles {
-			if strings.Contains(stdout, needle) {
-				t.Errorf("the %v report carries source content %q:\n%s", extra, needle, stdout)
+		needles, traces := sourceContentNeedles(t, cfg, fixture.sessionID)
+		reasoning = reasoning || len(traces) > 0
+		needles = append(needles, claudeOpeningPrompt(t, fixture.path))
+		for _, extra := range [][]string{{"--json"}, {"--dry-run", "--json"}} {
+			code, stdout, stderr := runCLI(t, continueArgs(fixture.sessionID, extra...)...)
+			if code != exitOK {
+				t.Fatalf("exit %d for %v on %s, stderr: %s", code, extra, project, stderr)
 			}
+			if strings.Contains(stdout, "first_user_message") {
+				t.Errorf("the %v report for %s carries a first_user_message field:\n%s", extra, project, stdout)
+			}
+			assertNoSourceContent(t, fmt.Sprintf("the %v report for %s", extra, project), []byte(stdout), needles)
 		}
+	}
+	if !reasoning {
+		t.Fatal("no fixture conversation carried a reasoning trace: the thinking needle stays unexercised")
 	}
 }
 
@@ -992,7 +1007,8 @@ func TestContinueHumanBlockCarriesNoSourceContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading the configuration: %v", err)
 	}
-	needles := append(sourceContentNeedles(t, cfg, sessionID), prompt)
+	needles, _ := sourceContentNeedles(t, cfg, sessionID)
+	needles = append(needles, prompt)
 	for _, extra := range [][]string{{}, {"--dry-run"}} {
 		code, stdout, stderr := runCLI(t, continueArgs(sessionID, extra...)...)
 		if code != exitOK {
@@ -2038,4 +2054,43 @@ func sessionMetaOf(t *testing.T, path string) map[string]any {
 	}
 	t.Fatalf("the installed session holds no session_meta record")
 	return nil
+}
+
+// assertNoSourceContent fails for every needle the document carries as a value, naming the value that
+// holds it. The needles are searched in the document's decoded string values, not in its serialized
+// text: a quoted tool argument or a multiline output is escaped in the wire form (`\"`, `\n`,
+// `\u003c`), and a search over the raw bytes would read the escape and never the content.
+func assertNoSourceContent(t *testing.T, report string, document []byte, needles []string) {
+	t.Helper()
+	var decoded any
+	if err := json.Unmarshal(document, &decoded); err != nil {
+		t.Fatalf("%s is not one JSON document: %v\n%s", report, err, document)
+	}
+	for _, value := range jsonStrings(decoded) {
+		for _, needle := range needles {
+			if strings.Contains(value, needle) {
+				t.Errorf("%s carries source content %q as the value %q", report, needle, value)
+			}
+		}
+	}
+}
+
+// jsonStrings answers every string value a decoded JSON document holds, in document order, so a rule
+// about what a document must not carry is asked of its values and not of the escapes its wire form
+// happens to use.
+func jsonStrings(value any) []string {
+	var found []string
+	switch typed := value.(type) {
+	case string:
+		found = append(found, typed)
+	case []any:
+		for _, item := range typed {
+			found = append(found, jsonStrings(item)...)
+		}
+	case map[string]any:
+		for _, item := range typed {
+			found = append(found, jsonStrings(item)...)
+		}
+	}
+	return found
 }

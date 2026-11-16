@@ -1196,3 +1196,149 @@ func TestCodexRolloutWritesTheTargetsOwnViewRecordForEachMessage(t *testing.T) {
 		}
 	}
 }
+
+// TestCodexRolloutRetiresACallWhenItsResultIsOmitted pins the other half of the pairing rule: a recorded
+// result answers its call even when this conversion writes no output for it -- the text is empty, holds
+// only whitespace, or holds only blocks the target's output field has no room for. The outstanding set is
+// what an id-less result may be paired with, so a call whose own result arrived must leave it; left
+// pending, a later id-less result would be attributed to a call that already has an answer, or refused as
+// ambiguous while every call it could belong to is answered.
+func TestCodexRolloutRetiresACallWhenItsResultIsOmitted(t *testing.T) {
+	// (a) An omitted result followed by an id-less result: the omitted result answers its call, so the
+	// id-less result has nothing to pair with and is counted rather than attributed to the answered call.
+	omitted := []struct {
+		name   string
+		result ToolResult
+		loss   string
+		blocks int
+	}{
+		{name: "no text at all", result: ToolResult{ToolUseID: "toolu_a"}, loss: "empty_tool_results"},
+		{name: "whitespace only", result: ToolResult{ToolUseID: "toolu_a", ContentRaw: "  \n  "},
+			loss: "whitespace_only_tool_results"},
+		{name: "an image block only", loss: "empty_tool_results", blocks: 1,
+			result: ToolResult{ToolUseID: "toolu_a",
+				ContentRaw: `[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGk="}}]`}},
+	}
+	for _, omittedCase := range omitted {
+		conversation := testConversation(
+			Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask"},
+			Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "[Read: /x]",
+				ToolCalls: []ToolCall{{ToolUseID: "toolu_a", Name: "Read", InputJSON: `{"file_path":"/x"}`}}},
+			Message{Ordinal: 2, Role: string(parser.RoleUser), ToolResults: []ToolResult{omittedCase.result}},
+			Message{Ordinal: 3, Role: string(parser.RoleUser),
+				ToolResults: []ToolResult{{ContentRaw: "A LATER RESULT WITH NO ID"}}},
+		)
+		rollout, err := ConvertToCodexRollout(conversation, testOptions())
+		if err != nil {
+			t.Fatalf("converting (%s): %v", omittedCase.name, err)
+		}
+		if rollout.Carried.ToolResults != 0 {
+			t.Errorf("(%s) carried = %+v, want no result: the call the id-less result could pair with "+
+				"was answered by the omitted result", omittedCase.name, rollout.Carried)
+		}
+		if loss := lossCount(t, rollout.Losses, omittedCase.loss); loss.Count != 1 {
+			t.Errorf("(%s) %s = %+v, want the omitted result counted", omittedCase.name, omittedCase.loss, loss)
+		}
+		if loss := lossCount(t, rollout.Losses, "unrepresentable_result_blocks"); loss.Count != omittedCase.blocks {
+			t.Errorf("(%s) unrepresentable_result_blocks = %+v, want %d", omittedCase.name, loss, omittedCase.blocks)
+		}
+		if loss := lossCount(t, rollout.Losses, "unpaired_tool_results"); loss.Count != 1 {
+			t.Errorf("(%s) unpaired_tool_results = %+v, want the id-less result counted, not paired with "+
+				"the call whose own result is recorded", omittedCase.name, loss)
+		}
+		if strings.Contains(string(rollout.Data), "A LATER RESULT WITH NO ID") {
+			t.Errorf("(%s) the rollout attributes the id-less result to the call whose own result is "+
+				"recorded", omittedCase.name)
+		}
+	}
+
+	// (b) Two results for the same call, one of them omitted, in both orders: the omitted result is
+	// counted, and the other result -- before or after the retirement -- is still accepted, because
+	// acceptance is by the call this conversion wrote and not by what stays outstanding.
+	for _, order := range []struct {
+		name    string
+		results []ToolResult
+	}{
+		{name: "the recorded output first", results: []ToolResult{
+			{ToolUseID: "toolu_a", ContentRaw: "the recorded output"}, {ToolUseID: "toolu_a"}}},
+		{name: "the omitted result first", results: []ToolResult{
+			{ToolUseID: "toolu_a"}, {ToolUseID: "toolu_a", ContentRaw: "the recorded output"}}},
+	} {
+		conversation := testConversation(
+			Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask"},
+			Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "[Read: /x]",
+				ToolCalls: []ToolCall{{ToolUseID: "toolu_a", Name: "Read", InputJSON: `{"file_path":"/x"}`}}},
+			Message{Ordinal: 2, Role: string(parser.RoleUser), ToolResults: order.results},
+		)
+		rollout, err := ConvertToCodexRollout(conversation, testOptions())
+		if err != nil {
+			t.Fatalf("converting (%s): %v", order.name, err)
+		}
+		if rollout.Carried.ToolResults != 1 {
+			t.Errorf("(%s) carried = %+v, want the one representable result written", order.name, rollout.Carried)
+		}
+		if loss := lossCount(t, rollout.Losses, "empty_tool_results"); loss.Count != 1 {
+			t.Errorf("(%s) empty_tool_results = %+v, want the omitted result counted", order.name, loss)
+		}
+		if loss := lossCount(t, rollout.Losses, "unpaired_tool_results"); loss.Count != 0 {
+			t.Errorf("(%s) unpaired_tool_results = %+v, want none: the second result names the call this "+
+				"conversion wrote", order.name, loss)
+		}
+		outputs := 0
+		for _, line := range decodeRollout(t, rollout.Data) {
+			if payloadField(t, line, "type") != codexItemFunctionOutput {
+				continue
+			}
+			outputs++
+			output, callID := payloadField(t, line, "output"), payloadField(t, line, "call_id")
+			if output != "the recorded output" || callID != "toolu_a" {
+				t.Errorf("(%s) the written output is %q for call %q, want the recorded text under toolu_a",
+					order.name, output, callID)
+			}
+		}
+		if outputs != 1 {
+			t.Errorf("(%s) the rollout holds %d function_call_output record(s), want exactly one", order.name, outputs)
+		}
+	}
+
+	// (c) An omitted result for one of two outstanding calls: the answered call leaves the outstanding
+	// set, so the id-less result after it pairs with the call that really has no result instead of being
+	// refused as ambiguous for the answered call's sake.
+	twoCalls := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask"},
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "[Read: /x and /y]",
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_a", Name: "Read", InputJSON: `{"file_path":"/x"}`},
+				{ToolUseID: "toolu_b", Name: "Read", InputJSON: `{"file_path":"/y"}`}}},
+		Message{Ordinal: 2, Role: string(parser.RoleUser),
+			ToolResults: []ToolResult{{ToolUseID: "toolu_a"}}},
+		Message{Ordinal: 3, Role: string(parser.RoleUser),
+			ToolResults: []ToolResult{{ContentRaw: "the answer to the one that is left"}}},
+	)
+	rollout, err := ConvertToCodexRollout(twoCalls, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if rollout.Carried.ToolResults != 1 {
+		t.Errorf("carried = %+v, want the id-less result paired with the one call that has none", rollout.Carried)
+	}
+	if loss := lossCount(t, rollout.Losses, "unpaired_tool_results"); loss.Count != 0 {
+		t.Errorf("unpaired_tool_results = %+v, want none: one call was still unanswered", loss)
+	}
+	outputs := 0
+	for _, line := range decodeRollout(t, rollout.Data) {
+		if payloadField(t, line, "type") != codexItemFunctionOutput {
+			continue
+		}
+		outputs++
+		output, callID := payloadField(t, line, "output"), payloadField(t, line, "call_id")
+		if callID != "toolu_b" {
+			t.Errorf("the id-less result was paired with %q, want the call with no result (toolu_b)", callID)
+		}
+		if output != "the answer to the one that is left" {
+			t.Errorf("the paired output is %q, want the id-less result's own text", output)
+		}
+	}
+	if outputs != 1 {
+		t.Errorf("the rollout holds %d function_call_output record(s), want exactly one under toolu_b", outputs)
+	}
+}

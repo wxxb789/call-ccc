@@ -636,9 +636,12 @@ func TestRelativePathReferenceIgnoresARootThatDoesNotHoldIt(t *testing.T) {
 // so the scan reads every fixture as text and rejects an absolute path anywhere but the fixtures'
 // invented roots, plus any Windows drive or UNC spelling. The invented roots name no machine and no
 // user: `/home/user/` is the placeholder every host path in these transcripts is rewritten to, and the
-// synthetic Codex rollout records `/tmp` as its working directory.
+// synthetic Codex rollout records `/tmp` as its working directory. A root is compared component-wise
+// (the path is the root itself, or continues past it at a separator), so a sibling directory that
+// merely shares the root's first characters (`/tmp-elsewhere/...`, `/home/user-evil/...`) is not
+// accepted as though it were below the root.
 var (
-	inventedFixtureRoots = []string{"/home/user/", "/tmp"}
+	inventedFixtureRoots = []string{"/home/user", "/tmp"}
 
 	fixtureAbsolutePathShape = regexp.MustCompile(`(?:^|[\s"':=,(\[])(/[A-Za-z0-9._~-][^\s"']*)`)
 	fixtureWindowsPathShape  = regexp.MustCompile(`(?:^|[\s"':=,(\[])([A-Za-z]:[\\/]|\\\\[^\s"'\\]+\\)`)
@@ -647,7 +650,7 @@ var (
 // inventedFixturePath reports whether an absolute path is one of the fixtures' invented spellings.
 func inventedFixturePath(path string) bool {
 	for _, root := range inventedFixtureRoots {
-		if path == strings.TrimSuffix(root, "/") || strings.HasPrefix(path, root) {
+		if path == root || strings.HasPrefix(path, root+"/") {
 			return true
 		}
 	}
