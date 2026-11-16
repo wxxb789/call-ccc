@@ -139,10 +139,16 @@ disposition, so a consumer never has to infer what was left out.
   into a different identity silently.
 - The source file's own digest (sha256, taken before the conversion and compared after installation) is
   reported as `installation.source_check_state` — `unchanged`, `changed`, or `not-verified` when the
-  comparison did not run at all (an archive read has no file of its own; a run can stop before comparing)
-  — with `detail` carrying that answer's own words. It compares the file's own bytes deliberately, not a
-  provider's fingerprint — a provider may fingerprint a parse or a store member, and comparing those
-  would report a change that did not happen. Nothing in the pipeline opens the source for writing.
+  comparison did not run at all (an archive read has no file of its own; a read resolved through a
+  *member* identity inside a container holds no file of its own either — `parser.VirtualSourcePath` spells
+  it `<container>#<member>`, and the container's bytes hold every member it carries, so they are not this
+  conversation's to compare; a run can stop before comparing) — with `detail` carrying that answer's own
+  words. It compares the file's own bytes deliberately, not a provider's fingerprint — a provider may
+  fingerprint a parse or a store member, and comparing those would report a change that did not happen.
+  Nothing in the pipeline opens the source for writing. The check never stops a conversion whose source
+  was read: an identity that names no file (a projection, a container member) is answered as a comparison
+  that did not run, and only a read that reports no path at all, a digest that was never taken or a file
+  that cannot be re-read stops the run.
 - A failure after the session is published does not cost the caller the identity it can resume: the
   report keeps the conversion, the installation and the target identity, every check that did not run is
   reported `not-verified` with the reason, and the error is returned beside the report rather than

@@ -168,9 +168,10 @@ type StructureVerification struct {
 	TargetPath string        `json:"target_path,omitempty"`
 	ReadBack   CodexReadBack `json:"read_back,omitempty"`
 	// NotReadBackVerbatim counts the written dialogue messages the read-back does not show with their own
-	// text and the installed file's own dialogue record holds. The inherited reader reads some text a file
-	// holds differently: a user text block that opens with `# AGENTS.md` (or another injected-context
-	// envelope) is read as that context rather than as a turn (internal/parser's
+	// text and the installed file's own dialogue record holds; one read-back message shows one written
+	// message, so a text the document writes twice needs the read-back to hold it twice. The inherited
+	// reader reads some text a file holds differently: a user text block that opens with `# AGENTS.md` (or
+	// another injected-context envelope) is read as that context rather than as a turn (internal/parser's
 	// preprocessCodexUserTextBlocks), so the reader reads no message for the whole prompt, or reads only
 	// the text the envelope preceded. A Claude transcript may hold a genuine prompt with that prefix, and
 	// such a message is in the file, so the run counts it here and warns instead of reporting a loss the
@@ -548,7 +549,8 @@ type dialogueWalk struct {
 	// for, each by what identifies it rather than by its text.
 	differences []string
 	// notReadBackVerbatim counts the written messages the read-back does not show with their own text and
-	// the installed file's records hold in their own place.
+	// the installed file's records hold in their own place. It is counted from the read-back's texts, one
+	// claim per read-back message (readBackTexts), not from what the pairing made of them.
 	notReadBackVerbatim int
 }
 
@@ -567,7 +569,11 @@ type dialogueWalk struct {
 // The walk pairs the read-back's messages with the written messages they account for, in order, and
 // every written message -- the ones left between them, and the paired one itself -- is resolved by the
 // file: its own record is what tells the reader's projection (not a loss: nothing else can explain a
-// record the reader does not show) from a message the file does not hold.
+// record the reader does not show) from a message the file does not hold. What the count is read from is
+// the read-back's texts rather than the pairing's answers: a message the file holds where the document
+// writes it is counted when the read-back holds no message with its own text for it
+// (readBackTexts), so the two relations the pairing chooses between cannot make one read-back message
+// stand for two written ones.
 //
 // The file's records are read in their own order, and a message is resolved against the record that
 // stands where the document writes it: a record the file holds anywhere else is a file whose dialogue
@@ -577,9 +583,12 @@ type dialogueWalk struct {
 // the same prompt recorded twice in the source needs two records in the file.
 func compareDialogue(intended, read []string, records dialogueRecords) dialogueWalk {
 	var walk dialogueWalk
+	// The read-back's own texts, one claim each: the count asks whether the read-back shows this message's
+	// own text, which is a question about the texts rather than about the pairing -- see readBackTexts.
+	shown := newReadBackTexts(read)
 	// account resolves one written message against the file's own records, names the difference where
 	// the file's answer is one, and answers whether the message's record was the file's next unconsumed
-	// record -- the shape the reader's projection leaves behind, which is what notReadBackVerbatim counts.
+	// record -- the shape the reader's projection leaves behind, which is what gates notReadBackVerbatim.
 	account := func(ordinal int) bool {
 		key := intended[ordinal]
 		switch records.hold(key) {
@@ -596,24 +605,23 @@ func compareDialogue(intended, read []string, records dialogueRecords) dialogueW
 		}
 		return false
 	}
+	// Every written message is resolved exactly once, in the document's own order, whatever the pairing
+	// did with it: the message's own record being consumed where the document writes it is what the count
+	// is gated on, and the read-back's texts are claimed in the same order.
 	resolve := func(ordinal int) {
-		if account(ordinal) {
+		if account(ordinal) && !shown.claim(intended[ordinal]) {
 			walk.notReadBackVerbatim++
 		}
 	}
 	cursor := 0
 	for index, readKey := range read {
-		paired, projected := pairReadBackMessage(intended, cursor, readKey, &records)
+		paired := pairReadBackMessage(intended, cursor, readKey, &records)
 		switch {
 		case paired >= 0:
 			for skipped := cursor; skipped < paired; skipped++ {
 				resolve(skipped)
 			}
-			// The record is what the count is about: this is the message's own record being consumed, in
-			// the place the document writes it, and a reading is only counted where it was.
-			if account(paired) && projected {
-				walk.notReadBackVerbatim++
-			}
+			resolve(paired)
 			cursor = paired + 1
 		case cursor < len(intended) && !records.holds(intended[cursor]):
 			walk.differences = append(walk.differences, fmt.Sprintf(
@@ -647,23 +655,60 @@ func compareDialogue(intended, read []string, records dialogueRecords) dialogueW
 // message at or after `from` whose own text it is, or whose reading it is -- a run of that message's
 // characters in their own order, where the installed file still holds a record for it (the reader reads
 // a written message only as far as the file holds it, so a reading is evidence about a message the file
-// has). The boolean reports whether the pairing is the reader's reading rather than the message's own
-// text; a message neither relation answers for has -1.
-func pairReadBackMessage(intended []string, from int, readKey string, records *dialogueRecords) (int, bool) {
+// has). A message neither relation answers for has -1.
+func pairReadBackMessage(intended []string, from int, readKey string, records *dialogueRecords) int {
 	for index := from; index < len(intended); index++ {
 		key := intended[index]
 		if key == readKey {
-			return index, false
+			return index
 		}
 		if !records.holds(key) {
 			continue
 		}
 		kind, text, _ := strings.Cut(key, "\x00")
 		if readsAsDialogueMessage(kind, text, readKey) {
-			return index, true
+			return index
 		}
 	}
-	return -1, false
+	return -1
+}
+
+// readBackTexts is the read-back's own messages as the count asks about them: one claim per read-back
+// message, so a written message is shown with its own text exactly as often as the read-back holds a
+// message with that text.
+//
+// The count asks a question about texts -- "does the read-back show this message's own text?" -- while
+// the pairing answers a different one: which written message a read-back message is *about*. The two
+// relations the pairing chooses between can overlap, and a read-back message can be both a reading of an
+// earlier written message and the own text of a later one; an omitted `# AGENTS.md` envelope in front of a
+// later turn carrying the same text is exactly that shape. Reading the count off the pairing made the
+// pairing's choice the count's, so that shape reported the envelope's message as projected *and* the
+// later turn as never read back -- two messages where the read-back does not show one (review round 11's
+// finding 2). Claims are what the count is read from instead, and no choice of pairing moves them: the
+// walk resolves the written messages in the document's own order and claims the read-back's texts in it,
+// so a text the document writes twice needs the read-back to hold it twice, and which of two identical
+// written messages the one read-back message is said to show cannot change either answer.
+type readBackTexts struct {
+	claims map[string]int
+}
+
+// newReadBackTexts counts one read-back's dialogue keys.
+func newReadBackTexts(read []string) readBackTexts {
+	claims := make(map[string]int, len(read))
+	for _, key := range read {
+		claims[key]++
+	}
+	return readBackTexts{claims: claims}
+}
+
+// claim takes the read-back message showing this key, when the read-back still holds one, and answers
+// whether it did.
+func (texts readBackTexts) claim(key string) bool {
+	if texts.claims[key] == 0 {
+		return false
+	}
+	texts.claims[key]--
+	return true
 }
 
 // readsAsDialogueMessage reports whether the read-back's message is the reader's own reading of a written

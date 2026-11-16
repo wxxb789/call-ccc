@@ -191,6 +191,33 @@ func TestCodexRoundTripCountsWhatTheReaderProjectsAway(t *testing.T) {
 			t.Errorf("a comparison with a difference reports a verification detail: %q", detail)
 		}
 	})
+
+	// The rule the count stands on, pinned where its shape is one this reader does not produce today: one
+	// read-back message shows one written message, so a text the document writes twice is shown twice only
+	// when the read-back holds it twice. A count that asked whether the read-back holds the text anywhere
+	// would answer the shape below as fully shown, and the inserted envelope case above is where the two
+	// readings of "shown" part company in a file a run really installs.
+	t.Run("one read-back message shows one written message", func(t *testing.T) {
+		const prompt = "Review the changes"
+		rollout := CodexRollout{Items: []TargetItem{
+			{Kind: ItemUser, Text: prompt},
+			{Kind: ItemUser, Text: prompt},
+		}}
+		installed := []byte(codexDialogueRecord(t, ItemUser, prompt) +
+			codexDialogueRecord(t, ItemUser, prompt))
+		readBack := Conversation{Messages: []Message{
+			{Role: string(parser.RoleUser), Content: prompt},
+		}}
+		roundTrip := compareCodexRoundTrip(rollout, readBack, installed)
+		if len(roundTrip.differences) != 0 {
+			t.Errorf("differences = %q, want none: both messages' records are in the file where the "+
+				"document writes them", roundTrip.differences)
+		}
+		if roundTrip.notReadBackVerbatim != 1 {
+			t.Errorf("notReadBackVerbatim = %d, want 1: the read-back shows the text once for two written "+
+				"messages", roundTrip.notReadBackVerbatim)
+		}
+	})
 }
 
 // TestCodexRoundTripReportsDialogueRecordsOutOfOrder pins the file's own record order, which the

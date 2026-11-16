@@ -344,11 +344,11 @@ summary and must be written once).
 ## 6. Tests, gate, and what each pins
 
 ```
-$ CGO_ENABLED=1 go test -tags fts5 -count=1 ./cmd/ccc/... ./internal/ccc/...     # rc=0
-ok  	go.kenn.io/agentsview/cmd/ccc	2.030s
-ok  	go.kenn.io/agentsview/internal/ccc	10.911s
+$ GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 ./cmd/ccc/... ./internal/ccc/...     # rc=0
+ok  	go.kenn.io/agentsview/cmd/ccc	2.081s
+ok  	go.kenn.io/agentsview/internal/ccc	10.432s
 ?   	go.kenn.io/agentsview/internal/ccc/fixturegen	[no test files]
-ok  	go.kenn.io/agentsview/internal/ccc/parity	1.251s
+ok  	go.kenn.io/agentsview/internal/ccc/parity	0.901s
 ?   	go.kenn.io/agentsview/internal/ccc/parity/oracle	[no test files]
 ```
 
@@ -365,6 +365,7 @@ ok  	go.kenn.io/agentsview/internal/ccc/parity	1.251s
 | every loss category reported, and truly absent from the file | `TestCodexRolloutReportsEveryCategoryItKnows` |
 | text the target's reader reads as *nothing at all* is never written and is named — a whitespace-only tool result, a whitespace-only dialogue (whose record's tool evidence still travels), and a compact summary the reader trims | `TestContinueOmitsOutputTheInheritedReaderCannotReadBack`, `TestContinueOmitsDialogueTheInheritedReaderReadsAsNothing`, `TestContinueRoundTripsACompactionSummaryTheReaderTrims` |
 | text the target's reader *projects away* although it is a real message is carried, is counted, and is never confused with a loss: the check asks the installed file's own dialogue record, the count reaches `verification.structure.not_read_back_verbatim` and a warning, and text the file does not hold stays a missing message — for both shapes of the projection, the envelope alone and the envelope followed by text | `TestContinueInstallsPromptsTheReaderReadsDifferently` (`cmd/ccc`, native Claude transcripts, one per shape), `TestCodexRoundTripCountsWhatTheReaderProjectsAway` |
+| a read-back message shows one written message, and the count is read from the read-back's texts rather than from the pairing's answers (round 11): an omitted envelope beside one or two later turns carrying its text counts one message, not two | `TestStructureVerificationCountsAnOmittedEnvelopeBesideItsOwnTextOnce`, `TestCodexRoundTripCountsWhatTheReaderProjectsAway` |
 | the file is asked for the message's own dialogue record — its record type, the payload's message type, the role, the content block's own type and text — counted so one record answers for one written message, and a read-back message is accounted for only by a written message's own text or by a run of it under that message's own kind, in the file's own order | `TestCodexRoundTripAsksTheFileForItsOwnDialogueRecord`, `TestCodexRoundTripCountsARecordOncePerWrittenMessage`, `TestCodexRoundTripReportsAMessageTheFileOnlyHoldsAsNoMessage`, `TestCodexRoundTripReportsReadBackDialogueNoWrittenMessageAccountsFor`, `TestStructureVerificationAsksTheFileForTheMessageRecord` |
 | a difference report identifies its items — category, ordinal, kind, call, tool, size, SHA-256 — and never carries the dialogue, arguments or output it compared | `TestCodexRoundTripReportNamesDifferencesWithoutTheirText`, `TestStructureVerificationNamesWhatTheFileDoesNotHold` |
 | the installed file's dialogue records are read in the file's own order (round 10): a record the file holds where another message's would stand is a difference, a record the document does not write is a difference even where the reader projects it away, and the message's own record is asked for even where the read-back shows its text — at the comparison level and over a real installed file | `TestCodexRoundTripReportsDialogueRecordsOutOfOrder`, `TestStructureVerificationReportsDialogueRecordsOutOfOrder`, `TestCodexRoundTripAsksTheFileForItsOwnDialogueRecord` |
@@ -388,7 +389,7 @@ ok  	go.kenn.io/agentsview/internal/ccc/parity	1.251s
 | the printed resume invocation names the data directory the session was installed into, quoted where a shell would act on a word, and a resume verification reports the command it ran the same way | `TestContinuePrintsAResumeCommandThatSelectsTheInstallationHome`, `TestResumeVerificationCommandNamesTheHomeItRanAgainst`, `TestContinueHumanOutputNamesTheResumeCommand`, `TestContinueJSONDistinguishesConversionInstallationAndVerification` |
 | exclusive install (a taken name refused, a filesystem without hard links refused rather than renamed over) and dry run writes nothing (no directory for a home the caller named that is not there yet, and the target harness is never started), dry run reports its own states, prompt required, target/level validation, home resolution | `TestInstallCodexRolloutNeverReplacesASession`, `TestInstallCodexRolloutRefusesAFilesystemWithoutHardLinks`, `TestContinueDryRunWritesNothing`, `TestContinueDryRunReportsWhatItVerified`, `TestContinueDryRunInstallsNothingThroughTheCLI`, `TestContinueRequiresAPromptBeforeItRunsATurn`, `TestContinueRefusesAnUnsupportedTargetOrLevel`, `TestContinueTargetHomeResolution` |
 | the round-trip check compares rather than agrees | `TestStructureVerificationNamesWhatTheFileDoesNotHold` |
-| the source's own digest is taken before the conversion and compared after it; a moved source is warned about; a projection and a stopped run answer `not-verified` rather than claiming a comparison | `TestSourceCheckComparesTheFileBeforeAndAfter`, `TestSourceChangedWarningsNameTheMove`, `TestSourceCheckSaysWhenThereWasNoFileToCompare` |
+| the source's own digest is taken before the conversion and compared after it; a moved source is warned about; a projection, a read whose identity is a *member* inside a container (round 11) and a stopped run answer `not-verified` rather than claiming a comparison, while a read that names no path at all still stops the run | `TestSourceCheckComparesTheFileBeforeAndAfter`, `TestSourceChangedWarningsNameTheMove`, `TestSourceCheckSaysWhenThereWasNoFileToCompare`, `TestContinueFromAContainerMemberReportsNoFileToCompare`, `TestSourceCheckStopsAReadThatNamesNoFileAtAll` |
 | a result the conversion does not write is never reported as carried with a caveat, while the same two flags on a result that *is* written are counted | `TestCodexRolloutDoesNotReportOmittedResultsAsCarried` |
 | a failure after the conversion keeps the report it reached — the published installation and identity, the conversion's counts — with every check that did not run `not-verified` and naming the reason: a source that vanished after publication, a temporary file the installer could not remove, a home that could not be created | `TestContinueKeepsTheReportWhenTheSourceVanishesAfterTheInstall`, `TestContinueKeepsTheReportWhenTheTemporaryFileCannotBeRemoved`, `TestContinueKeepsTheConversionReportWhenTheHomeCannotBeCreated` |
 | the CLI's three states, human shape, source check, partial-read fidelity line, exit codes, help, that a failure carrying a report still writes it (and a failure with none writes nothing), that a run which stopped before publishing renders the report's own `not-installed` state with its identity marked proposed, that a dry run's block says it wrote nothing and marks its identity proposed, and that the installed line names the session's own path and its mechanism | `TestContinueJSONDistinguishesConversionInstallationAndVerification`, `TestContinueHumanOutputNamesTheResumeCommand`, `TestContinueHumanOutputReportsTheSourceCheck`, `TestContinueHumanOutputNamesAPartialSourceRead`, `TestContinueUsageErrors`, `TestContinueReportsAFailedVerificationAsAFailure`, `TestContinueWritesTheReportOfAFailureAfterPublication`, `TestContinueHumanOutputReportsAPrePublicationFailure`, `TestContinueDryRunInstallsNothingThroughTheCLI`, `TestContinueRefusesAMissingDataDirectoryNobodyNamed`, `TestContinueHelpIsARequestNotAFailure` |
@@ -402,7 +403,7 @@ gate: go=<home>/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/..
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 153 tests in 5.405s (rc=0)
+  PASS     selftest Ran 153 tests in 5.181s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 26 project-owned prefix(es); files seen by git: 5626 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     secrets  no leaks found in 74 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
@@ -1317,3 +1318,122 @@ provider's own classification of the read, and why the route is disclosed rather
 round (the changes live in existing package files and test files), which the stage report states. Goal
 bookkeeping: 0002 is still `Implemented on feat/0002-claude-to-codex-continuation; awaiting operator
 acceptance`, so nothing moves to `docs/goals/archive/` and `docs/goals/README.md`'s row stays as it is.
+
+## 16. Repair round 11 — a member identity is not a file; the count is the read-back's texts
+
+Round 11's review left two findings (a P2 and a P3), both fixed here, and both reproduced by execution
+before the fix (Table A). Its carried-tree parity audit found no increment-attributable defect again — the
+mechanisms it re-read are the ones §13 to §15 audited, and this round touched no carried file, which the
+gate's `parity` step proves (5 553 carried files still byte-identical to the pin). Its one note is that
+both findings were static traces and that no rehashing, build or test ran on its side.
+
+**1 — continuing a readable SQLite-backed session failed before the conversion**
+(`internal/ccc/continue.go`). A multi-session container is read through a *member* identity: the inherited
+providers spell it `parser.VirtualSourcePath(container, member)` (`<container>#<member>`), the parse records
+that spelling as the session's own path (`parser.ParsedSession.File.Path`), and this reader carries it
+unchanged because it is what a caller resolves the member by. `sourceFileDigest` opened that spelling as a
+filesystem path unconditionally, so a readable member of an OpenClaw container — the fixture the reader
+suite already exercises (`TestReadReportsAnOpenClawContainersMembersInsteadOfPickingOne`) — failed with
+`open /tmp/…/openclaw-agent.sqlite#main:good: no such file or directory` before the conversion, for every
+`--verify` level and for `--dry-run`; the archive fallback could not help, because the source read had
+already answered. The check now asks the read's own identity once (`sourceFileOf`, used by both halves) and
+answers with the third state when that identity names no file: `installation.source_check_state` is
+`not-verified`, the `detail` names the member and the container it belongs to, no warning claims a move, and
+the conversion, the installation and the other verifications run exactly as they do for a file-backed
+source. The container's own bytes are deliberately *not* digested: they hold every member the container
+carries, so a digest of them answers a different question than the report asks (did *this* conversation's
+bytes move?), would report `changed` for a sibling member's write, and would report `unchanged` for a change
+that never reached the main file's bytes (a database's write-ahead log, a buffered writer) — a claim the
+report must not make. The line the third state is *not* for is kept and now pinned on its own: a read that
+reports no path at all, a digest that was never taken and a file that cannot be re-read still stop the run,
+and `TestSourceCheckStopsAReadThatNamesNoFileAtAll` holds a read that names no file apart from a read that
+names a *member*. The rule reaches the plan's §3 bullet and Q-0002-20.
+
+**2 — an omitted envelope beside a later turn carrying the same text was counted twice**
+(`internal/ccc/codex_install.go`). `notReadBackVerbatim` was read off the walk's pairing: a written message
+the read-back accounted for through the reader's *reading* relation was counted as one the read-back does
+not show, and the pairing is the earliest written message at or after the cursor that the read-back message
+accounts for — its own text, or a run of that text's characters in their order. With `# AGENTS.md\nhello`
+followed by `hello`, the inherited reader drops the first prompt (`preprocessCodexUserTextBlocks`) and
+returns the second verbatim, and the returned `hello` is *both* a run of the envelope prompt's characters
+and the later turn's own text: the greedy pairing took the envelope prompt, the walk counted it as
+projected, counted the later turn as never read back, and the report named **2** where the read-back does
+not show one message. The count is now read from the read-back's own texts rather than from the pairing's
+answers: one claim per read-back message (`readBackTexts`), consumed in the document's own order, so a
+message whose record the file holds where the document writes it is counted when the read-back holds no
+message with its own text for it — the rule the field's own words
+(`verification.structure.not_read_back_verbatim`) always stated. The pairing is unchanged and still answers
+what it is for — which written message a read-back message is *about*, which is what the differences are
+read apart by — so no alignment change was needed for the count, and the class is closed rather than
+patched: the count is invariant under any choice of pairing. Both shapes the class has (one later turn
+carrying the text, and two) now count **1**; the count read from *claims* is pinned separately
+(`…/one read-back message shows one written message`), because the pre-fix walk answered that shape's count
+by accident rather than by rule (Table A, last row).
+
+### Table A — both findings reproduced by execution before the fix
+
+The reproduced runs use the reviewed revision's own two source files (`git show HEAD:internal/ccc/…`, so
+the code is `de82906`'s) with this round's tests present, and a throw-away probe on the untouched review
+head for the abort's own message:
+
+| Finding | Executed against the pre-fix code | Observed |
+| --- | --- | --- |
+| 1, the container member's abort | `go test -tags fts5 -count=1 -run TestContinueFromAContainerMemberReportsNoFileToCompare ./internal/ccc` | FAIL `TestContinueFromAContainerMemberReportsNoFileToCompare` — `continuing the container member: open /tmp/…/openclaw-agent.sqlite#main:good: no such file or directory`; the probe on the untouched head printed the same error with `conversion = ""` and an empty source-check state |
+| 2, the overlapping count | `go test -tags fts5 -count=1 -run TestStructureVerificationCountsAnOmittedEnvelopeBesideItsOwnTextOnce ./internal/ccc` | both arms FAIL `not_read_back_verbatim = 2, want 1: the omitted prompt's own text is the one the read-back does not show`, detail `2 written message(s) are in the installed session and the inherited Codex reader does not read their own text from it …` |
+| 1, the arm that stays a stopped run | `go test … -run TestSourceCheckStopsAReadThatNamesNoFileAtAll` | FAIL — the pre-fix digest traced an empty path (`open : no such file or directory`) instead of the read that reported none |
+| 2, the claim rule's own arm | `go test … -run TestCodexRoundTripCountsWhatTheReaderProjectsAway` | PASS — the pre-fix walk satisfied that arm by accident, which is why the rule has a mutation of its own (Table B, B3) |
+
+### Table B — every rule of the touched surface, one executed mutation each
+
+Each mutation was applied to this working tree by a throw-away harness outside the repository (it lives in
+`/tmp`, never in the tree), the test that claims the rule was run
+(`go test -tags fts5 -count=1 ./internal/ccc/ -run …`), and every file was restored from a byte-identical
+copy with the restore checked by SHA-256 after every case (four files — the two sources and the two test
+files — 13 cases, every restore byte-identical; the harness refuses to continue on a mismatch):
+
+| Rule | Mutation (the fix's line reverted) | Observed |
+| --- | --- | --- |
+| A1 the file's own bytes are shown unchanged after the conversion | `continue.go`: the `unchanged` answer serves `changed` | `TestSourceCheckComparesTheFileBeforeAndAfter` FAIL — `an untouched source was reported as "changed": sha256 9848ab0b…` |
+| A2 a file that moved while it was converted is reported changed | `continue.go`: `if after != before` → `if false` | `TestSourceCheckComparesTheFileBeforeAndAfter` FAIL — `a source that changed during the conversion was reported as "unchanged", want "changed"` |
+| A3 an archive read takes no digest | `continue.go`: `sourceFileDigest`'s `readFrom != "source"` guard dropped | `TestSourceCheckSaysWhenThereWasNoFileToCompare` FAIL — `digest = "", err = open /absent/file.jsonl: no such file or directory; an archive read has no source file to digest` |
+| A3 an archive read answers `not-verified` in its own words | `continue.go`: the archive answer serves `unchanged` | `TestSourceCheckSaysWhenThereWasNoFileToCompare` FAIL — `state = "unchanged", err = <nil>; want a comparison that did not run` |
+| A4 a member identity is no file's name, so the check answers it rather than opening it | `continue.go`: `sourceFileOf`'s member branch removed (and its `parser` import, as before the fix) | `TestContinueFromAContainerMemberReportsNoFileToCompare` FAIL — `continuing the container member: open …/openclaw-agent.sqlite#main:good: no such file or directory` |
+| A4 the member's answer is the third state, not a claim about a file | `continue.go`: `SourceCheckNotVerified` → `SourceCheckUnchanged` for a non-file identity | `TestContinueFromAContainerMemberReportsNoFileToCompare` FAIL — `source_check_state = "unchanged", want "not-verified": no file holds the member's own bytes` |
+| A5 a read that names no path is a stopped run, not a state of a file | `continue.go`: `sourceCheckAfter`'s empty-path guard removed | `TestSourceCheckStopsAReadThatNamesNoFileAtAll` FAIL — `err = the source digest before the conversion was not taken, want a stopped run naming the read that reported no path` (the guard is what puts the read's own name in the error) |
+| A6 a source file that cannot be re-read is a stopped run | `continue.go`: the re-read failure answered `unchanged` | `TestContinueKeepsTheReportWhenTheSourceVanishesAfterTheInstall` FAIL — `a run whose source vanished after the installation reported success` |
+| A7 only a changed source warns about a move | `continue.go`: `sourceChangedWarnings`' state test inverted | `TestSourceChangedWarningsNameTheMove` FAIL — `a "unchanged" source check produced warnings: [the source session changed while it was converted: …]` |
+| B2 a message the read-back shows with its own text is not counted | `codex_install.go`: the count's `!shown.claim(…)` test dropped | `TestCodexRoundTripCountsWhatTheReaderProjectsAway` FAIL — `notReadBackVerbatim = 2, want 1`; `TestStructureVerificationCountsAnOmittedEnvelopeBesideItsOwnTextOnce` FAIL in both arms |
+| B3 one read-back message shows one written message | `codex_install.go`: `claim` answers membership without consuming the claim | `TestCodexRoundTripCountsWhatTheReaderProjectsAway` FAIL — `notReadBackVerbatim = 0, want 1: the read-back shows the text once for two written messages` |
+| B6 the pairing finds the written message the read-back accounts for | `codex_install.go`: `pairReadBackMessage` answers -1 for every message | `TestCodexRoundTripCountsWhatTheReaderProjectsAway` FAIL — `differences = ["dialogue 1 is in the file but was not written: assistant_message (18 bytes, sha256 e46d83c1…)"], want none`; `TestStructureVerificationReportsDialogueRecordsOutOfOrder` and `TestStructureVerificationCountsAnOmittedEnvelopeBesideItsOwnTextOnce` FAIL too |
+| B7 a reading pairs only where the file still holds the message's record | `codex_install.go`: the `records.holds` guard dropped | `TestCodexRoundTripCountsWhatTheReaderProjectsAway` FAIL — `differences = ["dialogue 1 is in the target document but not in the file: user_message (60 bytes, sha256 3cf14f33…)"], want the written message a…` |
+
+Tests, gate: top-level `--- PASS` cases **153 → 156** across `./cmd/ccc/... ./internal/ccc/...` (before:
+`internal/ccc` 126, `./internal/ccc/...` 129, `cmd/ccc` 24 — measured on a detached `git archive` checkout
+of `de82906` in `/tmp/head-r11`; after: `internal/ccc` **129**, `./internal/ccc/...` **132**, `cmd/ccc`
+**24**, the CLI's own cases untouched, `--- FAIL` 0; `go test -tags fts5 -count=1 -v`, `--- PASS` lines at
+top level). The three new top-level cases are the container member's continuation, the overlapping envelope
+and the line that stays a stopped run; the count-read-from-claims rule is a case this round added to
+`TestCodexRoundTripCountsWhatTheReaderProjectsAway`. The Python suite's own `selftest` step is **153**,
+unchanged (this round touched no `scripts/` file). `python3 scripts/gate.py` on this tree — **exit 0,
+`GATE: PASS`** (not partial; the block is the one in §6, recorded by the run on the tree as delivered —
+only documentation changed after the code, tests and scripts).
+
+The native harness was not re-run, and the fix's own reach is the reason: this round changes neither the
+converted rollout, nor the installation, nor the target-side checks — it changes which state the source-file
+comparison answers for one source family, and how the structural count is read from a read-back. The two
+runs §3 records are file-backed Claude transcripts whose source check is `unchanged` and whose structural
+count is 0, and both are pinned offline (`TestContinueConvertsInstallsAndReadsBackTheFixture` asserts the
+count is 0 and the fixture's own source hash), so no number those runs printed moves; §14's and §15's quoted
+counts for their own shapes (1, 2 and 0) are unchanged as well — the tests that assert them pass untouched,
+which is the evidence rather than an argument. Q-0002-20 records why a member read earns the run's third
+state rather than a digest of the container.
+
+Docs changed with the code: this §16, §6 (the `go test` and gate blocks re-recorded, and two rule rows) and
+the plan's §3 source-check bullet (the member identity in the `not-verified` list, and the line the third
+state is not for). `docs/decisions/OPEN-QUESTIONS.md` gains **Q-0002-20** (how the source check answers a
+read whose identity is a container member, and why the third state is the answer rather than a digest of the
+container). `AGENTS.md` is unchanged: no repository layout, gate step, command, read order or agent rule
+moved this round — the changes live in existing package files and test files — which the stage report
+states. Goal bookkeeping: 0002 is still `Implemented on feat/0002-claude-to-codex-continuation; awaiting
+operator acceptance`, so nothing moves to `docs/goals/archive/` and `docs/goals/README.md`'s row stays as it
+is.

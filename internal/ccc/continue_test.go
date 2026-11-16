@@ -1209,6 +1209,92 @@ func TestStructureVerificationReportsDialogueRecordsOutOfOrder(t *testing.T) {
 	})
 }
 
+// TestStructureVerificationCountsAnOmittedEnvelopeBesideItsOwnTextOnce pins the count a read-back
+// answers when its text overlaps two written messages. The inherited reader drops a user prompt that
+// opens with `# AGENTS.md` (preprocessCodexUserTextBlocks), and the prompt it drops can be followed by a
+// turn whose own text the read-back shows: `# AGENTS.md\nhello` and then `hello` is exactly that pair.
+// The dropped prompt's own text is not shown, so it is counted; the later turn's own text is shown, so it
+// is not -- and the read-back holds one message for that turn, not one per written message a pairing
+// could read it as (review round 11's finding 2, whose count was read off that pairing).
+//
+// The second shape is the same class one step further: two later turns carrying the same text, with the
+// reader returning one message for each. A count that read the pairing answers two there as well, while
+// the read-back shows both turns' own text.
+func TestStructureVerificationCountsAnOmittedEnvelopeBesideItsOwnTextOnce(t *testing.T) {
+	ctx := context.Background()
+	cfg := fixtureConfig(t)
+	const answer = "I read the policy."
+	for _, testCase := range []struct {
+		name    string
+		prompts []string
+		shown   int
+	}{
+		{
+			name:    "the omitted prompt is followed by one turn carrying its text",
+			prompts: []string{"# AGENTS.md\nhello", "hello"},
+			shown:   1,
+		},
+		{
+			name:    "the omitted prompt is followed by two turns carrying the same text",
+			prompts: []string{"# AGENTS.md\nhello", "hello", "hello"},
+			shown:   2,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			messages := make([]Message, 0, len(testCase.prompts)+1)
+			for ordinal, prompt := range testCase.prompts {
+				messages = append(messages, Message{
+					Ordinal: ordinal, Role: string(parser.RoleUser), Content: prompt, Dialogue: prompt,
+				})
+			}
+			messages = append(messages, Message{
+				Ordinal: len(messages), Role: string(parser.RoleAssistant), Content: answer, Dialogue: answer,
+			})
+			rollout, err := ConvertToCodexRollout(testConversation(messages...),
+				CodexTargetOptions{SessionID: "01a1e000-2222-7000-8000-000000000005"})
+			if err != nil {
+				t.Fatalf("converting: %v", err)
+			}
+			// Half the premise: the conversion carries every prompt, so the file holds a record for each
+			// of them and the count answers the reader's projection rather than a loss.
+			written := 0
+			for _, item := range rollout.Items {
+				if item.Kind == ItemUser {
+					written++
+				}
+			}
+			if written != len(testCase.prompts) {
+				t.Fatalf("the conversion wrote %d user message(s), want %d", written, len(testCase.prompts))
+			}
+			home := t.TempDir()
+			if _, _, err := InstallCodexRollout(rollout, home); err != nil {
+				t.Fatalf("installing: %v", err)
+			}
+			verification, err := VerifyCodexRolloutStructure(ctx,
+				filepath.Join(home, codexSessionsSubdir), rollout, cfg)
+			if err != nil {
+				t.Fatalf("verifying: %v", err)
+			}
+			// The other half: the reader drops the envelope prompt and reads every later turn, which is
+			// what makes an overlapping count possible at all.
+			if verification.ReadBack.UserMessages != testCase.shown {
+				t.Fatalf("the read-back shows %d user message(s), want %d: the reader's own projection is "+
+					"the shape this case pins", verification.ReadBack.UserMessages, testCase.shown)
+			}
+			if verification.State != VerificationStateVerified {
+				t.Fatalf("the file the conversion wrote did not verify: %+v", verification)
+			}
+			if verification.NotReadBackVerbatim != 1 {
+				t.Errorf("not_read_back_verbatim = %d, want 1: the omitted prompt's own text is the one "+
+					"the read-back does not show", verification.NotReadBackVerbatim)
+			}
+			if !strings.Contains(verification.Detail, "1 written message(s)") {
+				t.Errorf("the verification detail = %q, want the count named", verification.Detail)
+			}
+		})
+	}
+}
+
 // dialogueRecordText answers the text one installed line carries, when the line is a dialogue record the
 // inherited reader reads a turn from: a response_item whose payload is a message, whose role is the
 // user's or the assistant's, and whose content holds a text block. A line that is not that shape answers
@@ -1454,6 +1540,96 @@ func TestSourceCheckComparesTheFileBeforeAndAfter(t *testing.T) {
 	}
 	if !strings.Contains(detail, "changed while it was converted") {
 		t.Errorf("the report does not say what happened: %q", detail)
+	}
+}
+
+// TestContinueFromAContainerMemberReportsNoFileToCompare pins the read whose identity is not a file: a
+// member of a multi-session container is read through `parser.VirtualSourcePath`'s spelling
+// (`<container>#<member>`), which the inherited provider records as the session's own path and this
+// reader carries unchanged. The source check cannot digest that spelling -- it names a row, not a file,
+// and the container's bytes hold every member the container carries -- so it must answer not-verified
+// with the member it was about instead of stopping a conversion whose source was read (review round 11's
+// finding 1). The container's own bytes are compared here by hand, because the run reports no comparison
+// of them: the property the report would otherwise claim is the caller's to check for this shape.
+func TestContinueFromAContainerMemberReportsNoFileToCompare(t *testing.T) {
+	ctx := context.Background()
+	root, containerPath := openClawContainer(t, map[string][]string{
+		"good": openClawContainerEvents("good"),
+	})
+	cfg := fixtureConfig(t)
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentOpenClaw: {root}}
+	before, err := fileDigest(containerPath)
+	if err != nil {
+		t.Fatalf("digesting the container: %v", err)
+	}
+
+	// The premise: the member's own path is the virtual identity, not a file the check could digest.
+	ref := Ref{Provider: "openclaw", ID: "openclaw:main:good"}
+	conversation, err := NewSourceReader(cfg).Read(ctx, ref)
+	if err != nil {
+		t.Fatalf("reading the container member: %v", err)
+	}
+	if want := containerPath + "#main:good"; conversation.Source.SourcePath != want {
+		t.Fatalf("the member's own path = %q, want the container's member identity %q, which is what "+
+			"this case is about", conversation.Source.SourcePath, want)
+	}
+
+	result, err := Continue(ctx, ContinueOptions{
+		Ref:          ref,
+		Target:       TargetCodex,
+		Config:       cfg,
+		Reader:       NewSourceReader(cfg),
+		TargetHome:   t.TempDir(),
+		TargetBinary: missingTargetBinary,
+		Verify:       VerifyNone,
+	})
+	if err != nil {
+		t.Fatalf("continuing the container member: %v", err)
+	}
+	if result.Conversion.State != ConversionStateConverted ||
+		result.Installation.State != InstallationStateInstalled {
+		t.Errorf("conversion = %+v, installation = %+v, want the session carried and installed",
+			result.Conversion, result.Installation)
+	}
+	if result.Verification.Structure.State != VerificationStateVerified {
+		t.Errorf("structure = %+v, want the converted session to read back", result.Verification.Structure)
+	}
+	if result.Installation.SourceCheckState != SourceCheckNotVerified {
+		t.Errorf("source_check_state = %q, want %q: no file holds the member's own bytes",
+			result.Installation.SourceCheckState, SourceCheckNotVerified)
+	}
+	for _, want := range []string{"main:good", containerPath} {
+		if !strings.Contains(result.Installation.Detail, want) {
+			t.Errorf("the source check detail %q does not name %q", result.Installation.Detail, want)
+		}
+	}
+	if warnings := sourceChangedWarnings(result.Installation.SourceCheckState); len(warnings) != 0 {
+		t.Errorf("a comparison that did not run warned about a moved source: %v", warnings)
+	}
+	after, err := fileDigest(containerPath)
+	if err != nil {
+		t.Fatalf("digesting the container after the conversion: %v", err)
+	}
+	if after != before {
+		t.Errorf("the container's bytes changed while it was converted (sha256 %s before, %s after)",
+			before, after)
+	}
+}
+
+// TestSourceCheckStopsAReadThatNamesNoFileAtAll pins the line between the two answers a read that names
+// no file can earn: an identity that names a *member* (a row inside a container) is a fact about the
+// source, and the check answers not-verified with it; a read that reported no path at all is a read the
+// report cannot describe, and the caller stops the run rather than reporting a state of a file that was
+// never named. sourceFileOf answers the two apart, and each half is pinned by the test beside this one.
+func TestSourceCheckStopsAReadThatNamesNoFileAtAll(t *testing.T) {
+	conversation := Conversation{Source: SourceIdentity{Provider: "claude"}}
+	digest, err := sourceFileDigest(conversation, "source")
+	if err != nil || digest != "" {
+		t.Fatalf("digest = %q, err = %v; a read that names no path has no file to digest", digest, err)
+	}
+	if _, _, err := sourceCheckAfter(conversation, "source", ""); err == nil ||
+		!strings.Contains(err.Error(), "no path") {
+		t.Fatalf("err = %v, want a stopped run naming the read that reported no path", err)
 	}
 }
 

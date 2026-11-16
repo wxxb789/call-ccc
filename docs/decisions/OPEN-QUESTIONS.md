@@ -945,3 +945,31 @@ supersede it with a newer one and say which it supersedes.
 - **Settled by:** whether the operator wants a continuation from a degraded or not-current read to be an
   error, or a disclosed conversion the caller decides about — the same choice Q-0002-16 and Q-0002-17
   took for content the target's reader reads differently.
+
+## Q-0002-20 — How the source check answers a read whose identity is a container member
+
+- **Status:** resolved (default taken)
+- **Question:** a multi-session container is read through a *member* identity — the inherited providers
+  spell it `parser.VirtualSourcePath(container, member)` (`<container>#<member>`), and the parse records
+  that spelling as the session's own path. Round 11's review found that the source check opened that
+  spelling as a filesystem path, so continuing a readable SQLite-backed session (an OpenClaw container's
+  member is the fixture) failed before the conversion with `open …#main:good: no such file or directory`,
+  whatever `--verify` said. Should the check digest the physical container the member lives in, or report
+  the comparison as one that did not run?
+- **Default taken:** report it as a comparison that did not run — `installation.source_check_state` is
+  `not-verified`, with a `detail` naming the member and its container — and so never stop a conversion
+  whose source was read. The container's own bytes are not the conversation's: they hold every member the
+  container carries, so a digest of them answers a different question than the report asks (did *this*
+  conversation's bytes move?), it would report `changed` for a sibling member's write, and it would
+  sometimes report `unchanged` for a change that did not reach the file's main bytes (a database's
+  write-ahead log, a buffered writer). `sourceFileOf` (`internal/ccc/continue.go`) decides once, from the
+  identity, and both halves of the check use it: an identity that names no file is a state of its own, and
+  only a read that reports no path at all, a digest that was never taken or a file that cannot be re-read
+  stops the run. The rule reaches the plan's §3 bullet and the evidence record's §16.
+- **Reversal:** digest the physical container (`parser.ParseVirtualSourcePath` gives it) and report
+  `unchanged`/`changed` for the container's bytes, naming the member in the detail; or stop the run as
+  before. `TestContinueFromAContainerMemberReportsNoFileToCompare` fails on the second and the third arms
+  the same way, and on the first arm only if the container's bytes move, so the decision is one field of
+  one report for this source family.
+- **Settled by:** whether the operator prefers the third state (no comparison ran, the reason named) or a
+  container-level digest as the nearest available file evidence for a member read.

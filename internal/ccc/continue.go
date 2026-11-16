@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/parser"
 )
 
 // Verification levels a caller may ask for. "load" is the default because it is the target harness's own
@@ -709,14 +710,51 @@ func readForConversion(
 	return archived, "archive", []string{warning}, nil
 }
 
-// sourceFileDigest is the digest of the source session's own file, or "" when the read came from an
-// archive: a projection has no file of its own to compare, and the caller says so instead of claiming a
-// check that did not run.
+// sourceFile answers where one conversation's own bytes are: the file a read resolved (`path`), or why no
+// file holds them (`reason`). Exactly one of the two is set.
+type sourceFile struct {
+	path   string
+	reason string
+}
+
+// sourceFileOf answers the file a source read's conversation lives in.
+//
+// A multi-session container is read through a *member* identity: the inherited providers spell it
+// `parser.VirtualSourcePath(container, member)` (`<container>#<member>`), the parse records that spelling
+// as the session's own path (`parser.ParsedSession.File.Path`), and this document carries it unchanged
+// because it is what a caller resolves the member by. Such an identity is not a filesystem path -- which
+// is why opening it is an error -- and no file holds the conversation's bytes: the transcript lives in the
+// container's rows. The container's own bytes are not that file either: they hold every member the
+// container carries, so digesting them answers a different question than the report asks (did *this*
+// conversation's bytes move?) and would sometimes answer "unchanged" for a member a write did not reach
+// (a database's write-ahead log, a buffered writer). The comparison is therefore reported as one that did
+// not run, with the member it was about, instead of a conversion of a readable session being stopped by a
+// check that cannot apply to it.
+//
+// An identity that names no file at all is not this case: it is a read that reported no path, and the
+// caller reports that as a stopped run rather than as a state of a file.
+func sourceFileOf(conversation Conversation) sourceFile {
+	path := sourceFilePath(conversation)
+	if container, member, ok := parser.ParseVirtualSourcePath(path); ok {
+		return sourceFile{reason: fmt.Sprintf(
+			"the source read resolved member %s inside the container %s, and no file holds this "+
+				"member's own bytes to compare", member, container)}
+	}
+	return sourceFile{path: path}
+}
+
+// sourceFileDigest is the digest of the source session's own file, or "" when there is no file of its own
+// to compare: a projection has no file of its own, and neither has a member read out of a container's
+// rows, so the caller says the comparison did not run instead of claiming a check that did.
 func sourceFileDigest(conversation Conversation, readFrom string) (string, error) {
 	if readFrom != "source" {
 		return "", nil
 	}
-	return fileDigest(sourceFilePath(conversation))
+	file := sourceFileOf(conversation)
+	if file.path == "" {
+		return "", nil
+	}
+	return fileDigest(file.path)
 }
 
 // sourceFilePath is the source session's own file, as the read recorded it.
@@ -737,11 +775,17 @@ func sourceFilePath(conversation Conversation) string {
 // It answers with one of the SourceCheck* states and that state's own words. An error means the
 // comparison could not run at all — a read that named no path, a digest that was never taken, a file that
 // cannot be re-read — and the caller reports that as a stopped run rather than as a state the file earned.
+// A read whose identity is no file's name is the other answer: the turn that would have compared it was
+// never taken, and the state names the member identity instead (sourceFileOf).
 func sourceCheckAfter(conversation Conversation, readFrom, before string) (string, string, error) {
 	if readFrom != "source" {
 		return SourceCheckNotVerified, "the conversion read an archive row, so no source file was open at all", nil
 	}
-	path := sourceFilePath(conversation)
+	file := sourceFileOf(conversation)
+	if file.reason != "" {
+		return SourceCheckNotVerified, file.reason, nil
+	}
+	path := file.path
 	if strings.TrimSpace(path) == "" {
 		return "", "", errors.New("the source read reported no path, so its digest could not be compared")
 	}
