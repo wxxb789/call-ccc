@@ -17,6 +17,7 @@
 package ccc
 
 import (
+	"fmt"
 	"time"
 
 	"go.kenn.io/agentsview/internal/parser"
@@ -172,6 +173,44 @@ type Conversation struct {
 	Source   SourceIdentity `json:"source"`
 	Messages []Message      `json:"messages"`
 	Fidelity Fidelity       `json:"fidelity"`
+}
+
+// fidelityWarnings names what the provider itself said about the completeness of one read, in the words
+// every report of a read owes its caller. An inspection and a continuation both present the conversation
+// as what the source recorded, and three of the provider's own classifications say the read is not that:
+// a summary fallback standing in for a transcript the provider could not read, a result the provider
+// says is not current for its data version, and tool outputs whose persisted content this machine could
+// not read. The warnings are the report's own channel beside the fidelity block, which carries the same
+// classifications as fields.
+func fidelityWarnings(fidelity Fidelity) []string {
+	var warnings []string
+	if fidelity.NeedsRetry {
+		// The provider returned a conversation *and* said the result is not current: a Codex fork whose
+		// parent page cannot be read keeps the copied parent messages until that parent resolves, so the
+		// messages are reported while their session boundary is named as unresolved. A report that
+		// printed the conversation alone would present those copied parent turns as this session's own
+		// recorded history.
+		reason := ""
+		if fidelity.RetryReason != "" {
+			reason = " (" + fidelity.RetryReason + ")"
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"the provider classified this read as needing a retry%s; it returned the messages it "+
+				"could read, which may not be the session's complete recorded history",
+			reason))
+	}
+	if fidelity.TranscriptFidelity == parser.TranscriptFidelitySummary {
+		warnings = append(warnings,
+			"the provider classified this read as a summary transcript: it is a degraded fallback "+
+				"for a source it could not read in full, not the session's recorded transcript")
+	}
+	if fidelity.UnresolvedToolOutputs > 0 {
+		warnings = append(warnings, fmt.Sprintf(
+			"%d tool result(s) name persisted output this machine could not read; their content is "+
+				"the placeholder that says where it was saved, not the output",
+			fidelity.UnresolvedToolOutputs))
+	}
+	return warnings
 }
 
 // Counts summarises a conversation without re-reading its messages.

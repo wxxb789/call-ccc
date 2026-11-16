@@ -1054,6 +1054,191 @@ func TestStructureVerificationAsksTheFileForTheMessageRecord(t *testing.T) {
 	}
 }
 
+// TestStructureVerificationReportsDialogueRecordsOutOfOrder pins the file's own dialogue order at the
+// level the finding named: the installed file's records, read back through the inherited reader. Two
+// messages whose records are swapped leave every text in the file, so a check that asked the file
+// whether it holds each message answers the same as for the file the conversion wrote -- while the
+// conversation the file holds is not the one the document writes.
+//
+// Both shapes of the reader's projection are exercised, because the read-back answers differently for
+// each. A document whose two prompts open with an injected-context envelope comes back as the same
+// assistant message whichever order its records stand in, so the swap is invisible to the read-back
+// alone. A real fixture's first two records are a user turn and the assistant turn after it, so moving
+// them also puts the moved message where the document does not write it -- further evidence beside the
+// file's own records.
+func TestStructureVerificationReportsDialogueRecordsOutOfOrder(t *testing.T) {
+	ctx := context.Background()
+	cfg := fixtureConfig(t)
+
+	// swapFirstDialogueRecords moves the installed file's first two dialogue records past each other and
+	// answers the texts that were in them, after checking that the file still holds both: the mutation
+	// moved the records rather than dropping anything.
+	swapFirstDialogueRecords := func(t *testing.T, path string) (string, string) {
+		t.Helper()
+		installed, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading the installed session: %v", err)
+		}
+		lines := strings.Split(strings.TrimSuffix(string(installed), "\n"), "\n")
+		// The dialogue records, in the file's own order: the response_items whose payload is a message
+		// the inherited reader reads a turn from.
+		var dialogue []int
+		var texts []string
+		for index, line := range lines {
+			if !json.Valid([]byte(line)) {
+				t.Fatalf("the installed session holds a line that is not a record: %s", line)
+			}
+			text, ok := dialogueRecordText(line)
+			if !ok {
+				continue
+			}
+			dialogue = append(dialogue, index)
+			texts = append(texts, text)
+		}
+		if len(dialogue) < 2 {
+			t.Fatalf("the installed session holds %d dialogue record(s), so this case pins nothing",
+				len(dialogue))
+		}
+		lines[dialogue[0]], lines[dialogue[1]] = lines[dialogue[1]], lines[dialogue[0]]
+		if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+			t.Fatalf("writing the mutated session: %v", err)
+		}
+		// The mutation moved the two records rather than dropping anything: the records the mutated file
+		// holds still decode to both texts.
+		held := map[string]bool{}
+		for _, line := range lines {
+			if text, ok := dialogueRecordText(line); ok {
+				held[text] = true
+			}
+		}
+		for _, text := range texts[:2] {
+			if !held[text] {
+				t.Fatalf("the mutated session no longer holds %q, so it does not pin this rule", text)
+			}
+		}
+		return texts[0], texts[1]
+	}
+
+	t.Run("a document whose prompts the reader projects away", func(t *testing.T) {
+		const first = "# AGENTS.md\nThe retry policy lives in internal/retry/policy.go."
+		const second = "# AGENTS.md\nThe retry budget is a constant in internal/retry/budget.go."
+		const answer = "I read both notes."
+		conversation := testConversation(
+			Message{Ordinal: 0, Role: string(parser.RoleUser), Content: first, Dialogue: first},
+			Message{Ordinal: 1, Role: string(parser.RoleUser), Content: second, Dialogue: second},
+			Message{Ordinal: 2, Role: string(parser.RoleAssistant), Content: answer, Dialogue: answer},
+		)
+		rollout, err := ConvertToCodexRollout(conversation,
+			CodexTargetOptions{SessionID: "01a1e000-2222-7000-8000-000000000004"})
+		if err != nil {
+			t.Fatalf("converting: %v", err)
+		}
+		home := t.TempDir()
+		path, _, err := InstallCodexRollout(rollout, home)
+		if err != nil {
+			t.Fatalf("installing: %v", err)
+		}
+		sessions := filepath.Join(home, codexSessionsSubdir)
+		verification, err := VerifyCodexRolloutStructure(ctx, sessions, rollout, cfg)
+		if err != nil {
+			t.Fatalf("verifying: %v", err)
+		}
+		// The premise: the inherited reader reads no message for either prompt, so the read-back is the
+		// assistant's message alone and the file's own records are what carry the two prompts.
+		if verification.State != VerificationStateVerified || verification.NotReadBackVerbatim != 2 {
+			t.Fatalf("the file the conversion wrote did not verify with both prompts counted: %+v",
+				verification)
+		}
+		swapFirstDialogueRecords(t, path)
+		verification, err = VerifyCodexRolloutStructure(ctx, sessions, rollout, cfg)
+		if err != nil {
+			t.Fatalf("verifying: %v", err)
+		}
+		if verification.State == VerificationStateVerified {
+			t.Fatal("the check accepted a file whose projected dialogue records stand in another order")
+		}
+		if !strings.Contains(verification.Detail, "out of order") ||
+			!strings.Contains(verification.Detail, describeText(first)) {
+			t.Errorf("the difference report does not name the out-of-place message by its size and digest: %q",
+				verification.Detail)
+		}
+		if strings.Contains(verification.Detail, first) {
+			t.Errorf("the difference report carries the evidence it compared: %q", verification.Detail)
+		}
+	})
+
+	t.Run("a fixture whose first two records are swapped", func(t *testing.T) {
+		conversation, err := NewSourceReader(cfg).Read(ctx, claudeFixtureRef)
+		if err != nil {
+			t.Fatalf("reading the fixture: %v", err)
+		}
+		rollout, err := ConvertToCodexRollout(conversation,
+			CodexTargetOptions{SessionID: "01a1e000-2222-7000-8000-000000000003"})
+		if err != nil {
+			t.Fatalf("converting: %v", err)
+		}
+		home := t.TempDir()
+		path, _, err := InstallCodexRollout(rollout, home)
+		if err != nil {
+			t.Fatalf("installing: %v", err)
+		}
+		sessions := filepath.Join(home, codexSessionsSubdir)
+		verification, err := VerifyCodexRolloutStructure(ctx, sessions, rollout, cfg)
+		if err != nil {
+			t.Fatalf("verifying: %v", err)
+		}
+		if verification.State != VerificationStateVerified {
+			t.Fatalf("an unchanged rollout did not verify: %+v", verification)
+		}
+		first, _ := swapFirstDialogueRecords(t, path)
+		verification, err = VerifyCodexRolloutStructure(ctx, sessions, rollout, cfg)
+		if err != nil {
+			t.Fatalf("verifying: %v", err)
+		}
+		if verification.State == VerificationStateVerified {
+			t.Fatal("the structure check accepted a session whose dialogue records stand in another order")
+		}
+		if !strings.Contains(verification.Detail, "out of order") ||
+			!strings.Contains(verification.Detail, describeText(first)) {
+			t.Errorf("the difference report does not name the out-of-place message by its size and digest: %q",
+				verification.Detail)
+		}
+		if strings.Contains(verification.Detail, first) {
+			t.Errorf("the difference report carries the evidence it compared: %q", verification.Detail)
+		}
+	})
+}
+
+// dialogueRecordText answers the text one installed line carries, when the line is a dialogue record the
+// inherited reader reads a turn from: a response_item whose payload is a message, whose role is the
+// user's or the assistant's, and whose content holds a text block. A line that is not that shape answers
+// false, so the walk applies to the file's own bytes rather than to a hand-written expectation of them.
+func dialogueRecordText(line string) (string, bool) {
+	var record struct {
+		Type    string `json:"type"`
+		Payload struct {
+			Type    string `json:"type"`
+			Role    string `json:"role"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(line), &record); err != nil {
+		return "", false
+	}
+	if record.Type != "response_item" || record.Payload.Type != "message" ||
+		(record.Payload.Role != "user" && record.Payload.Role != "assistant") {
+		return "", false
+	}
+	for _, block := range record.Payload.Content {
+		if block.Text != "" {
+			return block.Text, true
+		}
+	}
+	return "", false
+}
+
 // TestContinueOmitsOutputTheInheritedReaderCannotReadBack pins the rule that made an LF-only tool result
 // a false failure: a conversion may only write evidence its own round-trip check can read back, because
 // that check — not the source — is the run's verdict about the installed file. The inherited Codex reader
@@ -1541,5 +1726,133 @@ func TestContinueKeepsTheDryRunReportWhenItsSourceCheckCannotRun(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(result.Warnings, " "), "the run stopped after the conversion") {
 		t.Errorf("warnings = %v, want one naming the stopped run", result.Warnings)
+	}
+}
+
+// TestContinueDisclosesASummaryTranscriptRead pins the continuation's own disclosure of the provider's
+// classification of the read. The conversion's fidelity block carries the classification as a field, and
+// a caller that reads only the report's warnings and its loss list has to be told the same thing: a
+// summary fallback is a degraded read standing in for a transcript the provider could not produce, not
+// the session's recorded transcript, and a run that converted, installed and verified says nothing about
+// that by itself.
+//
+// The fixture is the finding's own shape: a Grok session whose chat history is missing reads as one
+// synthesized fallback message (internal/parser's summary classification). The control is a transcript
+// read of the same provider family's route: no summary warning, and the category is present with a zero
+// count, so a reader can tell "not a summary" from "the report does not say".
+func TestContinueDisclosesASummaryTranscriptRead(t *testing.T) {
+	ctx := context.Background()
+	summaryCfg, _, summaryRef := grokSummarySession(t)
+	summaryResult, err := Continue(ctx, ContinueOptions{
+		Ref:          summaryRef,
+		Target:       TargetCodex,
+		Config:       summaryCfg,
+		Reader:       NewSourceReader(summaryCfg),
+		TargetHome:   t.TempDir(),
+		TargetBinary: missingTargetBinary,
+		Verify:       VerifyNone,
+	})
+	if err != nil {
+		t.Fatalf("continuing the summary-only session: %v", err)
+	}
+	if got := summaryResult.Conversion.SourceFidelity.TranscriptFidelity; got != parser.TranscriptFidelitySummary {
+		t.Errorf("source fidelity = %q, want %q", got, parser.TranscriptFidelitySummary)
+	}
+	if warnings := strings.Join(summaryResult.Warnings, "\n"); !strings.Contains(warnings, "summary transcript") {
+		t.Errorf("the classification is in the fidelity block but not in the report's warnings: %v",
+			summaryResult.Warnings)
+	}
+	loss := lossCount(t, summaryResult.Conversion.Losses, "summary_transcript")
+	if loss.Count != 1 || loss.Disposition != DispositionCarriedWithCaveat {
+		t.Errorf("summary_transcript = %+v, want the read's classification counted once, carried with a caveat",
+			loss)
+	}
+	if !strings.Contains(loss.Detail, "summary") || !strings.Contains(loss.Detail, "recorded transcript") {
+		t.Errorf("summary_transcript detail = %q, want it to say what the read is not", loss.Detail)
+	}
+
+	// The control: a read from a transcript, which the provider classifies as full.
+	fullCfg := fixtureConfig(t)
+	fullResult, err := Continue(ctx, ContinueOptions{
+		Ref:          claudeFixtureRef,
+		Target:       TargetCodex,
+		Config:       fullCfg,
+		Reader:       NewSourceReader(fullCfg),
+		TargetHome:   t.TempDir(),
+		TargetBinary: missingTargetBinary,
+		Verify:       VerifyNone,
+	})
+	if err != nil {
+		t.Fatalf("continuing the transcript fixture: %v", err)
+	}
+	if warnings := strings.Join(fullResult.Warnings, "\n"); strings.Contains(warnings, "summary") {
+		t.Errorf("a transcript read is disclosed as a summary: %v", fullResult.Warnings)
+	}
+	if loss := lossCount(t, fullResult.Conversion.Losses, "summary_transcript"); loss.Count != 0 ||
+		strings.TrimSpace(loss.Detail) == "" {
+		t.Errorf("summary_transcript = %+v, want a zero count that still says what the category is", loss)
+	}
+}
+
+// TestContinueDisclosesARetryableRead pins the other classification the provider can return beside a
+// usable conversation: a result that is not current for its own data version. A Codex fork whose copied
+// prefix comes from a page whose parent head is unreadable parses to the copied parent messages *and*
+// that state (internal/parser's DataVersionNeedsRetry), so the conversion carries messages whose session
+// boundary is unresolved -- which the report has to say in its warnings and in its loss list, not only
+// in the fidelity block.
+//
+// The control is the same reference once the parent's head is readable: no retry warning, and the
+// category is present with a zero count.
+func TestContinueDisclosesARetryableRead(t *testing.T) {
+	ctx := context.Background()
+	forkCfg, _ := codexForkRollouts(t, false)
+	forkResult, err := Continue(ctx, ContinueOptions{
+		Ref:          Ref{Provider: "codex", ID: codexForkID},
+		Target:       TargetCodex,
+		Config:       forkCfg,
+		Reader:       NewSourceReader(forkCfg),
+		TargetHome:   t.TempDir(),
+		TargetBinary: missingTargetBinary,
+		Verify:       VerifyNone,
+	})
+	if err != nil {
+		t.Fatalf("continuing the fork whose parent head is unreadable: %v", err)
+	}
+	if !forkResult.Conversion.SourceFidelity.NeedsRetry {
+		t.Errorf("source fidelity = %+v, want the provider's own retry state",
+			forkResult.Conversion.SourceFidelity)
+	}
+	warnings := strings.Join(forkResult.Warnings, "\n")
+	if !strings.Contains(warnings, "needing a retry") || !strings.Contains(warnings, "forked from") {
+		t.Errorf("the retry and the provider's own reason are not in the warnings: %v", forkResult.Warnings)
+	}
+	loss := lossCount(t, forkResult.Conversion.Losses, "source_needs_retry")
+	if loss.Count != 1 || loss.Disposition != DispositionCarriedWithCaveat {
+		t.Errorf("source_needs_retry = %+v, want the read's state counted once, carried with a caveat", loss)
+	}
+	if !strings.Contains(loss.Detail, "retry") || !strings.Contains(loss.Detail, "forked from") {
+		t.Errorf("source_needs_retry detail = %q, want the provider's own reason in it", loss.Detail)
+	}
+
+	// The control: the same reference once the parent's head is readable.
+	resolvedCfg, _ := codexForkRollouts(t, true)
+	resolvedResult, err := Continue(ctx, ContinueOptions{
+		Ref:          Ref{Provider: "codex", ID: codexForkID},
+		Target:       TargetCodex,
+		Config:       resolvedCfg,
+		Reader:       NewSourceReader(resolvedCfg),
+		TargetHome:   t.TempDir(),
+		TargetBinary: missingTargetBinary,
+		Verify:       VerifyNone,
+	})
+	if err != nil {
+		t.Fatalf("continuing the resolved fork: %v", err)
+	}
+	if warnings := strings.Join(resolvedResult.Warnings, "\n"); strings.Contains(warnings, "needing a retry") {
+		t.Errorf("a resolved read is disclosed as needing a retry: %v", resolvedResult.Warnings)
+	}
+	if loss := lossCount(t, resolvedResult.Conversion.Losses, "source_needs_retry"); loss.Count != 0 ||
+		strings.TrimSpace(loss.Detail) == "" {
+		t.Errorf("source_needs_retry = %+v, want a zero count that still says what the category is", loss)
 	}
 }

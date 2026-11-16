@@ -345,10 +345,13 @@ type codexRolloutBuilder struct {
 	carried    Carried
 	callOwners map[string]struct{}
 
-	// sourceFidelity is the completeness the read itself reported. Lines the provider's reader could
-	// not turn into a message never reach this writer as evidence at all, so the conversion's report
-	// has to name them from the read's own count: a caller that read "converted" alone would not know
-	// the source was partial.
+	// sourceFidelity is the completeness and the provider's own classification of the read itself.
+	// Lines the provider's reader could not turn into a message never reach this writer as evidence at
+	// all, so the conversion's report has to name them from the read's own count; and a read the provider
+	// classified as a summary fallback, or as not current for its data version, is named from that
+	// classification the same way: a caller that read "converted" alone would not know the source was
+	// partial or that the conversation is the provider's fallback rather than the session's recorded
+	// transcript.
 	sourceFidelity Fidelity
 
 	lossReasoning          int
@@ -818,7 +821,10 @@ func (b *codexRolloutBuilder) losses() []Loss {
 	// The read's own completeness is reported here rather than left to the fidelity block alone: a line
 	// the provider's reader skipped produced no message, so no per-message category could count it, and
 	// "converted" without this entry would read as though the conversation the target holds were the
-	// whole of what the source file records.
+	// whole of what the source file records. The provider's own classifications of the read are reported
+	// the same way: a summary fallback is not the session's recorded transcript, and a result the
+	// provider says is not current may not be the session's complete history, so "converted" without
+	// those entries would read as though the conversation were the session as the source recorded it.
 	unreadableLinesDetail := "every source line this read produced a message for was readable"
 	if b.sourceFidelity.MalformedLines > 0 {
 		unreadableLinesDetail = "the provider's reader skipped these source line(s) as unreadable " +
@@ -828,6 +834,24 @@ func (b *codexRolloutBuilder) losses() []Loss {
 			unreadableLinesDetail += "; the source file's last line was still being written when it was " +
 				"read (the fidelity block's truncated flag), and it is one of them"
 		}
+	}
+	summaryTranscriptDetail := "the provider's own classification says this read is the session's " +
+		"recorded transcript"
+	if b.sourceFidelity.TranscriptFidelity == parser.TranscriptFidelitySummary {
+		summaryTranscriptDetail = "the provider classified this read as a summary transcript: the " +
+			"conversation carried here is a degraded fallback standing in for a transcript the provider " +
+			"could not read in full, not the session's recorded transcript"
+	}
+	needsRetryDetail := "the provider's own classification says this read is current for its data version"
+	if b.sourceFidelity.NeedsRetry {
+		reason := ""
+		if b.sourceFidelity.RetryReason != "" {
+			reason = " (" + b.sourceFidelity.RetryReason + ")"
+		}
+		needsRetryDetail = "the provider classified this read as needing a retry" + reason + ": it " +
+			"returned the messages it could read, which may not be the session's complete recorded " +
+			"history. A Codex fork whose parent page cannot be read keeps the copied parent messages " +
+			"until that parent resolves"
 	}
 	return []Loss{
 		{
@@ -987,7 +1011,29 @@ func (b *codexRolloutBuilder) losses() []Loss {
 			Count:       b.sourceFidelity.MalformedLines,
 			Detail:      unreadableLinesDetail,
 		},
+		{
+			Category:    "summary_transcript",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       flagCount(b.sourceFidelity.TranscriptFidelity == parser.TranscriptFidelitySummary),
+			Detail:      summaryTranscriptDetail,
+		},
+		{
+			Category:    "source_needs_retry",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       flagCount(b.sourceFidelity.NeedsRetry),
+			Detail:      needsRetryDetail,
+		},
 	}
+}
+
+// flagCount reports a state of the read or of the run as the count a loss entry carries: one entry when
+// the state holds, none otherwise. The state is a property of the read, not a number of items, which is
+// why it is reported this way rather than as a count of messages.
+func flagCount(set bool) int {
+	if set {
+		return 1
+	}
+	return 0
 }
 
 // providerBindingCount reports whether this conversion recorded a provider binding.

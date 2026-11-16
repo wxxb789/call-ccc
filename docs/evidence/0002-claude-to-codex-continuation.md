@@ -126,9 +126,11 @@ answer:                 From this conversation: the file summarized was `interna
 The three blocks a consumer reads apart: `conversion.state` (`converted`), `installation.state`
 (`installed`), `verification.load`/`verification.resume` (`verified` / `not-verified` /
 `not-requested`), each with its own `method` and `detail`, and `conversion.losses[]` naming every
-omitted or narrowed category with its count and reason (twenty categories, always present, including the
-zero ones — round 3's §8 added `malformed_source_lines`, and the §1 and §2 blocks here were recorded
-before that and print what the writer reported then; §3's runs are this tree's, and print twenty — round 7's §12 added the two whitespace-only ones (a result and a dialogue), so a re-run prints two more than the blocks recorded before it).
+omitted or narrowed category with its count and reason (twenty-two categories, always present, including
+the zero ones — round 3's §8 added `malformed_source_lines`, round 7's §12 the two whitespace-only ones,
+round 10's §15 the two the provider's own classification of the read feeds, `summary_transcript` and
+`source_needs_retry`; the §1 and §2 blocks here were recorded before those additions and print what the
+writer reported then, and §3's blocks are §15's re-run of this tree, printing twenty-two).
 
 The source check is three states of its own: `installation.source_check_state` is `unchanged`, `changed`
 or `not-verified` — the comparison did not run, which is what an archive read and a stopped run answer —
@@ -153,15 +155,15 @@ $ python3 scripts/codex-native-check.py --model-provider tencent-litellm --model
     --resume-prompt "Answer only from this conversation, one line each: which file did you read, and what was the attempt limit?"
 exit 0
 PASS: ccc builds with the flags upstream ships
-PASS: the conversion reports carried evidence and a non-zero loss category — 5 message(s), 1 tool call(s), 20 loss categories
-PASS: the session is installed under the target's own sessions tree — sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1e2c6-967d-701a-806f-6942dcc719c8.jsonl [hard-link]
-PASS: the target identity is new and is not the source's — 01a1e2c6-967d-701a-806f-6942dcc719c8, not one of the 1 id(s) already in the home
+PASS: the conversion reports carried evidence and a non-zero loss category — 5 message(s), 1 tool call(s), 22 loss categories
+PASS: the session is installed under the target's own sessions tree — sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1e324-fa37-73f0-b646-8973626bf724.jsonl [hard-link]
+PASS: the target identity is new and is not the source's — 01a1e324-fa37-73f0-b646-8973626bf724, not one of the 1 id(s) already in the home
 PASS: the installed file is one JSON object per line — 3970 bytes (the target's own read of it is the load check)
-PASS: the inherited reader reads the installed file back as what was written — ccc inspect codex:01a1e2c6-967d-701a-806f-6942dcc719c8: {"messages": 7, "user_messages": 2, "assistant_messages": 5, "system_messages": 0, "tool_messages": 0, "system_records": 1, "sidechain_messages": 0, "compact_boundaries": 1, "tool_calls": 1, "tool_results": 1}; conversion carried: 2 user message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies)
-PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1e2c6-967d-701a-806f-6942dcc719c8 [legacy] cwd=/home/user/code/example-api
+PASS: the inherited reader reads the installed file back as what was written — ccc inspect codex:01a1e324-fa37-73f0-b646-8973626bf724: {"messages": 7, "user_messages": 2, "assistant_messages": 5, "system_messages": 0, "tool_messages": 0, "system_records": 1, "sidechain_messages": 0, "compact_boundaries": 1, "tool_calls": 1, "tool_results": 1}; conversion carried: 2 user message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies)
+PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1e324-fa37-73f0-b646-8973626bf724 [legacy] cwd=/home/user/code/example-api
 PASS: the target's own view lists the converted turns — 5 item(s) in the reply's own turn list
-PASS: the reported resume command selects the installation home — resume_command='CODEX_HOME=<tmp>/codex-home <codex> resume 01a1e2c6-967d-701a-806f-6942dcc719c8' exec_resume_command="CODEX_HOME=<tmp>/codex-home <codex> exec resume 01a1e2c6-967d-701a-806f-6942dcc719c8 '<prompt>'" environment={'CODEX_HOME': '<tmp>/codex-home'}
-PASS: a real turn continues from the installed session — exit 0, session 3970 -> 71248 bytes
+PASS: the reported resume command selects the installation home — resume_command='CODEX_HOME=<tmp>/codex-home <codex> resume 01a1e324-fa37-73f0-b646-8973626bf724' exec_resume_command="CODEX_HOME=<tmp>/codex-home <codex> exec resume 01a1e324-fa37-73f0-b646-8973626bf724 '<prompt>'" environment={'CODEX_HOME': '<tmp>/codex-home'}
+PASS: a real turn continues from the installed session — exit 0, session 3970 -> 73595 bytes
 PASS: the source session is unchanged — sha256 2bd510821d4abf83… (fixture tree identical)
 PASS: the unrelated session in the target home is unchanged — sha256 59ff49ca30baf622…
 PASS: no pre-existing session in the target home changed — 0 pre-existing session file(s)
@@ -173,7 +175,7 @@ harness) and the answer its own resume produced:
 
 ```
 the target harness's own view of the installed session:
-    thread 01a1e2c6-967d-701a-806f-6942dcc719c8 [legacy] provider=tencent-litellm
+    thread 01a1e324-fa37-73f0-b646-8973626bf724 [legacy] provider=tencent-litellm
       turn rollout-2
         userMessage: Summarize the retry policy in internal/retry/policy.go.
         agentMessage: I will read the retry policy first.
@@ -183,17 +185,17 @@ the target harness's own view of the installed session:
         agentMessage: The cap is configured in internal/retry/config.go as maxBackoffSeconds.
 
 the turn's own output (the target's answer, as the harness printed it):
-    Read: none — I made no tool calls in this conversation; `internal/retry/policy.go` and `internal/retry/config.go` appear only in my own unchecked claims (so I also can't vouch for `maxBackoffSeconds`).
-    Attempt limit: the only number stated was four, and it came from my unverified summary, not from any file I actually read.
+    - File: `internal/retry/policy.go` (only the summary above exists in this conversation; no file was actually read here).
+    - Attempt limit: four.
 ```
 
 Why the first fixture's answer has this shape (its own wording varies run to run): the fixture compacts
 after its tool call, the conversion carries that boundary as the target's `compacted` record, and Codex
 applies that record to its own model-visible history — so the resumed turn continues from the source's
 own active context (the summary and the turns after the boundary), which is why this run could still state
-the attempt limit (`four`, from the summary's own words) while answering that it came from that summary
-rather than from any file it read — and why it named no file read at all. The file keeps the turns before
-the boundary with their tool evidence, but the target does not continue from them. An earlier run of
+the attempt limit (four, from the summary's own words) while saying that the file it named is in the
+conversation only as the summary's own claim and that nothing was actually read. The file keeps the turns
+before the boundary with their tool evidence, but the target does not continue from them. An earlier run of
 this same check, over a rollout written without the target's `event_msg` message records, could not see
 even the post-boundary turns and answered that no tool call exists in this conversation; that is what
 writing both record kinds buys. The second fixture has no boundary, and there the tool evidence reaches
@@ -205,15 +207,15 @@ $ python3 scripts/codex-native-check.py --session b6d93f07-2f5c-4a11-8e0d-3c7a91
     --resume-prompt "Answer only from this conversation, one line each: which tools appear, what did the first return, and what did the last one return?"
 exit 0
 PASS: ccc builds with the flags upstream ships
-PASS: the conversion reports carried evidence and a non-zero loss category — 5 message(s), 3 tool call(s), 20 loss categories
-PASS: the session is installed under the target's own sessions tree — sessions/2026/05/05/rollout-2026-05-05T10-00-00-01a1e2c6-a83d-7659-bf67-04db6913b546.jsonl [hard-link]
-PASS: the target identity is new and is not the source's — 01a1e2c6-a83d-7659-bf67-04db6913b546, not one of the 1 id(s) already in the home
+PASS: the conversion reports carried evidence and a non-zero loss category — 5 message(s), 3 tool call(s), 22 loss categories
+PASS: the session is installed under the target's own sessions tree — sessions/2026/05/05/rollout-2026-05-05T10-00-00-01a1e325-2174-7f1f-98f6-edd9d0cc48e4.jsonl [hard-link]
+PASS: the target identity is new and is not the source's — 01a1e325-2174-7f1f-98f6-edd9d0cc48e4, not one of the 1 id(s) already in the home
 PASS: the installed file is one JSON object per line — 4611 bytes (the target's own read of it is the load check)
-PASS: the inherited reader reads the installed file back as what was written — ccc inspect codex:01a1e2c6-a83d-7659-bf67-04db6913b546: {"messages": 8, "user_messages": 2, "assistant_messages": 6, "system_messages": 0, "tool_messages": 0, "system_records": 0, "sidechain_messages": 0, "compact_boundaries": 0, "tool_calls": 3, "tool_results": 3}; conversion carried: 2 user message(s), 3 tool call(s), 3 tool result(s), 0 boundary(ies)
-PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1e2c6-a83d-7659-bf67-04db6913b546 [legacy] cwd=/home/user/code/tooling
+PASS: the inherited reader reads the installed file back as what was written — ccc inspect codex:01a1e325-2174-7f1f-98f6-edd9d0cc48e4: {"messages": 8, "user_messages": 2, "assistant_messages": 6, "system_messages": 0, "tool_messages": 0, "system_records": 0, "sidechain_messages": 0, "compact_boundaries": 0, "tool_calls": 3, "tool_results": 3}; conversion carried: 2 user message(s), 3 tool call(s), 3 tool result(s), 0 boundary(ies)
+PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1e325-2174-7f1f-98f6-edd9d0cc48e4 [legacy] cwd=/home/user/code/tooling
 PASS: the target's own view lists the converted turns — 5 item(s) in the reply's own turn list
-PASS: the reported resume command selects the installation home — resume_command='CODEX_HOME=<tmp>/codex-home <codex> resume 01a1e2c6-a83d-7659-bf67-04db6913b546' exec_resume_command="CODEX_HOME=<tmp>/codex-home <codex> exec resume 01a1e2c6-a83d-7659-bf67-04db6913b546 '<prompt>'" environment={'CODEX_HOME': '<tmp>/codex-home'}
-PASS: a real turn continues from the installed session — exit 0, session 4611 -> 76345 bytes
+PASS: the reported resume command selects the installation home — resume_command='CODEX_HOME=<tmp>/codex-home <codex> resume 01a1e325-2174-7f1f-98f6-edd9d0cc48e4' exec_resume_command="CODEX_HOME=<tmp>/codex-home <codex> exec resume 01a1e325-2174-7f1f-98f6-edd9d0cc48e4 '<prompt>'" environment={'CODEX_HOME': '<tmp>/codex-home'}
+PASS: a real turn continues from the installed session — exit 0, session 4611 -> 84635 bytes
 PASS: the source session is unchanged — sha256 415bbc31a6cd541f… (fixture tree identical)
 PASS: the unrelated session in the target home is unchanged — sha256 59ff49ca30baf622…
 PASS: no pre-existing session in the target home changed — 0 pre-existing session file(s)
@@ -222,7 +224,7 @@ PASS: no pre-existing session in the target home changed — 0 pre-existing sess
 
 ```
 the target harness's own view of the installed session:
-    thread 01a1e2c6-a83d-7659-bf67-04db6913b546 [legacy] provider=tencent-litellm
+    thread 01a1e325-2174-7f1f-98f6-edd9d0cc48e4 [legacy] provider=tencent-litellm
       turn rollout-2
         userMessage: Check the retry policy and tell me the attempt limit.
         agentMessage: I will read the policy file first.
@@ -232,9 +234,9 @@ the target harness's own view of the installed session:
         agentMessage: internal/retry/config.go, as maxBackoffSeconds.
 
 the turn's own output (the target's answer, as the harness printed it):
-    - Tools appearing: `Read` and `Bash` were actually called; the environment also declares `exec_command`, `write_stdin`, `request_user_input`, `view_image`, and `multi_agent_v1__*`, none of which I invoked this turn.
-    - First return (`Read` on `/home/user/code/tooling/internal/retry/policy.go`): the file body, `package retry` and `const MaxAttempts = 4`.
-    - Last return (`Bash`, `python3 -c` printing JSON of the constant name): `"maxBackoffSeconds"` — it names no file, so my earlier `internal/retry/config.go` answer wasn't actually confirmed by it.
+    Tools that appear: `Read` (first call) and `Bash` (two calls: `grep`, then `python3`).
+    First return: the contents of `/home/user/code/tooling/internal/retry/policy.go` — `package retry` followed by `const MaxAttempts = 4`.
+    Last return: `"maxBackoffSeconds"` — stdout of the `python3 -c 'import json; print(json.dumps("maxBackoffSeconds"))'` call.
 ```
 
 All three tool calls, the first result's content, the second result's recorded *failure* and the third
@@ -305,7 +307,7 @@ half:
 
 ```
 the target harness's own view of the installed session:
-    thread 01a1e2c6-a83d-7659-bf67-04db6913b546 [legacy] provider=tencent-litellm
+    thread 01a1e325-2174-7f1f-98f6-edd9d0cc48e4 [legacy] provider=tencent-litellm
       turn rollout-2
         userMessage: Check the retry policy and tell me the attempt limit.
         agentMessage: I will read the policy file first.
@@ -320,7 +322,7 @@ the target harness's own view of the installed session:
 | user "Check the retry policy and tell me the attempt limit." | `userMessage: Check the retry policy and tell me the attempt limit.` | carried |
 | assistant "I will read the policy file first." (with a persisted reasoning trace) | `agentMessage: I will read the policy file first.` | carried; the reasoning trace omitted (`reasoning_text ×2`, both traces) |
 | the reasoning-only turn (the provider projects an empty dialogue; `Content` renders the trace) | absent, and the trace's own words appear nowhere in the file | omitted (`reasoning_text ×2`); never written as the agent's dialogue |
-| `Read` call + its result ("package retry … MaxAttempts = 4") | reached the resumed turn (the answer names `Read` and its first return: "the file body, `package retry` and `const MaxAttempts = 4`") and the file holds the pair | carried (`tool_calls ×3`, `tool_results ×3`) |
+| `Read` call + its result ("package retry … MaxAttempts = 4") | reached the resumed turn (the answer names `Read` and its first return: "the contents of … `package retry` followed by `const MaxAttempts = 4`") and the file holds the pair | carried (`tool_calls ×3`, `tool_results ×3`) |
 | `Bash` call whose result the source marked `is_error` | the file holds the pair, and this run's answer names `Bash` among the tools that appear (its wording does not quote the failure) | carried; the recorded outcome has no target field (`tool_result_outcomes ×1`) |
 | `Bash` call whose result text is a JSON string (`"maxBackoffSeconds"`), recorded on the same record as a system reminder | reached the resumed turn as that text, quotation marks included (the answer's last return: `"maxBackoffSeconds"`) | carried, decoded exactly once; the record's reminder text is not written (`system_records ×1`, round 4 below) |
 | assistant "The attempt limit is four." | `agentMessage: The attempt limit is four.` | carried |
@@ -331,7 +333,7 @@ the target harness's own view of the installed session:
 
 Everything a conversion cannot carry is named by category with a count and a reason on *every* run
 (`internal/ccc/codex_target_test.go`'s `TestCodexRolloutReportsEveryCategoryItKnows` requires all
-twenty categories to be present and to be truthful — the omitted text is not in the file — and
+twenty-two categories to be present and to be truthful — the omitted text is not in the file — and
 `TestCodexRolloutReportsTheSourceLinesItsReadCouldNotProduce` pins the read-completeness one, whose count
 is the read's own; `TestContinueFallsBackToTheArchiveWhenTheSourceIsGone` covers the archive-read path,
 where the report
@@ -343,10 +345,10 @@ summary and must be written once).
 
 ```
 $ CGO_ENABLED=1 go test -tags fts5 -count=1 ./cmd/ccc/... ./internal/ccc/...     # rc=0
-ok  	go.kenn.io/agentsview/cmd/ccc	8.837s
-ok  	go.kenn.io/agentsview/internal/ccc	24.911s
+ok  	go.kenn.io/agentsview/cmd/ccc	2.030s
+ok  	go.kenn.io/agentsview/internal/ccc	10.911s
 ?   	go.kenn.io/agentsview/internal/ccc/fixturegen	[no test files]
-ok  	go.kenn.io/agentsview/internal/ccc/parity	3.580s
+ok  	go.kenn.io/agentsview/internal/ccc/parity	1.251s
 ?   	go.kenn.io/agentsview/internal/ccc/parity/oracle	[no test files]
 ```
 
@@ -365,6 +367,8 @@ ok  	go.kenn.io/agentsview/internal/ccc/parity	3.580s
 | text the target's reader *projects away* although it is a real message is carried, is counted, and is never confused with a loss: the check asks the installed file's own dialogue record, the count reaches `verification.structure.not_read_back_verbatim` and a warning, and text the file does not hold stays a missing message — for both shapes of the projection, the envelope alone and the envelope followed by text | `TestContinueInstallsPromptsTheReaderReadsDifferently` (`cmd/ccc`, native Claude transcripts, one per shape), `TestCodexRoundTripCountsWhatTheReaderProjectsAway` |
 | the file is asked for the message's own dialogue record — its record type, the payload's message type, the role, the content block's own type and text — counted so one record answers for one written message, and a read-back message is accounted for only by a written message's own text or by a run of it under that message's own kind, in the file's own order | `TestCodexRoundTripAsksTheFileForItsOwnDialogueRecord`, `TestCodexRoundTripCountsARecordOncePerWrittenMessage`, `TestCodexRoundTripReportsAMessageTheFileOnlyHoldsAsNoMessage`, `TestCodexRoundTripReportsReadBackDialogueNoWrittenMessageAccountsFor`, `TestStructureVerificationAsksTheFileForTheMessageRecord` |
 | a difference report identifies its items — category, ordinal, kind, call, tool, size, SHA-256 — and never carries the dialogue, arguments or output it compared | `TestCodexRoundTripReportNamesDifferencesWithoutTheirText`, `TestStructureVerificationNamesWhatTheFileDoesNotHold` |
+| the installed file's dialogue records are read in the file's own order (round 10): a record the file holds where another message's would stand is a difference, a record the document does not write is a difference even where the reader projects it away, and the message's own record is asked for even where the read-back shows its text — at the comparison level and over a real installed file | `TestCodexRoundTripReportsDialogueRecordsOutOfOrder`, `TestStructureVerificationReportsDialogueRecordsOutOfOrder`, `TestCodexRoundTripAsksTheFileForItsOwnDialogueRecord` |
+| the provider's own classification of the read reaches every channel of a continuation (round 10): the same words in an inspection's and a conversion's warnings, and the `summary_transcript` / `source_needs_retry` categories with their counts and the provider's own retry reason | `TestContinueDisclosesASummaryTranscriptRead`, `TestContinueDisclosesARetryableRead`, `TestInspectReportsASummaryTranscriptClassification`, `TestInspectReportsARetryableResultWithItsMessages` |
 | the round-trip comparison folds the reader's own normalisations — a trimmed result output, a trimmed compact summary, an empty argument object (the last was unpinned until its mutation went unnoticed and this round pinned it) | `TestContinueConvertsInstallsAndReadsBackTheFixture`, `TestContinueRoundTripsACompactionSummaryTheReaderTrims`, `TestCodexRoundTripFoldsAnEmptyArgumentObjectAsNoArguments` |
 | the carried-link rules run on every host: the separator fold and the modified-link exemption are exercised against a real symlink *and* through the module's `symlink_target` seam, so a host whose checkouts cannot create a link still pins them | `scripts/tests/test_upstream_parity.py`'s `ParityCase` link cases (`link_shape_runs`, `selftest` step) |
 | a conversion report carries no source conversation content, in the core and on the CLI's wire document (installed and dry run) | `TestContinueReportCarriesNoSourceContent`, `TestContinueJSONCarriesNoSourceContent` |
@@ -398,7 +402,7 @@ gate: go=<home>/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/..
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 153 tests in 6.770s (rc=0)
+  PASS     selftest Ran 153 tests in 5.405s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 26 project-owned prefix(es); files seen by git: 5626 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     secrets  no leaks found in 74 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
@@ -986,7 +990,8 @@ The native harness re-ran on both fixtures with a real turn each
 (`--model-provider tencent-litellm --model deepseek-v4.1-flash-fast --resume-prompt …`): **13/13 checks
 passed, 0 failed, 0 skipped** each, exit 0, `20 loss categories` each — the count the script reads out of
 the conversion's own report — and no conversion or structural verdict changed for either fixture; §3's
-two blocks are those runs, re-recorded here.
+two blocks were those runs (round 10's §15 re-ran the check on a tree with two more loss categories and
+re-recorded §3's blocks; the count above is round 7's, as its own runs printed it).
 
 Docs changed with the code: this record's §1 note (the category count), §3 (both runs re-recorded), §5
 (the tooling run's own answer wording and the count), §6 (the refreshed `go test` and gate blocks, the new
@@ -1219,3 +1224,96 @@ mechanism half of Q-0002-17, not its default). `AGENTS.md` is unchanged: no repo
 command, read order or agent rule moved this round, which the stage report states. Goal bookkeeping: 0002 is
 still `Implemented …; awaiting operator acceptance`, so nothing moves to `docs/goals/archive/` and
 `docs/goals/README.md`'s row stays as it is.
+
+## 15. Repair round 10 — the installed file's dialogue order; the provider's own classification of the read
+
+Round 10's review left two P2 findings, both fixed here. Its carried-tree parity audit found no
+increment-attributable defect again — the mechanisms it re-read are the ones §13 and §14 audited, and this
+round touched no carried file, which the gate's `parity` step proves (5 553 carried files still
+byte-identical to the pin) — and its one note (the normalized `skip` path's shape check accepts a symlink
+for hashing and checks the followed file's executable bit) is the limitation the review itself filed as
+predating the increment; it is unchanged.
+
+**1 — a file whose projected dialogue records stood in another order verified**
+(`internal/ccc/codex_install.go`). `installedDialogueRecords` reduced the installed file's dialogue to a
+multiset and `compareDialogue` consumed it, so a written message the read-back does not show — the
+inherited reader projects a user text block that opens with an injected-context envelope away, and a
+genuine prompt with that prefix is carried verbatim — resolved against a record standing anywhere in the
+file. Two distinct prompts the reader projects away, installed in the other order, left the multiset
+unchanged and the read-back showing the same assistant message, so the check returned `verified` for a
+file whose model-visible dialogue was not the document's. The records are now kept in the file's own order
+(`dialogueRecords`: the ordered keys, and the positions still pending per identity) and every written
+message is resolved against the record that stands where the document writes it —
+`dialogueRecordInPlace`, `dialogueRecordOutOfPlace` (consumed where it stands, so one record still answers
+for one written message, and reported as "out of order") or `dialogueRecordAbsent` (reported as a missing
+message) — and a record no written message resolves is reported too: a record the reader projects away
+reaches no read-back message, so the file's own records are the only side that can report it. One further
+consequence of asking the file for the record at every position: the message's own record is asked for
+even where the read-back shows its text, because the inherited reader reads `input_text`, `output_text`
+and `text` blocks alike (internal/parser's `extractCodexTextBlocks`), so a record of another shape can put
+the message's words in the read-back while the file does not hold the writer's dialogue record.
+
+**2 — a continuation could present a degraded read as an ordinary success**
+(`internal/ccc/continue.go`, `internal/ccc/conversation.go`, `internal/ccc/inspect.go`,
+`internal/ccc/codex_target.go`). `Continue` accepted every known source provider but carried the
+provider's own classifications of the read — a summary transcript, a result the provider says is not
+current for its data version — only in `conversion.source_fidelity`; no warning named them and the loss
+list did not either, so the Grok session whose chat history is missing (one synthesized fallback prompt)
+converted, installed and verified as an ordinary success. The words are now built once
+(`fidelityWarnings`, shared with `Inspect`, so an inspection and a continuation say the same thing) and
+reach `warnings[]` and the human block's warning lines; `conversion.losses[]` gains `summary_transcript`
+and `source_needs_retry` (both `carried-with-caveat`, count 1 when the classification holds and 0
+otherwise, with the provider's own retry reason in the detail), beside `malformed_source_lines`, which had
+already reported the read's own completeness. Q-0002-19 records the decision and what reverses it.
+
+Both findings were reproduced before the fix, on a detached `git archive` checkout of the review head
+(`02b9ed2`, `/tmp/prefix-r10`) carrying this round's test files:
+
+| Finding | Executed against the pre-fix code | Observed |
+| --- | --- | --- |
+| 1, the swapped projections | `go test -tags fts5 -count=1 -run TestCodexRoundTripReportsDialogueRecordsOutOfOrder ./internal/ccc` | `…/the_two_projected_records_swapped_are_reported` FAIL `the check accepted a file whose dialogue records stand in another order: {differences:[] notReadBackVerbatim:2}`; `…/a_record_the_document_does_not_write_is_reported` FAIL `differences = "", want the record the document does not write named by its own size and digest` |
+| 1, over a real installed file | `go test … -run TestStructureVerificationReportsDialogueRecordsOutOfOrder` | `…/a_document_whose_prompts_the_reader_projects_away` FAIL `the check accepted a file whose projected dialogue records stand in another order`; `…/a_fixture_whose_first_two_records_are_swapped` FAIL `the difference report does not name the out-of-place message by its size and digest: "… dialogue 2 is in the file but was not written: …"` — the pre-fix walk reported some other difference, never the record's own place |
+| 1, a record of another shape whose text the reader reads back | `go test … -run TestCodexRoundTripAsksTheFileForItsOwnDialogueRecord` | `…/the_reader_reads_the_text_back_from_another_record_shape` FAIL `differences = [], want the written message named by its own size and digest` |
+| 2, the warnings | `go test … -run TestContinueDiscloses` | `TestContinueDisclosesASummaryTranscriptRead` FAIL `the classification is in the fidelity block but not in the report's warnings: []`; `TestContinueDisclosesARetryableRead` FAIL `the retry and the provider's own reason are not in the warnings: []` |
+| 2, the loss list | the same command | `the report does not name the "summary_transcript" category`; `the report does not name the "source_needs_retry" category` |
+
+Every rule of the touched surface was then pinned by executing one mutation in a scratch copy of this
+working tree (`/tmp/mut-r10`, whose three mutated sources were hashed against this tree before the first
+mutation and restored and re-hashed after every run — `ALL RESTORED: True`, byte-identical every time),
+running the test that claims the rule, and recording the failure:
+
+| Rule | Mutation (the fix's line reverted) | Observed |
+| --- | --- | --- |
+| a written message whose record stands elsewhere in the file is a difference | `hold`'s out-of-place branch answered `dialogueRecordInPlace` (the multiset's acceptance) | `TestCodexRoundTripReportsDialogueRecordsOutOfOrder` FAIL `the check accepted a file whose dialogue records stand in another order: {differences:[] notReadBackVerbatim:2}`; `TestStructureVerificationReportsDialogueRecordsOutOfOrder` FAIL in **both** arms (`the check accepted a file whose projected dialogue records stand in another order`, and the fixture arm's wording assertion) |
+| a record the document does not write is a difference | the walk over the file's unresolved records removed | `TestCodexRoundTripReportsDialogueRecordsOutOfOrder` FAIL `differences = "", want the record the document does not write named by its own size and digest` |
+| the message's own record is asked for even where the read-back shows its text | the paired branch's `account(paired)` → `records.hold(intended[paired]) == dialogueRecordInPlace` (consume, report nothing) | `TestCodexRoundTripAsksTheFileForItsOwnDialogueRecord` FAIL `…/the_reader_reads_the_text_back_from_another_record_shape: differences = [], want the written message named by its own size and digest` |
+| records are consumed in the document's order, not the pairing's | the paired message's record consumed before the written messages the pairing skipped | `TestCodexRoundTripReportsReadBackDialogueNoWrittenMessageAccountsFor` FAIL in all five rows (`differences = ["dialogue 1 is in the file but was not written: …" "dialogue 2 is out of order in the file: …"]`) |
+| a summary transcript is disclosed in the report's warnings | the summary branch removed from `fidelityWarnings` | `TestContinueDisclosesASummaryTranscriptRead` FAIL `the classification is in the fidelity block but not in the report's warnings: []`; `TestInspectReportsASummaryTranscriptClassification` FAIL `the summary classification is not disclosed: []` |
+| a summary transcript is a category in the conversion's loss list | `Count: flagCount(… TranscriptFidelitySummary)` → `flagCount(false)` | `TestContinueDisclosesASummaryTranscriptRead` FAIL `summary_transcript = {… Count:0 …}` |
+| a retryable read is disclosed in the report's warnings | the retry branch removed from `fidelityWarnings` | `TestContinueDisclosesARetryableRead` FAIL (the warnings assertion); `TestInspectReportsARetryableResultWithItsMessages` FAIL |
+| a retryable read is a category in the conversion's loss list | `Count: flagCount(b.sourceFidelity.NeedsRetry)` → `flagCount(false)` | `TestContinueDisclosesARetryableRead` FAIL `source_needs_retry = {… Count:0, Detail: "… (could not read the Codex session it was forked from (2d9b7e10-…) …"}` |
+
+Tests, gate: top-level `--- PASS` cases 149 → **153** across `./cmd/ccc/... ./internal/ccc/...` (before:
+`internal/ccc` 122, `./internal/ccc/...` 125, `cmd/ccc` 24 — measured on a detached `git archive` checkout
+of `02b9ed2` in `/tmp/head-r10`; after: `internal/ccc` **126**, `./internal/ccc/...` **129**, `cmd/ccc`
+**24**, the CLI's own cases untouched, `--- FAIL` 0; `go test -tags fts5 -count=1 -v`, `--- PASS` lines at
+top level). The Python suite's own `selftest` step is **153**, unchanged (this round touched no
+`scripts/` file). `python3 scripts/gate.py` on this tree — **exit 0, `GATE: PASS`** (not partial; the
+block is the one in §6). `gofmt` still counts 3 582 files, and this round added none: five sources and
+three test files were edited.
+
+The native harness re-ran on both fixtures with a real turn each (`--model-provider tencent-litellm
+--model deepseek-v4.1-flash-fast --resume-prompt …`): **13/13 checks passed, 0 failed, 0 skipped** each,
+exit 0, `22 loss categories` each — two more than round 7's runs printed, the two categories this round
+added — and no conversion or structural verdict changed for either fixture; §3's two blocks are those
+runs, re-recorded there (which supersedes §12's pointer that §3 held its runs).
+
+Docs changed with the code: this record's §1 note (the category count), §3 (both runs re-recorded, with
+the view and answer blocks that belong to them), §5 (the tooling run's quoted view, the `Read` row's
+answer wording, and the count), §6 (the refreshed `go test` and gate blocks, and the two new rule rows)
+and this §15. `docs/decisions/OPEN-QUESTIONS.md` gains **Q-0002-19** (how a continuation discloses the
+provider's own classification of the read, and why the route is disclosed rather than refused).
+`AGENTS.md` is unchanged: no repository layout, gate step, command, read order or agent rule moved this
+round (the changes live in existing package files and test files), which the stage report states. Goal
+bookkeeping: 0002 is still `Implemented on feat/0002-claude-to-codex-continuation; awaiting operator
+acceptance`, so nothing moves to `docs/goals/archive/` and `docs/goals/README.md`'s row stays as it is.

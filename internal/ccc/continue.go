@@ -275,6 +275,12 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 	}
 	result.Source = new(conversionSourceReport(conversation))
 	result.Warnings = append(result.Warnings, readWarnings...)
+	// The provider's own classification of this read travels into the report's warnings, not only into
+	// its fidelity block and the conversion's loss list: a summary fallback, a result the provider says
+	// is not current and a read whose tool outputs could not be read are all reads a caller must not take
+	// for the session's recorded transcript, and a run that converted, installed and verified says
+	// nothing about that by itself.
+	result.Warnings = append(result.Warnings, fidelityWarnings(conversation.Fidelity)...)
 
 	// The source's digest is taken before anything is written and compared again afterwards: the
 	// property the design asks for is that the transcript a conversation came from is the same file

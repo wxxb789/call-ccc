@@ -416,6 +416,8 @@ func TestCodexRolloutReportsEveryCategoryItKnows(t *testing.T) {
 		"provider_binding":              {0, DispositionCarriedWithCaveat},
 		"pre_compaction_history":        {0, DispositionCarriedWithCaveat},
 		"malformed_source_lines":        {0, DispositionOmitted},
+		"summary_transcript":            {0, DispositionCarriedWithCaveat},
+		"source_needs_retry":            {0, DispositionCarriedWithCaveat},
 	} {
 		loss := lossCount(t, rollout.Losses, category)
 		if loss.Count != want.count || loss.Disposition != want.disposition {

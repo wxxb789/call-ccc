@@ -289,11 +289,13 @@ func (roundTrip codexRoundTrip) detail() string {
 // because a block that opens with an envelope is that context rather than a turn (internal/parser's
 // preprocessCodexUserTextBlocks), so a written message can come back as no message at all or with the
 // text the envelope preceded. Dialogue is therefore walked against the installed file's own dialogue
-// records rather than through a set membership test, which is what lets both shapes resolve to the same
-// count (compareDialogue); what tells a projection from a loss is the record, not the read-back's
-// silence. The file is asked about dialogue only, because that is where the reader's projection applies:
-// a call, a result and a boundary are compared through keys the reader derives from the record itself,
-// and a difference there is a difference in what the file holds.
+// records, in the file's own order, rather than through a set membership test: what tells a projection
+// from a loss is the record -- and where the document writes it -- not the read-back's silence, which is
+// what lets both projection shapes resolve to the same count (compareDialogue) while a file whose
+// records hold the right texts in another order is reported. The file is asked about dialogue only,
+// because that is where the reader's projection applies: a call, a result and a boundary are compared
+// through keys the reader derives from the record itself, and a difference there is a difference in what
+// the file holds.
 func compareCodexRoundTrip(rollout CodexRollout, readBack Conversation, installed []byte) codexRoundTrip {
 	var roundTrip codexRoundTrip
 	intendedDialogue := []string{}
@@ -359,23 +361,28 @@ func dialogueKey(kind, text string) string {
 	return kind + "\x00" + text
 }
 
-// installedDialogueRecords counts the dialogue the installed file's own records hold: for every rollout
-// record that is a dialogue message written the way this writer writes one -- a response_item whose
-// payload is a message, whose role is the user's or the assistant's, and whose content holds a block of
-// the type this writer writes for that role carrying the message's own text -- the identity the
-// comparison uses (which role recorded it and the text itself), counted.
+// installedDialogueRecords reads the dialogue the installed file's own records hold, in the file's own
+// order: for every rollout record that is a dialogue message written the way this writer writes one -- a
+// response_item whose payload is a message, whose role is the user's or the assistant's, and whose
+// content holds a block of the type this writer writes for that role carrying the message's own text --
+// the identity the comparison uses (which role recorded it and the text itself).
 //
 // The question is this narrow on purpose. The same text is also written into the target's own event for
 // the turn, because that is what the harness's view of the conversation is built from, and the text of
 // one message can appear in another message's tool output; asking the file whether it holds a text
 // *somewhere* would answer for records that are not the message, and a session whose model-visible
 // record is gone would verify against the copy its own view keeps. The walk asks what the target's model
-// history is built from, and the count is what makes one record answer for one written message.
+// history is built from.
+//
+// The order is kept because it is a claim of its own: the file's dialogue records are the document's
+// dialogue in the document's own order, and a walk that only asked whether the file holds each text
+// would verify two prompts the reader projects away against one another swapped -- a different
+// conversation from the one the document writes.
 //
 // A line that is not one readable record is skipped: the file's own bytes are being read, and the
 // failure this walk answers for is an absent record, not a malformed one.
-func installedDialogueRecords(installed []byte) map[string]int {
-	records := map[string]int{}
+func installedDialogueRecords(installed []byte) dialogueRecords {
+	var keys []string
 	for _, line := range bytes.Split(installed, []byte("\n")) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
@@ -388,9 +395,104 @@ func installedDialogueRecords(installed []byte) map[string]int {
 		if !ok {
 			continue
 		}
-		records[dialogueKey(string(kind), text)]++
+		keys = append(keys, dialogueKey(string(kind), text))
+	}
+	return newDialogueRecords(keys)
+}
+
+// dialoguePlace says what the installed file's own records answered for one written message.
+type dialoguePlace int
+
+const (
+	// dialogueRecordInPlace: the file's next unconsumed record is the message's own, and it was consumed.
+	dialogueRecordInPlace dialoguePlace = iota
+	// dialogueRecordOutOfPlace: the file holds the message's own record and consumed it, but not where
+	// the document writes the message: the file's dialogue stands in another order.
+	dialogueRecordOutOfPlace
+	// dialogueRecordAbsent: the file holds no dialogue record for the message.
+	dialogueRecordAbsent
+)
+
+// dialogueRecords is the installed file's own dialogue records, in the file's own order, and what the
+// walk has resolved against them so far.
+//
+// The order is the point. The walk resolves a written message the read-back does not show by the file's
+// own record -- the reader projects some records away, so its silence is not evidence about them -- and
+// a record the file holds *anywhere* answers a question the walk must not ask: two prompts the reader
+// projects away would verify against one another swapped, because the file holds both texts and neither
+// one's place was ever read. Each written message is therefore resolved against the file's dialogue in
+// the file's own order: the message's record is the file's next unconsumed record, a record the file
+// holds anywhere else is reported as the difference it is, and a record no written message resolves is
+// dialogue the file holds that the document does not write.
+type dialogueRecords struct {
+	// keys is the file's dialogue records, in the file's own order.
+	keys []string
+	// pending is where each identity's records still stand, in the file's own order: consuming one takes
+	// the first entry, so one record answers for one written message and no record answers twice.
+	pending map[string][]int
+	// taken marks the records the walk has consumed, wherever they stood.
+	taken []bool
+	// next is the position the walk stands on, advanced past every record consumed so far.
+	next int
+}
+
+// newDialogueRecords indexes one file's dialogue records for the walk.
+func newDialogueRecords(keys []string) dialogueRecords {
+	records := dialogueRecords{
+		keys:    keys,
+		pending: make(map[string][]int, len(keys)),
+		taken:   make([]bool, len(keys)),
+	}
+	for index, key := range keys {
+		records.pending[key] = append(records.pending[key], index)
 	}
 	return records
+}
+
+// holds reports whether the file still holds a record for one written message. The pairing asks it
+// before it treats a read-back message as this message's own reading: a reading is evidence about a
+// message the file has.
+func (records *dialogueRecords) holds(key string) bool {
+	return len(records.pending[key]) > 0
+}
+
+// hold resolves one written message against the file's own records, consuming the record it answers
+// with, if it answers with one.
+func (records *dialogueRecords) hold(key string) dialoguePlace {
+	if next, ok := records.nextKey(); ok && next == key {
+		records.consume(records.next)
+		records.next++
+		return dialogueRecordInPlace
+	}
+	if records.holds(key) {
+		// The file holds the message's record, but not where the document writes the message. It is
+		// consumed where it stands so that one record answers for one written message and the record that
+		// does stand here is left for the message that follows.
+		records.consume(records.pending[key][0])
+		return dialogueRecordOutOfPlace
+	}
+	return dialogueRecordAbsent
+}
+
+// nextKey answers the file's next unconsumed record, advancing the walk's position past the records the
+// walk already consumed out of their place.
+func (records *dialogueRecords) nextKey() (string, bool) {
+	for records.next < len(records.keys) && records.taken[records.next] {
+		records.next++
+	}
+	if records.next >= len(records.keys) {
+		return "", false
+	}
+	return records.keys[records.next], true
+}
+
+// consume takes the record at one position: it is marked taken and leaves its identity's queue. The
+// queue's front is therefore the first record of that identity the file still holds, which is what makes
+// a position in the queue the record's own place.
+func (records *dialogueRecords) consume(index int) {
+	key := records.keys[index]
+	records.taken[index] = true
+	records.pending[key] = records.pending[key][1:]
 }
 
 // codexInstalledRecord is the part of one installed line this walk reads: the record's own type and, for
@@ -437,61 +539,83 @@ func (record codexInstalledRecord) dialogueMessage() (TargetItemKind, string, bo
 	return "", "", false
 }
 
-// dialogueWalk is what walking the written dialogue and the read-back together found.
+// dialogueWalk is what walking the written dialogue, the read-back and the file's own records together
+// found.
 type dialogueWalk struct {
-	// differences names every written message the file does not hold and every read-back message no
-	// written message accounts for, each by what identifies it rather than by its text.
+	// differences names every written message the file does not hold where the document writes it (one it
+	// does not hold at all, or one whose record stands elsewhere in the file), every record the file
+	// holds that no written message resolves, and every read-back message no written message accounts
+	// for, each by what identifies it rather than by its text.
 	differences []string
 	// notReadBackVerbatim counts the written messages the read-back does not show with their own text and
-	// the installed file's records hold.
+	// the installed file's records hold in their own place.
 	notReadBackVerbatim int
 }
 
-// compareDialogue walks the written dialogue and the read-back together, in the file's own order, and
-// names what they differ by.
+// compareDialogue walks the written dialogue, the read-back and the installed file's own records
+// together, in the document's own order, and names what they differ by.
 //
 // A written message is accounted for by the read-back's message that is its own text, or by the reader's
 // reading of it: the reader deletes the segments it classifies away from a text block (a leading
 // injected-context envelope; a plugin envelope in the middle of the block) and never invents characters,
-// so what it reads for a written text is a run of that text's own characters in their own order. Where
-// the read-back shows a written message's own text, that reading is the file's evidence for the message
-// and the walk does not ask its own record walk again — the reader is the target's own view of the file.
-// The walk pairs the read-back's messages with the written messages they account for, in order, and the
-// written messages left between them are resolved by the file: counted where its records hold the
-// message (the reader's projection, not a loss -- nothing else can explain a record the reader does not
-// show), and reported missing where they do not. A read-back message no written message accounts for is
-// evidence the file holds dialogue the conversion did not write, unless the written message the walk
-// stands on is missing from the file too -- then the two are reported as the same item altered, which is
-// what a reader is told when a message's text or its record changed.
+// so what it reads for a written text is a run of that text's own characters in their own order. The
+// pairing settles which written message a read-back message is about; it is not what answers for the
+// message -- the file's own record is, for the paired message as much as for the ones the walk passes
+// over, because the reader reads a block of any of the three types it accepts (`input_text`,
+// `output_text`, `text`), so a record this writer would not write can put the message's own words in the
+// read-back while the message's own dialogue record is absent from the file.
+// The walk pairs the read-back's messages with the written messages they account for, in order, and
+// every written message -- the ones left between them, and the paired one itself -- is resolved by the
+// file: its own record is what tells the reader's projection (not a loss: nothing else can explain a
+// record the reader does not show) from a message the file does not hold.
 //
+// The file's records are read in their own order, and a message is resolved against the record that
+// stands where the document writes it: a record the file holds anywhere else is a file whose dialogue
+// stands in another order, which the read-back cannot report for the messages the reader projects away,
+// and a record no written message resolves is dialogue the file holds that the document does not write.
 // `records` is consumed as the walk resolves messages, so one record answers for one written message:
 // the same prompt recorded twice in the source needs two records in the file.
-func compareDialogue(intended, read []string, records map[string]int) dialogueWalk {
+func compareDialogue(intended, read []string, records dialogueRecords) dialogueWalk {
 	var walk dialogueWalk
-	resolve := func(ordinal int) {
-		if holdDialogueRecord(records, intended[ordinal]) {
-			walk.notReadBackVerbatim++
-			return
+	// account resolves one written message against the file's own records, names the difference where
+	// the file's answer is one, and answers whether the message's record was the file's next unconsumed
+	// record -- the shape the reader's projection leaves behind, which is what notReadBackVerbatim counts.
+	account := func(ordinal int) bool {
+		key := intended[ordinal]
+		switch records.hold(key) {
+		case dialogueRecordInPlace:
+			return true
+		case dialogueRecordOutOfPlace:
+			walk.differences = append(walk.differences, fmt.Sprintf(
+				"%s %d is out of order in the file: %s", categoryDialogue, ordinal+1,
+				describeItem(categoryDialogue, key)))
+		default:
+			walk.differences = append(walk.differences, fmt.Sprintf(
+				"%s %d is in the target document but not in the file: %s",
+				categoryDialogue, ordinal+1, describeItem(categoryDialogue, key)))
 		}
-		walk.differences = append(walk.differences, fmt.Sprintf(
-			"%s %d is in the target document but not in the file: %s",
-			categoryDialogue, ordinal+1, describeItem(categoryDialogue, intended[ordinal])))
+		return false
+	}
+	resolve := func(ordinal int) {
+		if account(ordinal) {
+			walk.notReadBackVerbatim++
+		}
 	}
 	cursor := 0
 	for index, readKey := range read {
-		paired, projected := pairReadBackMessage(intended, cursor, readKey, records)
+		paired, projected := pairReadBackMessage(intended, cursor, readKey, &records)
 		switch {
 		case paired >= 0:
-			// The record is what the count is about: the pairing already asked the file for one, so this
-			// is the message's own record being consumed, and a reading is only counted where it was.
-			if held := holdDialogueRecord(records, intended[paired]); held && projected {
-				walk.notReadBackVerbatim++
-			}
 			for skipped := cursor; skipped < paired; skipped++ {
 				resolve(skipped)
 			}
+			// The record is what the count is about: this is the message's own record being consumed, in
+			// the place the document writes it, and a reading is only counted where it was.
+			if account(paired) && projected {
+				walk.notReadBackVerbatim++
+			}
 			cursor = paired + 1
-		case cursor < len(intended) && records[intended[cursor]] == 0:
+		case cursor < len(intended) && !records.holds(intended[cursor]):
 			walk.differences = append(walk.differences, fmt.Sprintf(
 				"%s %d differs (written %s, read back %s)", categoryDialogue, cursor+1,
 				describeItem(categoryDialogue, intended[cursor]), describeItem(categoryDialogue, readKey)))
@@ -505,6 +629,17 @@ func compareDialogue(intended, read []string, records map[string]int) dialogueWa
 	for ordinal := cursor; ordinal < len(intended); ordinal++ {
 		resolve(ordinal)
 	}
+	// A record the walk never resolved is dialogue the file holds that the document does not write. The
+	// read-back is not asked: a record the reader projects away reaches no read-back message at all, so
+	// the file's own records are the only side that can report it.
+	for index, key := range records.keys {
+		if records.taken[index] {
+			continue
+		}
+		walk.differences = append(walk.differences, fmt.Sprintf(
+			"%s record %d is in the file but was not written: %s",
+			categoryDialogue, index+1, describeItem(categoryDialogue, key)))
+	}
 	return walk
 }
 
@@ -514,13 +649,13 @@ func compareDialogue(intended, read []string, records map[string]int) dialogueWa
 // a written message only as far as the file holds it, so a reading is evidence about a message the file
 // has). The boolean reports whether the pairing is the reader's reading rather than the message's own
 // text; a message neither relation answers for has -1.
-func pairReadBackMessage(intended []string, from int, readKey string, records map[string]int) (int, bool) {
+func pairReadBackMessage(intended []string, from int, readKey string, records *dialogueRecords) (int, bool) {
 	for index := from; index < len(intended); index++ {
 		key := intended[index]
 		if key == readKey {
 			return index, false
 		}
-		if records[key] == 0 {
+		if !records.holds(key) {
 			continue
 		}
 		kind, text, _ := strings.Cut(key, "\x00")
@@ -564,17 +699,6 @@ func holdsTextInOrder(written, read string) bool {
 			return false
 		}
 	}
-	return true
-}
-
-// holdDialogueRecord takes one of the file's records for a written message, if it still holds one. The
-// record is what a written message resolves against, so a message is only ever answered by a record no
-// other message has consumed.
-func holdDialogueRecord(records map[string]int, key string) bool {
-	if records[key] <= 0 {
-		return false
-	}
-	records[key]--
 	return true
 }
 

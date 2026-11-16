@@ -918,3 +918,30 @@ supersede it with a newer one and say which it supersedes.
   records or only to the words somewhere in the file; a text the reader projects and a text the file does
   not hold are the same bytes to a search, and a partial projection is only distinguishable from a loss by
   which records the file holds.
+
+## Q-0002-19 — How a continuation discloses the provider's own classification of the read
+
+- **Status:** resolved (default taken).
+- **Question:** round 10's review found that `Continue` accepted every known source provider but kept the
+  provider's own fidelity classifications — a summary transcript, a result the provider says is not
+  current for its data version — only in the JSON fidelity block: no warning, no loss category, and the
+  human block's fidelity line named only malformed lines and truncation. An accepted invocation could
+  therefore present a degraded projection (the Grok session whose chat history is missing reads as one
+  synthesized fallback prompt) as an ordinary successful conversion. Should such a read be refused, or
+  disclosed?
+- **Default taken:** disclosed on every channel, and not refused. `Fidelity`'s classifications are turned
+  into words once (`fidelityWarnings`, in `internal/ccc/conversation.go`), so an `Inspect` and a
+  `Continue` say the same thing; `Continue` appends them to `warnings[]` (and the human block prints
+  warnings), while the conversion's `losses[]` gains `summary_transcript` and `source_needs_retry` —
+  both `carried-with-caveat`, count 1 when the classification holds and 0 otherwise, with the provider's
+  own retry reason in the detail — mirroring `malformed_source_lines`, which had already put the read's
+  own completeness in the loss list. The route is not refused: the messages the provider did return are
+  real evidence, the design's rule is to disclose loss by category rather than to hide a usable read, and
+  the exit code answers conversion, installation and native verification — not source fidelity.
+- **Reversal:** refuse a conversion whose read is classified as a summary or as not current (a new
+  error beside `ErrUnsupportedTarget`), or keep the disclosure in the fidelity block alone; the
+  regressions (`TestContinueDisclosesASummaryTranscriptRead`, `TestContinueDisclosesARetryableRead`)
+  fail either way.
+- **Settled by:** whether the operator wants a continuation from a degraded or not-current read to be an
+  error, or a disclosed conversion the caller decides about — the same choice Q-0002-16 and Q-0002-17
+  took for content the target's reader reads differently.
