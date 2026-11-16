@@ -113,6 +113,23 @@ const stubCodexEnv = "CCC_TEST_STUB_CODEX"
 // it is pinned by its presence, so the absence is an assertion rather than a stub that never writes.
 const stubMarkerEnv = "CCC_TEST_STUB_MARKER"
 
+// The stub harness's modes. Each names one behaviour a native check is about, so the check's own rule
+// can be exercised offline instead of only against the real harness (which the gate does not require):
+// a loader that answers with the session's own identity and path (stubLoadModeEnv) and one that answers
+// with another session's, a thread whose defaults name a provider (stubProviderEnv) or whose explicit
+// configuration does (stubConfigProviderEnv), and a turn that appends to the installed session
+// (stubTurnModeEnv) or answers without touching it.
+const (
+	stubLoadModeEnv       = "CCC_TEST_STUB_LOAD"
+	stubLoadOtherMode     = "other"
+	stubLoadOtherPathMode = "other-path"
+	stubProviderEnv       = "CCC_TEST_STUB_PROVIDER"
+	stubConfigProviderEnv = "CCC_TEST_STUB_CONFIG_PROVIDER"
+	stubTurnModeEnv       = "CCC_TEST_STUB_TURN"
+	stubTurnGrowMode      = "grow"
+	stubTurnSilentMode    = "silent"
+)
+
 // TestMain lets this test binary act as a target harness when a child of it is asked to. One case needs
 // a harness whose verification runs and fails, and the stub is this binary itself, so the test needs no
 // host tooling and no platform-specific script.
@@ -155,21 +172,31 @@ func stubCodex(args []string) int {
 			}
 		}
 		return serveStubAppServer()
+	case "exec":
+		return stubTurn(args[1:])
 	default:
 		fmt.Fprintln(os.Stderr, "the stub harness does not implement "+args[0])
 		return 2
 	}
 }
 
-// serveStubAppServer answers the two-line handshake a verification opens with and refuses every request
-// after it, which is what makes a load check run and come back not verified.
+// serveStubAppServer answers the two-line handshake a verification opens with, then whatever the
+// environment tells it to answer. With no mode set it refuses every request after the handshake, which
+// is what makes a load check run and come back not verified.
+//
+// The modes are the harness behaviours the offline cases pin: a loader that answers with the session's
+// own identity and path (stubLoadModeEnv), one that answers with another session's (the same variable,
+// stubLoadOtherMode), and a thread whose defaults name a provider (stubProviderEnv). Each mode answers
+// exactly the request it is about, and every other request is still refused, so a check a mode is not
+// about keeps its own honest answer instead of a green one.
 func serveStubAppServer() int {
 	decoder := json.NewDecoder(os.Stdin)
 	encoder := json.NewEncoder(os.Stdout)
 	for {
 		var message struct {
-			ID     *int   `json:"id"`
-			Method string `json:"method"`
+			ID     *int           `json:"id"`
+			Method string         `json:"method"`
+			Params map[string]any `json:"params"`
 		}
 		if err := decoder.Decode(&message); err != nil {
 			return 0
@@ -178,8 +205,8 @@ func serveStubAppServer() int {
 			continue // the initialized notification carries no id
 		}
 		answer := map[string]any{"jsonrpc": "2.0", "id": *message.ID}
-		if message.Method == "initialize" {
-			answer["result"] = map[string]any{}
+		if result, ok := stubAnswer(message.Method, message.Params); ok {
+			answer["result"] = result
 		} else {
 			answer["error"] = map[string]any{"code": -32601, "message": "the stub harness refuses " + message.Method}
 		}
@@ -187,6 +214,103 @@ func serveStubAppServer() int {
 			return 1
 		}
 	}
+}
+
+// stubAnswer is what the stub answers for one request: the handshake always, and otherwise only the
+// request the mode named by the environment is about.
+func stubAnswer(method string, params map[string]any) (map[string]any, bool) {
+	switch method {
+	case "initialize":
+		return map[string]any{}, true
+	case "thread/resume":
+		mode := os.Getenv(stubLoadModeEnv)
+		if mode == "" {
+			return nil, false
+		}
+		id, _ := params["threadId"].(string)
+		path, ok := stubSessionPath(id)
+		if !ok {
+			return nil, false
+		}
+		// The other-session mode answers with an identity that is not the one the file holds: it is the
+		// loader that echoes a thread it did not open, which is what the check must not accept.
+		if mode == stubLoadOtherMode {
+			id = "00000000-0000-7000-8000-000000000000"
+		}
+		if mode == stubLoadOtherPathMode {
+			path += ".other"
+		}
+		return map[string]any{"thread": map[string]any{
+			"id": id, "sessionId": id, "path": path, "historyMode": "legacy",
+		}}, true
+	case "thread/start":
+		provider := os.Getenv(stubProviderEnv)
+		if provider == "" {
+			return nil, false
+		}
+		return map[string]any{"thread": map[string]any{"modelProvider": provider, "model": "a-stub-model"}}, true
+	case "config/read":
+		provider := os.Getenv(stubConfigProviderEnv)
+		if provider == "" {
+			return nil, false
+		}
+		return map[string]any{"config": map[string]any{
+			"model_provider": provider, "model": "a-stub-model",
+		}}, true
+	}
+	return nil, false
+}
+
+// stubTurn answers the non-interactive turn the environment describes: one that appends a record to the
+// installed session (stubTurnGrowMode), or one that answers without touching it (stubTurnSilentMode).
+func stubTurn(args []string) int {
+	if len(args) < 2 || args[0] != "resume" {
+		fmt.Fprintln(os.Stderr, "the stub harness does not implement exec "+strings.Join(args, " "))
+		return 2
+	}
+	id := args[1]
+	switch mode := os.Getenv(stubTurnModeEnv); mode {
+	case stubTurnGrowMode:
+		path, ok := stubSessionPath(id)
+		if !ok {
+			fmt.Fprintln(os.Stderr, "the stub harness found no installed session for "+id)
+			return 1
+		}
+		file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "the stub harness could not open the installed session:", err)
+			return 1
+		}
+		defer file.Close()
+		record := `{"timestamp":"2026-05-04T10:00:00Z","type":"event_msg",` +
+			`"payload":{"type":"agent_message","message":"a stub turn"}}` + "\n"
+		if _, err := file.WriteString(record); err != nil {
+			fmt.Fprintln(os.Stderr, "the stub harness could not append the turn:", err)
+			return 1
+		}
+		fmt.Println("the stub harness answered from the installed session")
+		return 0
+	case stubTurnSilentMode:
+		fmt.Println("the stub harness answered without appending to the installed session")
+		return 0
+	default:
+		fmt.Fprintln(os.Stderr, "the stub harness does not implement exec resume")
+		return 2
+	}
+}
+
+// stubSessionPath finds the session file for one identity under the data directory the runner set, the
+// way the target's own resume path discovers it.
+func stubSessionPath(id string) (string, bool) {
+	home := os.Getenv("CODEX_HOME")
+	if strings.TrimSpace(home) == "" {
+		return "", false
+	}
+	matches, err := filepath.Glob(filepath.Join(home, "sessions", "*", "*", "*", "rollout-*-"+id+".jsonl"))
+	if err != nil || len(matches) != 1 {
+		return "", false
+	}
+	return matches[0], true
 }
 
 // TestInspectJSONReportsIdentityAndConversation is the CLI half of the goal's first clause: a
@@ -1537,4 +1661,219 @@ func TestContinueHelpIsARequestNotAFailure(t *testing.T) {
 			t.Errorf("help is missing %q", want)
 		}
 	}
+}
+
+// continueDocumentOf reads one `ccc continue --json` run's document, requiring the run's exit status.
+func continueDocumentOf(t *testing.T, code int, stdout, stderr string) map[string]any {
+	t.Helper()
+	if code != exitOK {
+		t.Fatalf("exit %d, want %d (stderr %q)", code, exitOK, stderr)
+	}
+	var document map[string]any
+	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
+	}
+	return document
+}
+
+// verificationBlock reads one verification level's block out of a continue document.
+func verificationBlock(t *testing.T, document map[string]any, level string) map[string]any {
+	t.Helper()
+	verification, ok := document["verification"].(map[string]any)
+	if !ok {
+		t.Fatalf("the document carries no verification block: %+v", document)
+	}
+	block, ok := verification[level].(map[string]any)
+	if !ok {
+		t.Fatalf("the document carries no verification.%s block: %+v", level, verification)
+	}
+	return block
+}
+
+// TestCodexLoadVerificationRequiresTheSessionsOwnRecord pins the two directions of the load rule: a
+// harness loader that answers with the installed session's own identity and path is a verified load, and
+// one that answers with another session -- a loader that echoes an identity it did not open -- is not.
+//
+// The stub harness serves the app server itself, so both directions run offline on every platform, with
+// no target harness installed: the rule this pins is the check's (the answer must be the conversion's
+// own session, by id and by path), not the harness's presence. The real harness is exercised beside it
+// by scripts/codex-native-check.py, which is not a gate step.
+func TestCodexLoadVerificationRequiresTheSessionsOwnRecord(t *testing.T) {
+	continueEnvironment(t)
+	sessionID, _ := claudeFixture(t)
+	binary := stubTargetBinary(t)
+
+	t.Setenv(stubLoadModeEnv, "self")
+	_, stdout, stderr := runCLI(t, "continue", "claude:"+sessionID, "--to", "codex",
+		"--target-binary", binary, "--verify", "load", "--json")
+	document := continueDocumentOf(t, exitOK, stdout, stderr)
+	load := verificationBlock(t, document, "load")
+	if load["state"] != ccc.VerificationStateVerified {
+		t.Fatalf("load = %+v, want verified for a loader that answers with the installed session", load)
+	}
+	target, _ := document["target_session"].(map[string]any)
+	if load["path"] != target["path"] {
+		t.Errorf("the verified load names %v, want the installed file %v", load["path"], target["path"])
+	}
+
+	// The same run with a loader that answers with another session: the check must not call that a load.
+	_, otherHome := continueEnvironment(t)
+	t.Setenv(stubLoadModeEnv, stubLoadOtherMode)
+	code, stdout, stderr := runCLI(t, "continue", "claude:"+sessionID, "--to", "codex",
+		"--target-binary", binary, "--target-home", otherHome, "--verify", "load", "--json")
+	if code != exitFailure {
+		t.Fatalf("exit %d, want %d for a loader that loaded another session (stderr %q)", code, exitFailure, stderr)
+	}
+	var other map[string]any
+	if err := json.Unmarshal([]byte(stdout), &other); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
+	}
+	failed := verificationBlock(t, other, "load")
+	if failed["state"] != ccc.VerificationStateNotVerified {
+		t.Errorf("load = %+v, want not-verified for another session's identity", failed)
+	}
+	if detail, _ := failed["detail"].(string); !strings.Contains(detail, "not the conversion's own session") {
+		t.Errorf("the refusal does not say the loaded thread was not this session: %q", detail)
+	}
+
+	// A loader that answers with the session's own id but names another file: the id alone is an
+	// identity the harness chose to echo, so the file it opened is what the check must confirm.
+	_, thirdHome := continueEnvironment(t)
+	t.Setenv(stubLoadModeEnv, stubLoadOtherPathMode)
+	code, stdout, stderr = runCLI(t, "continue", "claude:"+sessionID, "--to", "codex",
+		"--target-binary", binary, "--target-home", thirdHome, "--verify", "load", "--json")
+	if code != exitFailure {
+		t.Fatalf("exit %d, want %d for a loader that named another file (stderr %q)", code, exitFailure, stderr)
+	}
+	var third map[string]any
+	if err := json.Unmarshal([]byte(stdout), &third); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
+	}
+	unnamed := verificationBlock(t, third, "load")
+	if unnamed["state"] != ccc.VerificationStateNotVerified {
+		t.Errorf("load = %+v, want not-verified when the loader named another file", unnamed)
+	}
+	if detail, _ := unnamed["detail"].(string); !strings.Contains(detail, "not the installed file") {
+		t.Errorf("the refusal does not say the loader named another file: %q", detail)
+	}
+}
+
+// TestResumeVerificationRequiresTheTurnToAppendToTheSession pins the resume rule in both directions: a
+// turn that appends to the installed session is a verified resume, and one that answers without touching
+// the file is not -- a harness that answered a question without continuing the session has not shown
+// that the session is resumable.
+func TestResumeVerificationRequiresTheTurnToAppendToTheSession(t *testing.T) {
+	continueEnvironment(t)
+	sessionID, _ := claudeFixture(t)
+	binary := stubTargetBinary(t)
+
+	t.Setenv(stubTurnModeEnv, stubTurnGrowMode)
+	_, stdout, stderr := runCLI(t, "continue", "claude:"+sessionID, "--to", "codex",
+		"--target-binary", binary, "--verify", "resume", "--resume-prompt", "answer only from this conversation",
+		"--json")
+	document := continueDocumentOf(t, exitOK, stdout, stderr)
+	resume := verificationBlock(t, document, "resume")
+	if resume["state"] != ccc.VerificationStateVerified {
+		t.Fatalf("resume = %+v, want verified for a turn that appended to the session", resume)
+	}
+	before, after := numberField(t, resume, "session_bytes_before"), numberField(t, resume, "session_bytes_after")
+	if after <= before {
+		t.Errorf("the verified resume reports %v -> %v bytes, want growth", before, after)
+	}
+
+	_, otherHome := continueEnvironment(t)
+	t.Setenv(stubTurnModeEnv, stubTurnSilentMode)
+	code, stdout, stderr := runCLI(t, "continue", "claude:"+sessionID, "--to", "codex",
+		"--target-binary", binary, "--target-home", otherHome, "--verify", "resume",
+		"--resume-prompt", "answer only from this conversation", "--json")
+	if code != exitFailure {
+		t.Fatalf("exit %d, want %d for a turn that appended nothing (stderr %q)", code, exitFailure, stderr)
+	}
+	var other map[string]any
+	if err := json.Unmarshal([]byte(stdout), &other); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
+	}
+	silent := verificationBlock(t, other, "resume")
+	if silent["state"] != ccc.VerificationStateNotVerified {
+		t.Errorf("resume = %+v, want not-verified when the session did not grow", silent)
+	}
+	if detail, _ := silent["detail"].(string); !strings.Contains(detail, "did not grow") {
+		t.Errorf("the refusal does not name the missing growth: %q", detail)
+	}
+}
+
+// numberField reads one JSON number out of a report block.
+func numberField(t *testing.T, block map[string]any, key string) float64 {
+	t.Helper()
+	value, ok := block[key].(float64)
+	if !ok {
+		t.Fatalf("the block carries no numeric %q: %+v", key, block)
+	}
+	return value
+}
+
+// TestProviderBindingIsTheTargetsOwnAnswer pins where the recorded provider comes from: the harness's
+// own answer about a new session of its own (thread/start's thread defaults, or its configuration when
+// that request is not answered) -- never the source's provider, which would be false -- and the written
+// session records that answer, because the harness's loader checks it when the session is resumed.
+func TestProviderBindingIsTheTargetsOwnAnswer(t *testing.T) {
+	continueEnvironment(t)
+	sessionID, _ := claudeFixture(t)
+	binary := stubTargetBinary(t)
+
+	t.Setenv(stubProviderEnv, "a-stub-provider")
+	_, stdout, stderr := runCLI(t, "continue", "claude:"+sessionID, "--to", "codex",
+		"--target-binary", binary, "--verify", "none", "--json")
+	document := continueDocumentOf(t, exitOK, stdout, stderr)
+	target, _ := document["target_session"].(map[string]any)
+	if target["model_provider"] != "a-stub-provider" {
+		t.Fatalf("model_provider = %v, want the harness's own answer", target["model_provider"])
+	}
+	if target["model_provider_source"] != "target-thread-defaults" {
+		t.Errorf("model_provider_source = %v, want the thread defaults' own name", target["model_provider_source"])
+	}
+	meta := sessionMetaOf(t, target["path"].(string))
+	if meta["model_provider"] != "a-stub-provider" {
+		t.Errorf("the installed session records %v as its provider, want the harness's own answer",
+			meta["model_provider"])
+	}
+
+	// The fallback: a harness that does not answer thread/start but names a provider in its own
+	// configuration answers that way, and the report says so instead of presenting it as a default.
+	_, otherHome := continueEnvironment(t)
+	t.Setenv(stubProviderEnv, "")
+	t.Setenv(stubConfigProviderEnv, "a-configured-provider")
+	_, stdout, stderr = runCLI(t, "continue", "claude:"+sessionID, "--to", "codex",
+		"--target-binary", binary, "--target-home", otherHome, "--verify", "none", "--json")
+	document = continueDocumentOf(t, exitOK, stdout, stderr)
+	target, _ = document["target_session"].(map[string]any)
+	if target["model_provider"] != "a-configured-provider" {
+		t.Errorf("model_provider = %v, want the harness's configured provider", target["model_provider"])
+	}
+	if target["model_provider_source"] != "target-config" {
+		t.Errorf("model_provider_source = %v, want the configuration's own name", target["model_provider_source"])
+	}
+}
+
+// sessionMetaOf reads the session_meta record out of an installed rollout's own bytes.
+func sessionMetaOf(t *testing.T, path string) map[string]any {
+	t.Helper()
+	installed, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the installed session: %v", err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(installed)), "\n") {
+		var record struct {
+			Type    string         `json:"type"`
+			Payload map[string]any `json:"payload"`
+		}
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("the installed session holds a line that is not a record: %v", err)
+		}
+		if record.Type == "session_meta" {
+			return record.Payload
+		}
+	}
+	t.Fatalf("the installed session holds no session_meta record")
+	return nil
 }

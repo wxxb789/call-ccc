@@ -1044,3 +1044,85 @@ func TestCodexRolloutStampsRecordsInOneOrderedRun(t *testing.T) {
 		previous = stamp
 	}
 }
+
+// TestCodexRolloutWritesTheTargetsOwnViewRecordForEachMessage pins the pair of records every written
+// dialogue message needs, and that they carry the same text under the target's own record kinds.
+//
+// The target writes each message twice: a `response_item` (the record its model history is built from)
+// and an `event_msg` of its own kind (the record its own view of the turn is built from). Measured on
+// the tested CLI version: a rollout holding only the response_item loads and resumes, while the
+// harness's own view of that session shows no turn at all, so "installed" would be a claim about a file
+// rather than about a session a person or an agent can open. The plan's record table
+// (docs/plans/0002-claude-to-codex-continuation.md §2.2) is what this test holds the writer to, and the
+// native half (scripts/codex-native-check.py, not a gate step) is where the view itself is read back.
+func TestCodexRolloutWritesTheTargetsOwnViewRecordForEachMessage(t *testing.T) {
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask"},
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "Answer", Dialogue: "Answer"},
+	)
+	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+
+	type record struct {
+		Type    string `json:"type"`
+		Payload struct {
+			Type    string `json:"type"`
+			Role    string `json:"role"`
+			Message string `json:"message"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"payload"`
+	}
+	parsed := []record{}
+	for _, line := range strings.Split(strings.TrimSpace(string(rollout.Data)), "\n") {
+		var one record
+		if err := json.Unmarshal([]byte(line), &one); err != nil {
+			t.Fatalf("the rollout holds a line that is not a record: %v\n%s", err, line)
+		}
+		parsed = append(parsed, one)
+	}
+
+	// Every written dialogue message: the model-visible record under its role's own block type, and the
+	// event record of the kind the target writes for that role.
+	for _, item := range rollout.Items {
+		if item.Kind != ItemUser && item.Kind != ItemAssistant {
+			continue
+		}
+		// The literals are the target's own record kinds (docs/plans/0002-claude-to-codex-continuation.md
+		// §2.2), named here as the file must spell them rather than through this writer's constants: a
+		// constant renamed on both sides of the comparison would leave the file saying something the
+		// target does not read.
+		role, blockType, eventType := "user", "input_text", "user_message"
+		if item.Kind == ItemAssistant {
+			role, blockType, eventType = "assistant", "output_text", "agent_message"
+		}
+		var modelRecords, eventRecords int
+		for _, one := range parsed {
+			if one.Type == codexRecordResponseItem && one.Payload.Type == codexItemMessage &&
+				one.Payload.Role == role {
+				for _, block := range one.Payload.Content {
+					if block.Type == blockType && block.Text == item.Text {
+						modelRecords++
+					}
+				}
+			}
+			if one.Type == codexRecordEventMsg && one.Payload.Type == eventType &&
+				one.Payload.Message == item.Text {
+				eventRecords++
+			}
+		}
+		if modelRecords != 1 {
+			t.Errorf("the file holds %d model-visible record(s) for %s %q, want exactly one",
+				modelRecords, role, item.Text)
+		}
+		if eventRecords != 1 {
+			t.Errorf("the file holds %d %s event(s) for %q, want exactly one: the harness's own view of "+
+				"the turn is built from that record, and its absence is a session the target loads but "+
+				"does not show", eventRecords, eventType, item.Text)
+		}
+	}
+}

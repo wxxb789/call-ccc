@@ -1004,3 +1004,42 @@ supersede it with a newer one and say which it supersedes.
 - **Settled by:** whether the operator wants the throw-away verification home to carry more of the host
   configuration than the loader's question needs — a denylist, at the price of copying settings whose
   values nothing vetted — or only the settings this check names.
+
+## Q-0002-22 — The ordinary review budget, and the one authorized acceptance audit
+
+- **Status:** open (one-time authorization taken; the audit's result is not yet known). This entry takes a
+  **new** id because `Q-0002-01` is already the provider-binding entry above; nothing about this entry
+  rewrites or supersedes it, and `Q-0000-01` (merge authority) is untouched.
+- **Question:** twelve ordinary machine-review rounds have run on goal 0002's pull request
+  (`feat/0002-claude-to-codex-continuation`) and **every one of them returned findings** —
+  8 · 3 · 4 · 1 · 2 · 2 · 2 · 3 · 2 · 2 · 2 · 2 = **33 findings**, all closed, **no clean ordinary
+  round** — so the ordinary review budget is exhausted. Is the next move a fourteenth round of the same
+  kind, a larger review budget, or something else?
+- **Default taken:** exhausting the budget is a signal, not a number to raise. The consulted cross-family
+  decision was to perform **one systematic close-out of the complete fidelity and verification surface**,
+  and then **exactly one fresh, read-only acceptance audit** whose scope is a *frozen rule list* — never a
+  further automatic review cycle. The close-out enumerated the obligations derived from the core design,
+  the goal's `Done when` clauses, the public output claims and the behavioral claims of every shipped check
+  and test — including all 33 earlier findings — and mapped each to its implementation, its positive
+  evidence and **one executed mutation that detects its violation**, without weakening an obligation to
+  match the implementation. Its record is
+  [`docs/evidence/0002-obligation-matrix.md`](../evidence/0002-obligation-matrix.md); the rule list it
+  froze is that file, and the head it froze is `3ee6cb2` plus the close-out's own repairs (three
+  obligations had no gate-level pin and gained one: the file holds both record kinds, the loader's
+  answered id *and* path must be this session's, "resumable" requires the turn to append to the session,
+  and the provider is the harness's own answer). Two alternative readings were rejected as the consulted
+  decision instructed: code introduced by earlier fix rounds is **not** out of contract (a
+  credential-copying native check or a falsely-positive structural check is a real obligation), and native
+  verification is **not** optional decoration to be cut — it is central to the goal.
+- **Stop condition (binding for the unattended series):** if the acceptance audit returns even one finding,
+  the run **stops for decomposition/replanning** — no further automatic cycle, no re-frozen list, no
+  "one more round". An audit that returns no finding is what ends the ordinary review for this goal, and
+  the operator still owns the merge (`Q-0000-01`'s conditions are unchanged: CI green on the verified
+  head, a clean machine-review evidence comment naming that head, zero unresolved threads, and the
+  operator's own gate run).
+- **Reversal:** delete the audit's authorization and return to ordinary rounds — the close-out is
+  additive (a new evidence file, four new tests, no assertion or gate rule weakened), so nothing has to be
+  unwound first; the cost is that the same twelve-round shape (a finding every round, none of them the same
+  one) continues, which is the signal this entry records.
+- **Settled by:** the acceptance audit's own verdict on the frozen list — which is why the list was frozen
+  **before** the audit runs and is a file rather than a summary in a pull-request comment.
