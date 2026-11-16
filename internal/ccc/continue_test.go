@@ -86,6 +86,17 @@ func TestContinueConvertsInstallsAndReadsBackTheFixture(t *testing.T) {
 	if result.Conversion.Carried.Bytes == 0 {
 		t.Error("the conversion reports no bytes")
 	}
+	// The fixture's last line is not JSON, and the inherited reader skips it and counts it: the report
+	// carries that count as the read's own omission, so a caller reading the loss list learns that the
+	// conversation the target holds is not the whole of what the source file records.
+	if loss := lossCount(t, result.Conversion.Losses, "malformed_source_lines"); loss.Count != 1 ||
+		loss.Disposition != DispositionOmitted {
+		t.Errorf("malformed_source_lines = %+v, want the skipped fixture line counted", loss)
+	}
+	if result.Conversion.SourceFidelity.MalformedLines != 1 {
+		t.Errorf("source fidelity = %+v, want the read's own malformed-line count",
+			result.Conversion.SourceFidelity)
+	}
 
 	if result.Installation.State != InstallationStateInstalled || !result.Installation.Created {
 		t.Errorf("installation = %+v, want an installed session", result.Installation)

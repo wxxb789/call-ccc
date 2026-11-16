@@ -64,9 +64,13 @@ type ToolCall struct {
 	FilePath          string `json:"file_path,omitempty"`
 	SkillName         string `json:"skill_name,omitempty"`
 	SubagentSessionID string `json:"subagent_session_id,omitempty"`
-	// ResultContent is the outcome the archive stores on the call itself. The archive folds a
-	// tool-result-only message into its call, so this field is how an archive read carries that
-	// evidence; a source read carries it as a Message with ToolResults instead.
+	// ResultContent is the summary the archive stores on the call itself. The inherited write path
+	// derives it from the call's ResultEvents (internal/db stores it only when it is not the sole
+	// content-bearing event's text, and a read restores it from that event when the column was cleared),
+	// so beside those events it is a view of them rather than a separately recorded outcome -- which is
+	// why a writer carries it only for a call with no recorded result of its own. It is then the only
+	// evidence the read holds of the outcome (an archive row whose events were not written); a source
+	// read carries a call's outcome as a Message with ToolResults instead.
 	ResultContent     string `json:"result_content,omitempty"`
 	ResultContentSize int    `json:"result_content_size,omitempty"`
 }

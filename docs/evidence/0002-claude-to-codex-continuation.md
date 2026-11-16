@@ -125,8 +125,10 @@ answer:                 From this conversation: the file summarized was `interna
 The three blocks a consumer reads apart: `conversion.state` (`converted`), `installation.state`
 (`installed`), `verification.load`/`verification.resume` (`verified` / `not-verified` /
 `not-requested`), each with its own `method` and `detail`, and `conversion.losses[]` naming every
-omitted or narrowed category with its count and reason (seventeen categories, always present, including the
-zero ones). The CLI's own tests pin each state's wording, the `--json` document's shape and that
+omitted or narrowed category with its count and reason (eighteen categories, always present, including the
+zero ones; the count is the one this repair round's §8 records, and a category was added to it there —
+the run blocks above it print seventeen, which is what the writer reported before the fix). The CLI's own
+tests pin each state's wording, the `--json` document's shape and that
 diagnostics stay on stderr (`cmd/ccc/main_test.go`).
 
 ## 3. Codex loads the installed session and continues from it
@@ -320,8 +322,10 @@ the target harness's own view of the installed session:
 
 Everything a conversion cannot carry is named by category with a count and a reason on *every* run
 (`internal/ccc/codex_target_test.go`'s `TestCodexRolloutReportsEveryCategoryItKnows` requires all
-seventeen categories to be present and to be truthful — the omitted text is not in the file — and
-`TestContinueFallsBackToTheArchiveWhenTheSourceIsGone` covers the archive-read path, where the report
+eighteen categories to be present and to be truthful — the omitted text is not in the file — and
+`TestCodexRolloutReportsTheSourceLinesItsReadCouldNotProduce` pins the read-completeness one, whose count
+is the read's own; `TestContinueFallsBackToTheArchiveWhenTheSourceIsGone` covers the archive-read path,
+where the report
 also says the evidence came from a projection; `TestContinueFromTheArchiveWritesEachRecordedOutcomeOnce`
 covers the archive's other half, where one recorded outcome is exposed as both an event and a restored
 summary and must be written once).
@@ -330,10 +334,10 @@ summary and must be written once).
 
 ```
 $ CGO_ENABLED=1 go test -tags fts5 -count=1 ./cmd/ccc/... ./internal/ccc/...     # rc=0
-ok  	go.kenn.io/agentsview/cmd/ccc	1.712s
-ok  	go.kenn.io/agentsview/internal/ccc	9.803s
+ok  	go.kenn.io/agentsview/cmd/ccc	3.331s
+ok  	go.kenn.io/agentsview/internal/ccc	13.377s
 ?   	go.kenn.io/agentsview/internal/ccc/fixturegen	[no test files]
-ok  	go.kenn.io/agentsview/internal/ccc/parity	1.062s
+ok  	go.kenn.io/agentsview/internal/ccc/parity	2.257s
 ?   	go.kenn.io/agentsview/internal/ccc/parity/oracle	[no test files]
 ```
 
@@ -344,8 +348,11 @@ ok  	go.kenn.io/agentsview/internal/ccc/parity	1.062s
 | a reasoning-only record is counted, never written as dialogue — and the native fixture really has that shape | `TestCodexRolloutKeepsAReasoningOnlyRecordOutOfTheDialogue`, `TestToolingFixtureCarriesTheShapesTheWriterMustNotMisread` |
 | an encoded content field is decoded once, text a read already decoded is not decoded again | `TestCodexRolloutDecodesEncodedContentExactlyOnce` |
 | blocks the target's text-only output cannot carry are counted, and a field holding only such blocks is not written as its own JSON | `TestCodexRolloutReportsToolResultBlocksTheTargetCannotCarry` |
-| an archive's double exposure of one outcome is written once, a genuinely distinct summary still is | `TestCodexRolloutWritesAnArchiveSummaryOnce`, `TestContinueFromTheArchiveWritesEachRecordedOutcomeOnce` |
+| an archive's summary is derived from the call's own result events, so it is written only for a call that has no recorded result — as is a genuinely summary-only row | `TestCodexRolloutWritesAnArchiveSummaryOnlyForACallWithoutResults`, `TestContinueFromTheArchiveWritesEachRecordedOutcomeOnce` |
+| a subagent record that also carries the source's compaction marker is omitted as a sidechain message, not applied as the main conversation's `compacted` boundary | `TestCodexRolloutDoesNotApplyASidechainCompactionBoundary` |
+| the read's own malformed-line count travels into the loss report, with the unfinished tail named | `TestCodexRolloutReportsTheSourceLinesItsReadCouldNotProduce`, `TestContinueConvertsInstallsAndReadsBackTheFixture` |
 | every loss category reported, and truly absent from the file | `TestCodexRolloutReportsEveryCategoryItKnows` |
+| a resume turn runs the executable the caller's path resolved to, even though the turn changes into the session's own working directory | `TestRunCodexTurnResolvesARelativeExecutableBeforeChangingDirectory` |
 | the tool role is never written as dialogue: a paired output travels as `function_call_output` alone, an orphan one travels nowhere | `TestCodexRolloutCarriesAToolRoleMessageOnlyThroughItsResult` |
 | id-less calls and results get paired deterministically, or are reported unpaired — for one, two and three outstanding calls | `TestCodexRolloutPairsAnIdLessResultWithItsCall` |
 | the provider binding comes from the caller and is reported | `TestCodexRolloutRecordsTheProviderBindingItIsGiven` |
@@ -360,7 +367,7 @@ ok  	go.kenn.io/agentsview/internal/ccc/parity	1.062s
 | exclusive install (a taken name refused, a filesystem without hard links refused rather than renamed over) and dry run writes nothing (no directory for a home the caller named that is not there yet, and the target harness is never started), dry run reports its own states, prompt required, target/level validation, home resolution | `TestInstallCodexRolloutNeverReplacesASession`, `TestInstallCodexRolloutRefusesAFilesystemWithoutHardLinks`, `TestContinueDryRunWritesNothing`, `TestContinueDryRunReportsWhatItVerified`, `TestContinueDryRunInstallsNothingThroughTheCLI`, `TestContinueRequiresAPromptBeforeItRunsATurn`, `TestContinueRefusesAnUnsupportedTargetOrLevel`, `TestContinueTargetHomeResolution` |
 | the round-trip check compares rather than agrees | `TestStructureVerificationNamesWhatTheFileDoesNotHold` |
 | the source's own digest is taken before the conversion and compared after it; a moved source is warned about; a projection says no file was compared | `TestSourceUnchangedComparesTheFileBeforeAndAfter`, `TestSourceChangedWarningsNameTheMove`, `TestSourceUnchangedSaysWhenThereWasNoFileToCompare` |
-| the CLI's three states, human shape, source check, exit codes, help | `TestContinueJSONDistinguishesConversionInstallationAndVerification`, `TestContinueHumanOutputNamesTheResumeCommand`, `TestContinueHumanOutputReportsTheSourceCheck`, `TestContinueUsageErrors`, `TestContinueReportsAFailedVerificationAsAFailure`, `TestContinueRefusesAMissingDataDirectoryNobodyNamed`, `TestContinueHelpIsARequestNotAFailure` |
+| the CLI's three states, human shape, source check, partial-read fidelity line, exit codes, help | `TestContinueJSONDistinguishesConversionInstallationAndVerification`, `TestContinueHumanOutputNamesTheResumeCommand`, `TestContinueHumanOutputReportsTheSourceCheck`, `TestContinueHumanOutputNamesAPartialSourceRead`, `TestContinueUsageErrors`, `TestContinueReportsAFailedVerificationAsAFailure`, `TestContinueRefusesAMissingDataDirectoryNobodyNamed`, `TestContinueHelpIsARequestNotAFailure` |
 
 Gate, run on this tree after the last change (`python3 scripts/gate.py`, exit 0):
 
@@ -371,7 +378,7 @@ gate: go=<home>/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/..
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 151 tests in 7.860s (rc=0)
+  PASS     selftest Ran 151 tests in 8.122s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 26 project-owned prefix(es); files seen by git: 5625 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     secrets  no leaks found in 70 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
@@ -488,3 +495,96 @@ section pins, and the dangling line as what the self-check cases read a child's 
   provider a new session of it would use. The dry run's conversion therefore carries no
   `model_provider`, its `model_provider_source` is `unrecorded` with that reason, and the run warns about
   it; `Q-0002-11` records the choice.
+
+## 8. Repair round 3 — the round-3 review's four findings, each pinned by mutation
+
+The review asked for the rules of this surface to be proved by executing a mutation rather than by
+argument, and named four defects: a subagent record that also carries the source's compaction marker was
+applied as the main conversation's `compacted` boundary; an archive's derived summary was written as an
+extra tool outcome beside the very events it is derived from; a relative `--target-binary` spelling
+stopped resolving once the resume turn changed into the session's working directory; and the ordinary
+human result said nothing about a source read that had skipped content. All four are fixed above, and the
+block below is the repaired human result of the same fixture (throw-away data directory, target home and
+absent harness, so the native half is deterministic; repository root and throw-away paths rewritten):
+
+```
+$ CLAUDE_PROJECTS_DIR=<repo>/internal/ccc/testdata/fixtures/claude \
+    <tmp>/ccc continue claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to codex \
+    --target-home <tmp>/home4 --target-binary ccc-no-such-target-harness --data-dir <tmp>/data
+exit 0
+claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 → codex
+  source:       <repo>/internal/ccc/testdata/fixtures/claude/-home-user-code-example-api/9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10.jsonl
+  read from:    source
+  conversation: 8 message(s), 3 user, 5 assistant, 1 tool call(s), 1 compaction boundary(ies)
+  fidelity:     1 malformed line(s)
+  converted:    codex-rollout-jsonl, 3101 bytes: 5 message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies), 2 turn(s)
+  carried-with-caveat: tool_name_vocabulary ×1
+  carried-with-caveat: pre_compaction_history ×3
+  omitted:      malformed_source_lines ×1
+  installed:    <tmp>/home4/sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1e262-4c95-7d73-a982-c6bb14876d33.jsonl [hard-link]
+  source file:  unchanged (sha256 2bd510821d4abf83235752eff81e0e9824d0c41b3d2d4b84956d1130992467b6, taken before and after the conversion)
+  target id:    01a1e262-4c95-7d73-a982-c6bb14876d33
+  working dir:  /home/user/code/example-api
+  resume:       CODEX_HOME=<tmp>/home4 ccc-no-such-target-harness resume 01a1e262-4c95-7d73-a982-c6bb14876d33
+  non-interactive resume: CODEX_HOME=<tmp>/home4 ccc-no-such-target-harness exec resume 01a1e262-4c95-7d73-a982-c6bb14876d33 '<prompt>'
+  cli_version:  0.169.0 (writer-pin)
+  structure:    verified (the inherited AgentsView Codex reader over the installed session)
+  native load:  not-verified (the target harness's own loader (codex app-server, thread/resume))
+                ccc-no-such-target-harness is not on PATH, so the installed session's native load could not be verified (ccc-no-such-target-harness is not on PATH)
+  native resume: not-requested (one turn in the installed session through the target harness's non-interactive resume)
+                not requested (--verify load)
+  warning:      the target harness was not found on PATH: the conversation is converted and installed at <tmp>/home4/sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1e262-4c95-7d73-a982-c6bb14876d33.jsonl, and its native load is unverified
+  carried:      AgentsView 83195c8a6861b8c74a4b6cb87512817fed6f8584, unmodified (scripts/upstream-parity.py)
+```
+
+The same invocation with `--json` reports `source.fidelity` as
+`{"malformed_lines": 1, "source_version": "1.0.30", "read_from": "source"}` (the fixture's last line is
+not JSON, and it is written as a complete record, so `truncated` is absent), `conversion.source_fidelity`
+as the same block, and `conversion.losses[]` as the eighteen categories, three of them non-zero
+(`tool_name_vocabulary ×1`, `pre_compaction_history ×3`, and the one this round added):
+
+```
+{ "category": "malformed_source_lines", "disposition": "omitted", "count": 1,
+  "detail": "the provider's reader skipped these source line(s) as unreadable (invalid JSON, or a line
+             the reader would not read), so no message in this conversation stands for them and no record
+             here can carry what it could not read" }
+```
+
+The new category is the read's own count of lines whose content its parser could not turn into a message
+(`internal/ccc/codex_target.go`): no per-message category can see them, and an unfinished final record —
+which the parser counts among them — is named in the reason rather than reported as an extra omission
+(`TestCodexRolloutReportsTheSourceLinesItsReadCouldNotProduce` runs both the truncated and the complete
+shape).
+
+Each new or changed rule was pinned by reverting its line, running the test that claims to pin it, and
+restoring the file from a byte-identical copy (the sha256 of `internal/ccc/codex_target.go`
+`338e1632…`, `internal/ccc/codex_verify.go` `b79031c0…` and `cmd/ccc/main.go` `741d5776…` was compared
+after every restore, and the two `cmd/ccc/main.go` mutations were re-run against that file's final bytes,
+after the wording change below):
+
+| Rule | Mutation (the fix's line reverted) | Observed |
+| --- | --- | --- |
+| a subagent record that also carries the compaction marker is excluded before the boundary rule | the guard back to `message.IsSidechain && !message.IsCompactBoundary` | `TestCodexRolloutDoesNotApplyASidechainCompactionBoundary` FAIL: `the conversion wrote the target's compacted record for a subagent's summary: {"message":"SUBAGENT-SUMMARY"}` |
+| an archive summary is a view of the call's recorded results, so it is not written beside them | `callHasRecordedResult` → `return false` | `TestCodexRolloutWritesAnArchiveSummaryOnlyForACallWithoutResults` FAIL: 6 `function_call_output` records, `toolu_1`'s text twice and `toolu_2: agent-1:…/agent-2:…` as its own outcome, want 4 |
+| a summary whose call has no recorded result *is* written (the fallback half) | `callHasRecordedResult` → `return true` | the same test FAIL: 3 records, `toolu_3: summary-only outcome` missing |
+| a resume turn runs the executable the caller's path resolved to, not one re-resolved after the directory change | `resolveCodexExecutable(binary)` back to `exec.LookPath(binary)` | `TestRunCodexTurnResolvesARelativeExecutableBeforeChangingDirectory` FAIL: `fork/exec ./ccc.test: no such file or directory` |
+| the human block names a partial source read | the `fidelity:` guard → `false` | `TestContinueHumanOutputNamesAPartialSourceRead` FAIL: `the human output is missing "fidelity:     1 malformed line(s)\n"` |
+| an unfinished final record is named in the read's own words, not as something this CLI did | `truncatedSuffix` → `""` | the same test FAIL: `an unfinished final record is not named by the read's own words` |
+| the read's own skipped-line count reaches the loss report | `sourceFidelity: conv.Fidelity` dropped from the builder | `TestCodexRolloutReportsTheSourceLinesItsReadCouldNotProduce` and `TestContinueConvertsInstallsAndReadsBackTheFixture` FAIL: count `0` with the `every source line this read produced a message for was readable` reason |
+| the reason names the unfinished final record it counts | `if b.sourceFidelity.Truncated` → `false` | `TestCodexRolloutReportsTheSourceLinesItsReadCouldNotProduce` FAIL: the reason does not name it |
+| the adjacent rule the fix sits beside: a sidechain record is omitted, never written as the conversation's own turn | the sidechain branch's `return` dropped | `TestCodexRolloutReportsEveryCategoryItKnows` FAIL: `the rollout holds "Subagent said this", which the report says was omitted` |
+| the adjacent rule beside it: the turns before a carried boundary are counted | `b.lossPreBoundary = b.carried.Messages` → `0` | `TestCodexRolloutCarriesACompactionBoundaryAndKeepsTheHistoryBeforeIt` FAIL: `pre_compaction_history … Count:0 …, want 2 carried-with-caveat` |
+
+The tail clause reads ", and the last record was still being written at read time" instead of the words
+`inspect` already used for the same state (", truncated by the writer"): in this tree "the writer" is the
+target writer, which never truncates a source, so that line could be read as a claim about the conversion.
+`inspect` and `continue` share the one rendering (`truncatedSuffix`), and the fixture this repository
+commits holds a *complete* malformed line, so its block shows the count without that clause (the CLI case
+asserts both shapes).
+
+The native-check blocks recorded in §3 print `17 loss categories`; they are the runs before this repair,
+and the script's own condition (`any(loss["count"] > 0)`, with the count printed for a reader) is
+unchanged, so a re-run prints eighteen. They were not re-run here: that check needs the Codex binary —
+and, for a real turn, model access — and is deliberately not a gate step. Nothing this round changed
+touches what it verifies (the install, the loader's read-back, the resume invocation and the reported
+commands); its offline half is the gate's `test` step, which passes on this tree (§6).

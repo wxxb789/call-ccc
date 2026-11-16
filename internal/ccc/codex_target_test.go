@@ -253,6 +253,50 @@ func TestCodexRolloutCarriesACompactionBoundaryAndKeepsTheHistoryBeforeIt(t *tes
 	}
 }
 
+// TestCodexRolloutDoesNotApplyASidechainCompactionBoundary pins the exclusion order: the inherited
+// Claude parser keeps both flags on one record (its own TestParseClaudeSession_CompactBoundary is that
+// shape), and such a record is a subagent's own summary, not a boundary of the main conversation.
+// Applying it as the target's compacted record would replace the main conversation's model-visible
+// history with a subagent's summary, and would leave the record out of the sidechain count while doing
+// it -- so the exclusion is checked before the boundary is written.
+func TestCodexRolloutDoesNotApplyASidechainCompactionBoundary(t *testing.T) {
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Main question", Dialogue: "Main question"},
+		// The combined shape: a subagent's record that also carries the source's compaction marker.
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "SUBAGENT-SUMMARY",
+			IsSidechain: true, IsCompactBoundary: true, IsSystem: true},
+		Message{Ordinal: 2, Role: string(parser.RoleUser), Content: "Follow-up", Dialogue: "Follow-up"},
+	)
+	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	for _, line := range decodeRollout(t, rollout.Data) {
+		if line.Type == codexRecordCompacted {
+			t.Fatalf("the conversion wrote the target's compacted record for a subagent's summary: %s",
+				line.Payload)
+		}
+	}
+	if strings.Contains(string(rollout.Data), "SUBAGENT-SUMMARY") {
+		t.Error("the rollout holds a subagent summary the report says is omitted")
+	}
+	if rollout.Carried.CompactionBoundaries != 0 {
+		t.Errorf("boundaries carried = %d, want none: the summary belongs to a subagent",
+			rollout.Carried.CompactionBoundaries)
+	}
+	if loss := lossCount(t, rollout.Losses, "sidechain_messages"); loss.Count != 1 ||
+		loss.Disposition != DispositionOmitted {
+		t.Errorf("sidechain_messages = %+v, want the combined record counted as a subagent's", loss)
+	}
+	if loss := lossCount(t, rollout.Losses, "pre_compaction_history"); loss.Count != 0 {
+		t.Errorf("pre_compaction_history = %+v, want no boundary applied to the main conversation", loss)
+	}
+	if rollout.Carried.Messages != 2 {
+		t.Errorf("messages carried = %d, want the two main-thread messages",
+			rollout.Carried.Messages)
+	}
+}
+
 // TestCodexRolloutReportsEveryCategoryItKnows pins the report's completeness: a category that is not
 // named cannot be read, and a count that is not reported looks like evidence that travelled.
 func TestCodexRolloutReportsEveryCategoryItKnows(t *testing.T) {
@@ -312,6 +356,7 @@ func TestCodexRolloutReportsEveryCategoryItKnows(t *testing.T) {
 		"tool_name_vocabulary":          {2, DispositionCarriedWithCaveat},
 		"provider_binding":              {0, DispositionCarriedWithCaveat},
 		"pre_compaction_history":        {0, DispositionCarriedWithCaveat},
+		"malformed_source_lines":        {0, DispositionOmitted},
 	} {
 		loss := lossCount(t, rollout.Losses, category)
 		if loss.Count != want.count || loss.Disposition != want.disposition {
@@ -742,26 +787,36 @@ func TestCodexRolloutReportsToolResultBlocksTheTargetCannotCarry(t *testing.T) {
 	}
 }
 
-// TestCodexRolloutWritesAnArchiveSummaryOnce pins the archive's double exposure of one outcome: such a
-// read carries a call's result as the events the archive kept and as the summary internal/db restored
-// from the call's sole event, and those are the same evidence. The summary is written only when no event
-// of that call already holds its text, so one recorded outcome cannot arrive as two
-// function_call_output records -- while a summary that is a genuinely different stored outcome still is.
-func TestCodexRolloutWritesAnArchiveSummaryOnce(t *testing.T) {
+// TestCodexRolloutWritesAnArchiveSummaryOnlyForACallWithoutResults pins the archive rule: the archive
+// keeps a call's outcome as the result events it recorded on the call and holds their derived summary in
+// the column beside them (internal/db restores the sole event's text into that column, or stores the
+// aggregate it derives from several events). A summary is therefore a view of the recorded evidence, and
+// a conversion writes it only when the call has no recorded result of its own -- the shape of an archive
+// row whose events were not written -- where it is the only evidence of that outcome. Writing it beside
+// its own events would present a display aggregate as a separately recorded tool output.
+func TestCodexRolloutWritesAnArchiveSummaryOnlyForACallWithoutResults(t *testing.T) {
 	// The archive shape: the outcome is folded onto the call's own message, so the events sit beside the
-	// calls they answer (messageFromArchive), and the call's summary is the column the archive restored.
+	// calls they answer (messageFromArchive), and the call's summary is the column the archive holds.
 	conversation := testConversation(
 		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask"},
-		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "[Bash: ls]",
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "[a batch of calls]",
 			ToolCalls: []ToolCall{
+				// One event, its own text restored into the column by the read: the same outcome.
 				{ToolUseID: "toolu_1", Name: "Bash", InputJSON: `{"command":"ls"}`,
 					ResultContent: "the recorded output", ResultContentSize: 19},
-				{ToolUseID: "toolu_2", Name: "Bash", InputJSON: `{"command":"du"}`,
-					ResultContent: "a distinct outcome", ResultContentSize: 18},
+				// Two events and the aggregate the inherited write path derives from them, stored in
+				// the column because it is not either event's text: still the same two outcomes.
+				{ToolUseID: "toolu_2", Name: "Task", InputJSON: `{"prompt":"x"}`,
+					ResultContent:     "agent-1:\nfirst\n\nagent-2:\nsecond",
+					ResultContentSize: len("agent-1:\nfirst\n\nagent-2:\nsecond")},
+				// A summary whose call carries no result at all: the only evidence of that outcome.
+				{ToolUseID: "toolu_3", Name: "Bash", InputJSON: `{"command":"du"}`,
+					ResultContent: "summary-only outcome", ResultContentSize: 20},
 			},
 			ToolResults: []ToolResult{
 				{ToolUseID: "toolu_1", ContentRaw: "the recorded output", ContentDecoded: true},
-				{ToolUseID: "toolu_2", ContentRaw: "an event outcome", ContentDecoded: true},
+				{ToolUseID: "toolu_2", ContentRaw: "first", ContentDecoded: true},
+				{ToolUseID: "toolu_2", ContentRaw: "second", ContentDecoded: true},
 			}},
 	)
 	rollout, err := ConvertToCodexRollout(conversation, testOptions())
@@ -774,12 +829,55 @@ func TestCodexRolloutWritesAnArchiveSummaryOnce(t *testing.T) {
 			outputs = append(outputs, payloadField(t, line, "call_id")+": "+payloadField(t, line, "output"))
 		}
 	}
-	want := []string{"toolu_1: the recorded output", "toolu_2: an event outcome", "toolu_2: a distinct outcome"}
+	want := []string{
+		"toolu_1: the recorded output",
+		"toolu_2: first",
+		"toolu_2: second",
+		"toolu_3: summary-only outcome",
+	}
 	sort.Strings(outputs)
 	sort.Strings(want)
-	if strings.Join(outputs, " | ") != strings.Join(want, " | ") || rollout.Carried.ToolResults != 3 {
-		t.Errorf("function_call_output records = %q (carried %d results), want each recorded outcome once: %q",
+	if strings.Join(outputs, " | ") != strings.Join(want, " | ") || rollout.Carried.ToolResults != 4 {
+		t.Errorf("function_call_output records = %q (carried %d results), want the recorded results once "+
+			"each and the summary only where no result was recorded: %q",
 			outputs, rollout.Carried.ToolResults, want)
+	}
+}
+
+// TestCodexRolloutReportsTheSourceLinesItsReadCouldNotProduce pins the report's outermost omission: a
+// line the provider's reader skipped never became a message, so no per-message category can count it,
+// and a conversion that reported only its own per-message counts would let "converted" stand for a
+// conversation the source file holds more of. The read's own count travels into the report, and an
+// unfinished final record -- which the reader counts among those lines -- is named in the reason.
+func TestCodexRolloutReportsTheSourceLinesItsReadCouldNotProduce(t *testing.T) {
+	partial := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask"},
+	)
+	partial.Fidelity = Fidelity{ReadFrom: "source", MalformedLines: 2, Truncated: true}
+	rollout, err := ConvertToCodexRollout(partial, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	loss := lossCount(t, rollout.Losses, "malformed_source_lines")
+	if loss.Count != 2 || loss.Disposition != DispositionOmitted {
+		t.Errorf("malformed_source_lines = %+v, want the read's own count as an omission", loss)
+	}
+	if !strings.Contains(loss.Detail, "truncated") {
+		t.Errorf("the reason does not name the unfinished final record it counts: %q", loss.Detail)
+	}
+
+	// A read that produced a message for every line reports the same category with a zero count and a
+	// reason that says so, which is what makes the count above readable as this run's answer.
+	complete := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask"},
+	)
+	rollout, err = ConvertToCodexRollout(complete, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if loss := lossCount(t, rollout.Losses, "malformed_source_lines"); loss.Count != 0 ||
+		!strings.Contains(loss.Detail, "readable") {
+		t.Errorf("malformed_source_lines = %+v, want a zero count for a complete read", loss)
 	}
 }
 

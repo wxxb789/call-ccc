@@ -1,10 +1,47 @@
 package ccc
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
+
+// TestRunCodexTurnResolvesARelativeExecutableBeforeChangingDirectory pins the resume turn's one
+// directory-sensitive path. A relative Cmd.Path is evaluated by the operating system relative to the
+// directory the child runs in, and this turn runs in the source session's working directory -- so the
+// caller's own spelling ("./tools/codex", the form the probe found and every earlier verification stage
+// used) would be looked for under that directory instead: a different executable, or none.
+//
+// The stub is this test binary under a relative spelling, run with a filter that matches no test: it
+// exits 0 immediately, which is what separates "the operating system launched the harness" from "it
+// could not be found".
+func TestRunCodexTurnResolvesARelativeExecutableBeforeChangingDirectory(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolving the test binary: %v", err)
+	}
+	executable, err = filepath.Abs(executable)
+	if err != nil {
+		t.Fatalf("resolving the test binary absolutely: %v", err)
+	}
+	// The relative spelling is relative to the process's own directory, which is where a caller who
+	// typed "./tools/codex" stood.
+	t.Chdir(filepath.Dir(executable))
+	relative := "." + string(filepath.Separator) + filepath.Base(executable)
+
+	_, diagnostics, err := runCodexTurn(context.Background(), relative, CodexResumeOptions{
+		WorkingDir: t.TempDir(),
+		Home:       t.TempDir(),
+	}, 2*time.Minute, []string{"-test.run=^$"})
+	if err != nil {
+		t.Fatalf("the turn did not run the harness the caller's relative path names (%v); diagnostics: %q",
+			err, summariseText(diagnostics, 200))
+	}
+}
 
 // TestBoundedBufferKeepsTheFirstBytes pins what the app server's diagnostic buffer is for: the first
 // bytes written are kept, everything past the bound is dropped, and a write is still answered with the

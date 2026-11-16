@@ -260,14 +260,15 @@ func ConvertToCodexRollout(conv Conversation, opts CodexTargetOptions) (CodexRol
 	}
 
 	builder := &codexRolloutBuilder{
-		sessionID:  sessionID,
-		cwd:        source.Cwd,
-		cliVersion: cliVersion,
-		clock:      newCodexClock(startedAt),
-		callOwners: map[string]struct{}{},
-		gitBranch:  source.GitBranch,
-		gitRemote:  source.GitRemote,
-		opts:       opts,
+		sessionID:      sessionID,
+		cwd:            source.Cwd,
+		cliVersion:     cliVersion,
+		clock:          newCodexClock(startedAt),
+		callOwners:     map[string]struct{}{},
+		gitBranch:      source.GitBranch,
+		gitRemote:      source.GitRemote,
+		opts:           opts,
+		sourceFidelity: conv.Fidelity,
 	}
 	// One encoder writes every line: JSONL is one object per line, and the encoder's own newline is
 	// what separates them. HTML escaping is off because the target stores the conversation's text as it
@@ -344,6 +345,12 @@ type codexRolloutBuilder struct {
 	carried    Carried
 	callOwners map[string]struct{}
 
+	// sourceFidelity is the completeness the read itself reported. Lines the provider's reader could
+	// not turn into a message never reach this writer as evidence at all, so the conversion's report
+	// has to name them from the read's own count: a caller that read "converted" alone would not know
+	// the source was partial.
+	sourceFidelity Fidelity
+
 	lossReasoning         int
 	lossSidechain         int
 	lossSystemRecords     int
@@ -406,6 +413,18 @@ func (b *codexRolloutBuilder) writeConversation(conv Conversation) {
 }
 
 func (b *codexRolloutBuilder) writeMessage(message Message) {
+	if message.IsSidechain {
+		// A subagent's turn, recorded in the same transcript. The target has no subagent attribution
+		// for a flat message, so carrying it as an ordinary turn would state that the conversation's
+		// own agent said it. A subagent record that also carries the source's compaction marker is
+		// still a subagent's own record -- the inherited Claude parser keeps both flags on one record
+		// (internal/parser's TestParseClaudeSession_CompactBoundary) -- so it is excluded here, before
+		// the boundary rule below: its summary stands for the subagent's history, and applying it as
+		// the target's compacted record would replace the main conversation's model-visible history
+		// with it.
+		b.lossSidechain++
+		return
+	}
 	if message.IsCompactBoundary {
 		// A compaction boundary is the target's own record for the same event: the summary the source
 		// kept in place of the history before it. The target applies it to its model-visible history,
@@ -419,13 +438,6 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 		})
 		b.carried.CompactionBoundaries++
 		b.items = append(b.items, TargetItem{Kind: ItemCompactionBoundary, Text: message.Content})
-		return
-	}
-	if message.IsSidechain {
-		// A subagent's turn, recorded in the same transcript. The target has no subagent attribution
-		// for a flat message, so carrying it as an ordinary turn would state that the conversation's
-		// own agent said it.
-		b.lossSidechain++
 		return
 	}
 	if message.IsSystem {
@@ -495,16 +507,19 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 	for _, result := range message.ToolResults {
 		b.toolResult(result, message.Timestamp)
 	}
-	// An archive read folds a call's outcome onto the call itself as well as into the result events
-	// that outcome came from: internal/db restores a summary it dropped from the call's own sole
-	// content-bearing event, so the two are the same evidence. Every event is written above; a summary
-	// is written only when no event of that call already holds it, which is what keeps one recorded
-	// outcome from arriving as two function_call_output records.
+	// An archive read carries a call's outcome both as the result events the archive kept on the call
+	// and as the summary it holds in ResultContent. That summary is derived from those same events by
+	// the inherited write path (internal/db stores it only when it is not the sole content-bearing
+	// event's text, and restores it from that event when the column was cleared), so it is a view of
+	// the recorded evidence rather than another outcome recorded beside it -- writing it too would
+	// present a normalized display aggregate as a separately recorded tool output. Every event is
+	// written above; the summary is written only when the call has no recorded result of its own,
+	// where it is the only evidence the read holds of that outcome.
 	for _, call := range message.ToolCalls {
 		if strings.TrimSpace(call.ResultContent) == "" && call.ResultContentSize == 0 {
 			continue
 		}
-		if resultEventHoldsText(message.ToolResults, call.ToolUseID, call.ResultContent) {
+		if callHasRecordedResult(message.ToolResults, call.ToolUseID) {
 			continue
 		}
 		b.toolResult(ToolResult{
@@ -516,20 +531,18 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 	}
 }
 
-// resultEventHoldsText reports whether one of a message's result events already carries a call's
-// summary text, which makes that summary a duplicate of an outcome the conversion writes anyway rather
-// than a second outcome of the same call. The archive's own summary is the sole event's text byte for
-// byte (internal/db's dedup restores a dropped summary from it) or an aggregate of several events, and
-// the reader trims a result's text where it presents it, so the comparison is made in that trimmed
-// namespace. An empty summary is compared the same way: a blocked archive result is stored as an empty
-// summary beside an empty event, and counting it twice would report one dropped outcome as two.
-func resultEventHoldsText(results []ToolResult, callID, text string) bool {
-	trimmed := strings.TrimSpace(text)
+// callHasRecordedResult reports whether the conversation already carries a recorded result for a call,
+// which is what makes the archive's summary of that call a derived view of recorded evidence rather
+// than a second outcome. The archive holds a call's outcome as the events it kept on the call and, when
+// they differ from their own text, as the summary in ResultContent: internal/db's
+// DedupToolCallResultSummary stores the summary only when it is not the sole content-bearing event's
+// text, and RestoreToolCallResultContent refills it from that event when the column was cleared. So a
+// call with any result of its own has its outcome carried as that result, whatever the summary text
+// happens to be; a summary whose call carries no result at all is the only evidence the read holds of
+// the outcome, and it is written.
+func callHasRecordedResult(results []ToolResult, callID string) bool {
 	for _, result := range results {
-		if result.ToolUseID != callID {
-			continue
-		}
-		if content, _ := resultText(result); strings.TrimSpace(content) == trimmed {
+		if result.ToolUseID == callID {
 			return true
 		}
 	}
@@ -754,6 +767,20 @@ func (b *codexRolloutBuilder) losses() []Loss {
 			"here: the target applies the boundary to its model-visible history, so those turns are " +
 			"recorded history the target does not continue from"
 	}
+	// The read's own completeness is reported here rather than left to the fidelity block alone: a line
+	// the provider's reader skipped produced no message, so no per-message category could count it, and
+	// "converted" without this entry would read as though the conversation the target holds were the
+	// whole of what the source file records.
+	unreadableLinesDetail := "every source line this read produced a message for was readable"
+	if b.sourceFidelity.MalformedLines > 0 {
+		unreadableLinesDetail = "the provider's reader skipped these source line(s) as unreadable " +
+			"(invalid JSON, or a line the reader would not read), so no message in this conversation " +
+			"stands for them and no record here can carry what it could not read"
+		if b.sourceFidelity.Truncated {
+			unreadableLinesDetail += "; the source file's last line was still being written when it was " +
+				"read (the fidelity block's truncated flag), and it is one of them"
+		}
+	}
 	return []Loss{
 		{
 			Category:    "reasoning_text",
@@ -880,6 +907,12 @@ func (b *codexRolloutBuilder) losses() []Loss {
 			Disposition: DispositionCarriedWithCaveat,
 			Count:       b.lossPreBoundary,
 			Detail:      preBoundaryDetail,
+		},
+		{
+			Category:    "malformed_source_lines",
+			Disposition: DispositionOmitted,
+			Count:       b.sourceFidelity.MalformedLines,
+			Detail:      unreadableLinesDetail,
 		},
 	}
 }

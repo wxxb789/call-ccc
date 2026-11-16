@@ -511,6 +511,14 @@ func writeContinuation(out io.Writer, result ccc.ContinueResult) {
 		fmt.Fprintf(out, "  source:       %s\n", valueOr(source.Identity.SourcePath, source.Identity.DisplayPath))
 		fmt.Fprintf(out, "  read from:    %s\n", result.Conversion.ReadFrom)
 		fmt.Fprintf(out, "  conversation: %s\n", describeCounts(source.Counts))
+		// A read that skipped source content says so here as well as in its own loss category: the
+		// conversion, the installation and a verified native load can all be true while the source
+		// held records this conversation does not, and a block that never names that lets "converted"
+		// read as "everything travelled".
+		if source.Fidelity.MalformedLines > 0 || source.Fidelity.Truncated {
+			fmt.Fprintf(out, "  fidelity:     %d malformed line(s)%s\n",
+				source.Fidelity.MalformedLines, truncatedSuffix(source.Fidelity.Truncated))
+		}
 	}
 	carried := result.Conversion.Carried
 	fmt.Fprintf(out, "  converted:    %s, %d bytes: %d message(s), %d tool call(s), %d tool result(s), %d boundary(ies), %d turn(s)\n",
@@ -589,9 +597,14 @@ func describeCounts(counts ccc.Counts) string {
 	return strings.Join(parts, ", ")
 }
 
+// truncatedSuffix names the incomplete tail an inherited read reports: the source file's last record was
+// still being written when the file was read, so the read stopped at the last complete one (and that
+// partial record is one of the malformed lines beside it). "The writer" is deliberately not used: in this
+// tree that word means the target writer, which never truncates the source, and the line would read as a
+// claim about the conversion instead of about the file.
 func truncatedSuffix(truncated bool) string {
 	if truncated {
-		return ", truncated by the writer"
+		return ", and the last record was still being written at read time"
 	}
 	return ""
 }

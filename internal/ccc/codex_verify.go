@@ -392,10 +392,21 @@ func resumeCommandLine(binary string, arguments []string, home string) string {
 
 // runCodexTurn runs one non-interactive turn and returns its answer and its diagnostics separately: the
 // answer is what the harness wrote to stdout, the diagnostics everything it wrote to stderr.
+//
+// The executable is resolved before the command's directory is set. A relative Cmd.Path is evaluated by
+// the operating system relative to the directory the child runs in, and this turn runs in the source
+// session's working directory -- so a caller's "./tools/codex" would otherwise be looked for there: a
+// different executable, or none, even though the probe that found it ran from the caller's directory.
+// The reported command (VerifyCodexResume's own Command field and the conversation's resume lines) keeps
+// the caller's requested spelling.
 func runCodexTurn(ctx context.Context, binary string, opts CodexResumeOptions, timeout time.Duration, args []string) (string, string, error) {
+	executable, err := resolveCodexExecutable(binary)
+	if err != nil {
+		return "", "", err
+	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	command := exec.CommandContext(runCtx, binary, args...)
+	command := exec.CommandContext(runCtx, executable, args...)
 	if dir := strings.TrimSpace(opts.WorkingDir); dir != "" {
 		if info, err := os.Stat(dir); err == nil && info.IsDir() {
 			command.Dir = dir
@@ -412,11 +423,28 @@ func runCodexTurn(ctx context.Context, binary string, opts CodexResumeOptions, t
 	} else {
 		command.Stderr = &diagnostics
 	}
-	err := command.Run()
+	err = command.Run()
 	if runCtx.Err() != nil && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		return answer.String(), diagnostics.String(), fmt.Errorf("timed out after %s", timeout)
 	}
 	return answer.String(), diagnostics.String(), err
+}
+
+// resolveCodexExecutable answers the path a command will run: exec.LookPath's answer, made absolute
+// where it is not already. LookPath returns an explicitly relative spelling unchanged (a path holding a
+// separator is tried directly), and a command that changes the directory it runs in would evaluate that
+// spelling against the new directory rather than against the caller's -- the difference between the
+// harness the probe asked for its version and one that happens to sit under the session's own working
+// directory.
+func resolveCodexExecutable(binary string) (string, error) {
+	path, err := exec.LookPath(binary)
+	if err != nil {
+		return "", err
+	}
+	if filepath.IsAbs(path) {
+		return path, nil
+	}
+	return filepath.Abs(path)
 }
 
 // codexAppServer is a minimal client for the target's app-server protocol over stdio: one initialize

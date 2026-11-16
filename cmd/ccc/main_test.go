@@ -825,6 +825,47 @@ func TestContinueHumanOutputReportsTheSourceCheck(t *testing.T) {
 	}
 }
 
+// TestContinueHumanOutputNamesAPartialSourceRead pins the fidelity half of the ordinary human block: the
+// committed fixture's transcript ends in a line that is not JSON (its own recorded shape), the inherited
+// reader skips that line and counts it, and a run that reports conversion, installation and a verified
+// structure must still tell a reader that the conversation it holds is not the whole of what the source
+// file records — in the block's own fidelity line and in the loss category beside it.
+func TestContinueHumanOutputNamesAPartialSourceRead(t *testing.T) {
+	continueEnvironment(t)
+	sessionID, _ := claudeFixture(t)
+	code, stdout, stderr := runCLI(t, continueArgs(sessionID)...)
+	if code != exitOK {
+		t.Fatalf("exit %d, stderr: %s", code, stderr)
+	}
+	for _, want := range []string{
+		"conversation: 8 message(s)",
+		// The exact line, newline included: this fixture writes its malformed line as a complete
+		// record, so the unfinished-tail clause (", and the last record was still being written at
+		// read time") must not be appended here — a suffix would put text before the newline and fail
+		// this assertion.
+		"fidelity:     1 malformed line(s)\n",
+		"omitted:      malformed_source_lines ×1\n",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("the human output is missing %q:\n%s", want, stdout)
+		}
+	}
+
+	// A read whose last record was still being written says so in the same line, in the read's own words:
+	// the block names the file's state, not this CLI, which never writes a source file.
+	var truncated bytes.Buffer
+	writeContinuation(&truncated, ccc.ContinueResult{
+		Ref:        ccc.Ref{Provider: "claude", ID: sessionID},
+		Target:     ccc.TargetCodex,
+		Source:     &ccc.SessionReport{Fidelity: ccc.Fidelity{MalformedLines: 1, Truncated: true}},
+		Conversion: ccc.ConversionReport{State: ccc.ConversionStateConverted, Format: ccc.CodexTargetFormat},
+	})
+	if got := truncated.String(); !strings.Contains(got,
+		"fidelity:     1 malformed line(s), and the last record was still being written at read time\n") {
+		t.Errorf("an unfinished final record is not named by the read's own words:\n%s", got)
+	}
+}
+
 // TestContinueDryRunInstallsNothingThroughTheCLI pins the flag's promise at the CLI boundary.
 func TestContinueDryRunInstallsNothingThroughTheCLI(t *testing.T) {
 	_, targetHome := continueEnvironment(t)
