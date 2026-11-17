@@ -1516,12 +1516,12 @@ func TestPiSourceLeafCheckStatesTheLeafItCouldNotEstablish(t *testing.T) {
 }
 
 // TestPiScanConversationEntriesStopsAtItsLineBound pins the scan's own rule: its line bound is what one
-// line may be, and a line beyond it stops the scan with the read error rather than leaving either caller
-// to judge a file by the entries before the line it could not read. The bound's own values are the two
-// callers': the load check reads a converted file this build wrote, and the leaf check reads a source file
-// with the bound the carried parser reads a line with (piSourceEntryLineMax, internal/parser's
-// maxLineSize). A bufio.Scanner's maximum token size is the larger of the bound and the initial buffer, so
-// the line this case uses is beyond both.
+// line may be, and a line beyond it stops the scan with the read error rather than leaving the caller to
+// judge a file by the entries before the line it could not read. The bound's one value here is the leaf
+// check's source scan (piSourceEntryLineMax, internal/parser's maxLineSize); the load check's byte-backed
+// read of a converted file takes no bound at all (piConversationEntries), because the writer imposes none
+// on an entry and a bounded read there would judge the file by a prefix. A bufio.Scanner's maximum token
+// size is the larger of the bound and the initial buffer, so the line this case uses is beyond both.
 func TestPiScanConversationEntriesStopsAtItsLineBound(t *testing.T) {
 	long := `{"type":"message","id":"aa11bb22","parentId":null,"message":{"role":"user","content":"` +
 		strings.Repeat("x", 70<<10) + `"}}`
@@ -1656,11 +1656,14 @@ func TestPiSourceLeafRefusalRefusesAReadWithNoIdentityForItsLastRecord(t *testin
 }
 
 // TestPiSourceLeafRefusalAnswersAReadWithNoRecordsAndAFileWithNoEntries pins the two shapes the check
-// answers without walking anything: a read that holds no record at all (there is no leaf to resume
-// wrongly) and a file that holds nothing beyond its session header (there is no entry the loader could
-// select). Neither is a refusal: an empty conversation converts to an empty session, and no branch can be
-// revived by it. The empty read is asked of a file that *does* hold an entry, so the answer is the guard's
-// own rather than the file's.
+// answers without walking a path: a read that holds no record at all against a file whose own entries are
+// all outside the conversation's context (there is no leaf to resume wrongly, and the loader would build
+// no conversation from the file either) and a file that holds nothing beyond its session header (there is
+// no entry the loader could select). Neither is a refusal: an empty conversation converts to an empty
+// session, and no branch can be revived by it. The empty read is asked of a file that *does* hold an
+// entry, so the answer is the guard's own rather than the file's; a file entry the harness's own loader
+// builds context from is the case beside this one
+// (TestPiSourceLeafRefusalRefusesADroppedRecordBehindAnEmptyRead).
 func TestPiSourceLeafRefusalAnswersAReadWithNoRecordsAndAFileWithNoEntries(t *testing.T) {
 	dir := t.TempDir()
 	header := `{"type":"session","version":3,"id":"01a1c338-0000-4000-8000-000000000000","timestamp":"2026-05-04T09:15:00.000Z","cwd":"/home/user/code/example-api"}`
@@ -1683,9 +1686,69 @@ func TestPiSourceLeafRefusalAnswersAReadWithNoRecordsAndAFileWithNoEntries(t *te
 	}
 	empty := Conversation{Source: SourceIdentity{Provider: "pi", SourcePath: metadataOnly}}
 	if err := piSourceLeafRefusal(empty, metadataOnly); err != nil {
-		t.Errorf("the leaf check on a read holding no record = %v, want none: there is no leaf to resume "+
-			"wrongly, whatever the file holds", err)
+		t.Errorf("the leaf check on a read holding no record = %v, want none: the file's own entries are "+
+			"all outside the conversation's context, so there is no leaf to resume wrongly and no context "+
+			"the loader would build", err)
 	}
+	// Off the file's own leaf path, a record the read did not carry is recorded history rather than
+	// context (the same reading the walk makes for a read that holds records): the file's last entry walks
+	// to a metadata record, and the `custom_message` beside it is not on that walk.
+	offPath := filepath.Join(dir, "dropped-record-off-the-path.jsonl")
+	if err := os.WriteFile(offPath, []byte(header+"\n"+
+		`{"type":"custom_message","id":"aa11bb22","parentId":null,"timestamp":"2026-05-04T09:16:00.000Z","customType":"note","content":"the archive lock is held"}`+"\n"+
+		`{"type":"session_info","id":"bb22cc33","parentId":null,"timestamp":"2026-05-04T09:16:30.000Z","name":"retry cap notes"}`+"\n"),
+		0o600); err != nil {
+		t.Fatalf("writing the off-path session: %v", err)
+	}
+	if err := piSourceLeafRefusal(empty, offPath); err != nil {
+		t.Errorf("the leaf check on a file whose leaf path reaches no dropped record = %v, want none: the "+
+			"custom_message beside the leaf is not on the walk the loader builds its context from", err)
+	}
+}
+
+// TestPiSourceLeafRefusalRefusesADroppedRecordBehindAnEmptyRead pins the empty read's other answer: a read
+// that holds no record at all while the file's own entries hold one the harness's own loader builds a
+// message from -- a `custom_message`, which the carried Pi parser skips -- is refused rather than
+// installed as an empty session, because the read's own empty answer cannot count the dropped record as a
+// loss. The file shape is the review's own: a session header and one such entry, on the path its loader
+// walks from.
+func TestPiSourceLeafRefusalRefusesADroppedRecordBehindAnEmptyRead(t *testing.T) {
+	dir := t.TempDir()
+	header := `{"type":"session","version":3,"id":"01a1c338-0000-4000-8000-000000000000","timestamp":"2026-05-04T09:15:00.000Z","cwd":"/home/user/code/example-api"}`
+	custom := `{"type":"custom_message","id":"f1e2d3c4","parentId":null,"timestamp":"2026-05-04T09:16:00.000Z","customType":"note","content":"the archive lock is held"}`
+	t.Run("an entry the loader builds a message from", func(t *testing.T) {
+		path := filepath.Join(dir, "custom-message.jsonl")
+		if err := os.WriteFile(path, []byte(header+"\n"+custom+"\n"), 0o600); err != nil {
+			t.Fatalf("writing the session: %v", err)
+		}
+		err := piSourceLeafRefusal(Conversation{Source: SourceIdentity{Provider: "pi", SourcePath: path}}, path)
+		if !errors.Is(err, ErrUnrepresentableLeaf) {
+			t.Fatalf("the leaf check = %v, want ErrUnrepresentableLeaf: the file's own loader builds a "+
+				"message from the entry the empty read dropped", err)
+		}
+		for _, want := range []string{"holds no record at all", "custom_message", "selects the leaf"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal %q does not name %q", err, want)
+			}
+		}
+	})
+	t.Run("an identity-free file, by its own order", func(t *testing.T) {
+		const v1Header = `{"type":"session","version":1,"timestamp":"2026-05-04T09:15:00.000Z","cwd":"/home/user/code/example-api"}`
+		const v1Custom = `{"type":"custom_message","timestamp":"2026-05-04T09:16:00.000Z","customType":"note","content":"the archive lock is held"}`
+		path := filepath.Join(dir, "custom-message-v1.jsonl")
+		if err := os.WriteFile(path, []byte(v1Header+"\n"+v1Custom+"\n"), 0o600); err != nil {
+			t.Fatalf("writing the v1 session: %v", err)
+		}
+		err := piSourceLeafRefusal(Conversation{Source: SourceIdentity{Provider: "pi", SourcePath: path}}, path)
+		if !errors.Is(err, ErrUnrepresentableLeaf) {
+			t.Fatalf("the leaf check = %v, want ErrUnrepresentableLeaf for an identity-free file", err)
+		}
+		for _, want := range []string{"holds no record at all", "records no entry identities", "custom_message"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal %q does not name %q", err, want)
+			}
+		}
+	})
 }
 
 // TestContinueIntoPiKeepsABranchedSourcesOwnConversation pins the goal's branch clause for the Pi

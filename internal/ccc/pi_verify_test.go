@@ -1,6 +1,7 @@
 package ccc
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -187,7 +189,7 @@ func TestPiRPCReadsAndComparesTheLoadersAnswer(t *testing.T) {
 	}, "\n") + "\n")
 
 	stdout := piRPCStdout(sessionID, 2, []string{"user", "assistant"})
-	responses := readPiResponses(stdout)
+	responses := piResponsesFrom(t, stdout)
 	if len(responses) != 2 {
 		t.Fatalf("readPiResponses kept %d response(s) %+v, want the two and not the session event or the "+
 			"non-JSON diagnostic", len(responses), responses)
@@ -195,7 +197,7 @@ func TestPiRPCReadsAndComparesTheLoadersAnswer(t *testing.T) {
 	if responses[0].Command != "get_state" || responses[1].Command != "get_messages" {
 		t.Errorf("responses = %+v, want them in the order the harness wrote them", responses)
 	}
-	state, err := readPiState(stdout)
+	state, err := readPiState(responses)
 	if err != nil {
 		t.Fatalf("readPiState: %v", err)
 	}
@@ -203,7 +205,7 @@ func TestPiRPCReadsAndComparesTheLoadersAnswer(t *testing.T) {
 		t.Errorf("state = %+v, want the harness's own answer naming the session and its count", state)
 	}
 
-	detail, err := piMessageDetail(stdout, data)
+	detail, err := piMessageDetail(responses, data)
 	if err != nil {
 		t.Fatalf("piMessageDetail: %v", err)
 	}
@@ -212,7 +214,7 @@ func TestPiRPCReadsAndComparesTheLoadersAnswer(t *testing.T) {
 	}
 
 	// A count that disagrees: the sentence names both numbers.
-	countMismatch := piRPCStdout(sessionID, 2, []string{"user"})
+	countMismatch := piResponsesFrom(t, piRPCStdout(sessionID, 2, []string{"user"}))
 	detail, err = piMessageDetail(countMismatch, data)
 	if err != nil {
 		t.Fatalf("piMessageDetail(count mismatch): %v", err)
@@ -222,7 +224,7 @@ func TestPiRPCReadsAndComparesTheLoadersAnswer(t *testing.T) {
 	}
 
 	// A role that disagrees: the sentence names the position and both roles.
-	roleMismatch := piRPCStdout(sessionID, 2, []string{"assistant", "user"})
+	roleMismatch := piResponsesFrom(t, piRPCStdout(sessionID, 2, []string{"assistant", "user"}))
 	detail, err = piMessageDetail(roleMismatch, data)
 	if err != nil {
 		t.Fatalf("piMessageDetail(role mismatch): %v", err)
@@ -232,19 +234,48 @@ func TestPiRPCReadsAndComparesTheLoadersAnswer(t *testing.T) {
 		t.Errorf("detail = %q, want it to name the position and the two roles that differ", detail)
 	}
 
+	// A line whose last piece had no line feed -- a stream that ended mid-line -- is still that line's
+	// own answer, not a lost record: the reader answers the line's end for both its line feed and the
+	// stream's own end.
+	unterminated := piResponsesFrom(t, `{"type":"response","command":"get_state","success":true,`+
+		`"data":{"sessionId":"`+sessionID+`","messageCount":2}}`)
+	if len(unterminated) != 1 || unterminated[0].Command != "get_state" {
+		t.Errorf("readPiResponses on a stream that ended mid-line = %+v, want the state response", unterminated)
+	}
+
 	// A refused command surfaces the harness's own words, never a pass.
 	refusedState := `{"type":"response","command":"get_state","success":false,"error":"the loader refused this session"}` + "\n"
-	if _, err := readPiState(refusedState); err == nil {
+	if _, err := readPiState(piResponsesFrom(t, refusedState)); err == nil {
 		t.Error("readPiState accepted a refused get_state")
 	} else if !strings.Contains(err.Error(), "the loader refused this session") {
 		t.Errorf("error = %q, want the harness's own words", err)
 	}
 	refusedMessages := `{"type":"response","command":"get_messages","success":false,"error":"no messages for this session"}` + "\n"
-	if _, err := piMessageDetail(refusedMessages, data); err == nil {
+	if _, err := piMessageDetail(piResponsesFrom(t, refusedMessages), data); err == nil {
 		t.Error("piMessageDetail accepted a refused get_messages")
 	} else if !strings.Contains(err.Error(), "no messages for this session") {
 		t.Errorf("error = %q, want the harness's own words", err)
 	}
+
+	// A stream the read could not finish is answered as that failure, not as a shorter answer: the run's
+	// own error channel is how a broken pipe reaches the check, and a silent end would be a pass a run
+	// that failed never earned.
+	broken := io.MultiReader(strings.NewReader(stdout), iotest.ErrReader(errors.New("the pipe broke")))
+	if responses, err := readPiResponses(broken); err == nil || len(responses) != 2 {
+		t.Errorf("readPiResponses on a stream that failed = %d response(s), %v; want the two answers and "+
+			"the read error", len(responses), err)
+	}
+}
+
+// piResponsesFrom parses one run's stdout the way the check's own runner does, for the byte-level cases:
+// the reader is the rule under test there, and a parse failure is the case's failure.
+func piResponsesFrom(t *testing.T, stdout string) []piRPCResponse {
+	t.Helper()
+	responses, err := readPiResponses(strings.NewReader(stdout))
+	if err != nil {
+		t.Fatalf("readPiResponses(%q): %v", summariseText(stdout, 200), err)
+	}
+	return responses
 }
 
 // TestPiModelVisibleRolesAndExpectedMessageCount pins the byte-level walk the load check compares the
@@ -352,7 +383,7 @@ type fakePiRPCCall struct {
 func (f *fakePiRPC) run(
 	_ context.Context, binary, cwd, home, sessionDir string, arguments []string, stdin string,
 	_ time.Duration, _ io.Writer,
-) (string, error) {
+) ([]piRPCResponse, error) {
 	f.calls = append(f.calls, fakePiRPCCall{
 		executable: binary, cwd: cwd, home: home, sessionDir: sessionDir, arguments: arguments, stdin: stdin,
 	})
@@ -362,28 +393,28 @@ func (f *fakePiRPC) run(
 	}
 	if sessionID != f.installed {
 		if f.controlSucceeds {
-			return piRPCStdout(sessionID, 1, []string{"user"}), nil
+			return f.answers(piRPCStdout(sessionID, 1, []string{"user"}))
 		}
 		if f.plantControl {
 			planted := filepath.Join(home, "sessions", "--planted-project--",
 				"2026-01-01T00-00-00-000Z_"+sessionID+".jsonl")
 			if err := os.MkdirAll(filepath.Dir(planted), 0o700); err != nil {
-				return "", fmt.Errorf("the fake could not plant a control session: %w", err)
+				return nil, fmt.Errorf("the fake could not plant a control session: %w", err)
 			}
 			if err := os.WriteFile(planted, []byte(`{"type":"session","version":3,"id":"`+sessionID+`"}`+"\n"), 0o600); err != nil {
-				return "", fmt.Errorf("the fake could not plant a control session: %w", err)
+				return nil, fmt.Errorf("the fake could not plant a control session: %w", err)
 			}
 		}
 		if f.removeSessionsRoot {
 			if err := os.RemoveAll(filepath.Join(home, "sessions")); err != nil {
-				return "", fmt.Errorf("the fake could not remove the scratch sessions tree: %w", err)
+				return nil, fmt.Errorf("the fake could not remove the scratch sessions tree: %w", err)
 			}
 		}
 		text := f.controlErrorText
 		if text == "" {
 			text = "No session found matching " + sessionID
 		}
-		return "", errors.New(text)
+		return nil, errors.New(text)
 	}
 	if f.mutateInstalledPath != "" {
 		if file, err := os.OpenFile(f.mutateInstalledPath, os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
@@ -399,7 +430,15 @@ func (f *fakePiRPC) run(
 	if count == 0 {
 		count = len(f.roles)
 	}
-	return piRPCStdout(reported, count, f.roles), nil
+	// The fake answers as a harness's stdout does -- the protocol text -- and the check's own reader
+	// parses it: the seam stands for the harness, not for the reader, so the bytes travel through the
+	// same read the real runner uses.
+	return f.answers(piRPCStdout(reported, count, f.roles))
+}
+
+// answers parses one fake arm's own protocol text the way a run's stdout is read.
+func (f *fakePiRPC) answers(stdout string) ([]piRPCResponse, error) {
+	return readPiResponses(strings.NewReader(stdout))
 }
 
 // piRPCStdout is one RPC run's stdout in the shape the harness was measured to write: a session event
@@ -799,4 +838,269 @@ func TestVerifyPiResumeRefusesWithoutABinary(t *testing.T) {
 	if !strings.Contains(verification.Detail, "PATH") {
 		t.Errorf("detail = %q, want it to say the binary is not on PATH", verification.Detail)
 	}
+}
+
+// piRPCStubEnv marks the child process the cases below start: this test binary, run with the variable in
+// its environment, answers as the harness arm the variable's own value names (piRPCStubArm*).
+const piRPCStubEnv = "CCC_TEST_PI_RPC_STUB"
+
+// The arms the stub harness is run as: the large load answer the case below pins, a harness that fails
+// with a diagnostic of its own, and a harness that never exits.
+const (
+	piRPCStubAnswer = "answer"
+	piRPCStubFail   = "fail"
+	piRPCStubHang   = "hang"
+)
+
+// piRPCStubSessionID is the identity the stub harness answers about.
+const piRPCStubSessionID = "01a1c338-0000-4000-8000-0000000000ab"
+
+// TestPiRPCCarriesAnAnswerLargerThanTheExcerptBound pins the arm the load check reads a harness through:
+// a `get_messages` answer carries a whole conversation's contents, so the runner reads the protocol as it
+// arrives with only the check's own fields kept, and a legitimate history larger than the diagnostic
+// bound (harnessOutputMax) is read whole -- an excerpt of a `get_messages` answer is not an answer, and a
+// check that cut one would report a successful native load as unverified. The same case runs the
+// runner's two other answers, because they travel through the same pipe: a harness that exits nonzero is
+// reported with its own stderr, and a harness that never exits is answered by the run's deadline.
+//
+// The cases run the real runPiRPC, not a fake of it: this test binary is the stub harness (started the
+// way the Codex turn case starts it), so the stdout pipe, the incremental read, the parse and the
+// process's own end are the production path. The answering stub checks its own answer's size, so the case
+// fails rather than silently stopping to exercise the bound it exists for.
+func TestPiRPCCarriesAnAnswerLargerThanTheExcerptBound(t *testing.T) {
+	switch os.Getenv(piRPCStubEnv) {
+	case piRPCStubAnswer:
+		piRPCStubHarnessAnswer(t)
+		return
+	case piRPCStubFail:
+		fmt.Fprintln(os.Stderr, "the stub harness failed on purpose")
+		os.Exit(3)
+	case piRPCStubHang:
+		time.Sleep(30 * time.Second)
+		os.Exit(0)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolving the test binary: %v", err)
+	}
+	arguments := []string{"-test.run=^TestPiRPCCarriesAnAnswerLargerThanTheExcerptBound$"}
+	run := func(t *testing.T, arm string, timeout time.Duration) ([]piRPCResponse, error) {
+		t.Helper()
+		t.Setenv(piRPCStubEnv, arm)
+		return runPiRPC(context.Background(), executable, t.TempDir(), t.TempDir(), t.TempDir(),
+			arguments, "", timeout, nil)
+	}
+
+	responses, err := run(t, piRPCStubAnswer, time.Minute)
+	if err != nil {
+		t.Fatalf("runPiRPC = %v, want the stub harness's own answers", err)
+	}
+	state, err := readPiState(responses)
+	if err != nil {
+		t.Fatalf("readPiState: %v", err)
+	}
+	if state.SessionID != piRPCStubSessionID || state.MessageCount != 2 {
+		t.Errorf("state = %+v, want the stub's own session and count", state)
+	}
+	detail, err := piMessageDetail(responses, piRPCStubSessionData())
+	if err != nil {
+		t.Fatalf("piMessageDetail: %v", err)
+	}
+	if detail != "" {
+		t.Errorf("piMessageDetail = %q, want the stub's roles to agree with the file the case reads", detail)
+	}
+
+	if _, err := run(t, piRPCStubFail, time.Minute); err == nil {
+		t.Error("runPiRPC answered no error for a harness that exited nonzero")
+	} else {
+		for _, want := range []string{"exit status 3", "the stub harness failed on purpose"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the failure %q does not name %q", err, want)
+			}
+		}
+	}
+
+	if _, err := run(t, piRPCStubHang, time.Second); err == nil {
+		t.Error("runPiRPC answered no error for a harness that never exited")
+	} else if !strings.Contains(err.Error(), "timed out after 1s") {
+		t.Errorf("the failure %q does not name the deadline it answered by", err)
+	}
+}
+
+// piRPCStubHarnessAnswer writes the protocol one RPC run answers with -- a session event, a diagnostic
+// line, the state and the messages -- with the get_messages line built past the excerpt bound.
+func piRPCStubHarnessAnswer(t *testing.T) {
+	t.Helper()
+	messages := []map[string]any{
+		{"role": "user", "content": strings.Repeat("x", harnessOutputMax)},
+		{"role": "assistant", "content": "It is set in internal/retry/config.go."},
+	}
+	stateData, err := json.Marshal(map[string]any{
+		"sessionId": piRPCStubSessionID, "messageCount": len(messages), "sessionFile": "",
+	})
+	if err != nil {
+		t.Fatalf("building the stub's state answer: %v", err)
+	}
+	messagesData, err := json.Marshal(map[string]any{"messages": messages})
+	if err != nil {
+		t.Fatalf("building the stub's messages answer: %v", err)
+	}
+	stateAnswer, err := json.Marshal(map[string]any{
+		"type": "response", "command": "get_state", "success": true, "data": json.RawMessage(stateData),
+	})
+	if err != nil {
+		t.Fatalf("building the stub's state response: %v", err)
+	}
+	messagesAnswer, err := json.Marshal(map[string]any{
+		"type": "response", "command": "get_messages", "success": true, "data": json.RawMessage(messagesData),
+	})
+	if err != nil {
+		t.Fatalf("building the stub's messages response: %v", err)
+	}
+	if len(messagesAnswer) <= harnessOutputMax {
+		t.Fatalf("the stub's messages answer holds %d byte(s), want more than the excerpt bound (%d): this "+
+			"case must exercise an answer the check used to cut", len(messagesAnswer), harnessOutputMax)
+	}
+	fmt.Fprintln(os.Stdout, `{"type":"session","sessionId":"`+piRPCStubSessionID+`"}`)
+	fmt.Fprintln(os.Stdout, "pi: loading")
+	fmt.Fprintln(os.Stdout, string(stateAnswer))
+	fmt.Fprintln(os.Stdout, string(messagesAnswer))
+}
+
+// piRPCStubSessionData is the converted file the stub's answer stands for: the two roles the stub
+// reports, in order, on one path.
+func piRPCStubSessionData() []byte {
+	return []byte(strings.Join([]string{
+		`{"type":"session","version":3,"id":"` + piRPCStubSessionID + `","cwd":"/tmp/stub-project"}`,
+		`{"type":"message","id":"aaaa1111","parentId":null,"message":{"role":"user","content":"hi"}}`,
+		`{"type":"message","id":"bbbb2222","parentId":"aaaa1111","message":{"role":"assistant","content":"ok"}}`,
+	}, "\n") + "\n")
+}
+
+// TestVerifyPiLoadReadsEveryEntryOfAConvertedFile pins the load check's own entry read on the file shape
+// this build's writer can produce and a bounded scan could not: a converted file holding a record larger
+// than any excerpt bound -- the writer imposes none of its own on an entry -- with the conversation's own
+// small leaf after it. The check must read the file's entries to their end: a scan that stopped at the
+// large record would answer the earlier one as the file's leaf and compare the loader's correct
+// two-message answer against a one-message prefix. The walk's own assertions come first, so a case that
+// broke the read fails where the read is, not only in the verdict below it.
+func TestVerifyPiLoadReadsEveryEntryOfAConvertedFile(t *testing.T) {
+	const sessionID = "01a1c338-0000-4000-8000-0000000000ac"
+	cwd := t.TempDir()
+	large := `{"type":"message","id":"bbbb2222","parentId":"aaaa1111","timestamp":"2026-05-04T09:15:02.000Z",` +
+		`"message":{"role":"user","content":"` + strings.Repeat("x", 9<<20) + `"}}`
+	data := []byte(strings.Join([]string{
+		`{"type":"session","version":3,"id":"` + sessionID + `","timestamp":"2026-05-04T09:15:00.000Z","cwd":"` + cwd + `"}`,
+		`{"type":"message","id":"aaaa1111","parentId":null,"timestamp":"2026-05-04T09:15:01.000Z",` +
+			`"message":{"role":"user","content":"Where is the retry cap configured?"}}`,
+		// The large record hangs off the root and nothing hangs off it: recorded history, not the leaf.
+		large,
+		`{"type":"message","id":"cccc3333","parentId":"aaaa1111","timestamp":"2026-05-04T09:15:04.000Z",` +
+			`"message":{"role":"assistant","content":[{"type":"text","text":"It is set in internal/retry/config.go."}]}}`,
+	}, "\n") + "\n")
+	if got, want := piModelVisibleRoles(data), []string{"user", "assistant"}; !slices.Equal(got, want) {
+		t.Fatalf("piModelVisibleRoles = %v, want %v: the walk must read the file to its own leaf, past a "+
+			"record larger than any bound", got, want)
+	}
+	if got := piExpectedMessageCount(data); got != 2 {
+		t.Fatalf("piExpectedMessageCount = %d, want 2", got)
+	}
+
+	home := t.TempDir()
+	path, _, err := InstallPiSession(PiSession{
+		SessionID: sessionID,
+		Directory: PiProjectDir(cwd),
+		FileName:  "2026-05-04T09-15-00-000Z_" + sessionID + ".jsonl",
+		Cwd:       cwd,
+		Data:      data,
+	}, home)
+	if err != nil {
+		t.Fatalf("installing the Pi session: %v", err)
+	}
+	rpc := &fakePiRPC{installed: sessionID, roles: []string{"user", "assistant"}}
+	withFakePiHarness(t, rpc, nil)
+	verification := VerifyPiLoad(context.Background(), PiLoadOptions{
+		Binary: PiBinaryDefault, SessionID: sessionID, Cwd: cwd,
+		Directory: PiProjectDir(cwd), FileName: filepath.Base(path),
+		Data: data, Installed: path, Timeout: time.Minute,
+	})
+	if verification.State != VerificationStateVerified {
+		t.Fatalf("load = %+v, want a verified load: the loader's own two-message answer is the file's own "+
+			"conversation", verification)
+	}
+}
+
+// TestPiProtocolLinesAnswersOneLineAtATime pins the reader the RPC protocol is parsed through, apart from
+// any JSON: a line longer than the underlying buffer is handed out in pieces, a line's own end is io.EOF
+// for its reader, a reader that abandons a line mid-piece still has the next line start where the
+// stream's own line feed is (nothing of the abandoned line is answered as a line of its own), and a
+// stream that ends mid-line answers the line it ended with rather than losing it.
+func TestPiProtocolLinesAnswersOneLineAtATime(t *testing.T) {
+	readerOf := func(input string) *piProtocolLines {
+		return &piProtocolLines{reader: bufio.NewReader(strings.NewReader(input))}
+	}
+	t.Run("a line longer than the buffer arrives in pieces", func(t *testing.T) {
+		first := strings.Repeat("a", 10_000)
+		lines := readerOf(first + "\n" + "b\n")
+		if !lines.next() {
+			t.Fatal("next answered false for a line that is there")
+		}
+		var got strings.Builder
+		if _, err := io.Copy(&got, lines); err != nil {
+			t.Fatalf("reading the first line: %v", err)
+		}
+		if got.String() != first+"\n" {
+			t.Errorf("the first line answered %d byte(s), want the line's own %d", got.Len(), len(first)+1)
+		}
+		if !lines.next() {
+			t.Fatal("next answered false for the second line")
+		}
+		second, err := io.ReadAll(lines)
+		if err != nil {
+			t.Fatalf("reading the second line: %v", err)
+		}
+		if string(second) != "b\n" {
+			t.Errorf("the second line = %q, want %q", second, "b\n")
+		}
+		if lines.next() {
+			t.Error("next answered true past the last line")
+		}
+	})
+	t.Run("a reader that abandons a line loses only that line", func(t *testing.T) {
+		lines := readerOf(strings.Repeat("a", 10_000) + "\nsecond\n")
+		if !lines.next() {
+			t.Fatal("next answered false for a line that is there")
+		}
+		one := make([]byte, 8)
+		if n, err := lines.Read(one); n != 8 || err != nil {
+			t.Fatalf("Read = %d, %v; want the first 8 bytes of the line", n, err)
+		}
+		if !lines.next() {
+			t.Fatal("next answered false for the line after an abandoned one")
+		}
+		rest, err := io.ReadAll(lines)
+		if err != nil {
+			t.Fatalf("reading after the abandoned line: %v", err)
+		}
+		if string(rest) != "second\n" {
+			t.Errorf("after abandoning a line the reader answered %q, want the next line's own bytes: the "+
+				"abandoned line's remainder is not a line of its own", rest)
+		}
+	})
+	t.Run("a stream that ends mid-line answers that line", func(t *testing.T) {
+		lines := readerOf("partial")
+		if !lines.next() {
+			t.Fatal("next answered false for a stream that holds a line")
+		}
+		rest, err := io.ReadAll(lines)
+		if err != nil {
+			t.Fatalf("reading a stream that ended mid-line: %v", err)
+		}
+		if string(rest) != "partial" {
+			t.Errorf("the last line = %q, want the bytes the stream ended with", rest)
+		}
+		if lines.next() {
+			t.Error("next answered true past a stream that ended")
+		}
+	})
 }

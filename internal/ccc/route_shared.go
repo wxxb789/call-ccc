@@ -24,11 +24,15 @@ import (
 // files keep their own option types, method constants, agent constant, target-path join, round-trip
 // comparator and blocked-environment names as their readable face.
 
-// harnessOutputMax and harnessDiagnosticsMax bound what one harness run may add to this process's
-// memory, for both the RPC arm and the turn arm of the checks. The answer a report quotes is cut to
-// boundedText's own limit anyway (8192 bytes by default), and a harness flooding either stream is
-// answered by its deadline and an excerpt rather than by this process growing with every byte it writes.
-// The diagnostics bound is the size the Codex app server keeps of its own, 4096 bytes.
+// harnessOutputMax and harnessDiagnosticsMax bound what one harness *turn* may add to this process's
+// memory, and the diagnostics an RPC arm keeps. The answer a report quotes is cut to boundedText's own
+// limit anyway (8192 bytes by default), and a harness flooding either stream is answered by its deadline
+// and an excerpt rather than by this process growing with every byte it writes. The diagnostics bound is
+// the size the Codex app server keeps of its own, 4096 bytes.
+//
+// An RPC arm's *protocol answers* are not bounded here: the Pi load check reads its harness's answers
+// incrementally, retaining only the fields it asks about (readPiResponses), because a `get_messages`
+// answer carries a whole conversation's contents and an excerpt of one is not an answer to the check.
 const (
 	harnessOutputMax      = 1 << 20
 	harnessDiagnosticsMax = 4096

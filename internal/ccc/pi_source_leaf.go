@@ -2,8 +2,6 @@ package ccc
 
 import (
 	"bufio"
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -169,21 +167,14 @@ func sourceLeafNotMeasuredDetail(readFrom string, boundary SourceBoundary) strin
 // therefore asked by order: the last entry whose kind is one the read carries is the record its last
 // message stands for, and every entry after that one must be an entry the harness's loader keeps out of
 // the context. A walk that ends where the file does (a root, a parent the file does not hold, a record
-// naming itself, a loop) answers what it reached. A read with no records at all has no leaf to resume
-// wrongly, and a file with no entry beyond its header selects nothing: both answer nil.
+// naming itself, a loop) answers what it reached.
+//
+// A read that holds no record at all is asked the same question of the same file: there is no leaf of its
+// own that could be resumed wrongly, but the file's entries are still the source's, and the harness's own
+// loader would build a context from them (piEmptyReadRefusal). A file with no entry beyond its header
+// selects nothing, and both of these answers are nil.
 func piSourceLeafRefusal(conversation Conversation, path string) error {
 	messages := conversation.Messages
-	if len(messages) == 0 {
-		return nil
-	}
-	carried := make(map[string]bool, len(messages))
-	for _, message := range messages {
-		if id := strings.TrimSpace(message.SourceUUID); id != "" {
-			carried[id] = true
-		}
-	}
-	lastID := strings.TrimSpace(messages[len(messages)-1].SourceUUID)
-
 	entries, byID, err := piSourceEntries(path)
 	if err != nil {
 		return err
@@ -193,6 +184,17 @@ func piSourceLeafRefusal(conversation Conversation, path string) error {
 		// so no branch of its own can be resumed in place of this read's last record.
 		return nil
 	}
+	if len(messages) == 0 {
+		return piEmptyReadRefusal(path, entries, byID)
+	}
+	carried := make(map[string]bool, len(messages))
+	for _, message := range messages {
+		if id := strings.TrimSpace(message.SourceUUID); id != "" {
+			carried[id] = true
+		}
+	}
+	lastID := strings.TrimSpace(messages[len(messages)-1].SourceUUID)
+
 	leaf := entries[len(entries)-1]
 	if len(byID) == 0 {
 		for index := len(entries) - 1; index >= 0; index-- {
@@ -271,6 +273,63 @@ func piSourceLeafRefusal(conversation Conversation, path string) error {
 	return nil
 }
 
+// piEmptyReadRefusal answers whether a file can stand behind a read that holds no record at all: nil when
+// the harness's own loader would build no conversation from the file either, and a refusal naming the
+// entry where it would.
+//
+// An empty read is not by itself a defect -- a conversation that recorded no message and a file that
+// holds nothing beyond its header are both real, and neither can be resumed wrongly -- but the file's
+// entries are still the source's, and an empty read is an answer the conversion would write as an empty
+// session: a *dropped* record is what this case may not pass over, because the read's own empty answer
+// cannot count it as a loss. The carried Pi parser skips `custom_message` and `branch_summary` (and any
+// kind this build does not know), while the harness's own loader builds a message from the first two, so
+// a file holding one on the path its loader walks from is context the conversion would install an empty
+// session in place of -- the same dropped-context shape the walk above refuses for a read that holds
+// records, with nothing carried to reconcile it against.
+//
+// The file is asked the question its own shape supports: a file that records entry identities is asked
+// about the path its loader walks from (the file's last entry and its ancestors), exactly as the walk
+// above asks it, because an entry off that path is recorded history the loader does not build context
+// from; a file that records none is asked by order, because that is the shape its answer takes (above).
+func piEmptyReadRefusal(path string, entries []piConversationEntry, byID map[string]int) error {
+	if len(byID) == 0 {
+		for index, entry := range entries {
+			if piEntryKindsOutsideTheContext[entry.Type] {
+				continue
+			}
+			return fmt.Errorf("%w: this read holds no record at all, while the source's own file %s "+
+				"records no entry identities and holds a %s record (entry %d of %d, role %s) whose kind "+
+				"this build cannot say the harness's own conversation context leaves out, so the "+
+				"conversation a resumed target would read is not the one the source's loader builds",
+				ErrUnrepresentableLeaf, path, entryKind(entry.Type), index+1, len(entries),
+				entryRole(entry.Message.Role))
+		}
+		return nil
+	}
+	leaf := entries[len(entries)-1]
+	current := leaf
+	for steps := 0; steps <= len(entries); steps++ {
+		if !piEntryKindsOutsideTheContext[current.Type] {
+			return fmt.Errorf("%w: this read holds no record at all, while the source's own file %s "+
+				"selects the leaf %s, whose own path holds a %s record (id %s, role %s) whose kind this "+
+				"build cannot say the harness's own conversation context leaves out: an empty session "+
+				"would be installed in place of the conversation the source's own loader builds",
+				ErrUnrepresentableLeaf, path, sourceLeafName(leaf), entryKind(current.Type),
+				entryIdentity(strings.TrimSpace(current.ID)), entryRole(current.Message.Role))
+		}
+		parent := parentOfPiEntry(current)
+		if parent == "" {
+			break
+		}
+		next, ok := byID[parent]
+		if !ok {
+			break
+		}
+		current = entries[next]
+	}
+	return nil
+}
+
 // piSourceEntries reads one source session's own entries in the file's order and answers them, plus the
 // index from an identity to its entry. A file that cannot be read is an error rather than an answer, the
 // way the boundary pass treats the same file (takeSourceBoundary); a line the scan cannot read is skipped,
@@ -333,9 +392,9 @@ func entryRole(role string) string {
 }
 
 // piScanConversationEntries reads one Pi session file's entries in the file's own order, calling visit for
-// each readable entry. The session header and lines that are not JSON objects are skipped, exactly as the
-// load check's own entry read (piConversationEntries) does with the bytes of a converted file: the two
-// callers read the same format family, and its entry shape has one reader here.
+// each readable entry. The line-to-entry shape is the family's one reader (piEntryFromLine), the same one
+// the load check's byte-backed read uses on a converted file: the two callers read the same format family,
+// and the shape it holds is decided once.
 //
 // maxLine bounds one line. A line beyond it and a read that fails stop the scan and are answered as the
 // error they are: a caller judging a file by the entries before such a line would be judging a file it did
@@ -344,18 +403,9 @@ func piScanConversationEntries(r io.Reader, maxLine int, visit func(piConversati
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLine)
 	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) == 0 {
-			continue
+		if entry, ok := piEntryFromLine(scanner.Bytes()); ok {
+			visit(entry)
 		}
-		var entry piConversationEntry
-		if err := json.Unmarshal(line, &entry); err != nil {
-			continue
-		}
-		if entry.Type == "" || entry.Type == piEntrySession {
-			continue
-		}
-		visit(entry)
 	}
 	return scanner.Err()
 }

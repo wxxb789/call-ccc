@@ -757,6 +757,98 @@ the source-side half of the leaf rule, and pinning or deleting another function'
 restyle code this round does not touch. Also unchanged: the run's report shape (the two disclosures travel
 in `warnings`, the channel the boundary and fidelity caveats already use) and every gate step.
 
+**The seventh review round's fix pass** answers that round's three findings, all on the Pi route's
+verification surface, and closes out every rule it touches with an executed mutation (revert the line, run
+the case that names it, restore the line, record the failure). The three findings:
+
+- **An empty Pi read is judged by the file's own entries** (`internal/ccc/pi_source_leaf.go`). The check
+  returned before reading the file when the read held no record, so a session header plus a
+  `custom_message` — an entry the carried Pi parser skips while Pi's own loader builds a message from it —
+  converted as an *empty* session with no counted omission. The file is now read first, and the empty read
+  is answered by `piEmptyReadRefusal`: every entry on the path Pi's loader walks from (the file's last
+  entry, then its ancestors) must be a kind the loader keeps out of the context, and a file that records no
+  identity is asked by its own order (every entry it holds must be such a kind, because the file's order is
+  the answer its shape takes). A header-only file still answers nil, a metadata-only file still converts,
+  and a dropped record *off* the leaf path is still recorded history rather than context — the reading the
+  walk already made for a read that holds records.
+- **The load check's RPC arm reads its harness's answers whole** (`internal/ccc/pi_verify.go`). The arm
+  captured stdout through the 1 MiB diagnostic bound (`harnessOutputMax`), and a `get_messages` answer
+  carries a whole conversation's *contents*: a legitimate history larger than the bound was truncated, the
+  incomplete JSON was dropped, and the check reported a successful native load as unverified — the default
+  CLI invocation then exited nonzero *after* installation. The runner now takes the harness's stdout as a
+  pipe and `readPiResponses` decodes each line as it arrives into `piRPCResponse`, which declares only the
+  fields the check reads: the message contents are scanned past, never held, and no diagnostic bound
+  applies to the protocol document. A line the decoder abandons is drained to its own line feed
+  (`piProtocolLines`), so a malformed line cannot hide the answers after it, and a stream that ends
+  mid-line answers the line it ended with.
+- **The converted file's entry read reads every entry the writer can emit** (`internal/ccc/pi_verify.go`).
+  The byte-backed read of a converted file bounded a line at 8 MiB and discarded the scan error, so a file
+  holding a large record between the conversation and its leaf was judged by a prefix: the walk started
+  from the wrong leaf and the native check compared the loader's correct answer against a shorter list.
+  The read now answers every line of the file — the bytes are in hand, and a bound the writer did not
+  promise is what leaves a caller judging a prefix — and the line-to-entry shape both scans read is one
+  function (`piEntryFromLine`), with the file-backed scan's own bound (the leaf check's 64 MiB, the carried
+  parser's `maxLineSize`) still stopping with the error it is.
+
+The mutations, one per rule, each run against the case that names it and restored afterwards:
+
+| Rule | Line disabled | Observed |
+| --- | --- | --- |
+| an empty read is still judged by the file's own entries (`internal/ccc/pi_source_leaf.go`) | the `piEmptyReadRefusal` branch replaced by the removed `if len(messages) == 0 { return nil }` | `TestPiSourceLeafRefusalRefusesADroppedRecordBehindAnEmptyRead` FAIL, both sub-cases (`the leaf check = <nil>, want ErrUnrepresentableLeaf` — the dropped `custom_message`, and the identity-free file) |
+| the load arm's answers are read whole, not cut at the diagnostic bound (`internal/ccc/pi_verify.go`) | `readPiResponses(stdout)` replaced by a prefix of `harnessOutputMax` bytes re-parsed (the pre-fix shape) | `TestPiRPCCarriesAnAnswerLargerThanTheExcerptBound` FAIL — `piMessageDetail: the harness answered no get_messages response`, the sentence the finding predicted; the case drives the real `runPiRPC` against a stub process of this build, so the pipe, the incremental read and the parse are the production path |
+| a line the decoder abandons is drained to its own line feed (`piProtocolLines.next`) | the drain loop removed | `TestPiProtocolLinesAnswersOneLineAtATime/a_reader_that_abandons_a_line_loses_only_that_line` FAIL — the abandoned line's remainder was answered as the next line |
+| the stream's end answers "no further line" exactly (`piProtocolLines.next`) | (no mutation needed: the case was written first and failed against the first implementation) | `TestPiProtocolLinesAnswersOneLineAtATime/a_line_longer_than_the_buffer_arrives_in_pieces` FAIL — `next answered true past the last line` — so the end-of-stream peek was added |
+| every entry of a converted file is read, past any record size (`piConversationEntries`) | the read replaced by the old `piScanConversationEntries(…, 8<<20)` whose error is discarded | `TestVerifyPiLoadReadsEveryEntryOfAConvertedFile` FAIL — `piModelVisibleRoles = [user], want [user assistant]`: the walk started from the entry before the large record |
+| a stream the read could not finish is an error, not a shorter answer (`piProtocolLines.err`) | the answer replaced by `return nil` | `TestPiRPCReadsAndComparesTheLoadersAnswer` FAIL — `readPiResponses on a stream that failed = 2 response(s), <nil>; want the two answers and the read error` |
+| a nonzero exit is reported with the harness's own stderr (`runPiRPC`) | the wait-error branch's condition disabled (`false && …`) | `TestPiRPCCarriesAnAnswerLargerThanTheExcerptBound` FAIL — `runPiRPC answered no error for a harness that exited nonzero` (the stub process exits 3 with `the stub harness failed on purpose`) |
+| a harness that never exits is answered by the run's deadline (`runPiRPC`) | the deadline branch's condition disabled | same case FAIL — `the failure "signal: killed; stderr: " does not name the deadline it answered by`: without the branch, a killed process reads as a run failure rather than as the deadline it passed |
+
+`python3 scripts/gate.py`, exit code 0, every step `PASS`:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3602 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 251 tests in 5.815s (rc=0)
+  PASS     parity   … carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) … owned: 29 project-owned prefix(es); files seen by git: 5671 … declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 123 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The native half was re-derived against the installed harness, because the fix changes a measured consumer
+(`scripts/pi-native-check.py` drives this build's load check). Without `--resume-prompt` — the arm this
+pass changes is the offline load check, and the turn arm is untouched — so `21` checks rather than §2's
+`23`, which is the same list plus the two real-turn checks; exit 0:
+
+```console
+PASS: the load check verified the installed session natively — the harness's own loader read the session and
+answered about it (sessionId "01a1eb4b-992e-7796-b010-fcfc15f82022", messageCount 3); the same question with
+an unknown session id answered "No session found matching". The check ran against a throw-away copy …
+PASS: the loader's own message list is the file's model-visible history — loader ['compactionSummary',
+'user', 'assistant'] vs file ['compactionSummary', 'user', 'assistant']
+PASS: the unknown-id control arm reports no such session — No session found matching '01a1c335-dead-beef-0000-000000000000'
+RESULT: PASS — 21 check(s), none failed
+```
+
+The carried counts, loss-category count and installed-file roles are the fourth through sixth rounds' own
+(`6`/`1`/`1`, `29` categories), which is the expected outcome of a fix whose shape — how the check reads
+its harness's answer, and which entries of a converted file it reads — no committed fixture's conversion
+changes. The fix pass changed `internal/ccc/pi_source_leaf.go` (the empty-read guard and
+`piEmptyReadRefusal`; both scans now share `piEntryFromLine`), `internal/ccc/pi_verify.go` (the response
+types, `readPiResponses`/`piProtocolLines`, the pipe-reading runner, `piConversationEntries`/
+`piEntryFromLine`, and the removed 8 MiB bound), `internal/ccc/route_shared.go` (the shared bound's
+comment now says what it bounds: a turn's answer and an RPC arm's diagnostics, not a protocol answer), and
+the cases: four new cases (`internal/ccc/pi_verify_test.go`) and the empty read's refusal case plus the
+extended no-records case (`internal/ccc/continue_pi_test.go`), with the read-error answer, the runner's
+failure and deadline arms and the byte-level reads added as assertions to the cases that already stand for
+those surfaces, and the fake RPC harness now parsing its own canned protocol through the same reader. The
+narrowed tree's `func Test` count moves `293 → 297`; the `selftest` count stays `251` (no Python case).
+`AGENTS.md` is not edited: no layout, gate step, command, read order or agent rule changed, and this is
+said here rather than by touching the file.
+
 ## 7. Limits and residual risks
 
 - **The Pi → previously-supported-target native half did not run for the harness's first run here**
@@ -824,7 +916,7 @@ in `warnings`, the channel the boundary and fidelity caveats already use) and ev
 | `2231 bytes`, `4 message(s)`, `1 call(s)`, `1 result(s)`, `1 turn(s)`, `unresolved_source_parents ×1` | the Pi → Codex conversion of the *other* committed Pi fixture (`pi:01a1c335-…`, the same source §3 converts to Claude), measured in the fourth round: the rollout's own counts, with the one counted place the adjacent projection step takes (Q-0005-13 (b)); the earlier revision reported that category at `0` on this conversion |
 | `unresolved_source_parents = 1` on the projection case and `= 2` on the walk's other two places | the Codex-target cases (`TestCodexRolloutKeepsAnActiveResultAcrossAnInterveningBranch`, `TestCodexRolloutCountsThePlacesItsWalkCouldNotAnswer`): the Codex-target loss list gained the category in the third review round's fix pass, with a detail naming the three relations it counts (Q-0005-12). The fourth round added the adjacent place to every route's count (Q-0005-13 (b)): the intervening case is still `1`, the adjacent one is now `1` where it was `0`, `TestPiSessionWritesTheSourcesOwnRelations` asserts `2` (the parent outside the read and the record naming the call its result stands directly before), and the committed linear Pi fixture converts with `×1` on both outbound routes (§3; the row below pins the same conversion's bytes) |
 | `3067 → 32999 bytes` | the installed Pi session's growth across one real turn (§2). What the check asserts is that the file grew, not a byte count, so a later run measures different ends: the runs this record has quoted measured `3123 → 33055` / `3123 → 33042` (the first revision), `3107 → 33039` (the earlier fix pass) and `3067 → 32986`, then `3067 → 32999`, in the third review round's fix pass |
-| `23 checks, none failed` / `12 checks, none failed` | the two native runs' verdicts (§2, §3); both were re-run for this pass. §3's run has one check more than the `11` the first run reported, because the earlier fix pass records the non-Pi target's load state as a check of its own. The fourth round's re-runs (no turn) report `21 check(s), none failed` for `claude-to-pi` — the §2 block's run is the same check list plus the two real-turn checks — and `12 check(s), none failed` for `pi-to-claude`, both with the loader's own verdicts unchanged; the fifth round's re-runs (no turn) print the same `21`/`12` lines, with the same carried counts (`6`/`4` messages, `1` call, `1` result) and loss-category counts (`29`/`27`) as the fourth round's |
+| `23 checks, none failed` / `12 checks, none failed` | the two native runs' verdicts (§2, §3); both were re-run for this pass. §3's run has one check more than the `11` the first run reported, because the earlier fix pass records the non-Pi target's load state as a check of its own. The fourth round's re-runs (no turn) report `21 check(s), none failed` for `claude-to-pi` — the §2 block's run is the same check list plus the two real-turn checks — and `12 check(s), none failed` for `pi-to-claude`, both with the loader's own verdicts unchanged; the fifth round's re-runs (no turn) print the same `21`/`12` lines, with the same carried counts (`6`/`4` messages, `1` call, `1` result) and loss-category counts (`29`/`27`) as the fourth round's; the seventh round's re-run (no turn, `claude-to-pi`) prints `21 check(s), none failed` at exit 0, with the loader's own verdict unchanged (`messageCount 3`, `[compactionSummary, user, assistant]`, the unknown-id control arm answering `No session found matching`) |
 | the branch fixture's loader answers | `messageCount 3` / `[user, assistant, assistant]` for the *source* file and for its conversion, against `messageCount 4` / `[compactionSummary, user, assistant, assistant]` for the conversion the pre-fix writer produced (§4) |
 | the branch-switch fixture's loader answer | `messageCount 4` / `[user, assistant, assistant, branchSummary]` from Pi 1.5.2's own RPC loader against a copy of `pi/01a1c337-…` (the sixth review round's fix pass, §6): the file's leaf is the switch's `branch_summary`, and the read's own last record -- the abandoned branch's last turn -- is not on the path the loader walks |
-| `251 selftest cases`, `293 Go test functions`, `5553 carried files`, `29 owned prefixes`, `3601 gofmt-clean files`, `123 owned file(s)` scanned | the gate run (§6) and the current case count: the selftest count went `246 → 248` with the third review round's two Python cases (`seed_pi_home`'s nested-credential cases) and `248 → 251` with the fourth round's three (the endpoint-policy cases at both levels, the credential-free counter-arm, and the run-level refusal), while the narrowed tree's `func Test` count went `269 → 270` with the third round's one new Go case, `270 → 274` with the fourth round's four (one per route: the Pi tree writer, the Claude tree writer, the Codex line walk and the pipeline's archive read) and `274 → 279` with the fifth round's five Go cases (the omission/projection composition on the Pi writer and on the Claude writer, `endRecord`'s two-effects case, the omitted record with no resolved place, and the recorded-cycle case), the selftest count unchanged because the fifth round added no Python case; the sixth round's fix pass took it `279 → 293` with fourteen Go cases (the branch-switch fixture's facts and its refusal for all three targets, the two context-free shapes that must still convert, the dropped-context-record refusal and the two other refusals the walk answers, the identity-free file's two answers, the two no-walk answers, the scan's line bound, the walk's cycle bound, the writer's answer for a read with no leaf identity, and the two load-check cases for a recorded directory whose name ends with a space) and left the selftest count at `251` (no Python case) and the owned-file count at `123` (the new source-side file and the new committed fixture). The owned-file count includes the ignored build/test artifacts the working tree holds (the check's `bin/` and the two `__pycache__` directories), which the scan stages with the owned files; a fresh checkout counts fewer, and the pre-fix tree's own gate run (a detached worktree of `711e256`) printed `114` |
+| `251 selftest cases`, `297 Go test functions`, `5553 carried files`, `29 owned prefixes`, `3602 gofmt-clean files`, `5671 files seen by git`, `123 owned file(s)` scanned | the gate run (§6) and the current case count: the selftest count went `246 → 248` with the third review round's two Python cases (`seed_pi_home`'s nested-credential cases) and `248 → 251` with the fourth round's three (the endpoint-policy cases at both levels, the credential-free counter-arm, and the run-level refusal), while the narrowed tree's `func Test` count went `269 → 270` with the third round's one new Go case, `270 → 274` with the fourth round's four (one per route: the Pi tree writer, the Claude tree writer, the Codex line walk and the pipeline's archive read) and `274 → 279` with the fifth round's five Go cases (the omission/projection composition on the Pi writer and on the Claude writer, `endRecord`'s two-effects case, the omitted record with no resolved place, and the recorded-cycle case), the selftest count unchanged because the fifth round added no Python case; the sixth round's fix pass took it `279 → 293` with fourteen Go cases (the branch-switch fixture's facts and its refusal for all three targets, the two context-free shapes that must still convert, the dropped-context-record refusal and the two other refusals the walk answers, the identity-free file's two answers, the two no-walk answers, the scan's line bound, the walk's cycle bound, the writer's answer for a read with no leaf identity, and the two load-check cases for a recorded directory whose name ends with a space) and left the selftest count at `251` (no Python case) and the owned-file count at `123` (the new source-side file and the new committed fixture); the seventh round's fix pass took it `293 → 297` with four Go cases (the empty read's dropped-record refusal, the runner's answer larger than the excerpt bound against a stub process, the converted file read past a large entry, and the protocol line reader) and printed `3602` gofmt-clean files and `5671` files seen by git for this tree. The owned-file count includes the ignored build/test artifacts the working tree holds (the check's `bin/` and the two `__pycache__` directories), which the scan stages with the owned files; a fresh checkout counts fewer, and the pre-fix tree's own gate run (a detached worktree of `711e256`) printed `114` |

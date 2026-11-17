@@ -1,6 +1,7 @@
 package ccc
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -258,13 +259,30 @@ type piLoadState struct {
 // caller's patience.
 const piLoadTimeout = 90 * time.Second
 
-// piRPCResponse is one answer. A session event carries other fields and no `type` of "response".
+// piRPCResponse is one answer, with only the fields this check asks about declared.
+//
+// A session event carries other fields and no `type` of "response". A `get_messages` answer carries the
+// whole conversation's *contents* -- far more than any diagnostic bound -- and this check compares roles,
+// so those members are left undeclared on purpose: the decode this type is read with (readPiResponses)
+// scans a member it does not name past as the bytes arrive instead of holding it, and the answer to a
+// large session's load is read with the same memory as a small one's.
 type piRPCResponse struct {
-	Type    string          `json:"type"`
-	Command string          `json:"command"`
-	Success bool            `json:"success"`
-	Error   string          `json:"error"`
-	Data    json.RawMessage `json:"data"`
+	Type    string            `json:"type"`
+	Command string            `json:"command"`
+	Success bool              `json:"success"`
+	Error   string            `json:"error"`
+	Data    piRPCResponseData `json:"data"`
+}
+
+// piRPCResponseData is the part of an answer's `data` this check reads: the `get_state` fields and the
+// `get_messages` roles, in the loader's own order.
+type piRPCResponseData struct {
+	SessionFile  string `json:"sessionFile"`
+	SessionID    string `json:"sessionId"`
+	MessageCount int    `json:"messageCount"`
+	Messages     []struct {
+		Role string `json:"role"`
+	} `json:"messages"`
 }
 
 // piAskLoader starts the harness in its own RPC mode against the scratch home, asks it for the state of
@@ -296,16 +314,16 @@ func piAskLoader(
 		`{"id":"state","type":"get_state"}`,
 		`{"id":"messages","type":"get_messages"}`,
 	}, "\n") + "\n"
-	stdout, err := runPiLoaderRPC(ctx, binary, cwd, home, sessionDir, arguments, stdin, timeout, stderr)
+	responses, err := runPiLoaderRPC(ctx, binary, cwd, home, sessionDir, arguments, stdin, timeout, stderr)
 	if err != nil {
 		return piLoadState{}, err
 	}
-	state, err := readPiState(stdout)
+	state, err := readPiState(responses)
 	if err != nil {
 		return piLoadState{}, err
 	}
 	if len(data) > 0 {
-		if detail, err := piMessageDetail(stdout, data); err != nil {
+		if detail, err := piMessageDetail(responses, data); err != nil {
 			return piLoadState{}, err
 		} else if detail != "" {
 			return piLoadState{}, errors.New(detail)
@@ -360,30 +378,22 @@ func stateSummary(state piLoadState) string {
 	return fmt.Sprintf("sessionId %q, messageCount %d", state.SessionID, state.MessageCount)
 }
 
-// readPiState reads the `get_state` answer out of one RPC run's stdout.
-func readPiState(stdout string) (piLoadState, error) {
-	for _, response := range readPiResponses(stdout) {
+// readPiState reads the `get_state` answer out of one RPC run's responses.
+func readPiState(responses []piRPCResponse) (piLoadState, error) {
+	for _, response := range responses {
 		if response.Command != "get_state" {
 			continue
 		}
 		if !response.Success {
 			return piLoadState{}, fmt.Errorf("the harness refused get_state: %s", summariseText(response.Error, 200))
 		}
-		var state piLoadState
-		if err := json.Unmarshal(response.Data, &state); err != nil {
-			return piLoadState{}, fmt.Errorf("the harness's get_state answer could not be read: %w", err)
-		}
-		return state, nil
+		return piLoadState{
+			SessionFile:  response.Data.SessionFile,
+			SessionID:    response.Data.SessionID,
+			MessageCount: response.Data.MessageCount,
+		}, nil
 	}
 	return piLoadState{}, errors.New("the harness answered no get_state response")
-}
-
-// piMessageAnswer is the harness's `get_messages` answer: the messages its own loader built from the
-// file, as the harness serialises them.
-type piMessageAnswer struct {
-	Messages []struct {
-		Role string `json:"role"`
-	} `json:"messages"`
 }
 
 // piMessageDetail compares the roles and count the harness's loader reported with what the session
@@ -394,21 +404,17 @@ type piMessageAnswer struct {
 // A `compactionSummary` is how the loader reports the compaction entry it rebuilt its context from, and
 // it stands where the entry stands in the file, so the comparison is between the file's own list of
 // model-visible entries (with the boundary rendered as that one summary) and the loader's.
-func piMessageDetail(stdout string, data []byte) (string, error) {
-	for _, response := range readPiResponses(stdout) {
+func piMessageDetail(responses []piRPCResponse, data []byte) (string, error) {
+	for _, response := range responses {
 		if response.Command != "get_messages" {
 			continue
 		}
 		if !response.Success {
 			return "", fmt.Errorf("the harness refused get_messages: %s", summariseText(response.Error, 200))
 		}
-		var answer piMessageAnswer
-		if err := json.Unmarshal(response.Data, &answer); err != nil {
-			return "", fmt.Errorf("the harness's get_messages answer could not be read: %w", err)
-		}
 		want := piModelVisibleRoles(data)
-		got := make([]string, 0, len(answer.Messages))
-		for _, message := range answer.Messages {
+		got := make([]string, 0, len(response.Data.Messages))
+		for _, message := range response.Data.Messages {
 			got = append(got, message.Role)
 		}
 		if len(got) == 0 {
@@ -499,19 +505,23 @@ func piModelVisibleRoles(data []byte) []string {
 	return roles
 }
 
-// readPiResponses reads the RPC protocol's own response records out of stdout, in order. Session events,
-// which describe activity rather than answer a command, are skipped; a line that is not JSON is skipped
-// too, because the harness writes its diagnostics on stderr and a protocol change would otherwise be
-// reported as a parse failure of the whole stream rather than as the missing answer it is.
-func readPiResponses(stdout string) []piRPCResponse {
+// readPiResponses reads the RPC protocol's own response records out of a run's stdout, in order, as the
+// harness writes them: each line is decoded on its own, and the decode names only the fields the check
+// asks about (piRPCResponse), so a `get_messages` answer carrying a whole conversation's contents is
+// scanned past rather than held -- a load answer is not bounded by anything here, and a legitimate
+// history larger than any diagnostic bound is read the same way as a small one.
+//
+// Session events, which describe activity rather than answer a command, are skipped; a line that is not
+// JSON is skipped too, because the harness writes its diagnostics on stderr and a protocol change would
+// otherwise be reported as a parse failure of the whole stream rather than as the missing answer it is. A
+// line the decoder does not read to its end is discarded by the next line's start (piProtocolLines), so a
+// line's own malformed tail cannot hide the responses after it.
+func readPiResponses(stdout io.Reader) ([]piRPCResponse, error) {
+	lines := &piProtocolLines{reader: bufio.NewReader(stdout)}
 	var responses []piRPCResponse
-	for _, line := range strings.Split(stdout, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "{") {
-			continue
-		}
+	for lines.next() {
 		var response piRPCResponse
-		if err := json.Unmarshal([]byte(trimmed), &response); err != nil {
+		if err := json.NewDecoder(lines).Decode(&response); err != nil {
 			continue
 		}
 		if response.Type != "response" {
@@ -519,47 +529,152 @@ func readPiResponses(stdout string) []piRPCResponse {
 		}
 		responses = append(responses, response)
 	}
-	return responses
+	return responses, lines.err()
 }
 
-// runPiRPC starts one RPC harness run, writes the given commands to its stdin, closes it, and answers
-// its stdout. Both streams are bounded and drained on their own goroutines, so a harness that floods
-// either pipe or never exits is answered by its deadline rather than by this process growing with it.
+// piProtocolLines reads one line at a time out of an RPC run's stdout, so a decoder can read a line's own
+// JSON while it is still arriving: a piece of a long line is handed out and forgotten as the next is
+// read, and the line's end is io.EOF for that decoder, so neither the decoder nor this reader ever holds
+// a whole line, however large the answer is.
+//
+// A line is ended by its line feed (or by the stream's own end), and a piece the stream's buffer cuts is
+// not a line end: a line longer than the buffer is handed out in as many pieces as it takes. A line the
+// decoder abandons is drained by the following next(), so the line after it starts where the stream's own
+// line feed says it does.
+type piProtocolLines struct {
+	reader *bufio.Reader
+	// piece is the current line's bytes not yet handed to a reader. lineEnded reports that the stream will
+	// answer no more of this line (its line feed was read, or the stream ended), and streamErr is what
+	// ended the stream (io.EOF for a stream that simply ended); it is answered once the piece is handed
+	// out.
+	piece     []byte
+	lineEnded bool
+	streamErr error
+	started   bool
+}
+
+// next advances past the current line and reports whether another line follows. The bytes the previous
+// line's reader did not take are discarded; a stream that has ended answers false, after the line it
+// ended with has been handed out. The end is asked with a peek, so a stream that ends right after a line
+// feed answers "no line" here rather than leaving the caller to discover an empty one.
+func (l *piProtocolLines) next() bool {
+	if l.started {
+		for !l.lineEnded {
+			_, err := l.reader.ReadSlice('\n')
+			switch {
+			case err == nil:
+				l.lineEnded = true
+			case errors.Is(err, bufio.ErrBufferFull):
+				// A piece of the same line still to come: read on.
+			default:
+				l.lineEnded = true
+				l.streamErr = err
+			}
+		}
+		if l.streamErr != nil {
+			return false
+		}
+	} else {
+		l.started = true
+	}
+	if _, err := l.reader.Peek(1); err != nil {
+		if !errors.Is(err, io.EOF) {
+			l.streamErr = err
+		}
+		return false
+	}
+	l.piece, l.lineEnded = nil, false
+	return true
+}
+
+// Read answers the current line's bytes, a piece at a time. The line's end and the stream's end both
+// answer io.EOF, which is what a decoder needs to read the line's own value: a line whose last piece had
+// no line feed (a stream that ended mid-line) is answered the same way rather than being lost.
+func (l *piProtocolLines) Read(p []byte) (int, error) {
+	for len(l.piece) == 0 {
+		if l.lineEnded {
+			return 0, io.EOF
+		}
+		piece, err := l.reader.ReadSlice('\n')
+		l.piece = piece
+		switch {
+		case err == nil:
+			l.lineEnded = true
+		case errors.Is(err, bufio.ErrBufferFull):
+			// A piece of a longer line: handed out now, the rest read when it is spent.
+		default:
+			l.lineEnded = true
+			l.streamErr = err
+		}
+	}
+	n := copy(p, l.piece)
+	l.piece = l.piece[n:]
+	return n, nil
+}
+
+// err answers the read error that ended the stream, and nil for a stream that simply ended: io.EOF is
+// the protocol's own end of output, not a failure of the run.
+func (l *piProtocolLines) err() error {
+	if errors.Is(l.streamErr, io.EOF) {
+		return nil
+	}
+	return l.streamErr
+}
+
+// runPiRPC starts one RPC harness run, writes the given commands to its stdin, closes it, and answers the
+// protocol responses its own loader wrote, read as the harness writes them (readPiResponses). The
+// harness's stderr is still bounded and drained on its own goroutine, and the run keeps its deadline, so
+// a harness flooding its diagnostics or never exiting is answered by an excerpt and the deadline rather
+// than by this process growing with it; its *answers* are not cut, because a `get_messages` answer is a
+// conversation and the check's questions cannot be answered by an excerpt of one.
 //
 // The environment is the caller's own with the home variable set and the model variables removed: a
 // host's PATH and locale still reach the harness, and nothing in it can reach a model.
 func runPiRPC(
 	ctx context.Context, binary, cwd, home, sessionDir string, arguments []string, stdin string,
 	timeout time.Duration, stderr io.Writer,
-) (string, error) {
+) ([]piRPCResponse, error) {
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	command := exec.CommandContext(runCtx, binary, arguments...)
 	command.Dir = cwd
 	command.Env = piEnvironment(home, sessionDir, piLoadEnvDenied)
 	command.Stdin = strings.NewReader(stdin)
-	answer := newBoundedBuffer(harnessOutputMax)
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("connecting to the harness's own output: %w", err)
+	}
 	diagnostics := newBoundedBuffer(harnessDiagnosticsMax)
-	command.Stdout = answer
 	if stderr != nil {
 		command.Stderr = io.MultiWriter(diagnostics, stderr)
 	} else {
 		command.Stderr = diagnostics
 	}
-	err := command.Run()
+	if err := command.Start(); err != nil {
+		return nil, err
+	}
+	// The answers are read to their end before waiting: exec closes the pipe when the process exits, so
+	// Wait is called only once no more answers can arrive.
+	responses, readErr := readPiResponses(stdout)
+	waitErr := command.Wait()
 	if runCtx.Err() != nil && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-		return answer.String(), fmt.Errorf("timed out after %s", timeout)
+		return responses, fmt.Errorf("timed out after %s", timeout)
 	}
-	if err != nil {
-		return answer.String(), fmt.Errorf("%v; stderr: %s", err, summariseText(diagnostics.String(), 300))
+	if waitErr != nil {
+		return responses, fmt.Errorf("%v; stderr: %s", waitErr, summariseText(diagnostics.String(), 300))
 	}
-	return answer.String(), nil
+	if readErr != nil {
+		return responses, fmt.Errorf("reading the harness's own answers: %w", readErr)
+	}
+	return responses, nil
 }
 
 // runPiLoaderRPC is the seam the load check drives the target harness's RPC mode through. It is named so
 // a test can answer as a harness whose protocol behaviour is not the host's business: the rule under
 // test is what the check makes of the harness's answer, not which build of the harness is installed
-// here, and the real subprocess path is exercised by scripts/pi-native-check.py against a real binary.
+// here, and the real subprocess path is exercised both by scripts/pi-native-check.py against a real
+// binary and by the runner's own case against a stub process
+// (TestPiRPCCarriesAnAnswerLargerThanTheExcerptBound).
 var runPiLoaderRPC = runPiRPC
 
 // piEnvironment builds a child environment for one harness run: the caller's own environment with the
@@ -771,22 +886,52 @@ type piConversationEntry struct {
 	} `json:"message"`
 }
 
-// piConversationEntries answers the file's own entries, in the file's own order, skipping the header and
-// any line it cannot read. It is the byte-shaped reading of the family's entry scan (a converted file is
-// in hand as bytes); the scan's own bound is the one this checks a *converted* file with, which this
-// build wrote and which holds no line of its own that its writer did not write.
+// piConversationEntries answers a converted file's own entries, in the file's own order, skipping the
+// header and any line it cannot read. It is the byte-shaped reading of the family's entry scan (a
+// converted file is in hand as bytes, not as a stream): the bytes are already held, so every line of the
+// file is read, whatever its size.
+//
+// The writer imposes no bound of its own on an entry -- a source record this build can carry is written
+// as it was read -- so a bound here would be a bound the writer never promised, and a line beyond it
+// would leave the caller judging a *prefix* of the file: a large entry standing between the file's real
+// leaf and the entries before it would move the leaf the walk starts from and answer the loader's
+// correct conversation as a mismatch. This read's error channel is the file-backed scan's
+// (piScanConversationEntries); an answer is always the whole file.
 func piConversationEntries(data []byte) []piConversationEntry {
 	var records []piConversationEntry
-	// The scan cannot fail on a []byte reader: a line beyond the bound is a line this build's own writer
-	// did not write, and the records before it are what this answers with, exactly as before.
-	_ = piScanConversationEntries(bytes.NewReader(data), piConvertedEntryLineMax, func(entry piConversationEntry) {
-		records = append(records, entry)
-	})
+	for len(data) > 0 {
+		line := data
+		if index := bytes.IndexByte(data, '\n'); index >= 0 {
+			line, data = data[:index], data[index+1:]
+		} else {
+			data = nil
+		}
+		if entry, ok := piEntryFromLine(line); ok {
+			records = append(records, entry)
+		}
+	}
 	return records
 }
 
-// piConvertedEntryLineMax bounds one line of a converted session file this build wrote.
-const piConvertedEntryLineMax = 8 << 20
+// piEntryFromLine reads one line of the session format, answering false for a line this family's reads
+// pass over: a blank line, a line that is not JSON, the session header, and a record that names no kind.
+// It is the one reader of the entry shape both scans use -- the file-backed scan answers a line beyond
+// its bound as its error, the byte-backed read answers every line -- so the shape two callers read is
+// decided once, here.
+func piEntryFromLine(line []byte) (piConversationEntry, bool) {
+	line = bytes.TrimSpace(line)
+	if len(line) == 0 {
+		return piConversationEntry{}, false
+	}
+	var entry piConversationEntry
+	if err := json.Unmarshal(line, &entry); err != nil {
+		return piConversationEntry{}, false
+	}
+	if entry.Type == "" || entry.Type == piEntrySession {
+		return piConversationEntry{}, false
+	}
+	return entry, true
+}
 
 // piHomeEnv is the environment variable that selects the Pi data directory a run reads: the harness has
 // no command-line flag for the directory itself, so a resume command that does not set it opens the
