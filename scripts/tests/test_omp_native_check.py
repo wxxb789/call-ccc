@@ -7,8 +7,10 @@ on ``PATH``: the project directory OMP files a session under (``omp_project_dir`
 directory from the host's own OMP home (``seed_omp_home`` -- which providers survive and what their
 ``apiKey`` becomes), the reading of a written session's own bytes (the assistant ``model``/``provider``
 pair OMP's request builder indexes, the fixed-width first line, and the roles the loader builds from the
-file's own ``parentId`` walk), and the ``INCOMPLETE`` verdict a run reports when the OMP binary is not
-installed (``main`` driven with an absent binary).
+file's own ``parentId`` walk), the printed resume line read the way a POSIX shell reads it
+(``ReportedInvocationCases`` -- OMP's line names both the data directory and the session directory inside
+it), and the ``INCOMPLETE`` verdict a run reports when the OMP binary is not installed (``main`` driven
+with an absent binary).
 
 The spelling is the subject the whole route turns on, and it is **not** Pi's: measured on OMP 18.18.7, a
 working directory under the OS temporary directory spells ``-tmp`` + its relative path (that branch wins

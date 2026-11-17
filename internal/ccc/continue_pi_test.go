@@ -382,7 +382,8 @@ func TestContinueFromPiThroughTheCommonModel(t *testing.T) {
 // directWriterAgreesWithThePipeline drives the target's own writer directly over the same document the
 // pipeline read, installs and reads back its own conversion, and requires the pipeline's result to agree
 // on what was carried and read back. Whatever route the pipeline took, the answer must be the shared
-// model's: a Pi-specific branch would produce a different carried report or a different read-back here.
+// model's: a shortcut specific to one source harness would produce a different carried report or a
+// different read-back here.
 func directWriterAgreesWithThePipeline(
 	t *testing.T, target string, conversation Conversation, result ContinueResult,
 ) {
@@ -409,9 +410,9 @@ func directWriterAgreesWithThePipeline(
 			t.Fatalf("reading the direct conversion back: %v", err)
 		}
 		if directVerify.ReadBack != result.Verification.Structure.ReadBack {
-			t.Errorf("the pipeline read back %+v, while the target's own writer over the same source read "+
-				"back %+v: a Pi-specific shortcut is not the shared model's answer",
-				result.Verification.Structure.ReadBack, directVerify.ReadBack)
+			t.Errorf("the pipeline read back %+v for %s, while the target's own writer over the same source "+
+				"read back %+v: the answer must be the shared model's, whatever the source harness",
+				result.Verification.Structure.ReadBack, target, directVerify.ReadBack)
 		}
 	case TargetCodex:
 		direct, err := ConvertToCodexRollout(conversation, CodexTargetOptions{SessionID: sessionID})
@@ -432,9 +433,32 @@ func directWriterAgreesWithThePipeline(
 			t.Fatalf("reading the direct conversion back: %v", err)
 		}
 		if directVerify.ReadBack != result.Verification.Structure.ReadBack {
-			t.Errorf("the pipeline read back %+v, while the target's own writer over the same source read "+
-				"back %+v: a Pi-specific shortcut is not the shared model's answer",
-				result.Verification.Structure.ReadBack, directVerify.ReadBack)
+			t.Errorf("the pipeline read back %+v for %s, while the target's own writer over the same source "+
+				"read back %+v: the answer must be the shared model's, whatever the source harness",
+				result.Verification.Structure.ReadBack, target, directVerify.ReadBack)
+		}
+	case TargetPi:
+		direct, err := ConvertToPiSession(conversation, PiTargetOptions{SessionID: sessionID})
+		if err != nil {
+			t.Fatalf("converting the same document with the target's own writer: %v", err)
+		}
+		if got, want := carriedWithoutBytes(result.Conversion.Carried), carriedWithoutBytes(direct.Carried); got != want {
+			t.Errorf("the pipeline carried %+v, while the target's own writer over the same source carried %+v",
+				got, want)
+		}
+		directHome := t.TempDir()
+		if _, _, err := InstallPiSession(direct, directHome); err != nil {
+			t.Fatalf("installing the direct conversion: %v", err)
+		}
+		directVerify, err := VerifyPiSessionStructure(ctx,
+			filepath.Join(directHome, piSessionsSubdir), direct, fixtureConfig(t))
+		if err != nil {
+			t.Fatalf("reading the direct conversion back: %v", err)
+		}
+		if directVerify.ReadBack != result.Verification.Structure.ReadBack {
+			t.Errorf("the pipeline read back %+v for %s, while the target's own writer over the same source "+
+				"read back %+v: the answer must be the shared model's, whatever the source harness",
+				result.Verification.Structure.ReadBack, target, directVerify.ReadBack)
 		}
 	default:
 		t.Fatalf("no direct writer is pinned for target %q", target)

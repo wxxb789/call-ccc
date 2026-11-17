@@ -164,15 +164,18 @@ func TestOMPHistoryFixtureKeepsTheHabitssNoticeOffTheConversation(t *testing.T) 
 	if err != nil {
 		t.Fatalf("converting the fixture: %v", err)
 	}
-	for _, entry := range ompEntries(t, session.Data) {
-		if entry.Type == "custom" || entry.Type == piEntryTitle && entry != ompEntries(t, session.Data)[0] {
+	// The converted file may hold no `custom` record at all, and its only `title` record is the file's
+	// first line.
+	converted := ompEntries(t, session.Data)
+	for index, entry := range converted {
+		if entry.Type == "custom" || (entry.Type == piEntryTitle && index != 0) {
 			t.Errorf("the converted session holds a %s record the read never carried", entry.Type)
 		}
 	}
 	// The one title slot is the file's own first line and the format's own record, not a claim about a
 	// notice the source held.
-	if entries := ompEntries(t, session.Data); entries[0].Type != piEntryTitle {
-		t.Errorf("the converted session's first line = %q, want the title slot", entries[0].Type)
+	if converted[0].Type != piEntryTitle {
+		t.Errorf("the converted session's first line = %q, want the title slot", converted[0].Type)
 	}
 }
 

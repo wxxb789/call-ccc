@@ -1,6 +1,6 @@
 # Plan — 0005 Continue conversations into and out of Pi
 
-Contract: [`docs/goals/0005-pi-continuation.md`](../goals/archive/0005-pi-continuation.md).
+Contract: [`docs/goals/archive/0005-pi-continuation.md`](../goals/archive/0005-pi-continuation.md).
 Governing design: [`docs/core-design/README.md`](../core-design/README.md).
 Shape reference: increment 0003 ([`docs/plans/0003-codex-to-claude-continuation.md`](0003-codex-to-claude-continuation.md)).
 

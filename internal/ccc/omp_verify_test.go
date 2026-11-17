@@ -50,9 +50,11 @@ func TestProbeOMPBinaryReportsAMissingBinary(t *testing.T) {
 // the list is missing, and that is the failure this contract has to catch.
 //
 // The second half is the OMP-specific rule this route exists to not get wrong: the sessions *tree*
-// variable is not named. Measured on 18.18.7, naming it replaces the lookup root and a session filed
-// under its project directory inside the named tree is then not found, so a check that set it (as the Pi
-// route does for Pi's own lookup) would search where the session is not.
+// variable is named, with the session's own project directory rather than the `sessions` root above it.
+// Measured on 18.18.7: the variable names the directory that holds session files *directly*, so naming
+// this directory resolves the session while naming the root above a session's project directory answers
+// that no such session is installed -- and naming it is also what keeps a caller's leftover value (a Pi
+// user's, most obviously) from sending the lookup to a tree this session is not in.
 func TestOMPLoadEnvironmentRemovesEveryModelPath(t *testing.T) {
 	documented := []string{
 		"PI_API_KEY",
@@ -155,6 +157,26 @@ func TestOMPSessionBindingReadsTheBindingThenTheMessages(t *testing.T) {
 
 	if _, _, ok := ompSessionBinding([]byte(`{"type":"message","id":"u","parentId":null,"message":{"role":"user","content":"hi"}}` + "\n")); ok {
 		t.Error("a file holding no model of any kind was read as one the check can build a home for")
+	}
+}
+
+// TestOMPYAMLScalarQuotesExoticValues pins the rule that keeps the scratch data directory's own YAML the
+// shape the harness's reader expects: a value that is a plain scalar stays as it is, and one holding a
+// character YAML acts on -- or holding nothing at all -- becomes a double-quoted JSON string. The provider
+// and model ids are the target home's own configuration answers, so an id this build did not anticipate is
+// ordinary; the Python check's twin rule is pinned in scripts/tests/test_omp_native_check.py.
+func TestOMPYAMLScalarQuotesExoticValues(t *testing.T) {
+	for _, testCase := range []struct{ value, want string }{
+		{"example-proxy", "example-proxy"},
+		{"a:b", `"a:b"`},
+		{"a b", `"a b"`},
+		{"", `""`},
+		{"provider#one", `"provider#one"`},
+		{"line\nbreak", `"line\nbreak"`},
+	} {
+		if got := ompYAMLScalar(testCase.value); got != testCase.want {
+			t.Errorf("ompYAMLScalar(%q) = %q, want %q", testCase.value, got, testCase.want)
+		}
 	}
 }
 
@@ -379,8 +401,13 @@ func TestVerifyOMPLoadResolvesTheInstalledSessionAndItsControl(t *testing.T) {
 	home, cwd, data, installed := installedOMPSession(t)
 	before := hashFile(t, installed)
 	directory := ompProjectDirFor(cwd, "/home/nobody", "/var/empty")
-	roles := piModelVisibleRoles(data)
-	rpc := &fakeOMPRPC{installed: ompFixtureRef.ID, roles: roles}
+	// The fake answers the converted file's own walk as a literal -- the converted conversation's five
+	// model-visible records, in the file's own order -- rather than reading it back off the walk's own
+	// function: a case whose fake and expectation both come from the code under test cannot redden when
+	// that walk regresses. The walk function itself is pinned against the committed fixtures' bytes with
+	// literals in TestPiModelVisibleRolesAndExpectedMessageCount.
+	rpc := &fakeOMPRPC{installed: ompFixtureRef.ID,
+		roles: []string{"user", "assistant", "toolResult", "assistant", "assistant"}}
 	resolved := withFakeOMPHarness(t, rpc, nil)
 
 	verification := VerifyOMPLoad(context.Background(), OMPLoadOptions{
@@ -504,6 +531,23 @@ func TestVerifyOMPLoadRefusesEveryBadAnswer(t *testing.T) {
 		}
 	})
 
+	t.Run("a message list whose roles disagree with the file", func(t *testing.T) {
+		rpc := base()
+		// The same count, so the count check passes and only the role-by-role comparison can refuse this
+		// arm: the harness's loader has to answer the file's own walk, not merely a list as long. The
+		// first two roles are swapped -- the converted file's walk starts with `user` and `assistant`
+		// (pinned as a literal in the verified case above), so the first position differs.
+		rpc.roles = slices.Clone(roles)
+		rpc.roles[0], rpc.roles[1] = rpc.roles[1], rpc.roles[0]
+		verification := load(t, rpc, data, cwd)
+		if verification.State == VerificationStateVerified {
+			t.Fatalf("load = %+v, want it refused: the loader's message roles are not the file's", verification)
+		}
+		if !strings.Contains(verification.Detail, "position") {
+			t.Errorf("detail = %q, want it to name the position whose role differs", verification.Detail)
+		}
+	})
+
 	t.Run("an answer from another file", func(t *testing.T) {
 		rpc := base()
 		rpc.sessionFile = filepath.Join(home, "sessions", directory, filepath.Base(installed))
@@ -590,9 +634,11 @@ func TestVerifyOMPLoadRefusesEveryBadAnswer(t *testing.T) {
 
 // TestOMPResumeInvocationAndEnvironment pins the invocation the report prints and the resume check runs,
 // and the environment it runs in: print mode with the session id and the option terminator, the data
-// directory the session was installed into -- and no sessions-tree variable, because naming one relocates
-// this harness's lookup (measured; the sessions tree is searched flat there and a session filed under its
-// project directory is not found).
+// directory the session was installed into, and the session's own project directory below its sessions
+// root. Measured on 18.18.7: the sessions-tree variable names the directory that holds session files
+// *directly*, so naming this directory resolves the session while naming the `sessions` root above it
+// answers that no such session is installed -- and naming it keeps a caller's leftover value from sending
+// the printed line to a tree this session is not in.
 func TestOMPResumeInvocationAndEnvironment(t *testing.T) {
 	arguments := ompResumeArguments("01a1c338-9e4f-7c21-8f3d-2b6a05e1d7a4", "do the thing")
 	want := []string{"-p", "--resume", "01a1c338-9e4f-7c21-8f3d-2b6a05e1d7a4", "--", "do the thing"}
@@ -616,7 +662,7 @@ func TestOMPResumeInvocationAndEnvironment(t *testing.T) {
 // directory and with the printed environment. A missing prompt, a missing binary, a harness that fails,
 // an empty answer and a file that did not grow are each reported as not-verified with their own reason.
 func TestVerifyOMPResumeRequiresAnAnswerAndGrowth(t *testing.T) {
-	_, cwd, data, installed := installedOMPSession(t)
+	_, cwd, _, installed := installedOMPSession(t)
 	resume := func(t *testing.T, turn *fakeOMPTurn, prompt string) ResumeVerification {
 		t.Helper()
 		withFakeOMPHarness(t, nil, turn)
@@ -626,7 +672,6 @@ func TestVerifyOMPResumeRequiresAnAnswerAndGrowth(t *testing.T) {
 			Cwd: cwd, SessionPath: installed, Prompt: prompt, Timeout: time.Minute,
 		})
 	}
-	_ = data
 
 	t.Run("the harness answers and appends", func(t *testing.T) {
 		turn := &fakeOMPTurn{growPath: installed, answer: "PROBE-REPLY-OK"}

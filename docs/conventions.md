@@ -154,8 +154,10 @@ gate runs as a required step.
   session is installed), and naming it is what keeps a caller's leftover value from hiding the session the
   pasted line was verified against. A load writes into the session it opens (measured: it appends a
   `custom` `session_exit` record), so its check drives a copy too, in a scratch data directory that
-  defines the provider and model the converted file's own records name with `auth: none` — a home with no
-  model refuses to start the harness at all, and this way a load needs no credential.
+  declares its own provider definition for the converted file's own records without a credential of the
+  caller's — `auth: none` in the Go verifier's scratch home (`internal/ccc/omp_verify.go`), the
+  placeholder `apiKey` value `ccc-native-check` in the native check's loader data directory — a home with
+  no model refuses to start the harness at all, and this way a load needs no credential.
 - **Fixtures are sanitized native shapes.** Small, version-identified, committed fixtures — one
   provider directory per source (`fixtures/claude/`, `fixtures/codex/`, `fixtures/pi/`,
   `fixtures/omp/`) — with no real

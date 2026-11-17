@@ -36,7 +36,7 @@ with their exit codes and counts).
   source recorded — on that route too, where the count is the line walk's own accounting of the places it
   chose, not only of the records it left out.
 - **A target writer's claim is shown through the target harness's own loader.** Call `ccc continue …
-  --to codex`, `--to claude` or `--to pi` converts, installs and reports **converted / installed /
+  --to codex`, `--to claude`, `--to pi` or `--to omp` converts, installs and reports **converted / installed /
   natively resumable** as three separate states; "resumable" is only ever `verification.load` or
   `verification.resume` coming back `verified`, and every one of a conversion's omissions or narrowing
   is named in `conversion.losses[]`. The native half needs the target harness installed and, for a real
@@ -45,12 +45,13 @@ with their exit codes and counts).
   re-derive it and report each check's
   own verdict (the gate keeps deciding the offline half — round-trip through the inherited reader,
   install rules, reported losses, CLI shape). A check whose target harness is absent exits 2 naming the
-  harness it needs — the Pi check ends its run with `RESULT: INCOMPLETE` and the reason, the Codex and
-  Claude checks print the reason on stderr — so a partial run is never quoted as a pass. The Pi and OMP
+  harness it needs — the Pi and OMP checks end their run with `RESULT: INCOMPLETE` and the reason, the
+  Codex and Claude checks print the reason on stderr — so a partial run is never quoted as a pass. The Pi and OMP
   checks drive their harness's own RPC loader against a **throw-away copy** of the converted bytes
   (measured on both: a load writes records of its own into the session it opens) and read the harness's
   own `get_state`/`get_messages` answers beside an unknown-id control arm; the OMP check's scratch data
-  directory defines a credential-free provider (`auth: none`) so a load needs none. The Codex check also runs the repeat scenario goal 0004 added: it converts a *copy* of the
+  directory carries this run's own provider definition for the load (its `apiKey` value a placeholder this
+  run writes) so a load needs no credential of the caller's. The Codex check also runs the repeat scenario goal 0004 added: it converts a *copy* of the
   fixture, loads it, appends the committed `internal/ccc/testdata/growth/` fragment to the copy,
   converts again, and shows Codex's own loader opening the second session with its own view holding the
   appended turn while the first session's bytes did not move (`--repeat-resume-prompt` adds one real
@@ -145,8 +146,8 @@ with their exit codes and counts).
   conversation (an unknown kind is not assumed to be outside it). Where no source file stands behind the
   read — an archive row, a file that moved while it was read — the entry is not established, and that is
   stated in the run's warnings instead of being presented as the read's own answer. A
-  Pi invocation the report prints and the check runs names the sessions tree inside the data directory
-  explicitly (`PI_CODING_AGENT_SESSION_DIR`), so the printed line, the verified lookup and the
+  Pi or Oh My Pi invocation the report prints and the check runs names the sessions tree inside the data
+  directory explicitly (`PI_CODING_AGENT_SESSION_DIR`), so the printed line, the verified lookup and the
   installation agree even when the caller's shell, or the home's own `settings.json`, names another tree.
 - Gate: `python3 scripts/gate.py`, which must print `GATE: PASS`; it runs `parity` and `selftest` as
   required steps, and its Go steps are narrowed to `./cmd/ccc/... ./internal/ccc/...` with the measured

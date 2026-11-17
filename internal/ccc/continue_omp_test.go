@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -215,37 +216,6 @@ func TestContinueFromOMPThroughTheCommonModel(t *testing.T) {
 			if result.Conversion.ReadFrom != "source" {
 				t.Errorf("read from = %q, want the source file", result.Conversion.ReadFrom)
 			}
-			if target == TargetPi {
-				// The shared helper covers the Claude and Codex writers; Pi's own is compared here, over
-				// the same document and by the same two answers (what was carried, and what the target's
-				// own reader made of the file).
-				direct, err := ConvertToPiSession(conversation, PiTargetOptions{
-					SessionID: result.TargetSession.SessionID,
-				})
-				if err != nil {
-					t.Fatalf("converting the same document with Pi's own writer: %v", err)
-				}
-				if got, want := carriedWithoutBytes(result.Conversion.Carried),
-					carriedWithoutBytes(direct.Carried); got != want {
-					t.Errorf("the pipeline carried %+v, while Pi's own writer over the same source carried %+v",
-						got, want)
-				}
-				directHome := t.TempDir()
-				if _, _, err := InstallPiSession(direct, directHome); err != nil {
-					t.Fatalf("installing the direct conversion: %v", err)
-				}
-				directVerify, err := VerifyPiSessionStructure(context.Background(),
-					filepath.Join(directHome, piSessionsSubdir), direct, fixtureConfig(t))
-				if err != nil {
-					t.Fatalf("reading the direct conversion back: %v", err)
-				}
-				if directVerify.ReadBack != result.Verification.Structure.ReadBack {
-					t.Errorf("the pipeline read back %+v, while Pi's own writer over the same source read "+
-						"back %+v: an OMP-specific shortcut is not the shared model's answer",
-						result.Verification.Structure.ReadBack, directVerify.ReadBack)
-				}
-				return
-			}
 			directWriterAgreesWithThePipeline(t, target, conversation, result)
 		})
 	}
@@ -284,7 +254,7 @@ func TestContinueFromOMPIntoOMPKeepsTheFamilyTree(t *testing.T) {
 // TestOMPRouteIsRegistered pins what the route table answers: the OMP target is one this build writes, its
 // route names the harness's own binary and data directory, and an unknown target's refusal lists it.
 func TestOMPRouteIsRegistered(t *testing.T) {
-	if !slicesContains(Targets(), TargetOMP) {
+	if !slices.Contains(Targets(), TargetOMP) {
 		t.Errorf("Targets() = %v, want the OMP target among them", Targets())
 	}
 	if Targets()[len(Targets())-1] != TargetOMP {
@@ -310,13 +280,33 @@ func TestOMPRouteIsRegistered(t *testing.T) {
 	}
 }
 
-// slicesContains reports whether one string is in a list, without pulling a helper's name into a case that
-// asserts a route table.
-func slicesContains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
+// TestConvertToOMPSessionFilesUnderOMPsOwnSpelling pins the wiring between the family conversion and the
+// directory rule: a working directory the two harnesses spell differently must be filed under *OMP's* own
+// spelling by the conversion itself, not only by the installer when a test case hands it one. A
+// conversion whose ProjectDir were Pi's rule would file the session under a spelling OMP itself moves it
+// out of, while the report named the directory it no longer occupies.
+func TestConvertToOMPSessionFilesUnderOMPsOwnSpelling(t *testing.T) {
+	conversation := readFixtureConversation(t, claudeFixtureRef)
+	cwd := t.TempDir()
+	conversation.Source.Cwd = cwd
+	if want := OMPProjectDir(cwd); want == PiProjectDir(cwd) {
+		t.Fatalf("this host spells %q the same way for both harnesses (%q), so this case cannot tell the "+
+			"two rules apart", cwd, want)
 	}
-	return false
+	session, err := ConvertToOMPSession(conversation, OMPTargetOptions{SessionID: claudeFixtureRef.ID})
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if want := OMPProjectDir(cwd); session.Directory != want {
+		t.Errorf("the conversion files the session under %q, want OMP's own spelling of the working "+
+			"directory (%q), not Pi's (%q)", session.Directory, want, PiProjectDir(cwd))
+	}
+	home := t.TempDir()
+	installed, _, err := InstallOMPSession(session, home)
+	if err != nil {
+		t.Fatalf("installing: %v", err)
+	}
+	if wantDir := filepath.Join(home, ompSessionsSubdir, OMPProjectDir(cwd)); filepath.Dir(installed) != wantDir {
+		t.Errorf("installed at %q, want it filed under %s", installed, wantDir)
+	}
 }

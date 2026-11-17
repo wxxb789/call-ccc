@@ -843,14 +843,16 @@ func (b *piSessionBuilder) writeAssistantMessage(text string, message Message, c
 // what the source's own message recorded, and the target's own totals then count the turn under the
 // model that wrote it rather than under one of the caller's.
 //
-// The provider is deliberately *not* written. Pi's `provider` field means the endpoint that served the
-// words, and the inherited read does not answer that: it reports the model each source message recorded
-// (Message.Model) but not the endpoint, and its session-level provider names the *harness* that wrote
-// the words (`pi`, `claude`, `codex`) -- a label the target's own configuration need not define as a
-// provider. Writing that label into the record was measured wrong (0005's review): the committed Pi
-// fixture records `example-proxy`, and the conversion wrote `pi` while the report claimed the source's
-// own provider travelled verbatim. Nothing is written in its place, and the report says so
-// (message_model_attribution).
+// Pi's records deliberately carry no provider. Pi's `provider` field means the endpoint that served
+// the words, and the inherited read does not answer that: it reports the model each source message
+// recorded (Message.Model) but not the endpoint, and its session-level provider names the *harness*
+// that wrote the words (`pi`, `claude`, `codex`) -- a label the target's own configuration need not
+// define as a provider. Writing that label into the record was measured wrong (0005's review): the
+// committed Pi fixture records `example-proxy`, and the conversion wrote `pi` while the report claimed
+// the source's own provider travelled verbatim. Pi's records write nothing in its place, and the report
+// says so (message_model_attribution; piModelDetail words the family's own answer). A family whose
+// format requires a provider states the target home's own configured endpoint instead, and the shape
+// carries that value (piFamilyShape.assistantProvider).
 func (b *piSessionBuilder) modelField(message Message) string {
 	model := strings.TrimSpace(message.Model)
 	if model == "" {
@@ -1415,12 +1417,6 @@ func (b *piSessionBuilder) familyLosses() []Loss {
 	// what the missing record costs. A family that writes no binding at all is not this case and never
 	// reaches here (familyLosses answers nothing for it).
 	bindingDetail := b.shape.sessionBindingDetail
-	if strings.TrimSpace(bindingDetail) == "" {
-		bindingDetail = "no session-level model record was written, so the harness resolves this session's " +
-			"model from the pairs its own records carry -- the source's, which the target home need not " +
-			"define -- and refuses the session on a home that does not know the source's model " +
-			"(`SessionModelRestoreError`, measured)"
-	}
 	return []Loss{
 		{
 			Category:    "target_model_binding",
@@ -1445,12 +1441,12 @@ func (b *piSessionBuilder) familyLosses() []Loss {
 // happened to leave out: a limit carries no count, because it holds for every conversion.
 //
 // The family's shared half is the family's, and the sentences that name the harness whose file is
-// written take the shape's own name (shape.sentenceName): a Pi session's header, its missing turn
+// written take the shape's own name (shape.sessionPhrase()): a Pi session's header, its missing turn
 // record, its lack of attachment bytes and its tool vocabulary are the same claims for an OMP session.
-// The provider binding is **Pi's own limit** and is named only for Pi: a Pi session binds no model
-// provider to itself, while an OMP session records one its loader restores and refuses -- that is the
-// `session_model_binding` limit OMP's own list states instead (ompFormatLimits), so carrying this one
-// into an OMP report would state the opposite of what its format does.
+// The provider binding is **Pi's own limit** and is not carried into OMP's (the condition below): a Pi
+// session binds no model provider to itself, while an OMP session records one its loader restores and
+// refuses -- that is the `session_model_binding` limit OMP's own list states instead (ompFormatLimits),
+// so carrying this one into an OMP report would state the opposite of what its format does.
 func piFormatLimits(shape piFamilyShape) []FormatLimit {
 	limits := []FormatLimit{
 		{

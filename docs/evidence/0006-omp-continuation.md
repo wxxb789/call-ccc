@@ -266,15 +266,29 @@ that block (`scripts/tests/test_evidence_claims.py`, which this record is regist
 ```console
 gate: /home/azureuser/repos/call-ccc
 gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
-  PASS     gofmt    3602 file(s) gofmt-clean
+  PASS     gofmt    3611 file(s) gofmt-clean
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 267 tests in 5.596s (rc=0)
+  PASS     selftest Ran 267 tests in 6.159s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 30 project-owned prefix(es); files seen by git: 5688 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     secrets  no leaks found in 141 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
+
+After the simplify pass's accepted edits — the native checks' shared mechanisms moved into
+`scripts/native_check_common.py`, with no behaviour change intended — this block was re-derived by
+re-running the gate on the applied tree (`gofmt 3611 file(s)`, the tree's tracked `*.go` count; the
+recorded run's `3602` was made before this increment's nine `.go` files were staged), and the harness
+runs this record quotes were re-derived too, with the same verdicts: `python3 scripts/pi-native-check.py`
+→ `RESULT: PASS — 21 check(s), none failed` (exit 0); `python3 scripts/omp-native-check.py --direction
+omp-to-claude --claude ~/.local/share/ccc-native/claude-cli/node_modules/.bin/claude` → `RESULT: PASS —
+18 check(s), none failed` (exit 0); the same direction with no `claude` on `PATH` → `RESULT: INCOMPLETE —
+15 check(s) ran, none failed` (exit 2); and `python3 scripts/omp-native-check.py --resume-prompt 'Reply
+with exactly: OMP-NATIVE-CHECK-OK' --expect OMP-NATIVE-CHECK-OK` → `RESULT: PASS — 25 check(s), none
+failed` (exit 0), whose own turn grew the session `3625 -> 7179 bytes` in that run (the harness's
+appended bytes differ per run; §2's `7176` is its own run's number). Every check count and verdict the
+record holds is unchanged.
 
 The counts the increment is pinned by:
 
@@ -286,7 +300,7 @@ The counts the increment is pinned by:
 | `entries {'compaction': 1, 'message': 7, 'model_change': 1, 'role:assistant': 4, 'role:toolResult': 1, 'role:user': 2, 'session': 1, 'title': 1}` | the installed OMP file's own bytes (§2) |
 | `messageCount 3` with `['compactionSummary', 'user', 'assistant']` | OMP's own loader's answers, twice (§1, §2), against a file holding seven message entries — the loader builds context from the walk the file's own `parentId` values make, so the pre-compaction records are not in it |
 | `session 3625 -> 7176 bytes` / `3595 to 7097 bytes` | the two real turns: the session grew and its pre-existing bytes stayed a prefix (§1, §2) |
-| `267` | the harness's own cases (`python3 -m unittest discover -s scripts/tests`), up from 251 — the 16 new ones are `scripts/tests/test_omp_native_check.py`; the gate's own `selftest` step ran the same suite (`Ran 267 tests in 5.596s (rc=0)`) |
+| `267` | the harness's own cases (`python3 -m unittest discover -s scripts/tests`), up from 251 — the 16 new ones are `scripts/tests/test_omp_native_check.py`; the gate's own `selftest` step ran the same suite (`Ran 267 tests in 6.159s (rc=0)`) |
 
 Documentation and bookkeeping this increment carries: `AGENTS.md` (the route list, the writer/installer/
 verifier files, the OMP native harness, and the OMP rules — its own project spelling, the 256-byte title
@@ -305,8 +319,8 @@ slot, the required per-assistant `model`+`provider`, the session binding being t
 - **The OMP half's turn ran under the host's own loopback proxy**, in a data directory the check seeded
   from the host's own OMP home with the key's *value* replaced by a placeholder. A host with no loopback
   provider (and no `LITELLM_BASE_URL`/`--provider-base-url`) reports a named skip for the turn; the load
-  half runs regardless, since its data directory defines the provider the file's own records name with
-  `auth: none`.
+  half runs regardless, since its loader data directory carries this run's own provider definition (the
+  placeholder `apiKey` value this run writes, never a credential of the caller's).
 - **`messageCount` is the loader's own count**, not the file's `message` entry count (§6): seven message
   entries, three messages on the file's own walk after its latest compaction entry. The check compares the
   loader's answer with the roles it computes from the file's bytes, which is the strongest comparison two

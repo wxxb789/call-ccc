@@ -59,19 +59,22 @@ by category), whether the session is installed, and whether **the target harness
 (Codex's `codex app-server` `thread/resume`, Claude Code's own loader for `--to claude`, or the Pi
 family's own loaders in their RPC modes for `--to pi` and `--to omp`) or
 continued from it (`--verify resume --resume-prompt TEXT`). It prints the target's own session id and
-the command that resumes it — the data directory it installed into (`CODEX_HOME=…`, or for the two
-harnesses whose lookup is project-scoped `CLAUDE_CONFIG_DIR=…` / `PI_CODING_AGENT_DIR=…` together with
-the working directory they discover a session from:
+the command that resumes it — the data directory it installed into (`CODEX_HOME=…`, or for the three
+harnesses whose resume line also changes into the session's working directory `CLAUDE_CONFIG_DIR=…` /
+`PI_CODING_AGENT_DIR=…`, and for Oh My Pi the directory holding the session's file named beside that
+(`PI_CODING_AGENT_SESSION_DIR=…`):
 `cd <cwd> && CLAUDE_CONFIG_DIR=<home> claude --resume <id>`,
-`cd <cwd> && PI_CODING_AGENT_DIR=<home> pi --session <id>`) plus the harness and the session id,
+`cd <cwd> && PI_CODING_AGENT_DIR=<home> pi --session <id>`,
+`cd <cwd> && PI_CODING_AGENT_DIR=<home> PI_CODING_AGENT_SESSION_DIR=<home>/sessions/<project dir> omp --resume <id>`) plus the harness and the session id,
 so the pasted command opens the home holding the session rather than the caller's default one — and
 `--json` reports all of it as one object, the argument vector and environment included. `--dry-run`
 converts and verifies without writing anything, `--target-home DIR` keeps a demo or a test away from a
 real Codex or Claude Code home, and `--target-binary PATH` names the harness executable when it is not
-the target's default name (`codex`, `claude`, `pi`) on `PATH`; the Claude Code and Pi resume commands
-name the path the probe found — the program the conversion asked and the verification ran — or the
-spelling given here when it found none, while the Codex commands keep the spelling given here (or
-`codex`), because only the Claude Code and Pi invocations change into the session's working directory.
+the target's default name (`codex`, `claude`, `pi`, `omp`) on `PATH`; the Claude Code, Pi and Oh My Pi
+resume commands name the path the probe found — the program the conversion asked and the verification
+ran — or the spelling given here when it found none, while the Codex commands keep the spelling given
+here (or `codex`), because only the Claude Code, Pi and Oh My Pi invocations change into the session's
+working directory.
 
 A conversion is a snapshot of the source at one moment, and it says where that moment is: the result
 names the boundary it covers — the source file's `sha256` and size, whether the file is still the size
@@ -91,8 +94,9 @@ the file is written reads it again.
 The continuation engine itself lives in [`internal/ccc`](internal/ccc) and is callable without the
 CLI: `SourceReader` reads a native session into a typed, transient Conversation document,
 `Archive`/`Ingestor` cover the inherited read and write paths, `targets.go` routes `Continue` to the
-target writer, `ConvertToCodexRollout`/`ConvertToClaudeTranscript`/`ConvertToPiSession` convert into the
-three target formats (a Codex rollout, a Claude Code transcript, a Pi session), and `Inspect` is what the
+target writer, `ConvertToCodexRollout`/`ConvertToClaudeTranscript`/`ConvertToPiSession`/`ConvertToOMPSession`
+convert into the four target formats (a Codex rollout, a Claude Code transcript, and the Pi family's two: a
+Pi session and an Oh My Pi session), and `Inspect` is what the
 `inspect` command calls. Further targets
 (OpenCode, GitHub Copilot CLI, …) arrive with the goals that specify them.
 

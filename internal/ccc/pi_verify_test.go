@@ -593,8 +593,12 @@ func installedPiSession(t *testing.T) (string, string, []byte, string) {
 func TestVerifyPiLoadResolvesTheInstalledSessionAndItsControl(t *testing.T) {
 	home, cwd, data, installed := installedPiSession(t)
 	before := hashFile(t, installed)
-	roles := piModelVisibleRoles(data)
-	rpc := &fakePiRPC{installed: piFixtureRef.ID, roles: roles}
+	// The fake answers the fixture's own walk as a literal -- measured through the harness's
+	// `get_state`/`get_messages` answers for this file -- rather than reading it back off the walk's own
+	// function: a case whose fake and expectation both come from the code under test cannot redden when
+	// that walk regresses.
+	rpc := &fakePiRPC{installed: piFixtureRef.ID,
+		roles: []string{"user", "assistant", "toolResult", "assistant", "assistant"}}
 	probe := withFakePiHarness(t, rpc, nil)
 
 	verification := VerifyPiLoad(context.Background(), PiLoadOptions{

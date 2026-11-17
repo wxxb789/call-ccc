@@ -73,21 +73,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from native_check_common import (  # noqa: E402
     CONTINUE_TERMINATOR,
     PROMPT_PLACEHOLDER,
-    REPORT_BLOCK_CHARS_MAX,
-    REPORT_BLOCK_LINES_MAX,
     RESULTS,
-    SHELL_SYNTAX_CHARACTERS,
-    TURN_OUTPUT_MARKER,
-    bounded_block,
+    bounded,
     credential_free_url,
+    home_holds_id,
+    installed_counts,
     jsonl_parse_error,
+    print_answer,
     record,
+    report,
+    reported_invocation,
     rewrite_source_cwd,
+    rpc_answer,
     run,
+    session_records,
+    session_tree,
     sha256,
-    shell_words,
     tree_digest,
-    unquoted_text,
 )
 
 #: Where this repository keeps its committed native-shaped fixtures. A Claude transcript and an OMP
@@ -174,11 +176,6 @@ UNRELATED_TIMESTAMP = "2026-01-01T00-00-00-000Z"
 
 #: The workspace the rewritten source session belongs to, relative to the scratch root.
 WORKSPACE = "workspace"
-
-#: The words a rendered invocation begins with and the operator between them: the directory change, and
-#: the `&&` a shell reads as its own operator. They mirror `internal/ccc/continue.go`'s `renderInvocation`.
-CD_WORD = "cd"
-OPERATOR_WORD = "&&"
 
 #: The fabricated sessions this run planted, so a run that stops early still removes exactly the files
 #: it created -- and never one that was already there.
@@ -521,38 +518,6 @@ def seed_omp_home(home: Path, host_home: Path, preferred_model: str, provider_ba
 # --- reading a written session file, from its own bytes ---------------------------------------------
 
 
-def session_records(text: str) -> list[dict]:
-    """Every line of one session file that is one JSON object, in the file's own order."""
-    records: list[dict] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            entry = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(entry, dict):
-            records.append(entry)
-    return records
-
-
-def installed_counts(session: Path) -> dict[str, int]:
-    """What one installed session file holds, from its own bytes: entries by record type, and the roles
-    of its message entries."""
-    counts: dict[str, int] = {}
-    roles: dict[str, int] = {}
-    for entry in session_records(session.read_text(encoding="utf-8")):
-        kind = entry.get("type", "")
-        counts[kind] = counts.get(kind, 0) + 1
-        if kind == "message":
-            message = entry.get("message")
-            role = message.get("role", "") if isinstance(message, dict) else ""
-            roles[role] = roles.get(role, 0) + 1
-    counts.update({f"role:{role}": value for role, value in roles.items()})
-    return counts
-
-
 def omp_model_visible_roles(text: str) -> list[str]:
     """The roles OMP's own loader builds from one session file, in order: the latest compaction entry
     **on the path the loader walks** (reported by the harness as ``compactionSummary``), then every
@@ -625,14 +590,6 @@ def title_slot_line(session: Path) -> tuple[int, bool]:
     return len(first) + 1, isinstance(entry, dict) and entry.get("type") == "title"
 
 
-def session_id_from_header(session: Path) -> str:
-    """The session id one OMP session file's own header line records, or ""."""
-    for entry in session_records(session.read_text(encoding="utf-8")):
-        if entry.get("type") == "session":
-            return str(entry.get("id", ""))
-    return ""
-
-
 def session_binding(text: str) -> tuple[str, str]:
     """The provider and model the converted file's own records name: the session's `model_change`
     binding when it holds one, else the pair the last assistant record carries (the order OMP reads a
@@ -654,18 +611,6 @@ def session_binding(text: str) -> tuple[str, str]:
             provider = str(message["provider"]).strip()
             model = str(message["model"]).strip()
     return provider, model
-
-
-def home_holds_id(home: Path, session_id: str, exclude: Path | None = None) -> bool:
-    """Whether any session file below `home`, other than `exclude`, records `session_id` in its header."""
-    if not session_id:
-        return False
-    for path in home.rglob("*.jsonl"):
-        if exclude is not None and path == exclude:
-            continue
-        if session_id_from_header(path) == session_id:
-            return True
-    return False
 
 
 # --- the two harnesses' own loaders -----------------------------------------------------------------
@@ -697,22 +642,6 @@ def ask_omp_loader(omp: str, home, session_dir, cwd, session_id: str,
     return subprocess.run(
         [omp, *omp_rpc_arguments(session_id)], input=commands, cwd=str(cwd),
         env=omp_rpc_environment(home, session_dir), capture_output=True, text=True, timeout=timeout)
-
-
-def rpc_answer(stdout: str, command: str) -> dict | None:
-    """The last response record for one command out of an RPC run's stdout, or None."""
-    answer: dict | None = None
-    for line in stdout.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("{"):
-            continue
-        try:
-            parsed = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        if parsed.get("type") == "response" and parsed.get("command") == command:
-            answer = parsed
-    return answer
 
 
 def last_json_line(output: str) -> dict | None:
@@ -747,89 +676,22 @@ def ask_claude_loader(claude: str, home, cwd, session_id: str,
 # --- reading a printed invocation -------------------------------------------------------------------
 
 
-def spelled_as_invocation(command: str, home_env: str) -> bool:
-    """Whether the line's own spelling makes a shell read it as `<cd> <dir> && NAME=<home> <words>`.
-
-    `unquoted_text` keeps the characters a shell reads *without* quoting, so the line's structure is read
-    off it: the opening `cd` word, then `&&` as an operator word of its own, then the assignment's own
-    `<home_env>=` prefix, with no other unquoted character a shell would act on. A quoted assignment, a
-    character a shell acts on left bare inside the value, and an operator glued to a word are each
-    refused -- the same three spellings the sibling harnesses' `spelled_as_invocation` refuses.
-    """
-    text = unquoted_text(command)
-    if text is None:
-        return False
-    head, operator, tail = text.partition(OPERATOR_WORD)
-    if operator == "" or OPERATOR_WORD in tail:
-        return False
-    if head.split()[:1] != [CD_WORD] or not head[-1:].isspace() or not tail[:1].isspace():
-        return False
-    if not tail.lstrip().startswith(f"{home_env}="):
-        return False
-    forbidden = set(SHELL_SYNTAX_CHARACTERS)
-    return not (set(head) | set(tail)) & forbidden
-
-
-def reported_invocation(command: str, workspace, home, home_env: str, arguments: list[str],
-                        session_dir_env: str | None = None, session_dir: str = "") -> bool:
-    """Whether `command` is the invocation as a POSIX shell reads it: the `cd`, the environment
-    assignments, then `arguments`.
-
-    The whole word vector is compared, exactly as the sibling harnesses' `reported_invocation` does: any
-    `cd <anything>` beside any assignments beside any session id reads back as the right *shape* and is
-    still another invocation. The spelling is read too, which is why both halves decide the rule. An
-    invocation that names the sessions directory directly (OMP's route does) is compared against the
-    directory the check itself looked the session up in, not against a spelling computed twice.
-    """
-    words = [f"{home_env}={home}"]
-    if session_dir_env:
-        words.append(f"{session_dir_env}={session_dir}")
-    return (shell_words(command) == [CD_WORD, str(workspace), OPERATOR_WORD, *words, *arguments]
-            and spelled_as_invocation(command, home_env))
-
-
 def omp_session_tree(home, project_dir: str) -> str:
     """The directory one OMP session is filed in and looked up through: the project directory below the
     data directory's own `sessions` root. It mirrors the Go function ``ompSessionTree``
-    (internal/ccc/omp_verify.go), which joins those three names with ``filepath.Join``, so a
-    Windows-shaped data directory (backslashes, no forward slashes) joins with ``\\`` here too."""
-    home_text = str(home)
-    separator = "\\" if "\\" in home_text and "/" not in home_text else "/"
-    return separator.join([home_text.rstrip("/\\"), OMP_SESSIONS_SUBDIR, project_dir])
+    (internal/ccc/omp_verify.go), which joins those three names with ``filepath.Join``; the join itself
+    is `session_tree`."""
+    return session_tree(home, OMP_SESSIONS_SUBDIR, project_dir)
 
 
 # --- reporting --------------------------------------------------------------------------------------
 
 
-def bounded(text: str, limit: int) -> str:
-    text = (text or "").strip()
-    if len(text) <= limit:
-        return text
-    return text[:limit] + " …[the rest of this output was dropped]"
-
-
-def print_answer(output: str) -> None:
-    print(TURN_OUTPUT_MARKER)
-    for line in bounded_block(output, REPORT_BLOCK_LINES_MAX, REPORT_BLOCK_CHARS_MAX):
-        print("    " + line)
-    print()
-
-
 def _report(args: argparse.Namespace, scratch: Path, document: dict) -> None:
-    if args.keep:
-        print(f"scratch kept at {scratch}")
-    else:
-        shutil.rmtree(scratch, ignore_errors=True)
-        print(f"scratch removed ({scratch})")
-    if args.json:
-        target = document.get("target_session") or {}
-        print(json.dumps({
-            "direction": args.direction,
-            "checks": [{"name": name, "state": state, "detail": detail} for name, state, detail in RESULTS],
-            "target_session": target.get("session_id", ""),
-            "installed": target.get("path", ""),
-            "conversion": (document.get("conversion") or {}).get("state", ""),
-        }, indent=2))
+    """OMP's own `report` payload adds the installed session's path between `target_session` and
+    `conversion`; the body it shares with the sibling harnesses is `native_check_common.report`."""
+    target = document.get("target_session") or {}
+    report(args, scratch, document, {"installed": target.get("path", "")})
 
 
 def verdict(native_missing: str) -> int:
@@ -856,6 +718,105 @@ def finish(args: argparse.Namespace, scratch: Path, document: dict, native_missi
 # --- the two directions -----------------------------------------------------------------------------
 
 
+def _build_ccc(args: argparse.Namespace, repo: Path, scratch: Path) -> int | None:
+    """Build the CCC binary this direction drives, recording the one named check both directions share.
+
+    Returns the exit code to finish with when the build failed, or None when it built.
+    """
+    build_parent = (repo / BINARY).parent
+    build_parent.mkdir(parents=True, exist_ok=True)
+    build = run([shutil.which("go") or "go", "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY),
+                 "./cmd/ccc"], cwd=repo, env={"CGO_ENABLED": "1"})
+    if build.returncode != 0:
+        record("ccc builds with the flags upstream ships", False, build.stderr.strip()[:400])
+        return finish(args, scratch, {})
+    record("ccc builds with the flags upstream ships", True)
+    return None
+
+
+def _plant_unrelated(args: argparse.Namespace, scratch: Path, unrelated: Path, body: str,
+                     named_home: bool) -> int | None:
+    """Plant this run's fabricated unrelated session, unless the caller named the home (which this run
+    never writes into). Returns the exit code to finish with when the file was already there, else None.
+    """
+    if named_home:
+        return None
+    if unrelated.exists():
+        print(f"{unrelated} already exists: this harness plants its own fabricated session under that "
+              f"name and will not overwrite one that is there", file=sys.stderr)
+        return finish(args, scratch, {},
+                      f"the fabricated session this run plants at {unrelated} was already there, and "
+                      f"this harness never overwrites one that is")
+    unrelated.parent.mkdir(parents=True, exist_ok=True)
+    unrelated.write_text(body, encoding="utf-8")
+    PLANTED.append(unrelated)
+    return None
+
+
+def _convert_and_read_report(args: argparse.Namespace, repo: Path, scratch: Path, home: Path,
+                             command: list[str], env: dict[str, str]):
+    """Run the conversion CLI and read the checks both directions share out of its result document: the
+    document parses, the conversation it carried and every loss category, the structural read-back, the
+    exit code, and the installed session's own existence.
+
+    Returns either the exit code to finish with (a document that would not parse, or an install this
+    check could not find) or the tuple `(document, convert, target, verification, session_id, installed)`.
+    """
+    convert = run(command, cwd=repo, env=env)
+    try:
+        document = json.loads(convert.stdout)
+    except json.JSONDecodeError:
+        record("ccc continue writes one JSON result document", False,
+               bounded(convert.stdout or convert.stderr, 400))
+        return finish(args, scratch, {})
+    record("ccc continue writes one JSON result document", True)
+
+    conversion = document.get("conversion") or {}
+    installation = document.get("installation") or {}
+    target = document.get("target_session") or {}
+    verification = document.get("verification") or {}
+    carried = conversion.get("carried") or {}
+    losses = {loss.get("category"): loss.get("count") for loss in conversion.get("losses") or []}
+    record("the conversion reports the conversation it carried and every loss category",
+           conversion.get("state") == "converted" and carried.get("messages", 0) > 0 and bool(losses),
+           f"carried {carried.get('messages')} message(s), {carried.get('tool_calls')} call(s), "
+           f"{carried.get('tool_results')} result(s); loss categories named: {len(losses)}")
+    record("the structural read-back verified the installed session",
+           (verification.get("structure") or {}).get("state") == "verified",
+           bounded((verification.get("structure") or {}).get("detail", ""), 300))
+    record("ccc continue exits 0 for a conversion whose verification ran", convert.returncode == 0,
+           f"exit {convert.returncode}; stderr {bounded(convert.stderr, 300)}")
+
+    session_id = target.get("session_id", "")
+    installed = Path(target.get("path", ""))
+    if not session_id or not installed.is_file():
+        record("the installed session exists at the reported path", False,
+               f"session_id={session_id!r} path={target.get('path')!r}")
+        return finish(args, scratch, document)
+    record("the installed session exists at the reported path", True,
+           f"{installed.relative_to(home)} [{(installation or {}).get('mechanism')}]")
+    return document, convert, target, verification, session_id, installed
+
+
+def _record_unchanged_evidence(source_root: Path, source_root_before: dict[str, str], named_home: bool,
+                               unrelated: Path, planted_before: str,
+                               existing_sessions: dict[Path, str]) -> None:
+    """Re-digest the source tree, the planted session and every session the home already held, so
+    "nothing else moved" is a measurement rather than a claim."""
+    source_root_after = tree_digest(source_root)
+    record("the source fixture tree is unchanged", source_root_after == source_root_before,
+           f"{len(source_root_before)} file(s) digested before and after")
+    if named_home:
+        record("the planted unrelated session is unchanged", False,
+               "not planted: this run was given the caller's home with --target-home and writes nothing "
+               "into it; every session that home holds is digested instead", skipped=True)
+    else:
+        record("the planted unrelated session is unchanged", sha256(unrelated) == planted_before)
+    moved = [str(path) for path, digest in existing_sessions.items()
+             if not path.is_file() or sha256(path) != digest]
+    record("every session the home already held is unchanged", not moved, "; ".join(moved[:3]))
+
+
 def _claude_to_omp(args: argparse.Namespace, repo: Path, scratch: Path, workspace: Path,
                    source_root: Path, destination: Path, recorded_cwd: str, source: Path) -> int:
     """Convert a Claude transcript into OMP and verify the installed session with OMP's own loader."""
@@ -878,22 +839,15 @@ def _claude_to_omp(args: argparse.Namespace, repo: Path, scratch: Path, workspac
 
     unrelated = home / OMP_SESSIONS_SUBDIR / f"-{UNRELATED_PROJECT}" / \
         f"{UNRELATED_TIMESTAMP}_{UNRELATED_SESSION}.jsonl"
-    if not named_home:
-        if unrelated.exists():
-            print(f"{unrelated} already exists: this harness plants its own fabricated session under that "
-                  f"name and will not overwrite one that is there", file=sys.stderr)
-            return finish(args, scratch, {},
-                          f"the fabricated session this run plants at {unrelated} was already there, and "
-                          f"this harness never overwrites one that is")
-        unrelated.parent.mkdir(parents=True, exist_ok=True)
-        unrelated.write_text(json.dumps({
-            "type": "title", "v": 1, "title": "", "updatedAt": "2026-01-01T00:00:00.000Z", "pad": "",
-        }) + "\n" + json.dumps({
-            "type": "session", "version": 3, "id": UNRELATED_SESSION,
-            "timestamp": "2026-01-01T00:00:00.000Z", "cwd": f"/tmp/{UNRELATED_PROJECT}",
-            "records": "a session this run must not touch",
-        }) + "\n", encoding="utf-8")
-        PLANTED.append(unrelated)
+    planted = _plant_unrelated(args, scratch, unrelated, json.dumps({
+        "type": "title", "v": 1, "title": "", "updatedAt": "2026-01-01T00:00:00.000Z", "pad": "",
+    }) + "\n" + json.dumps({
+        "type": "session", "version": 3, "id": UNRELATED_SESSION,
+        "timestamp": "2026-01-01T00:00:00.000Z", "cwd": f"/tmp/{UNRELATED_PROJECT}",
+        "records": "a session this run must not touch",
+    }) + "\n", named_home)
+    if planted is not None:
+        return planted
 
     print(f"repo:        {repo}")
     print(f"direction:   {args.direction} ({SOURCE_PROVIDER}:{args.source or SOURCE_SESSION} → omp)")
@@ -940,50 +894,18 @@ def _claude_to_omp(args: argparse.Namespace, repo: Path, scratch: Path, workspac
     planted_before = sha256(unrelated) if unrelated.is_file() else ""
     existing_sessions = {path: sha256(path) for path in home.rglob("*.jsonl") if path != unrelated}
 
-    build_parent = (repo / BINARY).parent
-    build_parent.mkdir(parents=True, exist_ok=True)
-    build = run([shutil.which("go") or "go", "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY),
-                 "./cmd/ccc"], cwd=repo, env={"CGO_ENABLED": "1"})
-    if build.returncode != 0:
-        record("ccc builds with the flags upstream ships", False, build.stderr.strip()[:400])
-        return finish(args, scratch, {})
-    record("ccc builds with the flags upstream ships", True)
+    built = _build_ccc(args, repo, scratch)
+    if built is not None:
+        return built
 
     command = [str(repo / BINARY), "continue", f"{SOURCE_PROVIDER}:{args.source or SOURCE_SESSION}",
                "--to", OMP_TARGET, "--target-home", str(home), "--target-binary", omp, "--json"]
-    convert = run(command, cwd=repo, env={SOURCE_ROOT_ENV[SOURCE_PROVIDER]: str(source_root)})
-    try:
-        document = json.loads(convert.stdout)
-    except json.JSONDecodeError:
-        record("ccc continue writes one JSON result document", False,
-               bounded(convert.stdout or convert.stderr, 400))
-        return finish(args, scratch, {})
-    record("ccc continue writes one JSON result document", True)
+    read = _convert_and_read_report(args, repo, scratch, home, command,
+                                    {SOURCE_ROOT_ENV[SOURCE_PROVIDER]: str(source_root)})
+    if isinstance(read, int):
+        return read
+    document, convert, target, verification, session_id, installed = read
 
-    conversion = document.get("conversion") or {}
-    installation = document.get("installation") or {}
-    target = document.get("target_session") or {}
-    verification = document.get("verification") or {}
-    carried = conversion.get("carried") or {}
-    losses = {loss.get("category"): loss.get("count") for loss in conversion.get("losses") or []}
-    record("the conversion reports the conversation it carried and every loss category",
-           conversion.get("state") == "converted" and carried.get("messages", 0) > 0 and bool(losses),
-           f"carried {carried.get('messages')} message(s), {carried.get('tool_calls')} call(s), "
-           f"{carried.get('tool_results')} result(s); loss categories named: {len(losses)}")
-    record("the structural read-back verified the installed session",
-           (verification.get("structure") or {}).get("state") == "verified",
-           bounded((verification.get("structure") or {}).get("detail", ""), 300))
-    record("ccc continue exits 0 for a conversion whose verification ran", convert.returncode == 0,
-           f"exit {convert.returncode}; stderr {bounded(convert.stderr, 300)}")
-
-    session_id = target.get("session_id", "")
-    installed = Path(target.get("path", ""))
-    if not session_id or not installed.is_file():
-        record("the installed session exists at the reported path", False,
-               f"session_id={session_id!r} path={target.get('path')!r}")
-        return finish(args, scratch, document)
-    record("the installed session exists at the reported path", True,
-           f"{installed.relative_to(home)} [{(installation or {}).get('mechanism')}]")
     record("the installed session is filed under this run's own OMP spelling of the workspace",
            installed.parent == home / OMP_SESSIONS_SUBDIR / spelling,
            f"{installed.relative_to(home)}; this run's OMP spelling of {workspace} is {spelling}")
@@ -1017,18 +939,8 @@ def _claude_to_omp(args: argparse.Namespace, repo: Path, scratch: Path, workspac
         else:
             _run_omp_turn(args, target, workspace, installed)
 
-    source_root_after = tree_digest(source_root)
-    record("the source fixture tree is unchanged", source_root_after == source_root_before,
-           f"{len(source_root_before)} file(s) digested before and after")
-    if named_home:
-        record("the planted unrelated session is unchanged", False,
-               "not planted: this run was given the caller's home with --target-home and writes nothing "
-               "into it; every session that home holds is digested instead", skipped=True)
-    else:
-        record("the planted unrelated session is unchanged", sha256(unrelated) == planted_before)
-    moved = [str(path) for path, digest in existing_sessions.items()
-             if not path.is_file() or sha256(path) != digest]
-    record("every session the home already held is unchanged", not moved, "; ".join(moved[:3]))
+    _record_unchanged_evidence(source_root, source_root_before, named_home, unrelated, planted_before,
+                               existing_sessions)
     record("the conversion wrote no id the home already held",
            not home_holds_id(home, session_id, exclude=installed),
            f"{session_id} is new among the session id(s) the home's own header lines record")
@@ -1043,9 +955,10 @@ def _check_omp_loader(omp: str, home: Path, workspace: Path, installed: Path, se
 
     The copy lives in a throw-away data directory that carries this run's own seeded configuration (the
     provider definitions the conversion's binding was asked of, credential-free by construction). A home
-    the caller named is never copied -- its configuration may hold literal keys or headers -- so that
-    case falls back to the smallest home the harness starts in: a provider named with `auth: none` for
-    the provider and model the file's own records name.
+    the caller named is never copied -- its configuration may hold literal keys or headers -- so when the
+    copy carries no `models.yml` this check writes its own provider definition instead, in the shape
+    `_generated_block` writes: the provider and model the file's own records name, with the placeholder
+    `apiKey` value `SANDBOX_KEY` (`ccc-native-check`) and no `auth:` key anywhere.
     """
     before = sha256(installed)
     loader_home = Path(tempfile.mkdtemp(prefix="ccc-omp-native-loader-"))
@@ -1176,20 +1089,13 @@ def _omp_to_claude(args: argparse.Namespace, repo: Path, scratch: Path, workspac
     spelling = claude_project_dir(str(workspace))
 
     unrelated = home / CLAUDE_PROJECTS_SUBDIR / f"-{UNRELATED_PROJECT}" / f"{UNRELATED_SESSION}.jsonl"
-    if not named_home:
-        if unrelated.exists():
-            print(f"{unrelated} already exists: this harness plants its own fabricated session under that "
-                  f"name and will not overwrite one that is there", file=sys.stderr)
-            return finish(args, scratch, {},
-                          f"the fabricated session this run plants at {unrelated} was already there, and "
-                          f"this harness never overwrites one that is")
-        unrelated.parent.mkdir(parents=True, exist_ok=True)
-        unrelated.write_text(json.dumps({
-            "type": "user", "uuid": UNRELATED_SESSION, "sessionId": UNRELATED_SESSION,
-            "timestamp": "2026-01-01T00:00:00.000Z", "cwd": f"/tmp/{UNRELATED_PROJECT}",
-            "message": {"role": "user", "content": "an unrelated session this run must not touch"},
-        }) + "\n", encoding="utf-8")
-        PLANTED.append(unrelated)
+    planted = _plant_unrelated(args, scratch, unrelated, json.dumps({
+        "type": "user", "uuid": UNRELATED_SESSION, "sessionId": UNRELATED_SESSION,
+        "timestamp": "2026-01-01T00:00:00.000Z", "cwd": f"/tmp/{UNRELATED_PROJECT}",
+        "message": {"role": "user", "content": "an unrelated session this run must not touch"},
+    }) + "\n", named_home)
+    if planted is not None:
+        return planted
 
     print(f"repo:        {repo}")
     print(f"direction:   {args.direction} (omp:{args.source or OMP_BACK_SOURCE_SESSION} → claude)")
@@ -1207,55 +1113,19 @@ def _omp_to_claude(args: argparse.Namespace, repo: Path, scratch: Path, workspac
     existing_sessions = {path: sha256(path) for path in home.rglob("*.jsonl") if path != unrelated}
     existing_ids = [path.stem for path in home.rglob("*.jsonl")]
 
-    build_parent = (repo / BINARY).parent
-    build_parent.mkdir(parents=True, exist_ok=True)
-    build = run([shutil.which("go") or "go", "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY),
-                 "./cmd/ccc"], cwd=repo, env={"CGO_ENABLED": "1"})
-    if build.returncode != 0:
-        record("ccc builds with the flags upstream ships", False, build.stderr.strip()[:400])
-        return finish(args, scratch, {})
-    record("ccc builds with the flags upstream ships", True)
+    built = _build_ccc(args, repo, scratch)
+    if built is not None:
+        return built
 
     command = [str(repo / BINARY), "continue", f"{OMP_BACK_SOURCE_PROVIDER}:"
                f"{args.source or OMP_BACK_SOURCE_SESSION}", "--to", OMP_BACK_TARGET,
                "--target-home", str(home), "--target-binary", args.claude, "--json"]
-    convert = run(command, cwd=repo, env={SOURCE_ROOT_ENV[OMP_BACK_SOURCE_PROVIDER]: str(source_root)})
+    read = _convert_and_read_report(args, repo, scratch, home, command,
+                                    {SOURCE_ROOT_ENV[OMP_BACK_SOURCE_PROVIDER]: str(source_root)})
+    if isinstance(read, int):
+        return read
+    document, convert, target, verification, session_id, installed = read
 
-    document: dict = {}
-    try:
-        document = json.loads(convert.stdout)
-        parsed = True
-    except json.JSONDecodeError:
-        parsed = False
-    record("ccc continue writes one JSON result document", parsed,
-           "" if parsed else bounded(convert.stdout or convert.stderr, 400))
-    if not parsed:
-        return finish(args, scratch, {})
-
-    conversion = document.get("conversion") or {}
-    installation = document.get("installation") or {}
-    target = document.get("target_session") or {}
-    verification = document.get("verification") or {}
-    carried = conversion.get("carried") or {}
-    losses = {loss.get("category"): loss.get("count") for loss in conversion.get("losses") or []}
-    record("the conversion reports the conversation it carried and every loss category",
-           conversion.get("state") == "converted" and carried.get("messages", 0) > 0 and bool(losses),
-           f"carried {carried.get('messages')} message(s), {carried.get('tool_calls')} call(s), "
-           f"{carried.get('tool_results')} result(s); loss categories named: {len(losses)}")
-    record("the structural read-back verified the installed session",
-           (verification.get("structure") or {}).get("state") == "verified",
-           bounded((verification.get("structure") or {}).get("detail", ""), 300))
-    record("ccc continue exits 0 for a conversion whose verification ran", convert.returncode == 0,
-           f"exit {convert.returncode}; stderr {bounded(convert.stderr, 300)}")
-
-    session_id = target.get("session_id", "")
-    installed = Path(target.get("path", ""))
-    if not session_id or not installed.is_file():
-        record("the installed session exists at the reported path", False,
-               f"session_id={session_id!r} path={target.get('path')!r}")
-        return finish(args, scratch, document)
-    record("the installed session exists at the reported path", True,
-           f"{installed.relative_to(home)} [{(installation or {}).get('mechanism')}]")
     record("the installed transcript is filed under this run's own Claude project spelling of the workspace",
            installed.parent == home / CLAUDE_PROJECTS_SUBDIR / spelling,
            f"{installed.relative_to(home)}; this run's Claude spelling of {workspace} is {spelling}")
@@ -1282,18 +1152,8 @@ def _omp_to_claude(args: argparse.Namespace, repo: Path, scratch: Path, workspac
                "invocation it drives itself; the Claude Code target's own resume level is the conversion "
                "CLI's, and this direction verifies its loader, which needs no model turn", skipped=True)
 
-    source_root_after = tree_digest(source_root)
-    record("the source fixture tree is unchanged", source_root_after == source_root_before,
-           f"{len(source_root_before)} file(s) digested before and after")
-    if named_home:
-        record("the planted unrelated session is unchanged", False,
-               "not planted: this run was given the caller's home with --target-home and writes nothing "
-               "into it; every session that home holds is digested instead", skipped=True)
-    else:
-        record("the planted unrelated session is unchanged", sha256(unrelated) == planted_before)
-    moved = [str(path) for path, digest in existing_sessions.items()
-             if not path.is_file() or sha256(path) != digest]
-    record("every session the home already held is unchanged", not moved, "; ".join(moved[:3]))
+    _record_unchanged_evidence(source_root, source_root_before, named_home, unrelated, planted_before,
+                               existing_sessions)
     record("the conversion wrote no id the home already held",
            session_id not in existing_ids, f"{session_id}, not one of the {len(existing_ids)} id(s) already "
                                            f"in the home")

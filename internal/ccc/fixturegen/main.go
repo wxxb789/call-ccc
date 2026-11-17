@@ -77,6 +77,17 @@ const (
 	piHistorySessionCwd   = "/home/user/code/history"
 	piHistorySessionStamp = "2026-05-05T11:00:00.000Z"
 
+	// The words of the one invented conversation both family history fixtures record, each in its own
+	// member's record shape: OMP's history fixture is the same session as Pi's read through the other
+	// harness (the shared-loss list and the evidence record read the two that way), so its content is
+	// named once here rather than written twice and left able to drift into two conversations.
+	historyTowerQuestion = "How tall is the tower in the plaza?"
+	historyTowerAnswer   = "The tower in the plaza is 42 metres tall."
+	historySummary       = "The user is working through the plaza measurements and settled on the tower height."
+	historyRetryQuestion = "And the retry cap?"
+	historyRetryAnswer   = "Thirty seconds, in internal/retry/config.go."
+	historyBranchAnswer  = "I should not have answered with only the height."
+
 	// The third carries the shape a `/tree` branch switch leaves in the file: the conversation continues on
 	// one branch, the user takes a second one and then switches back with a generated summary, so the file's
 	// own last entry is the summary and its active path is the branch the conversation returned to.
@@ -243,30 +254,30 @@ func piHistorySession() string {
 			"provider":  piFixtureProvider, "modelId": piFixtureModel,
 		}),
 		marshal(piEntryMap(summarizedID, "7f8e9d0c", "2026-05-05T11:00:01.000Z", map[string]any{
-			"message": piMessageMap("user", "How tall is the tower in the plaza?", 1795026001000),
+			"message": piMessageMap("user", historyTowerQuestion, 1795026001000),
 		})),
 		marshal(piEntryMap(abandonedID, summarizedID, "2026-05-05T11:00:04.000Z", map[string]any{
-			"message": piAssistantMap("The tower in the plaza is 42 metres tall.", 1795026004000),
+			"message": piAssistantMap(historyTowerAnswer, 1795026004000),
 		})),
 	}
 	entries := []string{
 		marshal(map[string]any{
 			"type": "compaction", "id": summaryID, "parentId": abandonedID,
 			"timestamp":        "2026-05-05T11:01:00.000Z",
-			"summary":          "The user is working through the plaza measurements and settled on the tower height.",
+			"summary":          historySummary,
 			"firstKeptEntryId": summaryID, "tokensBefore": 2048,
 		}),
 		marshal(piEntryMap(keptID, summaryID, "2026-05-05T11:02:00.000Z", map[string]any{
-			"message": piMessageMap("user", "And the retry cap?", 1795026120000),
+			"message": piMessageMap("user", historyRetryQuestion, 1795026120000),
 		})),
 		marshal(piEntryMap(answerID, keptID, "2026-05-05T11:02:03.000Z", map[string]any{
-			"message": piAssistantMap("Thirty seconds, in internal/retry/config.go.", 1795026123000),
+			"message": piAssistantMap(historyRetryAnswer, 1795026123000),
 		})),
 		// The branch's own turn, and the file's last entry: it names the entry the summary replaced as its
 		// parent, so the active path runs through it and the summary's own line -- the compaction entry and
 		// the exchange after it, written before this one -- is what the walk from here never reaches.
 		marshal(piEntryMap("5566cc77", abandonedID, "2026-05-05T11:03:00.000Z", map[string]any{
-			"message": piAssistantMap("I should not have answered with only the height.", 1795026180000),
+			"message": piAssistantMap(historyBranchAnswer, 1795026180000),
 		})),
 	}
 	return testjsonl.JoinJSONL(append(headers, entries...)...)
@@ -1100,26 +1111,26 @@ func ompHistorySession() string {
 		}),
 		marshal(ompEntryMap(summarizedID, "7f8e9d0c", "2026-05-05T11:00:01.000Z", map[string]any{
 			"message": map[string]any{
-				"role": "user", "content": "How tall is the tower in the plaza?", "timestamp": 1795026001000,
+				"role": "user", "content": historyTowerQuestion, "timestamp": 1795026001000,
 			},
 		})),
 		marshal(ompEntryMap(abandonedID, summarizedID, "2026-05-05T11:00:04.000Z", map[string]any{
 			"message": ompAssistantMessage([]map[string]any{
-				{"type": "text", "text": "The tower in the plaza is 42 metres tall."},
+				{"type": "text", "text": historyTowerAnswer},
 			}, 1795026004000, "stop"),
 		})),
 		marshal(map[string]any{
 			"type": "compaction", "id": summaryID, "parentId": abandonedID,
 			"timestamp": "2026-05-05T11:01:00.000Z", "runtime": map[string]any{"version": ompFixtureRuntime},
-			"summary":          "The user is working through the plaza measurements and settled on the tower height.",
+			"summary":          historySummary,
 			"firstKeptEntryId": summaryID, "systemMessage": nil, "tokensBefore": 2048,
 		}),
 		marshal(ompEntryMap(keptID, summaryID, "2026-05-05T11:02:00.000Z", map[string]any{
-			"message": map[string]any{"role": "user", "content": "And the retry cap?", "timestamp": 1795026120000},
+			"message": map[string]any{"role": "user", "content": historyRetryQuestion, "timestamp": 1795026120000},
 		})),
 		marshal(ompEntryMap(answerID, keptID, "2026-05-05T11:02:03.000Z", map[string]any{
 			"message": ompAssistantMessage([]map[string]any{
-				{"type": "text", "text": "Thirty seconds, in internal/retry/config.go."},
+				{"type": "text", "text": historyRetryAnswer},
 			}, 1795026123000, "stop"),
 		})),
 		// The branch the conversation left, recorded after the summary and hanging off the entry the
@@ -1127,7 +1138,7 @@ func ompHistorySession() string {
 		// this one.
 		marshal(ompEntryMap("5566cc77", abandonedID, "2026-05-05T11:03:00.000Z", map[string]any{
 			"message": ompAssistantMessage([]map[string]any{
-				{"type": "text", "text": "I should not have answered with only the height."},
+				{"type": "text", "text": historyBranchAnswer},
 			}, 1795026180000, "stop"),
 		})),
 		// The harness's own notice, chained onto the turn the file's path ends at -- which is where a run
