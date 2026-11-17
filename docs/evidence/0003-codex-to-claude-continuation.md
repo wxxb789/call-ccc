@@ -537,6 +537,103 @@ to follow. `docs/goals/README.md` and `docs/goals/archive/` likewise stay as the
 0003 is this increment's open goal (`Implemented on …; awaiting operator acceptance`), and the accepted
 0002 was archived in the previous round.
 
+### 6.4 The CI repair round (`gate (windows-latest)`)
+
+The hosted gate failed this branch's head `595e136` on one leg — `gate (windows-latest)`, job
+133927852 of run 44050830659 — in the `test` step, the other two legs green:
+
+```console
+  PASS     gofmt    3591 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  FAIL     test     go test -count=1 ./cmd/ccc/... ./internal/ccc/... -> rc=1
+…
+FAIL	go.kenn.io/agentsview/internal/ccc	17.764s
+  PASS     selftest Ran 189 tests in 9.579s (rc=0)
+GATE: FAIL · test
+```
+
+The step's printed detail is a bounded tail of the test run, so the failing case's own line was not
+retained; the package it names is the one the case is in.
+
+**The defect was in the case, not in the write path.**
+`TestContinueResolvesARelativeTargetBinaryForTheDirectoryChangingInvocation` asserted the *bare*
+spelling of the resolved executable in both printed lines, while the renderer spells every word the way a
+POSIX shell reads it back — a word holding any of `shellUnsafeCharacters` is quoted, and every Windows
+path holds backslashes, which are such characters. A host whose temp root holds a space is in the same
+arm — the word a shell acts on is quoted, whatever the platform spells in it — and `TMPDIR` puts this host
+there, which is what the reproduction below is: the case fails because the quoted word is presented to an
+assertion spelled bare. The run, on the pre-fix file:
+
+```console
+$ TMPDIR='/tmp/ccc win' go test -count=1 -tags fts5 -run TestContinueResolvesARelativeTargetBinaryForTheDirectoryChangingInvocation ./internal/ccc/
+--- FAIL: TestContinueResolvesARelativeTargetBinaryForTheDirectoryChangingInvocation (0.15s)
+    continue_claude_test.go:395: resume command "cd /home/user/code/example-api && CLAUDE_CONFIG_DIR='/tmp/ccc win/…/003/claude home' '/tmp/ccc win/…/002/tools/claude' --resume df086aae-…" does not change into "/home/user/code/example-api" and name the executable there
+    continue_claude_test.go:399: exec resume command "cd /home/user/code/example-api && CLAUDE_CONFIG_DIR='/tmp/ccc win/…/003/claude home' '/tmp/ccc win/…/002/tools/claude' -p --output-format json --resume df086aae-… '<prompt>'" does not name the executable in the caller's directory
+FAIL	go.kenn.io/agentsview/internal/ccc	0.174s
+```
+
+exit code **1** on the pre-fix tree. The case now spells the caller's own directory `caller with a space`
+— the shape `claudeTargetHome` in the same file and the CLI's `shellUnsafeHome` already pin — and asserts
+the quoted word in both lines; the resolution assertions themselves (both argument vectors, the bare name
+that travels verbatim) are unchanged. Nothing else moved: the case keeps its name, the write path is
+untouched, and of the three Go cases §6.3 lists only this one changed — one fixture spelling and two
+assertions.
+
+**The case still fails when the rule it pins is broken.** Restoring the reviewed shape in a scratch copy
+of `internal/ccc/targets.go` (`binary := invocationBinary(in.Binary)` → `binary := in.Binary`) fires all
+four assertion lines — both argument vectors come back as the relative word, and both lines name it
+unquoted — exit code **1**; the file was restored and `git diff` is clean for it.
+
+**Re-run on this tree**, the case in the three host shapes, the whole Go suite on the space-named temp
+root, and the gate:
+
+```console
+$ go test -count=1 -tags fts5 -run TestContinueResolvesARelativeTargetBinaryForTheDirectoryChangingInvocation ./internal/ccc/
+ok  	go.kenn.io/agentsview/internal/ccc	0.226s
+$ TMPDIR='/tmp/ccc win' go test … -run TestContinueResolvesARelativeTargetBinaryForTheDirectoryChangingInvocation ./internal/ccc/
+ok  	go.kenn.io/agentsview/internal/ccc	0.129s
+$ TMPDIR='/tmp/ccc-win\temp' go test … -run TestContinueResolvesARelativeTargetBinaryForTheDirectoryChangingInvocation ./internal/ccc/
+ok  	go.kenn.io/agentsview/internal/ccc	0.062s
+```
+
+each run exit code **0** — where the pre-fix file's own run above is exit code **1**.
+
+```console
+$ TMPDIR='/tmp/ccc win' go test -count=1 -tags fts5 ./internal/ccc/... ./cmd/ccc/...
+ok  	go.kenn.io/agentsview/internal/ccc	12.272s
+ok  	go.kenn.io/agentsview/internal/ccc/parity	1.858s
+ok  	go.kenn.io/agentsview/cmd/ccc	3.365s
+```
+
+each exit code **0**.
+
+```console
+$ python3 scripts/gate.py
+  PASS     gofmt    3591 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 189 tests in 4.960s (rc=0)
+  PASS     parity   … owned: 28 project-owned prefix(es); files seen by git: 5644 | …
+  PASS     secrets  no leaks found in 95 file(s) this repository owns …
+GATE: PASS
+```
+
+exit code **0**. No count moves: `gofmt` 3591, the three packages, `selftest` 189, `files seen by git`
+5644 and `secrets` 95 are §6.3's numbers, because no case was added or removed. On a root whose *name*
+holds a backslash (the Windows-shaped trick `docs/harness.md` records) two `cmd/ccc` cases —
+`TestCodexLoadVerificationRequiresTheSessionsOwnRecord`,
+`TestResumeVerificationRequiresTheTurnToAppendToTheSession` — still fail on this host: that is the
+artifact that file already names (the stub harness finds the installed session with `filepath.Glob`, and a
+POSIX `Glob` reads a backslash in the pattern as an escape), not this round's subject; they are green on
+the real Windows leg, where `cmd/ccc` is otherwise unchanged but for one `--help` line.
+
+`AGENTS.md` needed no change in this round either: no command, step, layout or rule moved. The case now
+follows the rule that file already states — a case whose subject is what a check makes of a target
+harness's answer must hold on every host the docs name, not only on the host that runs it.
+`docs/goals/README.md` and `docs/goals/archive/` are unchanged: 0003 is still this increment's open goal.
+
 ## 7. Limits and residual risks
 
 - **The `resume` level, and the native check's real turn, need model access.** On a host without it the

@@ -358,7 +358,11 @@ func TestContinueIntoClaudeReportsACompactionBoundaryWhoseSummaryHoldsNoText(t *
 // PATH lookup, which the directory change does not affect.
 func TestContinueResolvesARelativeTargetBinaryForTheDirectoryChangingInvocation(t *testing.T) {
 	cfg := fixtureConfig(t)
-	caller := t.TempDir()
+	// The caller's directory holds a space -- a word a POSIX shell acts on -- so the printed line has to
+	// quote the resolved executable on every host. An assertion against the bare spelling would pin
+	// whichever arm the host happens to spell instead of the quoting rule: bare where nothing in the
+	// temp path is shell syntax (POSIX), quoted where it holds backslashes (every Windows one).
+	caller := filepath.Join(t.TempDir(), "caller with a space")
 	binary := filepath.Join(caller, "tools", "claude")
 	if err := os.MkdirAll(filepath.Dir(binary), 0o700); err != nil {
 		t.Fatalf("creating the caller's tools directory: %v", err)
@@ -390,12 +394,15 @@ func TestContinueResolvesARelativeTargetBinaryForTheDirectoryChangingInvocation(
 	if args := report.ExecResumeArguments; len(args) != 7 || args[0] != binary {
 		t.Errorf("exec resume arguments = %q, want the same resolved executable", args)
 	}
+	// The word the line spells for the executable is the one a POSIX shell reads back as the resolved
+	// path, which is the quoted form here: the caller's directory holds a space.
+	quoted := "'" + binary + "'"
 	if !strings.Contains(report.ResumeCommand, "cd "+report.Cwd+" && ") ||
-		!strings.Contains(report.ResumeCommand, binary+" --resume "+report.SessionID) {
+		!strings.Contains(report.ResumeCommand, quoted+" --resume "+report.SessionID) {
 		t.Errorf("resume command %q does not change into %q and name the executable there",
 			report.ResumeCommand, report.Cwd)
 	}
-	if !strings.Contains(report.ExecResumeCommand, binary+" -p ") {
+	if !strings.Contains(report.ExecResumeCommand, quoted+" -p ") {
 		t.Errorf("exec resume command %q does not name the executable in the caller's directory",
 			report.ExecResumeCommand)
 	}
