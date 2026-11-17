@@ -471,6 +471,21 @@ is `3051` bytes where the earlier revision's was `3091` — the two `"provider":
 writes — and the Pi → Claude Code transcript is unchanged at `2773` bytes, because that source is one
 line), and §8 lists the numbers.
 
+**The CI repair pass** answers the one real failure of `gate (windows-latest)` at this branch's head: the
+`selftest` step failed on `scripts/tests/test_pi_native_check.py`'s
+`test_the_loader_run_names_the_sessions_tree_the_printed_line_names`, which asserted a POSIX spelling of a
+synthetic home — `str(Path("/loader-home"))` is `\loader-home` on Windows, so the value the check passed
+through could never read back as the literal — and computed the expected sessions tree from that
+POSIX-shaped string while the run's own value was joined with the host's separator. Only that one case
+changed: it now drives the home under this host's own flavour and under `PureWindowsPath` (what `Path` is
+on Windows), compares the agent directory against the home the check was given, and takes the expected
+tree from the same `pi_session_tree` the printed line is built from. No case was removed, skipped or
+weakened, and the repaired case still fails against three broken spellings of the shipped `ask_pi_loader`
+(the sessions-tree variable never set, the agent directory handed the sessions tree, the tree computed
+from the workspace's parent — measured in this pass, under both flavours, in a throw-away harness outside
+the tree). The suite's case count is unchanged at 246, so §8's numbers and the transcripts above stand,
+and `python3 scripts/gate.py` ends in `GATE: PASS` with every step `PASS` on this pass's re-run.
+
 **Goal 0004 moved to the archive in this increment.** It was still sitting in `docs/goals/` with a
 "Implemented on `feat/0004-repeatable-evolving-session-handoffs`" status while `origin/main` already
 carried its merge (`8a8265a feat(0004): Repeat continuation as source history grows (#6)`), which is the

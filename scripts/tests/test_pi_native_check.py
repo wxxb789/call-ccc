@@ -1009,22 +1009,29 @@ class LoaderCopyCarriesNoCredentials(unittest.TestCase):
 
         Pi reads ``PI_CODING_AGENT_SESSION_DIR`` ahead of the agent directory's own default, so a check
         that removed the variable would verify a lookup the printed command does not make whenever the
-        caller's shell holds it, or the data directory's ``settings.json`` names another tree.
+        caller's shell holds it, or the data directory's ``settings.json`` names another tree. The home is
+        driven under this host's own flavour and under ``PureWindowsPath`` -- what ``Path`` is on Windows,
+        whose ``str`` folds a rooted value to a backslash spelling -- and the expected value is the home
+        the check was given, so the case pins the value itself on every host rather than one host's
+        spelling of it. The expected sessions tree is the same ``pi_session_tree`` the printed line is
+        built from, which is what makes the two the same directory rather than two spellings of one.
         """
-        captured: dict = {}
+        for home in (Path("/loader-home"), PureWindowsPath(r"C:\loader-home")):
+            with self.subTest(home=str(home)):
+                captured: dict = {}
 
-        def fake_run(command, cwd=None, env=None, timeout=None, **kwargs):
-            captured["command"] = [str(part) for part in command]
-            captured["env"] = dict(env or {})
-            captured["cwd"] = str(cwd)
-            return subprocess.CompletedProcess(command, 0, "", "")
+                def fake_run(command, cwd=None, env=None, timeout=None, **kwargs):
+                    captured["command"] = [str(part) for part in command]
+                    captured["env"] = dict(env or {})
+                    captured["cwd"] = str(cwd)
+                    return subprocess.CompletedProcess(command, 0, "", "")
 
-        with mock.patch.object(NATIVE_CHECK.subprocess, "run", fake_run):
-            NATIVE_CHECK.ask_pi_loader("pi", Path("/loader-home"), self.workspace, self.SESSION)
-        self.assertEqual(captured["env"].get(PI_HOME_ENV), "/loader-home")
-        self.assertEqual(captured["env"].get(NATIVE_CHECK.PI_SESSION_DIR_ENV),
-                         NATIVE_CHECK.pi_session_tree("/loader-home", self.workspace))
-        self.assertEqual(captured["cwd"], str(self.workspace))
+                with mock.patch.object(NATIVE_CHECK.subprocess, "run", fake_run):
+                    NATIVE_CHECK.ask_pi_loader("pi", home, self.workspace, self.SESSION)
+                self.assertEqual(captured["env"].get(PI_HOME_ENV), str(home))
+                self.assertEqual(captured["env"].get(NATIVE_CHECK.PI_SESSION_DIR_ENV),
+                                 NATIVE_CHECK.pi_session_tree(home, self.workspace))
+                self.assertEqual(captured["cwd"], str(self.workspace))
 
 
 class BuildOutputStaysOutOfTheRepositoryRoot(NativeCheckDriver):
