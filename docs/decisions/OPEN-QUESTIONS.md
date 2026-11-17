@@ -1621,3 +1621,36 @@ supersede it with a newer one and say which it supersedes.
   the second boundary reporting an unterminated record), `TestUnterminatedSourceTailIsBoundaryedAndNeverPublished`
   (which now also asserts the warning claims no omission), `TestBoundaryWarningsNameTheUnterminatedRecordAndAMovedFile`,
   and `TestSourceBoundaryOfFileStatesTheRecordOffsets`'s "a complete record without its line feed" row.
+
+## Q-0004-11 — The read-coverage answer is a size match, not byte identity (Q-0004-08's wording superseded)
+
+- **Status:** resolved (default taken)
+- **Question:** Q-0004-08 answered the read-coverage question with `read_coverage: verified` — "the
+  conversion read these bytes" — when the file's size equals the size the read's own snapshot recorded. The
+  review round measured that the equality does not support the claim: the read's own record
+  (`ParsedSession.File.Size`) is a size and no digest of the bytes it opened, so a file replaced by a
+  *different* transcript of the same length after the read leaves every size equal while the conversation
+  came from bytes that are gone. Nothing else in the report can catch it either: the boundary's digest is of
+  the file as it stands, and the source comparison's two digests are both taken after the read — so the
+  state and its words were the whole of the claim, and both were stronger than the measurement.
+- **Default taken:** the states say what was compared. They are `size-match` and `size-mismatch` (not
+  `verified`/`unverified`), the match state's detail names the comparison and its limit ("the file is the
+  size the read recorded, which is a size match and not a byte-identity check -- the read's own record holds
+  no digest of the bytes it opened, so a same-length replacement of the file after it is not ruled out"), the
+  human `boundary:` line says the same in one clause, and the mismatch state keeps its own words (both
+  sizes, the file moved while it was being read, coverage not established) and its warning. The byte
+  identity the earlier wording claimed is not obtainable at this seam without a second full read before the
+  parse (Q-0004-08's own rejected reversal) and is not what the design asks a caller to compare two
+  snapshots by: the digest beside the state is, and it is the file's own.
+- **Reversal:** a provider-level content digest could restore a "these bytes" claim for a source whose read
+  records one (the inherited `Fingerprint` is the provider's own artifact — a parse's or a store member's —
+  so it is not comparable with one file's bytes), or the boundary pass could be moved before the read to
+  bound the snapshot from the other side.
+- **Settled by:** whether the owner wants the boundary to take a second full read of the source before the
+  parse to compare digests (one more pass over a source that can be hundreds of megabytes), or a
+  provider-declared per-source digest added upstream.
+- **Regression:** `TestTakeSourceBoundaryStatesASizeMatchNotAByteIdentity` (an equal-size replacement at the
+  pass's seam: `size-match`, both sizes reported, the digest of the file as it stands, the detail's limit
+  named, no warning, and neither `verified` nor "the conversion read these bytes" anywhere in the answer —
+  measured red against the pre-fix code, which printed both), and the repeated-conversion case's
+  `read_bytes == bytes`/`read_coverage: size-match` assertions, which are the end-to-end half.

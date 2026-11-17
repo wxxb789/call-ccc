@@ -55,14 +55,15 @@ usage:
   A conversion is a snapshot of the source at one moment: it reads the source as it is and writes a new
   session, so converting the same source again after it has grown writes another new session -- never a
   merge into one that an agent may already have continued, and never a rewrite of the source. The result
-  names the boundary each snapshot covers (the source file's sha256 and size, whether those are the bytes
-  the read itself opened, and, for a source whose records are the lines a harness appends, where its last
-  line-feed-terminated record ends), so two continuations of one growing session can be told apart and the
-  newer one chosen. A file that ends without a line feed holds a record the source may still be writing:
-  the block says so under 'unterminated:' and leaves what the read made of it to the read's own fidelity,
-  so nothing the read did not read is presented as history. A source whose own bytes are a compressed
-  container of the records -- Codex reads its compressed rollouts -- is reported by its bytes and digest
-  with no record offset claimed for them, because no offset into such a file is a record boundary.
+  names the boundary each snapshot covers (the source file's sha256 and size, whether the file is still the
+  size the read's own snapshot recorded -- a size match, which is what a size can show -- and, for a source
+  whose records are the lines a harness appends, where its last line-feed-terminated record ends), so two
+  continuations of one growing session can be told apart and the newer one chosen. A file that ends without
+  a line feed holds a record the source may still be writing: the 'records:' line and the run's warnings
+  state those bytes, and leave what the read made of them to the read's own fidelity, so nothing the read
+  did not read is presented as history. A source whose own bytes are a compressed container of the records
+  -- Codex reads its compressed rollouts -- is reported by its bytes and digest with no record offset claimed
+  for them, because no offset into such a file is a record boundary.
 
   inspect reports the session's identity, agent, source and conversation shape. It reads the
   source session through the provider's own reader and, when an archive is present, says what the
@@ -691,15 +692,17 @@ func writeBoundary(out io.Writer, boundary *ccc.SourceBoundary) {
 
 // coverageSuffix spells what the read's own snapshot of the file has to do with the bytes the boundary
 // reports. The ordinary case is stated in words rather than left implicit, because the whole point of the
-// boundary is that a conversion is attributed to the bytes it read; the case that must never read as the
-// ordinary one is a file that moved while it was being read, whose bytes this build cannot attribute the
-// conversation to at all. Empty where the read recorded no size to compare (a representation this build may
-// not read as one file's, or none at all).
+// boundary is that a conversion is attributed to the bytes it read -- and the words say which comparison
+// was made (a size, and only a size) rather than claiming byte identity the read's own record cannot
+// support; the case that must never read as the ordinary one is a file that moved while it was being read,
+// whose bytes this build cannot attribute the conversation to at all. Empty where the read recorded no size
+// to compare (a representation this build may not read as one file's, or none at all).
 func coverageSuffix(boundary *ccc.SourceBoundary) string {
 	switch boundary.ReadCoverage {
-	case ccc.SourceBoundaryCoverageVerified:
-		return "; the read's own snapshot of this file is exactly these bytes"
-	case ccc.SourceBoundaryCoverageUnverified:
+	case ccc.SourceBoundaryCoverageSizeMatch:
+		return "; the file is the size the read's own snapshot recorded (a size match, not a " +
+			"byte-identity check)"
+	case ccc.SourceBoundaryCoverageSizeMismatch:
 		return fmt.Sprintf("; the file moved while it was read: the read's own snapshot of it recorded %d "+
 			"byte(s), so which of these bytes the conversion covered is not established", boundary.ReadBytes)
 	default:

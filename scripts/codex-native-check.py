@@ -587,9 +587,10 @@ def boundary_matches(document: dict, path: Path) -> tuple[bool, str]:
     one that never ran, or one whose record offsets do not describe the file at all is a failure rather
     than something this harness takes the report's word for. The path the report names is compared with
     the same spelling this run handed the conversion, because that is the file the two must agree about.
-    The read's own coverage answer is checked the same way: the conversion has to report that the snapshot
-    it opened is this file, which is what makes the two conversions of one growing copy attributable to
-    their own bytes at all.
+    The read's own coverage answer is checked the same way: the conversion has to report that the file is
+    still the size the snapshot it opened recorded (a size match, which is what the read's own record can
+    show), which is what makes the two conversions of one growing copy attributable to their own bytes at
+    all.
     """
     boundary = boundary_of(document)
     size, digest = path.stat().st_size, sha256(path)
@@ -598,7 +599,7 @@ def boundary_matches(document: dict, path: Path) -> tuple[bool, str]:
           and boundary.get("bytes") == size
           and boundary.get("sha256") == digest
           and boundary.get("read_bytes") == size
-          and boundary.get("read_coverage") == "verified"
+          and boundary.get("read_coverage") == "size-match"
           and boundary.get("record_offsets") == "claimed"
           and boundary.get("terminated_records_end_bytes") == size
           and not boundary.get("unterminated_tail_bytes"))

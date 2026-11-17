@@ -60,13 +60,19 @@ const (
 	SourceBoundaryNotTaken = "not-taken"
 )
 
-// Read-coverage states: what the file's bytes at the boundary have to do with the bytes the conversion
-// read. They are taken from the read's own record of the file it opened (ParsedSession.File.Size), so a
-// conversion can answer whether the bytes it reports are the bytes it covered -- and a source that moved
-// while it was being read says so instead of attributing a conversation to bytes it may not have read.
+// Read-coverage states: what the file's bytes at the boundary have to do with the read's own snapshot of
+// it. They are taken from the read's own record of the file it opened (ParsedSession.File.Size), which is
+// a size and not a digest of the bytes it read, so the comparison a conversion can support is a size
+// comparison: the file is the size the read recorded, or it is not -- and a source whose size moved while
+// it was being read says so instead of attributing a conversation to bytes it may not have read.
+//
+// Neither state is a byte-identity claim, which is why neither is named "verified": a file replaced by
+// different bytes of the same length after the read leaves every size equal, and no recorded artifact can
+// tell the replacement from what the read opened -- the states therefore say what was compared, and the
+// detail beside them says what a size cannot show.
 const (
-	SourceBoundaryCoverageVerified   = "verified"
-	SourceBoundaryCoverageUnverified = "unverified"
+	SourceBoundaryCoverageSizeMatch    = "size-match"
+	SourceBoundaryCoverageSizeMismatch = "size-mismatch"
 )
 
 // Record-offset states: whether the two offsets beside them are claimed for this file. Both halves are the
@@ -92,15 +98,17 @@ const (
 )
 
 // SourceBoundary is where one conversion's snapshot of the source stops: the source file's own bytes at the
-// boundary instant (its size and the digest of exactly those bytes), how those bytes relate to the ones the
-// read covered, and -- for a source whose records are the lines a harness appends -- the offset at which
-// the file's last line-feed-terminated record ends and the bytes of the record after it that the file had
-// not terminated.
+// boundary instant (its size and the digest of exactly those bytes), how those bytes relate to the read's own
+// snapshot of the file (a size comparison -- see the read-coverage states -- since that snapshot holds no
+// digest of what it opened), and -- for a source whose records are the lines a harness appends -- the offset
+// at which the file's last line-feed-terminated record ends and the bytes of the record after it that the
+// file had not terminated.
 //
 // It exists because a conversion is a one-way snapshot of a source that may keep growing: the digest and
 // the byte offsets are what make two conversions of one source distinguishable and each one attributable to
-// the bytes it read, and the unterminated tail is the honest answer to a source captured while it was still
-// being written -- a tail the inherited readers handle differently (the Claude reader counts an unterminated
+// the file it read, the coverage answer says what a size comparison can establish about that attribution,
+// and the unterminated tail is the honest answer to a source captured while it was still being written --
+// a tail the inherited readers handle differently (the Claude reader counts an unterminated
 // trailing record as malformed and flags the session truncated; the Codex reader deliberately counts
 // nothing for a live session's tail) and that this block states from the file's own bytes.
 //
@@ -130,11 +138,12 @@ type SourceBoundary struct {
 	// the transcript's own size -- and is absent where the read recorded none, because comparing a size this
 	// build may not read as a file's own would state a move that did not happen.
 	ReadBytes int64 `json:"read_bytes,omitempty"`
-	// ReadCoverage is SourceBoundaryCoverageVerified when the file is the size the read's own snapshot
-	// recorded for it (the conversion read these bytes) and SourceBoundaryCoverageUnverified when it is not:
-	// the file moved while it was being read, so which of these bytes the conversion covered is not
-	// established, and ReadCoverageDetail says which two sizes were compared. Empty when there was no size
-	// to compare.
+	// ReadCoverage is SourceBoundaryCoverageSizeMatch when the file's size is the size the read's own
+	// snapshot recorded for it, and SourceBoundaryCoverageSizeMismatch when it is not: the file's size moved
+	// while it was being read, so which of these bytes the conversion covered is not established.
+	// ReadCoverageDetail says which two sizes were compared and what a size comparison can and cannot show
+	// (a size match is not byte identity, and this block claims no more than it compared). Empty when there
+	// was no size to compare.
 	ReadCoverage string `json:"read_coverage,omitempty"`
 	// ReadCoverageDetail is that state's own words.
 	ReadCoverageDetail string `json:"read_coverage_detail,omitempty"`
@@ -402,10 +411,10 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 	// The source's own bytes are measured once, after the read and before anything is written: the digest
 	// this pass takes is the one the post-installation comparison re-reads, and the boundary it answers is
 	// what makes one conversion's snapshot distinguishable from another's -- which source file, which bytes
-	// of it, whether those are the bytes the read covered, and how many bytes of an unterminated record the
-	// file had left when the boundary was taken. The property the design asks for is that the transcript a
-	// conversation came from is the same file afterwards, whatever the provider's own fingerprint happens to
-	// hash.
+	// of it, whether the file is still the size the read's own snapshot recorded (a size match, which is
+	// what a size can show), and how many bytes of an unterminated record the file had left when the
+	// boundary was taken. The property the design asks for is that the transcript a conversation came from
+	// is the same file afterwards, whatever the provider's own fingerprint happens to hash.
 	boundary, err := takeSourceBoundary(reader, conversation, readFrom)
 	if err != nil {
 		return ContinueResult{}, err
@@ -928,6 +937,13 @@ func takeSourceBoundary(reader *SourceReader, conversation Conversation, readFro
 // snapshot recorded for it. A source that grew while it was being read is the case this answers: the bytes
 // below are the file's, but which of them the conversion covered is then not established, and the report
 // says so instead of attributing an older conversation to newer bytes with nothing to notice it by.
+//
+// What the read's own record holds is a size (ParsedSession.File.Size) and no digest of the bytes it
+// opened, so equal sizes establish a size match and not byte identity: a file replaced by different bytes
+// of the same length after the read leaves both sizes equal and is invisible here and everywhere else in
+// the report (the digest below is of the file as it stands, and the source comparison's two digests are
+// both taken after the read). The detail therefore names the comparison and its limit rather than claiming
+// the conversion read these bytes, which is the claim a size cannot support.
 func fillReadCoverage(boundary *SourceBoundary, readBytes int64) {
 	if readBytes <= 0 {
 		// The read recorded no size for this file: there is nothing to compare, and a comparison against
@@ -936,13 +952,15 @@ func fillReadCoverage(boundary *SourceBoundary, readBytes int64) {
 	}
 	boundary.ReadBytes = readBytes
 	if readBytes == boundary.Bytes {
-		boundary.ReadCoverage = SourceBoundaryCoverageVerified
+		boundary.ReadCoverage = SourceBoundaryCoverageSizeMatch
 		boundary.ReadCoverageDetail = fmt.Sprintf(
-			"the read's own snapshot of this file is %d byte(s) and the file holds %d: the conversion read "+
-				"these bytes", readBytes, boundary.Bytes)
+			"the read's own snapshot of this file is %d byte(s) and the file holds %d: the file is the size "+
+				"the read recorded, which is a size match and not a byte-identity check -- the read's own "+
+				"record holds no digest of the bytes it opened, so a same-length replacement of the file "+
+				"after it is not ruled out", readBytes, boundary.Bytes)
 		return
 	}
-	boundary.ReadCoverage = SourceBoundaryCoverageUnverified
+	boundary.ReadCoverage = SourceBoundaryCoverageSizeMismatch
 	boundary.ReadCoverageDetail = fmt.Sprintf(
 		"the read's own snapshot of this file is %d byte(s) while the file holds %d: the file moved while "+
 			"it was being read, so which of these bytes the conversion covered is not established",
@@ -1175,7 +1193,7 @@ func boundaryWarnings(boundary *SourceBoundary) []string {
 		return nil
 	}
 	var warnings []string
-	if boundary.ReadCoverage == SourceBoundaryCoverageUnverified {
+	if boundary.ReadCoverage == SourceBoundaryCoverageSizeMismatch {
 		warnings = append(warnings, fmt.Sprintf(
 			"the source file is not the size the read's own snapshot recorded for it (%d byte(s) read, %d "+
 				"byte(s) now): the file moved while it was being read, so which of its bytes this conversion "+

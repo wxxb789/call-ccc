@@ -709,7 +709,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             copy = source_copy(env)
             boundary = {"state": "taken", "detail": "the case's stub boundary", "path": str(copy),
                         "bytes": copy.stat().st_size, "sha256": NATIVE_CHECK.sha256(copy),
-                        "read_bytes": copy.stat().st_size, "read_coverage": "verified",
+                        "read_bytes": copy.stat().st_size, "read_coverage": "size-match",
                         "record_offsets": "claimed",
                         "terminated_records_end_bytes": copy.stat().st_size}
             if which == "second":
@@ -961,7 +961,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         copy attributable to their own bytes at all.
         """
         for override in ({"sha256": "0" * 64}, {"bytes": 1}, {"state": "not-taken"},
-                         {"read_coverage": "unverified"}, {"read_bytes": 1}):
+                         {"read_coverage": "size-mismatch"}, {"read_bytes": 1}):
             with self.subTest(override=override):
                 code, results = self.drive(second_boundary=override)
                 state, detail = results.get(

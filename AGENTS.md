@@ -51,13 +51,15 @@ with their exit codes and counts).
 - **A conversion is a snapshot of the source at one boundary, and repeating it is the same operation.**
   The source is read again and written as *another* fresh target session; nothing ever merges later
   source history into an existing target session, and nothing rewrites the source. Every conversion's
-  result states the boundary it covers — the source file's sha256 and size, whether those are the bytes the
-  read itself opened (`read_coverage`), and, for a source whose records are appended lines, where its
+  result states the boundary it covers — the source file's sha256 and size, whether the file is still the
+  size the read's own snapshot recorded (`read_coverage`: a size match, which is what the read's own record
+  can show — it holds no digest of the bytes it opened, so a same-length replacement of the file after the
+  read is not ruled out), and, for a source whose records are appended lines, where its
   line-feed-terminated records end and how many bytes of an unterminated record follow — so two
   continuations of one growing session can be told apart and each is attributed to the bytes it read; a
-  read whose own recorded snapshot is not the file the boundary measured says so instead of attributing its
-  conversation to bytes it is not shown to have read. A file whose last bytes hold no line feed holds a
-  record the source had not terminated, which it may still be writing: that is disclosed
+  read whose own recorded snapshot is not the size the file has at the boundary says so instead of
+  attributing its conversation to bytes it is not shown to have read. A file whose last bytes hold no line
+  feed holds a record the source had not terminated, which it may still be writing: that is disclosed
   (`boundary.unterminated_tail_bytes`, the run's warnings, the human `records:` line) and never called
   published or left out, because whether a read carried an unterminated record is the read's own answer —
   what is forbidden is presenting bytes the read did not read as history, and another conversion once the

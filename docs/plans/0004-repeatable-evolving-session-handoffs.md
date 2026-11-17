@@ -58,7 +58,7 @@ each one attributed, and one rule the clause below it demands. This increment ad
 | `state` | `taken` or `not-taken` | `taken` when the conversion read the session from its own file at a path that names one file; `not-taken` with the reason for an archive read, a container-member identity, or a read that named no path |
 | `detail` | the state's own words | e.g. *"the conversation's own source file, read after the session and before anything was written"*, or the reason it was not taken |
 | `path`, `bytes`, `sha256` | the source file, its size and the digest of exactly those bytes | one streamed pass, the same pass that already computed the pre-conversion digest |
-| `read_bytes`, `read_coverage`, `read_coverage_detail` | the size the read itself recorded for this file when it opened it, and what the file's bytes at this boundary have to do with it | the provider's own `ParsedSession.File.Size` compared with the boundary pass's size: `verified` when they are the same (the conversion read these bytes), `unverified` when they are not (the file moved while it was being read, so the coverage is not established). Filled only where the provider's own declarations make that size this file's own (the declaration `record_offsets` rests on: Claude's transcript, Codex's rollout) — a layout's composite size is never compared with one file's (Q-0004-08, superseding Q-0004-05) |
+| `read_bytes`, `read_coverage`, `read_coverage_detail` | the size the read itself recorded for this file when it opened it, and what the file's bytes at this boundary have to do with it | the provider's own `ParsedSession.File.Size` compared with the boundary pass's size: `size-match` when they are the same (the file is the size the read recorded — a size comparison, which is all that record can support, since it holds no digest of the bytes the read opened), `size-mismatch` when they are not (the file moved while it was being read, so the coverage is not established). Filled only where the provider's own declarations make that size this file's own (the declaration `record_offsets` rests on: Claude's transcript, Codex's rollout) — a layout's composite size is never compared with one file's (Q-0004-08, superseding Q-0004-05; the states' own limit is Q-0004-11) |
 | `record_offsets` | whether the record offsets beside it are claimed | `claimed` when the **provider's own declaration** (`parser.SourceCapabilities.IncrementalAppend` = `CapabilitySupported`: the source grows by appended lines) *and* the file's own bytes can be such a transcript. A provider that declares only `parser.ContentCapabilities.MalformedLineCount` — a count of malformed *entries* inside one whole-file document — gets `not-claimed` (Q-0004-07); so does a file whose own bytes are not text lines, because a compressed container of the records is not the records, nor is a byte sequence no text line can be read from (Q-0004-09) |
 | `record_offsets_detail` | why they are not claimed | the provider declares no such source, or the file's own bytes are not a transcript of text lines (a compressed or otherwise binary container of the records, or a sequence that does not decode as text) |
 | `terminated_records_end_bytes` | where the file's line-feed-terminated records end | the offset just after the file's last line feed, read in that same pass; equal to `bytes` when the file ends at a line feed |
@@ -71,8 +71,14 @@ The field is documented as the conversion's, so its absence in an inspection is 
 
 ### 2.2 What the boundary is not
 
+- **It is not a byte-identity claim.** The read's own record holds a size and no digest of the bytes it
+  opened, so the comparison the pass can make is a size comparison, and that is what it reports: the file is
+  the size the read recorded (`read_coverage: size-match`) or it is not (`size-mismatch`). A file replaced by
+  different bytes of the same length after the read leaves every size equal, and no artifact in the report
+  would notice it — so the state and its detail say what was compared, never that the conversion read these
+  bytes (Q-0004-11, and the equal-size replacement case that pins it).
 - **It is not a claim about a file it did not compare.** The pass runs after the read and before anything
-  is written, and it answers whether the file it measured is the file the read's own snapshot recorded
+  is written, and it answers whether the file it measured is the size the read's own snapshot recorded
   (`read_coverage`): when it is not, the report says so and says the conversion's coverage of these bytes is
   not established, in the block's words and in the run's warnings. The comparison is asked only where the
   provider's own declarations make the recorded size this file's own — a provider whose source is a layout
@@ -103,7 +109,8 @@ The field is documented as the conversion's, so its absence in an inspection is 
 | trailing bytes hold no line feed and are not a record (a half-written record) | Claude: `malformed_lines` +1 and `truncated = true`; Codex: **nothing** (it counts an unterminated tail only for a stable-snapshot caller) | `unterminated_tail_bytes > 0`, and a warning names the bytes and the remedy | dropped: nothing of the tail becomes a message, and the conversion's counts say so |
 | trailing bytes hold no line feed and *are* a complete record | Claude: nothing (the line is valid, the file is not truncated); Codex: nothing | `unterminated_tail_bytes > 0`, and the same warning | **read**: the record's own dialogue is in the conversation and in the target document |
 | the file holds no line feed at all | as above | `terminated_records_end_bytes = 0`, `unterminated_tail_bytes = bytes` | a record the reader can read is read; the whole file is one unterminated record |
-| the file grew while it was being read | — | `read_coverage: unverified` with both sizes, and a warning naming the remedy | the report does not attribute the conversation to bytes the read is not shown to have covered |
+| the file grew while it was being read | — | `read_coverage: size-mismatch` with both sizes, and a warning naming the remedy | the report does not attribute the conversation to bytes the read is not shown to have covered |
+| the file was replaced by different bytes of the same length after the read | — | `read_coverage: size-match` with both sizes equal, and no warning | the report states a size match and the digest of the file as it stands — never that the conversion read these bytes, which no size comparison can show (Q-0004-11) |
 | the boundary pass cannot read the file | — | the run stops, the way a source check that cannot run already does | nothing written before the failure |
 
 A source whose tail is unterminated is **not** a failure: it is a live session, the conversion is real, and
@@ -122,7 +129,7 @@ type SourceBoundary struct {
 	Bytes  int64  `json:"bytes,omitempty"`
 	SHA256 string `json:"sha256,omitempty"`
 	ReadBytes            int64  `json:"read_bytes,omitempty"`
-	ReadCoverage         string `json:"read_coverage,omitempty"`        // verified | unverified
+	ReadCoverage         string `json:"read_coverage,omitempty"`        // size-match | size-mismatch
 	ReadCoverageDetail   string `json:"read_coverage_detail,omitempty"`
 	RecordOffsets        string `json:"record_offsets"`                 // claimed | not-claimed
 	RecordOffsetsDetail  string `json:"record_offsets_detail,omitempty"`
@@ -142,12 +149,12 @@ No new command and no new flag. The human block gains up to two lines, and the s
 `--json`:
 
 ```text
-  boundary:     2884 byte(s) read; the read's own snapshot of this file is exactly these bytes
+  boundary:     2884 byte(s) read; the file is the size the read's own snapshot recorded (a size match, not a byte-identity check)
   records:      the source's records end at a line feed at byte 2884: the file ends at a record boundary
   boundary:     3035 byte(s) read; the file moved while it was read: the read's own snapshot of it recorded 2884 byte(s), so which of these bytes the conversion covered is not established
   records:      the source's records end at a line feed at byte 2884: the last 151 byte(s) are a record the source had not terminated
   boundary:     not taken (the conversion read an archive row, so no source file was open at all)
-  boundary:     3626 byte(s) read; the read's own snapshot of this file is exactly these bytes
+  boundary:     3626 byte(s) read; the file is the size the read's own snapshot recorded (a size match, not a byte-identity check)
   records:      no line-record offsets claimed: the file's own bytes are not a transcript of text lines (a compressed or otherwise binary container of the records, or a sequence that does not decode as text), so no byte offset into them is a record boundary
 ```
 

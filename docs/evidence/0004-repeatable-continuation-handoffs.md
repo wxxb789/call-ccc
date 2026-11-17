@@ -37,7 +37,7 @@ said nothing at all.
 ## 1. The source boundary on a real conversion
 
 A conversion of the committed Claude fixture into an isolated Codex home (`<repo>/bin/ccc continue
-claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to codex --target-home /tmp/evidence-0004/a1/home
+claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to codex --target-home /tmp/evidence-0004/r3/a3/home
 --target-binary ccc-no-such-harness --verify none`, `CLAUDE_PROJECTS_DIR=<repo>/internal/ccc/testdata/fixtures/claude`,
 exit code 0):
 
@@ -47,18 +47,18 @@ claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 → codex
   read from:    source
   conversation: 8 message(s), 3 user, 5 assistant, 1 tool call(s), 1 compaction boundary(ies)
   fidelity:     1 malformed line(s)
-  boundary:     2051 byte(s) read; the read's own snapshot of this file is exactly these bytes
+  boundary:     2051 byte(s) read; the file is the size the read's own snapshot recorded (a size match, not a byte-identity check)
   records:      the source's records end at a line feed at byte 2051: the file ends at a record boundary
   converted:    codex-rollout-jsonl, 3101 bytes: 5 message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies), 2 turn(s)
   carried-with-caveat: tool_name_vocabulary ×1
   carried-with-caveat: pre_compaction_history ×3
   omitted:      malformed_source_lines ×1
-  installed:    /tmp/evidence-0004/a1/home/sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1e978-f9bb-7766-b15d-7f3135eede36.jsonl [hard-link]
+  installed:    /tmp/evidence-0004/r3/a3/home/sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1e98b-7682-7104-95a2-8641d4e883ee.jsonl [hard-link]
   source file:  unchanged (sha256 2bd510821d4abf83235752eff81e0e9824d0c41b3d2d4b84956d1130992467b6, taken before and after the conversion)
-  target id:    01a1e978-f9bb-7766-b15d-7f3135eede36
+  target id:    01a1e98b-7682-7104-95a2-8641d4e883ee
   working dir:  /home/user/code/example-api
-  resume:       CODEX_HOME=/tmp/evidence-0004/a1/home ccc-no-such-harness resume 01a1e978-f9bb-7766-b15d-7f3135eede36
-  non-interactive resume: CODEX_HOME=/tmp/evidence-0004/a1/home ccc-no-such-harness exec resume 01a1e978-f9bb-7766-b15d-7f3135eede36 '<prompt>'
+  resume:       CODEX_HOME=/tmp/evidence-0004/r3/a3/home ccc-no-such-harness resume 01a1e98b-7682-7104-95a2-8641d4e883ee
+  non-interactive resume: CODEX_HOME=/tmp/evidence-0004/r3/a3/home ccc-no-such-harness exec resume 01a1e98b-7682-7104-95a2-8641d4e883ee '<prompt>'
   cli_version:  0.169.0 (writer-pin)
   structure:    verified (the inherited AgentsView Codex reader over the installed session)
   native load:  not-requested (the target harness's own loader (codex app-server, thread/resume))
@@ -68,7 +68,7 @@ claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 → codex
   carried:      AgentsView 83195c8a6861b8c74a4b6cb87512817fed6f8584, unmodified (scripts/upstream-parity.py)
 ```
 
-The same run with `--json` (an isolated second run, `/tmp/evidence-0004/a2`), with the boundary, the
+The same run with `--json` (an isolated second run, `/tmp/evidence-0004/r3/a4`), with the boundary, the
 source comparison and the target identity quoted from the document itself:
 
 ```json
@@ -84,8 +84,8 @@ source comparison and the target identity quoted from the document itself:
       "bytes": 2051,
       "sha256": "2bd510821d4abf83235752eff81e0e9824d0c41b3d2d4b84956d1130992467b6",
       "read_bytes": 2051,
-      "read_coverage": "verified",
-      "read_coverage_detail": "the read's own snapshot of this file is 2051 byte(s) and the file holds 2051: the conversion read these bytes",
+      "read_coverage": "size-match",
+      "read_coverage_detail": "the read's own snapshot of this file is 2051 byte(s) and the file holds 2051: the file is the size the read recorded, which is a size match and not a byte-identity check -- the read's own record holds no digest of the bytes it opened, so a same-length replacement of the file after it is not ruled out",
       "record_offsets": "claimed",
       "terminated_records_end_bytes": 2051
     }
@@ -96,12 +96,18 @@ source comparison and the target identity quoted from the document itself:
     "detail": "sha256 2bd510821d4abf83235752eff81e0e9824d0c41b3d2d4b84956d1130992467b6, taken before and after the conversion"
   },
   "target_session": {
-    "session_id": "01a1e978-f9da-7872-8e93-f626ecd07661",
-    "path": "/tmp/evidence-0004/a2/home/sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1e978-f9da-7872-8e93-f626ecd07661.jsonl",
-    "resume_command": "CODEX_HOME=/tmp/evidence-0004/a2/home ccc-no-such-harness resume 01a1e978-f9da-7872-8e93-f626ecd07661"
+    "session_id": "01a1e98b-76a3-7667-8465-9154b85cadb9",
+    "path": "/tmp/evidence-0004/r3/a4/home/sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1e98b-76a3-7667-8465-9154b85cadb9.jsonl",
+    "resume_command": "CODEX_HOME=/tmp/evidence-0004/r3/a4/home ccc-no-such-harness resume 01a1e98b-76a3-7667-8465-9154b85cadb9"
   }
 }
 ```
+
+*(Both blocks are this round's own re-run on the fixed tree — `/tmp/evidence-0004/r3/a3` and `a4`, exit code
+0 each — re-taken because the read-coverage answer's words changed in this round (§12's finding 1: the state
+is a size match, not a byte-identity claim). The earlier spellings of these two runs stood as
+`read_coverage: verified` with "the conversion read these bytes"; §11's own records keep the wording of the
+round that wrote them, and §12 names what changed.)*
 
 `unterminated_tail_bytes` is absent because it is zero (omitempty), which is the field's own meaning: the
 file's bytes end at a line feed, so it has no unterminated record. (`record_offsets_detail` is absent for
@@ -116,24 +122,36 @@ skipped record, not a record the file had not finished writing.
   A conversion is a snapshot of the source at one moment: it reads the source as it is and writes a new
   session, so converting the same source again after it has grown writes another new session -- never a
   merge into one that an agent may already have continued, and never a rewrite of the source. The result
-  names the boundary each snapshot covers (the source file's sha256 and size, whether those are the bytes
-  the read itself opened, and, for a source whose records are the lines a harness appends, where its last
-  line-feed-terminated record ends), so two continuations of one growing session can be told apart and the
-  newer one chosen. A file that ends without a line feed holds a record the source may still be writing:
-  the block says so under 'unterminated:' and leaves what the read made of it to the read's own fidelity,
-  so nothing the read did not read is presented as history. A source whose own bytes are a compressed
-  container of the records -- Codex reads its compressed rollouts -- is reported by its bytes and digest
-  with no record offset claimed for them, because no offset into such a file is a record boundary.
+  names the boundary each snapshot covers (the source file's sha256 and size, whether the file is still the
+  size the read's own snapshot recorded -- a size match, which is what a size can show -- and, for a source
+  whose records are the lines a harness appends, where its last line-feed-terminated record ends), so two
+  continuations of one growing session can be told apart and the newer one chosen. A file that ends without
+  a line feed holds a record the source may still be writing: the 'records:' line and the run's warnings
+  state those bytes, and leave what the read made of them to the read's own fidelity, so nothing the read
+  did not read is presented as history. A source whose own bytes are a compressed container of the records
+  -- Codex reads its compressed rollouts -- is reported by its bytes and digest with no record offset claimed
+  for them, because no offset into such a file is a record boundary.
 ```
 
-*(The paragraph as the final tree prints it: the apply stage's accepted findings qualified its last
-sentence to a source whose records are appended lines — §7.)*
+*(The paragraph as the final tree prints it (this round's own `ccc help`, exit code 0): the apply stage's
+accepted findings qualified its last sentence to a source whose records are appended lines — §7 — and this
+round replaced the label it names for an unfinished record with the one the block prints it on, and the
+coverage clause with the size match the boundary answers (§12's findings 1 and 3).)*
 
 ## 2. Two conversions of one growing source, by hand
 
-A copy of the committed Claude fixture under `/tmp/evidence-0004/b/src`, converted, grown by the committed
+A copy of the committed Claude fixture under `/tmp/evidence-0004/r3/b/src`, converted, grown by the committed
 fragment `internal/ccc/testdata/growth/claude-complete-turn.jsonl`, then converted again into the same
-home — the scenario the goal's first clause names (exit code 0 for each run):
+home — the scenario the goal's first clause names (exit code 0 for each run). This block is one run's own
+transcript, quoted as the evidence-bearing subset of the two conversion blocks it ran (§12's finding 2
+re-took it, because an earlier revision quoted the first conversion's identity from one run beside the
+second's from another): B1's `installed:`/`target id:` lines and B4's `first installed now:` name the same
+file, `01a1e98b-76e1-…` (`rollout-2026-05-04T09-15-00-01a1e98b-76e1-7475-ba0e-80c959cb5f5d.jsonl`), and
+B4 digests it after the second conversion with the same `sha256=3971fbc722c190ee` it had when B1 wrote it;
+the home B4 lists holds exactly the two sessions B4's two lines name, and B5's two counts are of those two
+documents. The B0 and B2 lines join the size that run's `stat` printed with the digest its `sha256sum`
+printed — the block's own long-standing shape — and every other quoted line is the run's, character for
+character.
 
 ```console
 ### B0: the growing copy before the first conversion
@@ -142,13 +160,13 @@ bytes=2051 sha256=2bd510821d4abf83235752eff81e0e9824d0c41b3d2d4b84956d1130992467
 ### B1: the first conversion
   conversation: 8 message(s), 3 user, 5 assistant, 1 tool call(s), 1 compaction boundary(ies)
   fidelity:     1 malformed line(s)
-  boundary:     2051 byte(s) read; the read's own snapshot of this file is exactly these bytes
+  boundary:     2051 byte(s) read; the file is the size the read's own snapshot recorded (a size match, not a byte-identity check)
   records:      the source's records end at a line feed at byte 2051: the file ends at a record boundary
   converted:    codex-rollout-jsonl, 3101 bytes: 5 message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies), 2 turn(s)
-  installed:    /tmp/evidence-0004/b/home/sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1e939-1b2b-7e15-b068-2913ad8b9d72.jsonl [hard-link]
+  installed:    /tmp/evidence-0004/r3/b/home/sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1e98b-76e1-7475-ba0e-80c959cb5f5d.jsonl [hard-link]
   source file:  unchanged (sha256 2bd510821d4abf83235752eff81e0e9824d0c41b3d2d4b84956d1130992467b6, taken before and after the conversion)
-  target id:    01a1e939-1b2b-7e15-b068-2913ad8b9d72
-first installed: rollout-2026-05-04T09-15-00-01a1e939-1b2b-7e15-b068-2913ad8b9d72.jsonl sha256=c945f80f6c93bb49
+  target id:    01a1e98b-76e1-7475-ba0e-80c959cb5f5d
+first installed: rollout-2026-05-04T09-15-00-01a1e98b-76e1-7475-ba0e-80c959cb5f5d.jsonl sha256=3971fbc722c190ee
 
 ### B2: the source gains one turn (the committed growth fragment)
 bytes=2540 sha256=e2921e995915855d41b1b945e847ed751a8e92d9d053ae19e5c05ac19c81a02f
@@ -156,30 +174,35 @@ bytes=2540 sha256=e2921e995915855d41b1b945e847ed751a8e92d9d053ae19e5c05ac19c81a0
 ### B3: the second conversion of the same session
   conversation: 10 message(s), 4 user, 6 assistant, 1 tool call(s), 1 compaction boundary(ies)
   fidelity:     1 malformed line(s)
-  boundary:     2540 byte(s) read; the read's own snapshot of this file is exactly these bytes
+  boundary:     2540 byte(s) read; the file is the size the read's own snapshot recorded (a size match, not a byte-identity check)
   records:      the source's records end at a line feed at byte 2540: the file ends at a record boundary
-  installed:    /tmp/evidence-0004/b/home/sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1e978-fa5b-715b-be9d-8b90c2484ce3.jsonl [hard-link]
+  converted:    codex-rollout-jsonl, 4051 bytes: 7 message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies), 3 turn(s)
+  installed:    /tmp/evidence-0004/r3/b/home/sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1e98b-7709-7ecf-9abe-2c984d6846d3.jsonl [hard-link]
   source file:  unchanged (sha256 e2921e995915855d41b1b945e847ed751a8e92d9d053ae19e5c05ac19c81a02f, taken before and after the conversion)
-  target id:    01a1e978-fa5b-715b-be9d-8b90c2484ce3
+  target id:    01a1e98b-7709-7ecf-9abe-2c984d6846d3
 
 ### B4: the earlier target after the second conversion
-first installed now: rollout-2026-05-04T09-15-00-01a1e978-fa33-75f0-83c3-b397149d2fc7.jsonl sha256=ba2870988be17a2f
-  rollout-2026-05-04T09-15-00-01a1e978-fa33-75f0-83c3-b397149d2fc7.jsonl
-  rollout-2026-05-04T09-15-00-01a1e978-fa5b-715b-be9d-8b90c2484ce3.jsonl
+first installed now: rollout-2026-05-04T09-15-00-01a1e98b-76e1-7475-ba0e-80c959cb5f5d.jsonl sha256=3971fbc722c190ee
+  rollout-2026-05-04T09-15-00-01a1e98b-76e1-7475-ba0e-80c959cb5f5d.jsonl
+  rollout-2026-05-04T09-15-00-01a1e98b-7709-7ecf-9abe-2c984d6846d3.jsonl
 
 ### B5: the appended turn's words in each installed document
-  rollout-2026-05-04T09-15-00-01a1e978-fa33-75f0-83c3-b397149d2fc7.jsonl: question=0 answer=0
-  rollout-2026-05-04T09-15-00-01a1e978-fa5b-715b-be9d-8b90c2484ce3.jsonl: question=2 answer=2
+  rollout-2026-05-04T09-15-00-01a1e98b-76e1-7475-ba0e-80c959cb5f5d.jsonl: question=0 answer=0
+  rollout-2026-05-04T09-15-00-01a1e98b-7709-7ecf-9abe-2c984d6846d3.jsonl: question=2 answer=2
 ```
+
+B4's first line is the *same file* B1 installed — `01a1e98b-76e1-…`, the one B1's own `installed:` and
+`target id:` lines name — digested again after the second conversion ran into the same home: the same
+sha256, `3971fbc722c190ee`, it had when B1 wrote it. The home holds exactly the two sessions B4 lists.
 
 Read as the four claims it is meant to support:
 
 | Claim | Evidence in the block above |
 | --- | --- |
-| two conversions of one growing source are **distinguishable** | two sessions in one home, `01a1e978-fa33-…` then `01a1e978-fa5b-…`, each with its own path; two different boundaries (`2051` then `2540` bytes, `2bd51082…` then `e2921e99…`) |
-| each is **correctly attributed** to its own bytes | B0's digest is B1's `boundary` digest and B1's `source file` digest; the copy's own digest after the growth (B2) is B3's `boundary` digest; the later read carries 10 messages against the earlier 8; both blocks state the read's own snapshot as the file they measured (`read_coverage: verified`) |
+| two conversions of one growing source are **distinguishable** | two sessions in one home, `01a1e98b-76e1-…` then `01a1e98b-7709-…`, each with its own path; two different boundaries (`2051` then `2540` bytes, `2bd51082…` then `e2921e99…`) |
+| each is **correctly attributed** to its own bytes | B0's digest is B1's `boundary` digest and B1's `source file` digest; the copy's own digest after the growth (B2) is B3's `boundary` digest; the later read carries 10 messages against the earlier 8; both blocks state the read's own snapshot as a size match against the file they measured (`read_coverage: size-match`, which is what a size can show — §12's finding 1) |
 | the later result **includes the eligible appended history** | B3's `conversation: 10 message(s)`/`converted: 7 message(s)`/`3 turn(s)` against B1's 8/5/2, and B5: the appended question and answer appear twice in the second document and not at all in the first |
-| the earlier target **stays unchanged** | B4: `sha256=ba2870988be17a2f` — the same digest it had immediately after B1, after the second conversion ran into the same home |
+| the earlier target **stays unchanged** | B4: `sha256=3971fbc722c190ee` for `01a1e98b-76e1-…`, the same digest that file had immediately after B1, after the second conversion ran into the same home |
 | the source is read again and never written | each run's `source file: unchanged (sha256 …, taken before and after the conversion)` names the digest it compared; the copy's bytes changed only where B2 appended the fragment |
 
 The same property is pinned in-process for **both** target routes by
@@ -197,30 +220,41 @@ of a record the harness writes — the shape a capture mid-append has — and bo
 
 ```console
 ### C1: a Claude source whose writer had not finished a record
-the copy: 2051 bytes -> 2182 bytes; the last 131 bytes hold no record terminator
+the copy: 2182 bytes (the fixture's 2051 and the fragment's 131)
   conversation: 8 message(s), 3 user, 5 assistant, 1 tool call(s), 1 compaction boundary(ies)
   fidelity:     2 malformed line(s), and the last record was still being written at read time
-  boundary:     2182 byte(s) read; the read's own snapshot of this file is exactly these bytes
+  boundary:     2182 byte(s) read; the file is the size the read's own snapshot recorded (a size match, not a byte-identity check)
   records:      the source's records end at a line feed at byte 2051: the last 131 byte(s) are a record the source had not terminated
   omitted:      malformed_source_lines ×2
-  installed:    /tmp/evidence-0004/c/claude/home/sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1e979-1c49-7934-ae2d-e6bbd70aedbf.jsonl [hard-link]
+  installed:    /tmp/evidence-0004/r3/c/claude/home/sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1e98b-773d-7d0f-afc9-cc08bdaf68c2.jsonl [hard-link]
   source file:  unchanged (sha256 95ce6c56aee411c05bd48dfbf966e63bd219a42295b6178ec83890a9482d9b3f, taken before and after the conversion)
-  target id:    01a1e979-1c49-7934-ae2d-e6bbd70aedbf
+  target id:    01a1e98b-773d-7d0f-afc9-cc08bdaf68c2
+  warning:      the source file's last 131 byte(s) hold no line feed: its bytes end at byte 2182 while its last line-feed-terminated record ends at byte 2051, so the source may still be writing that record.
   the unfinished record's words in the installed document: 0
 
 ### C2: a Codex source whose writer had not finished a record
-the copy: 1792 bytes -> 1957 bytes; the last 165 bytes hold no record terminator
+the copy: 1957 bytes (the fixture's 1792 and the fragment's 165)
   conversation: 6 message(s), 2 user, 4 assistant, 1 tool call(s), 1 compaction boundary(ies)
-  boundary:     1957 byte(s) read; the read's own snapshot of this file is exactly these bytes
+  boundary:     1957 byte(s) read; the file is the size the read's own snapshot recorded (a size match, not a byte-identity check)
   records:      the source's records end at a line feed at byte 1792: the last 165 byte(s) are a record the source had not terminated
   omitted:      message_model_attribution ×5
-  installed:    /tmp/evidence-0004/c/codex/home/projects/-home-user-code-example-api/a652661e-01db-49a5-8238-533fc42ad433.jsonl [hard-link]
+  installed:    /tmp/evidence-0004/r3/c/codex/home/projects/-home-user-code-example-api/93ff4b0d-acfb-4504-ab86-321ad0ee93a1.jsonl [hard-link]
   source file:  unchanged (sha256 aa19c70a9c0042786070d0891f88f58c21fa678f7ccc73aa62bc48f6e553bbb3, taken before and after the conversion)
-  target id:    a652661e-01db-49a5-8238-533fc42ad433
+  target id:    93ff4b0d-acfb-4504-ab86-321ad0ee93a1
+  warning:      the source file's last 165 byte(s) hold no line feed: its bytes end at byte 1957 while its last line-feed-terminated record ends at byte 1792, so the source may still be writing that record.
   the unfinished record's words in the installed document: 0
-  the same source read by ccc inspect reports no malformed line at all:
+  the same source read by ccc inspect reports:
     {"fidelity": {"read_from": "source"}, "messages": 6, "file_size": 1957}
 ```
+
+*(Both blocks are this round's own re-run on the fixed tree (`/tmp/evidence-0004/r3/c`, exit code 0 each),
+re-taken because the boundary's read-coverage clause changed (§12's finding 1). Each `warning:` line is
+quoted through its first sentence — the rest names the read's own answer and the remedy, and stands in full
+in §11's F02 — the `the copy:` lines state the fixture's own size beside the appended fragment's, where the
+run printed the grown copy's, and the `ccc inspect` line under C2 is that same copy read by a second command
+of the same run (`ccc inspect codex:0c8e5f21-… --json`, exit code 0), quoted as it printed; no other line is
+altered. The earlier revision quoted the pre-fix wording, `the read's own snapshot of this file is exactly
+these bytes`.)*
 
 | What the case shows | C1 (Claude source) | C2 (Codex source) |
 | --- | --- | --- |
@@ -248,36 +282,47 @@ and it asserts that no warning claims the record was left out of the conversion 
 | `TestSourceBoundaryOfFileStatesTheRecordOffsets` | the pass itself: two complete lines (`terminated_records_end = 16`, tail 0), an unterminated last line (`terminated_records_end = 8` of 13, tail 5), a complete record without its line feed (8 of 15, tail 7), a file with no line feed at all (0, the whole 7 bytes unterminated), an empty file (both 0), a multi-byte rune the pass's own read buffer splits (still text: the offsets are claimed), a source whose records are *not* declared appended lines (the file's bytes and digest are still measured, `record_offsets: not-claimed` with the declaration as the reason), a compressed container (its zstd header is not text: `not-claimed` with the container as the reason, no offset, no unterminated record), and a path that names no file (the error itself — `os.ErrNotExist`, asserted by kind so the case holds on every platform — never a boundary with no bytes in it) |
 | `TestTextStreamCarriesSplitRunes` | the validator the gate's second half rests on: a rune split across chunks is decided by the chunk that completes it (a two-byte and a four-byte rune, and the encoded rune error), while a stray continuation byte, a zstd frame header, and a rune no chunk completes are not text |
 | `TestTakeSourceBoundaryAnswersTheReadsThatHaveNoFileToMeasure` | `not-taken` with its own reason for an archive read (`the conversion read an archive row, so no source file was open at all`) and for a container-member identity (`…member member-1 inside the container…`), with no bytes claimed |
-| `TestTakeSourceBoundaryReportsAFileThatMovedWhileItWasRead` | the state a mid-read growth leaves, at the seam where it is visible (§11's F01): the read's own recorded snapshot is smaller than the file the pass measures, so the block reports `read_bytes`, `read_coverage: unverified` with both sizes in its detail, the file's own record structure beside it, and a warning naming the remedy — and the pass writes nothing to the file |
-| `TestBoundaryWarningsNameTheUnterminatedRecordAndAMovedFile` | the warning channel: no boundary, a boundary that was not taken, and a file with neither an unterminated record nor a move produce no warning; an unterminated record produces one naming `1835`, `1792`, `43 byte(s)` and `converting again` and claiming no omission; an unverified coverage produces one naming both sizes (`1792 byte(s) read`, `1835 byte(s) now`) and the remedy; both answers together produce one each |
+| `TestTakeSourceBoundaryReportsAFileThatMovedWhileItWasRead` | the state a mid-read growth leaves, at the seam where it is visible (§11's F01): the read's own recorded snapshot is smaller than the file the pass measures, so the block reports `read_bytes`, `read_coverage: size-mismatch` with both sizes in its detail, the file's own record structure beside it, and a warning naming the remedy — and the pass writes nothing to the file |
+| `TestTakeSourceBoundaryStatesASizeMatchNotAByteIdentity` | the limit of the read-coverage answer (§12's finding 1): a file replaced by *different bytes of the same length* after the read leaves the sizes equal, so the pass reports `read_coverage: size-match` with both sizes, the digest of the file as it stands, the detail's own limit (`not a byte-identity check`, `a same-length replacement … not ruled out`), no warning, and neither the pre-fix `verified` state nor the words "the conversion read these bytes" — measured red against the pre-fix code, which printed both |
+| `TestBoundaryWarningsNameTheUnterminatedRecordAndAMovedFile` | the warning channel: no boundary, a boundary that was not taken, and a file with neither an unterminated record nor a move produce no warning; an unterminated record produces one naming `1835`, `1792`, `43 byte(s)` and `converting again` and claiming no omission; a size mismatch produces one naming both sizes (`1792 byte(s) read`, `1835 byte(s) now`) and the remedy; both answers together produce one each |
 | `TestSourceRecordsAreLinesAsksTheProvidersOwnDeclarations` | the *declaration* half of the gate on the record offsets: `claude` and `codex` are declared line-recorded (`parser.SourceCapabilities.IncrementalAppend`), an unknown name and an empty one are not, and a reader-less call claims nothing. Three providers whose source is a whole-file JSON document or a compressed container (QwenPaw, CodeBuddy, DeepSeek Harness — each declaring only `ContentCapabilities.MalformedLineCount`) are not (§10: the review round found the gate accepting that count and superseding `Q-0004-01` with `Q-0004-07`) |
 | `TestConversionOfAWholeFileJSONSourceClaimsNoRecordBoundary` | end to end (added in the review round, §10): a complete QwenPaw session — one whole-file JSON document, no trailing line feed — converts with `record_offsets: not-claimed` (the provider declares no such source), no record offset, no unterminated record and no unterminated-record warning, and the boundary digest is the file's own |
-| `TestContinueFromACompressedCodexSourceClaimsNoRecordOffsets` | end to end (§11's F03): a runtime-compressed copy of the committed Codex rollout — Codex's own `.jsonl.zst` representation, the one its reader decodes — converts with the same conversation the plain rollout of the same bytes produces, while the boundary reports the compressed file's own size and digest, `record_offsets: not-claimed` with the container as the reason, no record offset, no unterminated record, and `read_coverage: verified` |
+| `TestContinueFromACompressedCodexSourceClaimsNoRecordOffsets` | end to end (§11's F03): a runtime-compressed copy of the committed Codex rollout — Codex's own `.jsonl.zst` representation, the one its reader decodes — converts with the same conversation the plain rollout of the same bytes produces, while the boundary reports the compressed file's own size and digest, `record_offsets: not-claimed` with the container as the reason, no record offset, no unterminated record, and `read_coverage: size-match` |
 | `TestContinueCarriesACompleteRecordThatHasNoLineFeed` | end to end (§11's F02), in both directions: the committed growth fragment appended as committed and with its last byte (its line feed) removed produce the same conversation and the same carried counts — the reader reads a complete unterminated record — while only the second boundary reports an unterminated record, and its installed document holds the record's dialogue |
 | `TestConversionFromAnArchiveReportsNoBoundaryToTake` | end to end: a conversion that fell back to the archive reports `not-taken`, no bytes, `source_check_state: not-verified` with the archive reason, and no unfinished-record warning |
-| `TestContinueJSONCarriesTheSourceBoundary` | the CLI's `--json` document: `state`, `path` (the file the conversion read), `bytes` (the file's own size), `sha256` (an independently computed digest), `read_bytes`/`read_coverage` (the read's own snapshot is that file), `record_offsets: claimed` with no reason, `terminated_records_end_bytes`, and a non-empty `detail` |
+| `TestContinueJSONCarriesTheSourceBoundary` | the CLI's `--json` document: `state`, `path` (the file the conversion read), `bytes` (the file's own size), `sha256` (an independently computed digest), `read_bytes`/`read_coverage: size-match` (the file is the size the read's own snapshot recorded — a size match, not a byte-identity check), `record_offsets: claimed` with no reason, `terminated_records_end_bytes`, and a non-empty `detail` |
 | `TestContinueHumanOutputStatesTheSourceBoundary` | the human block, on a real conversion and on the five shapes (complete, unterminated record, compressed container, moved file, not-taken, undeclared source), including that a boundary that claims no offsets prints no `records end at` line, that the unterminated case claims no omission, and that a report with no boundary prints no `boundary:` line at all |
 | `TestFixturesMatchTheirGenerator` | the committed fixtures **and** the growth fragments are byte-for-byte what `internal/ccc/fixturegen` writes, so a fragment cannot drift from the shape the runs above appended |
 
 All of them pass (`--count=1`, exit code 0):
 
 ```console
---- PASS: TestContinueRepeatedOnAGrowingSourceIsAttributedToItsOwnSnapshot (0.37s)
---- PASS: TestUnpublishedSourceTailIsBoundaryedAndNeverPublished (0.03s)
+--- PASS: TestContinueRepeatedOnAGrowingSourceIsAttributedToItsOwnSnapshot (0.09s)
+--- PASS: TestUnterminatedSourceTailIsBoundaryedAndNeverPublished (0.04s)
+--- PASS: TestContinueCarriesACompleteRecordThatHasNoLineFeed (0.02s)
+--- PASS: TestContinueFromACompressedCodexSourceClaimsNoRecordOffsets (0.01s)
 --- PASS: TestSourceBoundaryOfFileStatesTheRecordOffsets (0.00s)
+--- PASS: TestTextStreamCarriesSplitRunes (0.00s)
 --- PASS: TestTakeSourceBoundaryAnswersTheReadsThatHaveNoFileToMeasure (0.00s)
---- PASS: TestBoundaryWarningsNameAnUnfinishedRecord (0.00s)
+--- PASS: TestTakeSourceBoundaryReportsAFileThatMovedWhileItWasRead (0.00s)
+--- PASS: TestTakeSourceBoundaryStatesASizeMatchNotAByteIdentity (0.00s)
+--- PASS: TestBoundaryWarningsNameTheUnterminatedRecordAndAMovedFile (0.00s)
 --- PASS: TestSourceRecordsAreLinesAsksTheProvidersOwnDeclarations (0.00s)
---- PASS: TestConversionFromAnArchiveReportsNoBoundaryToTake (0.14s)
---- PASS: TestFixturesMatchTheirGenerator (0.18s)
+--- PASS: TestConversionOfAWholeFileJSONSourceClaimsNoRecordBoundary (0.01s)
+--- PASS: TestConversionFromAnArchiveReportsNoBoundaryToTake (0.16s)
+--- PASS: TestFixturesMatchTheirGenerator (0.09s)
 PASS
-ok  	go.kenn.io/agentsview/internal/ccc	0.782s
---- PASS: TestContinueJSONCarriesTheSourceBoundary (0.36s)
---- PASS: TestContinueHumanOutputStatesTheSourceBoundary (0.01s)
+ok  	go.kenn.io/agentsview/internal/ccc	0.475s
+--- PASS: TestContinueJSONCarriesTheSourceBoundary (0.17s)
+--- PASS: TestContinueHumanOutputStatesTheSourceBoundary (0.02s)
 --- PASS: TestContinueHelpIsARequestNotAFailure (0.01s)
 PASS
-ok  	go.kenn.io/agentsview/cmd/ccc	0.428s
+ok  	go.kenn.io/agentsview/cmd/ccc	0.220s
 ```
+
+*(This round's own run of the cases above, with `-run` naming them, exit code 0 — §12 re-took it because the
+coverage states' names changed and the size-match case joined the table. Timing varies per run; the names,
+the counts and the verdicts do not.)*
 
 ## 5. What the boundary and the repeat carry, source side and target side
 
@@ -288,7 +333,7 @@ ok  	go.kenn.io/agentsview/cmd/ccc	0.428s
 | the appended fact, as the **answer** of a real turn in the *later* target | the recorded turn's answer holds it: the second answer block quotes `120 seconds per session, held in` (§6) |
 | the converted history before the growth, as the **answer** of a real turn in the *earlier* target | the recorded turn's answer names `maxBackoffSeconds` as the fact the converted history supplied, in the first answer block (§6) |
 | an unterminated trailing record (`165` bytes with no line feed) | `boundary.unterminated_tail_bytes`, the `records:` line and the run's warning; no message of the conversation and no record of either target document holds its text (§3) — and where the record *is* a complete one, the conversion carries it while the boundary still states the byte fact (§11's F02) |
-| an earlier conversion of the same source | unchanged by the second conversion (`sha256 c945f80f6c93bb49` before and after, §2 B4) — and unchanged in the native run after the first session had itself been resumed by Codex (§6) |
+| an earlier conversion of the same source | unchanged by the second conversion (`sha256 3971fbc722c190ee` before and after, §2 B4, taken of the same file B1 installed) — and unchanged in the native run after the first session had itself been resumed by Codex (§6) |
 | the source file during and after every run | `source file: unchanged (sha256 …, taken before and after the conversion)` in each CLI run (§1–§3); in the native check, the copy and the committed fixture tree are digested around each conversion and compared once more at the end of the run, after the second loader and the optional turn (§6, §10) |
 
 The two "**answer**" rows are the ones this record cannot re-derive by re-running the *offline* half: they
@@ -311,37 +356,39 @@ Its header and the checks that make the clause material:
 source:      internal/ccc/testdata/fixtures/claude/-home-user-code-example-api/9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10.jsonl
 copy:        source/-home-user-code-example-api/9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10.jsonl (the fixture's bytes; this is what grows)
 growth:      internal/ccc/testdata/growth/claude-complete-turn.jsonl (489 bytes)
-PASS: the conversion reports the boundary of the source copy it read — boundary={"state": "taken", … "bytes": 2051, "sha256": "2bd510821d4abf83235752eff81e0e9824d0c41b3d2d4b84956d1130992467b6", "read_bytes": 2051, "read_coverage": "verified", … "record_offsets": "claimed", "terminated_records_end_bytes": 2051}; 9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10.jsonl is 2051 bytes, sha256 2bd510821d4abf83…
+PASS: the conversion reports the boundary of the source copy it read — boundary={"state": "taken", … "bytes": 2051, "sha256": "2bd510821d4abf83235752eff81e0e9824d0c41b3d2d4b84956d1130992467b6", "read_bytes": 2051, "read_coverage": "size-match", … "record_offsets": "claimed", "terminated_records_end_bytes": 2051}; 9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10.jsonl is 2051 bytes, sha256 2bd510821d4abf83…
 PASS: the source copy is unchanged by the conversion — sha256 2bd510821d4abf83…, 2051 bytes, taken before and after
-PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1e97a-befb-7e96-baf4-9771095d86ca [legacy] cwd=/home/user/code/example-api
+PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1e98c-72c1-7750-ba2c-232b40c71afe [legacy] cwd=/home/user/code/example-api
 PASS: the source copy grew by exactly the appended turn — 2051 -> 2540 bytes (+489 from internal/ccc/testdata/growth/claude-complete-turn.jsonl), sha256 e2921e995915855d…
-PASS: the second conversion reports the boundary of the grown source copy — boundary={"state": "taken", … "bytes": 2540, "sha256": "e2921e995915855d41b1b945e847ed751a8e92d9d053ae19e5c05ac19c81a02f", "read_bytes": 2540, "read_coverage": "verified", … "record_offsets": "claimed", "terminated_records_end_bytes": 2540}; …; the first conversion's boundary was {"state": "taken", …}
-PASS: the second conversion's identity is new, not the source's and not the first session's — 01a1e97a-c116-718a-96b0-2af34635a77a at sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1e97a-c116-718a-96b0-2af34635a77a.jsonl
+PASS: the second conversion reports the boundary of the grown source copy — boundary={"state": "taken", … "bytes": 2540, "sha256": "e2921e995915855d41b1b945e847ed751a8e92d9d053ae19e5c05ac19c81a02f", "read_bytes": 2540, "read_coverage": "size-match", … "record_offsets": "claimed", "terminated_records_end_bytes": 2540}; …; the first conversion's boundary was {"state": "taken", …}
+PASS: the second conversion's identity is new, not the source's and not the first session's — 01a1e98c-74d6-701b-9b36-138f43851f93 at sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1e98c-74d6-701b-9b36-138f43851f93.jsonl
 PASS: the second conversion carries the history the source gained — carried user messages 2 -> 3, assistant messages 3 -> 4; the appended turn's own words are in the second document and not in the first
-PASS: the first conversion's session is unchanged by the second — sha256 9914968c479b4dea… before and after the second conversion
+PASS: the first conversion's session is unchanged by the second — sha256 77a2cced4cd51705… before and after the second conversion
 PASS: the source copy is unchanged by the second conversion — sha256 e2921e995915855d…, 2540 bytes, taken before and after the second conversion
-PASS: the target harness's own loader opens the second installed session — thread/resume -> 01a1e97a-c116-718a-96b0-2af34635a77a [legacy] cwd=/home/user/code/example-api
+PASS: the target harness's own loader opens the second installed session — thread/resume -> 01a1e98c-74d6-701b-9b36-138f43851f93 [legacy] cwd=/home/user/code/example-api
 PASS: the target's own view of the second session lists the appended turn — 7 item(s) in the reply's own turn list; the appended turn's own words are in its own view
 PASS: the first session's own view does not hold the appended turn — the first session's own view holds 5 item(s), none of them the turn the source gained after it was converted
-conversions: 2 session(s) installed (01a1e97a-befb-7e96-baf4-9771095d86ca then 01a1e97a-c116-718a-96b0-2af34635a77a); real turn(s) run: 0
+conversions: 2 session(s) installed (01a1e98c-72c1-7750-ba2c-232b40c71afe then 01a1e98c-74d6-701b-9b36-138f43851f93); real turn(s) run: 0
 PASS: the source session is unchanged — sha256 2bd510821d4abf83… (fixture tree identical, internal/ccc/testdata/growth/claude-complete-turn.jsonl identical; the converted copy identical too: sha256 e2921e995915855d…, 2540 bytes)
 PASS: the unrelated session in the target home is unchanged — sha256 59ff49ca30baf622…
 PASS: no pre-existing session in the target home changed — 0 pre-existing session file(s)
 25 check(s) passed, 0 failed, 2 skipped
 ```
 
-*(The block above is re-taken from the second review round's own re-run of the offline half on the fixed
-tree (§11): the same `25 check(s) passed, 0 failed, 2 skipped` and the same checks, the same committed
-fixture and fragment digests, and the boundary lines as the fixed tree prints them — `read_bytes`,
-`read_coverage`, `record_offsets` and `terminated_records_end_bytes` in place of the pre-fix spellings —
-with this run's own session ids. §10 records why the final comparison grew; §11 records what changed.)*
+*(The block above is re-taken from this round's own re-run of the offline half on the fixed tree (§12): the
+same `25 check(s) passed, 0 failed, 2 skipped`, the same checks, the same committed fixture and fragment
+digests, and the boundary lines as the fixed tree prints them — `read_coverage: "size-match"` in place of
+the pre-fix `"verified"` — with this run's own session ids. Each boundary JSON is quoted with `…` where its
+own `detail`, `path` and `read_coverage_detail` fields (and, on the second line, the per-file restatement
+that follows) are elided; every other character is what the run printed. §10 records why the final
+comparison grew; §11 records what changed then, and §12 what changed now.)*
 
 Codex's own `thread/read` view of the *second* session, printed by the run (its own view of the later
 snapshot, with the turn the source gained as its last turn):
 
 ```console
 the target harness's own view of the second installed session:
-    thread 01a1e97a-c116-718a-96b0-2af34635a77a [legacy] provider=openai
+    thread 01a1e98c-74d6-701b-9b36-138f43851f93 [legacy] provider=openai
       turn rollout-2
         userMessage: Summarize the retry policy in internal/retry/policy.go.
         agentMessage: I will read the retry policy first.
@@ -564,13 +611,16 @@ recorded above:
   rollouts. Both narrowings are stated per run rather than silently guessed around. What the gate does *not*
   cover is a text-shaped container of records (a base64 or otherwise textual wrapper): its bytes would pass
   the file half, and no provider in this tree writes one.
-- **The boundary answers the read-coverage question only where the recorded size may be read as one file's**
-  (Q-0004-08, superseding Q-0004-05). The comparison is asked for the providers whose declarations make the
-  read's recorded size this file's own, so a layout provider's composite size is never compared with one
-  file's — and a source that grows while it is being read is reported as `read_coverage: unverified` with
-  both sizes, instead of the report attributing the conversation to bytes the read is not shown to have
-  covered. The window itself is not closed: a file that grows during the read is still read only as far as
-  the reader's own snapshot, and the report names it rather than repairing it.
+- **The boundary answers the read-coverage question only where the recorded size may be read as one file's,
+  and a size is all it can compare** (Q-0004-08, superseding Q-0004-05; Q-0004-11 for what a size proves).
+  The comparison is asked for the providers whose declarations make the read's recorded size this file's
+  own, so a layout provider's composite size is never compared with one file's — and a source that grows
+  while it is being read is reported as `read_coverage: size-mismatch` with both sizes, instead of the
+  report attributing the conversation to bytes the read is not shown to have covered. The window itself is
+  not closed: a file that grows during the read is still read only as far as the reader's own snapshot, and
+  the report names it rather than repairing it. And the answer is a size match, never byte identity: a file
+  replaced by different bytes of the same length after the read is a state no size comparison can see, which
+  is why the state and its detail say what was compared (§12's finding 1, `TestTakeSourceBoundaryStatesASizeMatchNotAByteIdentity`).
 - **The boundary states an unterminated record, not its publication** (Q-0004-10, superseding Q-0004-03's
   wording). The block reports the bytes no line feed follows and leaves whether the read carried them to
   the read's own fidelity and the conversion's counts; what the goal forbids — publishing bytes the read did
@@ -859,8 +909,8 @@ overrides), so a report whose read is not shown to have covered the file fails t
 
 ```console
 $ python3 scripts/gate.py
-gate: /home/azureuser/repos/call-ccc
-gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+gate: <repo>
+gate: go=~/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
   PASS     gofmt    3592 file(s) gofmt-clean
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
@@ -882,6 +932,168 @@ covers the boundary comparison grew (two more overrides inside one case) rather 
 
 `python3 scripts/codex-native-check.py` (the offline half, exit code `0`, no turn billed): `25 check(s)
 passed, 0 failed, 2 skipped` — §6's block is that run.
+
+**`AGENTS.md` and bookkeeping:** as stated above, this round changed a rule an agent must follow, so
+`AGENTS.md` was updated and the repository layout, the gate and its steps, the commands and the read order
+were not. `docs/goals/` holds no goal file whose implementation is merged-and-waiting: 0004 is this
+increment's own, still on its branch and awaiting operator acceptance, so nothing moves to
+`docs/goals/archive/` and `docs/goals/README.md`'s status table is unchanged.
+
+## 12. The third review round: findings, fixes, and the numbers re-measured
+
+An independent review read the frozen range `18d50b2..696e055` — the head this increment's records had
+reached — and reported four findings, all four about something this record, the help or the code stated
+more strongly than the run behind it supported. All four are fixed; nothing outside them changed. Two were
+measured red against the pre-fix tree before the fix (findings 1 and 3, below); the other two are records
+that named things which do not exist (finding 2: a target identity and a digest from two different runs;
+finding 4: the account's own host paths in a transcript). The re-measured numbers are at the end of this
+section.
+
+### T01 (P2) — equal file sizes do not establish byte coverage
+
+The boundary answered equal sizes with `read_coverage: verified` and the words "the conversion read these
+bytes". The review measured what that claim rests on: the read's own record is *a size*
+(`ParsedSession.File.Size` — `SourceIdentity.file_size`), not a digest of the bytes the read opened, so a
+file replaced by a different transcript of the same length after the read leaves every size equal while the
+conversation came from bytes that are gone. Nothing else in the report catches it: the boundary's digest is
+of the file as it stands, `installation.source_check_state` compares two digests both taken after the read,
+and the state and its detail were the whole of the claim.
+
+**Fix (Q-0004-11):** the states say what was compared. `SourceBoundaryCoverageSizeMatch` (`size-match`) and
+`SourceBoundaryCoverageSizeMismatch` (`size-mismatch`) replace `verified`/`unverified`; the match state's
+detail names the comparison and its limit ("the file is the size the read recorded, which is a size match
+and not a byte-identity check -- the read's own record holds no digest of the bytes it opened, so a
+same-length replacement of the file after it is not ruled out"); the human `boundary:` clause says the same
+("the file is the size the read's own snapshot recorded (a size match, not a byte-identity check)"); and the
+mismatch state, its detail, its warning and the CLI clause it renders are unchanged apart from the constant
+they name.
+
+**Regression:** `TestTakeSourceBoundaryStatesASizeMatchNotAByteIdentity` — a file replaced by different bytes
+of the same length after the read, at the pass's own seam (the replacement happens inside a conversion
+between the read and the pass, so an end-to-end case would race `Continue`'s own read). It requires
+`size-match` with both sizes, the digest of the file as it stands, the detail's limit named, no warning, and
+— as literals, so this half is red whatever the states are named — neither `verified` nor "the conversion
+read these bytes". Measured red against the pre-fix code (which printed both) and green after:
+
+```console
+### the pre-fix code, the same case (the two states' values and words restored for the measurement)
+--- FAIL: TestTakeSourceBoundaryStatesASizeMatchNotAByteIdentity (0.00s)
+    continue_growth_test.go:777: boundary = {… ReadCoverage:verified ReadCoverageDetail:the read's own snapshot of this file is 16 byte(s) and the file holds 16: the conversion read these bytes …}, want no byte-identity claim from a size comparison
+### the fixed code
+--- PASS: TestTakeSourceBoundaryStatesASizeMatchNotAByteIdentity (0.00s)
+```
+
+The states' names travel with the claim everywhere it is made: `cmd/ccc`'s `coverageSuffix`, the
+repeated-conversion case's assertions, the `read_coverage` the native check requires
+(`scripts/codex-native-check.py`) and the overrides its own cases drive it with
+(`scripts/tests/test_codex_native_check.py`), the plan's field and case tables, `AGENTS.md`,
+`docs/conventions.md`, `README.md`, `docs/harness.md` and §9 above.
+
+### T02 (P3) — the §2 transcript named one run's sessions beside another's digests
+
+§2's B block recorded B1 installing `01a1e939-1b2b-…` with digest `c945f80f6c93bb49`, and B4 — the block's
+"the earlier target stays unchanged" evidence — listing `01a1e978-fa33-…` with digest `ba2870988be17a2f`.
+§2's table called the second "the same digest it had immediately after B1", and §5 cited B4 as the evidence
+for B1's digest — which B4 does not show, and cannot: the two excerpts are different runs (the home B4 listed
+was not the home B1 converted into).
+
+**Fix:** the whole B block is one run's own transcript, re-taken on the fixed tree and re-verified
+line by line against it. B1's `installed:`/`target id:` lines and B4's `first installed now:` now name the
+same file, `01a1e98b-76e1-…` (`rollout-2026-05-04T09-15-00-01a1e98b-76e1-7475-ba0e-80c959cb5f5d.jsonl`), and
+B4 digests it after the second conversion with the same `sha256=3971fbc722c190ee` it had when B1 wrote it;
+the home B4 lists holds exactly the two sessions B4's two lines name, and B5's two counts are of those two
+documents. §5's row and §2's claims table were re-taken with the same identities, and §2 says which run the
+block is.
+
+### T03 (P3) — the help named an `unterminated:` line no block prints
+
+`ccc help` said an unfinished record is reported "under 'unterminated:'", while the renderer prints it on
+the `records:` line (`writeBoundary`/`recordsLine`) and repeats it in the run's `warning:` lines — and the
+help case pinned the stale spelling rather than checking it against the renderer.
+
+**Fix:** the help now says "the 'records:' line and the run's warnings state those bytes, and leave what the
+read made of them to the read's own fidelity", and `TestContinueHelpIsARequestNotAFailure` reads the label
+back out of the block itself: it renders an unterminated boundary through `writeBoundary`, takes the label
+of the line that states the tail (`tailLabelOf`), and requires the help to name *that* label — so a rename
+in the renderer and not in the help fails the case instead of being pinned twice. Measured red against the
+stale wording and green after:
+
+```console
+### the help put back to the pre-fix wording
+--- FAIL: TestContinueHelpIsARequestNotAFailure (0.01s)
+    main_test.go:2091: help does not state the repeat rule ("'records:' line and the run's warnings state those bytes")
+### the fixed help
+--- PASS: TestContinueHelpIsARequestNotAFailure (0.01s)
+```
+
+§1's `ccc help` quote is re-taken from this tree (`ccc help`, exit code 0) with the paragraph as it prints.
+
+### T04 (P3) — the §11 gate transcript kept the account's own host paths
+
+The last gate transcript in §11 printed the account's literal repository root and Go toolchain path on its
+two header lines, against this record's own stated scheme (the repository root spelled `<repo>`, the
+account's home spelled `~`) and `docs/conventions.md`'s prohibition on absolute host paths in committed
+evidence.
+
+**Fix:** both header lines now carry `<repo>` and `~/.local/share/mise/…`; the transcript's other lines are
+unchanged. This record's runs otherwise name the committed fixture paths and `/tmp/evidence-0004/…` scratch
+paths, which its header states are the runs' own. (The accepted 0003 record carries host paths of its own
+from that increment's runs; it is that increment's record and this round left it as it was.)
+
+### The numbers this round re-measured
+
+`python3 scripts/gate.py`, exit code `0`, the verdict line `GATE: PASS` with no `(partial: …)` suffix — every
+step ran, including the two required ones:
+
+```console
+$ python3 scripts/gate.py
+gate: <repo>
+gate: go=~/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3592 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 199 tests in 5.490s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 28 project-owned prefix(es); files seen by git: 5650 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 101 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The header lines are this record's placeholders, as its own scheme states (the run printed the account's
+home); every other character is what the run printed, with the `parity` line cut exactly where the gate's own
+`tail()` cut it. `gofmt`'s 3592 is the count of *tracked* `*.go` files, unchanged from §11 (this round changed
+files rather than adding one); `selftest`'s `Ran 199 tests` is unchanged too (the Python cases this round
+touched changed values inside existing cases rather than adding one), and its wall clock varies per run.
+
+`./cmd/ccc/... ./internal/ccc/...` held 224 `func Test…` functions before this round and 225 after it
+(`git grep -h '^func Test' HEAD -- cmd/ccc internal/ccc | wc -l` against the same count in the working tree) —
+the one new case is T01's regression.
+
+The evidence re-runs this round's blocks are taken from, all offline, no turn billed, exit code 0 each:
+`/tmp/evidence-0004/r3/{a3,a4}` (§1's two runs), `/tmp/evidence-0004/r3/b` (§2's B block: the copy, the two
+conversions into one home, the first installed file digested after the second), `/tmp/evidence-0004/r3/c`
+(§3's two cases), and `python3 scripts/codex-native-check.py` (§6's offline block: `25 check(s) passed, 0
+failed, 2 skipped`, which is also the count §10 and §11 record). The turned runs were not re-run: two billed
+turns each, they quote no boundary field, and the clause they exercise is what the offline half and its cases
+pin.
+
+### What this round changed in the files that carry the rules
+
+- `AGENTS.md`: the snapshot bullet now states the size match and its limit (the read's own record holds no
+  digest of the bytes it opened, so a same-length replacement is not ruled out). This is a change to a rule an
+  agent must follow, so the file moved with it; the repository layout, the gate and its steps, the commands
+  and the read order are unchanged.
+- `docs/conventions.md`, `README.md`, `cmd/ccc`'s help paragraph and `docs/harness.md`: the same rule in the
+  words their own readers use, with the new state names and the help's own label corrected.
+- `docs/plans/0004-repeatable-evolving-session-handoffs.md`: §2.1's `read_bytes`/`read_coverage` row, §2.2's
+  bullets (a new "not a byte-identity claim" one), §2.3's case table (an equal-size replacement row) and
+  §3.2's CLI illustration.
+- `docs/decisions/OPEN-QUESTIONS.md`: Q-0004-11 appended (the states say what was compared; Q-0004-08's
+  wording superseded), with the reversals and the regression named.
+- §1–§6 above: the run blocks re-taken from this round's own re-runs (named above, each in its own note) and
+  the tables and limits re-worded; §10 and §11 keep the wording of the rounds that wrote them, and the
+  `read_coverage` values they quote are the pre-round spellings of T01.
+- `docs/upstream.md` and the carried tree: untouched — the gate's `parity` step (above) is what proves it.
 
 **`AGENTS.md` and bookkeeping:** as stated above, this round changed a rule an agent must follow, so
 `AGENTS.md` was updated and the repository layout, the gate and its steps, the commands and the read order

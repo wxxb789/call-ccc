@@ -67,10 +67,11 @@ func TestContinueRepeatedOnAGrowingSourceIsAttributedToItsOwnSnapshot(t *testing
 				t.Errorf("the first boundary = %+v, want the whole %d-byte file with nothing unterminated",
 					firstBoundary, beforeSize)
 			}
-			// The conversion is attributed to the bytes it read, and the boundary says so from the read's
-			// own record of the file it opened rather than assuming it.
+			// The conversion is attributed to the file it read: the boundary compares the file's size with
+			// the size the read's own record holds for it and reports the match as a match -- a size, which
+			// is as far as that record can show.
 			if firstBoundary.ReadBytes != beforeSize ||
-				firstBoundary.ReadCoverage != SourceBoundaryCoverageVerified {
+				firstBoundary.ReadCoverage != SourceBoundaryCoverageSizeMatch {
 				t.Errorf("the first boundary = %+v, want its read's own snapshot to be the file's %d bytes",
 					firstBoundary, beforeSize)
 			}
@@ -133,7 +134,7 @@ func TestContinueRepeatedOnAGrowingSourceIsAttributedToItsOwnSnapshot(t *testing
 			}
 			if secondBoundary.UnterminatedTailBytes != 0 ||
 				secondBoundary.TerminatedRecordsEndBytes != secondBoundary.Bytes ||
-				secondBoundary.ReadCoverage != SourceBoundaryCoverageVerified ||
+				secondBoundary.ReadCoverage != SourceBoundaryCoverageSizeMatch ||
 				secondBoundary.ReadBytes != grown {
 				t.Errorf("the second boundary = %+v, want the whole grown file, read as it stands", secondBoundary)
 			}
@@ -245,7 +246,7 @@ func TestUnterminatedSourceTailIsBoundaryedAndNeverPublished(t *testing.T) {
 				t.Errorf("the boundary = %+v, want its terminated records to end at byte %d with the "+
 					"%d-byte unterminated record after them", boundary, completeSize, len(fragment))
 			}
-			if boundary.ReadCoverage != SourceBoundaryCoverageVerified || boundary.ReadBytes != boundary.Bytes {
+			if boundary.ReadCoverage != SourceBoundaryCoverageSizeMatch || boundary.ReadBytes != boundary.Bytes {
 				t.Errorf("the boundary = %+v, want the read's own snapshot to be the file it measured",
 					boundary)
 			}
@@ -440,7 +441,7 @@ func TestContinueFromACompressedCodexSourceClaimsNoRecordOffsets(t *testing.T) {
 	}
 	// The file's own bytes are still what they are, and the read's own snapshot of them is the file: the two
 	// answers the offsets are withheld *for* are the two a caller compares two conversions by.
-	if boundary.ReadCoverage != SourceBoundaryCoverageVerified || boundary.ReadBytes != int64(len(before)) {
+	if boundary.ReadCoverage != SourceBoundaryCoverageSizeMatch || boundary.ReadBytes != int64(len(before)) {
 		t.Errorf("boundary = %+v, want the read's own snapshot to be the file it measured", boundary)
 	}
 	if warning := strings.Join(result.Warnings, " "); strings.Contains(warning, "hold no line feed") ||
@@ -651,7 +652,7 @@ func TestTakeSourceBoundaryAnswersTheReadsThatHaveNoFileToMeasure(t *testing.T) 
 // A conversion cannot reach this state end to end without racing its own read (the parse runs inside
 // Continue, and a case that appended to the file while it ran would be a flake rather than a case), so the
 // state is produced here exactly as the race leaves it, and the end-to-end half is the repeated-conversion
-// case's assertion that a read which did keep up reports `read_coverage: verified` with `read_bytes` equal
+// case's assertion that a read which did keep up reports `read_coverage: size-match` with `read_bytes` equal
 // to the file's size.
 func TestTakeSourceBoundaryReportsAFileThatMovedWhileItWasRead(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.jsonl")
@@ -675,7 +676,7 @@ func TestTakeSourceBoundaryReportsAFileThatMovedWhileItWasRead(t *testing.T) {
 	if boundary.Bytes != int64(len(whole)) || boundary.SHA256 != sha256Of(t, mustRead(t, path)) {
 		t.Errorf("boundary = %+v, want the file's own %d bytes and digest", boundary, len(whole))
 	}
-	if boundary.ReadBytes != readBytes || boundary.ReadCoverage != SourceBoundaryCoverageUnverified {
+	if boundary.ReadBytes != readBytes || boundary.ReadCoverage != SourceBoundaryCoverageSizeMismatch {
 		t.Errorf("boundary = %+v, want the read's own snapshot (%d byte(s)) reported as one this file is not",
 			boundary, readBytes)
 	}
@@ -706,6 +707,78 @@ func TestTakeSourceBoundaryReportsAFileThatMovedWhileItWasRead(t *testing.T) {
 	}
 }
 
+// TestTakeSourceBoundaryStatesASizeMatchNotAByteIdentity pins the limit of the read-coverage answer, which
+// is the state a file replaced by *different bytes of the same length* after the read leaves behind. The
+// read's own record holds a size and no digest of the bytes it opened, so this pass measures the
+// replacement and can compare one number with another: the sizes agree and the honest answer is a size
+// match -- the file is the size the read recorded -- beside the digest of the file as it stands. What the
+// report must never do is turn that agreement into a byte-identity claim (the pre-fix block said "the
+// conversion read these bytes" and named the state `verified`), because nothing the run holds can tell the
+// replacement from the bytes the read opened.
+//
+// The state is produced at the pass's own seam, as its moved-file sibling is: the replacement happens
+// inside a conversion between the read and this pass, so a case that raced `Continue`'s own read would be
+// a flake rather than a case.
+func TestTakeSourceBoundaryStatesASizeMatchNotAByteIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	// What the read opened, and what the file holds when the boundary pass measures it: another transcript
+	// of exactly the same length, so no size comparison can tell them apart.
+	read := "{\"a\":1}\n{\"b\":2}\n"
+	replacement := "{\"a\":1}\n{\"c\":3}\n"
+	if len(read) != len(replacement) {
+		t.Fatalf("the case's own premise is broken: %d byte(s) read, %d byte(s) replacing them",
+			len(read), len(replacement))
+	}
+	if err := os.WriteFile(path, []byte(replacement), 0o600); err != nil {
+		t.Fatalf("writing the replacement: %v", err)
+	}
+	conversation := Conversation{Source: SourceIdentity{
+		Provider:   "claude",
+		SourcePath: path,
+		FileSize:   int64(len(read)),
+	}}
+
+	boundary, err := takeSourceBoundary(NewSourceReader(fixtureConfig(t)), conversation, "source")
+	if err != nil {
+		t.Fatalf("taking the boundary: %v", err)
+	}
+	if boundary.ReadCoverage != SourceBoundaryCoverageSizeMatch {
+		t.Errorf("read_coverage = %q, want %q: equal sizes are a size match, which is all the read's own "+
+			"record can establish", boundary.ReadCoverage, SourceBoundaryCoverageSizeMatch)
+	}
+	if boundary.ReadBytes != int64(len(replacement)) || boundary.Bytes != int64(len(replacement)) {
+		t.Errorf("boundary = %+v, want both sizes reported as the %d byte(s) each is",
+			boundary, len(replacement))
+	}
+	// The digest is the file's own as it stands: it is the file the report names, and it is what two
+	// conversions of one source are compared by. It is *not* the bytes the read opened, which no digest here
+	// holds.
+	if boundary.SHA256 != sha256Of(t, []byte(replacement)) {
+		t.Errorf("boundary.sha256 = %q, want the file's own digest (%q): the block reports the bytes it "+
+			"measured, whatever the read held", boundary.SHA256, sha256Of(t, []byte(replacement)))
+	}
+	for _, want := range []string{
+		"16 byte(s)", "the file is the size the read recorded", "not a byte-identity check",
+		"a same-length replacement", "not ruled out",
+	} {
+		if !strings.Contains(boundary.ReadCoverageDetail, want) {
+			t.Errorf("read_coverage_detail = %q, want it to name %q", boundary.ReadCoverageDetail, want)
+		}
+	}
+	// And the answer claims no move either: a size that matched is not evidence the file moved, so the run
+	// warns of nothing here -- a warning would state a change nobody measured.
+	if warnings := boundaryWarnings(&boundary); len(warnings) != 0 {
+		t.Errorf("a size match warned: %v", warnings)
+	}
+	// The claim a size cannot support is also kept out by its own spelling: the pre-fix block answered equal
+	// sizes with `read_coverage: verified` and the words "the conversion read these bytes", which the
+	// same-length replacement above would have made false. Both are literal here, so this half is red
+	// against the pre-fix code whatever the states are named.
+	if boundary.ReadCoverage == "verified" || strings.Contains(boundary.ReadCoverageDetail, "read these bytes") {
+		t.Errorf("boundary = %+v, want no byte-identity claim from a size comparison", boundary)
+	}
+}
+
 // TestBoundaryWarningsNameTheUnterminatedRecordAndAMovedFile pins the warning half: a tail nobody measured
 // and a file nobody compared are not warned about, a measured tail is named with both offsets and the
 // remedy the goal states, and a file that moved while it was read is named in the same channel -- the one a
@@ -720,7 +793,7 @@ func TestBoundaryWarningsNameTheUnterminatedRecordAndAMovedFile(t *testing.T) {
 	}
 	complete := &SourceBoundary{
 		State: SourceBoundaryTaken, Bytes: 1792, TerminatedRecordsEndBytes: 1792,
-		ReadBytes: 1792, ReadCoverage: SourceBoundaryCoverageVerified,
+		ReadBytes: 1792, ReadCoverage: SourceBoundaryCoverageSizeMatch,
 	}
 	if warnings := boundaryWarnings(complete); len(warnings) != 0 {
 		t.Errorf("a file with nothing unterminated and no move warned: %v", warnings)
@@ -749,7 +822,7 @@ func TestBoundaryWarningsNameTheUnterminatedRecordAndAMovedFile(t *testing.T) {
 	// still name, and the channel a caller skims must say so.
 	moved := boundaryWarnings(&SourceBoundary{
 		State: SourceBoundaryTaken, Bytes: 1835, ReadBytes: 1792,
-		ReadCoverage: SourceBoundaryCoverageUnverified, TerminatedRecordsEndBytes: 1835,
+		ReadCoverage: SourceBoundaryCoverageSizeMismatch, TerminatedRecordsEndBytes: 1835,
 	})
 	if len(moved) != 1 {
 		t.Fatalf("warnings = %v, want one for the file that moved while it was read", moved)
@@ -763,7 +836,7 @@ func TestBoundaryWarningsNameTheUnterminatedRecordAndAMovedFile(t *testing.T) {
 	// Both answers at once: the file moved and its new bytes end in an unterminated record.
 	both := boundaryWarnings(&SourceBoundary{
 		State: SourceBoundaryTaken, Bytes: 1835, ReadBytes: 1792,
-		ReadCoverage:              SourceBoundaryCoverageUnverified,
+		ReadCoverage:              SourceBoundaryCoverageSizeMismatch,
 		TerminatedRecordsEndBytes: 1792, UnterminatedTailBytes: 43,
 	})
 	if len(both) != 2 {
