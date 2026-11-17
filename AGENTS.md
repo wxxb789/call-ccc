@@ -70,7 +70,11 @@ with their exit codes and counts).
   only holds on the platform or the `PATH` the case happens to run on: a case's stub bin answers the
   host probes it is not about, and the suite re-runs itself in a child whose `PATH` holds no tools and,
   once, with the platform probe answering Windows-without-a-compiler, so a host-dependent case fails
-  on this host ([`docs/conventions.md`](docs/conventions.md)).
+  on this host ([`docs/conventions.md`](docs/conventions.md)). The Go suites the gate's `test` step
+  runs are held to the same rule: a case whose subject is what a check makes of a target harness's
+  answer drives that harness through the check's own seam and answers the executable lookup the same
+  way, instead of needing the harness installed on the machine running the suite — a case that *is*
+  about a missing binary pins a `PATH` that holds no harness.
 - Stage order for an increment: implement → verify (gate) → simplify (report only) → apply (accepted
   findings only) → review (report only) → fix → gate → PR. Report stages must not edit the tree.
 - One goal ≈ one branch ≈ one pull request, squash-merged onto a linear `main`. Do not commit, push

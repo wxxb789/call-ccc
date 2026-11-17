@@ -1,6 +1,6 @@
 # Evidence — 0002 Continue a Claude Code session in Codex
 
-Contract: [`docs/goals/0002-claude-to-codex-continuation.md`](../goals/0002-claude-to-codex-continuation.md).
+Contract: [`docs/goals/archive/0002-claude-to-codex-continuation.md`](../goals/archive/0002-claude-to-codex-continuation.md).
 Plan: [`docs/plans/0002-claude-to-codex-continuation.md`](../plans/0002-claude-to-codex-continuation.md).
 Every command below was run on the branch, and every block is its real output, with the repository root
 rewritten to `<repo>`, the user's home to `<home>` and the throw-away directories to `<tmp>` so no host

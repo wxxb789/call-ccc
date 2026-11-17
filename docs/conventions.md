@@ -111,7 +111,11 @@ gate runs as a required step.
   outside: two of its cases re-run the *whole* suite in a child process whose `PATH` holds no tools,
   the second with the host answering Windows-without-a-compiler
   (`scripts/tests/test_gate.py`, `HostCase`), so a case that leans on this machine, or on the platform
-  it runs on, fails on this machine rather than in a CI job nobody can watch.
+  it runs on, fails on this machine rather than in a CI job nobody can watch. The Go suites the `test`
+  step runs are held to the same rule: a case whose subject is what a check makes of a target
+  harness's answer drives the harness through the check's own seam, and answers the executable lookup
+  the same way, instead of needing the harness installed on the machine running the suite; a case that
+  *is* about a missing binary pins a `PATH` that holds no harness.
 
 ## Commits and branches
 

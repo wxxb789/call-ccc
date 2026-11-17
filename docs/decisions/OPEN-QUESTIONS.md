@@ -1317,3 +1317,19 @@ supersede it with a newer one and say which it supersedes.
 - **Settled by:** whether the operator wants a subagent's turns visible in the file even though no target
   read shows them.
 
+## Q-0003-09 — The archived goal file's own `Status` line
+
+- **Status:** resolved (default taken)
+- **Question:** 0002's merge onto `main` (`8e1c502`) makes it accepted, so the fix round moved its goal
+  file to `docs/goals/archive/` and the index row now reads `Accepted: merged onto `main` as `8e1c502`;
+  archived`; the file's own `**Status:**` line still reads `Implemented on
+  `feat/0002-claude-to-codex-continuation`; awaiting operator acceptance`. 0001's archived file was
+  re-spelled to `Accepted: merged onto `main` as `ef6a61c`; archived` in the commit that archived it,
+  while this round's finding told the round not to touch the goal text beyond its location and the
+  README row.
+- **Default taken:** the finding's own limit — the file's text stays as reviewed, and the README row
+  carries the accepted state.
+- **Reversal:** one line in `docs/goals/archive/0002-claude-to-codex-continuation.md`: the `**Status:**`
+  line re-spelled to `Accepted: merged onto `main` as `8e1c502`; archived`, matching 0001's archive.
+- **Settled by:** whether the owner wants an archived goal's own status line re-spelled to the accepted
+  state (0001's practice) or frozen as the text the operator accepted.

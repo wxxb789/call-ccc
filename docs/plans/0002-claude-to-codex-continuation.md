@@ -1,6 +1,6 @@
 # Plan — 0002 Continue a Claude Code session in Codex
 
-Contract: [`docs/goals/0002-claude-to-codex-continuation.md`](../goals/0002-claude-to-codex-continuation.md).
+Contract: [`docs/goals/archive/0002-claude-to-codex-continuation.md`](../goals/archive/0002-claude-to-codex-continuation.md).
 Governing design: [`docs/core-design/README.md`](../core-design/README.md).
 Written before implementation. The target-side facts below were **measured on this host against the
 installed Codex CLI (`codex-cli 0.169.0`)** before any code was written; every measurement is repeated

@@ -256,11 +256,11 @@ exactly the three protected comparisons and exit 1.
 $ python3 scripts/gate.py
 gate: /home/azureuser/repos/call-ccc
 gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
-  PASS     gofmt    3582 file(s) gofmt-clean
+  PASS     gofmt    3591 file(s) gofmt-clean
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 185 tests in 4.999s (rc=0)
+  PASS     selftest Ran 185 tests in 4.951s (rc=0)
   PASS     parity   … carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared … | owned: 27 project-owned prefix(es); files seen by git: 5642 | …
   PASS     secrets  no leaks found in 93 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
@@ -272,6 +272,28 @@ increment's four new Go-side case files are inside the `test` step, the new nati
 evidence-claims rule) and re-runs itself in a child whose `PATH` holds no tools and once with the
 platform probe answering Windows-without-a-compiler. 0002's tests run unchanged inside that step: the
 increment's pipeline refactor (the route table) changed no pinned string, state, or command.
+
+This block is the fix round's own run, re-measured on the repaired tree. In the implement round the
+`test` step was green only where Claude Code was installed: `claude_verify_test.go` stubbed the turn the
+two checks drive, but not the executable they resolve it through, so three of its cases reported `claude
+is not on PATH` anywhere else — a green that could not reproduce on a host, or a CI runner, without the
+harness. Both host-facing seams are now the test's own (the turn, and the lookup), and the
+missing-binary answer keeps its own cases against a `PATH` holding no harness, so this `test` step
+passes with no Claude Code installed here. The re-measurement corrects one more number this record
+carried: its `gofmt` count said 3582, which is the count of the tree the increment *started from*
+(`git ls-tree -r 8e1c502 --name-only`, counting `*.go`: 3582); the increment's nine new Go files make
+this tree's count 3591.
+
+The bookkeeping round moved `docs/goals/0002-claude-to-codex-continuation.md` to
+`docs/goals/archive/`: 0002 is accepted — `main` carries its squash merge, `8e1c502`, and the index's
+own wording ends the "awaiting acceptance" state at the merge — so the `docs/goals/README.md` row now
+reads `Accepted: merged onto `main` as `8e1c502`; archived`, the moved file's prerequisite link is
+rewritten for its new directory, and every link that named the goal's old path is retargeted (goals
+0003, 0004, 0007 and 0014–0017 name it as a prerequisite; 0002's plan and both of its evidence records
+name it as their contract). The archived file's own `**Status:**` line is left as reviewed, per the
+round's finding — `docs/decisions/OPEN-QUESTIONS.md` Q-0003-09 records that choice against 0001's
+archived spelling. `python3 scripts/gate.py` was re-run on the moved tree: exit **0**, `GATE: PASS`,
+every count in the block above unchanged.
 
 Two failures the increment's own new rules caught before this green run, and their fixes, stated
 because a gate that only ever passed would not show that the rules bite: the new native-check case file

@@ -151,7 +151,7 @@ func VerifyClaudeLoad(ctx context.Context, opts ClaudeLoadOptions) LoadVerificat
 	if strings.TrimSpace(binary) == "" {
 		binary = ClaudeBinaryDefault
 	}
-	path, err := resolveTargetExecutable(binary)
+	path, err := resolveClaudeExecutable(binary)
 	if err != nil {
 		verification.Detail = fmt.Sprintf("%s is not on PATH, so the installed session's native load could not be verified", binary)
 		return verification
@@ -337,7 +337,7 @@ func VerifyClaudeResume(ctx context.Context, opts ClaudeResumeOptions) ResumeVer
 		return verification
 	}
 	arguments := []string{"-p", "--output-format", "json", "--resume", opts.SessionID, "--", opts.Prompt}
-	path, err := resolveTargetExecutable(binary)
+	path, err := resolveClaudeExecutable(binary)
 	if err != nil {
 		verification.Detail = fmt.Sprintf("%s is not on PATH, so no turn could be run in the installed session", binary)
 		return verification
@@ -471,6 +471,14 @@ func resolveTargetExecutable(binary string) (string, error) {
 	}
 	return filepath.Abs(path)
 }
+
+// resolveClaudeExecutable is the seam the two checks find the target harness through, named for the same
+// reason runClaudeHarnessTurn is: which build of the harness a host happens to have installed is not the
+// rule under test, so a test answers the lookup with a path of its own rather than the checks standing
+// or falling on the host's PATH. The lookup's own behaviour keeps its coverage through the real one:
+// TestProbeClaudeBinaryReportsAMissingBinary and TestVerifyClaudeResumeRefusesWithoutABinary both ask a
+// PATH that holds no harness.
+var resolveClaudeExecutable = resolveTargetExecutable
 
 // installedDigest is the digest of a file this check must not alter, or an error when the file cannot be
 // read. An empty path is answered as an error by the caller's own reading of it: a load check with no

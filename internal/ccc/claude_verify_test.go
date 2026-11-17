@@ -78,11 +78,16 @@ type fakeHarness struct {
 	// growSession appends a record to the session file the turn was told to run in, the way the harness
 	// writes its own bookkeeping records into a session it resumes.
 	growSession bool
+	// resolvedExecutable is the path the checks' executable lookup answers with while this fake is
+	// installed, so both checks can be driven on a host that has no harness on PATH; each call records
+	// the path it was really handed.
+	resolvedExecutable string
 	// calls records each arm: the arguments and the environment it was given.
 	calls []fakeHarnessCall
 }
 
 type fakeHarnessCall struct {
+	executable  string
 	arguments   []string
 	environment []string
 	home        string
@@ -90,7 +95,7 @@ type fakeHarnessCall struct {
 }
 
 func (h *fakeHarness) run(
-	_ context.Context, _ string, opts ClaudeResumeOptions, _ time.Duration,
+	_ context.Context, executable string, opts ClaudeResumeOptions, _ time.Duration,
 	args []string, environment []string, _ io.Writer,
 ) (string, string, error) {
 	home := ""
@@ -99,7 +104,9 @@ func (h *fakeHarness) run(
 			home = strings.TrimPrefix(entry, claudeHomeEnv+"=")
 		}
 	}
-	h.calls = append(h.calls, fakeHarnessCall{arguments: args, environment: environment, home: home, cwd: opts.Cwd})
+	h.calls = append(h.calls, fakeHarnessCall{
+		executable: executable, arguments: args, environment: environment, home: home, cwd: opts.Cwd,
+	})
 	sessionID := ""
 	if index := indexOf(args, "--resume"); index >= 0 && index+1 < len(args) {
 		sessionID = args[index+1]
@@ -145,17 +152,26 @@ func indexOf(values []string, want string) int {
 	return -1
 }
 
-// withFakeHarness installs one fake harness for the duration of a test.
+// withFakeHarness installs one fake harness for the duration of a test: the turn seam both checks drive a
+// harness through is answered by the fake, and the executable lookup they find the harness with is
+// answered by a path of the test's own -- what these tests pin is what each check makes of the harness's
+// answer, not whether this host has Claude Code installed. The missing-binary answers keep their own
+// coverage where no fake is installed and the real lookup answers: TestProbeClaudeBinaryReportsAMissingBinary
+// and TestVerifyClaudeResumeRefusesWithoutABinary.
 func withFakeHarness(t *testing.T, harness *fakeHarness) {
 	t.Helper()
-	original := runClaudeHarnessTurn
+	originalTurn := runClaudeHarnessTurn
 	runClaudeHarnessTurn = func(
 		ctx context.Context, executable string, opts ClaudeResumeOptions, timeout time.Duration,
 		args []string, environment []string, stderr io.Writer,
 	) (string, string, error) {
 		return harness.run(ctx, executable, opts, timeout, args, environment, stderr)
 	}
-	t.Cleanup(func() { runClaudeHarnessTurn = original })
+	t.Cleanup(func() { runClaudeHarnessTurn = originalTurn })
+	harness.resolvedExecutable = filepath.Join(t.TempDir(), ClaudeBinaryDefault)
+	originalLookup := resolveClaudeExecutable
+	resolveClaudeExecutable = func(string) (string, error) { return harness.resolvedExecutable, nil }
+	t.Cleanup(func() { resolveClaudeExecutable = originalLookup })
 }
 
 // installedClaudeSession writes a converted transcript into a fresh home and answers its path.
@@ -201,6 +217,10 @@ func TestVerifyClaudeLoadResolvesTheInstalledSessionAndItsControl(t *testing.T) 
 		}
 		if call.home == home {
 			t.Errorf("arm %d drove the loader against the installed data directory rather than a copy (%s)", index, call.home)
+		}
+		if call.executable != harness.resolvedExecutable {
+			t.Errorf("arm %d ran %q, want the path the check resolved (%q)",
+				index, call.executable, harness.resolvedExecutable)
 		}
 		if call.cwd != transcript.Cwd {
 			t.Errorf("arm %d ran in %q, want the session's own working directory %q", index, call.cwd, transcript.Cwd)
@@ -283,6 +303,10 @@ func TestVerifyClaudeResumeReportsTheTurnAndTheGrowth(t *testing.T) {
 	}
 	if len(harness.calls) != 1 || indexOf(harness.calls[0].arguments, "--bare") >= 0 {
 		t.Errorf("the resume turn ran %+v, want the caller's own environment and no --bare", harness.calls)
+	}
+	if harness.calls[0].executable != harness.resolvedExecutable {
+		t.Errorf("the resume turn ran %q, want the path the check resolved (%q)",
+			harness.calls[0].executable, harness.resolvedExecutable)
 	}
 	if !strings.Contains(strings.Join(harness.calls[0].arguments, " "), "How many attempts?") {
 		t.Error("the resume turn did not carry the caller's prompt")
