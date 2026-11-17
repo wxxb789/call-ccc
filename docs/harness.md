@@ -187,9 +187,12 @@ says so.
 - `scripts/upstream-parity.py` — the source-side parity check (above).
 - `scripts/tests/` — regression tests for the gate, the parity checker, the importer, the native check
   and the continuation evidence's own claims (`test_evidence_claims.py`: a §5 comparison cell that
-  credits a recorded run's answer may only quote words that run's recorded output holds; and
+  credits a recorded run's answer may only quote words that run's recorded output holds;
   `test_gate_transcript_claims.py`: a record's quoted `parity` line is the gate's own rendering — its end
-  is the checker's own — and the elision limit a record states is the gate's own call), run by the
+  is the checker's own — and the elision limit a record states is the gate's own call; and
+  `test_codex_native_check.py`'s `RecordStatesTheChecksOwnOrder`: the record's claim about *when* the
+  comparison taken where the copy grows runs is read against the positions of the native check's own
+  calls, so a record that drifts back to a placement the script does not have fails there), run by the
   `selftest` step.
 - `CALLCCC_GATE_ROOT` — run the gate against another tree. Most cases in `scripts/tests/` pin a rule
   against a throw-away tree instead of trusting the reader.

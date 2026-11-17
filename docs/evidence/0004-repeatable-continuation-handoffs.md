@@ -406,10 +406,13 @@ the target harness's own view of the second installed session:
 --model deepseek-v4.1-flash-fast --resume-prompt "Which file configures the backoff cap, and what is the
 cap set to?" --repeat-resume-prompt "What budget do retries share per session, and which file holds it?"`):
 `27 check(s) passed, 0 failed, 0 skipped`, exit 0, two turns billed (the run's own line says so). §13 did
-not re-run the turned halves: each is two billed turns, and the comparison §13 added runs *before* either
-of them, so a turned run of this tree would print `28 check(s) passed, 0 failed, 0 skipped` — arithmetic
-from the offline count §13 measured plus this block's own two extra passes, stated as arithmetic rather
-than quoted as a run. The turn
+not re-run the turned halves: each is two billed turns, so a turned run of this tree would print
+`28 check(s) passed, 0 failed, 0 skipped` — arithmetic from the offline count §13 measured plus this
+block's own two extra passes, stated as arithmetic rather than quoted as a run. The comparison §13 added
+sits between the two turns: it is taken after the first conversion's loader and its own real turn, and
+immediately before the copy the second conversion reads grows — hence ahead of the second conversion, its
+loader and its turn (§15 re-derived that ordering from the shipped script and pinned both of its ends).
+The turn
 in the **first** session ran *before* the growth and the second conversion, so that session is one its own
 harness had already resumed when the second conversion happened:
 
@@ -1267,9 +1270,11 @@ this round extended a case rather than adding one, and the three cases that did 
 `python3 scripts/codex-native-check.py` (the offline half, exit code `0`, no turn billed) reports
 `26 check(s) passed, 0 failed, 2 skipped` — one more than §12's 25, the comparison U01 added — and its
 opening lines and the check that comparison records are quoted in §6 above (§6's block is this run's own).
-The turned runs were not re-run: two billed turns each, and the comparison this round added runs *before*
-either of them, which is why §6 states the turned count it would print as arithmetic rather than quoting a
-run.
+The turned runs were not re-run: two billed turns each, which is why §6 states the turned count it would
+print as arithmetic rather than quoting a run. The comparison this round added is taken after the first
+conversion's loader and its own real turn, and immediately before the copy the second conversion reads
+grows — ahead of the second conversion, its loader and its turn, not ahead of both turns (§6's passage
+above and this one read the other way round until §15 corrected them).
 
 The evidence re-runs this round's blocks are taken from, all offline, no turn billed, exit code `0` each:
 `/tmp/evidence-0004/r4/gate.txt` (§13's gate transcript), `/tmp/evidence-0004/r4/native.txt` (§6's offline
@@ -1424,3 +1429,187 @@ order and no rule an agent must follow — it corrected what this record's trans
 case that reads the gate's own call — so `AGENTS.md` is unchanged. `docs/goals/` holds no goal file whose
 implementation is merged-and-waiting: 0004 is this increment's own, still on its branch and awaiting operator
 acceptance, so nothing moves to `docs/goals/archive/` and `docs/goals/README.md`'s status table is unchanged.
+
+## 15. The sixth review round: findings, fixes, and the numbers re-measured
+
+An independent review read the frozen range `18d50b2..956bf00` — the head this increment's records had
+reached — and reported one finding, `P3`, about what this record says about the native check: §6's paragraph
+and §13's numbers section both placed the comparison the fourth review round added ahead of *both* real
+turns, where the shipped script takes it after the first conversion's loader and that session's real turn and
+immediately before the copy grows. Both passages now state the shipped order, the order itself is re-derived
+from the script's own calls, and each end of it is pinned by a case that drives the shipped harness — the
+class (what this record claims about where that comparison is taken) had survived two rounds, so this round
+closes it with executed mutations rather than an argument, and the two turn windows close a gap no earlier
+case could see. The turned halves were not re-run, as both passages already disclose: two billed turns each.
+The re-measured numbers are at the end of this section.
+
+### W01 (P3) — the record placed the growth baseline ahead of both real turns
+
+With both prompt flags, the shipped order is: the first conversion and its own comparison, that session's
+native loader, the first session's real turn (`run_turn(repo, codex, home, installed, …)`), the comparison
+this record calls the growth's baseline (`copy_at_growth = sha256(copy)`, then the check `the source copy
+still holds the bytes the first conversion read`), `append_fragment(copy, fragment)`, and then the second
+conversion, its loader, the second session's turn (`run_turn(repo, codex, home, second_installed, …)`) and
+the closing comparisons of the fixture tree, the planted session and every session the home already held.
+The two passages said the comparison runs ahead of the two turns, which misstates the interval its own
+verdict answers for — the bytes the first conversion read, re-checked *after* that session was loaded and,
+when `--resume-prompt` is given, resumed — and §6's justification for stating the turned count as arithmetic
+rested on the same wrong reading. The offline half's own check order shows the placement on the tree this
+round ran it on: the first session's turn check above the comparison, and the second session's below it
+(lines 31–33 and 57 of `/tmp/evidence-0004/r6/native.txt`; the middle `…` is this record's own):
+
+```console
+SKIP: a real turn continues from the installed session — not attempted: pass --resume-prompt to run one
+PASS: the source copy still holds the bytes the first conversion read — sha256 2bd510821d4abf83…, 2051 bytes, against the 2bd510821d4abf83…, 2051 bytes taken before the first conversion
+PASS: the source copy grew by exactly the appended turn — 2051 -> 2540 bytes (+489 from internal/ccc/testdata/growth/claude-complete-turn.jsonl), sha256 e2921e995915855d…
+…
+SKIP: a real turn continues from the second installed session — not attempted: pass --repeat-resume-prompt to run one
+```
+
+**Fix.** §6's paragraph now says the comparison "sits between the two turns: it is taken after the first
+conversion's loader and its own real turn, and immediately before the copy the second conversion reads grows
+— hence ahead of the second conversion, its loader and its turn"; §13's numbers section states the same
+placement and names the correction; both keep the disclosure that the turned halves were not re-run. The
+claim is pinned from both sides:
+
+- **behaviourally**, by two new windows in `scripts/tests/test_codex_native_check.py`'s `copy_mutation` table
+  — `"first turn"` and `"second turn"`, driven by `drive`'s new `repeat_turn` flag (both prompt flags, the
+  shape §6's transcript quotes) — each making its same-length swap while that turn runs and asserting the
+  exact failure set the turn's own interval produces;
+- **as a record claim**, by `RecordStatesTheChecksOwnOrder` in the same file: it reads the four stages'
+  positions out of `scripts/codex-native-check.py` itself and fails when the script's order and this record's
+  stated placement disagree.
+
+### The close-out: the rules of this surface, each with its executed pin
+
+The instruction is round 3's repeated: a class that survived two rounds leaves this round with a
+machine-checked pin per rule, and every pin below was **executed** — the lines moved or reverted, the failure
+observed, the file restored (this record's sha256 and the shipped script's matched before and after every
+run). One property of the method was measured on the way and is documented at the loader that hit it
+(`load_native_check`): a script imported by path is served from bytecode whose cache is keyed on the source's
+mtime in *whole seconds* and its size, so two size-preserving mutations written within one second can make
+the second run execute the first's code — the first run of the M2 mutation below did exactly that, and every
+run quoted here was made with a fresh `PYTHONPYCACHEPREFIX`. Each run is a whole-module run of
+`scripts/tests/test_codex_native_check.py` (34 cases), `Ran 34 tests`:
+
+| rule | its pin | the mutation this round executed, and the failure observed |
+| --- | --- | --- |
+| the comparison taken where the copy grows runs after the first session's real turn | `test_a_copy_mutated_during_the_first_turn_is_caught_where_the_copy_grows` | the comparison moved up to just before `if args.resume_prompt:` — after the loader, before the turn: `AssertionError: Lists differ: [] != ['the source copy still holds the bytes the first conversion read']` is the run's only behavioural failure, while the first-load case stays `OK`, so the loader's window and the turn's are told apart |
+| the same comparison, and every other comparison of the copy, is behind the second session's turn | `test_a_copy_mutated_during_the_second_turn_is_caught_by_the_final_comparison` | the closing block moved up to just before `if args.repeat_resume_prompt:`: `AssertionError: Lists differ: [] != ['the source session is unchanged']`, and that case is the run's only failure |
+| this record's claim about that placement is the shipped script's own order | `RecordStatesTheChecksOwnOrder.test_the_record_states_the_order_the_shipped_script_runs_in` | §6's sentence reverted to the reading the review found, the placement re-worded away wherever the record states it (§6, §13 and this section's own restatement of the fix), and the script's order broken the other way (the comparison moved above the first turn): the case reports what it read and fails in all three — quoted below |
+
+```console
+### the comparison moved above the loader (and so above the turn): the first-load case, the first-turn case, the record case
+AssertionError: Lists differ: [] != ['the source copy still holds the bytes the first conversion read']
+AssertionError: Lists differ: [] != ['the source copy still holds the bytes the first conversion read']
+AssertionError: Lists differ: [53524, 49742, 55447, 61030] != [49742, 53524, 55447, 61030]
+ … the clause the run prints under that diff: the shipped script no longer runs the first session's turn,
+ the comparison taken where the copy grows, the growth append and the second session's turn in the order this
+ rule is about: the first session's turn at 53524, the comparison taken where the copy grows at 49742, the
+ growth append at 55447, the second session's turn at 61030
+
+### the comparison moved above the turn but left below the loader: the first-turn case and the record case
+AssertionError: Lists differ: [] != ['the source copy still holds the bytes the first conversion read']
+AssertionError: Lists differ: [53524, 53157, 55447, 61030] != [53157, 53524, 55447, 61030]
+ … the same clause, with the comparison taken where the copy grows at 53157 and the first session's turn at
+ 53524 …
+
+### the closing comparisons moved above the second turn: the second-turn case
+AssertionError: Lists differ: [] != ['the source session is unchanged']
+
+### §6's sentence put back to the reading the review found
+AssertionError: 'runs *before* either' unexpectedly found in '# Evidence — 0004 Repeat continuation as
+source history grows …
+
+### the placement re-worded away wherever the record states it
+AssertionError: "after the first conversion's loader and its own real turn" not found in '# Evidence — 0004
+Repeat continuation as source history grows …
+```
+
+*(Each block is one run's own lines, in the order the run printed them: a heading naming the mutation, then
+that run's failures. A failure is quoted by its own first `AssertionError:` line — the diff and the message
+unittest prints below it are elided, as a line beginning `…` says — except the two record-case order failures,
+whose appended clause is quoted from the run too; `…` also elides the document the two record readings echo.
+The phrase the fourth block quotes stands inside a fence here on purpose: it is the reading this record
+corrected, quoted from the run that found it, not the record speaking — the case reads the record's prose with
+fenced runs dropped for exactly that reason.)*
+
+The comparison's *interval* was the previous round's subject (§13's U01) and its two ends are this round's;
+together, a copy the conversions read now has six windows, one case each, and the growth baseline is the one
+comparison two of them answer (the first turn's and the first load's).
+
+### The numbers this round re-measured
+
+`python3 scripts/gate.py`, exit code `0`, the verdict line `GATE: PASS` with no `(partial: …)` suffix — every
+step ran, including the two required ones:
+
+```console
+$ python3 scripts/gate.py
+gate: <repo>
+gate: go=~/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3592 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 207 tests in 5.327s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 28 project-owned prefix(es); files seen by git: 5652 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 103 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The block is the run's own lines from the command line through the verdict line: the two header lines are
+this record's placeholders, as §7.1's scheme states (the run printed the account's home), the gate's own
+trailing `Wall time:` line is not quoted, and the `parity` line is the gate's own rendering whole — its one
+cut is the gate's own leading `…` — so every other character is what the run printed. This round ran the same
+command repeatedly, the block being the first of its runs: every later transcript of it in
+`/tmp/evidence-0004/r6/` — the `gate-*.txt` files there — printed the same steps and the same verdict, and each
+of their details equals the block's except two fields — `selftest`'s wall clock (`5.327s` above; 5.40–5.64s
+there) and `secrets`' count, which read `103` in every one of them except the two runs made while the case
+cache the next paragraph names stood (`104`). One count moved from §14's run of the same steps: `selftest` from
+`Ran 204 tests` to `Ran 207` (this round's two turn-window cases and the record-reading case joined
+`scripts/tests/test_codex_native_check.py`); `gofmt`'s 3592, `parity`'s `files seen by git: 5652` and
+`secrets … in 103 file(s)` are otherwise unchanged — this round added no file — and `selftest`'s wall clock
+varies per run. `secrets` counts the ignored files this repository owns too (the `scripts/…/__pycache__/*.pyc`
+an *ad-hoc* `python3 -m unittest` writes; the gate's own steps run Python with `PYTHONDONTWRITEBYTECODE=1`, so
+they write none): this round's direct runs of `scripts.tests.test_gate_transcript_claims` wrote that case's
+cache between the first two runs and the last one, and the newest run's `103` is the count once it was removed
+again.
+
+`scripts/tests/test_codex_native_check.py` on its own: `Ran 34 tests … OK` (31 before this round; the three
+cases above joined it), and `Ran 34 tests … FAILED` under each of the five mutations the close-out table
+names (the first-load window's case the only one that stays green under the third — the comparison below the
+loader, above the turn — which is what tells that window from the turn's), with the failure sets quoted there.
+No Go file changed this round, so the `test` step's packages and its `func Test…` count stand as §13 recorded
+them.
+
+`python3 scripts/codex-native-check.py` (the offline half, exit code `0`, no turn billed) reports
+`26 check(s) passed, 0 failed, 2 skipped` — the same count §13 recorded, because this round changed no line
+of the shipped check — and the placement its own order shows is quoted in W01 above. It was run twice —
+`/tmp/evidence-0004/r6/native.txt` and, on the tree as it stands, `/tmp/evidence-0004/r6/native-final.txt` —
+with that summary both times. The turned halves were not re-run, as §6 and §13 disclose.
+
+The evidence re-runs this round's blocks are taken from: `/tmp/evidence-0004/r6/gate.txt` (§15's gate
+transcript, with the later runs beside it), `/tmp/evidence-0004/r6/native.txt` (the offline half's check lines
+and its summary), and `/tmp/evidence-0004/r6/mutations/` — `shipped.txt` and the transcripts of the five
+mutations this section quotes (`m1_before_the_loader.txt`, `m2_before_the_closing.txt`, `m3_before_the_turn.txt`,
+`n1_wrong_reading.txt`, `n2_placement_removed.txt`), plus `stale_cache_proof.txt`, the bytecode-staleness
+demonstration the close-out describes — each executed on this tree and restored.
+
+### What this round changed in the files that carry the rules
+
+- `docs/evidence/0004-repeatable-continuation-handoffs.md`: §6's and §13's passages corrected (W01), and this
+  section appended.
+- `scripts/tests/test_codex_native_check.py`: the two turn windows (`copy_mutation`'s `"first turn"` and
+  `"second turn"`, `drive`'s new `repeat_turn`), the record-reading case `RecordStatesTheChecksOwnOrder` with
+  its `prose()` reading, and the measured bytecode hazard documented at `load_native_check`. No gate step, no
+  required step and no narrowing changed.
+- `docs/harness.md`: the `scripts/tests/` bullet now names the record-reading case beside the two that read
+  the continuation evidence's claims.
+- `docs/upstream.md` and the carried tree: untouched — the gate's `parity` step (above) is what proves it.
+
+**`AGENTS.md` and bookkeeping:** this round changed no repository layout, no gate step, no command, no read
+order and no rule an agent must follow — it corrected what this record says about the shipped check's own
+order and pinned both ends of that order with Python cases — so `AGENTS.md` is unchanged. `docs/goals/` holds
+no goal file whose implementation is merged-and-waiting: 0004 is this increment's own, still on its branch
+and awaiting operator acceptance, so nothing moves to `docs/goals/archive/` and `docs/goals/README.md`'s
+status table is unchanged.
