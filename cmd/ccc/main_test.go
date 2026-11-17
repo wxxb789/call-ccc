@@ -737,6 +737,85 @@ func continueArgs(sessionID string, extra ...string) []string {
 // missingTargetBinary is a name no host has: the CLI tests must not depend on the machine's tooling.
 const missingTargetBinary = "ccc-no-such-target-harness"
 
+// reportedContinueDocument is the JSON shape the CLI's continuation cases read, for both routes: the tests
+// decode the CLI's own document into their own declaration rather than the production type, so a field
+// the CLI renames or drops is a failing case and not a silent zero in a struct that changed with it.
+// It is declared once because both routes read one document; each case still asserts only the fields its
+// own route is about, and the small per-case subsets elsewhere stay their own declarations, because they
+// ask about one block rather than about the document.
+type reportedContinueDocument struct {
+	UpstreamRevision string `json:"upstream_revision"`
+	Target           string `json:"target"`
+	Source           struct {
+		Counts struct {
+			Messages int `json:"messages"`
+		} `json:"counts"`
+	} `json:"source"`
+	Conversion struct {
+		State    string `json:"state"`
+		Format   string `json:"format"`
+		ReadFrom string `json:"read_from"`
+		DryRun   bool   `json:"dry_run"`
+		Carried  struct {
+			Messages             int `json:"messages"`
+			ToolCalls            int `json:"tool_calls"`
+			ToolResults          int `json:"tool_results"`
+			CompactionBoundaries int `json:"compaction_boundaries"`
+		} `json:"carried"`
+		Losses []struct {
+			Category    string `json:"category"`
+			Disposition string `json:"disposition"`
+			Count       int    `json:"count"`
+			Detail      string `json:"detail"`
+		} `json:"losses"`
+	} `json:"conversion"`
+	TargetSession struct {
+		Provider         string `json:"provider"`
+		Format           string `json:"format"`
+		Home             string `json:"home"`
+		BinaryFound      bool   `json:"binary_found"`
+		SessionID        string `json:"session_id"`
+		Path             string `json:"path"`
+		Cwd              string `json:"cwd"`
+		CLIVersion       string `json:"cli_version"`
+		CLIVersionSource string `json:"cli_version_source"`
+		FormatLimits     []struct {
+			Category string `json:"category"`
+			Detail   string `json:"detail"`
+		} `json:"format_limits"`
+		ResumeArguments     []string          `json:"resume_arguments"`
+		ExecResumeArguments []string          `json:"exec_resume_arguments"`
+		ResumeEnvironment   map[string]string `json:"resume_environment"`
+		ResumeCommand       string            `json:"resume_command"`
+		ExecResumeCommand   string            `json:"exec_resume_command"`
+	} `json:"target_session"`
+	Installation struct {
+		State            string `json:"state"`
+		Path             string `json:"path"`
+		Mechanism        string `json:"mechanism"`
+		Created          bool   `json:"created"`
+		SourceCheckState string `json:"source_check_state"`
+	} `json:"installation"`
+	Verification struct {
+		Structure struct {
+			State    string `json:"state"`
+			ReadBack struct {
+				ToolCalls            int `json:"tool_calls"`
+				ToolResults          int `json:"tool_results"`
+				CompactionBoundaries int `json:"compaction_boundaries"`
+			} `json:"read_back"`
+		} `json:"structure"`
+		Load struct {
+			State  string `json:"state"`
+			Method string `json:"method"`
+			Detail string `json:"detail"`
+		} `json:"load"`
+		Resume struct {
+			State string `json:"state"`
+		} `json:"resume"`
+	} `json:"verification"`
+}
+
 // TestContinueJSONDistinguishesConversionInstallationAndVerification is the CLI half of the goal's
 // machine-readable clause: one JSON object on stdout reports what was converted, where it was
 // installed, and which verification actually ran — three states a reader can tell apart.
@@ -748,58 +827,7 @@ func TestContinueJSONDistinguishesConversionInstallationAndVerification(t *testi
 	if code != exitOK {
 		t.Fatalf("exit %d, stderr: %s", code, stderr)
 	}
-	var document struct {
-		UpstreamRevision string `json:"upstream_revision"`
-		Target           string `json:"target"`
-		Conversion       struct {
-			State    string `json:"state"`
-			ReadFrom string `json:"read_from"`
-			DryRun   bool   `json:"dry_run"`
-			Carried  struct {
-				Messages  int `json:"messages"`
-				ToolCalls int `json:"tool_calls"`
-			} `json:"carried"`
-			Losses []struct {
-				Category    string `json:"category"`
-				Disposition string `json:"disposition"`
-				Count       int    `json:"count"`
-				Detail      string `json:"detail"`
-			} `json:"losses"`
-		} `json:"conversion"`
-		TargetSession struct {
-			SessionID        string `json:"session_id"`
-			Path             string `json:"path"`
-			ResumeCommand    string `json:"resume_command"`
-			BinaryFound      bool   `json:"binary_found"`
-			CLIVersion       string `json:"cli_version"`
-			CLIVersionSource string `json:"cli_version_source"`
-			FormatLimits     []struct {
-				Category string `json:"category"`
-				Detail   string `json:"detail"`
-			} `json:"format_limits"`
-			ResumeArguments     []string          `json:"resume_arguments"`
-			ExecResumeArguments []string          `json:"exec_resume_arguments"`
-			ResumeEnvironment   map[string]string `json:"resume_environment"`
-		} `json:"target_session"`
-		Installation struct {
-			State            string `json:"state"`
-			Created          bool   `json:"created"`
-			SourceCheckState string `json:"source_check_state"`
-			Mechanism        string `json:"mechanism"`
-		} `json:"installation"`
-		Verification struct {
-			Structure struct {
-				State string `json:"state"`
-			} `json:"structure"`
-			Load struct {
-				State  string `json:"state"`
-				Detail string `json:"detail"`
-			} `json:"load"`
-			Resume struct {
-				State string `json:"state"`
-			} `json:"resume"`
-		} `json:"verification"`
-	}
+	var document reportedContinueDocument
 	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
 		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
 	}
@@ -1792,13 +1820,31 @@ func TestContinueHelpIsARequestNotAFailure(t *testing.T) {
 		t.Fatalf("help exit %d", code)
 	}
 	for _, want := range []string{
-		"ccc continue <provider>:<session-id-or-path> --to codex",
+		"ccc continue <provider>:<session-id-or-path> --to codex|claude",
 		"ccc continue claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to codex",
+		"ccc continue codex:0c8e5f21-6f24-4a57-9d59-0d1a51b4c8e3 --to claude",
 		"codex resume <session-id>",
+		"claude --resume <session-id>",
 		"--verify LEVEL",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("help is missing %q", want)
+		}
+	}
+	// The --target-binary line states the two routes' rules, which differ: the Claude Code commands name
+	// the path the probe found, because that invocation changes into the session's working directory and
+	// a shell there would search its own PATH for a bare name, while the Codex commands keep the spelling
+	// the caller gave, because theirs runs in the caller's own directory. The pair is read with the
+	// usage text's own line wrapping folded out, so the assertion pins both sentences rather than the
+	// columns they happen to wrap at -- and a return to one generalized sentence for both routes fails
+	// it, which is the wording this line used to carry.
+	flat := strings.Join(strings.Fields(stdout), " ")
+	for _, want := range []string{
+		"The Claude Code resume commands name the path the probe found for it",
+		"The Codex commands keep the spelling given here (or codex)",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("help does not state the route-scoped rule %q", want)
 		}
 	}
 }

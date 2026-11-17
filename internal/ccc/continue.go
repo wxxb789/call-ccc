@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -24,12 +23,6 @@ const (
 	VerifyNone   = "none"
 	VerifyLoad   = "load"
 	VerifyResume = "resume"
-)
-
-// Targets this build can write. Every other name is refused: a target that has no writer would
-// otherwise be answered with a plausible-looking file.
-const (
-	TargetCodex = "codex"
 )
 
 // Conversion and installation states, which a caller reads apart: the conversion is what the target
@@ -80,7 +73,8 @@ type ContinueOptions struct {
 	// Ref identifies the source session, exactly as Inspect does.
 	Ref Ref
 
-	// Target names the harness the conversation continues in ("codex").
+	// Target names the harness the conversation continues in: TargetCodex or TargetClaude, in the words
+	// Targets names them. Any other name is refused.
 	Target string
 
 	// Config supplies the provider roots and enabled agents, as in InspectOptions.
@@ -91,10 +85,12 @@ type ContinueOptions struct {
 	// own file. Empty means "source only".
 	ArchivePath string
 
-	// TargetHome is the target harness's data directory. Empty means "resolve it from the environment"
-	// ($CODEX_HOME, else ~/.codex).
+	// TargetHome is the target harness's data directory. Empty means "resolve it from the environment,
+	// the way the target's own route resolves it": $CODEX_HOME, else ~/.codex for Codex;
+	// $CLAUDE_CONFIG_DIR, else ~/.claude for Claude Code.
 	TargetHome string
-	// TargetBinary is the target harness's executable. Empty means CodexBinaryDefault on PATH.
+	// TargetBinary is the target harness's executable. Empty means the target's own default on PATH
+	// (CodexBinaryDefault for Codex, ClaudeBinaryDefault for Claude Code).
 	TargetBinary string
 
 	// DryRun converts and reports without installing anything.
@@ -105,9 +101,10 @@ type ContinueOptions struct {
 	// turn becomes part of the session.
 	ResumePrompt string
 
-	// Timeout bounds one verification command: one app-server request for the provider probe and the
-	// load check, or one resume turn. Zero means the per-level default (60 seconds per app-server
-	// request, 5 minutes for a resume turn).
+	// Timeout bounds one verification command against the target harness: for Codex, one app-server
+	// request for the provider probe and the load check, or one resume turn; for Claude Code, one loader
+	// arm of the load check, or one resume turn. Zero means the per-level default (60 seconds per
+	// app-server request, 90 seconds per Claude Code loader arm, 5 minutes for a resume turn).
 	Timeout time.Duration
 	// Now is the conversion instant; zero means time.Now.
 	Now time.Time
@@ -225,17 +222,21 @@ func conversionSourceReport(conversation Conversation) SessionReport {
 // Continue converts a source session into a new native session of the target harness, installs it, and
 // reports conversion, installation and native verification as three separate states.
 //
-// It is the engine's entry point for goal 0002 and takes no CLI type. Nothing here opens the source for
-// writing, and nothing replaces a target session: the identity is fresh, the installation is exclusive,
-// and a target harness whose data directory is not there is an error rather than a directory invented
-// here.
+// The pipeline is target-agnostic: everything a target harness answers differently -- what its data
+// directory is called, what its format can express, how one session of it is written, installed and
+// verified -- comes from the route targets.go keeps for it. Nothing here opens the source for writing,
+// and nothing replaces a target session: the identity is fresh, the installation is exclusive, and a
+// target harness whose data directory is not there is an error rather than a directory invented here.
+//
+// It is the engine's entry point and takes no CLI type.
 func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error) {
 	target := strings.ToLower(strings.TrimSpace(opts.Target))
 	if target == "" {
-		return ContinueResult{}, fmt.Errorf("%w: choose one (%s)", ErrUnsupportedTarget, TargetCodex)
+		return ContinueResult{}, fmt.Errorf("%w: choose one (%s)", ErrUnsupportedTarget, strings.Join(Targets(), ", "))
 	}
-	if target != TargetCodex {
-		return ContinueResult{}, fmt.Errorf("%w: %q (this build writes %s)", ErrUnsupportedTarget, opts.Target, TargetCodex)
+	route, err := targetRouteFor(target)
+	if err != nil {
+		return ContinueResult{}, err
 	}
 	if err := CheckVerifyOptions(opts.Verify, opts.ResumePrompt); err != nil {
 		return ContinueResult{}, err
@@ -244,10 +245,14 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 	if level == "" {
 		level = VerifyLoad
 	}
+	return continueWith(ctx, opts, route, level)
+}
 
-	result := ContinueResult{Ref: opts.Ref, Target: target}
+// continueWith runs one conversion along a target's route.
+func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, level string) (ContinueResult, error) {
+	result := ContinueResult{Ref: opts.Ref, Target: route.Name}
 
-	home, explicitHome, err := ResolveCodexHome(opts.TargetHome)
+	home, explicitHome, err := route.ResolveHome(opts.TargetHome)
 	if err != nil {
 		return ContinueResult{}, err
 	}
@@ -257,15 +262,15 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 	if info, err := os.Stat(home); err != nil {
 		if !explicitHome {
 			return ContinueResult{}, fmt.Errorf(
-				"%w at %s: pass --target-home (or set CODEX_HOME) to say where that harness keeps its "+
-					"sessions", ErrTargetHomeMissing, home)
+				"%w at %s: pass --target-home (or set %s) to say where that harness keeps its sessions",
+				ErrTargetHomeMissing, home, route.HomeEnv)
 		}
 		homeMissing = true
 	} else if !info.IsDir() {
 		return ContinueResult{}, fmt.Errorf("%w: %s is not a directory", ErrTargetHomeMissing, home)
 	}
 
-	probe := ProbeCodexBinary(ctx, opts.TargetBinary)
+	probe := route.Probe(ctx, opts.TargetBinary)
 	cfg, reader, err := resolveContinueConfig(opts)
 	if err != nil {
 		return ContinueResult{}, err
@@ -279,8 +284,7 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 	// The provider's own classification of this read travels into the report's warnings, not only into
 	// its fidelity block and the conversion's loss list: a summary fallback, a result the provider says
 	// is not current and a read whose tool outputs could not be read are all reads a caller must not take
-	// for the session's recorded transcript, and a run that converted, installed and verified says
-	// nothing about that by itself.
+	// for the session's recorded transcript.
 	result.Warnings = append(result.Warnings, fidelityWarnings(conversation.Fidelity)...)
 
 	// The source's digest is taken before anything is written and compared again afterwards: the
@@ -291,46 +295,26 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 		return ContinueResult{}, err
 	}
 
-	cliVersion := probe.Version
-	cliVersionSource := "probe"
-	if cliVersion == "" {
-		cliVersionSource = "writer-pin"
+	// What only the target's own harness can answer (Codex: the model provider its loader checks). It is
+	// asked here, after the read, because the answer can depend on the session's own working directory.
+	facts := route.Facts(ctx, targetFactsInput{
+		Home:      home,
+		DryRun:    opts.DryRun,
+		Probe:     probe,
+		SourceCwd: conversation.Source.Cwd,
+		Timeout:   opts.Timeout,
+		Stderr:    opts.Stderr,
+	})
+	if strings.TrimSpace(facts.CLIVersion) == "" {
+		facts.CLIVersion = route.PinVersion
 	}
-	// The target's own configuration answer supplies the provider binding the written session records.
-	// Without a harness to ask, the session records none, and the report says so. A dry run does not
-	// start the harness against its data directory at all: a harness fixes up its own state in the home
-	// it runs with (measured on Codex 0.169.0, whose app server writes its databases, logs and skills
-	// there), and a dry run's promise is that it touches that directory nowhere -- so the provider goes
-	// unrecorded, with the reason reported, and an installed run records the answer (Q-0002-11).
-	configProbe := CodexConfigProbe{}
-	if opts.DryRun {
-		configProbe.Detail = "a dry run does not start the target harness against its data directory, " +
-			"so which model provider a new session of it would use was not asked and none is recorded; " +
-			"an installed run records the harness's own answer"
-	} else if probe.Found {
-		// The provider is asked for as seen from the session's own working directory: the harness
-		// resolves project configuration layers from there, and a different directory can answer with a
-		// different provider.
-		configProbe = ProbeCodexConfig(ctx, home, probe.Binary, conversation.Source.Cwd, opts.Timeout, opts.Stderr)
+	if strings.TrimSpace(facts.CLIVersionSource) == "" {
+		facts.CLIVersionSource = "writer-pin"
 	}
-	// The provider source names where the target's own answer came from (Q-0002-01:
-	// target-thread-defaults, target-config, unrecorded); a probe that found no provider records none
-	// and says so.
-	providerSource := "unrecorded"
-	if configProbe.Found && strings.TrimSpace(configProbe.Provider) != "" {
-		providerSource = configProbe.Source
-	}
-	// The printed resume commands name the harness the way the caller asked for it (or "codex"), not the
-	// absolute path the probe resolved: a command a person or an agent pastes must be the one they run.
-	// They name the data directory too, because a resume command without it resumes the caller's default
-	// home rather than the directory this conversion installed into.
-	resumeName := strings.TrimSpace(opts.TargetBinary)
-	if resumeName == "" {
-		resumeName = CodexBinaryDefault
-	}
-	rollout, err := ConvertToCodexRollout(conversation, CodexTargetOptions{
-		CLIVersion:   cliVersion,
-		Provider:     configProbe.Provider,
+
+	session, err := route.Convert(conversation, targetConvertInput{
+		CLIVersion:   facts.CLIVersion,
+		Provider:     facts.ModelProvider,
 		Now:          opts.Now,
 		MaxToolNames: opts.MaxToolNames,
 	})
@@ -339,47 +323,50 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 	}
 	result.Conversion = ConversionReport{
 		State:          ConversionStateConverted,
-		Format:         CodexTargetFormat,
+		Format:         route.Format,
 		ReadFrom:       readFrom,
 		DryRun:         opts.DryRun,
-		Carried:        rollout.Carried,
-		Losses:         rollout.Losses,
+		Carried:        session.Carried,
+		Losses:         session.Losses,
 		SourceFidelity: conversation.Fidelity,
 	}
 	// The invocation is built here, where the session identity exists, and rendered twice: as the
 	// argument vector and environment a caller runs, and as the shell line a person pastes.
-	resumeArguments := []string{resumeName, "resume", rollout.SessionID}
-	execResumeArguments := []string{resumeName, "exec", "resume", rollout.SessionID, resumePromptPlaceholder}
-	resumeEnvironment := map[string]string{codexHomeEnv: home}
+	resumeName := strings.TrimSpace(opts.TargetBinary)
+	if resumeName == "" {
+		resumeName = route.BinaryDefault
+	}
+	invocation := route.Invocation(session, targetInvocationInput{Binary: resumeName, Probe: probe, Home: home})
+	fields := route.Fields(session, facts)
 	result.TargetSession = TargetReport{
-		Provider:            target,
-		Format:              CodexTargetFormat,
-		FormatLimits:        codexFormatLimits(),
+		Provider:            route.Name,
+		Format:              route.Format,
+		FormatLimits:        route.FormatLimits,
 		Home:                home,
 		Binary:              probe.Binary,
 		BinaryFound:         probe.Found,
 		BinaryVersion:       probe.Version,
 		BinaryDetail:        probe.Detail,
-		SessionID:           rollout.SessionID,
-		FileName:            rollout.FileName,
-		Cwd:                 rollout.Cwd,
-		StartedAt:           rollout.StartedAt,
-		CLIVersion:          rollout.CLIVersion,
-		CLIVersionSource:    cliVersionSource,
-		ModelProvider:       configProbe.Provider,
-		ProviderSource:      providerSource,
-		ProviderDetail:      configProbe.Detail,
-		Model:               configProbe.Model,
-		ResumeArguments:     resumeArguments,
-		ExecResumeArguments: execResumeArguments,
-		ResumeEnvironment:   resumeEnvironment,
-		ResumeCommand:       renderResumeCommand(resumeArguments, resumeEnvironment),
-		ExecResumeCommand:   renderResumeCommand(execResumeArguments, resumeEnvironment),
+		SessionID:           session.ID,
+		FileName:            session.FileName,
+		Cwd:                 session.Cwd,
+		StartedAt:           session.StartedAt,
+		CLIVersion:          fields.CLIVersion,
+		CLIVersionSource:    fields.CLIVersionSource,
+		ModelProvider:       fields.ModelProvider,
+		ProviderSource:      fields.ProviderSource,
+		ProviderDetail:      fields.ProviderDetail,
+		Model:               fields.Model,
+		ResumeArguments:     invocation.Arguments,
+		ExecResumeArguments: invocation.ExecArguments,
+		ResumeEnvironment:   invocation.Environment,
+		ResumeCommand:       renderInvocation(invocation.Arguments, invocation.Environment, invocation.WorkingDir),
+		ExecResumeCommand:   renderInvocation(invocation.ExecArguments, invocation.Environment, invocation.WorkingDir),
 	}
 	verification := VerificationReport{
-		Structure: StructureVerification{State: VerificationStateNotVerified, Method: structureMethod},
-		Load:      LoadVerification{State: VerificationStateNotRequested, Method: loadMethod},
-		Resume:    ResumeVerification{State: VerificationStateNotRequested, Method: resumeMethod},
+		Structure: StructureVerification{State: VerificationStateNotVerified, Method: route.StructureMethod},
+		Load:      LoadVerification{State: VerificationStateNotRequested, Method: route.LoadMethod},
+		Resume:    ResumeVerification{State: VerificationStateNotRequested, Method: route.ResumeMethod},
 	}
 	// The installation block exists from here on, whatever the run does next: a run that stops before
 	// publishing anything still answers "is it installed?" -- with not-installed -- and says which checks
@@ -395,20 +382,20 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 		// would install into is named but not created, and the report says which state that is. The
 		// structure check reads that copy, so its method says so before it runs: a run that stops before
 		// the check reports the mechanism it did not use rather than an empty one.
-		verification.Structure.Method = structureMethodDryRun
+		verification.Structure.Method = route.StructureMethodDryRun
 		scratch, err := os.MkdirTemp("", "ccc-dry-run-")
 		if err != nil {
 			return reportAfterFailure(result, verification, level, fmt.Errorf("creating a scratch directory: %w", err))
 		}
 		defer os.RemoveAll(scratch)
-		if _, _, err := InstallCodexRollout(rollout, scratch); err != nil {
+		if _, _, err := route.Install(session, scratch); err != nil {
 			return reportAfterFailure(result, verification, level, fmt.Errorf("verifying the conversion: %w", err))
 		}
-		structure, err := VerifyCodexRolloutStructure(ctx, filepath.Join(scratch, codexSessionsSubdir), rollout, cfg)
+		structure, err := route.ReadBack(ctx, route.StructureRoot(scratch), session, cfg)
 		if err != nil {
 			return reportAfterFailure(result, verification, level, err)
 		}
-		structure.Method = structureMethodDryRun
+		structure.Method = route.StructureMethodDryRun
 		structure.TargetPath = ""
 		verification.Structure = structure
 		switch level {
@@ -429,7 +416,7 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 			}
 		}
 		result.Verification = verification
-		result.Warnings = append(result.Warnings, structureWarnings(structure)...)
+		result.Warnings = append(result.Warnings, structureWarnings(route, structure)...)
 		// The dry run writes nothing, so the source file is compared exactly the way an installed run
 		// compares it: the report claims the check only when it ran.
 		sourceState, sourceDetail, err := sourceCheckAfter(conversation, readFrom, sourceDigest)
@@ -439,15 +426,9 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 		result.Installation.SourceCheckState = sourceState
 		result.Installation.Detail = sourceDetail
 		result.Warnings = append(result.Warnings, sourceChangedWarnings(sourceState)...)
-		// A dry run's conversion records no provider because the harness was never started against the
-		// home. When there is a harness to ask, an installed run's file differs from this one in that
-		// field, and a caller reading only the human block must not read the dry run's file as the one an
-		// installed run would write.
-		if probe.Found {
-			result.Warnings = append(result.Warnings, "a dry run does not start the target harness, so "+
-				"the conversion records no model provider; a run that installs asks the harness for its "+
-				"own answer")
-		}
+		// A dry run's conversion may record nothing a target harness would have filled in, because the
+		// harness was never started against the home; the route says what that means for its format.
+		result.Warnings = append(result.Warnings, route.DryRunWarnings(facts, probe)...)
 		if homeMissing {
 			result.Warnings = append(result.Warnings, fmt.Sprintf(
 				"the target data directory %s does not exist and a dry run did not create it; an installed "+
@@ -464,7 +445,7 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 			return reportAfterFailure(result, verification, level, fmt.Errorf("creating %s: %w", home, err))
 		}
 	}
-	path, mechanism, err := InstallCodexRollout(rollout, home)
+	path, mechanism, err := route.Install(session, home)
 	if path != "" {
 		// The installer returns the path it published even when it also reports a failure (a temporary
 		// file it could not remove): the report carries the identity the installed session can be resumed
@@ -491,7 +472,19 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 	result.Installation.Detail = sourceDetail
 	result.Warnings = append(result.Warnings, sourceChangedWarnings(sourceState)...)
 
-	structure, err := VerifyCodexRolloutStructure(ctx, filepath.Join(home, codexSessionsSubdir), rollout, cfg)
+	verificationInput := targetVerificationInput{
+		Home:      home,
+		Binary:    probe.Binary,
+		SessionID: session.ID,
+		Cwd:       session.Cwd,
+		Path:      path,
+		Directory: session.Directory,
+		FileName:  session.FileName,
+		Data:      session.Data,
+		Timeout:   opts.Timeout,
+		Stderr:    opts.Stderr,
+	}
+	structure, err := route.ReadBack(ctx, route.StructureRoot(home), session, cfg)
 	if err != nil {
 		return reportAfterFailure(result, verification, level, err)
 	}
@@ -520,34 +513,23 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 					"and its native load is unverified", path))
 			break
 		}
-		verification.Load = VerifyCodexLoad(ctx, CodexLoadOptions{
-			Home:         home,
-			Binary:       probe.Binary,
-			SessionID:    rollout.SessionID,
-			ExpectedPath: path,
-			Timeout:      opts.Timeout,
-			Stderr:       opts.Stderr,
-		})
+		verification.Load = route.Load(ctx, verificationInput)
 		verification.Load.BinaryVersion = probe.Version
 		if level == VerifyResume {
-			verification.Resume = VerifyCodexResume(ctx, CodexResumeOptions{
-				Home:        home,
-				Binary:      probe.Binary,
-				SessionID:   rollout.SessionID,
-				Prompt:      opts.ResumePrompt,
-				WorkingDir:  rollout.Cwd,
-				SessionPath: path,
-				Timeout:     opts.Timeout,
-				Stderr:      opts.Stderr,
-			})
+			resumeInput := verificationInput
+			resumeInput.Prompt = opts.ResumePrompt
+			verification.Resume = route.Resume(ctx, resumeInput)
 		} else {
 			verification.Resume.Detail = "not requested (--verify " + level + ")"
 		}
 	}
 	result.Verification = verification
-	result.Warnings = append(result.Warnings, structureWarnings(structure)...)
+	result.Warnings = append(result.Warnings, structureWarnings(route, structure)...)
 	if verification.Structure.State != VerificationStateVerified {
-		result.Warnings = append(result.Warnings, "the installed session does not hold every piece of "+
+		// "was not shown to hold" rather than "does not hold": the same state covers a comparison that
+		// ran and found the file missing evidence, and a reader that could not read the file back at
+		// all, where nothing was shown about what it holds either way.
+		result.Warnings = append(result.Warnings, "the installed session was not shown to hold every piece of "+
 			"evidence the conversion wrote: "+verification.Structure.Detail)
 	}
 	return result, nil
@@ -559,23 +541,43 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 // inherited reader reads no message for -- or reads only the text an injected-context envelope preceded
 // -- is exactly that case. A check that did not verify is answered where it failed, by the warning that
 // names what the file does not hold.
-func structureWarnings(structure StructureVerification) []string {
+func structureWarnings(route targetRoute, structure StructureVerification) []string {
 	if structure.State != VerificationStateVerified || structure.NotReadBackVerbatim == 0 {
 		return nil
 	}
-	return []string{fmt.Sprintf("the installed session holds %d written message(s) the inherited Codex "+
+	return []string{fmt.Sprintf("the installed session holds %d written message(s) the inherited %s "+
 		"reader does not read their own text for (verification.not_read_back_verbatim): their dialogue "+
 		"records are in the file, so the conversion carried them and the reader's own projection of the "+
-		"file is what the read-back shows instead", structure.NotReadBackVerbatim)}
+		"file is what the read-back shows instead", structure.NotReadBackVerbatim, route.StructureReader)}
 }
 
-// What each check reads, named once, so a check that did not run still reports the mechanism it would
-// have used: a reader sees which question went unanswered, not an empty field.
+// What each check reads, named once per target, so a check that did not run still reports the mechanism
+// it would have used: a reader sees which question went unanswered, not an empty field.
 const (
-	structureMethod       = "the inherited AgentsView Codex reader over the installed session"
-	structureMethodDryRun = "the inherited AgentsView Codex reader over a throw-away copy (dry run)"
-	loadMethod            = "the target harness's own loader (codex app-server, thread/resume)"
-	resumeMethod          = "one turn in the installed session through the target harness's non-interactive resume"
+	structureMethodCodex       = "the inherited AgentsView Codex reader over the installed session"
+	structureMethodCodexDryRun = "the inherited AgentsView Codex reader over a throw-away copy (dry run)"
+	loadMethodCodex            = "the target harness's own loader (codex app-server, thread/resume)"
+
+	structureMethodClaude       = "the inherited AgentsView Claude reader over the installed session"
+	structureMethodClaudeDryRun = "the inherited AgentsView Claude reader over a throw-away copy (dry run)"
+	// The Claude load check drives the harness's own loader with --bare and with the environment
+	// variables that could reach a model removed, so the loader resolves the installed session without a
+	// model turn, and runs an unknown-id control arm beside it: see claude_verify.go.
+	loadMethodClaude = "the target harness's own loader (claude --bare --resume, with no model " +
+		"credentials in its environment, plus an unknown-id control)"
+
+	resumeMethodCodex = "one turn in the installed session through the target harness's non-interactive resume"
+	// The Claude resume check runs the reported invocation as it is printed, which is also the exec form
+	// the report carries.
+	resumeMethodClaude = "one turn in the installed session through the target harness's non-interactive " +
+		"resume (claude -p --resume)"
+
+	// structureReaderCodex and structureReaderClaude name the inherited reader each route's structural
+	// check reads a file back through: the verification's own detail and the report's warning for a
+	// written message the reader does not read its own text for both name that reader, so the name lives
+	// once per route and no target's check can name another target's reader.
+	structureReaderCodex  = "Codex"
+	structureReaderClaude = "Claude Code"
 )
 
 // hasAnswer reports whether a check carries an answer of its own: it verified, or it came back
@@ -842,9 +844,20 @@ func fileDigest(path string) (string, error) {
 // home rather than the directory the session was installed into.
 const codexHomeEnv = "CODEX_HOME"
 
+// claudeHomeEnv is the environment variable that selects the Claude Code data directory a run reads: the
+// harness has no command-line flag for it, so a resume command that does not set it opens the caller's
+// own default directory rather than the one the session was installed into.
+const claudeHomeEnv = "CLAUDE_CONFIG_DIR"
+
 // resumePromptPlaceholder is where the exec form of the resume invocation takes the caller's turn. It is
 // a word of its own, not quoted shell syntax: a caller replaces it with the prompt's own words.
 const resumePromptPlaceholder = "<prompt>"
+
+// promptTerminator is the option terminator a target's non-interactive form puts between its own flags
+// and the caller's prompt. Without it a prompt whose own first word is an option is read as one -- a
+// turn asking about `--help` would print help instead of reaching the session -- so the printed exec
+// form carries it, and the resume verification and the load check run behind it.
+const promptTerminator = "--"
 
 // shellUnsafeCharacters are the characters a POSIX shell reads as syntax inside a word, so a word
 // holding any of them has to be quoted; an empty word would vanish, so it is quoted too.
@@ -870,6 +883,19 @@ func renderResumeCommand(arguments []string, environment map[string]string) stri
 		words = append(words, shellQuote(argument))
 	}
 	return strings.Join(words, " ")
+}
+
+// renderInvocation is renderResumeCommand for a target whose session is only discoverable from a
+// particular working directory: the line starts with the directory change, quoted the way the rest of the
+// line is, so a person or an agent pasting it resumes the session this report installed rather than
+// whatever the caller's shell happens to sit in. A target that does not care about the directory gets
+// exactly the invocation names, with no `cd` at all.
+func renderInvocation(arguments []string, environment map[string]string, workingDir string) string {
+	command := renderResumeCommand(arguments, environment)
+	if strings.TrimSpace(workingDir) == "" {
+		return command
+	}
+	return "cd " + shellQuote(workingDir) + " && " + command
 }
 
 // shellQuote renders one command-line word so a POSIX shell reads it back as that word: left as it is
@@ -914,7 +940,7 @@ func codexFormatLimits() []FormatLimit {
 	}
 }
 
-func probeDetailSuffix(probe CodexProbe) string {
+func probeDetailSuffix(probe harnessProbe) string {
 	if strings.TrimSpace(probe.Detail) == "" {
 		return ""
 	}

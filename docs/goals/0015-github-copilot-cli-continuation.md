@@ -1,7 +1,7 @@
 # 0015 — Continue conversations into and out of GitHub Copilot CLI
 
 **Status:** Ready  
-**Prerequisite:** [0002 — Continue a Claude Code session in Codex](0002-claude-to-codex-continuation.md). Independent of 0003–0014 and 0016–0017.
+**Prerequisite:** [0002 — Continue a Claude Code session in Codex](archive/0002-claude-to-codex-continuation.md). Independent of 0003–0014 and 0016–0017.
 
 ## Intended advance
 

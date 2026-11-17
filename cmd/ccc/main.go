@@ -29,7 +29,7 @@ import (
 const usage = `ccc — continue one agent session in another, through AgentsView's own reader
 
 usage:
-  ccc continue <provider>:<session-id-or-path> --to codex [options]
+  ccc continue <provider>:<session-id-or-path> --to codex|claude [options]
   ccc inspect <provider>:<session-id-or-path> [--json] [--data-dir DIR]
   ccc help
 
@@ -44,10 +44,13 @@ usage:
   continue reads that session through the inherited AgentsView reader, writes it as a NEW native
   session of the target harness, installs it where that harness keeps its sessions, and reports the
   target's own session id and resume command. It never changes the source session and never replaces
-  an existing target session. The common invocation is:
-      ccc continue claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to codex
-  and the result says which command resumes it (CODEX_HOME=<dir> codex resume <session-id>), naming
-  the data directory the session was installed into as well as the session itself.
+  an existing target session. The common invocations are:
+      ccc continue claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to codex   # Claude Code → Codex
+      ccc continue codex:0c8e5f21-6f24-4a57-9d59-0d1a51b4c8e3 --to claude  # Codex → Claude Code
+  and the result says which command resumes it (for Codex: CODEX_HOME=<dir> codex resume <session-id>;
+  for Claude Code: cd <dir> && CLAUDE_CONFIG_DIR=<dir> claude --resume <session-id>, because that
+  harness finds a session through the directory it is run from), naming the data directory the session
+  was installed into as well as the session itself.
 
   inspect reports the session's identity, agent, source and conversation shape. It reads the
   source session through the provider's own reader and, when an archive is present, says what the
@@ -55,17 +58,24 @@ usage:
   only.
 
 continuation options:
-  --to NAME          target harness to write (codex)
+  --to NAME          target harness to write (codex, claude)
   --json             write the result as one JSON object on stdout (diagnostics stay on stderr)
   --dry-run          convert and verify without writing anything into the target's data directory
-  --target-home DIR  that harness's data directory (default: $CODEX_HOME, else ~/.codex)
-  --target-binary P  that harness's executable (default: codex on PATH); the printed resume commands
-                     name it the way it is given here
+  --target-home DIR  that harness's data directory (codex: $CODEX_HOME, else ~/.codex; claude:
+                     $CLAUDE_CONFIG_DIR, else ~/.claude)
+  --target-binary P  that harness's executable (default: codex, or claude, on PATH). The Claude Code
+                     resume commands name the path the probe found for it -- the program this run asked
+                     and verified -- else the spelling given here, where a spelling that names a path is
+                     resolved against this directory, because that invocation runs from the session's
+                     own working directory and a shell there would search its own PATH for a bare name.
+                     The Codex commands keep the spelling given here (or codex): that invocation stays
+                     in the caller's own directory, so a bare name is the caller's own PATH lookup.
   --data-dir DIR     read the AgentsView archive in DIR (%s/sessions.db) when the source file itself
                      cannot answer the reference
   --verify LEVEL     none, load (default) or resume: load asks the target harness's own loader to
-                     open the installed session offline; resume runs one real turn in it and needs
-                     --resume-prompt
+                     open the installed session offline (Codex: its app server; Claude Code: the
+                     harness with --bare and no model credentials in its environment, plus an
+                     unknown-id control); resume runs one real turn in it and needs --resume-prompt
   --resume-prompt T  the turn --verify resume runs; call/ccc never writes a prompt of its own into a
                      session
 
@@ -382,7 +392,7 @@ func writeHuman(out io.Writer, inspection ccc.Inspection) {
 
 // continueUsage is the one-line usage `ccc continue` prints for `-h`, for a usage error and for a
 // missing operand.
-const continueUsage = "usage: ccc continue <provider>:<session-id-or-path> --to codex [--json] [--dry-run]\n" +
+const continueUsage = "usage: ccc continue <provider>:<session-id-or-path> --to codex|claude [--json] [--dry-run]\n" +
 	"                         [--target-home DIR] [--target-binary PATH] [--data-dir DIR]\n" +
 	"                         [--verify none|load|resume] [--resume-prompt TEXT]\n"
 
@@ -406,11 +416,11 @@ func runContinue(args []string, stdout, stderr io.Writer) int {
 	}
 	if strings.TrimSpace(*target) == "" {
 		fmt.Fprint(stderr, continueUsage)
-		fmt.Fprintf(stderr, "ccc: --to names the target harness (codex)\n")
+		fmt.Fprintf(stderr, "ccc: --to names the target harness (%s)\n", strings.Join(ccc.Targets(), ", "))
 		return exitUsage
 	}
-	if !strings.EqualFold(strings.TrimSpace(*target), ccc.TargetCodex) {
-		fmt.Fprintf(stderr, "ccc: this build writes %s, not %q\n", ccc.TargetCodex, *target)
+	if !writesTarget(strings.TrimSpace(*target)) {
+		fmt.Fprintf(stderr, "ccc: this build writes %s, not %q\n", strings.Join(ccc.Targets(), ", "), *target)
 		return exitUsage
 	}
 	// The core owns the wording of a refused verification request, so a caller driving the CLI and one
@@ -469,6 +479,17 @@ func runContinue(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	return exitOK
+}
+
+// writesTarget answers whether --to named a target this build writes, case-insensitively. It asks the
+// core's own list rather than repeating it, so the CLI cannot accept a target the engine refuses.
+func writesTarget(target string) bool {
+	for _, name := range ccc.Targets() {
+		if strings.EqualFold(target, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // continueRun is ccc.Continue, named so the CLI's own rule for a failure that still carries a report can

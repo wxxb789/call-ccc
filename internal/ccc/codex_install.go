@@ -162,11 +162,11 @@ func InstallCodexRollout(rollout CodexRollout, home string) (string, string, err
 // AgentsView Codex reader. The reader is upstream's implementation of the same format, so this compares
 // the file with an independent read of it rather than with the writer's own idea of it.
 type StructureVerification struct {
-	State      string        `json:"state"`
-	Method     string        `json:"method"`
-	Detail     string        `json:"detail,omitempty"`
-	TargetPath string        `json:"target_path,omitempty"`
-	ReadBack   CodexReadBack `json:"read_back,omitempty"`
+	State      string         `json:"state"`
+	Method     string         `json:"method"`
+	Detail     string         `json:"detail,omitempty"`
+	TargetPath string         `json:"target_path,omitempty"`
+	ReadBack   ReadBackCounts `json:"read_back,omitempty"`
 	// NotReadBackVerbatim counts the written dialogue messages the read-back does not show with their own
 	// text and the installed file's own dialogue record holds; one read-back message shows one written
 	// message, so a text the document writes twice needs the read-back to hold it twice. The inherited
@@ -180,8 +180,10 @@ type StructureVerification struct {
 	NotReadBackVerbatim int `json:"not_read_back_verbatim,omitempty"`
 }
 
-// CodexReadBack is what the inherited reader made of the target file.
-type CodexReadBack struct {
+// ReadBackCounts is what the inherited reader made of the target file: the session it found and the
+// evidence it read there. Every target's structural check reports these, so a consumer reads the same
+// block whichever target a conversion wrote.
+type ReadBackCounts struct {
 	SessionID            string `json:"session_id,omitempty"`
 	Messages             int    `json:"messages"`
 	UserMessages         int    `json:"user_messages"`
@@ -207,7 +209,7 @@ func VerifyCodexRolloutStructure(
 ) (StructureVerification, error) {
 	verification := StructureVerification{
 		State:      "not-verified",
-		Method:     structureMethod,
+		Method:     structureMethodCodex,
 		TargetPath: filepath.Join(sessionsDir, filepath.FromSlash(rollout.Directory), rollout.FileName),
 	}
 	readerConfig := cfg
@@ -228,7 +230,7 @@ func VerifyCodexRolloutStructure(
 		verification.Detail = "the inherited Codex reader could not read the installed session back: " + err.Error()
 		return verification, nil
 	}
-	verification.ReadBack = codexReadBack(conversation)
+	verification.ReadBack = readBackCounts(conversation)
 	// The comparison asks the file's own bytes about any written dialogue the read-back does not show:
 	// that is the one question the inherited reader's projection cannot answer for such a message, and
 	// it is asked of the bytes on disk rather than of the document the writer kept in memory.
@@ -245,13 +247,13 @@ func VerifyCodexRolloutStructure(
 		return verification, nil
 	}
 	verification.State = "verified"
-	verification.Detail = roundTrip.detail()
+	verification.Detail = roundTrip.detail(structureReaderCodex)
 	return verification, nil
 }
 
-func codexReadBack(conversation Conversation) CodexReadBack {
+func readBackCounts(conversation Conversation) ReadBackCounts {
 	counts := Summarize(conversation.Messages)
-	return CodexReadBack{
+	return ReadBackCounts{
 		SessionID:            conversation.Source.SessionID,
 		Messages:             counts.Messages,
 		UserMessages:         counts.UserMessages,
@@ -262,8 +264,9 @@ func codexReadBack(conversation Conversation) CodexReadBack {
 	}
 }
 
-// codexRoundTrip is what comparing the target document with a read-back of the installed file found.
-type codexRoundTrip struct {
+// roundTripComparison is what comparing a target document with a read-back of the installed file found.
+// Both targets' structural checks compare the same way, so this is the type they both answer with.
+type roundTripComparison struct {
 	// differences names every item one side holds and the other does not, each by what identifies it
 	// rather than by its text.
 	differences []string
@@ -275,95 +278,159 @@ type codexRoundTrip struct {
 
 // detail is the verification detail of a comparison the file satisfied: empty when the read-back showed
 // every written item verbatim, and otherwise the one thing a caller has to be told before reading
-// "verified" as "the read-back shows every message with the text the file holds".
-func (roundTrip codexRoundTrip) detail() string {
+// "verified" as "the read-back shows every message with the text the file holds". The reader is named by
+// the caller, because the sentence is about the reader that read *this* file back: the name is the
+// route's own (structureReaderCodex/structureReaderClaude), so a Claude conversion can never report a
+// Codex reader.
+func (roundTrip roundTripComparison) detail(reader string) string {
 	if roundTrip.notReadBackVerbatim == 0 {
 		return ""
 	}
 	return fmt.Sprintf(
-		"%d written message(s) are in the installed session and the inherited Codex reader does not read "+
+		"%d written message(s) are in the installed session and the inherited %s reader does not read "+
 			"their own text from it: the file's dialogue records hold them, so the conversion carried them "+
 			"and the reader's own projection of the file is what the read-back shows instead",
-		roundTrip.notReadBackVerbatim)
+		roundTrip.notReadBackVerbatim, reader)
 }
 
-// compareCodexRoundTrip names every way the file's read-back differs from the target document.
+// compareRoundTrip names every way a read-back of the installed file differs from a target document,
+// item by item. Every target's document is the same item list and the comparison is the same, so the walk
+// lives here and each target answers with its own reader's rules (roundTripReader) and its own file's
+// records.
 //
-// The comparison is by evidence, not by record shape: the target's reader pairs a call with its output
-// onto one message, trims a result's output, trims a compacted record's summary and drops an empty
-// argument object, so those are the reader's own normalisations and not differences in what the file
-// holds. A message the reader reads as no message at all (its text is blank after trimming) is not one
-// the writer may count as carried: the writer omits such text and names it, and a document that claims
-// one is reported here as the missing message it is. What the comparison cannot normalise is a missing
-// or altered message, call, result or boundary, which is what this reports.
+// The comparison is by evidence, not by record shape: a target reader's own normalisations -- the records
+// it puts back into one message, the text it trims, the boundary record it classifies as a system row --
+// are not differences in what the file holds. What it cannot normalise is a missing or altered message,
+// call, result or boundary, which is what this reports.
 //
-// One reading is neither: the reader reads user text blocks through the injected-context classification,
-// because a block that opens with an envelope is that context rather than a turn (internal/parser's
-// preprocessCodexUserTextBlocks), so a written message can come back as no message at all or with the
-// text the envelope preceded. Dialogue is therefore walked against the installed file's own dialogue
-// records, in the file's own order, rather than through a set membership test: what tells a projection
-// from a loss is the record -- and where the document writes it -- not the read-back's silence, which is
-// what lets both projection shapes resolve to the same count (compareDialogue) while a file whose
-// records hold the right texts in another order is reported. The file is asked about dialogue only,
-// because that is where the reader's projection applies: a call, a result and a boundary are compared
-// through keys the reader derives from the record itself, and a difference there is a difference in what
-// the file holds.
-func compareCodexRoundTrip(rollout CodexRollout, readBack Conversation, installed []byte) codexRoundTrip {
-	var roundTrip codexRoundTrip
-	intendedDialogue := []string{}
-	intendedCalls := []string{}
-	intendedResults := []string{}
-	intendedBoundaries := []string{}
-	for _, item := range rollout.Items {
-		switch item.Kind {
-		case ItemUser, ItemAssistant:
-			intendedDialogue = append(intendedDialogue, dialogueKey(string(item.Kind), item.Text))
-		case ItemToolCall:
-			intendedCalls = append(intendedCalls, roundTripCallKey(item.CallID, item.ToolName, item.InputJSON))
-		case ItemToolResult:
-			intendedResults = append(intendedResults, roundTripResultKey(item.CallID, item.Text))
-		case ItemCompactionBoundary:
-			intendedBoundaries = append(intendedBoundaries, roundTripBoundaryKey(item.Text))
-		}
-	}
-
-	readDialogue := []string{}
-	readCalls := []string{}
-	readResults := []string{}
-	readBoundaries := []string{}
-	for _, message := range readBack.Messages {
-		if message.IsCompactBoundary {
-			readBoundaries = append(readBoundaries, roundTripBoundaryKey(message.Content))
-			continue
-		}
-		if text := dialogueText(message); strings.TrimSpace(text) != "" {
-			kind := ItemAssistant
-			if parser.RoleType(message.Role) == parser.RoleUser {
-				kind = ItemUser
-			} else if parser.RoleType(message.Role) == parser.RoleTool {
-				continue
-			}
-			readDialogue = append(readDialogue, dialogueKey(string(kind), text))
-		}
-		for _, call := range message.ToolCalls {
-			readCalls = append(readCalls, roundTripCallKey(call.ToolUseID, call.Name, call.InputJSON))
-		}
-		for _, result := range message.ToolResults {
-			text, _ := resultText(result)
-			readResults = append(readResults, roundTripResultKey(result.ToolUseID, text))
-		}
-	}
-
-	dialogue := compareDialogue(intendedDialogue, readDialogue, installedDialogueRecords(installed))
+// A message the reader reads as no message at all (its text is blank after trimming) is not one the
+// writer may count as carried: the writer omits such text and names it, and a document that claims one is
+// reported here as the missing message it is.
+//
+// One reading is neither a normalisation nor a loss: a written message can come back as no message at all
+// or with the text an injected-context envelope preceded, because the reader classifies a block that
+// opens with such an envelope as that context rather than a turn. Dialogue is therefore walked against
+// the installed file's own dialogue records, in the file's own order, rather than through a set
+// membership test: what tells a projection from a loss is the record -- and where the document writes it
+// -- not the read-back's silence, which is what lets both projection shapes resolve to the same count
+// (compareDialogue) while a file whose records hold the right texts in another order is reported. The
+// file is asked about dialogue only, because that is where the reader's projection applies: a call, a
+// result and a boundary are compared through keys the reader derives from the record itself, and a
+// difference there is a difference in what the file holds.
+func compareRoundTrip(
+	items []TargetItem, readBack Conversation, reader roundTripReader, installedDialogue dialogueRecords,
+) roundTripComparison {
+	intended := intendedRoundTripEvidence(items)
+	read := readRoundTripEvidence(readBack, reader)
+	dialogue := compareDialogue(intended.dialogue, read.dialogue, installedDialogue)
+	var roundTrip roundTripComparison
 	roundTrip.differences = append(roundTrip.differences, dialogue.differences...)
 	roundTrip.notReadBackVerbatim = dialogue.notReadBackVerbatim
 	roundTrip.differences = append(roundTrip.differences,
-		compareSequences(categoryToolCall, compareAsMultiset, intendedCalls, readCalls)...)
+		compareSequences(categoryToolCall, compareAsMultiset, intended.calls, read.calls)...)
 	roundTrip.differences = append(roundTrip.differences,
-		compareSequences(categoryToolResult, compareAsMultiset, intendedResults, readResults)...)
+		compareSequences(categoryToolResult, compareAsMultiset, intended.results, read.results)...)
 	roundTrip.differences = append(roundTrip.differences,
-		compareSequences(categoryCompactionBoundary, compareInOrder, intendedBoundaries, readBoundaries)...)
+		compareSequences(categoryCompactionBoundary, compareInOrder, intended.boundaries, read.boundaries)...)
 	return roundTrip
+}
+
+// roundTripEvidence is one side of a round-trip comparison, by kind: the identities the comparison asks
+// about, in the order that side holds them (dialogue in reading order, calls and results as multisets,
+// boundaries in order).
+type roundTripEvidence struct {
+	dialogue   []string
+	calls      []string
+	results    []string
+	boundaries []string
+}
+
+// intendedRoundTripEvidence collects the evidence a target document says it wrote.
+func intendedRoundTripEvidence(items []TargetItem) roundTripEvidence {
+	var evidence roundTripEvidence
+	for _, item := range items {
+		switch item.Kind {
+		case ItemUser, ItemAssistant:
+			evidence.dialogue = append(evidence.dialogue, dialogueKey(string(item.Kind), item.Text))
+		case ItemToolCall:
+			evidence.calls = append(evidence.calls, roundTripCallKey(item.CallID, item.ToolName, item.InputJSON))
+		case ItemToolResult:
+			evidence.results = append(evidence.results, roundTripResultKey(item.CallID, item.Text))
+		case ItemCompactionBoundary:
+			evidence.boundaries = append(evidence.boundaries, roundTripBoundaryKey(item.Text))
+		}
+	}
+	return evidence
+}
+
+// roundTripReader is what one target's own reader decides about a read-back, so the walk over the
+// read-back is shared while each target keeps its own reader's normalisations: which records the reader
+// classifies away before the walk, and which item kind one message's dialogue stands for (false when the
+// reader has no message for that role).
+type roundTripReader struct {
+	classifiesAway func(Message) bool
+	kindOf         func(Message) (TargetItemKind, bool)
+}
+
+// readRoundTripEvidence collects what a read-back of the installed file shows, minus the records the
+// target's own reader classifies away.
+func readRoundTripEvidence(readBack Conversation, reader roundTripReader) roundTripEvidence {
+	var evidence roundTripEvidence
+	for _, message := range readBack.Messages {
+		if message.IsCompactBoundary {
+			evidence.boundaries = append(evidence.boundaries, roundTripBoundaryKey(message.Content))
+			continue
+		}
+		if reader.classifiesAway(message) {
+			continue
+		}
+		if text := dialogueText(message); strings.TrimSpace(text) != "" {
+			if kind, ok := reader.kindOf(message); ok {
+				evidence.dialogue = append(evidence.dialogue, dialogueKey(string(kind), text))
+			}
+		}
+		for _, call := range message.ToolCalls {
+			evidence.calls = append(evidence.calls, roundTripCallKey(call.ToolUseID, call.Name, call.InputJSON))
+		}
+		for _, result := range message.ToolResults {
+			text, _ := resultText(result)
+			evidence.results = append(evidence.results, roundTripResultKey(result.ToolUseID, text))
+		}
+	}
+	return evidence
+}
+
+// compareCodexRoundTrip names every way the file's read-back differs from the target document, through
+// the shared walk with the Codex reader's own rules.
+//
+// The Codex reader pairs a call with its output onto one message, trims a result's output, trims a
+// compacted record's summary and drops an empty argument object, so those are the reader's own
+// normalisations and not differences in what the file holds. It reads user text blocks through the
+// injected-context classification, because a block that opens with an envelope is that context rather
+// than a turn (internal/parser's preprocessCodexUserTextBlocks).
+func compareCodexRoundTrip(rollout CodexRollout, readBack Conversation, installed []byte) roundTripComparison {
+	return compareRoundTrip(rollout.Items, readBack, codexRoundTripReader(), installedDialogueRecords(installed))
+}
+
+// codexRoundTripReader is the inherited Codex reader's own rules for the read-back walk: it marks no
+// record as injected context (the Codex reader has no such classification), a tool record is no message
+// of its own (the reader pairs the tool's output onto the call's message), and any other role the reader
+// reads dialogue for stands for the assistant's turn -- the reader's own answer, which this check reports
+// rather than second-guesses.
+func codexRoundTripReader() roundTripReader {
+	return roundTripReader{
+		classifiesAway: func(Message) bool { return false },
+		kindOf: func(message Message) (TargetItemKind, bool) {
+			switch parser.RoleType(message.Role) {
+			case parser.RoleUser:
+				return ItemUser, true
+			case parser.RoleTool:
+				return "", false
+			default:
+				return ItemAssistant, true
+			}
+		},
+	}
 }
 
 // dialogueKey identifies one piece of dialogue: which role recorded it and the text itself. The two are

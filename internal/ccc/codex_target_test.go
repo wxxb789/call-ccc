@@ -588,8 +588,9 @@ func TestCodexRolloutCarriesAToolRoleMessageOnlyThroughItsResult(t *testing.T) {
 }
 
 // TestCodexRolloutPairsAnIdLessResultWithItsCall pins the pairing rule: the target pairs a call and its
-// output by id, so a source that recorded none gets one generated from the message's own position — and
-// two id-less calls make the pairing a guess, which is reported as an unpaired result instead.
+// output by id, so a source that recorded none gets one generated from the message's own position in the
+// document — and two id-less calls make the pairing a guess, which is reported as an unpaired result
+// instead. Two of them in two messages whose ordinals were never assigned are still two calls.
 func TestCodexRolloutPairsAnIdLessResultWithItsCall(t *testing.T) {
 	pairable := testConversation(
 		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask"},
@@ -666,6 +667,44 @@ func TestCodexRolloutPairsAnIdLessResultWithItsCall(t *testing.T) {
 	if lossCount(t, rollout.Losses, "unpaired_tool_results").Count != 1 {
 		t.Errorf("unpaired_tool_results = %+v, want the ambiguous result counted",
 			lossCount(t, rollout.Losses, "unpaired_tool_results"))
+	}
+
+	// Two messages whose ordinals were never assigned (both zero), each carrying one id-less call: keyed
+	// by the call's own place in the document, the two calls stay two calls, so the outstanding set
+	// holds both and this result is still refused. Keyed by the ordinal they would share one id, the set
+	// would read one call, and the result would pair -- which the report would then claim as carried.
+	crossMessage := testConversation(
+		Message{Role: string(parser.RoleAssistant), Content: "[Read: /x]",
+			ToolCalls: []ToolCall{{Name: "Read", InputJSON: `{"file_path":"/x"}`}}},
+		Message{Role: string(parser.RoleAssistant), Content: "[Read: /y]",
+			ToolCalls: []ToolCall{{Name: "Read", InputJSON: `{"file_path":"/y"}`}}},
+		Message{Role: string(parser.RoleUser),
+			ToolResults: []ToolResult{{ContentRaw: "content of one of them"}}},
+	)
+	rollout, err = ConvertToCodexRollout(crossMessage, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if rollout.Carried.ToolResults != 0 {
+		t.Errorf("carried %d result(s) for two id-less calls in two messages, which is a pairing the "+
+			"source did not record", rollout.Carried.ToolResults)
+	}
+	if lossCount(t, rollout.Losses, "unpaired_tool_results").Count != 1 {
+		t.Errorf("unpaired_tool_results = %+v, want the ambiguous result counted",
+			lossCount(t, rollout.Losses, "unpaired_tool_results"))
+	}
+	if lossCount(t, rollout.Losses, "generated_call_ids").Count != 2 {
+		t.Errorf("generated_call_ids = %+v, want the two calls and no inferred pairing",
+			lossCount(t, rollout.Losses, "generated_call_ids"))
+	}
+	ids := []string{}
+	for _, line := range decodeRollout(t, rollout.Data) {
+		if payloadField(t, line, "type") == codexItemFunctionCall {
+			ids = append(ids, payloadField(t, line, "call_id"))
+		}
+	}
+	if len(ids) != 2 || ids[0] == ids[1] {
+		t.Errorf("the two messages' id-less calls carry ids %q, want one distinct id per call", ids)
 	}
 
 	// A result that names its own call answers that one and leaves the call that is still outstanding

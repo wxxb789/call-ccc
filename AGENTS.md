@@ -26,29 +26,35 @@ with their exit codes and counts).
 - **Precision over apparent completeness.** An explicitly partial translation beats a
   plausible-looking one. Never fabricate tool results, reasoning, roles, resume identities or a
   success result; a valid file is not evidence that anything can resume it.
-- **A target writer's claim is shown through the target harness's own loader.** Call `ccc continue`
-  converts, installs and reports **converted / installed / natively resumable** as three separate
-  states; "resumable" is only ever `verification.load` or `verification.resume` coming back
-  `verified`, and every one of a conversion's omissions or narrowing is named in
-  `conversion.losses[]`. The native half needs the target harness installed and, for a real turn,
-  model access, so it is **not** a gate step: `scripts/codex-native-check.py` re-derives it and
-  reports each check's own verdict (the gate keeps deciding the offline half — round-trip through the
-  inherited reader, install rules, reported losses, CLI shape).
+- **A target writer's claim is shown through the target harness's own loader.** Call `ccc continue …
+  --to codex` or `--to claude` converts, installs and reports **converted / installed / natively
+  resumable** as three separate states; "resumable" is only ever `verification.load` or
+  `verification.resume` coming back `verified`, and every one of a conversion's omissions or narrowing
+  is named in `conversion.losses[]`. The native half needs the target harness installed and, for a real
+  turn, model access, so it is **not** a gate step: `scripts/codex-native-check.py` and
+  `scripts/claude-native-check.py` re-derive it and report each check's own verdict (the gate keeps
+  deciding the offline half — round-trip through the inherited reader, install rules, reported losses,
+  CLI shape).
 - **A conversion writes a fresh native identity and replaces nothing.** The install is exclusive, the
   source is never opened for writing, no credential or login store is copied, and a target data
   directory nobody named is an error rather than a directory invented here. Tests and demos use
-  isolated data directories. A written session records the target harness's own configured model
+  isolated data directories. A written Codex session records the target harness's own configured model
   provider — asked of the harness itself — and no model, never the source's: recording nothing is
   refused by a home that has migrated to paginated threads, and recording the source's provider would
-  be false.
+  be false. A Claude Code transcript has no provider field at all, so `--to claude` states that as the
+  `model_provider_binding` format limit and binds the session to no provider, and neither route ever
+  writes the source's.
 - Out of scope by design: Git/worktree management, process or environment migration, credentials,
   fleet orchestration, and any second session index for the existing archive.
 
 ## How to work here
 
-- The continuation core and its per-harness target writers live in `internal/ccc`; `cmd/ccc` adds
-  argument handling and presentation only, and a target-side native harness (`scripts/*-native-check.py`)
-  is registered in `docs/harness.md`, re-runnable, and deliberately not a gate step.
+- The continuation core and its per-harness target writers live in `internal/ccc` — the route table
+  `targets.go` and the writers/installers/verifiers `codex_target.go`, `codex_install.go`,
+  `codex_verify.go`, `claude_target.go`, `claude_install.go`, `claude_verify.go`; `cmd/ccc` adds
+  argument handling and presentation only, and a target-side native harness
+  (`scripts/codex-native-check.py`, `scripts/claude-native-check.py`) is registered in
+  `docs/harness.md`, re-runnable, and deliberately not a gate step.
 - Gate: `python3 scripts/gate.py`, which must print `GATE: PASS`; it runs `parity` and `selftest` as
   required steps, and its Go steps are narrowed to `./cmd/ccc/... ./internal/ccc/...` with the measured
   reasons in [`docs/harness.md`](docs/harness.md#why-the-go-steps-target-a-subset) — that narrowing is
@@ -66,7 +72,11 @@ with their exit codes and counts).
   only holds on the platform or the `PATH` the case happens to run on: a case's stub bin answers the
   host probes it is not about, and the suite re-runs itself in a child whose `PATH` holds no tools and,
   once, with the platform probe answering Windows-without-a-compiler, so a host-dependent case fails
-  on this host ([`docs/conventions.md`](docs/conventions.md)).
+  on this host ([`docs/conventions.md`](docs/conventions.md)). The Go suites the gate's `test` step
+  runs are held to the same rule: a case whose subject is what a check makes of a target harness's
+  answer drives that harness through the check's own seam and answers the executable lookup the same
+  way, instead of needing the harness installed on the machine running the suite — a case that *is*
+  about a missing binary pins a `PATH` that holds no harness.
 - Stage order for an increment: implement → verify (gate) → simplify (report only) → apply (accepted
   findings only) → review (report only) → fix → gate → PR. Report stages must not edit the tree.
 - One goal ≈ one branch ≈ one pull request, squash-merged onto a linear `main`. Do not commit, push

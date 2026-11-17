@@ -247,6 +247,40 @@ says so.
   can grow this harness's memory with it, while the pipe stays empty so the server cannot block on it.
   Every check prints its own verdict and the script exits non-zero when one fails, so a run that could
   not do the native half says so instead of reporting a pass.
+- `scripts/claude-native-check.py` — the target-side native verification for the Codex → Claude Code
+  route, and **deliberately not a gate step** for the same reason: it needs the Claude Code binary
+  installed, and its `resume` half also needs model access. The **`load` half needs no model access**: it
+  drives the installed binary (`claude --bare -p --output-format json --resume <id>`) against a
+  **throw-away copy** of the converted bytes in a scratch `CLAUDE_CONFIG_DIR`, with the environment
+  variables that could reach a model removed, and adds a **control arm** running the same command on a
+  fresh unknown session id, which must answer `No conversation found with session ID: <id>` — that
+  contrast is what makes the check an answer about *this* session rather than about any file, and no turn
+  is billed. The **`resume` half runs one real turn** through the invocation the conversion printed,
+  which carries the session's working directory as well as its home (`cd <cwd> && CLAUDE_CONFIG_DIR=<home>
+  claude --resume <id>`), because Claude Code resolves a session only from the directory whose project-dir
+  spelling matches the one it was installed under. That line is a POSIX one (`cd … && CLAUDE_CONFIG_DIR=…
+  claude …`, each word quoted where a POSIX shell would act on a character in it), so the shell that reads
+  it is **named by the script** rather than left to whatever `subprocess`'s `shell=True` selects: on a
+  POSIX host the platform's own `/bin/sh`, on any other host the first `sh`/`bash` on `PATH` (`posix_shell`),
+  and a host with neither is reported as a named **skip** with that reason — the way a host without POSIX
+  mode bits skips the owner-only check — because `cmd.exe` cannot read that line at all and running it
+  there would fail before the harness was reached, answering about the host's command shell instead of the
+  conversion. The check's own line says which shell read it (`ran through /bin/sh: …`). The host's model
+  access is **inherited** by that turn, never copied into an isolated home; the run hashes the source
+  fixture, a planted unrelated session and every session the home already held before and after, so a
+  mutation during the loader or the turn is answered by the comparison that runs last.
+- `scripts/native_check_common.py` — the mechanism the two native checks share, so neither keeps its own
+  copy of it: the file digests (`sha256`, `tree_digest`), the check recorder (`record`, `RESULTS`), the
+  subprocess runner (`run`), the POSIX-shell reading of a rendered command (`shell_words`,
+  `unquoted_text` and the character set a shell acts on), the JSONL record-shape test both checks report
+  through (a line may be blank or one JSON **object**; anything else — unparseable, or a value that is not
+  an object — is that check's FAIL with the line's number), and the two strings the record's own rules
+  read (`TURN_OUTPUT_MARKER`, `PROMPT_PLACEHOLDER`).
+  It is project-owned (`OWNED` and the manifest), imports nothing, and each check stays runnable on its
+  own; what the shared module does **not** absorb is the checks' independent restatements of the
+  contracts they check (the spelling rules their case files re-implement, the marker their case files
+  declare for themselves, the project-directory rule their own test carries), because a reading that
+  imported those from the thing it checks would answer nothing.
 
 ## Why the Go steps target a subset
 
@@ -285,7 +319,7 @@ mode the installer *requests* (`codexSessionFileMode`) on Windows, and compares 
 own bits with that request where the platform reports them: a widened mode must fail on the platform
 where the answer is visible, so the two halves are asserted by one platform-aware branch.
 
-Four more Windows answers the tree pins rather than tolerates, all because the platform's own answer is
+Five more Windows answers the tree pins rather than tolerates, all because the platform's own answer is
 not the one the rule is about:
 
 - a missing binary raises `FileNotFoundError` **without a filename** on Windows — `CreateProcess`'s
@@ -359,6 +393,21 @@ not the one the rule is about:
   discover -s scripts/tests` (executed; the unresolved spelling is `FAILED (failures=4)` there — the two
   cases plus the two self-check cases that read the red child, CI's own number — and the repaired one
   `OK`, 153 cases).
+- a path is absolute by the **platform's** own answer, not by its spelling: on Windows `filepath.IsAbs`
+  answers false for a POSIX-absolute word like `/opt/tools/claude`, because its volume test wants a drive
+  letter, a device prefix or a `\\host\share` UNC form (in the toolchain this tree builds with,
+  `src/internal/filepathlite/path_windows.go`'s own `IsAbs`, and the table at
+  `src/path/filepath/path_test.go` that turns every POSIX entry false there). A case that hands such a
+  word to code which re-spells a word it does not call absolute pins that leg's *working directory*
+  instead of the rule: `gate (windows-latest)` failed the `test` step at head `a2670d1` because the case
+  the increment's evidence record §6.5 added for the probed executable spelled its probe answer that way,
+  while the probe's answer for a bare name is a `PATH` hit, which both platforms spell the way the host
+  reads it — `os/exec.LookPath` refuses a hit that is not absolute (`ErrDot`) rather than answering a
+  relative one. The case now takes its probe answer from the host's own temp root, with a component holding
+  a space so the quoting rule is still exercised everywhere, which is the shape the CLI cases above already
+  use; the code under it did not move, because the probe's word is handed over as it stands whenever the
+  host calls it absolute. The branch that fires is reproducible on any host by handing the route a probe
+  answer the running host does not call absolute (evidence record §6.6).
 
 ## CI
 

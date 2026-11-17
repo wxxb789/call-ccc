@@ -36,22 +36,14 @@ const (
 
 var codexVersionPattern = regexp.MustCompile(`[0-9]+\.[0-9]+\.[0-9]+`)
 
-// CodexProbe is what the target harness answered when asked for its version.
-type CodexProbe struct {
-	Binary  string `json:"binary"`
-	Found   bool   `json:"found"`
-	Version string `json:"version,omitempty"`
-	Detail  string `json:"detail,omitempty"`
-}
-
 // ProbeCodexBinary finds the target executable and asks it for its version. A missing binary is an
 // answer, not an error: a conversion can still be written (and verified structurally), but the report
 // says the native half could not run.
-func ProbeCodexBinary(ctx context.Context, binary string) CodexProbe {
+func ProbeCodexBinary(ctx context.Context, binary string) harnessProbe {
 	if strings.TrimSpace(binary) == "" {
 		binary = CodexBinaryDefault
 	}
-	probe := CodexProbe{Binary: binary}
+	probe := harnessProbe{Binary: binary}
 	path, err := exec.LookPath(binary)
 	if err != nil {
 		probe.Detail = fmt.Sprintf("%s is not on PATH", binary)
@@ -218,7 +210,7 @@ type CodexLoadOptions struct {
 func VerifyCodexLoad(ctx context.Context, opts CodexLoadOptions) LoadVerification {
 	verification := LoadVerification{
 		State:  VerificationStateNotVerified,
-		Method: loadMethod,
+		Method: loadMethodCodex,
 	}
 	binary := opts.Binary
 	if strings.TrimSpace(binary) == "" {
@@ -314,7 +306,7 @@ type CodexResumeOptions struct {
 func VerifyCodexResume(ctx context.Context, opts CodexResumeOptions) ResumeVerification {
 	verification := ResumeVerification{
 		State:  VerificationStateNotVerified,
-		Method: resumeMethod,
+		Method: resumeMethodCodex,
 	}
 	binary := opts.Binary
 	if strings.TrimSpace(binary) == "" {

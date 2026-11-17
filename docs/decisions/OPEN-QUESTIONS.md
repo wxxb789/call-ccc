@@ -775,7 +775,12 @@ supersede it with a newer one and say which it supersedes.
   command assertion and spelled this host's temp path: `gate (windows-latest)` failed the `test` step at
   head `37c0a10` for it, and it now uses the same home and the same quoted spelling (the fifth CI red,
   `docs/evidence/0002-claude-to-codex-continuation.md` §6) — a case added to this rule, not a new answer
-  to the question above. The rendering rule is already the documented contract of the field, a caller
+  to the question above. A fourth case joined the rule in increment 0003, which found the same shape on
+  its own route: `TestContinueResolvesARelativeTargetBinaryForTheDirectoryChangingInvocation` asserted the
+  bare spelling of the resolved `--target-binary` executable in both printed lines, which every Windows
+  temp path's backslashes put in the quoted arm; the caller's directory now holds a space and the two
+  assertions spell the quoted word (`docs/evidence/0003-codex-to-claude-continuation.md` §6.4). The
+  rendering rule is already the documented contract of the field, a caller
   that runs the harness directly uses the `resume_arguments`/`resume_environment` fields beside it, and a
   per-platform dialect would make the same field mean two things; changing product behaviour to fit a
   test would be the larger move.
@@ -1192,3 +1197,188 @@ supersede it with a newer one and say which it supersedes.
   be a bounded failure too, and which of "kill it at the bound", "truncate the document" or "leave the
   subprocess's own deadline as the bound" is the acceptable failure shape.
 
+## Q-0003-01 — A source that records no working directory
+
+- **Status:** resolved (default taken)
+- **Question:** Claude Code's loader resolves a session only from the directory whose project-dir
+  spelling matches the one it was installed under (`claude -p --resume <id>` run elsewhere answers
+  `No conversation found with session ID`), so a source read that recorded no working directory cannot
+  be installed where any loader would find it. Invent a directory (the caller's, or a fixed one), or
+  refuse?
+- **Default taken:** refuse the conversion with `ErrNoTargetCwd`
+  (`internal/ccc/claude_target.go`'s `ConvertToClaudeTranscript`) before anything is written, and report
+  the conversion block without an installation, rather than invent a directory that would make the
+  session undiscoverable while the report called it installed. `claude_target_test.go` and
+  `continue_claude_test.go` pin the refusal.
+- **Reversal:** fall back to the caller's working directory (one branch in `claude_target.go`),
+  disclosed in the report as an invented location.
+- **Settled by:** whether the operator prefers a refused conversion over one installed at a disclosed
+  guessed directory.
+
+## Q-0003-02 — One record per source message, with a fresh `message.id`
+
+- **Status:** resolved (default taken)
+- **Question:** the inherited Claude reader merges *consecutive assistant records that share a
+  `message.id`* as streaming chunks of one response, and a message can carry several content blocks.
+  Write one record per message, or one record per block, and where does the id come from?
+- **Default taken:** one record per content block of a source message — the message's dialogue as its own
+  record (a plain string for a single text block, an array otherwise), each tool call as its own
+  assistant record, and a message's tool results together on one user record — with one fresh unique
+  `message.id` per source assistant message, shared by that message's records only; sharing an id across
+  two messages would merge them (measured), while a single multi-block record was measured to
+  reconstruct to exactly the request the harness's own block-per-record shape produces. The new UUID v4
+  is both the file stem and every record's `sessionId`, because the inherited reader reads a record
+  whose `sessionId` differs from the stem as a *child* session.
+- **Reversal:** derive ids from the source's own message identity where it has one, which needs a
+  per-source mapping and a source identity the read does not always carry.
+- **Settled by:** whether the operator wants the target's message identity traceable to the source's.
+
+## Q-0003-03 — `is_error` only where the source recorded a failure
+
+- **Status:** resolved (default taken)
+- **Question:** `tool_result.is_error` is the target's own field (measured to survive resume), and a
+  source status has richer meanings than "failed". Write a flag for every non-success status, or only
+  where the source said the call failed?
+- **Default taken:** `is_error: true` is written **only** where the source's own status says the call
+  failed (`internal/ccc/claude_target.go`); every other status is carried as text and counted under
+  `tool_result_statuses`, because a status with no error meaning has no target field and inventing one
+  would assert a failure the source did not record.
+- **Reversal:** write no flag at all (0002's `tool_result_outcomes` caveat), or map every non-success
+  status to `is_error`.
+- **Settled by:** whether the operator wants the target's error flag to track the source's status
+  taxonomy or only its recorded failures.
+
+## Q-0003-04 — The model field, and the provider a Claude transcript records
+
+- **Status:** resolved (default taken)
+- **Question:** the source read carries a per-message model, and Claude Code's transcript has a
+  `message.model` field but no provider field. Carry the source's model — the only field-shaped place
+  for it — or omit it and record no provider binding?
+- **Default taken:** omit the source's per-message model and count it (`message_model_attribution`), and
+  record no provider binding anywhere in the transcript, because `message.model` states which model
+  produced the words and the conversation was not produced by one of the caller's target models; the
+  absence is disclosed as a loss category and as a format limit.
+- **Reversal:** write the source's model into `message.model`, which would attribute the conversation to
+  a model that did not produce it.
+- **Settled by:** whether the operator prefers a transcript bound to no model over one that names the
+  source's.
+
+## Q-0003-05 — The `load` check is offline, with an unknown-id control arm
+
+- **Status:** resolved (default taken)
+- **Question:** the default verification level could prove the loader by running a real turn against the
+  caller's own endpoint, or by driving the loader without model access and reading its own resolution of
+  the session. Which is the default?
+- **Default taken:** the offline one. `--verify load` (the default) runs the installed `claude` binary
+  with `claude --bare -p --output-format json --resume <id>` against a **throw-away copy** of the
+  converted bytes in a scratch `CLAUDE_CONFIG_DIR`, with the variables that could reach a model removed,
+  plus a **control arm** on a fresh unknown id that must answer `No conversation found with session ID`
+  (`internal/ccc/claude_verify.go`). The default level therefore bills no turn and alters no installed
+  session, and the contrast with the control arm is what makes it an answer about *this* session rather
+  than about any file.
+- **Reversal:** an online load check against the caller's own endpoint (one branch in `claude_verify.go`),
+  which costs a turn and cannot run without model access.
+- **Settled by:** whether the operator wants the default verification to prove the loader with a real
+  turn instead of the offline resolution.
+
+## Q-0003-06 — The resume command carries the working directory
+
+- **Status:** resolved (default taken)
+- **Question:** the session is discoverable only from a particular directory (`Q-0003-01`), so the
+  printed resume command could carry the directory itself or state the requirement in prose and leave the
+  caller to `cd`.
+- **Default taken:** carry it — `cd <cwd> && CLAUDE_CONFIG_DIR=<home> claude --resume <id>`, rendered the
+  way 0002 renders its commands (every word quoted where a POSIX shell would act on it), because without
+  the `cd` the loader's project-directory lookup cannot see the session and without the home it looks in
+  the caller's own (`internal/ccc/continue.go`'s `renderInvocation`).
+- **Reversal:** print the invocation without the `cd` and document the requirement instead.
+- **Settled by:** whether the operator wants the pasted command to carry the directory or the
+  documentation to.
+
+## Q-0003-07 — Pre-boundary history, and the boundary's own pair
+
+- **Status:** resolved (default taken)
+- **Question:** a source `compacted` record could truncate the written transcript, or be written as the
+  marker the target itself writes so the target applies its own compaction semantics while the file
+  keeps the history.
+- **Default taken:** carry the pre-boundary turns and count them (`pre_compaction_history`, with its
+  caveat), and write the boundary as the pair the harness itself writes —
+  `{"type":"system","subtype":"compact_boundary"}` followed by the `isCompactSummary` summary record.
+  Measured: that pair truncates the target's model-visible history at the boundary (the loader's request
+  began with the summary and a pre-boundary fact answered `NOT-IN-CONTEXT`), while the `isCompactSummary`
+  flag alone changed nothing.
+- **Reversal:** stop the file at the boundary.
+- **Settled by:** whether the operator wants pre-boundary turns in the file — the history the boundary
+  record is what withholds from the model — or omitted.
+
+## Q-0003-08 — `isSidechain` records are omitted
+
+- **Status:** resolved (default taken)
+- **Question:** the source read marks some messages `IsSidechain`; the transcript could carry them (with
+  the flag) or omit them and count the omission.
+- **Default taken:** omit them, counted (`sidechain_messages`), because the loader was measured to drop
+  `isSidechain` records from the model-visible history: carrying them would put evidence in the file that
+  no read of it — including the conversion's own round-trip check — could show, and the target has no
+  subagent attribution for a flat message.
+- **Reversal:** write them with the flag, and report that the target's own reads do not surface them.
+- **Settled by:** whether the operator wants a subagent's turns visible in the file even though no target
+  read shows them.
+
+## Q-0003-09 — The archived goal file's own `Status` line
+
+- **Status:** resolved (default taken)
+- **Question:** 0002's merge onto `main` (`8e1c502`) makes it accepted, so the bookkeeping fix round
+  moved its goal file to `docs/goals/archive/` and the index row now reads `Accepted: merged onto `main`
+  as `8e1c502`; archived`; the file's own `**Status:**` line still reads `Implemented on
+  `feat/0002-claude-to-codex-continuation`; awaiting operator acceptance`. 0001's archived file was
+  re-spelled to `Accepted: merged onto `main` as `ef6a61c`; archived` in the commit that archived it,
+  while this round's finding told the round not to touch the goal text beyond its location and the
+  README row.
+- **Default taken:** the finding's own limit — the file's text stays as reviewed, and the README row
+  carries the accepted state.
+- **Reversal:** one line in `docs/goals/archive/0002-claude-to-codex-continuation.md`: the `**Status:**`
+  line re-spelled to `Accepted: merged onto `main` as `8e1c502`; archived`, matching 0001's archive.
+- **Settled by:** whether the owner wants an archived goal's own status line re-spelled to the accepted
+  state (0001's practice) or frozen as the text the operator accepted.
+
+## Q-0003-10 — The active goal file's own `Status` line
+
+- **Status:** resolved (default taken)
+- **Question:** `docs/goals/0003-codex-to-claude-continuation.md` still opens with `**Status:** Ready`
+  while the index row at `docs/goals/README.md` reads `Implemented on
+  `feat/0003-codex-to-claude-continuation`; awaiting operator acceptance`. The apply round's own finding
+  named this and left it alone: the goal file is the owner's artifact, the index declares itself the
+  status authority, and 0003 has not been accepted yet. Q-0003-09 records the same question for the
+  *archived* 0002 file.
+- **Default taken:** the goal file's line stays as it is; the README row carries the state, and the
+  question is recorded here rather than answered by an edit to a file the owner is still reviewing.
+- **Reversal:** one line in `docs/goals/0003-codex-to-claude-continuation.md`: `**Status:** Ready` →
+  `Implemented on `feat/0003-codex-to-claude-continuation`; awaiting operator acceptance`.
+- **Settled by:** whether the owner wants an active goal's own status line to track the index row while
+  the increment awaits acceptance, or to stay the text the increment was dispatched against.
+
+## Q-0003-11 — The printed invocation names the probed path, not the caller's word
+
+- **Status:** resolved (default taken)
+- **Question:** the Claude route's invocation runs from the session's own working directory (Q-0003-06),
+  so a bare `--target-binary claude` printed as `cd <session dir> && … claude --resume <id>` is read by a
+  shell that searches `PATH` *again* from that directory. Review round 2 asked for the probe's own answer
+  to be named instead; the alternative is that a pasted line can run a different program than the one the
+  conversion asked and the native checks ran — and, on a host whose `PATH` holds a relative entry, one
+  beside the session rather than beside the caller.
+- **Default taken:** name the path the probe found (`invocationBinary(in.Binary, in.Probe)`,
+  `internal/ccc/targets.go`), keeping the caller's spelling only when the probe found nothing (a path-like
+  spelling still resolved against the caller's directory, a bare name left as written). The report's own
+  `target_session.binary` / `binary_found` fields already carry that same answer, so the printed line and
+  the report agree. The cost is that a default `--target-binary` now prints an absolute path — a line that
+  names an installed program rather than the word the caller typed, and that may need editing before it is
+  pasted on another host.
+- **Reversal:** one branch in `invocationBinary`: return the caller's spelling whenever it is the bare
+  name the route defaults to (or unconditionally), and keep the probe's answer only in the report's
+  `binary` fields.
+- **Scope:** the Codex route's printed invocation is *not* changed here: it runs from the caller's own
+  directory, where a bare name is the PATH lookup the probe itself made, and 0002's printed form is
+  accepted evidence this increment does not rewrite. The same shell-versus-probe question can be asked of
+  its `codex resume <id>` line, and answering it belongs to a 0002-scoped change.
+- **Settled by:** whether the operator wants the printed resume command to name exactly the program this
+  run probed and verified, or to stay the spelling a caller typed.

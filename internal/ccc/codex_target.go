@@ -344,6 +344,10 @@ type codexRolloutBuilder struct {
 	items      []TargetItem
 	carried    Carried
 	callOwners map[string]struct{}
+	// messageIndex is the place of the message being written in the document's walk. It keys the id
+	// generated for a call that recorded none (toolCall): a message's own ordinal is not unique when an
+	// embedding caller never assigned one, and two calls sharing a generated id would read as one call.
+	messageIndex int
 
 	// sourceFidelity is the completeness and the provider's own classification of the read itself.
 	// Lines the provider's reader could not turn into a message never reach this writer as evidence at
@@ -410,9 +414,12 @@ func (b *codexRolloutBuilder) sessionMeta(startedAt time.Time) {
 	})
 }
 
-// writeConversation walks the document once and writes every record it can express.
+// writeConversation walks the document once and writes every record it can express. The message's place
+// in the walk keys the ids generated for calls that recorded none (toolCall), so two messages whose
+// ordinals were never assigned cannot collapse into one call.
 func (b *codexRolloutBuilder) writeConversation(conv Conversation) {
-	for _, message := range conv.Messages {
+	for index, message := range conv.Messages {
+		b.messageIndex = index
 		b.writeMessage(message)
 	}
 }
@@ -537,7 +544,7 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 // tool evidence contributes nothing here.
 func (b *codexRolloutBuilder) writeToolEvidence(message Message) {
 	for index, call := range message.ToolCalls {
-		b.toolCall(message.Ordinal, index, call, message.Timestamp)
+		b.toolCall(index, call, message.Timestamp)
 	}
 	for _, result := range message.ToolResults {
 		b.toolResult(result, message.Timestamp)
@@ -655,13 +662,18 @@ func (b *codexRolloutBuilder) messageItem(kind TargetItemKind, role, contentType
 	b.items = append(b.items, TargetItem{Kind: kind, Text: text})
 }
 
-func (b *codexRolloutBuilder) toolCall(ordinal, index int, call ToolCall, at time.Time) {
+func (b *codexRolloutBuilder) toolCall(index int, call ToolCall, at time.Time) {
 	if !b.turnOpen {
 		b.startTurn(at)
 	}
 	callID := strings.TrimSpace(call.ToolUseID)
 	if callID == "" {
-		callID = fmt.Sprintf("%s%d_%d", codexGeneratedCallPrefix, ordinal, index)
+		// The call's place in the document keys its generated id -- the message's position in the walk
+		// and the call's index in that message -- and not the message's own ordinal: an embedding caller
+		// may leave ordinals unassigned, and two messages' id-less calls must not collapse into one id.
+		// A shared id would make the pairing rule below read one call, so an id-less result could pair
+		// with "the" outstanding call while two are.
+		callID = fmt.Sprintf("%s%d_%d", codexGeneratedCallPrefix, b.messageIndex, index)
 		b.lossGeneratedIDs++
 	}
 	input := strings.TrimSpace(call.InputJSON)
@@ -803,19 +815,7 @@ func (b *codexRolloutBuilder) noteToolName(name string) {
 // report without knowing which categories this run happened to produce.
 func (b *codexRolloutBuilder) losses() []Loss {
 	names := b.toolNameOrder
-	sort.Strings(names)
-	shown := names
-	if len(shown) > b.opts.MaxToolNames {
-		shown = shown[:b.opts.MaxToolNames]
-	}
-	toolDetail := "no tool call was carried"
-	if len(names) > 0 {
-		toolDetail = fmt.Sprintf(
-			"tool calls keep the source's own tool names and recorded arguments (%s%s); the target's "+
-				"own tool set may not include them, and a resumed turn answers from them as history "+
-				"rather than replaying them",
-			strings.Join(shown, ", "), moreNames(len(names)-len(shown)))
-	}
+	toolDetail := toolVocabularyDetail(names, b.opts.MaxToolNames, "arguments")
 	emptyResultsDetail := "every carried tool result had recorded output text"
 	if b.lossEmptyResults > 0 {
 		emptyResultsDetail = "the target's function_call_output carries output text only; a result " +
@@ -837,33 +837,12 @@ func (b *codexRolloutBuilder) losses() []Loss {
 	// the same way: a summary fallback is not the session's recorded transcript, and a result the
 	// provider says is not current may not be the session's complete history, so "converted" without
 	// those entries would read as though the conversation were the session as the source recorded it.
-	unreadableLinesDetail := "every source line this read produced a message for was readable"
-	if b.sourceFidelity.MalformedLines > 0 {
-		unreadableLinesDetail = "the provider's reader skipped these source line(s) as unreadable " +
-			"(invalid JSON, or a line the reader would not read), so no message in this conversation " +
-			"stands for them and no record here can carry what it could not read"
-		if b.sourceFidelity.Truncated {
-			unreadableLinesDetail += "; the source file's last line was still being written when it was " +
-				"read (the fidelity block's truncated flag), and it is one of them"
-		}
-	}
-	summaryTranscriptDetail := "the provider's own classification says this read is the session's " +
-		"recorded transcript"
-	if b.sourceFidelity.TranscriptFidelity == parser.TranscriptFidelitySummary {
-		summaryTranscriptDetail = "the provider classified this read as a summary transcript: the " +
-			"conversation carried here is a degraded fallback standing in for a transcript the provider " +
-			"could not read in full, not the session's recorded transcript"
-	}
-	needsRetryDetail := "the provider's own classification says this read is current for its data version"
+	unreadableLinesDetail := malformedLinesLossDetail(b.sourceFidelity)
+	summaryTranscriptDetail := summaryTranscriptLossDetail(b.sourceFidelity)
+	needsRetryDetail := needsRetryLossDetail(b.sourceFidelity)
 	if b.sourceFidelity.NeedsRetry {
-		reason := ""
-		if b.sourceFidelity.RetryReason != "" {
-			reason = " (" + b.sourceFidelity.RetryReason + ")"
-		}
-		needsRetryDetail = "the provider classified this read as needing a retry" + reason + ": it " +
-			"returned the messages it could read, which may not be the session's complete recorded " +
-			"history. A Codex fork whose parent page cannot be read keeps the copied parent messages " +
-			"until that parent resolves"
+		needsRetryDetail += ". A Codex fork whose parent page cannot be read keeps the copied parent " +
+			"messages until that parent resolves"
 	}
 	return []Loss{
 		{
@@ -1046,6 +1025,71 @@ func flagCount(set bool) int {
 		return 1
 	}
 	return 0
+}
+
+// toolVocabularyDetail answers the tool_name_vocabulary category's detail: the source's own tool names
+// travel, the target's own tool set is unaffected by them, and a resumed turn reads them as history
+// rather than replaying them. The sentence is shared, because the rule is; inputWord is the word each
+// target's own format uses for what a call's recorded input is called. order is the source's tool names
+// in the order they were noted; maxNames bounds how many the report spells out.
+func toolVocabularyDetail(order []string, maxNames int, inputWord string) string {
+	names := append([]string(nil), order...)
+	sort.Strings(names)
+	if len(names) == 0 {
+		return "no tool call was carried"
+	}
+	shown := names
+	if len(shown) > maxNames {
+		shown = shown[:maxNames]
+	}
+	return fmt.Sprintf(
+		"tool calls keep the source's own tool names and recorded %s (%s%s); the target's own tool set "+
+			"may not include them, and a resumed turn answers from them as history rather than replaying "+
+			"them",
+		inputWord, strings.Join(shown, ", "), moreNames(len(names)-len(shown)))
+}
+
+// malformedLinesLossDetail answers the malformed_source_lines category's detail: what the provider's
+// reader skipped as unreadable, and whether the source file's last line was still being written. It is a
+// property of the read rather than of a target format, so both writers state it in the same words.
+func malformedLinesLossDetail(fidelity Fidelity) string {
+	detail := "every source line this read produced a message for was readable"
+	if fidelity.MalformedLines > 0 {
+		detail = "the provider's reader skipped these source line(s) as unreadable (invalid JSON, or a " +
+			"line the reader would not read), so no message in this conversation stands for them and no " +
+			"record here can carry what it could not read"
+		if fidelity.Truncated {
+			detail += "; the source file's last line was still being written when it was read (the " +
+				"fidelity block's truncated flag), and it is one of them"
+		}
+	}
+	return detail
+}
+
+// summaryTranscriptLossDetail answers the summary_transcript category's detail: the provider's own
+// classification of the read, in the same words for both writers, because it is the read's own property.
+func summaryTranscriptLossDetail(fidelity Fidelity) string {
+	if fidelity.TranscriptFidelity == parser.TranscriptFidelitySummary {
+		return "the provider classified this read as a summary transcript: the conversation carried here " +
+			"is a degraded fallback standing in for a transcript the provider could not read in full, not " +
+			"the session's recorded transcript"
+	}
+	return "the provider's own classification says this read is the session's recorded transcript"
+}
+
+// needsRetryLossDetail answers the source_needs_retry category's detail, up to what the provider itself
+// said: whether the read is current, and why not when it is not. A target whose reader has its own
+// reason to keep such a read says so beside this answer (see codex_target.go's losses, the fork case).
+func needsRetryLossDetail(fidelity Fidelity) string {
+	if !fidelity.NeedsRetry {
+		return "the provider's own classification says this read is current for its data version"
+	}
+	reason := ""
+	if fidelity.RetryReason != "" {
+		reason = " (" + fidelity.RetryReason + ")"
+	}
+	return "the provider classified this read as needing a retry" + reason + ": it returned the messages " +
+		"it could read, which may not be the session's complete recorded history"
 }
 
 // providerBindingCount reports whether this conversion recorded a provider binding.

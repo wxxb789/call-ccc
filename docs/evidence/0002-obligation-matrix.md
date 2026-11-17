@@ -1,6 +1,6 @@
 # Evidence — 0002 obligation matrix (systematic close-out before one acceptance audit)
 
-Contract: [`docs/goals/0002-claude-to-codex-continuation.md`](../goals/0002-claude-to-codex-continuation.md)
+Contract: [`docs/goals/archive/0002-claude-to-codex-continuation.md`](../goals/archive/0002-claude-to-codex-continuation.md)
 and [`docs/core-design/README.md`](../core-design/README.md).
 Plan: [`docs/plans/0002-claude-to-codex-continuation.md`](../plans/0002-claude-to-codex-continuation.md).
 Round-1..12 findings: [`0002-claude-to-codex-continuation.md`](0002-claude-to-codex-continuation.md) §8–§17.

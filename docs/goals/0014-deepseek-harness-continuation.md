@@ -1,7 +1,7 @@
 # 0014 — Continue conversations into and out of DeepSeek Harness
 
 **Status:** Ready  
-**Prerequisite:** [0002 — Continue a Claude Code session in Codex](0002-claude-to-codex-continuation.md). Independent of 0003–0013 and 0015–0017.
+**Prerequisite:** [0002 — Continue a Claude Code session in Codex](archive/0002-claude-to-codex-continuation.md). Independent of 0003–0013 and 0015–0017.
 
 ## Intended advance
 
