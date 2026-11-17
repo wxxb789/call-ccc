@@ -93,12 +93,12 @@ gate runs as a required step.
   the digest of its bytes at the boundary instant, and, for a source whose records are the lines a
   harness appends, the offset its last complete record ends at) and the same facts in the human block,
   so a caller — or an agent choosing which continuation to resume — can tell two snapshots of one
-  growing session apart without any index. An unfinished trailing record is *disclosed* and never
-  published as history: the boundary's `unpublished_tail_bytes` and the run's warning name it, a source
-  whose bytes do not end at a record boundary is not an error, and another conversion once the file is
-  written is what carries it. The boundary is computed from the file's own bytes rather than from a
-  provider's classification, and the record offsets are claimed only where the provider's own
-  declarations say the source is a transcript of line records.
+  growing session apart without any index. For a source whose records are appended lines, an unfinished
+  trailing record is *disclosed* and never published as history: the boundary's `unpublished_tail_bytes`
+  and the run's warning name it, a source whose bytes do not end at a record boundary is not an error,
+  and another conversion once the file is written is what carries it. The boundary is computed from the
+  file's own bytes rather than from a provider's classification, and the record offsets are claimed only
+  where the provider's own declarations say the source is a transcript of line records.
 - **A target session is discoverable where the target's own loader looks.** A target that finds a
   session only from the working directory its process runs in — Claude Code resolves a session through
   the directory whose project-dir spelling matches the one it was installed under — is installed under

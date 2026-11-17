@@ -14,19 +14,6 @@ import (
 	"go.kenn.io/agentsview/internal/parser"
 )
 
-// sourceFileSHA256 is an independent digest of one file's bytes: crypto/sha256 over the whole content,
-// read and hashed here rather than through the code the report's own boundary uses, so a case that checks a
-// reported digest is not checking the function that produced it.
-func sourceFileSHA256(t *testing.T, path string) string {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("reading %s: %v", path, err)
-	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
-}
-
 // TestContinueRepeatedOnAGrowingSourceIsAttributedToItsOwnSnapshot is the increment's central property:
 // one session converted twice while it grows yields two sessions, each attributed to the bytes it was read
 // from, and the earlier one is left exactly as the first conversion wrote it.
@@ -50,14 +37,19 @@ func TestContinueRepeatedOnAGrowingSourceIsAttributedToItsOwnSnapshot(t *testing
 			cfg, sourcePath := sourceFixtureCopy(t, cfg, parser.AgentClaude, fixture,
 				filepath.Join("-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"))
 			home := t.TempDir()
+			// The unrelated session a Claude Code home already holds, and its digest: nothing about a
+			// repeated conversion may reach it, which is the observation the comparison below makes.
+			unrelated, unrelatedBefore := "", ""
 			if testCase.target == TargetClaude {
 				// The Claude Code home holds a space and an unrelated session, exactly as the route's own
-				// tests use it: nothing about a repeated conversion may reach either.
-				home, _ = claudeTargetHome(t)
+				// tests use it.
+				home, unrelated = claudeTargetHome(t)
+				unrelatedBefore = sha256Of(t, mustRead(t, unrelated))
 			}
 
-			beforeGrowth := sourceFileSHA256(t, sourcePath)
-			beforeSize := int64(len(mustRead(t, sourcePath)))
+			before := mustRead(t, sourcePath)
+			beforeGrowth := sha256Of(t, before)
+			beforeSize := int64(len(before))
 			first := continueInto(t, cfg, home, testCase.target)
 
 			if first.Conversion.State != ConversionStateConverted ||
@@ -91,7 +83,7 @@ func TestContinueRepeatedOnAGrowingSourceIsAttributedToItsOwnSnapshot(t *testing
 				t.Fatalf("the grown source is %d bytes, want %d (%d + the %d-byte fragment)",
 					grown, beforeSize+int64(len(fragment)), beforeSize, len(fragment))
 			}
-			afterGrowth := sourceFileSHA256(t, sourcePath)
+			afterGrowth := sha256Of(t, mustRead(t, sourcePath))
 			if afterGrowth == beforeGrowth {
 				t.Fatal("the grown source digests the same as before: the case's premise does not hold")
 			}
@@ -113,8 +105,12 @@ func TestContinueRepeatedOnAGrowingSourceIsAttributedToItsOwnSnapshot(t *testing
 			}
 			// The earlier target is unchanged even though its source moved: nothing merges a later source
 			// snapshot into a session a caller may already have continued.
-			if got := sourceFileSHA256(t, first.Installation.Path); got != sha256Of(t, firstInstalled) {
+			if got := sha256Of(t, mustRead(t, first.Installation.Path)); got != sha256Of(t, firstInstalled) {
 				t.Errorf("the first conversion's session changed when the source grew and was converted again")
+			}
+			if unrelated != "" && sha256Of(t, mustRead(t, unrelated)) != unrelatedBefore {
+				t.Errorf("the unrelated session in the Claude home changed when the source grew and was " +
+					"converted again")
 			}
 
 			// Correctly attributed: the later boundary is the grown file's own bytes, and the earlier one
@@ -198,8 +194,12 @@ func TestUnpublishedSourceTailIsBoundaryedAndNeverPublished(t *testing.T) {
 			cfg, sourcePath := sourceFixtureCopy(t, cfg, testCase.agent,
 				fixturePath(t, testCase.fixture), destination)
 			home := t.TempDir()
+			// The unrelated session a Claude Code home already holds, digested before either conversion:
+			// converting an unfinished tail into that home must leave it alone as well.
+			unrelated, unrelatedBefore := "", ""
 			if testCase.target == TargetClaude {
-				home, _ = claudeTargetHome(t)
+				home, unrelated = claudeTargetHome(t)
+				unrelatedBefore = sha256Of(t, mustRead(t, unrelated))
 			}
 
 			complete := continueRefInto(t, cfg, home, testCase.target, testCase.ref)
@@ -225,7 +225,7 @@ func TestUnpublishedSourceTailIsBoundaryedAndNeverPublished(t *testing.T) {
 				t.Errorf("the boundary = %+v, want its records to end at byte %d with the %d-byte unfinished "+
 					"record unpublished", boundary, completeSize, len(fragment))
 			}
-			if boundary.SHA256 != sourceFileSHA256(t, sourcePath) {
+			if boundary.SHA256 != sha256Of(t, mustRead(t, sourcePath)) {
 				t.Errorf("the boundary digests %s, want the file's own bytes", boundary.SHA256)
 			}
 			if warning := strings.Join(captured.Warnings, " "); !strings.Contains(warning, "unfinished record") ||
@@ -258,6 +258,10 @@ func TestUnpublishedSourceTailIsBoundaryedAndNeverPublished(t *testing.T) {
 			installed := mustRead(t, captured.Installation.Path)
 			if strings.Contains(string(installed), fragmentText) {
 				t.Errorf("the installed session holds %q, which the source had not finished writing", fragmentText)
+			}
+			if unrelated != "" && sha256Of(t, mustRead(t, unrelated)) != unrelatedBefore {
+				t.Errorf("the unrelated session in the Claude home changed while the unfinished tail was " +
+					"converted")
 			}
 		})
 	}
@@ -298,7 +302,7 @@ func TestSourceBoundaryOfFileStatesTheRecordOffsets(t *testing.T) {
 			if boundary.Bytes != testCase.wantSize {
 				t.Errorf("bytes = %d, want %d", boundary.Bytes, testCase.wantSize)
 			}
-			if boundary.SHA256 != sourceFileSHA256(t, path) {
+			if boundary.SHA256 != sha256Of(t, mustRead(t, path)) {
 				t.Errorf("sha256 = %s, want the file's own digest", boundary.SHA256)
 			}
 			if boundary.RecordsAreLines != testCase.recordsAreLines {
@@ -479,7 +483,8 @@ func continueRefInto(
 }
 
 // boundaryOf answers the boundary a conversion reported, failing the case when there is none: every
-// conversion in this file read the source from its own file, so a missing block is the defect, not a state.
+// conversion in this file reports a boundary block -- a not-taken state is a block, not a missing one --
+// so a missing block is the defect, not a state.
 func boundaryOf(t *testing.T, result ContinueResult) SourceBoundary {
 	t.Helper()
 	if result.Source == nil || result.Source.Boundary == nil {
@@ -498,7 +503,9 @@ func mustRead(t *testing.T, path string) []byte {
 	return data
 }
 
-// sha256Of digests bytes already read, for comparing a file's content before and after another run.
+// sha256Of is an independent digest of bytes already read -- crypto/sha256 here rather than through the
+// code the report's own boundary uses, so a case that checks a reported digest is not checking the
+// function that produced it -- for comparing a file's content before and after another run.
 func sha256Of(t *testing.T, data []byte) string {
 	t.Helper()
 	sum := sha256.Sum256(data)

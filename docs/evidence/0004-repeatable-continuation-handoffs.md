@@ -108,10 +108,13 @@ skipped record, not a record the file had not finished writing.
   merge into one that an agent may already have continued, and never a rewrite of the source. The result
   names the boundary each snapshot covers (the source file's sha256 and size, and, for a transcript whose
   records are lines, the offset its last complete record ends at), so two continuations of one growing
-  session can be told apart and the newer one chosen. A source file still holding a record its writer had
-  not finished says so under 'unpublished:' instead of publishing that record, and converting again once
-  the file is written carries it.
+  session can be told apart and the newer one chosen. For a source whose records are appended lines, a
+  file still holding a record its writer had not finished says so under 'unpublished:' instead of
+  publishing that record, and converting again once the file is written carries it.
 ```
+
+*(The paragraph as the final tree prints it: the apply stage's accepted findings qualified its last
+sentence to a source whose records are appended lines — §7.)*
 
 ## 2. Two conversions of one growing source, by hand
 
@@ -444,6 +447,19 @@ pin the four rules this half stands on:
     retargeted.
   - `docs/decisions/OPEN-QUESTIONS.md`: the defaults this run had to take alone are appended
     (`Q-0004-…`).
+  - **Applied simplify findings (the stage after this increment's implement-and-verify round)**:
+    `ccc help`, `README.md`, `AGENTS.md` and `docs/conventions.md` now state the unfinished-record
+    disclosure's own condition — a source whose records are appended lines, which is the gate in the code
+    (`boundaryWarnings`/`sourceRecordsAreLines`) and the narrowing `Q-0004-01` and §9 already disclose —
+    and the §1 help quote is re-taken from that tree; `docs/harness.md` states what the native check's
+    repeat half does **not** re-check (the second conversion's installation block and rendered resume
+    line, which the same route code writes and `cmd/ccc`'s cases pin the renderer for); the goal file's
+    status line now matches this increment's index row; `scripts/codex-native-check.py`'s repeat half
+    shares the first half's stage helpers (`record_installed_jsonl`, `inspect_counts`,
+    `readback_verdict`, `load_and_view`, `run_turn`, `turn_identity`) with every recorded check name,
+    state and detail unchanged — re-measured on the final tree: `25 check(s) passed, 0 failed, 2 skipped`
+    offline and `27 check(s) passed, 0 failed, 0 skipped` with both prompt flags (two real turns), the
+    same numbers §6 records.
   - `docs/upstream.md` and the carried tree are untouched: no carried file changed, and the gate's `parity`
     step is what proves it.
 

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -179,8 +180,11 @@ func TestFixturesMatchTheirGenerator(t *testing.T) {
 					"`go run ./internal/ccc/fixturegen`", tree.name, path)
 			}
 		}
-		if unchanged := hashTree(t, tree.committed); len(unchanged) != len(committed[tree.name]) {
-			t.Errorf("the %s tree changed during the test: %d -> %d file(s)",
+		// The whole mapping is compared, not its length: a rewrite of a committed file during the case
+		// moves no count, and a count of files is not a digest of them.
+		unchanged := hashTree(t, tree.committed)
+		if !maps.Equal(unchanged, committed[tree.name]) {
+			t.Errorf("the %s tree changed during the test: %d file(s) before, %d after",
 				tree.name, len(committed[tree.name]), len(unchanged))
 		}
 	}

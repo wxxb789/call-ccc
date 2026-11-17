@@ -57,9 +57,9 @@ usage:
   merge into one that an agent may already have continued, and never a rewrite of the source. The result
   names the boundary each snapshot covers (the source file's sha256 and size, and, for a transcript whose
   records are lines, the offset its last complete record ends at), so two continuations of one growing
-  session can be told apart and the newer one chosen. A source file still holding a record its writer had
-  not finished says so under 'unpublished:' instead of publishing that record, and converting again once
-  the file is written carries it.
+  session can be told apart and the newer one chosen. For a source whose records are appended lines, a
+  file still holding a record its writer had not finished says so under 'unpublished:' instead of
+  publishing that record, and converting again once the file is written carries it.
 
   inspect reports the session's identity, agent, source and conversation shape. It reads the
   source session through the provider's own reader and, when an archive is present, says what the
@@ -666,8 +666,9 @@ func sourceCheckWord(state string) string {
 // writeBoundary prints where the conversion's snapshot of the source stops. It is the human half of
 // `source.boundary`: a caller comparing two conversions of one growing session has to be able to see, by
 // eye, which source bytes each of them read and whether either left a record the file was still writing
-// unpublished. The digest itself is not repeated here -- the `source file:` line below prints the same
-// sha256 in full, taken in the same pass -- so these lines carry what only the boundary states.
+// unpublished. The digest itself is not repeated here -- on a run that reached the comparison, the
+// `source file:` line below prints the same sha256 in full, taken in the same pass -- so these lines
+// carry what only the boundary states.
 func writeBoundary(out io.Writer, boundary *ccc.SourceBoundary) {
 	if boundary == nil {
 		return

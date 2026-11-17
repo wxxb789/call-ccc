@@ -357,6 +357,12 @@ func TestInspectJSONReportsIdentityAndConversation(t *testing.T) {
 	if source.Fidelity.MalformedLines != 1 {
 		t.Errorf("fidelity = %+v", source.Fidelity)
 	}
+	// An inspection takes no boundary (Q-0004-02): it reports what a session holds, and taking a
+	// boundary is another full read of the file. The absence is asserted rather than left to
+	// `omitempty`, which would read back a filled boundary as just another field of the document.
+	if source.Boundary != nil {
+		t.Errorf("an inspection reported a source boundary: %+v", source.Boundary)
+	}
 	if len(source.ToolNames) != 1 || source.ToolNames[0] != "Read" {
 		t.Errorf("tool names = %v", source.ToolNames)
 	}

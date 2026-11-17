@@ -543,9 +543,11 @@ PRE_EXISTING_NAME = "rollout-2025-12-31T23-59-00-01a1e000-0000-7000-8000-0000000
 GROWTH_QUESTION = "What budget do retries share per session?"
 GROWTH_ANSWER = "The retry budget is 120 seconds per session."
 
-#: The comparisons the repeat half adds, in the order the shipped check records them. A case that asserts
-#: "nothing else was red" names them all, so a comparison that stopped running -- or one that never runs
-#: because its stage was skipped -- is red here rather than silently absent.
+#: The comparisons a case that asserts "nothing else was red" names, in the order the shipped check
+#: records them: the repeat half's own, plus the two the *first* conversion's stage records before the
+#: growth (the source copy's boundary and its unchanged bytes), which the later stages are built on. A
+#: comparison that stopped running -- or one that never runs because its stage was skipped -- is red here
+#: rather than silently absent.
 REPEAT_CHECKS = (
     "the conversion reports the boundary of the source copy it read",
     "the source copy is unchanged by the conversion",

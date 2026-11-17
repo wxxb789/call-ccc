@@ -53,12 +53,13 @@ with their exit codes and counts).
   source history into an existing target session, and nothing rewrites the source. Every conversion's
   result states the boundary it covers — the source file's sha256 and size, and, for a source whose
   records are appended lines, the offset its last complete record ends at — so two continuations of one
-  growing session can be told apart and each is attributed to the bytes it read. A source file whose
-  writer had not finished a record is disclosed (`boundary.unpublished_tail_bytes`, the run's warnings,
-  the human `unpublished:` line) and that record is never published as history; another conversion once
-  the file is written is what carries it. The boundary is taken from the file's own bytes, never
-  inferred from a provider's silence, and the record offsets are claimed only where the provider's own
-  declarations say its source is a transcript of line records.
+  growing session can be told apart and each is attributed to the bytes it read. For a source whose
+  records are appended lines, a file whose writer had not finished a record is disclosed
+  (`boundary.unpublished_tail_bytes`, the run's warnings, the human `unpublished:` line) and that record
+  is never published as history; another conversion once the file is written is what carries it. The
+  boundary is taken from the file's own bytes, never inferred from a provider's silence, and the record
+  offsets are claimed only where the provider's own declarations say its source is a transcript of line
+  records.
 - Out of scope by design: Git/worktree management, process or environment migration, credentials,
   fleet orchestration, and any second session index for the existing archive.
 

@@ -638,6 +638,119 @@ def thread_view(server: AppServer, thread_id: str) -> tuple[list[str], list[str]
     return lines, kinds
 
 
+def record_installed_jsonl(path: Path, check_name: str, note: str = "") -> None:
+    """One installed file is one JSON object per line, under the check's own name.
+
+    ``note`` is what the first conversion's file earns for its passing detail -- it is also the file the
+    load check below reads -- while a file that is not that shape fails the check with the parse error
+    itself, so the failure names the line rather than restating the check's name.
+    """
+    parsed = jsonl_parse_error(path.read_text())
+    record(check_name, not parsed, parsed or f"{path.stat().st_size} bytes{note}")
+
+
+def inspect_counts(repo: Path, home: Path, thread_id: str) -> tuple[dict, subprocess.CompletedProcess]:
+    """The inherited reader's own read of one installed session: its counts, and the run that read them.
+
+    The file is read back by this script's own invocation of the reader, not by the conversion's own
+    structure block: `ccc inspect` is a second process reading the same isolated Codex root, and the
+    counts it reports are compared with what the conversion says it carried. A broken round-trip check
+    inside ccc -- or a CLI that mapped it to "verified" -- cannot make that comparison green.
+    """
+    readback = run([str(repo / BINARY), "inspect", f"codex:{thread_id}", "--json"],
+                   cwd=repo, env={"CODEX_HOME": str(home)})
+    try:
+        counts = json.loads(readback.stdout).get("source", {}).get("counts", {})
+    except json.JSONDecodeError:
+        counts = {}
+    return counts, readback
+
+
+def readback_verdict(thread_id: str, counts: dict, carried: dict) -> tuple[bool, str]:
+    """Whether the reader's counts agree with what one conversion carried, and that answer in words.
+
+    The comparison is over the counts that name evidence, because the reader normalises records it reads
+    (a standalone function_call becomes an assistant message of its own, for one), so a comparison of
+    whole message counts would compare the writer's shape with the reader's.
+    """
+    agreed = (counts.get("user_messages") == carried["user_messages"]
+              and counts.get("tool_calls") == carried["tool_calls"]
+              and counts.get("tool_results") == carried["tool_results"]
+              and counts.get("compact_boundaries") == carried["compaction_boundaries"])
+    detail = (f"ccc inspect codex:{thread_id}: {json.dumps(counts)}; conversion carried: "
+              f"{carried['user_messages']} user message(s), {carried['tool_calls']} tool call(s), "
+              f"{carried['tool_results']} tool result(s), "
+              f"{carried['compaction_boundaries']} boundary(ies)")
+    return agreed, detail
+
+
+def load_and_view(codex: str, home: Path, thread_id: str, installed: Path,
+                  loader_name: str, view_label: str) -> tuple[list[str], list[str]]:
+    """One installed session as the target harness itself answers for it: its own view, or the failure.
+
+    The strings a run records about a load are the run's own -- each conversion's checks have their own
+    names and the second session's own view has its own heading -- and the loader's answer is the
+    harness's reply itself: a server that stopped answering is a failed check carrying its diagnostics,
+    not a traceback, because the protocol is bounded and so is this run's verdict.
+    """
+    view: list[str] = []
+    kinds: list[str] = []
+    server = AppServer(codex, home)
+    try:
+        server.handshake()
+        loaded = server.call("thread/resume", {"threadId": thread_id})
+        loaded_thread = loaded.get("thread") or {}
+        record(loader_name,
+               loaded_thread.get("id") == thread_id and str(loaded_thread.get("path")) == str(installed),
+               f"thread/resume -> {loaded_thread.get('id')} [{loaded_thread.get('historyMode')}] "
+               f"cwd={loaded_thread.get('cwd')}")
+        view, kinds = thread_view(server, thread_id)
+    except RuntimeError as failure:
+        record(loader_name, False, str(failure))
+    finally:
+        server.close()
+    if view:
+        print()
+        print(view_label)
+        for line in view:
+            print("   ", line)
+    return view, kinds
+
+
+def turn_identity(codex: str, thread_id: str, reported_arguments: list[str]) -> list[str]:
+    """The words one real turn runs: the conversion's reported arguments, or the identity itself.
+
+    The turn runs the arguments the conversion reported -- binary, subcommand, identity -- rather than a
+    command line spelled here, so the printed invocation is what the check exercises. A report that did
+    not check out (the comparison above recorded that) leaves the identity spelled here, so the turn
+    still answers whether a turn can continue.
+    """
+    if reported_arguments == [codex, "exec", "resume", thread_id, PROMPT_PLACEHOLDER]:
+        return reported_arguments[1:-1]
+    return ["exec", "resume", thread_id]
+
+
+def run_turn(repo: Path, codex: str, home: Path, session_file: Path, identity: list[str],
+             prompt: str, check_name: str) -> None:
+    """One real turn in an installed session, recorded under ``check_name``, and its answer printed.
+
+    The flags this harness adds are its own isolation (no git repository, a read-only sandbox, no
+    approvals) and belong to the check, not to the reported command; what the check answers is whether
+    the turn ran and the session it names grew.
+    """
+    session_before = session_file.stat().st_size
+    turn = run([codex] + identity + [prompt] + [
+        "--skip-git-repo-check", "-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"',
+    ], cwd=repo, env={"CODEX_HOME": str(home)}, timeout=900)
+    session_after = session_file.stat().st_size
+    record(check_name, turn.returncode == 0 and session_after > session_before,
+           f"exit {turn.returncode}, session {session_before} -> {session_after} bytes")
+    print()
+    print(TURN_OUTPUT_MARKER)
+    for line in (turn.stdout or turn.stderr).splitlines():
+        print("   ", line)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parent.parent)
@@ -796,61 +909,19 @@ def main(argv: list[str] | None = None) -> int:
         record("the target identity is new and is not the source's",
                thread_id != args.session and thread_id not in existing_ids,
                f"{thread_id}, not one of the {len(existing_ids)} id(s) already in the home")
-        parsed = jsonl_parse_error(installed.read_text())
-        record("the installed file is one JSON object per line",
-               not parsed,
-               parsed or f"{installed.stat().st_size} bytes (the target's own read of it is the load "
-                         f"check)")
-        # The installed file is read back by this script's own invocation of the inherited reader, not by
-        # the conversion's own structure block: `ccc inspect` is a second process reading the same
-        # isolated Codex root, and the counts it reports are compared with what the conversion says it
-        # carried. A broken round-trip check inside ccc -- or a CLI that mapped it to "verified" -- cannot
-        # make this check green.
-        readback = run([str(repo / BINARY), "inspect", f"codex:{thread_id}", "--json"],
-                       cwd=repo, env={"CODEX_HOME": str(home)})
-        try:
-            read_back = json.loads(readback.stdout).get("source", {}).get("counts", {})
-        except json.JSONDecodeError:
-            read_back = {}
+        record_installed_jsonl(installed, "the installed file is one JSON object per line",
+                               " (the target's own read of it is the load check)")
+        read_back, readback = inspect_counts(repo, home, thread_id)
         carried = conversion["carried"]
-        # The comparison is over the counts that name evidence, because the reader normalises records it
-        # reads (a standalone function_call becomes an assistant message of its own, for one), so a
-        # comparison of whole message counts would compare the writer's shape with the reader's.
-        agreed = (read_back.get("user_messages") == carried["user_messages"]
-                  and read_back.get("tool_calls") == carried["tool_calls"]
-                  and read_back.get("tool_results") == carried["tool_results"]
-                  and read_back.get("compact_boundaries") == carried["compaction_boundaries"])
-        detail = (f"ccc inspect codex:{thread_id}: {json.dumps(read_back)}; conversion carried: "
-                  f"{carried['user_messages']} user message(s), {carried['tool_calls']} tool call(s), "
-                  f"{carried['tool_results']} tool result(s), "
-                  f"{carried['compaction_boundaries']} boundary(ies)")
+        agreed, detail = readback_verdict(thread_id, read_back, carried)
         if readback.returncode != 0:
             detail += f"; inspect rc={readback.returncode}: {last_meaningful_line(readback.stderr)}"
         record("the inherited reader reads the installed file back as what was written", agreed, detail)
 
-        server = AppServer(codex, home)
-        view: list[str] = []
-        item_kinds: list[str] = []
-        try:
-            server.handshake()
-            loaded = server.call("thread/resume", {"threadId": thread_id})
-            loaded_thread = loaded.get("thread") or {}
-            record("the target harness's own loader opens the installed session",
-                   loaded_thread.get("id") == thread_id and str(loaded_thread.get("path")) == str(installed),
-                   f"thread/resume -> {loaded_thread.get('id')} [{loaded_thread.get('historyMode')}] "
-                   f"cwd={loaded_thread.get('cwd')}")
-            view, item_kinds = thread_view(server, thread_id)
-        except RuntimeError as failure:
-            # A server that stopped answering is a failed check with the harness's own diagnostics, not a
-            # traceback: the protocol is bounded, and so is this run's verdict.
-            record("the target harness's own loader opens the installed session", False, str(failure))
-        finally:
-            server.close()
-        if view:
-            print()
-            print("the target harness's own view of the installed session:")
-            for line in view:
-                print("   ", line)
+        view, item_kinds = load_and_view(
+            codex, home, thread_id, installed,
+            "the target harness's own loader opens the installed session",
+            "the target harness's own view of the installed session:")
         record("the target's own view lists the converted turns",
                "userMessage" in item_kinds and "agentMessage" in item_kinds,
                f"{len(item_kinds)} item(s) in the reply's own turn list")
@@ -879,27 +950,9 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.resume_prompt:
             print()
-            session_before = installed.stat().st_size
-            # The turn runs the arguments the conversion reported -- binary, subcommand, identity --
-            # rather than a command line spelled here, so the printed invocation is what this check
-            # exercises. The flags this harness adds are its own isolation (no git repository, a
-            # read-only sandbox, no approvals) and belong to the check, not to the reported command.
-            # A report that did not check out (the check above recorded that) leaves the identity
-            # spelled here, so this turn still answers whether a turn can continue.
-            identity = exec_resume_arguments[1:-1] if exec_resume_arguments == want_exec_resume \
-                else ["exec", "resume", thread_id]
-            turn_command = [codex] + identity + [args.resume_prompt] + [
-                "--skip-git-repo-check", "-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"',
-            ]
-            turn = run(turn_command, cwd=repo, env={"CODEX_HOME": str(home)}, timeout=900)
-            session_after = installed.stat().st_size
-            record("a real turn continues from the installed session",
-                   turn.returncode == 0 and session_after > session_before,
-                   f"exit {turn.returncode}, session {session_before} -> {session_after} bytes")
-            print()
-            print(TURN_OUTPUT_MARKER)
-            for line in (turn.stdout or turn.stderr).splitlines():
-                print("   ", line)
+            run_turn(repo, codex, home, installed,
+                     turn_identity(codex, thread_id, exec_resume_arguments),
+                     args.resume_prompt, "a real turn continues from the installed session")
         else:
             record("a real turn continues from the installed session", False,
                    "not attempted: pass --resume-prompt to run one", skipped=True)
@@ -937,7 +990,6 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         second_document = json.loads(grown.stdout)
         second_conversion = second_document["conversion"]
-        second_installation = second_document["installation"]
         second_target = second_document["target_session"]
         second_thread_id = second_target["session_id"]
         second_installed = Path(second_target["path"])
@@ -951,10 +1003,8 @@ def main(argv: list[str] | None = None) -> int:
                second_thread_id not in (args.session, thread_id) and second_thread_id not in existing_ids
                and second_installed != installed,
                f"{second_thread_id} at {second_installed.relative_to(home)}")
-        second_parsed = jsonl_parse_error(second_installed.read_text())
-        record("the second installed file is one JSON object per line",
-               not second_parsed,
-               second_parsed or f"{second_installed.stat().st_size} bytes")
+        record_installed_jsonl(second_installed,
+                               "the second installed file is one JSON object per line")
         gained = (second_conversion["carried"]["user_messages"]
                   > conversion["carried"]["user_messages"]
                   and second_conversion["carried"]["assistant_messages"]
@@ -979,46 +1029,16 @@ def main(argv: list[str] | None = None) -> int:
 
         # The inherited reader's own second read, and the target harness's own second load: this run's
         # own stub-free answers about the later snapshot.
-        second_readback = run([str(repo / BINARY), "inspect", f"codex:{second_thread_id}", "--json"],
-                              cwd=repo, env={"CODEX_HOME": str(home)})
-        try:
-            second_counts = json.loads(second_readback.stdout).get("source", {}).get("counts", {})
-        except json.JSONDecodeError:
-            second_counts = {}
+        second_counts, second_readback = inspect_counts(repo, home, second_thread_id)
         second_carried = second_conversion["carried"]
+        second_agreed, second_detail = readback_verdict(second_thread_id, second_counts, second_carried)
         record("the inherited reader reads the second installed file back as what was written",
-               second_readback.returncode == 0
-               and second_counts.get("user_messages") == second_carried["user_messages"]
-               and second_counts.get("tool_calls") == second_carried["tool_calls"]
-               and second_counts.get("tool_results") == second_carried["tool_results"]
-               and second_counts.get("compact_boundaries") == second_carried["compaction_boundaries"],
-               f"ccc inspect codex:{second_thread_id}: {json.dumps(second_counts)}; conversion carried: "
-               f"{second_carried['user_messages']} user message(s), {second_carried['tool_calls']} tool "
-               f"call(s), {second_carried['tool_results']} tool result(s), "
-               f"{second_carried['compaction_boundaries']} boundary(ies)")
+               second_readback.returncode == 0 and second_agreed, second_detail)
 
-        second_view: list[str] = []
-        second_kinds: list[str] = []
-        server = AppServer(codex, home)
-        try:
-            server.handshake()
-            second_loaded = server.call("thread/resume", {"threadId": second_thread_id})
-            second_loaded_thread = second_loaded.get("thread") or {}
-            record("the target harness's own loader opens the second installed session",
-                   second_loaded_thread.get("id") == second_thread_id
-                   and str(second_loaded_thread.get("path")) == str(second_installed),
-                   f"thread/resume -> {second_loaded_thread.get('id')} "
-                   f"[{second_loaded_thread.get('historyMode')}] cwd={second_loaded_thread.get('cwd')}")
-            second_view, second_kinds = thread_view(server, second_thread_id)
-        except RuntimeError as failure:
-            record("the target harness's own loader opens the second installed session", False, str(failure))
-        finally:
-            server.close()
-        if second_view:
-            print()
-            print("the target harness's own view of the second installed session:")
-            for line in second_view:
-                print("   ", line)
+        second_view, second_kinds = load_and_view(
+            codex, home, second_thread_id, second_installed,
+            "the target harness's own loader opens the second installed session",
+            "the target harness's own view of the second installed session:")
         second_view_text = "\n".join(second_view)
         record("the target's own view of the second session lists the appended turn",
                all(text in second_view_text for text in appended)
@@ -1032,22 +1052,10 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.repeat_resume_prompt:
             print()
-            second_before = second_installed.stat().st_size
-            second_identity = (second_target.get("exec_resume_arguments") or [])[1:-1] \
-                if (second_target.get("exec_resume_arguments") or []) == \
-                [codex, "exec", "resume", second_thread_id, PROMPT_PLACEHOLDER] \
-                else ["exec", "resume", second_thread_id]
-            second_turn = run([codex] + second_identity + [args.repeat_resume_prompt] + [
-                "--skip-git-repo-check", "-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"',
-            ], cwd=repo, env={"CODEX_HOME": str(home)}, timeout=900)
-            second_after = second_installed.stat().st_size
-            record("a real turn continues from the second installed session",
-                   second_turn.returncode == 0 and second_after > second_before,
-                   f"exit {second_turn.returncode}, session {second_before} -> {second_after} bytes")
-            print()
-            print(TURN_OUTPUT_MARKER)
-            for line in (second_turn.stdout or second_turn.stderr).splitlines():
-                print("   ", line)
+            run_turn(repo, codex, home, second_installed,
+                     turn_identity(codex, second_thread_id,
+                                   second_target.get("exec_resume_arguments") or []),
+                     args.repeat_resume_prompt, "a real turn continues from the second installed session")
         else:
             record("a real turn continues from the second installed session", False,
                    "not attempted: pass --repeat-resume-prompt to run one", skipped=True)

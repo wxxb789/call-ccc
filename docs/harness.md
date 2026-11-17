@@ -229,6 +229,11 @@ says so.
   (the comparison about the first session runs after the second conversion, so a second conversion that
   touched it is caught), that the attribution comparison is checked against the file rather than trusted
   from the document, and that the search for the appended turn is live in both directions.
+  **What the second half does not re-check:** the second conversion's installation block and its
+  rendered resume line are not held to the two checks the first conversion's own are (the session is
+  installed under the target's sessions tree; the reported command selects the installation home). The
+  same route code writes both, and the renderer's spelling is pinned by `cmd/ccc`'s own cases, so the
+  second document is consumed for its identity, its path, what it carried and its boundary.
   The two rendered command lines (`resume_command`, `exec_resume_command`) are checked by **reading
   them the way a POSIX shell reads them**: word by word — a home the renderer quotes, any path holding
   a space or a Windows backslash, is accepted, while an unquoted home a shell would split into two words

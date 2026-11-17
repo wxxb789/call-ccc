@@ -53,9 +53,10 @@ are lines, the offset its last complete record ends at — so two continuations 
 growing can be told apart and the newer one chosen. Converting the same source again after it has grown
 is the ordinary way to carry the rest: it reads the source as it now is and writes **another** new
 session beside the earlier one — never a merge into a session an agent may already have continued, and
-never a rewrite of the source. A source file whose writer had not finished a record is reported
-(`boundary.unpublished_tail_bytes`, a warning, and an `unpublished:` line in the human block) rather than
-published as history, and converting again once the file is written carries it.
+never a rewrite of the source. For a source whose records are appended lines, a file whose writer had not
+finished a record is reported (`boundary.unpublished_tail_bytes`, a warning, and an `unpublished:` line in
+the human block) rather than published as history, and converting again once the file is written carries
+it.
 
 The continuation engine itself lives in [`internal/ccc`](internal/ccc) and is callable without the
 CLI: `SourceReader` reads a native session into a typed, transient Conversation document,
