@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
@@ -263,26 +264,31 @@ const piLoadTimeout = 90 * time.Second
 //
 // A session event carries other fields and no `type` of "response". A `get_messages` answer carries the
 // whole conversation's *contents* -- far more than any diagnostic bound -- and this check compares roles,
-// so those members are left undeclared on purpose: the decode this type is read with (readPiResponses)
-// scans a member it does not name past as the bytes arrive instead of holding it, and the answer to a
-// large session's load is read with the same memory as a small one's.
+// so those members are left undeclared on purpose: the walk this type is read with (readPiResponses) takes
+// the members named here and each message's own role as the answer arrives and consumes every other member
+// token by token, so no value the answer carries is held whole and a large session's load is read without
+// the memory its reply's size would ask for.
 type piRPCResponse struct {
-	Type    string            `json:"type"`
-	Command string            `json:"command"`
-	Success bool              `json:"success"`
-	Error   string            `json:"error"`
-	Data    piRPCResponseData `json:"data"`
+	Type    string
+	Command string
+	Success bool
+	Error   string
+	Data    piRPCResponseData
 }
 
 // piRPCResponseData is the part of an answer's `data` this check reads: the `get_state` fields and the
 // `get_messages` roles, in the loader's own order.
 type piRPCResponseData struct {
-	SessionFile  string `json:"sessionFile"`
-	SessionID    string `json:"sessionId"`
-	MessageCount int    `json:"messageCount"`
-	Messages     []struct {
-		Role string `json:"role"`
-	} `json:"messages"`
+	SessionFile  string
+	SessionID    string
+	MessageCount int
+	Messages     []piRPCResponseMessage
+}
+
+// piRPCResponseMessage is the part of one message entry of a `get_messages` answer this check reads: its
+// own role. Every other member -- the message's content above all -- is consumed as it arrives.
+type piRPCResponseMessage struct {
+	Role string
 }
 
 // piAskLoader starts the harness in its own RPC mode against the scratch home, asks it for the state of
@@ -506,10 +512,18 @@ func piModelVisibleRoles(data []byte) []string {
 }
 
 // readPiResponses reads the RPC protocol's own response records out of a run's stdout, in order, as the
-// harness writes them: each line is decoded on its own, and the decode names only the fields the check
-// asks about (piRPCResponse), so a `get_messages` answer carrying a whole conversation's contents is
-// scanned past rather than held -- a load answer is not bounded by anything here, and a legitimate
-// history larger than any diagnostic bound is read the same way as a small one.
+// harness writes them: each line is read on its own, and the walk names only the fields the check asks
+// about (piRPCResponse), so a `get_messages` answer carrying a whole conversation's contents is read past
+// rather than held -- a load answer is not bounded by anything here, and a legitimate history larger than
+// any diagnostic bound is read the same way as a small one.
+//
+// The walk is jsontext's own decoder (encoding/json/jsontext), driven token by token, the way this
+// repository reads a streamed JSON document (internal/remotesync/manifest_decode.go): a member this check
+// does not name is consumed with piSkipValue, so no value the answer carries -- a message's content, a
+// session event's payload -- is ever materialised whole, and the memory this read needs is one JSON token
+// in hand rather than the answer itself. (encoding/json's Decoder.Decode buffers the entire value it is
+// given before it unmarshals -- measured -- which is what made an earlier revision's "scanned past"
+// claim untrue.)
 //
 // Session events, which describe activity rather than answer a command, are skipped; a line that is not
 // JSON is skipped too, because the harness writes its diagnostics on stderr and a protocol change would
@@ -520,8 +534,8 @@ func readPiResponses(stdout io.Reader) ([]piRPCResponse, error) {
 	lines := &piProtocolLines{reader: bufio.NewReader(stdout)}
 	var responses []piRPCResponse
 	for lines.next() {
-		var response piRPCResponse
-		if err := json.NewDecoder(lines).Decode(&response); err != nil {
+		response, err := piReadResponse(jsontext.NewDecoder(lines))
+		if err != nil {
 			continue
 		}
 		if response.Type != "response" {
@@ -530,6 +544,227 @@ func readPiResponses(stdout io.Reader) ([]piRPCResponse, error) {
 		responses = append(responses, response)
 	}
 	return responses, lines.err()
+}
+
+// piReadResponse reads one answer out of a decoder standing at the start of a line: the members this
+// check asks about are decoded, and every other member is consumed as it arrives. An answer that is not a
+// JSON object, or a line that ends before its answer does, is answered as that error and the line is
+// skipped by the caller.
+func piReadResponse(dec *jsontext.Decoder) (piRPCResponse, error) {
+	var response piRPCResponse
+	token, err := dec.ReadToken()
+	if err != nil {
+		return response, err
+	}
+	if token.Kind() != '{' {
+		return response, fmt.Errorf("the line is a JSON %v, want an object", token.Kind())
+	}
+	for dec.PeekKind() != '}' {
+		name, err := dec.ReadToken()
+		if err != nil {
+			return response, err
+		}
+		switch name.String() {
+		case "type":
+			if response.Type, err = piStringMember(dec, "type"); err != nil {
+				return response, err
+			}
+		case "command":
+			if response.Command, err = piStringMember(dec, "command"); err != nil {
+				return response, err
+			}
+		case "success":
+			if response.Success, err = piBoolMember(dec, "success"); err != nil {
+				return response, err
+			}
+		case "error":
+			if response.Error, err = piStringMember(dec, "error"); err != nil {
+				return response, err
+			}
+		case "data":
+			if err := piReadResponseData(dec, &response.Data); err != nil {
+				return response, err
+			}
+		default:
+			if err := piSkipValue(dec); err != nil {
+				return response, err
+			}
+		}
+	}
+	if _, err := dec.ReadToken(); err != nil { // the answer's closing brace
+		return response, err
+	}
+	return response, nil
+}
+
+// piReadResponseData reads the part of an answer's `data` this check asks about: the `get_state` fields and
+// the `get_messages` roles, in the loader's own order, with the rest of the object consumed as it arrives.
+func piReadResponseData(dec *jsontext.Decoder, data *piRPCResponseData) error {
+	token, err := dec.ReadToken()
+	if err != nil {
+		return err
+	}
+	if token.Kind() != '{' {
+		return fmt.Errorf("the answer's data is a JSON %v, want an object", token.Kind())
+	}
+	for dec.PeekKind() != '}' {
+		name, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		switch name.String() {
+		case "sessionFile":
+			if data.SessionFile, err = piStringMember(dec, "sessionFile"); err != nil {
+				return err
+			}
+		case "sessionId":
+			if data.SessionID, err = piStringMember(dec, "sessionId"); err != nil {
+				return err
+			}
+		case "messageCount":
+			if data.MessageCount, err = piIntMember(dec, "messageCount"); err != nil {
+				return err
+			}
+		case "messages":
+			if err := piReadMessageRoles(dec, &data.Messages); err != nil {
+				return err
+			}
+		default:
+			if err := piSkipValue(dec); err != nil {
+				return err
+			}
+		}
+	}
+	_, err = dec.ReadToken() // the data object's closing brace
+	return err
+}
+
+// piReadMessageRoles reads a `get_messages` answer's message list, taking each entry's own role and
+// consuming the rest of the entry as it arrives: the contents are the whole conversation, and this check
+// compares roles.
+func piReadMessageRoles(dec *jsontext.Decoder, messages *[]piRPCResponseMessage) error {
+	token, err := dec.ReadToken()
+	if err != nil {
+		return err
+	}
+	switch token.Kind() {
+	case 'n':
+		// A null list is the harness's own "no messages", which the caller answers as no messages built.
+		return nil
+	case '[':
+	default:
+		return fmt.Errorf("the answer's messages is a JSON %v, want an array", token.Kind())
+	}
+	for dec.PeekKind() != ']' {
+		message, err := piReadMessageRole(dec)
+		if err != nil {
+			return err
+		}
+		*messages = append(*messages, message)
+	}
+	_, err = dec.ReadToken() // the message array's closing bracket
+	return err
+}
+
+// piReadMessageRole reads one message entry's own role and consumes every other member as it arrives.
+func piReadMessageRole(dec *jsontext.Decoder) (piRPCResponseMessage, error) {
+	var message piRPCResponseMessage
+	token, err := dec.ReadToken()
+	if err != nil {
+		return message, err
+	}
+	if token.Kind() != '{' {
+		return message, fmt.Errorf("a message entry is a JSON %v, want an object", token.Kind())
+	}
+	for dec.PeekKind() != '}' {
+		name, err := dec.ReadToken()
+		if err != nil {
+			return message, err
+		}
+		if name.String() != "role" {
+			if err := piSkipValue(dec); err != nil {
+				return message, err
+			}
+			continue
+		}
+		if message.Role, err = piStringMember(dec, "role"); err != nil {
+			return message, err
+		}
+	}
+	_, err = dec.ReadToken() // the message object's closing brace
+	return message, err
+}
+
+// piSkipValue consumes one JSON value token by token, holding no more than the token in hand: a container
+// is walked by depth and every scalar is read and dropped. It is what keeps an unnamed member's value --
+// a message's content, an event's payload -- from being held as one value, which is what both
+// encoding/json's Decoder.Decode and jsontext's own SkipValue do with it (SkipValue validates the skipped
+// bytes and keeps them in the decoder's buffer until the value ends: measured at twice the value's size
+// over a 16 MiB member).
+func piSkipValue(dec *jsontext.Decoder) error {
+	token, err := dec.ReadToken()
+	if err != nil {
+		return err
+	}
+	switch token.Kind() {
+	case '{', '[':
+	default:
+		return nil
+	}
+	depth := 1
+	for depth > 0 {
+		token, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		switch token.Kind() {
+		case '{', '[':
+			depth++
+		case '}', ']':
+			depth--
+		}
+	}
+	return nil
+}
+
+// piStringMember reads one member's string value.
+func piStringMember(dec *jsontext.Decoder, member string) (string, error) {
+	token, err := dec.ReadToken()
+	if err != nil {
+		return "", err
+	}
+	if token.Kind() != '"' {
+		return "", fmt.Errorf("the answer's %s is a JSON %v, want a string", member, token.Kind())
+	}
+	return token.String(), nil
+}
+
+// piBoolMember reads one member's boolean value.
+func piBoolMember(dec *jsontext.Decoder, member string) (bool, error) {
+	token, err := dec.ReadToken()
+	if err != nil {
+		return false, err
+	}
+	if token.Kind() != 't' && token.Kind() != 'f' {
+		return false, fmt.Errorf("the answer's %s is a JSON %v, want a boolean", member, token.Kind())
+	}
+	return token.Bool(), nil
+}
+
+// piIntMember reads one member's number value as an int.
+func piIntMember(dec *jsontext.Decoder, member string) (int, error) {
+	token, err := dec.ReadToken()
+	if err != nil {
+		return 0, err
+	}
+	if token.Kind() != '0' {
+		return 0, fmt.Errorf("the answer's %s is a JSON %v, want a number", member, token.Kind())
+	}
+	value, err := token.Int()
+	if err != nil {
+		return 0, fmt.Errorf("the answer's %s: %w", member, err)
+	}
+	return int(value), nil
 }
 
 // piProtocolLines reads one line at a time out of an RPC run's stdout, so a decoder can read a line's own

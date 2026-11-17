@@ -776,11 +776,14 @@ the case that names it, restore the line, record the failure). The three finding
   carries a whole conversation's *contents*: a legitimate history larger than the bound was truncated, the
   incomplete JSON was dropped, and the check reported a successful native load as unverified — the default
   CLI invocation then exited nonzero *after* installation. The runner now takes the harness's stdout as a
-  pipe and `readPiResponses` decodes each line as it arrives into `piRPCResponse`, which declares only the
-  fields the check reads: the message contents are scanned past, never held, and no diagnostic bound
-  applies to the protocol document. A line the decoder abandons is drained to its own line feed
-  (`piProtocolLines`), so a malformed line cannot hide the answers after it, and a stream that ends
-  mid-line answers the line it ended with.
+  pipe and `readPiResponses` reads each line as it arrives into `piRPCResponse`, which names only the
+  fields the check reads. (That line-at-a-time shape was handed to `encoding/json`'s `Decoder.Decode`,
+  which buffers the whole value it is given before it unmarshals — measured at ~4× a 32 MiB reply, so the
+  *reply* was held despite the bounded pieces `piProtocolLines` handed out; the eighth review round's fix
+  pass replaced it with the token-by-token walk the code claims, and the claim now states its own residual
+  bound — one JSON token at a time.) No diagnostic bound applies to the protocol document, and a line the
+  decoder abandons is drained to its own line feed (`piProtocolLines`), so a malformed line cannot hide
+  the answers after it, and a stream that ends mid-line answers the line it ended with.
 - **The converted file's entry read reads every entry the writer can emit** (`internal/ccc/pi_verify.go`).
   The byte-backed read of a converted file bounded a line at 8 MiB and discarded the scan error, so a file
   holding a large record between the conversation and its leaf was judged by a prefix: the walk started
@@ -849,6 +852,111 @@ narrowed tree's `func Test` count moves `293 → 297`; the `selftest` count stay
 `AGENTS.md` is not edited: no layout, gate step, command, read order or agent rule changed, and this is
 said here rather than by touching the file.
 
+### The eighth review round's fix pass
+
+Two findings, answered with behaviour that changed rather than acknowledged, and every rule each fix
+touches closed out with an executed mutation (revert the line, run the case that names it, restore the
+line, record the failure). The two findings:
+
+- **Ordinary Pi system records made the source direction fail** (`internal/ccc/pi_source_leaf.go`). Pi
+  writes a *system* record into every session it has run a turn in — "the first request of a session
+  persists one with every prompt section and tool declaration, and later changes persist as system
+  messages that patch `sections` by name and list `toolsAdded`/`toolsRemoved`" (the pinned
+  `docs/session-format.md`, "message", shipped with 1.5.2) — and the sixth round's leaf rule refused any
+  uncarried record on the file's leaf path whose kind the harness's loader builds context from. The
+  inherited Pi parser keeps only the roles user, assistant and toolResult, so a session Pi itself had
+  extended converted for no target: the recorded turn §2 measures (system record, user turn, answer)
+  reproduced here natively, below, refused with `ErrUnrepresentableLeaf` before this pass. The record is
+  now the one *accounted* omission: `piAccountedSourceOmission` names the role, the walk and the
+  identity-free/empty-read branches of the check count the records they pass (`piSystemRecordLoss`), and
+  the count travels into `conversion.losses[]` as the category `source_system_records` — absent when the
+  source's file held none, because the count is the check's own reading of the file's entries and no
+  target writer ever sees the record. What is omitted is the harness's prompt and tool-loadout state, not
+  a turn: the conversation's own records are unaffected, a target harness resumes under its own prompt,
+  and Pi rebuilds a session's prompt from its configuration when a session records no system message at
+  all. A message record of any role this build does not name is still refused, and so is every other
+  uncarried context record (`custom_message`, `branch_summary`, an unknown kind).
+- **The RPC decoder still buffered the complete reply** (`internal/ccc/pi_verify.go`). The seventh round's
+  line-at-a-time reader was handed to `encoding/json`'s `Decoder.Decode`, which reads the whole JSON value
+  into its buffer before unmarshalling it: a `get_messages` answer still held the entire conversation, so
+  the "scanned past rather than held" claim was untrue. The walk is now `encoding/json/jsontext` driven
+  token by token (the shape this repository reads streamed JSON with,
+  `internal/remotesync/manifest_decode.go`): the members the check names are taken, each `data.messages`
+  entry's own `role` is taken, and every other value is consumed by token (`piSkipValue`), so no value the
+  answer carries is materialised whole. Measured by the new case: an `8504402`-byte reply read four times
+  allocates `556160` bytes (`0.065 ×` the reply) with the walk, and allocated `134671368` bytes
+  (`15.8 ×` the reply, `~4 ×` per read) when the same case was run against `Decoder.Decode` — the
+  mutation below. What remains held is one JSON token at a time: a text block Pi wrote as a single string
+  arrives as one token, so the reply's size is no longer what the read's memory follows.
+
+The mutations, one per rule, each run against the case that names it and restored afterwards (the file's
+bytes were hashed before and after each run; every restore matched):
+
+| Rule | Line disabled | Observed |
+| --- | --- | --- |
+| a Pi system record on the leaf path is accounted for, not refused (`internal/ccc/pi_source_leaf.go`) | `piAccountedSourceOmission` made to answer `false` | `TestContinueCarriesASessionPiItselfHasExtended` FAIL — `the leaf check on a session Pi itself has extended = …selects a leaf this conversion cannot write as the target's…` (the pre-fix refusal, reproduced natively below as well) |
+| the counted omission travels into the report (`internal/ccc/continue.go`) | `result.Conversion.Losses = append(…)` replaced by `_ = leaf.Losses` | same case FAIL, all three targets: no `source_system_records` entry among the conversion's losses |
+| only the named role is accounted for, and an unknown role is refused | predicate made `kind == piEntryMessage` (any role) | `TestContinueRefusesAMessageRoleItCannotAccountFor` FAIL — `the leaf check = <nil>, want ErrUnrepresentableLeaf` for a `message` record with role `developer` |
+| a record the walk re-reaches through a cycle is counted once | the `counted` visited set removed | `TestPiSourceLeafRefusalCountsACycledSystemRecordOnce` FAIL — `the check counted 3 system record(s), want the literal 2` |
+| the category is reported only where the source's own file held such a record | the `omitted > 0` guard removed | `TestContinueKeepsARecordOutsideTheContextOutOfTheLeafRefusal` FAIL — the conversion reports `{Category:source_system_records … Count:0 …}` for a file that holds none |
+| an identity-free file's own order accounts too (`piSourceLeafRefusal`) | the accounted branch removed from that loop | `TestPiSourceLeafRefusalAnswersAnIdentityFreeFileByOrder` FAIL, the `system record after the last message` sub-case |
+| an empty read accounts too (`piEmptyReadRefusal`) | the walk's accounted case made `false` | `TestPiSourceLeafRefusalAnswersAReadWithNoRecordsAndAFileWithNoEntries` FAIL — `…an empty session would be installed in place of the conversation the source's own loader builds…` and `counted 0 system record(s), want 1` |
+| the reply is not held whole (`readPiResponses`) | the token walk replaced by `json.NewDecoder(lines).Decode(&response)` (the seventh round's shape) | `TestPiRPCReadsALargeAnswerWithoutHoldingIt` FAIL — `reading a 8504402 byte answer 4 time(s) allocated 134671368 byte(s), more than one reply's worth` |
+| each message's own role is taken, and no other member is | the role member skipped instead of read | `TestPiRPCReadsAndComparesTheLoadersAnswer` FAIL — `the harness's loader read a  at position 1, while the session file's own history holds a user there` |
+| an unnamed member's value is consumed as one value (`piSkipValue`) | the container walk removed (the first token dropped) | `TestPiRPCReadsANestedValueAsOneMember` FAIL — `the answer's command = "nonsense", want "get_state"`: a key inside the unnamed `meta` member was read as the answer's own |
+
+The native half was re-derived against the installed harness. Both directions without a turn are
+**unchanged** from the seventh round's re-run — `RESULT: PASS — 21 check(s), none failed` for
+`claude-to-pi` and `RESULT: PASS — 12 check(s), none failed` for `pi-to-claude`, the same carried counts
+(`6`/`4` messages, `1` call, `1` result) and the same loss-category counts (`29`/`27`) — which is the
+expected outcome for a pass whose source-direction change needs a *native-produced* Pi file (the
+committed fixture records no system record).
+
+That shape was then produced and converted natively, in one run: `CCC_PI_NATIVE_PROVIDER=tencent-litellm
+python3 scripts/pi-native-check.py --resume-prompt "Reply with exactly: PROBE-TURN-OK" --expect
+PROBE-TURN-OK --keep` (exit 0, `RESULT: PASS — 23 check(s), none failed`, the loader's own answer
+`['compactionSummary', 'user', 'assistant', 'system', 'user', 'assistant']`), which left Pi's own turn in
+the installed session whose own entries now read `'role:system': 1`; the grown file was then converted
+onward with the built binary,
+
+```console
+PI_DIR=<scratch>/pi-home /tmp/ccc-bin continue pi:01a1eb68-0856-7461-a067-14d2d3ac6bf3 --to claude \
+  --target-home <scratch>/claude-home --target-binary …/claude --data-dir <scratch>/data
+  conversation: 10 message(s), 4 user, 6 assistant, 1 tool call(s), 1 compaction boundary(ies)
+  converted:    claude-code-transcript-jsonl, 5000 bytes: 7 message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies), 0 turn(s)
+  omitted:      source_system_records ×1
+  native load:  verified (the target harness's own loader …, plus an unknown-id control)
+EXIT=0
+```
+
+— with the same command run against a binary built with the accounting predicate made `false` answering
+the pre-fix state, exit 1: `ccc: the source's own loader selects a leaf this conversion cannot write as
+the target's: the source's own file … selects the leaf message entry ddb56f13, and that leaf's own path
+holds a message record (id c891221b, role system) which this read does not carry …`. The source file (13
+lines, one `role:system` record) and the installed Claude transcript (11 lines) reconcile the omission:
+the transcript holds **no** system record while holding the turn's own prompt and answer
+(`Reply with exactly: PROBE-TURN-OK` / `PROBE-TURN-OK`).
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+  PASS     gofmt    3602 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 251 tests in 5.915s (rc=0)
+  PASS     parity   … carried: 5553 file(s) identical to the pinned revision … owned: 29 project-owned prefix(es); files seen by git: 5671 …
+  PASS     secrets  no leaks found in 123 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+`AGENTS.md` is not edited: the pass changes no layout, gate step, command, read order or agent rule — the
+leaf rule it implements is the one AGENTS.md already states, and the new category is an increment detail
+recorded in the evidence record and `docs/decisions/OPEN-QUESTIONS.md` (Q-0005-17). No goal file is moved:
+0005 is still the increment under review (`docs/goals/0005-pi-continuation.md`, "awaiting operator
+acceptance"), so nothing was archived and the goals index is unchanged.
+
 ## 7. Limits and residual risks
 
 - **The Pi → previously-supported-target native half did not run for the harness's first run here**
@@ -876,6 +984,14 @@ said here rather than by touching the file.
   route *does* omit records by design where the two tree-shaped routes keep them — and its line walk's own
   accounting is counted under the same `unresolved_source_parents` category (Q-0005-12), so a record the
   walk kept on the line through a relation the read did not answer is not presented as the source's own.
+- **A Pi session's own system records are omitted, and counted** (`source_system_records`, Q-0005-17). Pi
+  writes one into every session it has run a turn in — its own prompt and tool loadout, not a turn — and
+  the inherited reader does not carry the role, so no target entry holds it. The count is the source-side
+  leaf check's own reading of the file's entries, so it is reported exactly where a source file stood
+  behind the read: an archive-backed read cannot count these records (the row holds the read's own answer,
+  which never carried them), and a file that moved while it was being read is the same case. The count
+  covers the records on the file's own leaf path; a system record off that path is recorded history the
+  source's own loader does not replay either.
 - **The Pi → Claude Code route's branch handling is pinned offline, not by driving Claude Code against a
   branch-bearing transcript.** The case asserts the installed transcript's own `parentUuid` walk (the walk
   the loader follows, measured for the loader's link requirement) against the source file's, and the
@@ -919,4 +1035,6 @@ said here rather than by touching the file.
 | `23 checks, none failed` / `12 checks, none failed` | the two native runs' verdicts (§2, §3); both were re-run for this pass. §3's run has one check more than the `11` the first run reported, because the earlier fix pass records the non-Pi target's load state as a check of its own. The fourth round's re-runs (no turn) report `21 check(s), none failed` for `claude-to-pi` — the §2 block's run is the same check list plus the two real-turn checks — and `12 check(s), none failed` for `pi-to-claude`, both with the loader's own verdicts unchanged; the fifth round's re-runs (no turn) print the same `21`/`12` lines, with the same carried counts (`6`/`4` messages, `1` call, `1` result) and loss-category counts (`29`/`27`) as the fourth round's; the seventh round's re-run (no turn, `claude-to-pi`) prints `21 check(s), none failed` at exit 0, with the loader's own verdict unchanged (`messageCount 3`, `[compactionSummary, user, assistant]`, the unknown-id control arm answering `No session found matching`) |
 | the branch fixture's loader answers | `messageCount 3` / `[user, assistant, assistant]` for the *source* file and for its conversion, against `messageCount 4` / `[compactionSummary, user, assistant, assistant]` for the conversion the pre-fix writer produced (§4) |
 | the branch-switch fixture's loader answer | `messageCount 4` / `[user, assistant, assistant, branchSummary]` from Pi 1.5.2's own RPC loader against a copy of `pi/01a1c337-…` (the sixth review round's fix pass, §6): the file's leaf is the switch's `branch_summary`, and the read's own last record -- the abandoned branch's last turn -- is not on the path the loader walks |
-| `251 selftest cases`, `297 Go test functions`, `5553 carried files`, `29 owned prefixes`, `3602 gofmt-clean files`, `5671 files seen by git`, `123 owned file(s)` scanned | the gate run (§6) and the current case count: the selftest count went `246 → 248` with the third review round's two Python cases (`seed_pi_home`'s nested-credential cases) and `248 → 251` with the fourth round's three (the endpoint-policy cases at both levels, the credential-free counter-arm, and the run-level refusal), while the narrowed tree's `func Test` count went `269 → 270` with the third round's one new Go case, `270 → 274` with the fourth round's four (one per route: the Pi tree writer, the Claude tree writer, the Codex line walk and the pipeline's archive read) and `274 → 279` with the fifth round's five Go cases (the omission/projection composition on the Pi writer and on the Claude writer, `endRecord`'s two-effects case, the omitted record with no resolved place, and the recorded-cycle case), the selftest count unchanged because the fifth round added no Python case; the sixth round's fix pass took it `279 → 293` with fourteen Go cases (the branch-switch fixture's facts and its refusal for all three targets, the two context-free shapes that must still convert, the dropped-context-record refusal and the two other refusals the walk answers, the identity-free file's two answers, the two no-walk answers, the scan's line bound, the walk's cycle bound, the writer's answer for a read with no leaf identity, and the two load-check cases for a recorded directory whose name ends with a space) and left the selftest count at `251` (no Python case) and the owned-file count at `123` (the new source-side file and the new committed fixture); the seventh round's fix pass took it `293 → 297` with four Go cases (the empty read's dropped-record refusal, the runner's answer larger than the excerpt bound against a stub process, the converted file read past a large entry, and the protocol line reader) and printed `3602` gofmt-clean files and `5671` files seen by git for this tree. The owned-file count includes the ignored build/test artifacts the working tree holds (the check's `bin/` and the two `__pycache__` directories), which the scan stages with the owned files; a fresh checkout counts fewer, and the pre-fix tree's own gate run (a detached worktree of `711e256`) printed `114` |
+| `556160 byte(s)` vs `134671368 byte(s)` | the RPC read's own measurement (`TestPiRPCReadsALargeAnswerWithoutHoldingIt`, §6): an `8504402`-byte `get_messages` reply read four times allocates `556160` bytes (`0.065 ×` the reply) with the eighth round's token-by-token walk, and allocated `134671368` bytes (`15.8 ×` the reply, `≈4 ×` per read) when the same case ran with `encoding/json`'s `Decoder.Decode` — the mutation that fails it |
+| `source_system_records ×1`, `13 → 11` lines, exit `0` (was `1`) | the eighth round's native probe (§6): a Pi session a real turn extended (13 lines, one `role:system` record) converted to Claude Code with the omission counted and Claude's own loader verified; the same command against a binary with the accounting predicate disabled answered exit 1 with the refusal naming the system record |
+| `251 selftest cases`, `302 Go test functions`, `5553 carried files`, `29 owned prefixes`, `3602 gofmt-clean files`, `5671 files seen by git`, `123 owned file(s)` scanned | the gate run (§6) and the current case count: the selftest count went `246 → 248` with the third review round's two Python cases (`seed_pi_home`'s nested-credential cases) and `248 → 251` with the fourth round's three (the endpoint-policy cases at both levels, the credential-free counter-arm, and the run-level refusal), while the narrowed tree's `func Test` count went `269 → 270` with the third round's one new Go case, `270 → 274` with the fourth round's four (one per route: the Pi tree writer, the Claude tree writer, the Codex line walk and the pipeline's archive read) and `274 → 279` with the fifth round's five Go cases (the omission/projection composition on the Pi writer and on the Claude writer, `endRecord`'s two-effects case, the omitted record with no resolved place, and the recorded-cycle case), the selftest count unchanged because the fifth round added no Python case; the sixth round's fix pass took it `279 → 293` with fourteen Go cases (the branch-switch fixture's facts and its refusal for all three targets, the two context-free shapes that must still convert, the dropped-context-record refusal and the two other refusals the walk answers, the identity-free file's two answers, the two no-walk answers, the scan's line bound, the walk's cycle bound, the writer's answer for a read with no leaf identity, and the two load-check cases for a recorded directory whose name ends with a space) and left the selftest count at `251` (no Python case) and the owned-file count at `123` (the new source-side file and the new committed fixture); the seventh round's fix pass took it `293 → 297` with four Go cases (the empty read's dropped-record refusal, the runner's answer larger than the excerpt bound against a stub process, the converted file read past a large entry, and the protocol line reader), and the eighth round's fix pass took it `297 → 302` with five Go cases (the native-shape conversion and the unaccounted-role refusal in `internal/ccc/continue_pi_test.go`; the counted cycle, the reply whose read is not held whole, and the unnamed nested member in `internal/ccc/pi_verify_test.go`), both passes printing `251` selftest cases, `3602` gofmt-clean files and `5671` files seen by git for this tree. The owned-file count includes the ignored build/test artifacts the working tree holds (the check's `bin/` and the two `__pycache__` directories), which the scan stages with the owned files; a fresh checkout counts fewer, and the pre-fix tree's own gate run (a detached worktree of `711e256`) printed `114` |

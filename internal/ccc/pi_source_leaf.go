@@ -30,6 +30,13 @@ import (
 // load check reads a converted file with) and refuses the conversion when the file's own answer does not
 // support the record the read's last message stands for. It is the source-side half of the leaf rule
 // (selectedLeafRefusal, ErrUnrepresentableLeaf); the writer's half is unchanged.
+//
+// An entry on that path the read does not carry is refused unless the harness's own loader keeps its kind
+// out of the conversation, and one record shape is a third case: Pi's own system record, which the
+// harness writes into every session it has run a turn in and its loader builds a message from, and which
+// the inherited reader does not carry. It is the harness's own prompt and tool loadout rather than a turn,
+// so the conversion accounts for it as an omitted record (piAccountedSourceOmission, piSystemRecordLoss)
+// instead of refusing every session that a real Pi run has extended.
 
 // piSourceLeafProviders names the providers whose reader is the carried Pi parser, which is the reader
 // that drops the tree entries the harness's own loader walks. The list is spelled here because the
@@ -95,42 +102,117 @@ func piCarriedSourceEntry(kind, role string) bool {
 	return kind == piEntryMessage && piCarriedMessageRoles[strings.TrimSpace(role)]
 }
 
+// piSystemMessageRole is the role of the record in which Pi replays its own prompt and tool loadout: the
+// first request of a session persists one holding every prompt section and tool declaration, and later
+// changes persist more that patch `sections` by name and list `toolsAdded`/`toolsRemoved` (Pi 1.5.2,
+// `docs/session-format.md`, "message"). Pi itself writes these records into sessions it has run a turn
+// in, and its own loader builds a message from them, so an ordinary native session holds one on its
+// leaf path.
+const piSystemMessageRole = "system"
+
+// piAccountedSourceOmission reports whether one entry is a record the conversion accounts for as omitted
+// rather than refuses: a `message` entry whose role the carried Pi parser drops by design and whose shape
+// this build can name (the harness's own system record, `role: "system"`).
+//
+// The record is the harness's own prompt state rather than a turn of the conversation: its `content` is
+// empty and its payload is the prompt sections and tool declarations Pi replays to rebuild the system
+// prompt, which no target this pipeline writes has a place for and no other harness has a use for -- a
+// target harness resumes under its own prompt, and Pi's own loader rebuilds a session's prompt from its
+// configuration when a session records no system message at all. The inherited Pi parser does not carry
+// the role into the read (internal/parser/pi.go keeps the message roles user, assistant and toolResult),
+// so what the conversion writes is the conversation the source recorded without that state, and the
+// omission is reported as its own loss category (piSystemRecordLoss) rather than silently dropped. It is
+// not refused: refusing would make every session Pi itself has run a turn in unconvertible, and what is
+// omitted is the harness's own bookkeeping, not a record whose words the source's conversation holds.
+//
+// A role this predicate does not name is not accounted for: a message record of any other role on the
+// leaf path is context this build cannot say it may drop, and is refused exactly as before.
+func piAccountedSourceOmission(kind, role string) bool {
+	return kind == piEntryMessage && strings.TrimSpace(role) == piSystemMessageRole
+}
+
+// piSystemRecordLoss is the loss entry that reports the system records this build's read cannot carry
+// (piAccountedSourceOmission): the count of the records the source file's own leaf path holds that the
+// read does not, and the sentence that says what they are and why no target entry holds them. It is built
+// here because the file's own entries are where the count comes from -- the read's own answer never held
+// the record, so no target writer can count it -- and it travels on every conversion whose source file
+// held one.
+func piSystemRecordLoss(count int) Loss {
+	return Loss{
+		Category:    "source_system_records",
+		Disposition: DispositionOmitted,
+		Count:       count,
+		Detail: "a Pi system record is where the harness replays its own prompt and tool loadout: the " +
+			"first request of a session persists one holding every prompt section and tool declaration, " +
+			"and later changes persist more that patch `sections` and list `toolsAdded`/`toolsRemoved` " +
+			"(Pi 1.5.2, docs/session-format.md, \"message\"). The inherited Pi reader does not carry the " +
+			"role into the read and no target of this conversion has that state to hold -- a target " +
+			"harness resumes under its own prompt, and Pi rebuilds a session's prompt from its " +
+			"configuration when the session records no system message -- so the count is the number of " +
+			"such records the source file's own leaf path holds that this read does not carry. The " +
+			"conversation's own turns are unaffected: the record is the harness's prompt bookkeeping, " +
+			"not a turn",
+	}
+}
+
 // piSourceEntryLineMax bounds one line of a source session the entry scan reads. It is the bound the
 // carried Pi parser reads a line with (internal/parser's maxLineSize): a longer line is a line the read
 // could not have read either, so the scan stops and answers the read error rather than skipping it and
 // judging the file by the entries before it.
 const piSourceEntryLineMax = 64 << 20
 
+// piSourceLeafAnswer is what the source-side leaf check answers, in the two channels a conversion's report
+// has for it.
+type piSourceLeafAnswer struct {
+	// Warning states the record the source's own loader selects as the conversation's leaf was not
+	// established from the source's own bytes, and why. Empty when the file answered the question.
+	Warning string
+	// Losses names the records the source's own leaf path holds that this read does not carry and the
+	// conversion accounts for as omitted (piSystemRecordLoss): the count comes from the file's own
+	// entries, which the read's own answer does not hold, so the check is where it is measured. Empty for
+	// a source whose file held none.
+	Losses []Loss
+}
+
 // piSourceLeafCheck answers what one conversion could establish about the record the source's own loader
-// selects as the conversation's leaf. Two answers travel: the warning the report carries when the source's
-// own bytes were not what the check could read, and the refusal when they were and do not support the
-// record the read's last message stands for.
+// selects as the conversation's leaf. Three answers travel: the warning the report carries when the
+// source's own bytes were not what the check could read, the omitted records the conversion accounts for
+// (piAccountedSourceOmission), and the refusal when the file's own answer does not support the record the
+// read's last message stands for.
 //
 // The check runs where the source's own file stands behind the read: the read came from the file itself
 // (not from an archive row, which is a projection with no file open, built by the archive's own ingest)
 // and the file's bytes are the size the read's own snapshot recorded -- a size match, which is what that
 // record can show, exactly as the boundary's own use of the same number states (fillReadCoverage).
 // Anywhere else the leaf is not established, and the report says exactly that instead of presenting the
-// read's own last record as the source's leaf.
-func piSourceLeafCheck(conversation Conversation, readFrom string, boundary SourceBoundary) (string, error) {
+// read's own last record as the source's leaf. An archive read is also where a system record cannot be
+// counted: the row holds the read's own answer, which never carried the record.
+func piSourceLeafCheck(conversation Conversation, readFrom string, boundary SourceBoundary) (piSourceLeafAnswer, error) {
 	if !piSourceLeafProvider(conversation.Source.Provider) {
-		return "", nil
+		return piSourceLeafAnswer{}, nil
 	}
 	if readFrom != "source" || boundary.State != SourceBoundaryTaken || strings.TrimSpace(boundary.Path) == "" {
-		return fmt.Sprintf(
+		return piSourceLeafAnswer{Warning: fmt.Sprintf(
 			"the entry the source's own loader selects as the conversation's leaf was not established: %s, "+
 				"so the conversion writes the line of the read's own last record and no source file answers "+
 				"which entry the harness's own loader would walk from",
-			sourceLeafNotMeasuredDetail(readFrom, boundary)), nil
+			sourceLeafNotMeasuredDetail(readFrom, boundary))}, nil
 	}
 	if size := conversation.Source.FileSize; size > 0 && boundary.Bytes != size {
-		return fmt.Sprintf(
+		return piSourceLeafAnswer{Warning: fmt.Sprintf(
 			"the entry the source's own loader selects as the conversation's leaf was not established: the "+
 				"source file holds %d byte(s) while the read's own snapshot of this file recorded %d, so the "+
 				"file moved while it was being read and the entry its own bytes end with is not shown to be "+
-				"the entry this read's last record stands for", boundary.Bytes, size), nil
+				"the entry this read's last record stands for", boundary.Bytes, size)}, nil
 	}
-	return "", piSourceLeafRefusal(conversation, boundary.Path)
+	omitted, err := piSourceLeafRefusal(conversation, boundary.Path)
+	if err != nil {
+		return piSourceLeafAnswer{}, err
+	}
+	if omitted > 0 {
+		return piSourceLeafAnswer{Losses: []Loss{piSystemRecordLoss(omitted)}}, nil
+	}
+	return piSourceLeafAnswer{}, nil
 }
 
 // sourceLeafNotMeasuredDetail names why no source file stood behind this read: the read's own answer when
@@ -158,7 +240,11 @@ func sourceLeafNotMeasuredDetail(readFrom string, boundary SourceBoundary) strin
 //     last message stands for, because that is the record the target's loader would walk from;
 //   - an entry this read did not answer an identity for is a record the conversion cannot place, and it
 //     may stand on the path only when the harness's own loader keeps its kind out of the conversation's
-//     context (piEntryKindsOutsideTheContext).
+//     context (piEntryKindsOutsideTheContext) or when it is a record the conversion accounts for as
+//     omitted (piAccountedSourceOmission), which is counted and reported rather than refused.
+//
+// The answer is the number of records the walk counted as omissions, so the report can name them; every
+// refusal answers zero, because a refused conversion reports no conversion.
 //
 // A file that records no entry identities at all -- a Pi v1 session, which the inherited reader accepts and
 // derives an identity for from the filename -- answers its own order rather than a tree: it cannot hold a
@@ -166,23 +252,23 @@ func sourceLeafNotMeasuredDetail(readFrom string, boundary SourceBoundary) strin
 // last entry and the conversation is the file's own order. What the read's own last record stands for is
 // therefore asked by order: the last entry whose kind is one the read carries is the record its last
 // message stands for, and every entry after that one must be an entry the harness's loader keeps out of
-// the context. A walk that ends where the file does (a root, a parent the file does not hold, a record
-// naming itself, a loop) answers what it reached.
+// the context or one the conversion accounts for as omitted. A walk that ends where the file does (a root,
+// a parent the file does not hold, a record naming itself, a loop) answers what it reached.
 //
 // A read that holds no record at all is asked the same question of the same file: there is no leaf of its
 // own that could be resumed wrongly, but the file's entries are still the source's, and the harness's own
 // loader would build a context from them (piEmptyReadRefusal). A file with no entry beyond its header
 // selects nothing, and both of these answers are nil.
-func piSourceLeafRefusal(conversation Conversation, path string) error {
+func piSourceLeafRefusal(conversation Conversation, path string) (int, error) {
 	messages := conversation.Messages
 	entries, byID, err := piSourceEntries(path)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if len(entries) == 0 {
 		// Nothing but a session header (and possibly a title slot line): the file selects no entry at all,
 		// so no branch of its own can be resumed in place of this read's last record.
-		return nil
+		return 0, nil
 	}
 	if len(messages) == 0 {
 		return piEmptyReadRefusal(path, entries, byID)
@@ -197,13 +283,18 @@ func piSourceLeafRefusal(conversation Conversation, path string) error {
 
 	leaf := entries[len(entries)-1]
 	if len(byID) == 0 {
+		omitted := 0
 		for index := len(entries) - 1; index >= 0; index-- {
 			entry := entries[index]
 			if piCarriedSourceEntry(entry.Type, entry.Message.Role) {
-				return nil
+				return omitted, nil
+			}
+			if piAccountedSourceOmission(entry.Type, entry.Message.Role) {
+				omitted++
+				continue
 			}
 			if !piEntryKindsOutsideTheContext[entry.Type] {
-				return fmt.Errorf("%w: the source's own file %s records no entry identities, and the %s "+
+				return 0, fmt.Errorf("%w: the source's own file %s records no entry identities, and the %s "+
 					"record it holds after its last message-like record (entry %d of %d, role %s) is one "+
 					"this read does not carry and whose kind this build cannot say the harness's own "+
 					"conversation context leaves out, so the conversation a resumed target would read is "+
@@ -212,7 +303,7 @@ func piSourceLeafRefusal(conversation Conversation, path string) error {
 					entryRole(entry.Message.Role))
 			}
 		}
-		return fmt.Errorf("%w: the source's own file %s records no entry identities and holds no record "+
+		return 0, fmt.Errorf("%w: the source's own file %s records no entry identities and holds no record "+
 			"kind this read carries, so the entry the source's own loader selects as the conversation's leaf "+
 			"cannot be represented", ErrUnrepresentableLeaf, path)
 	}
@@ -221,29 +312,38 @@ func piSourceLeafRefusal(conversation Conversation, path string) error {
 	// parent the file does not hold, a record naming itself and a loop each end where the entry count runs
 	// out, which is the only bound the walk needs and the only one it has: a cycle the source recorded
 	// (a record naming itself, or a longer loop) is re-walked until the file's own entry count is spent and
-	// then answered as what it reached. No visited set is kept beside the bound: each entry's answer is
-	// idempotent, so removing one would leave every case green while stating only the loop's iteration
-	// count, which is what this walk's own bound already states (the writers' walk, writtenAncestor, makes
-	// the same choice for the same reason).
-	current := leaf
+	// then answered as what it reached. The walk's own answers are idempotent, which is what lets it
+	// re-reach an entry of a cycle without a visited set -- except for the omission count, which the
+	// visited set below keeps idempotent too: a record counted once is counted once, however often the
+	// walk reaches it (the writers' walk, writtenAncestor, makes the same choice for the same reason).
+	current := len(entries) - 1
 	deepest := ""
+	omitted := 0
+	counted := make(map[int]bool, 1)
 	for steps := 0; steps <= len(entries); steps++ {
-		currentID := strings.TrimSpace(current.ID)
-		if carried[currentID] {
+		entry := entries[current]
+		currentID := strings.TrimSpace(entry.ID)
+		switch {
+		case carried[currentID]:
 			if deepest == "" {
 				deepest = currentID
 			}
-		} else if !piEntryKindsOutsideTheContext[current.Type] {
+		case piAccountedSourceOmission(entry.Type, entry.Message.Role):
+			if !counted[current] {
+				counted[current] = true
+				omitted++
+			}
+		case !piEntryKindsOutsideTheContext[entry.Type]:
 			// The entry is not one this read answered an identity for -- so the conversion cannot place it
 			// -- and nothing here knows the harness's own loader keeps its kind out of the context either.
-			return fmt.Errorf("%w: the source's own file %s selects the leaf %s, and that leaf's own path "+
-				"holds a %s record (id %s, role %s) which this read does not carry and whose kind this "+
-				"build cannot say the harness's own conversation context leaves out, so the conversation a "+
-				"resumed target would read is not the one the source's loader builds",
-				ErrUnrepresentableLeaf, path, sourceLeafName(leaf), entryKind(current.Type),
-				entryIdentity(currentID), entryRole(current.Message.Role))
+			return 0, fmt.Errorf("%w: the source's own file %s selects the leaf %s, and that leaf's own "+
+				"path holds a %s record (id %s, role %s) which this read does not carry and whose kind "+
+				"this build cannot say the harness's own conversation context leaves out, so the "+
+				"conversation a resumed target would read is not the one the source's loader builds",
+				ErrUnrepresentableLeaf, path, sourceLeafName(leaf), entryKind(entry.Type),
+				entryIdentity(currentID), entryRole(entry.Message.Role))
 		}
-		parent := parentOfPiEntry(current)
+		parent := parentOfPiEntry(entry)
 		if parent == "" {
 			break
 		}
@@ -251,31 +351,32 @@ func piSourceLeafRefusal(conversation Conversation, path string) error {
 		if !ok {
 			break
 		}
-		current = entries[next]
+		current = next
 	}
 	switch {
 	case deepest == "":
-		return fmt.Errorf("%w: the source's own file %s selects the leaf %s, and that leaf's own path "+
+		return 0, fmt.Errorf("%w: the source's own file %s selects the leaf %s, and that leaf's own path "+
 			"reaches no record this read holds, while the read's last record is %s: a resumed session "+
 			"would continue another branch than the one the source's conversation ends on",
 			ErrUnrepresentableLeaf, path, sourceLeafName(leaf), entryIdentity(lastID))
 	case lastID == "":
-		return fmt.Errorf("%w: the source's own file %s selects the leaf %s, whose own path reaches the "+
+		return 0, fmt.Errorf("%w: the source's own file %s selects the leaf %s, whose own path reaches the "+
 			"record %s, while this read answered no identity for its last record, so which entry of the "+
 			"source's own file that record stands for is not established",
 			ErrUnrepresentableLeaf, path, sourceLeafName(leaf), deepest)
 	case deepest != lastID:
-		return fmt.Errorf("%w: the source's own file %s selects the leaf %s, whose own path reaches the "+
+		return 0, fmt.Errorf("%w: the source's own file %s selects the leaf %s, whose own path reaches the "+
 			"record %s, while this read's last record is %s: a resumed session would continue a branch "+
 			"the source's conversation left",
 			ErrUnrepresentableLeaf, path, sourceLeafName(leaf), deepest, lastID)
 	}
-	return nil
+	return omitted, nil
 }
 
 // piEmptyReadRefusal answers whether a file can stand behind a read that holds no record at all: nil when
 // the harness's own loader would build no conversation from the file either, and a refusal naming the
-// entry where it would.
+// entry where it would. It also answers the number of records it counted as omissions the conversion
+// accounts for (piAccountedSourceOmission), which is zero for every file it does not refuse.
 //
 // An empty read is not by itself a defect -- a conversation that recorded no message and a file that
 // holds nothing beyond its header are both real, and neither can be resumed wrongly -- but the file's
@@ -285,39 +386,55 @@ func piSourceLeafRefusal(conversation Conversation, path string) error {
 // kind this build does not know), while the harness's own loader builds a message from the first two, so
 // a file holding one on the path its loader walks from is context the conversion would install an empty
 // session in place of -- the same dropped-context shape the walk above refuses for a read that holds
-// records, with nothing carried to reconcile it against.
+// records, with nothing carried to reconcile it against. A system record of the same path is the one shape
+// whose omission *is* accounted for (piAccountedSourceOmission): it is the harness's own prompt state and
+// the count travels on the conversion like any other reported omission.
 //
 // The file is asked the question its own shape supports: a file that records entry identities is asked
 // about the path its loader walks from (the file's last entry and its ancestors), exactly as the walk
 // above asks it, because an entry off that path is recorded history the loader does not build context
 // from; a file that records none is asked by order, because that is the shape its answer takes (above).
-func piEmptyReadRefusal(path string, entries []piConversationEntry, byID map[string]int) error {
+func piEmptyReadRefusal(path string, entries []piConversationEntry, byID map[string]int) (int, error) {
 	if len(byID) == 0 {
+		omitted := 0
 		for index, entry := range entries {
 			if piEntryKindsOutsideTheContext[entry.Type] {
 				continue
 			}
-			return fmt.Errorf("%w: this read holds no record at all, while the source's own file %s "+
+			if piAccountedSourceOmission(entry.Type, entry.Message.Role) {
+				omitted++
+				continue
+			}
+			return 0, fmt.Errorf("%w: this read holds no record at all, while the source's own file %s "+
 				"records no entry identities and holds a %s record (entry %d of %d, role %s) whose kind "+
 				"this build cannot say the harness's own conversation context leaves out, so the "+
 				"conversation a resumed target would read is not the one the source's loader builds",
 				ErrUnrepresentableLeaf, path, entryKind(entry.Type), index+1, len(entries),
 				entryRole(entry.Message.Role))
 		}
-		return nil
+		return omitted, nil
 	}
 	leaf := entries[len(entries)-1]
-	current := leaf
+	current := len(entries) - 1
+	omitted := 0
+	counted := make(map[int]bool, 1)
 	for steps := 0; steps <= len(entries); steps++ {
-		if !piEntryKindsOutsideTheContext[current.Type] {
-			return fmt.Errorf("%w: this read holds no record at all, while the source's own file %s "+
+		entry := entries[current]
+		switch {
+		case piAccountedSourceOmission(entry.Type, entry.Message.Role):
+			if !counted[current] {
+				counted[current] = true
+				omitted++
+			}
+		case !piEntryKindsOutsideTheContext[entry.Type]:
+			return 0, fmt.Errorf("%w: this read holds no record at all, while the source's own file %s "+
 				"selects the leaf %s, whose own path holds a %s record (id %s, role %s) whose kind this "+
 				"build cannot say the harness's own conversation context leaves out: an empty session "+
 				"would be installed in place of the conversation the source's own loader builds",
-				ErrUnrepresentableLeaf, path, sourceLeafName(leaf), entryKind(current.Type),
-				entryIdentity(strings.TrimSpace(current.ID)), entryRole(current.Message.Role))
+				ErrUnrepresentableLeaf, path, sourceLeafName(leaf), entryKind(entry.Type),
+				entryIdentity(strings.TrimSpace(entry.ID)), entryRole(entry.Message.Role))
 		}
-		parent := parentOfPiEntry(current)
+		parent := parentOfPiEntry(entry)
 		if parent == "" {
 			break
 		}
@@ -325,9 +442,9 @@ func piEmptyReadRefusal(path string, entries []piConversationEntry, byID map[str
 		if !ok {
 			break
 		}
-		current = entries[next]
+		current = next
 	}
-	return nil
+	return omitted, nil
 }
 
 // piSourceEntries reads one source session's own entries in the file's order and answers them, plus the

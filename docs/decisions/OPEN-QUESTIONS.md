@@ -2140,3 +2140,33 @@ supersede it with a newer one and say which it supersedes.
   `[user, assistant, assistant, branchSummary]` while the read's last record is the abandoned branch's own
   turn).
 - **Settled by:** nothing owner-only.
+
+## Q-0005-17 — A Pi system record is an accounted omission, not a refusal (Q-0005-16's second rule refined)
+
+- **Status:** resolved (default taken; 0005's eighth review round found that every session Pi itself has run
+  a turn in was unconvertible)
+- **Question:** Pi's own format document places a system record at the head of every session that has run a
+  request and writes further ones as its prompt and tool loadout changes (`docs/session-format.md`,
+  "message", shipped with 1.5.2), and Pi's own loader builds a message from it — so a session Pi itself has
+  extended holds an uncarried record of a kind the loader's context holds, and Q-0005-16's second rule
+  (every uncarried entry on the leaf path must be a kind the loader keeps out of its context) refused it
+  with `ErrUnrepresentableLeaf`. The source direction then worked only for hand-written fixtures: the
+  recorded native probe on this host answered exit 1 for a session a real turn had extended, naming the
+  system record. Should such a record be refused, carried, or omitted with the omission reported?
+- **Default taken:** omitted and *counted*, as `conversion.losses[]`'s `source_system_records`, whose count
+  comes from the source file's own entries (the differentiator the refusal was built on,
+  `piAccountedSourceOmission`): the record is the harness's own prompt and tool-loadout state rather than a
+  turn, the inherited reader does not carry the role (and a second parser in this tree is what the design forbids),
+  and no target has that state to hold — a target harness resumes under its own prompt, and Pi rebuilds a
+  session's prompt from its configuration when a session records no system message at all. The refusal
+  stays for every *other* uncarried context record (`custom_message`, `branch_summary`, an unknown kind or
+  an unknown message role), so the reader's own limits are still refused rather than disclosed. The count
+  is reported where a source file stood behind the read: an archive-backed read cannot count the records
+  (the row holds the read's own answer, which never carried them), and that is stated in the run's warnings
+  through Q-0005-16's existing leaf statement.
+- **Reversal:** refuse the shape and disclose the restriction instead (the smaller rule the eighth round's
+  finding allowed; measured to remove the capability for every native Pi session, which is the route's
+  point), or carry the record by re-reading the file into conversation records in this tree (forbidden: a
+  second source parser), or leave the omission uncounted and rely on the loss table's other categories
+  (would present a dropped record as a carried conversation).
+- **Settled by:** nothing owner-only.

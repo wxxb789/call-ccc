@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -276,6 +277,38 @@ func piResponsesFrom(t *testing.T, stdout string) []piRPCResponse {
 		t.Fatalf("readPiResponses(%q): %v", summariseText(stdout, 200), err)
 	}
 	return responses
+}
+
+// TestPiRPCReadsANestedValueAsOneMember pins the walk's own rule for a member it does not name: that
+// member's value is consumed as *one* JSON value, so a key inside it cannot be read as the answer's own.
+// The answer's `meta` member holds a nested object whose keys are the answer's own member names (`command`,
+// `sessionId`, `messages`), written *after* the real ones: a walk that consumed the nested value token by
+// token would read the nested `command` as the answer's and answer "the harness answered no get_state
+// response", and a nested role or message list could be read as the loader's own answer.
+func TestPiRPCReadsANestedValueAsOneMember(t *testing.T) {
+	const sessionID = "01a1c335-0000-4000-8000-000000000000"
+	stdout := `{"type":"response","command":"get_state","success":true,` +
+		`"meta":{"command":"nonsense","sessionId":"decoy","messages":[{"role":"assistant"}]},` +
+		`"data":{"sessionId":"` + sessionID + `","messageCount":2}}` + "\n"
+	responses := piResponsesFrom(t, stdout)
+	if len(responses) != 1 {
+		t.Fatalf("readPiResponses kept %d response(s) %+v, want the answer whose own member names stand "+
+			"outside the nested member", len(responses), responses)
+	}
+	if responses[0].Command != "get_state" {
+		t.Errorf("the answer's command = %q, want %q: a key inside a member this check does not name must "+
+			"not be read as the answer's own", responses[0].Command, "get_state")
+	}
+	if responses[0].Data.SessionID != sessionID || responses[0].Data.MessageCount != 2 {
+		t.Errorf("the answer's data = %+v, want its own session and count", responses[0].Data)
+	}
+	state, err := readPiState(responses)
+	if err != nil {
+		t.Fatalf("readPiState: %v", err)
+	}
+	if state.SessionID != sessionID || state.MessageCount != 2 {
+		t.Errorf("state = %+v, want the answer's own session and count", state)
+	}
 }
 
 // TestPiModelVisibleRolesAndExpectedMessageCount pins the byte-level walk the load check compares the
@@ -927,8 +960,76 @@ func TestPiRPCCarriesAnAnswerLargerThanTheExcerptBound(t *testing.T) {
 	}
 }
 
-// piRPCStubHarnessAnswer writes the protocol one RPC run answers with -- a session event, a diagnostic
-// line, the state and the messages -- with the get_messages line built past the excerpt bound.
+// TestPiRPCReadsALargeAnswerWithoutHoldingIt pins the memory rule the RPC walk exists for, observed the
+// only way a test can observe it: a `get_messages` answer whose message contents are far larger than any
+// bound is read with allocations far smaller than the reply. The case builds the shape a real answer has --
+// many message entries, each holding its own text blocks, rather than one huge token -- and reads it
+// several times, comparing the bytes the runtime allocated with the reply's own size.
+//
+// The rule this pins has been false in this tree twice: an earlier revision captured the harness's stdout
+// through the 1 MiB diagnostic bound (a large answer was truncated and dropped), and the revision this
+// case's fix replaces handed each line to encoding/json's `Decoder.Decode`, which buffers the entire value
+// before unmarshalling it -- so the answer was held whole despite the bounded pieces piProtocolLines hands
+// out. Mutating the walk back to `Decode` fails this case with an allocation several times the reply; the
+// roles are asserted beside the measurement, so a failure to parse is answered as itself.
+//
+// What remains held is one JSON token at a time (a text block Pi wrote as a single string arrives as one
+// token): the reply, however large, is not. The bound below is deliberately loose -- one reply's worth of
+// allocation for several reads -- because the case is about the difference between streaming and buffering,
+// which is a factor in the reply's size, not a constant.
+func TestPiRPCReadsALargeAnswerWithoutHoldingIt(t *testing.T) {
+	const (
+		messages = 2048
+		block    = 4 << 10
+		reads    = 4
+	)
+	var reply strings.Builder
+	reply.WriteString(`{"type":"response","command":"get_messages","success":true,"data":{"messages":[`)
+	for index := range messages {
+		if index > 0 {
+			reply.WriteByte(',')
+		}
+		role := "user"
+		if index%2 == 1 {
+			role = "assistant"
+		}
+		reply.WriteString(`{"role":"` + role + `","content":[{"type":"text","text":"`)
+		reply.WriteString(strings.Repeat("x", block))
+		reply.WriteString(`"}]}`)
+	}
+	reply.WriteString(`]}}`)
+	stdout := reply.String() + "\n"
+	if len(stdout) < 8<<20 {
+		t.Fatalf("the answer holds %d byte(s), want more than 8 MiB: the case is about an answer no excerpt "+
+			"bound could hold", len(stdout))
+	}
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	for run := range reads {
+		responses, err := readPiResponses(strings.NewReader(stdout))
+		if err != nil {
+			t.Fatalf("readPiResponses (run %d): %v", run, err)
+		}
+		if len(responses) != 1 || len(responses[0].Data.Messages) != messages {
+			t.Fatalf("readPiResponses (run %d) answered %d response(s) with %d message(s), want the "+
+				"answer's own one and %d: the walk reads the message list's own roles as it arrives",
+				run, len(responses), len(responses[0].Data.Messages), messages)
+		}
+		if got := responses[0].Data.Messages[0].Role; got != "user" {
+			t.Fatalf("the first role read = %q, want the answer's own %q", got, "user")
+		}
+	}
+	runtime.ReadMemStats(&after)
+	allocated := after.TotalAlloc - before.TotalAlloc
+	if allocated > uint64(len(stdout)) {
+		t.Errorf("reading a %d byte answer %d time(s) allocated %d byte(s), more than one reply's worth: the "+
+			"walk must consume the answer token by token rather than buffer it (encoding/json's Decode, the "+
+			"shape this case's fix replaced, holds the whole reply per read)", len(stdout), reads, allocated)
+	}
+}
+
 func piRPCStubHarnessAnswer(t *testing.T) {
 	t.Helper()
 	messages := []map[string]any{

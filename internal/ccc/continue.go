@@ -432,13 +432,16 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 	// entries: for the Pi-family readers the read's own last record is not that answer (pi_source_leaf.go),
 	// and a conversion written from a record the file's leaf path does not reach would resume a branch the
 	// source's conversation left. Where no source file stands behind the read the leaf is not established,
-	// and the report says so rather than presenting the read's own last record as the source's leaf.
-	leafWarning, err := piSourceLeafCheck(conversation, readFrom, boundary)
+	// and the report says so rather than presenting the read's own last record as the source's leaf. The
+	// same pass counts the records on that path the read does not carry whose omission the conversion
+	// accounts for -- records the read never held, so no target writer can count them -- and those travel
+	// into the conversion's losses below.
+	leaf, err := piSourceLeafCheck(conversation, readFrom, boundary)
 	if err != nil {
 		return ContinueResult{}, err
 	}
-	if leafWarning != "" {
-		result.Warnings = append(result.Warnings, leafWarning)
+	if leaf.Warning != "" {
+		result.Warnings = append(result.Warnings, leaf.Warning)
 	}
 
 	// What only the target's own harness can answer (Codex: the model provider its loader checks). It is
@@ -476,6 +479,10 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 		Losses:         session.Losses,
 		SourceFidelity: conversation.Fidelity,
 	}
+	// The source-side check's counted omissions stand beside the target writer's own categories: the
+	// records are ones the read never held, so the writer has no record of them to count
+	// (piSystemRecordLoss). The category is absent when the source file held none.
+	result.Conversion.Losses = append(result.Conversion.Losses, leaf.Losses...)
 	// The invocation is built here, where the session identity exists, and rendered twice: as the
 	// argument vector and environment a caller runs, and as the shell line a person pastes.
 	resumeName := strings.TrimSpace(opts.TargetBinary)

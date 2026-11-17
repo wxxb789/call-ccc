@@ -174,7 +174,10 @@ as a file that resumes a branch the source's conversation left. The source side 
 source *file*'s own answer rather than the read's last record — the carried Pi reader skips tree entries the
 harness's own loader builds context from, so a file that switched branches with `/tree` can end above a
 record the read does not answer — and the source-side check, the fixture and the measured harness answer are
-in the evidence record's sixth review round (Q-0005-16).
+in the evidence record's sixth review round (Q-0005-16). The one record the check *accounts for* rather than
+refuses is the harness's own system record, which Pi writes into every session it has run a turn in: the read
+does not carry the role, so the record is omitted and counted (`source_system_records`) rather than refused —
+the eighth review round's fix (Q-0005-17).
 
 ### 2.3 Mapping rules, category by category
 
