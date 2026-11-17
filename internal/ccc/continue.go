@@ -526,7 +526,10 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 	result.Verification = verification
 	result.Warnings = append(result.Warnings, structureWarnings(route, structure)...)
 	if verification.Structure.State != VerificationStateVerified {
-		result.Warnings = append(result.Warnings, "the installed session does not hold every piece of "+
+		// "was not shown to hold" rather than "does not hold": the same state covers a comparison that
+		// ran and found the file missing evidence, and a reader that could not read the file back at
+		// all, where nothing was shown about what it holds either way.
+		result.Warnings = append(result.Warnings, "the installed session was not shown to hold every piece of "+
 			"evidence the conversion wrote: "+verification.Structure.Detail)
 	}
 	return result, nil

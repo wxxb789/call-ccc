@@ -1714,7 +1714,7 @@ func TestContinueOmitsOutputTheInheritedReaderCannotReadBack(t *testing.T) {
 		t.Errorf("read-back tool results = %d, want none: no result was written", got)
 	}
 	for _, warning := range result.Warnings {
-		if strings.Contains(warning, "does not hold every piece of evidence") {
+		if strings.Contains(warning, "was not shown to hold every piece of evidence") {
 			t.Errorf("the report warns that the installed session lacks written evidence: %q", warning)
 		}
 	}

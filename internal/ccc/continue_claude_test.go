@@ -12,10 +12,12 @@ import (
 )
 
 // claudeTargetHome prepares an isolated Claude Code data directory holding one unrelated session, and
-// answers the home and that session's path: a conversion must leave it alone.
+// answers the home and that session's path: a conversion must leave it alone. The home holds a space,
+// so the resume line the route prints has to quote the data directory on every host; an assertion
+// against a host temp path would instead pin the separator that host happens to spell.
 func claudeTargetHome(t *testing.T) (string, string) {
 	t.Helper()
-	home := t.TempDir()
+	home := filepath.Join(t.TempDir(), "claude home")
 	unrelated := filepath.Join(home, claudeProjectsSubdir, "-home-user-other-project",
 		"00000000-0000-4000-8000-0000000000ff.jsonl")
 	if err := os.MkdirAll(filepath.Dir(unrelated), 0o700); err != nil {
@@ -118,11 +120,12 @@ func TestContinueIntoClaudeConvertsInstallsAndReadsBack(t *testing.T) {
 	}
 	// Measured: the loader finds a session through the working directory it is run from, so the printed
 	// command carries both the directory and the data directory. A command missing either resumes the
-	// caller's own home, or nothing at all.
+	// caller's own home, or nothing at all. The home holds a space, so a shell would act on the bare
+	// word: the line must quote the directory exactly as a POSIX shell reads it back.
 	if !strings.HasPrefix(result.TargetSession.ResumeCommand, "cd "+result.TargetSession.Cwd+" && ") {
 		t.Errorf("resume command %q does not start by the session's working directory", result.TargetSession.ResumeCommand)
 	}
-	if !strings.Contains(result.TargetSession.ResumeCommand, claudeHomeEnv+"="+home) {
+	if !strings.Contains(result.TargetSession.ResumeCommand, claudeHomeEnv+"='"+home+"'") {
 		t.Errorf("resume command %q does not select the data directory it installed into", result.TargetSession.ResumeCommand)
 	}
 	if !strings.Contains(result.TargetSession.ExecResumeCommand, "-p --output-format json --resume "+result.TargetSession.SessionID) {
@@ -278,5 +281,68 @@ func TestContinueIntoClaudeRefusesASourceWithoutAWorkingDirectory(t *testing.T) 
 	}
 	if after := hashTree(t, home); !sameTree(before, after) {
 		t.Errorf("the refused conversion wrote into the target home: %v -> %v", before, after)
+	}
+}
+
+// TestContinueIntoClaudeReportsACompactionBoundaryWhoseSummaryHoldsNoText reproduces the one boundary
+// shape whose summary cannot travel as text: a source `compacted` record whose message is whitespace
+// alone. The inherited Codex reader trims it (internal/parser's handleCompacted), so the conversion
+// carries it with no summary text; the target's boundary pair is still written, because the pair is what
+// makes the target apply the boundary, and the report counts the empty summary instead of presenting it
+// as a summary that traveled.
+func TestContinueIntoClaudeReportsACompactionBoundaryWhoseSummaryHoldsNoText(t *testing.T) {
+	sourceRoot := t.TempDir()
+	const sessionID = "0c8e5f21-0000-4000-8000-00000000beef"
+	relative := filepath.Join("2026", "05", "04", "rollout-2026-05-04T09-15-00-"+sessionID+".jsonl")
+	path := filepath.Join(sourceRoot, relative)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("creating the source directory: %v", err)
+	}
+	lines := []string{
+		`{"timestamp":"2026-05-04T09:15:00Z","type":"session_meta","payload":{"cwd":"/home/user/code/example-api","id":"` + sessionID + `","originator":"codex_cli_rs"}}`,
+		`{"timestamp":"2026-05-04T09:15:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}}`,
+		`{"timestamp":"2026-05-04T09:16:00Z","type":"compacted","payload":{"message":"   "}}`,
+		`{"timestamp":"2026-05-04T09:16:10Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"after the boundary"}]}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("writing the source session: %v", err)
+	}
+	cfg := fixtureConfig(t)
+	dirs := make(map[parser.AgentType][]string, len(cfg.AgentDirs)+1)
+	for agent, roots := range cfg.AgentDirs {
+		dirs[agent] = roots
+	}
+	dirs[parser.AgentCodex] = []string{sourceRoot}
+	cfg.AgentDirs = dirs
+
+	home, _ := claudeTargetHome(t)
+	result, err := Continue(context.Background(), ContinueOptions{
+		Ref: Ref{Provider: "codex", ID: sessionID}, Target: TargetClaude, Config: cfg,
+		TargetHome: home, TargetBinary: missingTargetBinary,
+	})
+	if err != nil {
+		t.Fatalf("continuing: %v", err)
+	}
+	if result.Conversion.Carried.CompactionBoundaries != 1 {
+		t.Fatalf("carried = %+v, want the boundary written", result.Conversion.Carried)
+	}
+	if loss := lossCount(t, result.Conversion.Losses, "empty_compaction_summary"); loss.Count != 1 ||
+		loss.Disposition != DispositionOmitted {
+		t.Errorf("empty_compaction_summary = %+v, want the boundary's missing summary text counted as omitted", loss)
+	}
+	installed, err := os.ReadFile(result.Installation.Path)
+	if err != nil {
+		t.Fatalf("reading the installed session: %v", err)
+	}
+	if !strings.Contains(string(installed), `"subtype":"compact_boundary"`) ||
+		!strings.Contains(string(installed), `"isCompactSummary":true`) {
+		t.Errorf("the installed session does not hold the boundary pair:\n%s", installed)
+	}
+	if strings.Contains(string(installed), "   ") {
+		t.Errorf("the installed session holds the whitespace-only summary text:\n%s", installed)
+	}
+	if result.Verification.Structure.State != VerificationStateVerified {
+		t.Errorf("structure = %+v, want the installed file to read back as what was written",
+			result.Verification.Structure)
 	}
 }

@@ -279,6 +279,7 @@ type claudeTranscriptBuilder struct {
 	lossReasoning              int
 	lossSidechain              int
 	lossSystemRecords          int
+	lossEmptySummary           int
 	lossToolRoleMessages       int
 	lossUnclassifiedRoles      int
 	lossEmptyUserMessages      int
@@ -369,6 +370,14 @@ func (b *claudeTranscriptBuilder) writeMessage(message Message) {
 			Message:          &claudeMessage{Role: claudeTypeUser, Content: b.textContent(message.Content)},
 		})
 		b.carried.CompactionBoundaries++
+		if strings.TrimSpace(message.Content) == "" {
+			// The boundary's summary holds no text (the inherited Codex reader trims a compacted
+			// record's summary, so a source summary of whitespace alone arrives here empty too, and a
+			// remote compaction records none at all). The pair above is still written -- it is what
+			// makes the target apply the boundary -- but there is no summary text in it to travel, and
+			// the report says so rather than presenting the empty record as a carried summary.
+			b.lossEmptySummary++
+		}
 		b.items = append(b.items, TargetItem{Kind: ItemCompactionBoundary, Text: message.Content})
 		return
 	}
@@ -918,6 +927,16 @@ func (b *claudeTranscriptBuilder) losses() []Loss {
 			Disposition: DispositionCarriedWithCaveat,
 			Count:       b.lossPreBoundary,
 			Detail:      preBoundaryDetail,
+		},
+		{
+			Category:    "empty_compaction_summary",
+			Disposition: DispositionOmitted,
+			Count:       b.lossEmptySummary,
+			Detail: "the source recorded a compaction boundary whose summary holds no text (the " +
+				"inherited Codex reader trims a compacted record's summary, so a summary of whitespace " +
+				"alone arrives the same way). The boundary pair is still written, because the marker " +
+				"and the summary record are what make the target apply the boundary; the summary record " +
+				"holds the empty text rather than an invented summary, and no summary text travels",
 		},
 		{
 			Category:    "malformed_source_lines",

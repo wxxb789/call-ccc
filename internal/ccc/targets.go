@@ -343,7 +343,6 @@ func claudeRoute() targetRoute {
 		},
 		Load: func(ctx context.Context, in targetVerificationInput) LoadVerification {
 			return VerifyClaudeLoad(ctx, ClaudeLoadOptions{
-				Home:      in.Home,
 				Binary:    in.Binary,
 				SessionID: in.SessionID,
 				Cwd:       in.Cwd,

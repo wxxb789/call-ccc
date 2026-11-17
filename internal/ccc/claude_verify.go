@@ -76,8 +76,6 @@ var claudeLoadEnvDenied = []string{
 
 // ClaudeLoadOptions configures one native load verification.
 type ClaudeLoadOptions struct {
-	// Home is the data directory the session was installed into.
-	Home string
 	// Binary is the harness to drive; empty means ClaudeBinaryDefault.
 	Binary string
 	// SessionID is the identity the conversion wrote.
@@ -312,7 +310,9 @@ type ClaudeResumeOptions struct {
 // from) with the caller's own environment, so the turn's model access is whatever the caller has
 // configured -- this check never supplies credentials of its own. A missing binary, a harness that
 // refuses the session and a harness that cannot reach a model are each reported as not-verified with the
-// harness's own words.
+// harness's own words. A harness that answers but leaves the installed session's bytes unchanged is
+// refused the same way: the verified state says the harness wrote its own records into the session, and
+// the two sizes it reports have to show it.
 func VerifyClaudeResume(ctx context.Context, opts ClaudeResumeOptions) ResumeVerification {
 	verification := ResumeVerification{
 		State:  VerificationStateNotVerified,
@@ -346,9 +346,15 @@ func VerifyClaudeResume(ctx context.Context, opts ClaudeResumeOptions) ResumeVer
 		timeout = claudeResumeTimeout
 	}
 	stdout, stderr, runErr := runClaudeHarnessTurn(ctx, path, opts, timeout, arguments, claudeEnvironment(opts.Home, nil), opts.Stderr)
-	after, _ := fileSize(opts.SessionPath)
+	after, afterErr := fileSize(opts.SessionPath)
 	verification.SessionBytesBefore = before
 	verification.SessionBytesAfter = after
+	// The growth every answer path reports: the two sizes when both were readable, and the measurement
+	// failure named as such rather than shown as a session that went to 0 bytes.
+	growthDetail := claudeTurnGrowthDetail(before, after)
+	if afterErr != nil {
+		growthDetail = fmt.Sprintf(" (the installed session could not be measured after the turn: %v)", afterErr)
+	}
 	exitCode := 0
 	if runErr != nil {
 		var exitErr *exec.ExitError
@@ -377,7 +383,7 @@ func VerifyClaudeResume(ctx context.Context, opts ClaudeResumeOptions) ResumeVer
 		}
 		verification.Detail = fmt.Sprintf(
 			"the harness did not answer: %s (exit status %d)%s",
-			summariseText(reason, 300), exitCode, claudeTurnGrowthDetail(before, after))
+			summariseText(reason, 300), exitCode, growthDetail)
 		return verification
 	}
 	if answer.SessionID != "" && answer.SessionID != opts.SessionID {
@@ -387,7 +393,20 @@ func VerifyClaudeResume(ctx context.Context, opts ClaudeResumeOptions) ResumeVer
 	}
 	if strings.TrimSpace(answer.Result) == "" {
 		verification.Detail = fmt.Sprintf(
-			"the harness exited successfully and reported no answer%s", claudeTurnGrowthDetail(before, after))
+			"the harness exited successfully and reported no answer%s", growthDetail)
+		return verification
+	}
+	// The answer alone is not evidence that the turn continued the installed session: the sentence a
+	// verified state reports says the harness wrote its own records into it, so the sizes must show it.
+	// The Codex route refuses the same shape for the same reason.
+	if afterErr != nil {
+		verification.Detail = "the turn ran, but the installed session could not be measured afterwards: " + afterErr.Error()
+		return verification
+	}
+	if after <= before {
+		verification.Detail = fmt.Sprintf(
+			"the harness answered from the installed session in one turn, but the session file did not grow "+
+				"(%d bytes before and after), so the turn was not appended to the installed session", before)
 		return verification
 	}
 	verification.State = VerificationStateVerified

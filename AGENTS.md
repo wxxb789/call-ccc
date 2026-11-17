@@ -38,10 +38,12 @@ with their exit codes and counts).
 - **A conversion writes a fresh native identity and replaces nothing.** The install is exclusive, the
   source is never opened for writing, no credential or login store is copied, and a target data
   directory nobody named is an error rather than a directory invented here. Tests and demos use
-  isolated data directories. A written session records the target harness's own configured model
+  isolated data directories. A written Codex session records the target harness's own configured model
   provider — asked of the harness itself — and no model, never the source's: recording nothing is
   refused by a home that has migrated to paginated threads, and recording the source's provider would
-  be false.
+  be false. A Claude Code transcript has no provider field at all, so `--to claude` states that as the
+  `model_provider_binding` format limit and binds the session to no provider, and neither route ever
+  writes the source's.
 - Out of scope by design: Git/worktree management, process or environment migration, credentials,
   fleet orchestration, and any second session index for the existing archive.
 

@@ -212,7 +212,7 @@ func TestVerifyClaudeLoadResolvesTheInstalledSessionAndItsControl(t *testing.T) 
 	withFakeHarness(t, harness)
 
 	verification := VerifyClaudeLoad(context.Background(), ClaudeLoadOptions{
-		Home: home, Binary: "claude", SessionID: transcript.SessionID, Cwd: transcript.Cwd,
+		Binary: "claude", SessionID: transcript.SessionID, Cwd: transcript.Cwd,
 		Directory: transcript.Directory, FileName: transcript.FileName, Data: transcript.Data,
 		Installed: installed, Timeout: time.Minute,
 	})
@@ -260,11 +260,11 @@ func TestVerifyClaudeLoadResolvesTheInstalledSessionAndItsControl(t *testing.T) 
 // that answers about a different session -- or answers at all for an id nothing installed -- has not shown
 // that this session resolves.
 func TestVerifyClaudeLoadRefusesAnAnswerAboutAnotherSession(t *testing.T) {
-	home, transcript, installed := installedClaudeSession(t)
+	_, transcript, installed := installedClaudeSession(t)
 	other := &fakeHarness{answerSessionID: transcript.SessionID, controlAnswersJSON: true}
 	withFakeHarness(t, other)
 	verification := VerifyClaudeLoad(context.Background(), ClaudeLoadOptions{
-		Home: home, Binary: "claude", SessionID: transcript.SessionID, Cwd: transcript.Cwd,
+		Binary: "claude", SessionID: transcript.SessionID, Cwd: transcript.Cwd,
 		Directory: transcript.Directory, FileName: transcript.FileName, Data: transcript.Data,
 		Installed: installed,
 	})
@@ -279,7 +279,7 @@ func TestVerifyClaudeLoadRefusesAnAnswerAboutAnotherSession(t *testing.T) {
 	answeringAnotherSession := &fakeHarness{answerSessionID: "99999999-9999-4999-8999-999999999999"}
 	withFakeHarness(t, answeringAnotherSession)
 	verification = VerifyClaudeLoad(context.Background(), ClaudeLoadOptions{
-		Home: home, Binary: "claude", SessionID: transcript.SessionID, Cwd: transcript.Cwd,
+		Binary: "claude", SessionID: transcript.SessionID, Cwd: transcript.Cwd,
 		Directory: transcript.Directory, FileName: transcript.FileName, Data: transcript.Data,
 		Installed: installed,
 	})
@@ -335,6 +335,26 @@ func TestVerifyClaudeResumeReportsTheTurnAndTheGrowth(t *testing.T) {
 	}
 	if !strings.Contains(verification.Detail, "Not logged in") {
 		t.Errorf("detail = %q, want the harness's own reason", verification.Detail)
+	}
+
+	// A harness that answers in one turn but appends nothing to the installed session: an answer alone
+	// is not evidence that the turn continues the installed session, so the state is refused and the
+	// detail names the sizes that show nothing was written.
+	nonGrowing := &fakeHarness{answerSessionID: transcript.SessionID, resumeResult: "Four attempts, in internal/retry/policy.go."}
+	withFakeHarness(t, nonGrowing)
+	verification = VerifyClaudeResume(context.Background(), ClaudeResumeOptions{
+		Home: home, Binary: "claude", SessionID: transcript.SessionID, Cwd: transcript.Cwd,
+		SessionPath: installed, Prompt: "How many attempts?",
+	})
+	if verification.State == VerificationStateVerified {
+		t.Fatalf("resume = %+v, want it refused: the session file did not grow", verification)
+	}
+	if !strings.Contains(verification.Detail, "did not grow") {
+		t.Errorf("detail = %q, want it to name the session file that did not grow", verification.Detail)
+	}
+	if verification.SessionBytesAfter != verification.SessionBytesBefore {
+		t.Errorf("the report shows the session growing (%d -> %d) although the turn wrote nothing",
+			verification.SessionBytesBefore, verification.SessionBytesAfter)
 	}
 }
 

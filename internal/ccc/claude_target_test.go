@@ -180,12 +180,13 @@ func TestConvertToClaudeTranscriptWritesTheMeasuredShape(t *testing.T) {
 
 	// The tool pair: one assistant record holding the call, and one user record holding the result under
 	// the same id.
-	var callID, resultID string
+	var callID, callMessageID, resultID string
 	for _, record := range records {
 		for _, block := range recordBlocks(record) {
 			switch block["type"] {
 			case claudeBlockToolUse:
 				callID, _ = block["id"].(string)
+				callMessageID, _ = record["message"].(map[string]any)["id"].(string)
 				if block["name"] != "shell" {
 					t.Errorf("the tool call's name is %v, want the source's own %q", block["name"], "shell")
 				}
@@ -210,9 +211,32 @@ func TestConvertToClaudeTranscriptWritesTheMeasuredShape(t *testing.T) {
 		t.Errorf("the file pairs call %q with result %q, want the same id", callID, resultID)
 	}
 
-	// The assistant text and its call are two records of one message: the target's readers merge records
-	// that share a message id, and a writer that reused one across messages would merge those instead.
-	messageIDs := map[string][]map[string]any{}
+	// The message id is the grouping both readers rebuild one message from: the records of one source
+	// message share it, and records of different messages carry different ones. The fixture records the
+	// `shell` call and the assistant text as two different source messages (a `function_call` item and
+	// the later assistant message), so an id shared here would be the writer merging what the source
+	// kept apart. The shared-id half of the rule is pinned on a message that carries both components in
+	// TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers.
+	grouped := assistantRecordsByMessageID(t, records)
+	textMessageID := assistantMessageIDWithText(t, records, "It is set in internal/retry/config.go.")
+	if got := len(grouped[textMessageID]); got != 1 {
+		t.Errorf("the assistant text's message id groups %d assistant record(s), want its own record alone", got)
+	}
+	if got := len(grouped[callMessageID]); got != 1 {
+		t.Errorf("the tool call's message id groups %d assistant record(s), want the call's own record alone: "+
+			"the source recorded the call as a message of its own", got)
+	}
+	if lastMessageID := assistantMessageIDWithText(t, records, "Four attempts, in internal/retry/policy.go."); lastMessageID == textMessageID || lastMessageID == callMessageID {
+		t.Errorf("two of the fixture's three assistant messages carry message id %q", lastMessageID)
+	}
+}
+
+// assistantRecordsByMessageID groups the assistant records by the message id each carries, and fails on
+// a record without one: the id is what tells both readers which records are one message, so a record
+// missing it is one no read of the file can put back where the writer meant it.
+func assistantRecordsByMessageID(t *testing.T, records []map[string]any) map[string][]map[string]any {
+	t.Helper()
+	grouped := map[string][]map[string]any{}
 	for _, record := range records {
 		if record["type"] != claudeTypeAssistant {
 			continue
@@ -222,11 +246,9 @@ func TestConvertToClaudeTranscriptWritesTheMeasuredShape(t *testing.T) {
 		if id == "" {
 			t.Fatalf("an assistant record carries no message id: %v", record)
 		}
-		messageIDs[id] = append(messageIDs[id], record)
+		grouped[id] = append(grouped[id], record)
 	}
-	if _, ok := messageIDs[assistantMessageIDWithText(t, records, "It is set in internal/retry/config.go.")]; !ok {
-		t.Error("the assistant text and its tool call do not share a message id")
-	}
+	return grouped
 }
 
 // assistantMessageIDWithText answers the message id of the assistant record whose text is want.
@@ -294,8 +316,8 @@ func TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers(t *testing.T) {
 		"whitespace_only_dialogue", "unpaired_tool_results", "empty_tool_results",
 		"whitespace_only_tool_results", "unrepresentable_result_blocks", "unresolved_tool_outputs",
 		"tool_result_statuses", "empty_tool_inputs", "generated_call_ids", "tool_name_vocabulary",
-		"message_model_attribution", "pre_compaction_history", "malformed_source_lines",
-		"summary_transcript", "source_needs_retry",
+		"message_model_attribution", "pre_compaction_history", "empty_compaction_summary",
+		"malformed_source_lines", "summary_transcript", "source_needs_retry",
 	} {
 		lossCount(t, transcript.Losses, category)
 	}
@@ -372,6 +394,83 @@ func TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers(t *testing.T) {
 	}
 	if transcript.Carried.CompactionBoundaries != 1 {
 		t.Errorf("carried %d boundary(ies), want one", transcript.Carried.CompactionBoundaries)
+	}
+
+	// The message id is the grouping both readers rebuild one message from: the one source message that
+	// carries dialogue and two calls became three assistant records, and all three share exactly one id,
+	// while the other message's records carry a different one. A writer that reused an id across
+	// messages would merge them; one that generated an id per record would split this message.
+	records := decodeTranscript(t, transcript)
+	grouped := assistantRecordsByMessageID(t, records)
+	sharedID := assistantMessageIDWithText(t, records, "At the top of config.go.")
+	if got := len(grouped[sharedID]); got != 3 {
+		t.Errorf("the message carrying the dialogue and two calls is %d assistant record(s) under message id %q, want 3",
+			got, sharedID)
+	}
+	for _, record := range grouped[sharedID] {
+		blocks := recordBlocks(record)
+		if len(blocks) != 1 {
+			t.Errorf("a record of the dialogue-and-calls message holds %d block(s), want one: %v", len(blocks), blocks)
+			continue
+		}
+		if kind := blocks[0]["type"]; kind != claudeBlockText && kind != claudeBlockToolUse {
+			t.Errorf("a record of the dialogue-and-calls message holds a %v block", kind)
+		}
+	}
+	if otherID := assistantMessageIDWithText(t, records, "It is set in policy.go."); otherID == sharedID {
+		t.Errorf("two different messages carry the same message id %q", sharedID)
+	}
+}
+
+// TestClaudeWriterReportsACompactionBoundaryWhoseSummaryHoldsNoText pins the disclosure for the one
+// boundary shape whose summary cannot travel as text: the inherited Codex reader trims a compacted
+// record's summary (internal/parser's handleCompacted), so a source summary of whitespace alone -- or a
+// remote compaction that recorded none -- arrives as no text. The target's boundary pair is still
+// written, because the pair is what makes the target apply the boundary, and the summary record and the
+// report both say that no summary text traveled rather than presenting the boundary as a carried one.
+func TestClaudeWriterReportsACompactionBoundaryWhoseSummaryHoldsNoText(t *testing.T) {
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "hello", Dialogue: "hello", DialogueProjected: true},
+		// The shape the reader produces for a `compacted` record whose message is whitespace-only (or
+		// absent): a system boundary message with no content.
+		Message{Ordinal: 1, Role: "assistant", IsSystem: true, IsCompactBoundary: true},
+	)
+	transcript, err := ConvertToClaudeTranscript(conversation, ClaudeTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting the document: %v", err)
+	}
+	if loss := lossCount(t, transcript.Losses, "empty_compaction_summary"); loss.Count != 1 ||
+		loss.Disposition != DispositionOmitted {
+		t.Errorf("empty_compaction_summary = %+v, want the summary that holds no text counted as omitted", loss)
+	}
+	if transcript.Carried.CompactionBoundaries != 1 {
+		t.Errorf("carried = %+v, want the boundary still written", transcript.Carried)
+	}
+	var boundarySeen, summarySeen bool
+	for _, record := range decodeTranscript(t, transcript) {
+		if record["type"] != claudeTypeSystem || record["subtype"] != claudeSubtypeCompactBoundary {
+			continue
+		}
+		boundarySeen = true
+		for _, block := range recordBlocks(record) {
+			if block["type"] == claudeBlockText {
+				t.Errorf("the boundary marker holds text: %v", block)
+			}
+		}
+	}
+	for _, record := range decodeTranscript(t, transcript) {
+		if record["isCompactSummary"] != true {
+			continue
+		}
+		summarySeen = true
+		blocks := messageBlocks(t, record)
+		if len(blocks) != 1 || blocks[0]["type"] != claudeBlockText || blocks[0]["text"] != "" {
+			t.Errorf("the summary record holds %v, want one empty text block: the summary text did not travel", blocks)
+		}
+	}
+	if !boundarySeen || !summarySeen {
+		t.Errorf("the transcript holds boundary=%v summary=%v, want both: the pair is what applies the boundary",
+			boundarySeen, summarySeen)
 	}
 }
 

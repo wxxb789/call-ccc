@@ -12,6 +12,16 @@ import (
 // configured source root, which is how the CLI resolves a session the caller names by path.
 const codexFixtureRefRelative = "2026/05/04/rollout-2026-05-04T09-15-00-0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812.jsonl"
 
+// claudeShellUnsafeHome answers a Claude Code data directory whose path a POSIX shell would act on --
+// it holds a space -- so the printed resume line must quote it on every host. The rule is the one
+// main_test.go's shellUnsafeHome pins for the Codex route: an assertion written against the host's own
+// temp path would pin whichever arm that host happens to spell (bare where nothing in it is shell
+// syntax, quoted where it holds backslashes) instead of the quoting rule itself.
+func claudeShellUnsafeHome(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(t.TempDir(), "claude home")
+}
+
 // TestContinueToClaudeConvertsInstallsAndReportsTheRoute pins the second route through the CLI the way
 // the Codex route's own cases pin theirs: one documented non-interactive invocation converts a Codex
 // session into a Claude Code session, the report distinguishes conversion, installation and verification,
@@ -19,7 +29,7 @@ const codexFixtureRefRelative = "2026/05/04/rollout-2026-05-04T09-15-00-0c8e5f21
 // target's loader finds a session through.
 func TestContinueToClaudeConvertsInstallsAndReportsTheRoute(t *testing.T) {
 	isolatedEnvironment(t)
-	home := t.TempDir()
+	home := claudeShellUnsafeHome(t)
 	sourcePath := filepath.Join(fixtureRoot(t), "codex", filepath.FromSlash(codexFixtureRefRelative))
 	sourceBefore, err := os.ReadFile(sourcePath)
 	if err != nil {
@@ -81,7 +91,8 @@ func TestContinueToClaudeConvertsInstallsAndReportsTheRoute(t *testing.T) {
 	}
 	// The invocation is reported three ways, and all three have to name the session; the printed line
 	// additionally names the working directory and the data directory, without which the loader cannot
-	// find the session at all.
+	// find the session at all. The home holds a space, so a shell would act on the bare word: the line
+	// has to quote the data directory, exactly as a POSIX shell reads it back.
 	wantArguments := []string{missingTargetBinary, "--resume", document.TargetSession.SessionID}
 	if len(document.TargetSession.ResumeArguments) != len(wantArguments) {
 		t.Errorf("resume arguments = %v, want %v", document.TargetSession.ResumeArguments, wantArguments)
@@ -98,7 +109,7 @@ func TestContinueToClaudeConvertsInstallsAndReportsTheRoute(t *testing.T) {
 	if !strings.HasPrefix(document.TargetSession.ResumeCommand, "cd /home/user/code/example-api && ") {
 		t.Errorf("resume command = %q, want it to start in the session's working directory", document.TargetSession.ResumeCommand)
 	}
-	for _, want := range []string{"CLAUDE_CONFIG_DIR=" + home, missingTargetBinary, "--resume " + document.TargetSession.SessionID} {
+	for _, want := range []string{"CLAUDE_CONFIG_DIR='" + home + "'", missingTargetBinary, "--resume " + document.TargetSession.SessionID} {
 		if !strings.Contains(document.TargetSession.ResumeCommand, want) {
 			t.Errorf("resume command %q does not carry %q", document.TargetSession.ResumeCommand, want)
 		}
@@ -133,7 +144,7 @@ func TestContinueToClaudeConvertsInstallsAndReportsTheRoute(t *testing.T) {
 // the route, the installed identity and the exact command that resumes it.
 func TestContinueToClaudeHumanOutputCarriesTheResumeLine(t *testing.T) {
 	isolatedEnvironment(t)
-	home := t.TempDir()
+	home := claudeShellUnsafeHome(t)
 	code, stdout, stderr := runCLI(t, "continue", "codex:"+codexFixtureRefRelative, "--to", "claude",
 		"--target-home", home, "--target-binary", missingTargetBinary)
 	if code != exitOK {
@@ -145,7 +156,7 @@ func TestContinueToClaudeHumanOutputCarriesTheResumeLine(t *testing.T) {
 		"installed:",
 		"target id:",
 		"cd /home/user/code/example-api && ",
-		"CLAUDE_CONFIG_DIR=" + home,
+		"CLAUDE_CONFIG_DIR='" + home + "'",
 		missingTargetBinary + " --resume ",
 		"structure:    verified",
 		"cli_version:",
