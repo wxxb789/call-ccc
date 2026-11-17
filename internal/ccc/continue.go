@@ -1,6 +1,7 @@
 package ccc
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -47,6 +48,57 @@ const (
 
 // ErrUnsupportedTarget reports a target harness this build has no writer for.
 var ErrUnsupportedTarget = errors.New("unsupported target harness")
+
+// Source-boundary states: whether a conversion's snapshot of the source was measured against the source
+// file's own bytes at all. There are two answers, not three -- a boundary was taken, or it was not and the
+// detail says what kept it from being taken (an archive read has no source file open; a container member's
+// bytes are not one file's) -- and folding the second into an empty block would leave a caller unable to
+// tell "no file to measure" from "this build measured nothing".
+const (
+	SourceBoundaryTaken    = "taken"
+	SourceBoundaryNotTaken = "not-taken"
+)
+
+// SourceBoundary is where one conversion's snapshot of the source stops: the source file's own bytes at the
+// boundary instant (its size and the digest of exactly those bytes), and -- for a source whose records are
+// lines the harness appends -- the offset at which the file's last complete record ends and the bytes after
+// it that no snapshot publishes.
+//
+// It exists because a conversion is a one-way snapshot of a source that may keep growing: the digest and
+// the byte offsets are what make two conversions of one source distinguishable and each one attributable to
+// the bytes it read, and the unpublished tail is the honest answer to a source captured while it was still
+// being written -- a tail the inherited readers handle differently (the Claude reader counts an
+// unterminated trailing record as malformed and flags the session truncated; the Codex reader deliberately
+// counts nothing for a live session's tail) and that this block states uniformly from the file's own bytes.
+type SourceBoundary struct {
+	// State is SourceBoundaryTaken or SourceBoundaryNotTaken.
+	State string `json:"state"`
+	// Detail is the state's own words: how the boundary was taken, or what kept it from being taken.
+	Detail string `json:"detail,omitempty"`
+
+	// Path is the source session's own file, as the read recorded it.
+	Path string `json:"path,omitempty"`
+	// Bytes is that file's size at the boundary instant, and SHA256 the digest of exactly those bytes. They
+	// are taken by the same streamed pass the pre-conversion comparison uses, so a conversion costs one
+	// read of the file, not two, for both answers.
+	Bytes  int64  `json:"bytes,omitempty"`
+	SHA256 string `json:"sha256,omitempty"`
+
+	// RecordsAreLines says whether the two offsets below are claimed: they are claimed when the provider's
+	// own declarations say its source is a transcript of line records (an appended-lines source, or one
+	// whose read counts the records it could not parse). False means the block states the file's bytes and
+	// claims no record boundary, because the claim is the provider's to make rather than this build's guess
+	// about a format.
+	RecordsAreLines bool `json:"records_are_lines"`
+	// RecordsEndBytes is the offset at which the source's last complete line-recorded event ends: the byte
+	// just after the file's last line feed. Bytes after it (UnpublishedTailBytes) hold no record terminator,
+	// so no complete record ends there.
+	RecordsEndBytes int64 `json:"records_end_bytes,omitempty"`
+	// UnpublishedTailBytes counts the bytes after RecordsEndBytes: a record the file had not finished
+	// writing when the boundary was taken. It is reported, never published, and the goal's own remedy for it
+	// is another conversion once the source has been written.
+	UnpublishedTailBytes int64 `json:"unpublished_tail_bytes,omitempty"`
+}
 
 // CheckVerifyOptions answers whether a verification request is one this build can honour, in the words
 // the CLI refuses a command line with as well: the level must be none, load (the default when it is
@@ -287,13 +339,24 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 	// for the session's recorded transcript.
 	result.Warnings = append(result.Warnings, fidelityWarnings(conversation.Fidelity)...)
 
-	// The source's digest is taken before anything is written and compared again afterwards: the
-	// property the design asks for is that the transcript a conversation came from is the same file
-	// afterwards, whatever the provider's own fingerprint happens to hash.
-	sourceDigest, err := sourceFileDigest(conversation, readFrom)
+	// The source's own bytes are measured once, after the read and before anything is written: the digest
+	// this pass takes is the one the post-installation comparison re-reads, and the boundary it answers is
+	// what makes one conversion's snapshot distinguishable from another's -- which source file, which bytes
+	// of it, and how much of a still-growing tail no snapshot publishes. The property the design asks for is
+	// that the transcript a conversation came from is the same file afterwards, whatever the provider's own
+	// fingerprint happens to hash.
+	boundary, err := takeSourceBoundary(reader, conversation, readFrom)
 	if err != nil {
 		return ContinueResult{}, err
 	}
+	if result.Source != nil {
+		result.Source.Boundary = &boundary
+	}
+	sourceDigest := boundary.SHA256
+	// A source captured while it was still being written is reported in the warnings as well as in the
+	// boundary block: the conversion is real, and what is missing from it is a record the file had not
+	// finished writing, which another conversion carries.
+	result.Warnings = append(result.Warnings, boundaryWarnings(&boundary)...)
 
 	// What only the target's own harness can answer (Codex: the model provider its loader checks). It is
 	// asked here, after the read, because the answer can depend on the session's own working directory.
@@ -751,18 +814,134 @@ func sourceFileOf(conversation Conversation) sourceFile {
 	return sourceFile{path: path}
 }
 
-// sourceFileDigest is the digest of the source session's own file, or "" when there is no file of its own
-// to compare: a projection has no file of its own, and neither has a member read out of a container's
-// rows, so the caller says the comparison did not run instead of claiming a check that did.
-func sourceFileDigest(conversation Conversation, readFrom string) (string, error) {
+// takeSourceBoundary measures where one conversion's snapshot of the source stops. It answers the source
+// session's own file, its size and the digest of those bytes, and -- when the provider's own declarations
+// say the source is a transcript of line records -- the offset its last complete record ends at.
+//
+// It is called once per conversion, after the session was read and before anything is written, and it is
+// the *same* pass that answers the digest the post-installation comparison re-reads: a conversion therefore
+// pays for one read of the source file here, exactly as it did before the boundary existed.
+//
+// A read whose identity is not one file's name is answered as a boundary that was not taken, with the
+// reason, rather than as an error the caller would have to turn back into one: an archive read has no
+// source file open, and a container member's bytes are the container's, not this conversation's
+// (sourceFileOf). Only a file that cannot be read stops the run, the way the pre-conversion digest already
+// did.
+func takeSourceBoundary(reader *SourceReader, conversation Conversation, readFrom string) (SourceBoundary, error) {
 	if readFrom != "source" {
-		return "", nil
+		return SourceBoundary{
+			State:  SourceBoundaryNotTaken,
+			Detail: "the conversion read an archive row, so no source file was open at all",
+		}, nil
 	}
 	file := sourceFileOf(conversation)
-	if file.path == "" {
-		return "", nil
+	if file.reason != "" {
+		return SourceBoundary{State: SourceBoundaryNotTaken, Detail: file.reason}, nil
 	}
-	return fileDigest(file.path)
+	if strings.TrimSpace(file.path) == "" {
+		// A read that reported no path is the shape the source comparison stops on (sourceCheckAfter), and
+		// the boundary says the same thing here rather than measuring a file nobody named.
+		return SourceBoundary{
+			State:  SourceBoundaryNotTaken,
+			Detail: "the source read reported no path, so no file holds this conversation's bytes",
+		}, nil
+	}
+	boundary, err := sourceBoundaryOfFile(file.path, sourceRecordsAreLines(reader, conversation.Source.Provider))
+	if err != nil {
+		return SourceBoundary{}, fmt.Errorf("reading the source session's own bytes: %w", err)
+	}
+	return boundary, nil
+}
+
+// sourceRecordsAreLines answers whether one provider's own declarations say its source is a transcript of
+// line records: the capability that says the source grows by appended lines (which its read can only
+// re-answer by parsing the whole file again), or the capability that says a read counts the records it
+// could not parse. Both are declarations only a line-recorded source has.
+//
+// Anything else answers false, including a provider this reader cannot resolve (a disabled provider, a
+// stored agent label with no factory of its own): the boundary then states the file's bytes and claims no
+// record boundary, because that claim is the provider's to make and never this build's guess about a
+// format. A provider whose format is line-recorded but that declares neither capability therefore gets no
+// byte-level record boundary, which is a narrowing this build states rather than a claim it invents.
+func sourceRecordsAreLines(reader *SourceReader, provider string) bool {
+	if reader == nil {
+		return false
+	}
+	_, factory, err := reader.resolveFactory(provider)
+	if err != nil {
+		return false
+	}
+	capabilities := factory.Capabilities()
+	return capabilities.Source.IncrementalAppend == parser.CapabilitySupported ||
+		capabilities.Content.MalformedLineCount == parser.CapabilitySupported
+}
+
+// sourceBoundaryOfFile reads one file once, answering its size, the digest of exactly those bytes, and --
+// when the caller asked for a record boundary -- where the file's last complete line-recorded event ends.
+//
+// The record offsets are byte facts about the file, not a parse of it: records_end is the offset just after
+// the file's last line feed, and the bytes after it are a line the file had not finished writing. A file
+// with no line feed at all has no complete record in it (records_end 0, the whole file unpublished), and an
+// empty file has neither.
+func sourceBoundaryOfFile(path string, recordsAreLines bool) (SourceBoundary, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return SourceBoundary{}, err
+	}
+	defer file.Close()
+	hasher := sha256.New()
+	// One bounded buffer for a source that can be hundreds of megabytes: the caller's cost is the file's
+	// size, not a copy of it.
+	buffer := make([]byte, 32<<10)
+	var size, recordsEnd int64
+	for {
+		read, err := file.Read(buffer)
+		if read > 0 {
+			chunk := buffer[:read]
+			_, _ = hasher.Write(chunk)
+			if last := bytes.LastIndexByte(chunk, '\n'); last >= 0 {
+				recordsEnd = size + int64(last) + 1
+			}
+			size += int64(read)
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return SourceBoundary{}, err
+		}
+	}
+	boundary := SourceBoundary{
+		State:  SourceBoundaryTaken,
+		Detail: "the conversation's own source file, read after the session and before anything was written",
+		Path:   path,
+		Bytes:  size,
+		SHA256: hex.EncodeToString(hasher.Sum(nil)),
+	}
+	if recordsAreLines {
+		boundary.RecordsAreLines = true
+		boundary.RecordsEndBytes = recordsEnd
+		boundary.UnpublishedTailBytes = size - recordsEnd
+	}
+	return boundary, nil
+}
+
+// boundaryWarnings names an unfinished source tail in the report's own channel. A conversion of a session
+// captured while it was still being written is a real conversion of everything the file had recorded, and a
+// caller reading only the human block's head or only the warnings must still learn that the file holds a
+// record this snapshot does not, and that converting again is what carries it.
+//
+// A boundary that was not taken is not warned about: nothing measured a tail, and the block's own state and
+// detail already say why there is none.
+func boundaryWarnings(boundary *SourceBoundary) []string {
+	if boundary == nil || boundary.State != SourceBoundaryTaken || boundary.UnpublishedTailBytes <= 0 {
+		return nil
+	}
+	return []string{fmt.Sprintf(
+		"the source file holds an unfinished record: its bytes end at byte %d while its records end at byte "+
+			"%d, so the last %d byte(s) hold no record terminator and are not part of this conversion; "+
+			"converting again once the source has been written carries them",
+		boundary.Bytes, boundary.RecordsEndBytes, boundary.UnpublishedTailBytes)}
 }
 
 // sourceFilePath is the source session's own file, as the read recorded it.
@@ -826,17 +1005,16 @@ func sourceChangedWarnings(state string) []string {
 // fileDigest is one file's SHA-256, streamed rather than read into memory: a source transcript can be
 // hundreds of megabytes, and the comparison needs its digest, not a copy of it. The io.Copy buffer is
 // what keeps the read bounded (32 KiB at a time), so the caller's cost is the file's size, not twice it.
+//
+// It is the boundary pass with the record offsets unused, so one implementation answers both the digest a
+// comparison needs and the boundary a conversion reports -- a second loop over the same bytes would be a
+// second read of a large file for the same answer.
 func fileDigest(path string) (string, error) {
-	file, err := os.Open(path)
+	boundary, err := sourceBoundaryOfFile(path, false)
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
-	hasher := sha256.New()
-	if _, err := io.Copy(hasher, file); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(hasher.Sum(nil)), nil
+	return boundary.SHA256, nil
 }
 
 // codexHomeEnv is the environment variable that selects the Codex data directory a run reads: Codex has

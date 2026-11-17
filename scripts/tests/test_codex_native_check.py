@@ -536,6 +536,32 @@ PROTECTED_CHECKS = ("the source session is unchanged",
 #: host spells paths with.
 PRE_EXISTING_NAME = "rollout-2025-12-31T23-59-00-01a1e000-0000-7000-8000-000000000003.jsonl"
 
+#: The words the case's own growth fragment records, so the run has something to find in the *later*
+#: target's document and not in the earlier one. They are the case's, not the committed fixture's: what
+#: this half of the suite pins is that the shipped check reads the fragment it is given and searches the
+#: two documents for its words.
+GROWTH_QUESTION = "What budget do retries share per session?"
+GROWTH_ANSWER = "The retry budget is 120 seconds per session."
+
+#: The comparisons the repeat half adds, in the order the shipped check records them. A case that asserts
+#: "nothing else was red" names them all, so a comparison that stopped running -- or one that never runs
+#: because its stage was skipped -- is red here rather than silently absent.
+REPEAT_CHECKS = (
+    "the conversion reports the boundary of the source copy it read",
+    "the source copy is unchanged by the conversion",
+    "the source copy grew by exactly the appended turn",
+    "the second conversion reports the boundary of the grown source copy",
+    "the second conversion's identity is new, not the source's and not the first session's",
+    "the second installed file is one JSON object per line",
+    "the second conversion carries the history the source gained",
+    "the first conversion's session is unchanged by the second",
+    "the source copy is unchanged by the second conversion",
+    "the inherited reader reads the second installed file back as what was written",
+    "the target harness's own loader opens the second installed session",
+    "the target's own view of the second session lists the appended turn",
+    "the first session's own view does not hold the appended turn",
+)
+
 
 class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
     """The source session, the planted session and every session the home already held are compared
@@ -563,14 +589,32 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
     with itself.
     """
 
-    def drive(self, mutate_during_resume: bool,
-              installed_extra_line: str | None = None) -> tuple[int, dict[str, tuple[str, str]]]:
+    def drive(self, mutate_during_resume: bool = False,
+              installed_extra_line: str | None = None,
+              mutate_first_session_by_second: bool = False,
+              second_boundary: str | None = None,
+              include_growth_in_second: bool = True) -> tuple[int, dict[str, tuple[str, str]]]:
         """One run of the shipped ``main`` against stubs; answers its exit code and its recorded checks.
 
-        ``installed_extra_line`` is a line the stub appends to the installed file after its one object, so
-        the JSONL check's own failure paths are exercised: the line may be unparseable JSON or a valid
-        JSON value that is not an object, and the check has to name each as the failure its own name
-        promises.
+        ``installed_extra_line`` is a line the stub appends to the first installed file after its one
+        object, so the JSONL check's own failure paths are exercised: the line may be unparseable JSON or
+        a valid JSON value that is not an object, and the check has to name each as the failure its own
+        name promises.
+
+        ``mutate_first_session_by_second`` changes the asset the *second* conversion's comparisons are
+        about: the first conversion's installed file is rewritten while the second conversion runs, so the
+        comparison that says the earlier target is untouched -- and only it -- must fail. That is what
+        pins the new comparison to the end of the run rather than to the first conversion's own stage.
+
+        ``second_boundary`` replaces the boundary the second conversion's document reports (``sha256``,
+        ``bytes``, or any other field), so the attribution comparison is exercised against a report that
+        is not the grown copy's bytes: the check measures the file itself, so a document this off must be
+        a failure rather than something the harness takes the report's word for.
+
+        ``include_growth_in_second`` is the control for the *search* over the two documents: with it off,
+        the second conversion's file and the target's own view of it omit the appended turn's words, so
+        the comparisons that require them -- and only they -- must fail. A search that looked for nothing,
+        or one that searched the wrong file, would stay green here.
         """
         # The scratch root is resolved before anything is derived from it, because the shipped ``main``
         # resolves what it is handed (``--repo`` always, and ``--codex-home`` when the caller names one,
@@ -589,6 +633,15 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                    / "-fake-project" / f"{NATIVE_CHECK.SOURCE_SESSION}.jsonl")
         fixture.parent.mkdir(parents=True)
         fixture.write_text(json.dumps({"type": "user"}) + "\n")
+        # The committed growth fragment this run appends to its *copy*: two records, as the shipped
+        # fixturegen writes one, with the words the later target's document has to hold and the earlier
+        # one must not.
+        fragment = repo / NATIVE_CHECK.GROWTH_ROOT / NATIVE_CHECK.GROWTH_TURN
+        fragment.parent.mkdir(parents=True)
+        fragment.write_text(json.dumps({"type": "user", "message": {"content": GROWTH_QUESTION}}) + "\n"
+                            + json.dumps({"type": "assistant",
+                                          "message": {"content": [{"type": "text",
+                                                                   "text": GROWTH_ANSWER}]}}) + "\n")
         home = scratch / "codex-home"
         home.mkdir()
         # The two tools the harness resolves: names it only compares and runs through the stub below,
@@ -597,8 +650,11 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         go = str(scratch / "go")
 
         thread_id = "01a1e000-0000-7000-8000-000000000002"
+        second_thread_id = "01a1e000-0000-7000-8000-000000000004"
         installed = (home / "sessions" / "2026" / "05" / "04"
                      / f"rollout-2026-05-04T09-15-00-{thread_id}.jsonl")
+        second_installed = (home / "sessions" / "2026" / "05" / "04"
+                            / f"rollout-2026-05-04T09-15-00-{second_thread_id}.jsonl")
         planted = home / "sessions" / "2026" / "01" / "01" / NATIVE_CHECK.UNRELATED_NAME
         # A session the home already held before this run started, besides the one the harness plants:
         # the third comparison's subject. The harness only digests it, so a metadata line is all it needs
@@ -620,27 +676,54 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             """The words as the renderer under test spells them: each quoted where a shell acts."""
             return " ".join(shlex.quote(word) for word in words)
 
-        resume_arguments = [codex, "resume", thread_id]
-        exec_resume_arguments = [codex, "exec", "resume", thread_id, "<prompt>"]
-        document = {
-            "conversion": {
-                "state": "converted", "format": "codex-rollout-jsonl",
-                "carried": {"messages": 3, "user_messages": 1, "tool_calls": 1, "tool_results": 1,
-                            "compaction_boundaries": 0},
-                "losses": [{"category": "reasoning", "disposition": "omitted", "count": 1,
-                            "detail": "the stub's one loss"}],
-            },
-            "installation": {"state": "installed", "path": str(installed), "mechanism": "hard-link",
-                             "created": True, "source_check_state": "unchanged"},
-            "target_session": {
-                "session_id": thread_id, "path": str(installed), "binary_found": True,
-                "resume_arguments": resume_arguments, "exec_resume_arguments": exec_resume_arguments,
-                "resume_environment": {"CODEX_HOME": str(home)},
-                "resume_command": f"{assignment} {rendered(resume_arguments)}",
-                "exec_resume_command": f"{assignment} {rendered(exec_resume_arguments)}",
-            },
-            "verification": {"load": {"state": "verified"}, "resume": {"state": "verified"}},
-        }
+        def source_copy(env: dict | None) -> Path:
+            """The copy of the fixture the conversion under the stub is reading.
+
+            The harness makes the copy under its own scratch directory and hands the conversion its root
+            through ``CLAUDE_PROJECTS_DIR``, so that variable is where this case finds the file whose
+            bytes the conversion's reported boundary has to be -- the same file the *shipped* check
+            measures for itself.
+            """
+            root = Path((env or {}).get("CLAUDE_PROJECTS_DIR", str(scratch / "source")))
+            return root / "-fake-project" / f"{NATIVE_CHECK.SOURCE_SESSION}.jsonl"
+
+        def document_for(which: str, env: dict | None) -> dict:
+            """One conversion's stub document: its own session id, path and boundary of the copy's bytes."""
+            copy = source_copy(env)
+            boundary = {"state": "taken", "detail": "the case's stub boundary", "path": str(copy),
+                        "bytes": copy.stat().st_size, "sha256": NATIVE_CHECK.sha256(copy),
+                        "records_are_lines": True, "records_end_bytes": copy.stat().st_size}
+            if which == "second":
+                boundary.update(second_boundary or {})
+            session, path = ((thread_id, installed) if which == "first"
+                             else (second_thread_id, second_installed))
+            resume_arguments = [codex, "resume", session]
+            exec_resume_arguments = [codex, "exec", "resume", session, "<prompt>"]
+            user_messages, assistant_messages = (1, 1) if which == "first" else (2, 2)
+            return {
+                "conversion": {
+                    "state": "converted", "format": "codex-rollout-jsonl",
+                    "carried": {"messages": user_messages + assistant_messages,
+                                "user_messages": user_messages,
+                                "assistant_messages": assistant_messages,
+                                "tool_calls": 1, "tool_results": 1, "compaction_boundaries": 0},
+                    "losses": [{"category": "reasoning", "disposition": "omitted", "count": 1,
+                                "detail": "the stub's one loss"}],
+                },
+                "installation": {"state": "installed", "path": str(path), "mechanism": "hard-link",
+                                 "created": True, "source_check_state": "unchanged"},
+                "target_session": {
+                    "session_id": session, "path": str(path), "binary_found": True,
+                    "resume_arguments": resume_arguments, "exec_resume_arguments": exec_resume_arguments,
+                    "resume_environment": {"CODEX_HOME": str(home)},
+                    "resume_command": f"{assignment} {rendered(resume_arguments)}",
+                    "exec_resume_command": f"{assignment} {rendered(exec_resume_arguments)}",
+                },
+                "source": {"boundary": boundary},
+                "verification": {"load": {"state": "verified"}, "resume": {"state": "verified"}},
+            }
+
+        conversions = {"made": 0}
 
         def fake_run(cmd, cwd=None, env=None, timeout=600):
             command = [str(part) for part in cmd]
@@ -648,19 +731,34 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 0, "", "")
             if command[0] == str(repo / NATIVE_CHECK.BINARY):
                 if command[1] == "continue":
-                    installed.parent.mkdir(parents=True, exist_ok=True)
-                    installed.write_text(json.dumps({"type": "session_meta"}) + "\n"
-                                         + (installed_extra_line or ""))
+                    conversions["made"] += 1
+                    which = "first" if conversions["made"] == 1 else "second"
+                    document = document_for(which, env)
+                    path = Path(document["target_session"]["path"])
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    body = json.dumps({"type": "session_meta"}) + "\n"
+                    if which == "first" and installed_extra_line:
+                        body += installed_extra_line
+                    elif which == "second" and include_growth_in_second:
+                        # The later document holds the turn the source gained; the earlier one is written
+                        # without it, which is the contrast the check searches for.
+                        body += fragment.read_text()
+                    if which == "second" and mutate_first_session_by_second:
+                        installed.write_text(installed.read_text() + json.dumps({"type": "turn"}) + "\n")
+                    path.write_text(body)
                     return subprocess.CompletedProcess(cmd, 0, json.dumps(document), "")
                 if command[1] == "inspect":
-                    counts = {"user_messages": 1, "tool_calls": 1, "tool_results": 1,
-                              "compact_boundaries": 0}
+                    which = "second" if second_thread_id in command[2] else "first"
+                    counts = {"user_messages": 2 if which == "second" else 1,
+                              "assistant_messages": 2 if which == "second" else 1,
+                              "tool_calls": 1, "tool_results": 1, "compact_boundaries": 0}
                     return subprocess.CompletedProcess(
                         cmd, 0, json.dumps({"source": {"counts": counts}}), "")
             if command[0] == codex and command[1] == "exec":
-                # The resume stage: a turn that continued (the installed file grows) and, when this case
-                # asks for it, the mutation both protected artifacts have to survive.
-                installed.write_text(installed.read_text() + json.dumps({"type": "turn"}) + "\n")
+                # The resume stage: a turn that continued (the session it names grows) and, when this
+                # case asks for it, the mutation both protected artifacts have to survive.
+                turned = second_installed if second_thread_id in command else installed
+                turned.write_text(turned.read_text() + json.dumps({"type": "turn"}) + "\n")
                 if mutate_during_resume:
                     fixture.write_text(fixture.read_text() + json.dumps({"type": "assistant"}) + "\n")
                     planted.write_text(planted.read_text() + json.dumps({"type": "session_meta"}) + "\n")
@@ -680,14 +778,21 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             def call(self, method: str, params: dict) -> dict:
                 if method != "thread/resume":
                     raise AssertionError(f"the case's stub was asked for {method}")
-                return {"thread": {"id": thread_id, "path": str(installed), "historyMode": "legacy",
+                session = str(params.get("threadId"))
+                path = second_installed if session == second_thread_id else installed
+                return {"thread": {"id": session, "path": str(path), "historyMode": "legacy",
                                    "cwd": "/tmp"}}
 
             def close(self) -> None:
                 pass
 
         def fake_thread_view(server, thread):
-            return [f"thread {thread} (the case's stub's own view)"], ["userMessage", "agentMessage"]
+            lines = [f"thread {thread} (the case's stub's own view)"]
+            if str(thread) == second_thread_id and include_growth_in_second:
+                # The target's own view of the later session: the turn the source gained, as the harness
+                # itself lists it.
+                lines += [f"    userMessage: {GROWTH_QUESTION}", f"    agentMessage: {GROWTH_ANSWER}"]
+            return lines, ["userMessage", "agentMessage"]
 
         def fake_which(name, *args, **kwargs):
             return codex if name == "codex" else go
@@ -715,6 +820,12 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         self.assertEqual(failed, sorted(PROTECTED_CHECKS),
                          f"the mutating run's failures are not exactly the three protected-artifact "
                          f"comparisons: {results}")
+        # The repeat half's own comparisons still pass here: the mutation this case makes is of the
+        # *committed* fixture, and the conversions read the copy. A check that read the fixture where it
+        # meant the copy would be red on this run.
+        for name in REPEAT_CHECKS:
+            state, detail = results.get(name, ("missing", ""))
+            self.assertEqual(state, "PASS", f"{name}: {state} — {detail}; all results: {results}")
         self.assertEqual(code, 1, f"exit {code} for a run with failed checks: {results}")
         self.assertIn("the fixture tree changed:", results[PROTECTED_CHECKS[0]][1])
         self.assertIn(" before, ", results[PROTECTED_CHECKS[1]][1])
@@ -734,6 +845,24 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         self.assertIn("1 pre-existing session file(s)", results[PROTECTED_CHECKS[2]][1],
                       "the run's pre-existing-session comparison did not name the session the home "
                       "already held: a capture that never happened agrees with itself")
+        # Every comparison of the repeat half is present and passing, so none of them can be green by
+        # never running, and the only checks that did not run are the two real turns nobody asked for.
+        for name in REPEAT_CHECKS:
+            state, detail = results.get(name, ("missing", ""))
+            self.assertEqual(state, "PASS", f"{name}: {state} — {detail}; all results: {results}")
+        self.assertEqual(sorted(name for name, (state, _) in results.items() if state == "SKIP"),
+                         ["a real turn continues from the second installed session"],
+                         f"the run skipped something other than the one turn nobody asked for: {results}")
+        # The turn this run did ask for ran in the *first* session, which is what makes that session a
+        # session its own harness has already resumed by the time the second conversion happens.
+        self.assertEqual(results["a real turn continues from the installed session"][0], "PASS",
+                         f"the first session's turn did not run: {results}")
+        # The attribution comparisons say what they compared, so a comparison that read the wrong file
+        # (or an empty one) is visible in the record rather than only in a verdict.
+        self.assertIn("the first conversion's boundary was",
+                      results["the second conversion reports the boundary of the grown source copy"][1])
+        self.assertIn("before and after the second conversion",
+                      results["the first conversion's session is unchanged by the second"][1])
         self.assertEqual(code, 0, f"exit {code} for an intact run: {results}")
 
     def test_a_malformed_codex_installed_line_is_a_named_failure(self) -> None:
@@ -749,6 +878,59 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                          f"the malformed installed line did not fail the JSONL check: {results}")
         self.assertIn("line 2 is not JSON", detail, detail)
         self.assertEqual(code, 1, f"exit {code} for a run whose JSONL check failed: {results}")
+
+    def test_a_first_session_mutated_by_the_second_conversion_is_caught(self) -> None:
+        """The comparison about the earlier target runs after the *second* conversion, not before it.
+
+        The stub rewrites the first conversion's installed file while the second conversion runs -- the
+        shape a second conversion that merged into, or overwrote, the session an agent may already have
+        continued would have. Exactly that comparison must fail: the earlier target's bytes are the
+        promise this half of the goal makes, and a comparison recorded before the second conversion would
+        answer on the state it was about before that state could change.
+        """
+        code, results = self.drive(mutate_first_session_by_second=True)
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed, ["the first conversion's session is unchanged by the second"],
+                         f"the mutating run's failures are not exactly the comparison about the first "
+                         f"session: {results}")
+        detail = results["the first conversion's session is unchanged by the second"][1]
+        self.assertIn(" before and after the second conversion", detail, detail)
+        self.assertEqual(code, 1, f"exit {code} for a run with a failed comparison: {results}")
+
+    def test_a_second_boundary_that_is_not_the_grown_copy_fails(self) -> None:
+        """The reported boundary is checked against the file, not taken on its word.
+
+        The stub's second document claims a digest that is not the grown copy's. The check measures the
+        file itself, so the attribution comparison must fail -- and each of the two overrides below is a
+        different way a report can be wrong: a digest from another file, and a size that is not the file's.
+        """
+        for override in ({"sha256": "0" * 64}, {"bytes": 1}, {"state": "not-taken"}):
+            with self.subTest(override=override):
+                code, results = self.drive(second_boundary=override)
+                state, detail = results.get(
+                    "the second conversion reports the boundary of the grown source copy", ("missing", ""))
+                self.assertEqual(state, "FAIL", f"{override}: {state} — {detail}; all results: {results}")
+                # The first conversion's own boundary comparison is not the one that failed: the failure
+                # is attributed to the document that lied, not to the run.
+                self.assertEqual(results["the conversion reports the boundary of the source copy it read"][0],
+                                 "PASS", f"{override}: {results}")
+                self.assertEqual(code, 1, f"{override}: exit {code} for a failed comparison: {results}")
+
+    def test_a_second_document_without_the_appended_turn_fails_the_search(self) -> None:
+        """The two comparisons that look for the turn the source gained are live in both directions.
+
+        With the growth left out of the second conversion's document and out of the target's own view,
+        those two comparisons -- and only they -- must fail. A search that compared nothing, or one that
+        searched the first conversion's file, stays green here.
+        """
+        code, results = self.drive(include_growth_in_second=False)
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed,
+                         sorted(["the second conversion carries the history the source gained",
+                                 "the target's own view of the second session lists the appended turn"]),
+                         f"the run's failures are not exactly the two comparisons that search for the "
+                         f"appended turn: {results}")
+        self.assertEqual(code, 1, f"exit {code} for a run with failed comparisons: {results}")
 
     def test_a_non_object_codex_installed_line_is_a_named_failure(self) -> None:
         """A line that parses but is not a JSON object is a FAIL the check names, not a pass.

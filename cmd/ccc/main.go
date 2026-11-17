@@ -52,6 +52,15 @@ usage:
   harness finds a session through the directory it is run from), naming the data directory the session
   was installed into as well as the session itself.
 
+  A conversion is a snapshot of the source at one moment: it reads the source as it is and writes a new
+  session, so converting the same source again after it has grown writes another new session -- never a
+  merge into one that an agent may already have continued, and never a rewrite of the source. The result
+  names the boundary each snapshot covers (the source file's sha256 and size, and, for a transcript whose
+  records are lines, the offset its last complete record ends at), so two continuations of one growing
+  session can be told apart and the newer one chosen. A source file still holding a record its writer had
+  not finished says so under 'unpublished:' instead of publishing that record, and converting again once
+  the file is written carries it.
+
   inspect reports the session's identity, agent, source and conversation shape. It reads the
   source session through the provider's own reader and, when an archive is present, says what the
   archive holds for the same session. It never writes: the source session and any archive are read
@@ -568,6 +577,7 @@ func writeContinuation(out io.Writer, result ccc.ContinueResult) {
 			fmt.Fprintf(out, "  fidelity:     %d malformed line(s)%s\n",
 				source.Fidelity.MalformedLines, truncatedSuffix(source.Fidelity.Truncated))
 		}
+		writeBoundary(out, source.Boundary)
 	}
 	carried := result.Conversion.Carried
 	fmt.Fprintf(out, "  converted:    %s, %d bytes: %d message(s), %d tool call(s), %d tool result(s), %d boundary(ies), %d turn(s)\n",
@@ -651,6 +661,42 @@ func sourceCheckWord(state string) string {
 	default:
 		return "not verified"
 	}
+}
+
+// writeBoundary prints where the conversion's snapshot of the source stops. It is the human half of
+// `source.boundary`: a caller comparing two conversions of one growing session has to be able to see, by
+// eye, which source bytes each of them read and whether either left a record the file was still writing
+// unpublished. The digest itself is not repeated here -- the `source file:` line below prints the same
+// sha256 in full, taken in the same pass -- so these lines carry what only the boundary states.
+func writeBoundary(out io.Writer, boundary *ccc.SourceBoundary) {
+	if boundary == nil {
+		return
+	}
+	if boundary.State != ccc.SourceBoundaryTaken {
+		fmt.Fprintf(out, "  boundary:     not taken (%s)\n", oneLine(boundary.Detail))
+		return
+	}
+	if !boundary.RecordsAreLines {
+		fmt.Fprintf(out, "  boundary:     %d byte(s) read; this source is not a transcript of appended line "+
+			"records, so no record boundary is claimed\n", boundary.Bytes)
+		return
+	}
+	fmt.Fprintf(out, "  boundary:     %d byte(s) read, the source's records end at byte %d%s\n",
+		boundary.Bytes, boundary.RecordsEndBytes, boundaryTailSuffix(boundary.UnpublishedTailBytes))
+	if boundary.UnpublishedTailBytes > 0 {
+		fmt.Fprintf(out, "  unpublished:  %d byte(s) after that hold no record terminator: the record the "+
+			"source was writing is not part of this conversion\n", boundary.UnpublishedTailBytes)
+	}
+}
+
+// boundaryTailSuffix spells what an unpublished tail means for a reader who only skims the line: a file
+// whose records end at its last byte holds nothing this snapshot passed over, while a shorter
+// records_end is answered by the `unpublished:` line under it.
+func boundaryTailSuffix(unpublished int64) string {
+	if unpublished > 0 {
+		return " — the file holds more than this snapshot covers"
+	}
+	return ": nothing in the file is unpublished"
 }
 
 func describeCounts(counts ccc.Counts) string {

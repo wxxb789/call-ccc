@@ -34,7 +34,11 @@ with their exit codes and counts).
   turn, model access, so it is **not** a gate step: `scripts/codex-native-check.py` and
   `scripts/claude-native-check.py` re-derive it and report each check's own verdict (the gate keeps
   deciding the offline half — round-trip through the inherited reader, install rules, reported losses,
-  CLI shape).
+  CLI shape). The Codex check also runs the repeat scenario goal 0004 added: it converts a *copy* of the
+  fixture, loads it, appends the committed `internal/ccc/testdata/growth/` fragment to the copy,
+  converts again, and shows Codex's own loader opening the second session with its own view holding the
+  appended turn while the first session's bytes did not move (`--repeat-resume-prompt` adds one real
+  turn in the second session; each prompt flag runs one turn).
 - **A conversion writes a fresh native identity and replaces nothing.** The install is exclusive, the
   source is never opened for writing, no credential or login store is copied, and a target data
   directory nobody named is an error rather than a directory invented here. Tests and demos use
@@ -44,6 +48,17 @@ with their exit codes and counts).
   be false. A Claude Code transcript has no provider field at all, so `--to claude` states that as the
   `model_provider_binding` format limit and binds the session to no provider, and neither route ever
   writes the source's.
+- **A conversion is a snapshot of the source at one boundary, and repeating it is the same operation.**
+  The source is read again and written as *another* fresh target session; nothing ever merges later
+  source history into an existing target session, and nothing rewrites the source. Every conversion's
+  result states the boundary it covers — the source file's sha256 and size, and, for a source whose
+  records are appended lines, the offset its last complete record ends at — so two continuations of one
+  growing session can be told apart and each is attributed to the bytes it read. A source file whose
+  writer had not finished a record is disclosed (`boundary.unpublished_tail_bytes`, the run's warnings,
+  the human `unpublished:` line) and that record is never published as history; another conversion once
+  the file is written is what carries it. The boundary is taken from the file's own bytes, never
+  inferred from a provider's silence, and the record offsets are claimed only where the provider's own
+  declarations say its source is a transcript of line records.
 - Out of scope by design: Git/worktree management, process or environment migration, credentials,
   fleet orchestration, and any second session index for the existing archive.
 
@@ -51,7 +66,10 @@ with their exit codes and counts).
 
 - The continuation core and its per-harness target writers live in `internal/ccc` — the route table
   `targets.go` and the writers/installers/verifiers `codex_target.go`, `codex_install.go`,
-  `codex_verify.go`, `claude_target.go`, `claude_install.go`, `claude_verify.go`; `cmd/ccc` adds
+  `codex_verify.go`, `claude_target.go`, `claude_install.go`, `claude_verify.go`; its committed
+  native-shaped fixtures are `internal/ccc/testdata/fixtures/` and the growth fragments a run appends to
+  a *copy* of one (`internal/ccc/testdata/growth/`, written by the same `internal/ccc/fixturegen` and
+  pinned against it) are what makes one source session grow; `cmd/ccc` adds
   argument handling and presentation only, and a target-side native harness
   (`scripts/codex-native-check.py`, `scripts/claude-native-check.py`) is registered in
   `docs/harness.md`, re-runnable, and deliberately not a gate step.

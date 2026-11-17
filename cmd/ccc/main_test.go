@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -750,6 +752,16 @@ type reportedContinueDocument struct {
 		Counts struct {
 			Messages int `json:"messages"`
 		} `json:"counts"`
+		Boundary struct {
+			State                string `json:"state"`
+			Detail               string `json:"detail"`
+			Path                 string `json:"path"`
+			Bytes                int64  `json:"bytes"`
+			SHA256               string `json:"sha256"`
+			RecordsAreLines      bool   `json:"records_are_lines"`
+			RecordsEndBytes      int64  `json:"records_end_bytes"`
+			UnpublishedTailBytes int64  `json:"unpublished_tail_bytes"`
+		} `json:"boundary"`
 	} `json:"source"`
 	Conversion struct {
 		State    string `json:"state"`
@@ -1434,6 +1446,158 @@ func TestContinueHumanOutputNamesAPartialSourceRead(t *testing.T) {
 	}
 }
 
+// TestContinueJSONCarriesTheSourceBoundary pins the machine-readable half of the snapshot boundary: the
+// conversion's own JSON states the source file, its size, the digest of those bytes and how far its records
+// reach, which is what lets a caller compare two continuations of one growing session — or re-check the
+// source — without an always-on session index.
+func TestContinueJSONCarriesTheSourceBoundary(t *testing.T) {
+	continueEnvironment(t)
+	sessionID, fixture := claudeFixture(t)
+	code, stdout, stderr := runCLI(t, continueArgs(sessionID, "--json")...)
+	if code != exitOK {
+		t.Fatalf("exit %d, stderr: %s", code, stderr)
+	}
+	var document reportedContinueDocument
+	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
+	}
+	boundary := document.Source.Boundary
+	info, err := os.Stat(fixture)
+	if err != nil {
+		t.Fatalf("reading the committed fixture's size: %v", err)
+	}
+	data, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatalf("reading the committed fixture: %v", err)
+	}
+	sum := sha256.Sum256(data)
+	if boundary.State != ccc.SourceBoundaryTaken {
+		t.Fatalf("boundary.state = %q (%s), want %q", boundary.State, boundary.Detail, ccc.SourceBoundaryTaken)
+	}
+	if boundary.Path != fixture {
+		t.Errorf("boundary.path = %q, want the file the conversion read (%q)", boundary.Path, fixture)
+	}
+	if boundary.Bytes != info.Size() {
+		t.Errorf("boundary.bytes = %d, want the file's %d bytes", boundary.Bytes, info.Size())
+	}
+	if boundary.SHA256 != hex.EncodeToString(sum[:]) {
+		t.Errorf("boundary.sha256 = %q, want the file's own digest", boundary.SHA256)
+	}
+	if !boundary.RecordsAreLines {
+		t.Error("boundary.records_are_lines = false for a provider whose source is appended line records")
+	}
+	// The committed fixture ends at a line boundary — its last line is invalid JSON, but it is a complete
+	// line — so its records end at its last byte and nothing of it is unpublished.
+	if boundary.RecordsEndBytes != boundary.Bytes || boundary.UnpublishedTailBytes != 0 {
+		t.Errorf("boundary = %+v, want the records to end at byte %d with nothing unpublished",
+			boundary, boundary.Bytes)
+	}
+	if boundary.Detail == "" {
+		t.Error("the boundary carries no detail saying how it was taken")
+	}
+}
+
+// TestContinueHumanOutputStatesTheSourceBoundary pins the human half, on a real conversion and on the
+// shapes a running session can have: a file whose records end at its last byte, one whose writer had not
+// finished a record, one read from an archive, and one whose records are not lines at all.
+func TestContinueHumanOutputStatesTheSourceBoundary(t *testing.T) {
+	continueEnvironment(t)
+	sessionID, _ := claudeFixture(t)
+	code, stdout, stderr := runCLI(t, continueArgs(sessionID)...)
+	if code != exitOK {
+		t.Fatalf("exit %d, stderr: %s", code, stderr)
+	}
+	if want := "boundary:     2051 byte(s) read, the source's records end at byte 2051: nothing in the " +
+		"file is unpublished\n"; !strings.Contains(stdout, want) {
+		t.Errorf("the human output is missing %q:\n%s", want, stdout)
+	}
+	if strings.Contains(stdout, "unpublished:") {
+		t.Errorf("a source with nothing unpublished printed an unpublished line:\n%s", stdout)
+	}
+
+	for _, testCase := range []struct {
+		name      string
+		boundary  *ccc.SourceBoundary
+		wantLines []string
+		absent    []string
+	}{
+		{
+			name: "a record the writer had not finished",
+			boundary: &ccc.SourceBoundary{
+				State: ccc.SourceBoundaryTaken, Path: "/src/session.jsonl", Bytes: 1835,
+				SHA256: "010a14dd", RecordsAreLines: true, RecordsEndBytes: 1792,
+				UnpublishedTailBytes: 43,
+			},
+			wantLines: []string{
+				"boundary:     1835 byte(s) read, the source's records end at byte 1792 — the file holds " +
+					"more than this snapshot covers\n",
+				"unpublished:  43 byte(s) after that hold no record terminator: the record the source was " +
+					"writing is not part of this conversion\n",
+			},
+		},
+		{
+			name: "no file was open",
+			boundary: &ccc.SourceBoundary{
+				State:  ccc.SourceBoundaryNotTaken,
+				Detail: "the conversion read an archive row, so no source file was open at all",
+			},
+			wantLines: []string{
+				"boundary:     not taken (the conversion read an archive row, so no source file was open " +
+					"at all)\n",
+			},
+			absent: []string{"byte(s) read"},
+		},
+		{
+			name: "records that are not appended lines",
+			boundary: &ccc.SourceBoundary{
+				State: ccc.SourceBoundaryTaken, Path: "/src/state.json", Bytes: 3626,
+				SHA256: "415bbc31", RecordsAreLines: false,
+			},
+			wantLines: []string{
+				"boundary:     3626 byte(s) read; this source is not a transcript of appended line records, " +
+					"so no record boundary is claimed\n",
+			},
+			absent: []string{"records end at byte"},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			var block bytes.Buffer
+			writeContinuation(&block, ccc.ContinueResult{
+				Ref:    ccc.Ref{Provider: "claude", ID: sessionID},
+				Target: ccc.TargetCodex,
+				Source: &ccc.SessionReport{Boundary: testCase.boundary},
+				Conversion: ccc.ConversionReport{
+					State: ccc.ConversionStateConverted, Format: ccc.CodexTargetFormat,
+				},
+			})
+			for _, want := range testCase.wantLines {
+				if !strings.Contains(block.String(), want) {
+					t.Errorf("the human output is missing %q:\n%s", want, block.String())
+				}
+			}
+			for _, absent := range testCase.absent {
+				if strings.Contains(block.String(), absent) {
+					t.Errorf("the human output claims %q for a boundary that does not state it:\n%s",
+						absent, block.String())
+				}
+			}
+		})
+	}
+
+	// A report with no boundary at all (an inspection, or one this build did not write) prints no
+	// boundary line: an absent block is not a claim about a file.
+	var absent bytes.Buffer
+	writeContinuation(&absent, ccc.ContinueResult{
+		Ref:        ccc.Ref{Provider: "claude", ID: sessionID},
+		Target:     ccc.TargetCodex,
+		Source:     &ccc.SessionReport{},
+		Conversion: ccc.ConversionReport{State: ccc.ConversionStateConverted, Format: ccc.CodexTargetFormat},
+	})
+	if strings.Contains(absent.String(), "boundary:") {
+		t.Errorf("a report without a boundary printed one:\n%s", absent.String())
+	}
+}
+
 // TestContinueDryRunInstallsNothingThroughTheCLI pins the flag's promise at the CLI boundary.
 func TestContinueDryRunInstallsNothingThroughTheCLI(t *testing.T) {
 	_, targetHome := continueEnvironment(t)
@@ -1829,6 +1993,20 @@ func TestContinueHelpIsARequestNotAFailure(t *testing.T) {
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("help is missing %q", want)
+		}
+	}
+	// The repeat rule is stated where a caller learns the command: a conversion is a snapshot, converting
+	// the same source again after it grew writes another session rather than merging into one, and an
+	// unfinished record in the source file is named rather than published.
+	snapshot := strings.Join(strings.Fields(stdout), " ")
+	for _, want := range []string{
+		"A conversion is a snapshot of the source at one moment",
+		"writes another new session -- never a merge into one that an agent may already have continued",
+		"names the boundary each snapshot covers",
+		"says so under 'unpublished:' instead of publishing that record",
+	} {
+		if !strings.Contains(snapshot, want) {
+			t.Errorf("help does not state the repeat rule (%q)", want)
 		}
 	}
 	// The --target-binary line states the two routes' rules, which differ: the Claude Code commands name

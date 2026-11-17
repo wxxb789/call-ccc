@@ -1382,3 +1382,115 @@ supersede it with a newer one and say which it supersedes.
   its `codex resume <id>` line, and answering it belongs to a 0002-scoped change.
 - **Settled by:** whether the operator wants the printed resume command to name exactly the program this
   run probed and verified, or to stay the spelling a caller typed.
+
+## Q-0004-01 — Which providers get a byte-level record boundary
+
+- **Status:** resolved (default taken)
+- **Question:** the boundary's `records_end_bytes`/`unpublished_tail_bytes` describe where a *line-recorded*
+  source's last complete record ends, and this build can only justify that claim where the provider says so
+  itself. Two of the inherited declarations are candidates — `parser.SourceCapabilities.IncrementalAppend`
+  (this source grows by appended lines, which its read can only re-answer by parsing the whole file again)
+  and `parser.ContentCapabilities.MalformedLineCount` (its read counts records it could not parse) — and the
+  set of providers declaring either is not the set of providers whose format is line-recorded: Claude and
+  Codex declare them, while Copilot's JSONL transcript declares neither, so a Copilot source gets no
+  record boundary while an identical file shape does under another provider.
+- **Default taken:** claim the offsets when either capability is `CapabilitySupported`, and otherwise report
+  the file's bytes (path/size/digest) with `records_are_lines: false` and no record claim — the conservative
+  side, because the alternative is this build inferring a format from its own reading of the bytes. The
+  provider this reader cannot resolve (a disabled provider, a stored agent label with no factory) also
+  answers false, so the boundary states bytes and claims nothing.
+- **Reversal:** widen the predicate in `sourceRecordsAreLines` (`internal/ccc/continue.go`) — e.g. also
+  treat a source whose file ends in a line feed as line-recorded, or carry an explicit list of agents.
+- **Settled by:** whether the owner wants the record boundary for providers whose format is line-recorded
+  but which declare neither capability (Copilot's transcript is the measured example).
+
+## Q-0004-02 — The boundary is not taken by `ccc inspect`
+
+- **Status:** resolved (default taken)
+- **Question:** `ccc inspect` reports the same `SessionReport` shape a conversion does, so it could carry the
+  boundary too — a user comparing a stored conversion against the source's *current* size would not have to
+  read the file themselves. Taking one costs another full read of a source that can be hundreds of megabytes
+  (the design forbids duplicating an expensive source fingerprint solely for bookkeeping), and the
+  inspection already pays for a provider fingerprint and a parse.
+- **Default taken:** the boundary belongs to a conversion (`source.boundary` is absent from an inspection,
+  and the type's own comment says why). What an inspection already reports — the read's counts, timestamps,
+  fidelity, and the parse's own recorded file size — is what a caller compares against.
+- **Reversal:** call the boundary pass from `Inspect` too (one more full read per inspection) and reuse the
+  same block.
+- **Settled by:** whether the operator wants `ccc inspect` to answer "is my continuation current with the
+  source right now?" from one command, at the cost of a second full read of the file.
+
+## Q-0004-03 — An unfinished source record is a boundary fact, not a loss category
+
+- **Status:** resolved (default taken)
+- **Question:** the goal says only complete recorded events are eligible for a snapshot, so an unterminated
+  trailing record is not evidence that was left out — it was never a record. It could still be named in
+  `conversion.losses[]` (whose own rule is that every omission is counted there), beside the categories the
+  writers reason over, or it could live in the boundary and the warning channel alone.
+- **Default taken:** the boundary (`unpublished_tail_bytes`), the run's `warnings[]` and the human
+  `unpublished:` line. The loss list is unchanged: for a Claude source the inherited reader's own
+  `malformed_source_lines` count still travels in it (it counts what *the parser* skipped, including an
+  unterminated tail), so nothing is hidden — and for a Codex source, whose parser deliberately counts
+  nothing for a live session's tail, the boundary is the disclosure. Adding a category would have made two
+  different statements (bytes of an unfinished record; records the parser skipped) look like one count.
+- **Reversal:** add a loss category (e.g. `unpublished_tail`) to both writers' loss tables, driven from the
+  boundary, and pin it in each writer's own list.
+- **Settled by:** whether a consumer that reads only `conversion.losses[]` needs the tail named there.
+
+## Q-0004-04 — The repeat scenario is native-verified for the 0002 route, with a second prompt flag
+
+- **Status:** resolved (default taken)
+- **Question:** the contract names the accepted 0002 route (Claude Code → Codex) for the repeated-transfer
+  evidence, and one real turn is what the route's check has always asked for explicitly. Running the repeat
+  scenario also for `scripts/claude-native-check.py` (0003's route) would double the native work; running
+  *two* real turns in the Codex check (one before the growth, one after) is two billed turns where the
+  caller's `--resume-prompt` used to be one.
+- **Default taken:** the repeat scenario lives in `scripts/codex-native-check.py`, and each real turn has its
+  own flag: `--resume-prompt` (the first conversion's session, run *before* the growth, which is also what
+  makes that session one its harness has already resumed) and `--repeat-resume-prompt` (the second, later
+  session). Both are optional; the offline default loads both sessions through Codex's own app server and
+  runs no turn, and the run's report line says how many turns ran. The repeat property itself (two
+  conversions of one growing source, the earlier target untouched) is pinned for **both** target routes by
+  the Go test, so 0003's route is not left unpinned — only without a native repeat run.
+- **Reversal:** add the same scenario to `scripts/claude-native-check.py` (its own copy-then-grow step and a
+  second prompt flag), and/or fold the two prompt flags into one that runs both turns.
+- **Settled by:** whether the operator wants the repeat scenario re-derived natively for the Claude Code
+  target as well, and whether one flag should mean two turns.
+
+## Q-0004-05 — When the boundary is taken, and what it therefore does not claim
+
+- **Status:** resolved (default taken)
+- **Question:** a conversion reads the source and then measures it. A file that grows between the two makes
+  the boundary *newer* than the bytes the parser consumed, and nothing in the report says so. The alternative
+  was to compare the boundary's size with the size the parser recorded (`source.identity.file_size`), but for
+  a provider whose source is a layout that number is a composite (`internal/parser`'s sidecar handling), so
+  the comparison would sometimes report "the file grew" when it did not.
+- **Default taken:** the boundary is taken once, after the read and before anything is written, and the
+  block's `detail` states exactly that ordering; no comparison with the parse's own stat is attempted. A file
+  that moved *during the conversion* is still answered, by the existing source check
+  (`installation.source_check_state`), which compares the same digest after the installation.
+- **Reversal:** take the boundary before the read as well and compare the two digests (one more full read),
+  reporting "the file grew while it was being read" when they differ.
+- **Settled by:** whether the operator wants the mid-read growth window closed by measurement, at the cost of
+  a second full read of every source.
+
+## Q-0004-06 — 0003's goal file, its status line, and this record's name
+
+- **Status:** resolved (default taken)
+- **Question:** 0003 was merged onto `main` as `18d50b2`, so this increment archives it (Q-0003-10 asked
+  whether the file's own `**Status:** Ready` line should track the index row first; Q-0003-09 asked the same
+  for 0002's archived file) — and the increment's own evidence record's name decides whether
+  `scripts/tests/test_evidence_claims.py` discovers it, since that case discovers `*continuation*.md` and
+  requires the records it names to credit a recorded turn's answer.
+- **Default taken:** the goal file moved to `docs/goals/archive/0003-codex-to-claude-continuation.md`
+  **unchanged**; the index row carries `Accepted: merged onto main as 18d50b2; archived`, and the three links
+  that named its former path (0003's plan, evidence record and obligation matrix) were retargeted. The two
+  append-only `OPEN-QUESTIONS.md` entries that name the former path were left as written, because the file is
+  append-only and never edited. This increment's evidence record is
+  `docs/evidence/0004-repeatable-continuation-handoffs.md` — a name holding "continuation", so the
+  answer-crediting rule discovers it — and it was added to that case's `ROUTE_DOCUMENTS`.
+- **Reversal:** re-spell the archived file's `**Status:**` line (as 0001's archive did) in one line, and
+  rename the evidence record to mirror the goal file's own stem if the discovery rule is widened instead.
+- **Settled by:** whether the owner wants an archived goal's own status line re-spelled (0001's practice) or
+  frozen as the text the operator accepted (0002's and 0003's), and whether the evidence-record naming should
+  follow the goal file's stem rather than the discovery rule.

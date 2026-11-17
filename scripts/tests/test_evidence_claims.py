@@ -50,6 +50,7 @@ DOCUMENTS = sorted((ROOT / "docs" / "evidence").glob("*continuation*.md"))
 ROUTE_DOCUMENTS = (
     "0002-claude-to-codex-continuation.md",
     "0003-codex-to-claude-continuation.md",
+    "0004-repeatable-continuation-handoffs.md",
 )
 
 #: The line the harness prints above a turn's own output (``scripts/codex-native-check.py``, its

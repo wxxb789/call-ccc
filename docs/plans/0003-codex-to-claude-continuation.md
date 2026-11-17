@@ -1,6 +1,6 @@
 # Plan — 0003 Continue a Codex session in Claude Code
 
-Contract: [`docs/goals/0003-codex-to-claude-continuation.md`](../goals/0003-codex-to-claude-continuation.md).
+Contract: [`docs/goals/archive/0003-codex-to-claude-continuation.md`](../goals/archive/0003-codex-to-claude-continuation.md).
 Governing design: [`docs/core-design/README.md`](../core-design/README.md).
 Shape reference: increment 0002 ([`docs/plans/0002-claude-to-codex-continuation.md`](0002-claude-to-codex-continuation.md)).
 

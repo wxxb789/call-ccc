@@ -27,6 +27,9 @@ internal/ccc/       continuation core: conversation document, readers, archive a
                     codex_install.go, codex_verify.go, claude_target.go, claude_install.go,
                     claude_verify.go, continue.go)
 internal/ccc/parity the canonical dump and the oracle a pristine checkout runs too
+internal/ccc/testdata/fixtures  committed native-shaped sessions, written by internal/ccc/fixturegen
+internal/ccc/testdata/growth    committed fragments a run appends to a *copy* of one fixture, so one
+                    source session grows; the same generator writes and pins them
 docs/core-design/   the long-lived product and engineering boundaries
 docs/goals/         numbered outcome contracts (archive/ once accepted)
 docs/plans/         one plan per increment, written before its implementation
@@ -83,6 +86,19 @@ gate runs as a required step.
 - **Non-destructive by default.** Never modify the source transcript, never overwrite an existing
   target session, never copy credentials or login stores, and never log conversation bodies, tool
   arguments or secrets by default. Write into isolated data directories for tests and demos.
+- **A conversion is a snapshot at a stated boundary, and repeating it is the same operation.** A source
+  that grew is read again and written as *another* fresh target session: no run merges later source
+  history into a session an agent may already have continued, and no run rewrites the source or an
+  earlier target. Every conversion reports the boundary it covers (`source.boundary`: the source file,
+  the digest of its bytes at the boundary instant, and, for a source whose records are the lines a
+  harness appends, the offset its last complete record ends at) and the same facts in the human block,
+  so a caller — or an agent choosing which continuation to resume — can tell two snapshots of one
+  growing session apart without any index. An unfinished trailing record is *disclosed* and never
+  published as history: the boundary's `unpublished_tail_bytes` and the run's warning name it, a source
+  whose bytes do not end at a record boundary is not an error, and another conversion once the file is
+  written is what carries it. The boundary is computed from the file's own bytes rather than from a
+  provider's classification, and the record offsets are claimed only where the provider's own
+  declarations say the source is a transcript of line records.
 - **A target session is discoverable where the target's own loader looks.** A target that finds a
   session only from the working directory its process runs in — Claude Code resolves a session through
   the directory whose project-dir spelling matches the one it was installed under — is installed under

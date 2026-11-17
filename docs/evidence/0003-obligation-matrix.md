@@ -1,6 +1,6 @@
 # Evidence — 0003 obligation matrix (Codex → Claude Code)
 
-Contract: [`docs/goals/0003-codex-to-claude-continuation.md`](../goals/0003-codex-to-claude-continuation.md).
+Contract: [`docs/goals/archive/0003-codex-to-claude-continuation.md`](../goals/archive/0003-codex-to-claude-continuation.md).
 Evidence record: [`0003-codex-to-claude-continuation.md`](0003-codex-to-claude-continuation.md) (cited below
 as *record §N*). Plan: [`docs/plans/0003-codex-to-claude-continuation.md`](../plans/0003-codex-to-claude-continuation.md).
 

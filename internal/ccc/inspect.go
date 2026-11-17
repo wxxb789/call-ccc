@@ -48,6 +48,13 @@ type SessionReport struct {
 	StartedAt        time.Time      `json:"started_at,omitempty"`
 	EndedAt          time.Time      `json:"ended_at,omitempty"`
 	Fidelity         Fidelity       `json:"fidelity"`
+	// Boundary is where a *conversion's* snapshot of the source stops in the source file's own bytes
+	// (SourceBoundary). It is absent from an inspection: an inspection must stay immediate, and taking a
+	// boundary is another full read of a source that can be hundreds of megabytes, which the design's own
+	// rule against duplicating an expensive source read forbids for a command that only reports what a
+	// session holds. A missing boundary is therefore not a claim about a file; the conversion's own block
+	// states which source it was read from and why no boundary was taken when there is none.
+	Boundary *SourceBoundary `json:"boundary,omitempty"`
 }
 
 // ArchiveReport is what the archive holds, plus how it compares with the source read.
