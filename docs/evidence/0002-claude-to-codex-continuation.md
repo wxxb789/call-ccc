@@ -401,7 +401,7 @@ ok  	go.kenn.io/agentsview/internal/ccc/parity	0.838s
 | the archive fallback is used and disclosed | `TestContinueFallsBackToTheArchiveWhenTheSourceIsGone` |
 | which failure a conversion reports when neither side answers: the archive's own answer (candidates, truncation, a failed query) when the source is unreadable and the archive refuses it too, the source's error only when the archive holds no match | `TestContinueReportsTheArchivesAmbiguityInsteadOfAbsence` |
 | the app server's diagnostic buffer is bounded and synchronized: a failure report reads a snapshot, not a race with the goroutine os/exec copies stderr on | `TestBoundedBufferKeepsTheFirstBytes`, `TestBoundedBufferIsSafeForConcurrentWritesAndSnapshots` (the second is the case `go test -race` diagnoses) |
-| the native check reads the two rendered resume-command lines the way a POSIX shell reads them, on both `pathlib` flavours, so a home the renderer quotes is accepted and an unquoted one a shell would split is not | `scripts/tests/test_codex_native_check.py` (the `selftest` step) |
+| the native check reads the two rendered resume-command lines the way a POSIX shell reads them — the words they are, **and** the spelling that decides whether the shell reads the line as the `CODEX_HOME=` assignment rather than as a command word — on both `pathlib` flavours, so a home the renderer quotes is accepted while an unquoted home a shell would split, a quoted assignment and a value left with `;`, `$`, a backquote or `~` unquoted are not | `scripts/tests/test_codex_native_check.py` (the `selftest` step): round 19's `test_rejects_an_assignment_a_shell_reads_as_a_command`, `test_rejects_syntax_the_value_leaves_unquoted` and the accept case `test_accepts_a_value_spelled_with_the_other_quotes` |
 | the native check compares the source tree and the planted session **after** the loader and the real turn, so a mutation during either stage fails the run — and an intact run passes the same comparisons | `scripts/tests/test_codex_native_check.py`'s `ProtectedArtifactsAfterNativeVerification` |
 | the native check's throw-away home is seeded with settings that cannot hold a credential — never with a copy of the host's `config.toml` — and its report line names what was copied and what was left behind (round 12) | `scripts/tests/test_codex_native_check.py`'s `SeededHostConfiguration` |
 | a nested run that breaks inside a subtest is named by the case that read the child, not raised as an `IndexError` in the reader itself | `test_a_child_broken_inside_a_subtest_is_reported_by_name` |
@@ -424,7 +424,7 @@ gate: go=<home>/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/..
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 166 tests in 4.871s (rc=0)
+  PASS     selftest Ran 169 tests in 4.913s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 26 project-owned prefix(es); files seen by git: 5628 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     secrets  no leaks found in 78 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
@@ -616,9 +616,11 @@ the reported-command mutation, `:1991` for the exit-code one, and the growth rul
 repair sets lets the unmutated run reach exit 0). `docs/harness.md` states the third case beside the two,
 with the reason a backslash-shaped root cannot stand in for it here.
 
-The `selftest` step is **164** cases on this tree — the 153 that sentence once counted, plus the cases the
-later rounds and the sweep's `scripts/tests/test_gate.py` changes added (round 12's block records 158) — and
-the blocks above are refreshed from each repair's own run. `docs/harness.md`
+The `selftest` step is **169** cases on this tree — the 153 that sentence once counted, plus the cases the
+later rounds and the sweep's `scripts/tests/test_gate.py` changes added (round 12's block records 158,
+round 18's `test_evidence_claims.py` cases made 166, and the round-19 repair's three reader cases are the
+latest: the quoted assignment, the unquoted value syntax, and the double-quoted value a shell reads the
+same way) — and the gate block above is this repair's own run of it. `docs/harness.md`
 records all of it: the path-spelling constraint as its Platform boundary section's path bullet, now
 including the scratch root the third repair resolves (with the aliased-`TMPDIR` run as that constraint's
 instance on any host), the per-word quoting the fourth repair restored to the same cases' fixture as the

@@ -214,9 +214,12 @@ says so.
   comparison that runs last rather than by an earlier verdict — an ordering the native check's own cases
   pin offline.
   The two rendered command lines (`resume_command`, `exec_resume_command`) are checked by **reading
-  them the way a POSIX shell reads them**, word by word: a home the renderer quotes — any path holding
-  a space, any Windows path holding a backslash — is accepted, while an unquoted home a shell would
-  split into two words is not. That half is pinned offline, without the Codex binary, by
+  them the way a POSIX shell reads them**: word by word — a home the renderer quotes, any path holding
+  a space or a Windows backslash, is accepted, while an unquoted home a shell would split into two words
+  is not — and on the spelling that decides whether the shell reads the line's opening word as the
+  assignment at all: a quoted `'CODEX_HOME=…'` reads back as the very same words while a shell takes it
+  as the *program* to run, and a character a shell acts on left unquoted (`;`, `$`, a backquote, `~`) is
+  refused for the same reason. That half is pinned offline, without the Codex binary, by
   `scripts/tests/test_codex_native_check.py` in the `selftest` step (the renderer's own spelling is
   pinned by `cmd/ccc`'s tests); the substring form it replaced accepted exactly the line the quoting
   exists to prevent and rejected correct renderings on Windows. Its fixtures spell every home so both

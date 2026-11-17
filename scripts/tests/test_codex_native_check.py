@@ -3,10 +3,12 @@
 
 Two halves, both driven in-process with the shipped module imported by path, no subprocess and no tool
 on ``PATH``: the check that reads the reported resume invocation back the way a POSIX shell reads it
-(``shell_words``/``reported_invocation``), and the ordering rule that the source session and the planted
-session are compared **after** the harness's own native stages (``main`` driven with its subprocess and
-app-server seams replaced by stubs). A third subject is driven the same way: the app server's diagnostics
-drainer, whose retained lines are bounded (``new_diagnostics``/``drain_diagnostics``).
+(``shell_words`` -- what its words are -- with ``unquoted_text``/``reported_invocation`` for the spelling
+that decides whether a shell reads the line as the assignment at all), and the ordering rule that the
+source session and the planted session are compared **after** the harness's own native stages (``main``
+driven with its subprocess and app-server seams replaced by stubs). A third subject is driven the same
+way: the app server's diagnostics drainer, whose retained lines are bounded
+(``new_diagnostics``/``drain_diagnostics``).
 
 The resume-invocation check is the harness's own rule about the line a caller pastes or an agent runs: it
 must name the data directory the session was installed into, because Codex takes that directory from
@@ -122,6 +124,69 @@ class ResumeInvocationCheck(unittest.TestCase):
                         NATIVE_CHECK.reported_invocation(exec_resume, flavour(home),
                                                          EXEC_RESUME_ARGUMENTS),
                         f"a correct rendering was rejected: {exec_resume!r}")
+
+    def test_rejects_an_assignment_a_shell_reads_as_a_command(self) -> None:
+        """The words read back right and the line is still not the invocation.
+
+        A shell recognizes a leading assignment only while nothing in its name or its `=` is quoted, so
+        each spelling below is the *program* to run -- one named `CODEX_HOME=codex-home`, or one whose
+        name a shell would spell that way only after removing the quoting -- and nothing sets the data
+        directory. The word reading is asserted equal to the very words a correct rendering reads as,
+        which is why this case cannot be left to that reading: the quoting is the whole difference.
+        """
+        assignment = "CODEX_HOME=codex-home"
+        for line in (
+            f"'{assignment}' {CODEX} resume {SESSION}",
+            f'"{assignment}" {CODEX} resume {SESSION}',
+            f"CO'DEX_HOME=codex-home' {CODEX} resume {SESSION}",
+            f"CODEX_HOME\\=codex-home {CODEX} resume {SESSION}",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(NATIVE_CHECK.shell_words(line), [assignment, *RESUME_ARGUMENTS], line)
+                for flavour in PATH_FLAVOURS:
+                    with self.subTest(flavour=flavour.__name__):
+                        self.assertFalse(
+                            NATIVE_CHECK.reported_invocation(line, flavour("codex-home"),
+                                                             RESUME_ARGUMENTS), line)
+
+    def test_rejects_syntax_the_value_leaves_unquoted(self) -> None:
+        """A value the renderer quotes, spelled bare: the words read back right and the line is another
+        command line -- `;` ends the assignment (`CODEX_HOME=a`) and starts a program named `b`, `$HOME`
+        is substituted before the variable is set, a backquote is run, `~` expands. The rule is about
+        spellings: a character a shell acts on has to be quoted, which `shellQuote` does for every one.
+        (Each value is a single segment, so both path flavours spell it as the line does.)
+        """
+        for line, home in (
+            (f"CODEX_HOME=a;b {CODEX} resume {SESSION}", "a;b"),
+            (f"CODEX_HOME=$HOME {CODEX} resume {SESSION}", "$HOME"),
+            (f"CODEX_HOME=`id` {CODEX} resume {SESSION}", "`id`"),
+            (f"CODEX_HOME=~ {CODEX} resume {SESSION}", "~"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(NATIVE_CHECK.shell_words(line),
+                                 [f"CODEX_HOME={home}", *RESUME_ARGUMENTS], line)
+                for flavour in PATH_FLAVOURS:
+                    with self.subTest(flavour=flavour.__name__):
+                        self.assertFalse(
+                            NATIVE_CHECK.reported_invocation(line, flavour(home), RESUME_ARGUMENTS),
+                            line)
+
+    def test_accepts_a_value_spelled_with_the_other_quotes(self) -> None:
+        """The check applies the shell's rule, not the renderer's spelling: an assignment whose value is
+        double-quoted and holds nothing a shell acts on is the same invocation, and refusing it would
+        refuse a line that does resume the session. (`shellQuote` spells it with single quotes; the
+        shell's own reading does not require that spelling.)
+        """
+        for home, line in (
+            ("codex-home", f'CODEX_HOME="codex-home" {CODEX} resume {SESSION}'),
+            ("codex home", f'CODEX_HOME="codex home" {CODEX} resume {SESSION}'),
+        ):
+            with self.subTest(line=line):
+                for flavour in PATH_FLAVOURS:
+                    with self.subTest(flavour=flavour.__name__):
+                        self.assertTrue(
+                            NATIVE_CHECK.reported_invocation(line, flavour(home), RESUME_ARGUMENTS),
+                            line)
 
     def test_rejects_an_unquoted_home_a_shell_would_split(self) -> None:
         # The defect the quoted rendering prevents: a shell reads the space as the end of the assignment

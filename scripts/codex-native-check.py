@@ -6,8 +6,9 @@ readable by **Codex itself** and whether a **real turn** continues from it. It b
 committed fixture into an isolated Codex data directory, re-reads the installed file with its own second
 `ccc` invocation (the inherited reader, so the conversion's own verdict about itself decides nothing
 here), checks the resume invocation the conversion reported (its arguments name the target binary, the
-resume subcommand and the session, and its environment selects the directory the session is installed
-into), asks that directory's own app server to load the session (`thread/resume`), reads the harness's
+resume subcommand and the session, its environment selects the directory the session is installed into,
+and the line is spelled so a POSIX shell reads it as that assignment rather than as a command word),
+asks that directory's own app server to load the session (`thread/resume`), reads the harness's
 own view of the conversation (`thread/read`), and — when `--resume-prompt` is given — runs one real turn
 from the reported invocation and reports what the target answered. Only then — after the loader and the
 turn, and before the cleanup that removes the planted session — does it compare the source session and
@@ -335,6 +336,9 @@ def shell_words(command: str) -> list[str] | None:
     that rule: it rejects every home the renderer correctly quotes -- any home with a space, any Windows
     path with a backslash -- and accepts an unquoted home whose space a shell reads as two words, which
     is the defect quoting exists to prevent.
+
+    This answers what the *words* are and nothing else: the quoting is removed here, so what a shell
+    reads as syntax is `unquoted_text`'s half of the rule, and `reported_invocation` needs both.
     """
     try:
         return shlex.split(command)
@@ -343,13 +347,77 @@ def shell_words(command: str) -> list[str] | None:
         return None
 
 
+#: The characters a POSIX shell acts on somewhere in an unquoted word: `;`, `&`, `|` and a newline end a
+#: command, `<`, `>`, `(`, `)` redirect or group it, `$`, a backquote and `~` (at a word's start) expand
+#: or substitute, `*`, `?`, `[`, `]`, `{`, `}` change the word's meaning, and `#` and `!` are read
+#: specially at a word's start. `shellQuote` quotes every one of them, so a rendering that leaves one
+#: bare is not a spelling this renderer permits -- and a word a shell acts on is a different command than
+#: the word it looks like.
+SHELL_SYNTAX_CHARACTERS = ";&|<>()$`~*?[]{}\n#!"
+
+
+def unquoted_text(command: str) -> str | None:
+    """What a POSIX shell reads as syntax in `command`: the line with its quoting and escapes removed.
+
+    Quoting is what makes a character inert, so the word reading above -- which throws the quoting away
+    -- cannot tell an assignment from a program that is named like one, or a value from a value a `;`
+    turns into two commands. This is that half, read before the quoting is discarded. Inside `'…'`
+    nothing is syntax at all, inside `"…"` a shell still acts on `$` and a backquote (both kept here,
+    which is what refuses that spelling) and `\\` consumes the character after it, outside quotes `\\`
+    consumes the character after it, and everything else that is quoted is dropped. `None` means a shell
+    would not stop reading the line as one command: a quote or an escape is never closed.
+    """
+    kept: list[str] = []
+    quote = ""
+    escaped = False
+    for char in command:
+        if escaped:
+            escaped = False
+        elif quote == "'":
+            if char == "'":
+                quote = ""
+        elif char == "\\":
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = ""
+            elif char in "$`":
+                kept.append(char)
+        elif char in "'\"":
+            quote = char
+        else:
+            kept.append(char)
+    if quote or escaped:
+        return None
+    return "".join(kept)
+
+
+def reads_as_assignment(command: str, name: str) -> bool:
+    """Whether a POSIX shell reads `command` as the `name=…` assignment plus inert word text.
+
+    Two spellings that read back as the same words as the right one and are not it: the assignment
+    quoted -- `'name=…' codex resume …` is a *program* by that name to a shell, so nothing sets the
+    variable and no session resumes -- and a character a shell acts on left unquoted -- `name=a;b codex
+    resume …` sets `name=a` and runs `b`. Both are answered from the spelling, before the quoting is
+    removed: the assignment has to be the line's opening word, with nothing quoted before its `=`, and
+    every character a shell would act on has to be quoted (which `shellQuote` does).
+    """
+    text = unquoted_text(command)
+    if text is None or not text.startswith(f"{name}="):
+        return False
+    return not set(text).intersection(SHELL_SYNTAX_CHARACTERS)
+
+
 def reported_invocation(command: str, home: Path, arguments: list[str]) -> bool:
-    """Whether `command` is the shell's reading of the data-directory assignment plus `arguments`.
+    """Whether `command` is the invocation as a POSIX shell reads it: the assignment, then `arguments`.
 
     Codex takes its data directory from CODEX_HOME alone -- it has no flag for it -- so the assignment
-    being first and exact is what makes a pasted line resume the session this run installed.
+    being first and exact is what makes a pasted line resume the session this run installed. The words
+    alone do not answer that: a quoted assignment reads back as the very same words while a shell takes
+    it as the command word, so the spelling is read too (`reads_as_assignment`).
     """
-    return shell_words(command) == [f"CODEX_HOME={home}", *arguments]
+    return (shell_words(command) == [f"CODEX_HOME={home}", *arguments]
+            and reads_as_assignment(command, "CODEX_HOME"))
 
 
 def run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = None,
@@ -750,8 +818,10 @@ def main(argv: list[str] | None = None) -> int:
         # The reported invocation, checked against the directory this run installed into: Codex takes
         # its data directory from CODEX_HOME alone, so a resume command that does not name it opens
         # whichever home the caller's shell points at. Both rendered lines are read the way a shell
-        # reads them (so a home the renderer quotes -- a path with a space, a Windows path -- is
-        # accepted, while an unquoted home a shell would split is not).
+        # reads them -- the words they are, and the spelling that decides whether a shell reads the
+        # opening word as that assignment at all (a quoted assignment reads back as the same words and
+        # is a program to a shell) -- so a home the renderer quotes (a path with a space, a Windows
+        # path) is accepted, while an unquoted home a shell would split is not.
         resume_arguments = target.get("resume_arguments") or []
         exec_resume_arguments = target.get("exec_resume_arguments") or []
         resume_environment = target.get("resume_environment") or {}

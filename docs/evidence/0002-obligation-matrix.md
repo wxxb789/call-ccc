@@ -82,7 +82,7 @@ their rows (`internal/ccc/reader.go` `95e68873…`, `cmd/ccc/main_test.go` `0ea5
      `continueDocumentOf` the constant
      `exitOK`, and the resume case left the stub loader's mode unset, so its positive case claimed a
      success the command had not produced → E1, E2, E4.
-  3. `scripts/codex-native-check.py:388` — the stderr drainer appended every line to an unbounded list;
+  3. `scripts/codex-native-check.py:388` *(that round's numbering)* — the stderr drainer appended every line to an unbounded list;
      excerpt truncation bounds presentation only, and the cited mutation covers the separate Go buffer →
      E6.
   4. `internal/ccc/codex_target_test.go:1113` — the event-envelope assertion compared through this
@@ -1077,8 +1077,8 @@ obligation's number and place in the list are unchanged.)*
   digested before the run and compared after the loader and the real turn have run, so a mutation during
   either native stage is caught by the comparison that runs last; the planted file is removed only once
   those comparisons have run.
-- **Discharged:** `scripts/codex-native-check.py:669-690` (the captures), `:697-742` (the comparisons and
-  their placement after the load/resume blocks), `:748-753` (the planted file removed in `finally`).
+- **Discharged:** `scripts/codex-native-check.py:708-714` (the captures), `:871-892` (the comparisons and
+  their placement after the load/resume blocks), `:908` (the planted file removed in `finally`).
 - **Positive evidence:** the native run's own three lines —
   `the source session is unchanged — sha256 2bd510821d4abf83…`, `the unrelated session in the target home is
   unchanged — sha256 59ff49ca30baf622…`, `no pre-existing session in the target home changed — 0
@@ -1086,7 +1086,7 @@ obligation's number and place in the list are unchanged.)*
 - **Pinned by:** `scripts/tests/test_codex_native_check.py`'s `ProtectedArtifactsAfterNativeVerification`
   (both directions: an intact run passes both comparisons, a run whose source tree is mutated during the
   resume stage fails exactly those two).
-- **Executed mutation:** `scripts/codex-native-check.py:716` `planted_unchanged = unrelated.is_file() and
+- **Executed mutation:** `scripts/codex-native-check.py:879` `planted_unchanged = unrelated.is_file() and
   sha256(unrelated) == unrelated_before` → `planted_unchanged = unrelated.is_file()`. Command:
   `python3 -m unittest scripts.tests.test_codex_native_check.ProtectedArtifactsAfterNativeVerification`.
   **Observed:** exit `1`; `FAIL:
@@ -1371,29 +1371,65 @@ obligation's number and place in the list are unchanged.)*
 
 - **Clause:** the printed resume/exec-resume commands select the installation's data directory
   (`CODEX_HOME=…`), quote every word a POSIX shell would act on, and the resume verification reports the
-  command it actually ran the same way; the native check reads those lines the way a shell does, so a home
-  holding a space (or a Windows path with backslashes) is accepted while an unquoted home a shell would
-  split is rejected.
+  command it actually ran the same way; the native check reads those lines the way a shell does -- the
+  words they are *and* the spelling a shell needs to read the line's opening word as that assignment -- so
+  a home holding a space (or a Windows path with backslashes) is accepted, while an unquoted home a shell
+  would split, an assignment a shell would run as a command word, and a value left with a character a
+  shell acts on are rejected.
 - **Discharged:** `internal/ccc/continue.go:853-880` (`renderResumeCommand`, `shellQuote`),
-  `internal/ccc/codex_verify.go:385-401` (`resumeCommandLine`), `scripts/codex-native-check.py:310-334`
-  (`shell_words`, `reported_invocation`).
+  `internal/ccc/codex_verify.go:385-401` (`resumeCommandLine`), `scripts/codex-native-check.py:329-419`
+  (`shell_words`, `SHELL_SYNTAX_CHARACTERS`, `unquoted_text`, `reads_as_assignment`,
+  `reported_invocation`).
 - **Positive evidence:** the native run's `PASS: the reported resume command selects the installation home`
-  (a home whose rendered line was read back as words); `TestContinuePrintsAResumeCommandThatSelectsTheInstal
+  (a home whose rendered line was read back as words), re-executed on this repair's tree — 12 check(s)
+  passed, 0 failed, exit `0`, the reported line `CODEX_HOME=/tmp/ccc-native-check-az4x4umc/codex-home
+  …/codex resume 01a1e81a-4e34-788c-ba23-2b7adaffdf9a`; `TestContinuePrintsAResumeCommandThatSelectsTheInstal
   lationHome`, `TestResumeVerificationCommandNamesTheHomeItRanAgainst`,
   `TestContinueHumanOutputNamesTheResumeCommand` pass; `ResumeInvocationCheck` (both `pathlib` flavours)
   passes.
 - **Pinned by:** `TestResumeVerificationCommandNamesTheHomeItRanAgainst` (the renderer) and
-  `ResumeInvocationCheck` (the reader, both directions: correct renderings accepted, split/absent/other-home
-  renderings rejected).
-- **Executed mutations (two, one per side):**
+  `ResumeInvocationCheck` (the reader, both directions: correct renderings accepted — including a value
+  spelled with double quotes, which a shell reads the same way — and split/absent/other-home renderings
+  rejected, plus the repair's cases below).
+- **Repair (2026-11-17, the round-19 acceptance-audit finding).** `reported_invocation` compared only
+  `shlex.split` results, and that removes the quoting which decides whether the line's opening word is an
+  assignment: `'CODEX_HOME=codex-home' codex resume …` reads back as the very words a correct line reads
+  as, so it was accepted, while a shell runs a *program* by that name, sets nothing and resumes nothing.
+  The reader now reads the spelling before the quoting is discarded: `unquoted_text` (`:359-392`, the line
+  with its quoting and escapes removed — what a shell reads as syntax, with `$` and a backquote kept inside
+  double quotes, where a shell still acts on them) and `reads_as_assignment` (`:395-408`: the unquoted text
+  has to open with `CODEX_HOME=`, and nothing in `SHELL_SYNTAX_CHARACTERS` (`:349-356`) may be left
+  unquoted). The words-only reading was replaced, not kept beside the new one.
+- **Pinned by the repair:** `test_rejects_an_assignment_a_shell_reads_as_a_command`
+  (`scripts/tests/test_codex_native_check.py:128`) — the whole assignment quoted, its name quoted, its `=`
+  escaped, and the double-quoted spelling: each is asserted to read back as the *correct* words, and each
+  has to be answered `False` for the spelling; `test_rejects_syntax_the_value_leaves_unquoted` (`:152`) —
+  `a;b`, `$HOME`, a backquote and `~` left unquoted as the value, each reading back as the correct word
+  too; `test_accepts_a_value_spelled_with_the_other_quotes` (`:174`) — `CODEX_HOME="codex-home"` is the
+  same invocation to a shell, so the rule does not collapse into "the renderer's exact spelling".
+- **Executed mutations (five: one renderer, one reader from the round that introduced it, three from this
+  repair):**
   1. `continue.go:873` `if word != "" && !strings.ContainsAny(word, shellUnsafeCharacters) {` → `if true {`
      (never quote). **Observed:** exit `1`; `FAIL`;
      `continue_test.go:1135: resume command line = …`. Restored `e5be4e8a…`.
-  2. `codex-native-check.py:334` `return shell_words(command) == [f"CODEX_HOME={home}", *arguments]` →
+  2. *(recorded by the round that introduced the reader; that tree's `codex-native-check.py:334`)*
+     `return shell_words(command) == [f"CODEX_HOME={home}", *arguments]` →
      `return shell_words(command) is not None`. **Observed:** exit `1`;
      `FAIL: test_rejects_a_command_for_another_session` for both `Path` and `PureWindowsPath`;
      `AssertionError: True is not false : CODEX_HOME=codex-home codex resume 00000000-…`. Restored
      `7cf87ee9…`.
+  3. `codex-native-check.py:418` `reported_invocation` = the words-only comparison this repair replaced
+     (`return shell_words(command) == [f"CODEX_HOME={home}", *arguments]`). **Observed:** exit `1`;
+     `FAILED (failures=16)` — the four assignment spellings × two `pathlib` flavours and the four values ×
+     two flavours, with no accept case red; `AssertionError: True is not false : 'CODEX_HOME=codex-home'
+     codex resume 01a1e225-…` and `… : CODEX_HOME=a;b codex resume 01a1e225-…`. Restored byte-identical:
+     `sha256 ad80471b…` before and after.
+  4. `codex-native-check.py:406` `if text is None or not text.startswith(f"{name}="):` → `if text is None:`
+     (the assignment-spelling half removed). **Observed:** exit `1`; `FAILED (failures=8)` — all eight of
+     the assignment case's subtests and none of the value-syntax case's. Restored `ad80471b…`.
+  5. `codex-native-check.py:408` `return not set(text).intersection(SHELL_SYNTAX_CHARACTERS)` →
+     `return True` (the unquoted-syntax half removed). **Observed:** exit `1`; `FAILED (failures=8)` — all
+     eight of the value-syntax case's subtests and none of the assignment case's. Restored `ad80471b…`.
 
 ### E6 — Subprocesses are bounded: no hang, no unbounded diagnostics
 
@@ -1402,8 +1438,8 @@ obligation's number and place in the list are unchanged.)*
   rather than blocking or exhausting the run; the native check bounds its own requests the same way
   (`APP_SERVER_TIMEOUT`).
 - **Discharged:** `internal/ccc/codex_verify.go:554-611` (`call` with the per-request timeout),
-  `:612-633` (`stderrExcerpt`), `:634-654` (`boundedBuffer`), `scripts/codex-native-check.py:85-142`
-  (`APP_SERVER_TIMEOUT`, `last_meaningful_line`).
+  `:612-633` (`stderrExcerpt`), `:634-654` (`boundedBuffer`), and
+  `scripts/codex-native-check.py:88`/`:155-157` (`APP_SERVER_TIMEOUT`, `last_meaningful_line`).
 - **Positive evidence:** `TestBoundedBufferKeepsTheFirstBytes`,
   `TestBoundedBufferIsSafeForConcurrentWritesAndSnapshots` (the case `go test -race` diagnoses) pass; the
   native run completed inside its own deadlines on a host whose app server prints startup chatter.
@@ -1417,13 +1453,13 @@ obligation's number and place in the list are unchanged.)*
   appended every line the app server wrote to an unbounded `list`, and the `[:400]` in `stderr_tail` bounds
   what a *report* shows, never what the harness retains — a server that logs for the whole run (or floods
   its diagnostics pipe, which is the drainer's other job) would grow the harness's memory for the length of
-  the run. The drainer now writes into a ring: `APP_SERVER_DIAGNOSTICS_MAX` (`:87-92`),
-  `new_diagnostics`/`drain_diagnostics` (`:354-372`), the sink and the drainer (`:396`, `:413-418`), with
-  `stderr_tail` reading the ring's tail (`:431-434`). Presentation is unchanged (the last `limit` lines,
-  cut to 400 characters), and no credential or conversation-content rule is touched: the sink holds the
-  target server's own diagnostics, which F1's seeding rule never writes a credential into.
+  the run. The drainer now writes into a ring: `APP_SERVER_DIAGNOSTICS_MAX` (`:90-98`),
+  `new_diagnostics`/`drain_diagnostics` (`:432-439`, `:472-503`), the sink and the drainer (`:527`,
+  `:529-531`), with `stderr_tail` reading the ring's tail (`:562-565`). Presentation is unchanged (the last
+  `limit` lines, cut to 400 characters), and no credential or conversation-content rule is touched: the sink
+  holds the target server's own diagnostics, which F1's seeding rule never writes a credential into.
 - **Pinned by (audit repair):** `scripts/tests/test_codex_native_check.py`'s `BoundedAppServerDiagnostics`
-  (`:156-198`), three cases through the shipped sink and drainer: a 5000-line stream leaves exactly
+  (`:289-437`), three cases through the shipped sink and drainer: a 5000-line stream leaves exactly
   `APP_SERVER_DIAGNOSTICS_MAX` lines and they are the stream's **last** ones; a stream that fails mid-read
   keeps the lines that arrived; the reported tail is the end of what was read.
 - **Sweep repair (2026-11-16, Part 1 of the systematic sweep).** The bound above is a bound on the
@@ -1506,7 +1542,7 @@ obligation's number and place in the list are unchanged.)*
   behaviour choice rather than a defect repair.
 - **The sweep's other declared residual is decided as well (this lane).** `run()`, the native check's own
   subprocess helper, captures each helper call's whole stdout/stderr
-  (`scripts/codex-native-check.py:355-361`), and the sweep recorded that as a second, unnamed residual:
+  (`scripts/codex-native-check.py:423-429`), and the sweep recorded that as a second, unnamed residual:
   measured with a throwaway probe over the shipped helper — `python3 -c 'import sys;
   sys.stdout.write("x" * (64 << 20))'` through `run()` printed `captured=67108864 byte(s)` — so the
   capture is not bounded by bytes. It is decided, not left undecided: the clause's *floods* half is about
@@ -1526,15 +1562,15 @@ obligation's number and place in the list are unchanged.)*
   a credential (the model settings and a provider's name/endpoint/wire protocol/*names* of the environment
   variables a credential comes from); a provider whose base URL holds userinfo, a query or a fragment is
   left behind whole; the run's `seeded from:` line names both halves without quoting a value.
-- **Discharged:** `scripts/codex-native-check.py:93-107` (`SEEDED_TOP_LEVEL`, `SEEDED_PROVIDER_SETTINGS`),
-  `:174-186` (`credential_free_url`), `:223-307` (`seed_configuration`), `:508-527` (the report line).
+- **Discharged:** `scripts/codex-native-check.py:106-119` (`SEEDED_TOP_LEVEL`, `SEEDED_PROVIDER_SETTINGS`),
+  `:193-205` (`credential_free_url`), `:242-327` (`seed_configuration`), `:684-688` (the report line).
 - **Positive evidence:** the native run's own line, which names what was copied and what was left behind
   (`copied model, model_provider, [model_providers.tencent-litellm].name, …; not copied …:
   model_reasoning_effort, …, [projects], [features], [tui]`), and
   `SeededHostConfiguration` (five cases) passing.
 - **Pinned by:** `scripts/tests/test_codex_native_check.py`'s `SeededHostConfiguration` (round 12,
   finding 1: the throw-away home is seeded, not cloned).
-- **Executed mutation:** `scripts/codex-native-check.py:175` (first line of `credential_free_url`'s body)
+- **Executed mutation:** `scripts/codex-native-check.py:199` (first line of `credential_free_url`'s body)
   prepended `return True`. **Observed:** exit `1`;
   `FAIL: test_does_not_copy_a_provider_whose_url_holds_a_credential`;
   `AssertionError: 'model_providers' unexpectedly found in {… 'base_url':
@@ -1865,7 +1901,7 @@ alone and passed before that mutation was applied.
 | --- | --- | --- | --- |
 | 1 — `continue.go:677`, a source I/O failure bypassed the archive fallback | A2, A3 | `reader.go`: a failed `Fingerprint`/`Parse` travels as `ErrProviderFailed`, the sentinel the accepted set already holds; `continue.go`'s set documents why it is the gate | `TestContinueFallsBackToTheArchiveWhenTheSourceCannotBeRead` (three cases) + `TestUnreadableSourceFallsBackToTheArchive` (the inspection's same sentinel) — both wraps reverted, one at a time, each run failing |
 | 2 — `main_test.go:1771` (the audited head's line; that call site no longer exists — every positive case now passes the run's own `code`), the positive cases passed a constant `exitOK`, and the resume case's load was unset | E1, E2, E4 | every positive case reads the run's own exit code; the resume case sets the loader's mode it needs, and its negative half sets it too | `TestResumeVerificationRequiresTheTurnToAppendToTheSession` — the mode removed again fails as `exit 1, want 0`; the pre-repair shape passed while the CLI exited `1` |
-| 3 — `codex-native-check.py:388`, diagnostics retained without a memory bound | E6 | the drainer writes into a ring (`APP_SERVER_DIAGNOSTICS_MAX`, `new_diagnostics`/`drain_diagnostics`), presentation unchanged | `BoundedAppServerDiagnostics` — the `maxlen` removed retains 5000 of 5000 lines |
+| 3 — `codex-native-check.py:388` *(that round's numbering)*, diagnostics retained without a memory bound | E6 | the drainer writes into a ring (`APP_SERVER_DIAGNOSTICS_MAX`, `new_diagnostics`/`drain_diagnostics`), presentation unchanged | `BoundedAppServerDiagnostics` — the `maxlen` removed retains 5000 of 5000 lines |
 | 4 — `codex_target_test.go:1113`, the envelope assertion shared the writer's constant | C2 | both envelope spellings are literals taken from the carried reader (`response_item`, `event_msg`) | `TestCodexRolloutWritesTheTargetsOwnViewRecordForEachMessage` — a drifted writer spelling fails it; sharing the constant again hides the same drift |
 | — (same class, disclosed not found) `codex_target_test.go:128-135`, the record-*kind* list also read the writer's constants | C2 | the list is now the carried reader's own spellings as literals, with the source named in a comment; the operator repaired this one itself | `TestCodexRolloutRecordShape` — a drifted `codexRecordEventMsg` fails it with `record types = […want…]`; the pre-repair form moved with the writer and stayed green (the lane's disclosure, verified by an executed drift mutation and a byte-identical restore) |
 
@@ -1919,7 +1955,7 @@ and the reason each is safe is below.
 - **E2 — repaired to a decided state (see the declared-row table below).** The sweep measured that no case read the reported `exit_code` or `command`; both are now read out of the run's own document in `TestResumeVerificationRequiresTheTurnToAppendToTheSession` — `command` against the invocation the turn ran, `exit_code` against the turn's own status (the new failing-turn mode) — and two executed mutations fail those assertions (recorded in the row). The growth rule remains two-way.
 - **E3** — the relative-spelling mutation is caught by the cited case, and the plausible variants die on it too (a bare path, an absolute path, a directory change before resolution).
 - **E4 — repaired to a decided state (see the declared-row table below).** The clause's last half, "a dry run records none with that reason", is now asserted offline by `TestProviderBindingIsTheTargetsOwnAnswer`'s dry-run half — no provider, `unrecorded`, the reason naming the dry run, and the warning in the report's channel — with an executed mutation that makes the dry run start the probe (recorded in the row).
-- **E5** — both sides of the shell-reading rule are mutated and caught, and the reader is exercised in both directions over four renderings × two path flavours.
+- **E5** — both sides of the shell-reading rule are mutated and caught (renderer and reader), and the reader is exercised in both directions over four renderings × two path flavours; **the round-19 repair's two halves are each mutated and caught on their own cases** (16 failures with the words-only reader, 8 per half), so a quoted assignment and an unquoted `;`/`$`/backquote/`~` in a value are refused by a rule that is pinned two-way.
 - **E6** — repaired and corrected above (both harnesses' diagnostics bounded by bytes, the Go turn's two pipes bounded, the response-stream residual declared as `Q-0002-23`). **The other residual is decided too:** `codex-native-check.py`'s `run()` captures whole subprocess outputs in memory (a `ccc` build's stdout, the turn's output) with no byte bound — measured in this lane at `captured=67108864 byte(s)` for a 64 MiB child — and is recorded as `Q-0002-27` (the clause's *floods* is about the target protocol's diagnostics; `run()`'s captures are the harness's own plumbing, bounded by the subprocess's own deadline and read in bounded pieces by every consumer).
 - **F5** — every behaviour the sentence names is in `gate.py`/`upstream-parity.py` and each is pinned by a named case (`GateCase`, the unknown-name case, the partial-disclosure case, the parity script's `INCOMPLETE`); **mutation-coverage note:** the row records one executed mutation (required+SKIP), the other halves are asserted without one.
 
