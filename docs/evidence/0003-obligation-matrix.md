@@ -16,8 +16,8 @@ This matrix was produced in the **implement** stage of the increment: it records
 discharge, and it does *not* include the per-clause mutation sweep that 0002's matrix accumulated during
 its acceptance rounds (each row there names an executed mutation and its restore). Where a rule here is
 asserted by a test rather than by a mutation, the row says so; the mutation sweep belongs to the review
-stage that follows this one, and it began in the fix round that followed review round 2 — that round's
-executed mutations and restores are recorded at the end of this file.
+stage that follows this one, and it began in the fix rounds that followed review rounds 2 and 3 — those
+rounds' executed mutations and restores are recorded at the end of this file.
 
 ## `Done when` clauses
 
@@ -74,3 +74,23 @@ lines:
 The sweep is **not** exhaustive, and says so: it covers the four rules this round changed or added, and
 every other row above still names a case rather than a mutation. The per-clause sweep remains the
 acceptance stage's work.
+
+## Mutation sweep — the fix round that followed review round 3
+
+The same shape as the round-2 sweep above: every rule this round changed or added was broken on this
+tree, the case that names it run, and the tree restored. Each Go mutation was reverted afterwards and the
+file's diff read to hold exactly this round's intended change; the document mutation was restored from a
+byte-for-byte backup and its sha256 re-checked against it. The evidence record's §6.7 quotes the failure
+lines.
+
+| Clause | Mutation (broken rule) | Case that fired |
+| --- | --- | --- |
+| D3 | `compactJSON` accepts every valid JSON value again (the object-shape test removed) | `TestClaudeWriterHoldsOnlyObjectToolInputs` — `empty_tool_inputs = 2, want 6` and `call toolu_array holds input []interface {}{1, 2}, want a JSON object` — exit 1 |
+| D3 | the Claude writer's generated call id is keyed by `message.Ordinal` again (the reviewed line restored) | `TestClaudeWriterPairsAnIdlessResultOnlyWithSoleOutstandingCall` — `ids ["toolu_ccc_0_0" "toolu_ccc_0_0"]` with `unpaired_tool_results = 0, want 1` — exit 1 |
+| D3, D4 | the Codex writer's generated call id is keyed by `message.Ordinal` again — the same class, in the writer the shared document also feeds | `TestCodexRolloutPairsAnIdLessResultWithItsCall` — `ids ["call_ccc_0_0" "call_ccc_0_0"]` with `carried 1 result(s) …, which is a pairing the source did not record` — exit 1 |
+| D3 | the evidence case's route-record vacuity rule removed from `comparison_violations` (`if not claims: return`) | `test_a_route_record_whose_comparison_lost_its_table_is_reported` — `removing §5's table left the rule reporting []` — exit 1 |
+| D3 | the shipped route record's own §5 table deleted on disk (`docs/evidence/0003-codex-to-claude-continuation.md`) | `test_every_shipped_comparison_only_quotes_its_recorded_run` — the record reported with its `2 recorded answer block(s)` — exit 1 |
+
+The sweep is **not** exhaustive here either: it covers the five mutations above (two of them the same
+generated-id rule in the two writers, and one the finding's own on-disk scenario); every other row in
+this file still names a case rather than a mutation.

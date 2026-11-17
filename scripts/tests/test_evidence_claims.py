@@ -18,8 +18,13 @@ own bytes rather than a summary of them. What the case cannot check is stated ra
 harness records the answer, not its reading of it, so a quotation credited to the wrong return of the
 right run is invisible here (the audit's own limit).
 
-The second case drives the two audited cells, as they stood, through the same reading, so the detection
+The third case drives the two audited cells, as they stood, through the same reading, so the detection
 is exercised on the finding itself and not only asserted about the shipped file.
+
+The reading has to keep a subject: a record whose §5 credits no answer leaves this case checking nothing
+about it, so the records that report a converted route and its resumed turn (``ROUTE_DOCUMENTS``) must
+still credit that run, and the second case deletes §5's comparison from each of them and requires the same
+reading to report the loss.
 """
 
 from __future__ import annotations
@@ -35,6 +40,17 @@ ROOT = Path(__file__).resolve().parents[2]
 #: about one of them, so a new increment's record is covered by writing it the way the others are
 #: (rather than by remembering to add its name here).
 DOCUMENTS = sorted((ROOT / "docs" / "evidence").glob("*continuation*.md"))
+
+#: The continuation records that report a converted route and the native turn that resumed it: each
+#: one's §5 credits the answer of a run its increment really made, which is the subject this case reads.
+#: Named explicitly -- and asserted to be among the discovered documents -- because the check would
+#: otherwise pass by reading nothing: a route record whose §5 lost its answer claims is the vacuous case
+#: the previous revision rejected and the round-3 finding restored. A new route record joins this tuple
+#: when its increment is written.
+ROUTE_DOCUMENTS = (
+    "0002-claude-to-codex-continuation.md",
+    "0003-codex-to-claude-continuation.md",
+)
 
 #: The line the harness prints above a turn's own output (``scripts/codex-native-check.py``, its
 #: ``record``/print pair for the resume stage). The block under it is that turn's answer, verbatim.
@@ -111,6 +127,55 @@ def uncited(document: str) -> list[tuple[str, str]]:
             if not any(quotation in block for block in answers)]
 
 
+def comparison_violations(document: str, *, must_credit_the_run: bool) -> list[str]:
+    """Every way the document's §5 comparison breaks the rule, one message each.
+
+    ``must_credit_the_run`` is the route-record requirement (``ROUTE_DOCUMENTS``): the record reports a
+    converted route and the native turn that resumed it, so its §5 must still credit that run's answer
+    with an inline-code quotation -- a route record without one is the vacuous case this reading cannot
+    pass. A record that makes a claim at all needs the recorded runs its quotations cite; a record with
+    neither claims nor recorded runs is not this rule's subject and is read as passing.
+    """
+    blocks = recorded_answer_blocks(document)
+    claims = answer_claims(document)
+    found = [
+        f"a §5 cell credits the run's answer with words no recorded answer block holds: {quotation!r}"
+        for quotation, _ in uncited(document)
+    ]
+    if not claims:
+        if must_credit_the_run:
+            found.append(
+                f"a route record's §5 credits no answer with an inline-code quotation "
+                f"({len(blocks)} recorded answer block(s) under {ANSWER_MARKER!r}): the comparison "
+                f"lost the run it cites")
+    elif len(blocks) < 2:
+        found.append(
+            f"§5 credits the run's answer in {len(claims)} cell(s) but the record holds {len(blocks)} "
+            f"answer block(s) under {ANSWER_MARKER!r}: the quotations have no recorded run to cite")
+    return found
+
+
+def comparison_removed(document: str) -> str:
+    """The document with §5's table rows deleted: the recorded runs stay, the comparison's cells --
+    and the answer claims in them -- are gone.
+
+    This is the mutation the round-3 finding described, as a reading rather than as a hand-spelled
+    fixture: the case below feeds the shipped record's own bytes through it, so the shape it drives the
+    rule with cannot drift from the record the rule is about.
+    """
+    kept = []
+    inside_section = False
+    for line in document.splitlines():
+        if line.startswith(SECTION_HEADING):
+            inside_section = True
+        elif inside_section and line.startswith("## "):
+            inside_section = False
+        if inside_section and line.startswith("|"):
+            continue
+        kept.append(line)
+    return "\n".join(kept) + "\n"
+
+
 #: The two cells round 18's audit corrected, exactly as they stood: the first credits the answer with a
 #: file read's contents as its "first return" (the words of an earlier run), the second names the
 #: source's tool name where the recorded answer said ``exec_command`` and says the failure is unquoted.
@@ -137,33 +202,53 @@ AUDITED_DOCUMENT = (
 
 
 class ComparisonCreditsTheRecordedRun(unittest.TestCase):
-    """§5's tables may not credit a run's answer with words its recorded output does not hold."""
+    """§5's tables may not credit a run's answer with words its recorded output does not hold, and a
+    route record's §5 must keep crediting its own run."""
 
     def test_every_shipped_comparison_only_quotes_its_recorded_run(self) -> None:
         self.assertTrue(
             DOCUMENTS,
             f"no continuation evidence record under {ROOT / 'docs' / 'evidence'}: this case would "
             f"agree with itself")
+        # The named route records are the ones this reading must keep having a subject for, so a record
+        # that stops being discovered (a rename, a lost glob) fails here instead of retiring the rule
+        # quietly.
+        discovered = {path.name for path in DOCUMENTS}
+        for name in ROUTE_DOCUMENTS:
+            self.assertIn(
+                name, discovered,
+                f"{name} is a route record this case requires an answer claim from, but no such "
+                f"document was discovered (found: {sorted(discovered)})")
         for document_path in DOCUMENTS:
             document = document_path.read_text(encoding="utf-8")
-            blocks = recorded_answer_blocks(document)
+            found = comparison_violations(
+                document, must_credit_the_run=document_path.name in ROUTE_DOCUMENTS)
             self.assertEqual(
-                uncited(document), [],
-                f"{document_path.name}: a §5 cell credits the run's answer with words no recorded "
-                f"answer block holds — a cell may only quote the run it names")
-            # Non-vacuity, the same reading's other direction: a record that claims nothing about an
-            # answer is not this rule's subject, and one that claims something must have recorded the
-            # run it credits. So a record with answer claims needs two recorded blocks (the conversion
-            # run and the resumed turn), and one without them is reported rather than passed off as
-            # checked.
-            claims = answer_claims(document)
-            if not claims:
-                continue
-            self.assertGreaterEqual(
-                len(blocks), 2,
-                f"{document_path.name} quotes the run's answer in {len(claims)} cell(s) but records "
-                f"{len(blocks)} answer block(s) under {ANSWER_MARKER!r}: the quotations have no "
-                f"recorded run to cite")
+                found, [],
+                f"{document_path.name}: " + "; ".join(found))
+
+    def test_a_route_record_whose_comparison_lost_its_table_is_reported(self) -> None:
+        # Round 3's finding: the previous revision skipped its remaining assertions whenever a record
+        # held no answer claims, so deleting §5's table -- the comparison itself, and with it the run it
+        # credits -- left this case green. The requirement lives on the route records, so each one's own
+        # bytes are mutated: the table rows go, the recorded runs and their answer blocks stay, and the
+        # same reading the shipped check runs must report the loss.
+        for name in ROUTE_DOCUMENTS:
+            document = (ROOT / "docs" / "evidence" / name).read_text(encoding="utf-8")
+            self.assertEqual(
+                comparison_violations(document, must_credit_the_run=True), [],
+                f"{name}: the shipped record does not pass the reading this case mutates")
+            mutated = comparison_removed(document)
+            self.assertNotEqual(mutated, document, f"{name}: the mutation removed nothing")
+            self.assertTrue(
+                recorded_answer_blocks(mutated),
+                f"{name}: the mutation removed the recorded run instead of the comparison's cells")
+            found = comparison_violations(mutated, must_credit_the_run=True)
+            self.assertEqual(
+                len(found), 1,
+                f"{name}: removing §5's table left the rule reporting {found!r}, want the lost answer "
+                f"claim reported")
+            self.assertIn("credits no answer", found[0])
 
     def test_the_cells_the_audit_corrected_are_reported(self) -> None:
         flagged = {quotation for quotation, _ in uncited(AUDITED_DOCUMENT)}

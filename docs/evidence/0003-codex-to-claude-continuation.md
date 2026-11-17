@@ -961,6 +961,216 @@ a decision — and no gate rule moved (`scripts/gate.py`, `scripts/upstream-pari
 `scripts/gate-required.txt`, `scripts/gate-goflags.txt` and the workflow are untouched), so no
 `goals/0003/ci-fix-declined-1.md` was written.
 
+### 6.7 The fix round (review round 3's three findings)
+
+Review round 3 read `8e1c5026…93180b3a` and found three defects. Each was reproduced on this tree before
+it was fixed, and each changed behaviour, a case or a document — none is a comment. No `Done when` clause
+moved. The round's instructions also asked for a machine-checked pin per rule: every rule this round
+changed or added was broken on this tree, the case that names it run, and the tree restored (the
+mutations and restores are tabulated in the obligation matrix's round-3 sweep; the failures are quoted
+below).
+
+**(1) A recorded tool input that is not a JSON object was written through.** `compactJSON` answered the
+compacted bytes of every *valid JSON value*, while the target's `tool_use` block carries an object — and
+the writer's own `empty_tool_inputs` detail already promised the fallback for "recorded one that is not a
+JSON object". A Codex custom-tool input of `[1,2]`, `42`, `"ls"` or `null` therefore reached the file as
+that value with the count still zero. The reading now refuses any text whose first non-space byte is not
+`{` (a valid JSON text starting with `{` is an object, so the shape test needs no parse of its own), and
+the caller's empty-object fallback applies and is counted. Reproduced by removing the shape test again;
+the new case fails:
+
+```console
+$ go test -count=1 -tags fts5 -run TestClaudeWriterHoldsOnlyObjectToolInputs ./internal/ccc/   # exit 1
+--- FAIL: TestClaudeWriterHoldsOnlyObjectToolInputs (0.00s)
+    claude_target_test.go:457: empty_tool_inputs = 2, want 6: every recorded input that is not an object takes the fallback, not only an absent one
+    claude_target_test.go:469: call toolu_array holds input []interface {}{1, 2}, want a JSON object: the target's block carries no other shape
+    claude_target_test.go:469: call toolu_number holds input 42, want a JSON object: the target's block carries no other shape
+    claude_target_test.go:469: call toolu_string holds input "ls", want a JSON object: the target's block carries no other shape
+    claude_target_test.go:469: call toolu_null holds input <nil>, want a JSON object: the target's block carries no other shape
+    claude_target_test.go:477: the transcript holds 3 tool_use block(s), want the document's 7 calls
+FAIL
+FAIL	go.kenn.io/agentsview/internal/ccc	0.026s
+FAIL
+```
+
+`TestClaudeWriterHoldsOnlyObjectToolInputs` covers the scalar, array, string, null, whitespace-only and
+unparsed shapes beside one recorded object — whose own spacing the file and the item list both hold
+compacted — and reads every `tool_use` block back as an object. The repaired tree's own run of the same
+selector is `ok … 0.022s`, exit **0**.
+
+**(2) A generated call id was keyed by the message's ordinal, which two messages can share.** The
+review's scenario is an embedding caller that never assigned ordinals: two assistant messages, each with
+one id-less call, both received `toolu_ccc_0_0`, `pendingCalls` collapsed the two calls into one entry,
+and a following id-less result paired with "the" outstanding call while two were. The writer already
+tracks the message's place in the document for its shared message ids; a generated call id is now keyed
+by that same place and the call's index in the message (`toolCall`), so `toolu_ccc_0_0` and
+`toolu_ccc_1_0` are two calls and the pairing rule still refuses the guess.
+
+**The same probe found the identical defect in the sibling Codex writer**, which this increment's diff
+also changes: `codexRolloutBuilder.toolCall` was called with `message.Ordinal` and its generated ids
+collapsed the same way. A scratch case — two ordinal-less messages with one id-less call each, then one
+id-less result, converted through both writers before either line moved — printed
+
+```text
+claude call id "toolu_ccc_0_0"
+claude call id "toolu_ccc_1_0"
+claude generated_call_ids=2 unpaired=1 results=0
+codex call id "call_ccc_0_0"
+codex call id "call_ccc_0_0"
+codex call id "call_ccc_0_0"
+codex generated_call_ids=3 unpaired=0 results=1
+```
+
+(the scratch file was deleted after the run; the re-runnable form of the same reproduction is the
+reviewed line's restoration below). The Codex writer now keeps the message's place in its walk for the
+same reason, and both writers' pins live in their existing pairing cases
+(`TestClaudeWriterPairsAnIdlessResultOnlyWithSoleOutstandingCall`,
+`TestCodexRolloutPairsAnIdLessResultWithItsCall`), whose new arm asserts the distinct ids, the refused
+pairing, `unpaired_tool_results = 1` and no inferred pairing in `generated_call_ids`.
+
+Restoring the reviewed line in each writer (`message.Ordinal` again) fires each writer's own case:
+
+```console
+$ go test -count=1 -tags fts5 -run TestClaudeWriterPairsAnIdlessResultOnlyWithSoleOutstandingCall ./internal/ccc/   # exit 1
+--- FAIL: TestClaudeWriterPairsAnIdlessResultOnlyWithSoleOutstandingCall (0.00s)
+    claude_target_test.go:709: unpaired_tool_results = 0, want 1: two calls in two messages were outstanding
+    claude_target_test.go:712: generated_call_ids = 3, want 2: the two calls, with no pairing inferred
+    claude_target_test.go:715: carried 1 result(s), want none: the id-less result could belong to either call
+    claude_target_test.go:728: the two messages' id-less calls carry ids ["toolu_ccc_0_0" "toolu_ccc_0_0"], want one distinct id per call
+FAIL
+FAIL	go.kenn.io/agentsview/internal/ccc	0.022s
+FAIL
+
+$ go test -count=1 -tags fts5 -run TestCodexRolloutPairsAnIdLessResultWithItsCall ./internal/ccc/   # exit 1
+--- FAIL: TestCodexRolloutPairsAnIdLessResultWithItsCall (0.00s)
+    codex_target_test.go:689: carried 1 result(s) for two id-less calls in two messages, which is a pairing the source did not record
+    codex_target_test.go:693: unpaired_tool_results = {Category:unpaired_tool_results Disposition:omitted Count:0 …}, want the ambiguous result counted
+    codex_target_test.go:697: generated_call_ids = {Category:generated_call_ids Disposition:carried-with-caveat Count:3 …}, want the two calls and no inferred pairing
+    codex_target_test.go:707: the two messages' id-less calls carry ids ["call_ccc_0_0" "call_ccc_0_0"], want one distinct id per call
+FAIL
+FAIL	go.kenn.io/agentsview/internal/ccc	0.022s
+FAIL
+```
+
+Both writers' reviewed lines were put back after the runs, and each file's `git diff` was read to hold
+exactly the round's intended change; the repaired tree's own run of the two cases under one selector is
+`ok … 0.025s`, exit **0**.
+
+**(3) The evidence case passed when its subject disappeared.** The increment had replaced the shipped
+record's required nonempty answer claims (`assertTrue(claims)`) with `if not claims: continue`, so a
+route record that lost its §5 comparison — the exact condition the case exists to reject — read as a
+pass. The rule now lives where the finding put it: `ROUTE_DOCUMENTS` names the records that report a
+converted route and the native turn that resumed it, the case asserts each of them is among the globbed
+`*continuation*.md` documents (a rename or a lost glob fails rather than retires the requirement), and
+`comparison_violations` reports a route record whose §5 credits no answer. A new case deletes §5's table
+rows from each named record's own bytes (`comparison_removed`) and requires that reading to report the
+loss.
+
+Two mutations, both restored: the vacuity branch removed from `comparison_violations`, and — the
+finding's own scenario — the real `docs/evidence/0003-codex-to-claude-continuation.md` with its §5 table
+rows deleted in place (backup taken first; restored byte-for-byte afterwards, its sha256
+`cfa1249a0fe54a5937a9a66a9719a8747feca23ea8b76f7546174266d09744a9` and its git state unchanged):
+
+```console
+$ python3 -m unittest scripts.tests.test_evidence_claims   # vacuity branch removed: exit 1
+FAIL: test_a_route_record_whose_comparison_lost_its_table_is_reported
+AssertionError: 0 != 1 : 0002-claude-to-codex-continuation.md: removing §5's table left the rule reporting [], want the lost answer claim reported
+Ran 3 tests in 0.009s
+FAILED (failures=1)
+
+$ python3 -m unittest scripts.tests.test_evidence_claims   # the 0003 record's §5 table deleted on disk: exit 1
+FF.
+FAIL: test_a_route_record_whose_comparison_lost_its_table_is_reported
+AssertionError: Lists differ: ['a route record's §5 credits no answer w[174 chars]tes'] != []
+… : 0003-codex-to-claude-continuation.md: the shipped record does not pass the reading this case mutates
+FAIL: test_every_shipped_comparison_only_quotes_its_recorded_run
+AssertionError: Lists differ: ['a route record's §5 credits no answer w[174 chars]tes'] != []
+… : 0003-codex-to-claude-continuation.md: a route record's §5 credits no answer with an inline-code quotation (2 recorded answer block(s) …): the comparison lost the run it cites
+Ran 3 tests in 0.011s
+FAILED (failures=2)
+```
+
+(the second run fired both the shipped reading and the new case's own pre-mutation check on that file,
+which is why two failures were reported; the record was restored from its backup afterwards, byte for
+byte, and `git status` shows it unmodified). The repaired tree's run of the module is
+`Ran 3 tests in 0.011s … OK`, exit **0**.
+
+**Native re-measure on this tree.** The Claude writer is a measured consumer, so its check was re-run
+against the installed harness; the conversion's own numbers are §6.1's exactly (3674 bytes, the same
+three non-zero loss categories, no `generated_call_ids` and no `empty_tool_inputs`, because the fixture
+records both a call id and an object input):
+
+```console
+$ python3 scripts/claude-native-check.py --claude …/claude-cli/node_modules/.bin/claude   # exit 0
+…
+PASS: the installed file is one JSON object per line — 3674 bytes (the target's own read of it is the load check)
+PASS: the target harness's own loader resolves the installed session — verified — … the same command with an unknown session id answered "No conversation found with session ID: …"
+SKIP: a real turn continues from the installed session — not attempted: pass --resume-prompt to run one
+PASS: the source session is unchanged — sha256 dff6ad015aeb7363… (the scratch source root is identical)
+13 check(s) passed, 0 failed, 1 skipped
+```
+
+The turn arm was run as well and answered the documented no-model-access boundary — exit **1**, with the
+harness's own words (`13 check(s) passed, 1 failed, 0 skipped`; the failing check is `a real turn
+continues from the installed session`, whose comparison needs an answer the harness cannot produce
+without a provider). The Codex writer was re-measured the same way on its own route; it ran the offline
+half to completion and the turn arm was **not** attempted, because this host's Codex has credentials
+configured (`~/.codex/auth.json`) and the round's default verification level never bills a model turn:
+
+```console
+$ python3 scripts/codex-native-check.py   # exit 0
+PASS: the target harness's own loader opens the installed session — thread/resume -> … [legacy] cwd=/home/user/code/example-api
+PASS: the installed file is one JSON object per line — 3928 bytes (the target's own read of it is the load check)
+SKIP: a real turn continues from the installed session — not attempted: pass --resume-prompt to run one
+12 check(s) passed, 0 failed, 1 skipped
+```
+
+**Re-runs and the gate.** The whole Go suite ran twice — once with `TMPDIR` pointed at a directory whose
+name holds a space (the shell-unsafe root §6.6 exercises the quoting rules with, created first) and once
+as itself — and the gate ran last:
+
+```console
+$ TMPDIR='/tmp/ccc win' go test -count=1 -tags fts5 ./cmd/ccc/... ./internal/ccc/...   # exit 0
+ok  	go.kenn.io/agentsview/cmd/ccc	2.593s
+ok  	go.kenn.io/agentsview/internal/ccc	9.682s
+ok  	go.kenn.io/agentsview/internal/ccc/parity	1.058s
+
+$ go test -count=1 -tags fts5 ./cmd/ccc/... ./internal/ccc/...   # exit 0
+ok  	go.kenn.io/agentsview/cmd/ccc	2.816s
+ok  	go.kenn.io/agentsview/internal/ccc	10.301s
+ok  	go.kenn.io/agentsview/internal/ccc/parity	1.405s
+
+$ python3 scripts/gate.py   # exit 0
+  PASS     gofmt    3591 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 191 tests in 4.991s (rc=0)
+  PASS     parity   … carried: 5553 file(s) identical to the pinned revision … | owned: 28 project-owned prefix(es); files seen by git: 5644 | …
+  PASS     secrets  no leaks found in 95 file(s) this repository owns …
+GATE: PASS
+```
+
+Counts that moved, and why: Go top-level cases **206 → 207** (one new case,
+`TestClaudeWriterHoldsOnlyObjectToolInputs`; the two pairing cases gained arms and kept their names), and
+`selftest` **190 → 191** (one new offline case, the §5-table removal). No case was deleted, skipped,
+weakened or renamed; `gofmt` 3591, the three packages, `carried` 5553, `owned` 28, `files seen by git`
+5644 and `secrets` 95 are unchanged from §6.6.
+
+**Nothing else moved.** `docs/harness.md`, `README.md`, `AGENTS.md` and the gate files are untouched: no
+command, gate step, layout, read order or agent rule changed — the changed rules are the writer's own and
+the evidence case's, and both are described where they live (the writer's comments, the record's §5
+disclosure and the obligation matrix's sweep). `docs/goals/README.md` and `docs/goals/archive/` are
+unchanged too: 0003 is still this increment's open goal, awaiting operator acceptance. No owner-only
+question arose — the one judgement this round took alone (a generated id is keyed by the call's place in
+the document, and the sibling writer's identical defect is fixed with it) is an implementation default
+rather than a decision the owner must make, and the fix's reversibility is the mutation recorded above.
+
+That gate block is the last gate run on this tree: the only edits after it are this section's own closing
+lines and the obligation matrix's round-3 wording, which no gate step reads. The one step that does read
+these records — the `selftest` step's evidence case, over the `*continuation*.md` records' §5 tables and
+their answer blocks — was re-run on the file as it then stood: `Ran 191 tests in 5.073s`, exit 0.
+
 ## 7. Limits and residual risks
 
 - **The `resume` level, and the native check's real turn, need model access.** On a host without it the

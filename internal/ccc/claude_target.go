@@ -552,7 +552,7 @@ func (b *claudeTranscriptBuilder) writeToolEvidence(message Message) {
 		// A call is written on a record of its own -- the shape the harness writes for one block of one
 		// message -- carrying the id its message's dialogue record shares, so both readers put them back
 		// into one message.
-		b.toolCall(message, entry.index, entry.call, message.Timestamp)
+		b.toolCall(entry.index, entry.call, message.Timestamp)
 	}
 	for _, result := range message.ToolResults {
 		block, ok := b.toolResult(result, message.Timestamp)
@@ -633,10 +633,15 @@ func (b *claudeTranscriptBuilder) distinctCalls(message Message) []projectedCall
 }
 
 // toolCall writes one call as an assistant record holding a single tool_use block.
-func (b *claudeTranscriptBuilder) toolCall(message Message, index int, call ToolCall, at time.Time) {
+func (b *claudeTranscriptBuilder) toolCall(index int, call ToolCall, at time.Time) {
 	callID := strings.TrimSpace(call.ToolUseID)
 	if callID == "" {
-		callID = fmt.Sprintf("%s%d_%d", claudeGeneratedCallPrefix, message.Ordinal, index)
+		// The call's place in the document keys its generated id -- the message's position in the walk
+		// and the call's index in that message -- and not the message's own ordinal: an embedding caller
+		// may leave ordinals unassigned, and two messages' id-less calls must not collapse into one id.
+		// A shared id would make the pairing below read one call, so an id-less result could pair with
+		// "the" outstanding call while two are.
+		callID = fmt.Sprintf("%s%d_%d", claudeGeneratedCallPrefix, b.messageIndex, index)
 		b.lossGeneratedIDs++
 	}
 	// The block's input member is an object, and the encoder writes it compacted: the item list keeps the
@@ -809,13 +814,15 @@ func (b *claudeTranscriptBuilder) blocksContent(blocks []claudeContentBlock) jso
 	return json.RawMessage(bytes.TrimRight(buf.Bytes(), "\n"))
 }
 
-// compactJSON answers the compact spelling of one recorded JSON value, or "" when the bytes are not
-// valid JSON: the target's tool_use block carries an object, and the encoder that writes the record
-// stores it compacted, so an item list that kept the source's spacing would claim bytes the file does
-// not hold.
+// compactJSON answers the compact spelling of one recorded JSON object, or "" when the bytes are not
+// one: the target's tool_use block carries an object, so a recorded array, scalar or null is refused
+// exactly as bytes that are not JSON at all are, and the caller writes -- and reports -- its empty
+// object for it. (A valid JSON text starting with '{' is an object, so the shape test needs no parse of
+// its own.) The encoder that writes the record stores the object compacted, so an item list that kept
+// the source's spacing would claim bytes the file does not hold.
 func compactJSON(raw string) string {
 	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" || !json.Valid([]byte(trimmed)) {
+	if trimmed == "" || trimmed[0] != '{' || !json.Valid([]byte(trimmed)) {
 		return ""
 	}
 	var buffer bytes.Buffer

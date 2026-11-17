@@ -344,6 +344,10 @@ type codexRolloutBuilder struct {
 	items      []TargetItem
 	carried    Carried
 	callOwners map[string]struct{}
+	// messageIndex is the place of the message being written in the document's walk. It keys the id
+	// generated for a call that recorded none (toolCall): a message's own ordinal is not unique when an
+	// embedding caller never assigned one, and two calls sharing a generated id would read as one call.
+	messageIndex int
 
 	// sourceFidelity is the completeness and the provider's own classification of the read itself.
 	// Lines the provider's reader could not turn into a message never reach this writer as evidence at
@@ -410,9 +414,12 @@ func (b *codexRolloutBuilder) sessionMeta(startedAt time.Time) {
 	})
 }
 
-// writeConversation walks the document once and writes every record it can express.
+// writeConversation walks the document once and writes every record it can express. The message's place
+// in the walk keys the ids generated for calls that recorded none (toolCall), so two messages whose
+// ordinals were never assigned cannot collapse into one call.
 func (b *codexRolloutBuilder) writeConversation(conv Conversation) {
-	for _, message := range conv.Messages {
+	for index, message := range conv.Messages {
+		b.messageIndex = index
 		b.writeMessage(message)
 	}
 }
@@ -537,7 +544,7 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 // tool evidence contributes nothing here.
 func (b *codexRolloutBuilder) writeToolEvidence(message Message) {
 	for index, call := range message.ToolCalls {
-		b.toolCall(message.Ordinal, index, call, message.Timestamp)
+		b.toolCall(index, call, message.Timestamp)
 	}
 	for _, result := range message.ToolResults {
 		b.toolResult(result, message.Timestamp)
@@ -655,13 +662,18 @@ func (b *codexRolloutBuilder) messageItem(kind TargetItemKind, role, contentType
 	b.items = append(b.items, TargetItem{Kind: kind, Text: text})
 }
 
-func (b *codexRolloutBuilder) toolCall(ordinal, index int, call ToolCall, at time.Time) {
+func (b *codexRolloutBuilder) toolCall(index int, call ToolCall, at time.Time) {
 	if !b.turnOpen {
 		b.startTurn(at)
 	}
 	callID := strings.TrimSpace(call.ToolUseID)
 	if callID == "" {
-		callID = fmt.Sprintf("%s%d_%d", codexGeneratedCallPrefix, ordinal, index)
+		// The call's place in the document keys its generated id -- the message's position in the walk
+		// and the call's index in that message -- and not the message's own ordinal: an embedding caller
+		// may leave ordinals unassigned, and two messages' id-less calls must not collapse into one id.
+		// A shared id would make the pairing rule below read one call, so an id-less result could pair
+		// with "the" outstanding call while two are.
+		callID = fmt.Sprintf("%s%d_%d", codexGeneratedCallPrefix, b.messageIndex, index)
 		b.lossGeneratedIDs++
 	}
 	input := strings.TrimSpace(call.InputJSON)

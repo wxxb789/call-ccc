@@ -427,6 +427,82 @@ func TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers(t *testing.T) {
 	}
 }
 
+// TestClaudeWriterHoldsOnlyObjectToolInputs pins the one shape the target's tool_use block can carry
+// for a call's input: an object. A source read can record any JSON value there -- the inherited Codex
+// reader passes a custom tool call's arguments through unchanged (internal/parser's
+// extractCodexInputJSON), so an array, a scalar or null reaches this writer as readily as an object does
+// -- and the block has no spelling for those. Such an input takes the same fallback as an absent one: an
+// empty object, counted as empty_tool_inputs; writing the recorded value through would put a shape in
+// the file the format does not define while the report's count stayed zero.
+func TestClaudeWriterHoldsOnlyObjectToolInputs(t *testing.T) {
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "assistant", Content: "calling", ToolCalls: []ToolCall{
+			// The recorded object with the source's own spacing: the file and the item list hold it
+			// compacted, the same bytes on both sides.
+			{ToolUseID: "toolu_object", Name: "shell", InputJSON: `{"command":  "ls"}`},
+			{ToolUseID: "toolu_array", Name: "shell", InputJSON: `[1,2]`},
+			{ToolUseID: "toolu_number", Name: "shell", InputJSON: `42`},
+			{ToolUseID: "toolu_string", Name: "shell", InputJSON: `"ls"`},
+			{ToolUseID: "toolu_null", Name: "shell", InputJSON: `null`},
+			{ToolUseID: "toolu_absent", Name: "shell", InputJSON: "  "},
+			{ToolUseID: "toolu_unparsed", Name: "shell", InputJSON: `{"command":`},
+		}},
+	)
+	transcript, err := ConvertToClaudeTranscript(conversation, ClaudeTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting the document: %v", err)
+	}
+	const fallbacks = 6
+	if got := lossCount(t, transcript.Losses, "empty_tool_inputs").Count; got != fallbacks {
+		t.Errorf("empty_tool_inputs = %d, want %d: every recorded input that is not an object takes the "+
+			"fallback, not only an absent one", got, fallbacks)
+	}
+	inputs := map[string]map[string]any{}
+	for _, record := range decodeTranscript(t, transcript) {
+		for _, block := range recordBlocks(record) {
+			if block["type"] != claudeBlockToolUse {
+				continue
+			}
+			id, _ := block["id"].(string)
+			input, ok := block["input"].(map[string]any)
+			if !ok {
+				t.Errorf("call %s holds input %#v, want a JSON object: the target's block carries no "+
+					"other shape", id, block["input"])
+				continue
+			}
+			inputs[id] = input
+		}
+	}
+	if len(inputs) != 7 {
+		t.Fatalf("the transcript holds %d tool_use block(s), want the document's 7 calls", len(inputs))
+	}
+	if got := inputs["toolu_object"]["command"]; got != "ls" {
+		t.Errorf("the recorded object input reads back as %v, want the source's own command", got)
+	}
+	for _, id := range []string{
+		"toolu_array", "toolu_number", "toolu_string", "toolu_null", "toolu_absent", "toolu_unparsed",
+	} {
+		if input, ok := inputs[id]; !ok || len(input) != 0 {
+			t.Errorf("call %s holds %v, want the empty object the report counts", id, inputs[id])
+		}
+	}
+	// The item list holds what the file holds -- the recorded object compacted, the fallbacks as the
+	// empty object -- so the structure check this conversion owes its caller compares the same shape on
+	// both sides.
+	for _, item := range transcript.Items {
+		if item.Kind != ItemToolCall {
+			continue
+		}
+		want := "{}"
+		if item.CallID == "toolu_object" {
+			want = `{"command":"ls"}`
+		}
+		if item.InputJSON != want {
+			t.Errorf("item %s holds input %s, want %s", item.CallID, item.InputJSON, want)
+		}
+	}
+}
+
 // TestClaudeWriterReportsACompactionBoundaryWhoseSummaryHoldsNoText pins the disclosure for the one
 // boundary shape whose summary cannot travel as text: the inherited Codex reader trims a compacted
 // record's summary (internal/parser's handleCompacted), so a source summary of whitespace alone -- or a
@@ -577,7 +653,9 @@ func TestConvertToClaudeTranscriptRefusesASourceWithoutAWorkingDirectory(t *test
 }
 
 // TestClaudeWriterPairsAnIdlessResultOnlyWithSoleOutstandingCall pins the pairing rule: an id-less result
-// may be paired while exactly one carried call is unanswered, and never when the choice would be a guess.
+// may be paired while exactly one carried call is unanswered, and never when the choice would be a guess
+// -- including across messages whose ordinals were never assigned, where a generated id keyed by the
+// ordinal rather than by the call's own place in the document would collapse two calls into one.
 func TestClaudeWriterPairsAnIdlessResultOnlyWithSoleOutstandingCall(t *testing.T) {
 	paired := testConversation(
 		Message{Ordinal: 0, Role: "assistant", Content: "calling", DialogueProjected: false,
@@ -609,6 +687,45 @@ func TestClaudeWriterPairsAnIdlessResultOnlyWithSoleOutstandingCall(t *testing.T
 	}
 	if got := lossCount(t, transcript.Losses, "unpaired_tool_results").Count; got != 1 {
 		t.Errorf("unpaired_tool_results = %d, want 1: two calls were outstanding and the pairing would be a guess", got)
+	}
+
+	// Two messages whose ordinals were never assigned (both zero, the shape an embedding caller who
+	// never assigned them supplies), each carrying one id-less call: keyed by the call's own place in
+	// the document, the two calls stay two calls. Keyed by the ordinal they would share one id, the
+	// outstanding set would read one call, and this result would pair -- the guess the rule refuses and
+	// the *report* would then claim as a carried result.
+	crossMessage := testConversation(
+		Message{Role: "assistant", Content: "calling once",
+			ToolCalls: []ToolCall{{Name: "shell", InputJSON: `{"command":"first"}`}}},
+		Message{Role: "assistant", Content: "calling twice",
+			ToolCalls: []ToolCall{{Name: "shell", InputJSON: `{"command":"second"}`}}},
+		Message{Role: "user", ToolResults: []ToolResult{{ContentRaw: "output", ContentDecoded: true}}},
+	)
+	transcript, err = ConvertToClaudeTranscript(crossMessage, ClaudeTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if got := lossCount(t, transcript.Losses, "unpaired_tool_results").Count; got != 1 {
+		t.Errorf("unpaired_tool_results = %d, want 1: two calls in two messages were outstanding", got)
+	}
+	if got := lossCount(t, transcript.Losses, "generated_call_ids").Count; got != 2 {
+		t.Errorf("generated_call_ids = %d, want 2: the two calls, with no pairing inferred", got)
+	}
+	if transcript.Carried.ToolResults != 0 {
+		t.Errorf("carried %d result(s), want none: the id-less result could belong to either call",
+			transcript.Carried.ToolResults)
+	}
+	ids := []string{}
+	for _, record := range decodeTranscript(t, transcript) {
+		for _, block := range recordBlocks(record) {
+			if block["type"] == claudeBlockToolUse {
+				id, _ := block["id"].(string)
+				ids = append(ids, id)
+			}
+		}
+	}
+	if len(ids) != 2 || ids[0] == ids[1] {
+		t.Errorf("the two messages' id-less calls carry ids %q, want one distinct id per call", ids)
 	}
 }
 
