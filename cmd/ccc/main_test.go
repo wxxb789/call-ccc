@@ -1831,6 +1831,22 @@ func TestContinueHelpIsARequestNotAFailure(t *testing.T) {
 			t.Errorf("help is missing %q", want)
 		}
 	}
+	// The --target-binary line states the two routes' rules, which differ: the Claude Code commands name
+	// the path the probe found, because that invocation changes into the session's working directory and
+	// a shell there would search its own PATH for a bare name, while the Codex commands keep the spelling
+	// the caller gave, because theirs runs in the caller's own directory. The pair is read with the
+	// usage text's own line wrapping folded out, so the assertion pins both sentences rather than the
+	// columns they happen to wrap at -- and a return to one generalized sentence for both routes fails
+	// it, which is the wording this line used to carry.
+	flat := strings.Join(strings.Fields(stdout), " ")
+	for _, want := range []string{
+		"The Claude Code resume commands name the path the probe found for it",
+		"The Codex commands keep the spelling given here (or codex)",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("help does not state the route-scoped rule %q", want)
+		}
+	}
 }
 
 // continueDocumentOf reads one `ccc continue --json` run's document, requiring the run's exit status.

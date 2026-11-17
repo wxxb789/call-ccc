@@ -127,8 +127,12 @@ system     "# Environment …"
 ```
 
 The pre-boundary turns (the tool call `shell`, its output `internal/retry/config.go:41: maxBackoffSeconds
-= 30`, the first answer) are absent — the target applied its own compaction boundary to its model-visible
-history — and the tool pair is present in the file and in the loader's read of the post-boundary part.
+= 30`, the first answer) are absent from this request — the target applied its own compaction boundary to
+its model-visible history — and the tool pair is present in the installed file and in the inherited
+reader's read-back of it (§5's `tool_calls ×1`/`tool_results ×1`), while the request above begins at the
+boundary's summary record and carries none of it; §3(c)'s `NOT-IN-CONTEXT` answer is the same boundary
+read from the model's side, and the fixture's own order — the pair precedes the `compacted` record — is
+why no turn can demonstrate the pair reaching the model through this boundary.
 
 **(b) The `load` level, offline.** From the run above, `verification.load`:
 
@@ -182,8 +186,15 @@ The same session asked about the *pre*-boundary fact (`What value does maxBackof
 file defines it? If that is not in your context, reply exactly NOT-IN-CONTEXT.`) answered
 `NOT-IN-CONTEXT`: the boundary the writer carries is the target's own semantic, not a decoration.
 
-**(d) The native-check script** (`scripts/claude-native-check.py`, §6) re-derives (a)–(c) end to end
-against the real binary and prints each check's own verdict; its run is recorded in §6.
+**(d) The native-check script** (`scripts/claude-native-check.py`, §6) re-derives the reproducible half of
+this section end to end against the real binary and prints each check's own verdict; its run is recorded
+in §6. What it re-derives is (b) — the conversion's own `load` report is re-read and printed, the loader's
+answer and its unknown-id control arm in it — and, with `--resume-prompt`, (c): one real turn through the
+invocation the conversion printed. It does **not** re-derive (a): that request is a one-off measurement,
+taken once through a logging loopback proxy in front of the model endpoint (§0's table), and no check of
+the script captures or prints a model request — `scripts/tests/test_claude_native_check.py`'s
+`ReportedCheckSurface` pins the script's whole reported check surface, so what it re-derives can be read
+against that list instead of credited by assumption.
 
 ## 4. The source is unchanged, the identity is new, no other session moves
 
@@ -296,7 +307,8 @@ attempted. The round's own edits to the script (the shared-mechanism module, the
 the renames) are therefore exercised end to end against the installed harness; the run recorded above
 stays the round that had model access.
 
-`scripts/tests/test_claude_native_check.py` pins the harness offline (19 cases, no `claude`, no `go`):
+`scripts/tests/test_claude_native_check.py` pins the harness offline (19 cases at this run, no `claude`, no
+`go`; the later fix rounds' additions take the file to 23, §6.9):
 the shell reading of both reported command lines (the renderer's own rendering accepted; a quoted
 assignment, an unquoted shell metacharacter — a bare `&` included — a glued `&&`, a quoted operator, a
 split working directory and a line naming another session/home refused), the project-directory spelling,
@@ -1358,6 +1370,101 @@ That gate block is the last gate run on this tree, and it ran after every file e
 this section's own prose: the block's copy above and this closing note. The one step that does read these
 records — the `selftest` step's evidence case, over the `*continuation*.md` records' §5 tables and their
 answer blocks — was re-run on the records as they then stood: `Ran 194 tests in 6.044s`, exit 0.
+
+### 6.9 The fix round (review round 5's three findings)
+
+Round 5's close-out asks for one executed mutation per rule the round touches, and all three findings were
+about a state of the tree rather than a comment: the wrong-session regression case, the record's
+native-check claims, and the `--target-binary` help. Each is fixed below with the pin that makes the rule
+answerable, and the sweep at the end breaks each rule on this tree and records the case that fired.
+
+**(1) The wrong-session case never supplied a wrong-session answer.**
+`internal/ccc/claude_verify_test.go`'s `fakeHarness` read `answerSessionID` only in its resolve
+comparison, and every document it returned was built from the *requested* id (`harnessDocument(sessionID,
+…)`): setting `answerSessionID` to another UUID only moved the request into the not-found arm, so
+verification stopped at JSON parsing and the production identity guard
+(`claude_verify.go`, "the harness answered about session %q, not the installed %q") could be deleted
+without failing any case — the round-5 sweep below demonstrates exactly that. The fake now carries the two
+identities apart: `requestSessionID` is the id it resolves, `answerSessionID` the id its documents report,
+and the mismatch case sets the first to the installed id and the second to another UUID, so a well-formed
+result document really reaches the guard. The case asserts the guard's own reason and both ids in it.
+
+**(2) The record's native-check claims exceeded the script's checks.**
+§3(a)'s closing sentence credited the loader's read with the tool pair "of the post-boundary part", while
+the request printed directly above it — and the fixture's own order (the call and its output precede the
+`compacted` record) — say the opposite: the pair is present in the installed file and in the inherited
+reader's read-back (§5's `tool_calls ×1`/`tool_results ×1`), and the loader's model-visible request begins
+at the boundary's summary and carries none of it. §3(d) claimed the native-check script
+re-derives (a)–(c); the script re-derives (b) (the conversion's own `load` report, re-read and printed,
+control arm included) and, with `--resume-prompt`, (c), and it neither captures nor prints a model
+request — (a) is the one-off loopback-proxy measurement recorded in §0/§3(a). Both sentences now say that,
+and the plan's §6 D3 evidence cell names the proxy measurement instead of a script step that does not
+exist. The claim is now checkable rather than asserted: `scripts/tests/test_claude_native_check.py`'s
+`ReportedCheckSurface` pins the script's whole reported check surface (`NATIVE_CHECK_NAMES`, the 14 names
+of §6.1's run in order), so what §3(d) credits the script with can be read against that list, and the
+sweep's last row shows the case firing when a check name moves.
+
+**(3) The binary-path help was false for the Codex route.**
+The help's `--target-binary` entry promised the probed executable path in "the printed resume commands"
+for both routes, but only the Claude route calls `invocationBinary` — its invocation changes into the
+session's working directory, where a shell would search its own `PATH` for a bare name — while the Codex
+route keeps `in.Binary`, the word the caller gave, because its invocation stays in the caller's own
+directory (the decision record's Q-0003-11 already scopes the rule that way; the help and the README had
+not). `cmd/ccc/main.go`'s entry and `README.md`'s matching sentence now state the two rules
+separately, and the Codex half is pinned by `TestCodexInvocationKeepsTheSpellingItsCallerGave`
+(`internal/ccc/continue_test.go`), which drives the route seam with a probe that found an absolute path and
+requires both argument vectors to name the caller's spelling; the help's two sentences are pinned by
+`TestContinueHelpIsARequestNotAFailure`, which reads the usage with its line wrapping folded out so the
+assertion is about the sentences, not the columns. The Codex behavior itself is unchanged — the finding
+asked to preserve it — and `TestClaudeInvocationNamesTheExecutableItsProbeFound` keeps pinning the Claude
+half.
+
+**Mutation sweep.** Five rules of the touched surface were each broken on this tree, the case that names it
+run, and the tree restored; each restored Go file's `git diff` was re-read empty, and the script's renamed
+record line was restored and its case re-run green.
+
+| Rule | Mutation (broken rule) | Case that fired |
+| --- | --- | --- |
+| a loader's answer about another session is refused (the guard §6.9(1) pins) | the identity guard disabled (`if false && resolved.SessionID != opts.SessionID`) | `TestVerifyClaudeLoadRefusesAnAnswerAboutAnotherSession` — `load = {State:verified …}, want it refused: the loader answered about another session` — exit 1 |
+| the not-found arm stays the answer for any id but the requested one | the fake answers every request (the not-found branch's condition removed) | `TestVerifyClaudeLoadResolvesTheInstalledSessionAndItsControl` — `Detail:the control arm answered about session "4dbe86ab-…", which this check never installed, so the loader is not answering from the installed file` — exit 1 |
+| the Codex invocation keeps the spelling the caller gave | the Codex route names the probed path (`binary := invocationBinary(in.Binary, in.Probe)`) | `TestCodexInvocationKeepsTheSpellingItsCallerGave` — `arguments name "…/ccc tools/codex"/"…/ccc tools/codex", want the spelling the caller gave ("codex")…` — exit 1 |
+| the help states the two routes' rules separately | the generalized sentence restored (`the printed resume commands name the path the probe found for it …`) | `TestContinueHelpIsARequestNotAFailure` — `help does not state the route-scoped rule "The Claude Code resume commands name the path the probe found for it"` and the Codex sentence — exit 1 |
+| the native check's re-derivation surface is the 14 reported checks | the load check's recorded name renamed (`… resolves the installed session (mutant)`) | `ReportedCheckSurface.test_reports_exactly_the_checks_the_record_credits_it_with` — `Lists differ: [… 'the target harness's own loader resolves the installed session (mutant)' …] != [… 'the target harness's own loader resolves the installed session' …]` — exit 1 |
+
+Counts that moved, and why: Go top-level cases **208 → 209** (one new case,
+`TestCodexInvocationKeepsTheSpellingItsCallerGave`; `internal/ccc` 177 → 178, `cmd/ccc` 31 unchanged; the
+help case and the wrong-session case gained assertions and kept their names), and `selftest`
+**194 → 195** (one new offline case, `ReportedCheckSurface`; `test_claude_native_check.py` now holds 23
+case methods — §6.1's "19 cases" is that round's count). No case was deleted, skipped, weakened or
+renamed; `gofmt` 3591, the three packages, `carried` 5553, `owned` 28, `files seen by git` 5644 and
+`secrets` 95 are unchanged from §6.8.
+
+```console
+$ python3 scripts/gate.py   # exit 0
+  PASS     gofmt    3591 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 195 tests in 5.421s (rc=0)
+  PASS     parity   … | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision … | owned: 28 project-owned prefix(es); files seen by git: 5644 | …
+  PASS     secrets  no leaks found in 95 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+**Nothing else moved.** `README.md` moved the `--target-binary` sentence and nothing else; `AGENTS.md` and
+the gate files are untouched — no command, gate step, layout, read order or agent rule changed, so the
+control file's growth policy asks for no edit this round. The other documents this round changed are the
+plan's D3 evidence cell and this record, plus this increment's own matrix (the sweep above, appended
+there); all are project-owned paths in the carry manifest, so `parity` stays green. `docs/goals/README.md`
+and `docs/goals/archive/` are unchanged: 0003 is still this increment's open goal, awaiting operator
+acceptance. No owner-only question arose: every fix took the most reversible form the finding offered (the
+record's claim was corrected rather than a proxy capture being added to the script, which the finding
+itself names as the alternative), and the two route rules are each pinned where they live.
+
+That gate block is the last gate run on this tree; it ran after every file edit of this round except the
+prose edit that re-quotes it and this closing note. The one step that does read these records — the
+`selftest` step's evidence case, over the `*continuation*.md` records' §5 tables and their answer blocks —
+passed inside that run and again on the records as this note left them (`Ran 195 tests`, exit 0).
 
 ## 7. Limits and residual risks
 

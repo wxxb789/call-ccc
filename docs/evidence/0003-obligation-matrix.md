@@ -128,3 +128,24 @@ blank line, stated by the function's own docstring and observed by no case — a
 sweep is **not** exhaustive over the whole file: it covers the rules of the surface this round touched
 (`claudeEnvironment`, `ResolveClaudeHome`, `jsonl_parse_error` and the two checks' report of it), which is
 what the round's close-out asked for; every other row above still names a case rather than a mutation.
+
+## Mutation sweep — the fix round that followed review round 5
+
+The same shape as the sweeps above: every rule this round changed or added was broken on this tree, the
+case that names it run, and the tree restored (each restored Go file's `git diff` re-read empty, and the
+script's renamed record line restored and its case re-run green). The record's §6.9 quotes the failure
+lines. The first row is the one the round-5 finding exposed: before this round the wrong-session case
+never reached the guard, so this mutation faded into a pass — the pin is that it now fails.
+
+| Clause | Mutation (broken rule) | Case that fired |
+| --- | --- | --- |
+| D2 | the loader's identity guard disabled (`if false && resolved.SessionID != opts.SessionID`) | `TestVerifyClaudeLoadRefusesAnAnswerAboutAnotherSession` — `load = {State:verified …}, want it refused: the loader answered about another session` — exit 1 |
+| D2 | the fake harness answers every request (the not-found arm's condition removed) | `TestVerifyClaudeLoadResolvesTheInstalledSessionAndItsControl` — `Detail:the control arm answered about session "4dbe86ab-…", which this check never installed, so the loader is not answering from the installed file` — exit 1 |
+| D1 | the Codex route names the probed path (`binary := invocationBinary(in.Binary, in.Probe)`) | `TestCodexInvocationKeepsTheSpellingItsCallerGave` — `arguments name "…/ccc tools/codex"/"…/ccc tools/codex", want the spelling the caller gave ("codex")…` — exit 1 |
+| D1 | the help's generalized `--target-binary` sentence restored | `TestContinueHelpIsARequestNotAFailure` — `help does not state the route-scoped rule "The Claude Code resume commands name the path the probe found for it"` (and the Codex sentence) — exit 1 |
+| D2 | the native check's load check renamed (`… resolves the installed session (mutant)`) | `ReportedCheckSurface.test_reports_exactly_the_checks_the_record_credits_it_with` — `Lists differ: [… 'the target harness's own loader resolves the installed session (mutant)' …] != [… 'the target harness's own loader resolves the installed session' …]` — exit 1 |
+
+The sweep is **not** exhaustive over the whole tree either: it covers the rules of the four surfaces this
+round touched (the load fake's resolve/report split and the guard it feeds, the Codex route's invocation
+spelling, the help's two route sentences, and the native check's reported check surface); every other row
+above still names a case rather than a mutation.

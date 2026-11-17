@@ -42,9 +42,10 @@ so the pasted command opens the home holding the session rather than the caller'
 `--json` reports all of it as one object, the argument vector and environment included. `--dry-run`
 converts and verifies without writing anything, `--target-home DIR` keeps a demo or a test away from a
 real Codex or Claude Code home, and `--target-binary PATH` names the harness executable when it is not
-the target's default name (`codex`, `claude`) on `PATH`; the printed resume commands name the path the
-probe found for it — the program the conversion asked and the verification ran — or the spelling given
-here when it found none.
+the target's default name (`codex`, `claude`) on `PATH`; the Claude Code resume commands name the path
+the probe found for it — the program the conversion asked and the verification ran — or the spelling
+given here when it found none, while the Codex commands keep the spelling given here (or `codex`),
+because only the Claude Code invocation changes into the session's working directory.
 
 The continuation engine itself lives in [`internal/ccc`](internal/ccc) and is callable without the
 CLI: `SourceReader` reads a native session into a typed, transient Conversation document,

@@ -119,9 +119,13 @@ func TestClaudeLoadEnvironmentReplacesEverySpellingOfTheHomeVariable(t *testing.
 // check's two arms and the resume turn the way the installed harness was measured to, and it records what
 // it was asked, so the test can assert both the check's verdict and what the check really ran.
 type fakeHarness struct {
-	// answerSessionID is the id the first load arm (and the resume turn) reports; a different value
-	// exercises a loader answering about something other than the installed session.
+	// answerSessionID is the id the fake reports in its result document. A test that wants a loader
+	// answering about another session than the one it was asked for pairs it with requestSessionID.
 	answerSessionID string
+	// requestSessionID is the id the fake resolves: the request carrying it is answered, any other
+	// request gets the not-found arm. Empty means the fake resolves answerSessionID -- the ordinary case
+	// where the harness resolves the session it was asked for and answers about it.
+	requestSessionID string
 	// controlAnswersJSON makes the control arm answer with a result document instead of the not-found
 	// error, which must not verify.
 	controlAnswersJSON bool
@@ -164,7 +168,11 @@ func (h *fakeHarness) run(
 	if index := slices.Index(args, "--resume"); index >= 0 && index+1 < len(args) {
 		sessionID = args[index+1]
 	}
-	if sessionID != h.answerSessionID {
+	served := h.answerSessionID
+	if h.requestSessionID != "" {
+		served = h.requestSessionID
+	}
+	if sessionID != served {
 		if h.controlAnswersJSON {
 			// The shape a loader answering a session that was never installed has.
 			return harnessDocument(sessionID, false, "an answer for a session nobody installed"), "", nil
@@ -181,10 +189,13 @@ func (h *fakeHarness) run(
 	}
 	if opts.Prompt == "" {
 		// The load probe: measured, the harness resolves the session and then reports the model call it
-		// could not make, with a non-zero exit status.
-		return harnessDocument(sessionID, true, "Not logged in · Please run /login"), "", os.ErrProcessDone
+		// could not make, with a non-zero exit status. The document reports the fake's own identity --
+		// answerSessionID -- which a mismatch case sets to another id while requestSessionID keeps the
+		// resolution arm honest; reporting the requested id here would make every answer about the
+		// installed session, whatever answerSessionID said.
+		return harnessDocument(h.answerSessionID, true, "Not logged in · Please run /login"), "", os.ErrProcessDone
 	}
-	return harnessDocument(sessionID, h.resumeIsError, h.resumeResult), "", nil
+	return harnessDocument(h.answerSessionID, h.resumeIsError, h.resumeResult), "", nil
 }
 
 // harnessDocument is one result document in the shape the harness was measured to write.
@@ -308,8 +319,15 @@ func TestVerifyClaudeLoadRefusesAnAnswerAboutAnotherSession(t *testing.T) {
 		t.Errorf("detail = %q, want it to name the control arm", verification.Detail)
 	}
 
-	// A loader answering about a session nobody installed: its answer is not evidence about this one.
-	answeringAnotherSession := &fakeHarness{answerSessionID: "99999999-9999-4999-8999-999999999999"}
+	// A loader that resolves the requested session yet reports a different one: its answer is a valid
+	// result document, so nothing before the identity check can refuse it, and the check's own reason
+	// has to name the mismatch. (An earlier revision of this case only changed answerSessionID, which
+	// made the fake take its not-found arm: verification then stopped at JSON parsing and the production
+	// identity check was never reached -- leaving the check this case exists to pin unpinned.)
+	answeringAnotherSession := &fakeHarness{
+		requestSessionID: transcript.SessionID,
+		answerSessionID:  "99999999-9999-4999-8999-999999999999",
+	}
 	withFakeHarness(t, answeringAnotherSession)
 	verification = VerifyClaudeLoad(context.Background(), ClaudeLoadOptions{
 		Binary: "claude", SessionID: transcript.SessionID, Cwd: transcript.Cwd,
@@ -318,6 +336,15 @@ func TestVerifyClaudeLoadRefusesAnAnswerAboutAnotherSession(t *testing.T) {
 	})
 	if verification.State == VerificationStateVerified {
 		t.Fatalf("load = %+v, want it refused: the loader answered about another session", verification)
+	}
+	if !strings.Contains(verification.Detail, "answered about session") {
+		t.Errorf("detail = %q, want the identity mismatch named, not a failure to read the answer",
+			verification.Detail)
+	}
+	for _, want := range []string{answeringAnotherSession.answerSessionID, transcript.SessionID} {
+		if !strings.Contains(verification.Detail, want) {
+			t.Errorf("detail = %q does not name %q", verification.Detail, want)
+		}
 	}
 }
 

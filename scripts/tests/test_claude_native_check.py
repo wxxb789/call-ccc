@@ -357,30 +357,18 @@ PRE_EXISTING_NAME = "01a1e000-0000-7000-8000-000000000003.jsonl"
 SHELL_SEAM_ANSWER = "/the-shell-the-seam-answered/sh"
 
 
-class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
-    """The source fixture copy, the planted session and every session the home already held are compared
-    again after the harness's own native stages, not before them.
+class NativeCheckDriver(unittest.TestCase):
+    """One run of the shipped ``main`` against stubs, shared by the cases below.
 
     The native half cannot run offline -- it needs the Claude Code binary and, for a turn, model access --
-    so these cases drive the shipped ``main`` with the seams that half stands on replaced: the subprocess
-    runner, the shell runner the turn goes through with the shell the run resolved for it, the shell
-    probe that answers which POSIX shell that is, and ``shutil.which`` for the two tools. The stub for
+    so a case drives ``main`` with the seams that half stands on replaced: the subprocess runner, the
+    shell runner the turn goes through with the shell the run resolved for it, the shell probe that
+    answers which POSIX shell that is, and ``shutil.which`` for the two tools. The stub for
     ``ccc continue`` installs a real file into a throw-away home (at the path the shipped ``main``
     computes from the scratch source root it spawned, so the installation check is answered honestly),
     and the stub for the resume turn answers like a turn that continued (the installed file grows) while
-    it changes all three protected artifacts. With the comparisons at the end of the run, the mutating
-    case must FAIL exactly those three checks and PASS the turn; if the comparisons move back above the
-    loader and the turn -- the defect this pins -- they answer on the pre-mutation state, so the mutating
-    case below fails over an empty failure list while the intact control still passes: the ordering
-    defect breaks the catching, not the passing. The intact run is the control for the other direction --
-    a comparison that answered FAIL for its own reasons could not pass it -- and the mutating run asserts
-    the three protected checks are its **only** failures, so nothing else was already red.
-
-    The home carries a session of its own (``PRE_EXISTING_NAME``) besides the one the harness plants, and
-    that is what makes the third comparison's evidence non-vacuous rather than a restatement: with an
-    empty capture, "no pre-existing session in the target home changed" would iterate nothing, so
-    neutering the capture altogether would keep it green. Here the intact run has to report the capture it
-    compared (a count of one) and the mutating run has to name the file it caught changing.
+    it changes all three protected artifacts. This class holds no ``test_`` method of its own -- it is
+    the driver, and each case states its own subject -- so it adds no case to the suite.
     """
 
     def drive(self, mutate_during_resume: bool, posix_mode_bits: bool | None = None,
@@ -555,6 +543,26 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         results = {name: (state_, detail) for name, state_, detail in NATIVE_CHECK.RESULTS[before:]}
         del NATIVE_CHECK.RESULTS[before:]
         return code, results, printed.getvalue(), state.get("shell")
+
+
+class ProtectedArtifactsAfterNativeVerification(NativeCheckDriver):
+    """The source fixture copy, the planted session and every session the home already held are compared
+    again after the harness's own native stages, not before them.
+
+    With the comparisons at the end of the run, the mutating case must FAIL exactly those three checks and
+    PASS the turn; if the comparisons move back above the loader and the turn -- the defect this pins --
+    they answer on the pre-mutation state, so the mutating case below fails over an empty failure list
+    while the intact control still passes: the ordering defect breaks the catching, not the passing. The
+    intact run is the control for the other direction -- a comparison that answered FAIL for its own
+    reasons could not pass it -- and the mutating run asserts the three protected checks are its **only**
+    failures, so nothing else was already red.
+
+    The home carries a session of its own (``PRE_EXISTING_NAME``) besides the one the harness plants, and
+    that is what makes the third comparison's evidence non-vacuous rather than a restatement: with an
+    empty capture, "no pre-existing session in the target home changed" would iterate nothing, so
+    neutering the capture altogether would keep it green. Here the intact run has to report the capture it
+    compared (a count of one) and the mutating run has to name the file it caught changing.
+    """
 
     def test_a_mutation_during_the_claude_resume_stage_is_caught_by_the_last_comparison(self) -> None:
         code, results, printed, shell = self.drive(mutate_during_resume=True)
@@ -733,6 +741,52 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                          [REPORTED_INVOCATION_CHECK],
                          f"the pre-fix shape failed more than the check that reads it: {results}")
         self.assertEqual(code, 1, f"exit {code} for a run whose reported form was refused: {results}")
+
+
+#: Every check ``scripts/claude-native-check.py`` reports, in the order it reports them, as the shipped
+#: ``main`` names them: the script's whole re-derivation surface, which the evidence record's §3(d) has to
+#: describe rather than overstate. The record credits this surface with the native half of the evidence --
+#: the `load` level, re-read from the conversion's own report, and the real turn through the reported
+#: invocation -- and states that the loopback-proxy request capture of §3(a) is *not* one of these checks
+#: but a one-off measurement; a check that is added, removed or renamed here has to be read back into that
+#: sentence, and this case is what makes the move visible.
+NATIVE_CHECK_NAMES = (
+    "ccc builds with the flags upstream ships",
+    "the conversion reports carried evidence and a non-zero loss category",
+    "the session is installed under the project directory its working directory spells to",
+    "the installed session is readable and writable only by its owner",
+    "the target identity is new and is not the source's",
+    "the installed file is one JSON object per line",
+    "the structural read-back of the installed file is verified",
+    "the inherited reader reads the installed file back as what was written",
+    "the reported resume command names the binary, the session, the working directory and the data "
+    "directory",
+    "the target harness's own loader resolves the installed session",
+    "a real turn continues from the installed session",
+    "the source session is unchanged",
+    "the unrelated session in the target home is unchanged",
+    "no pre-existing session in the target home changed",
+)
+
+
+class ReportedCheckSurface(NativeCheckDriver):
+    """The checks the shipped harness reports are exactly ``NATIVE_CHECK_NAMES``.
+
+    The evidence record's §3(d) says what the script re-derives: the `load` level (its report re-read from
+    the conversion's own document, which this run's stub answers) and, with a prompt, the real turn. It
+    also says what the script does *not* do -- it does not capture the loader's reconstructed request
+    (that measurement is §3(a), taken once through a loopback proxy) -- and that distinction is only
+    checkable against the script's own list of checks. So the list is pinned here, in order and in full:
+    the write-up and this tuple move together, or this case fails.
+    """
+
+    def test_reports_exactly_the_checks_the_record_credits_it_with(self) -> None:
+        code, results, _, shell = self.drive(mutate_during_resume=False)
+        self.assertEqual(shell, SHELL_SEAM_ANSWER, f"the run did not reach its turn: {results}")
+        self.assertEqual(list(results), list(NATIVE_CHECK_NAMES),
+                         f"the harness's reported checks moved; the evidence record's §3(d) names this "
+                         f"surface and has to be read again: {list(results)}")
+        self.assertEqual(code, 0, f"exit {code} for the intact run whose surface this pins: {results}")
 
 
 if __name__ == "__main__":

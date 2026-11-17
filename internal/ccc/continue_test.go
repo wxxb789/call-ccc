@@ -572,6 +572,38 @@ func TestContinuePrintsAResumeCommandThatSelectsTheInstallationHome(t *testing.T
 	}
 }
 
+// TestCodexInvocationKeepsTheSpellingItsCallerGave pins the Codex half of the rule that
+// TestClaudeInvocationNamesTheExecutableItsProbeFound pins for the Claude route, and the difference is
+// deliberate: a Codex invocation runs in the caller's own directory (it carries no working directory),
+// where a bare name is the same PATH lookup the caller's shell makes, so the probe's answer buys the
+// printed line nothing and the route names the word the caller gave -- or the target's default name --
+// even when the probe found an absolute path. `ccc help` and the README state the two routes' rules
+// side by side; this is the half that used to be missing from both.
+func TestCodexInvocationKeepsTheSpellingItsCallerGave(t *testing.T) {
+	route, err := targetRouteFor(TargetCodex)
+	if err != nil {
+		t.Fatalf("the Codex route is not in this build: %v", err)
+	}
+	probed := filepath.Join(t.TempDir(), "ccc tools", "codex")
+	invocation := route.Invocation(
+		convertedTarget{ID: "0c8e5f21-0000-4000-8000-000000000001"},
+		targetInvocationInput{
+			Binary: "codex",
+			Probe:  harnessProbe{Binary: probed, Found: true, Version: "0.50.0"},
+			Home:   filepath.Join(t.TempDir(), "ccc home"),
+		},
+	)
+	if invocation.WorkingDir != "" {
+		t.Fatalf("the Codex invocation changes into %q; the rule this case pins is about an invocation "+
+			"that stays in the caller's directory", invocation.WorkingDir)
+	}
+	if invocation.Arguments[0] != "codex" || invocation.ExecArguments[0] != "codex" {
+		t.Errorf("arguments name %q/%q, want the spelling the caller gave (%q) even though the probe "+
+			"found %q: from the caller's own directory a bare name is the caller's own PATH lookup",
+			invocation.Arguments[0], invocation.ExecArguments[0], "codex", probed)
+	}
+}
+
 // TestContinueRequiresAPromptBeforeItRunsATurn pins the rule the CLI also enforces: a resume
 // verification writes a real turn into the session, so its text comes from the caller.
 func TestContinueRequiresAPromptBeforeItRunsATurn(t *testing.T) {

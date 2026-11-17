@@ -63,11 +63,13 @@ continuation options:
   --dry-run          convert and verify without writing anything into the target's data directory
   --target-home DIR  that harness's data directory (codex: $CODEX_HOME, else ~/.codex; claude:
                      $CLAUDE_CONFIG_DIR, else ~/.claude)
-  --target-binary P  that harness's executable (default: codex, or claude, on PATH); the printed resume
-                     commands name the path the probe found for it -- the program this run asked and
-                     verified -- else the spelling given here, a spelling that names a path resolved
-                     against this directory (the Claude Code invocation runs from the session's own
-                     working directory)
+  --target-binary P  that harness's executable (default: codex, or claude, on PATH). The Claude Code
+                     resume commands name the path the probe found for it -- the program this run asked
+                     and verified -- else the spelling given here, where a spelling that names a path is
+                     resolved against this directory, because that invocation runs from the session's
+                     own working directory and a shell there would search its own PATH for a bare name.
+                     The Codex commands keep the spelling given here (or codex): that invocation stays
+                     in the caller's own directory, so a bare name is the caller's own PATH lookup.
   --data-dir DIR     read the AgentsView archive in DIR (%s/sessions.db) when the source file itself
                      cannot answer the reference
   --verify LEVEL     none, load (default) or resume: load asks the target harness's own loader to
