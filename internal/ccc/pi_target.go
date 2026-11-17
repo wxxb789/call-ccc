@@ -400,11 +400,14 @@ func ConvertToPiSession(conv Conversation, opts PiTargetOptions) (PiSession, err
 		callNames:       map[string]string{},
 		ledger:          ledger{pendingCalls: map[string]struct{}{}},
 		sourceFidelity:  conv.Fidelity,
-		tree:            newSourceTree(),
+		tree:            newSourceTree(conv.Source.Provider),
 	}
 	builder.writeConversation(conv)
 	if builder.idErr != nil {
 		return PiSession{}, builder.idErr
+	}
+	if err := selectedLeafRefusal(conv.Messages, builder.tree.lastOrigin.sourceID, conv.Source.Provider); err != nil {
+		return PiSession{}, err
 	}
 	return PiSession{
 		SessionID:  sessionID,
@@ -636,7 +639,16 @@ func (b *piSessionBuilder) writeMessage(message Message) {
 	case text != "" && strings.TrimSpace(text) == "":
 		// Dialogue that holds only whitespace: the inherited Pi reader drops a record left with no text
 		// and no tool evidence, so a written entry would be in the file and absent from every read of it.
+		// What is dropped is the whitespace, and only it: a record that also recorded a reasoning trace
+		// keeps the trace, because Pi's `thinking` block is the trace's own shape and the trace is not
+		// dialogue (writing the record through writeCarriedCalls instead would omit it while
+		// reasoning_text reported it as carried).
 		b.lossWhitespace++
+		if role == parser.RoleAssistant && hasThinking {
+			b.writeAssistantMessage("", message, calls)
+			b.writeToolEvidence(message, calls)
+			return
+		}
 		b.writeCarriedCalls(message)
 		return
 	}

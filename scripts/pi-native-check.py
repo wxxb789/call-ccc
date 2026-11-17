@@ -87,6 +87,11 @@ BINARY = Path("bin", "ccc-native-check-pi")
 SOURCE_ROOT_ENV = {"claude": "CLAUDE_PROJECTS_DIR", "pi": "PI_DIR"}
 PI_HOME_ENV = "PI_CODING_AGENT_DIR"
 
+#: The variable the printed line and the loader check both use to name the sessions tree inside the data
+#: directory. Pi reads it ahead of the agent directory's own default, so naming it is what makes the
+#: printed lookup, the verified lookup and the installation location the same directory.
+PI_SESSION_DIR_ENV = "PI_CODING_AGENT_SESSION_DIR"
+
 #: How each target harness's printed invocation names its data directory, so this harness reads the
 #: assignment out of the route's own line rather than assuming one route's spelling twice. The home
 #: variable is the one the harness reads its data directory from: none of them has a flag for it, so it
@@ -94,7 +99,7 @@ PI_HOME_ENV = "PI_CODING_AGENT_DIR"
 #: printed line against the argument vector the report printed, which already carries the route's own
 #: session flag.)
 TARGET_INVOCATION = {
-    "pi": {"home_env": PI_HOME_ENV},
+    "pi": {"home_env": PI_HOME_ENV, "session_dir_env": PI_SESSION_DIR_ENV},
     "claude": {"home_env": "CLAUDE_CONFIG_DIR"},
 }
 
@@ -121,6 +126,18 @@ def pi_project_dir(cwd: str) -> str:
     for character in ("/", ":"):
         trimmed = trimmed.replace(character, "-")
     return f"--{trimmed}--"
+
+
+def pi_session_tree(home, workspace) -> str:
+    """The sessions tree one working directory's session is installed into and looked up in, below a data
+    directory: its own project directory under the default `sessions` root. It mirrors the Go side
+    (``internal/ccc/pi_verify.go``'s ``piSessionTree``, which joins the same three names with
+    ``filepath.Join``): the separator is spelled the way the paths are -- a Windows-shaped data directory
+    (backslashes, no forward slashes) joins with ``\\``, as Go's ``filepath.Join`` does there, and every
+    other spelling joins with ``/``."""
+    home_text = str(home)
+    separator = "\\" if "\\" in home_text and "/" not in home_text else "/"
+    return separator.join([home_text.rstrip("/\\"), PI_SESSION_SUBDIR, pi_project_dir(str(workspace))])
 
 
 def pi_session_file_name(timestamp: str, session_id: str) -> str:
@@ -330,8 +347,9 @@ def pi_tool_names(session: Path) -> list[str]:
 
 def ask_pi_loader(pi: str, home: Path, cwd: Path, session_id: str, timeout: int = 90) -> tuple[str, str]:
     """Ask Pi's own loader for one session's state and messages, offline, and answer its stdout and
-    stderr. The session is resolved by id through the agent directory's default layout, which is where a
-    conversion installs it, and the process runs from the session's own working directory.
+    stderr. The session is resolved by id through the sessions tree the printed line names -- the project
+    directory the conversion installed it under -- and the process runs from the session's own working
+    directory, exactly as ``internal/ccc/pi_verify.go`` runs it.
 
     The caller points this at a **copy** of the session, never at the installed file: measured on 1.5.2,
     an RPC run appends its own records (a `thinking_level_change` among them) to the session it opens, so
@@ -344,7 +362,10 @@ def ask_pi_loader(pi: str, home: Path, cwd: Path, session_id: str, timeout: int 
     ]) + "\n"
     environment = dict(os.environ)
     environment[PI_HOME_ENV] = str(home)
-    environment.pop("PI_CODING_AGENT_SESSION_DIR", None)
+    # The sessions tree is named explicitly, as the printed line names it: Pi reads this variable ahead of
+    # the agent directory's own default, so removing it (as this check once did) verified a lookup the
+    # printed command does not make when the caller's own shell holds the variable.
+    environment[PI_SESSION_DIR_ENV] = pi_session_tree(home, cwd)
     completed = subprocess.run(
         [pi, "--mode", "rpc", "--session", session_id, "--no-tools", "--offline"],
         input=commands, cwd=str(cwd), env=environment, capture_output=True, text=True, timeout=timeout,
@@ -752,7 +773,15 @@ def main(argv: list[str] | None = None) -> int:
 
 def _check_pi_loader(pi: str, home: Path, workspace: Path, session_id: str, installed: Path) -> None:
     """Ask Pi's own loader about the installed session and about an unknown id, and compare its answers
-    with the installed file's own bytes."""
+    with the installed file's own bytes.
+
+    The loader home holds the check's copy of the session and **no configuration of the caller's**: a
+    caller-named ``--target-home`` may hold a ``models.json`` with literal API keys or authorization
+    headers, and copying that document into another directory would copy credentials the conversion
+    contract never copies. Measured on 1.5.2: with the sessions tree named through
+    ``PI_SESSION_DIR_ENV``, `get_state`/`get_messages` answer from a home holding the session alone --
+    an RPC run is started with ``--offline --no-tools`` -- so no provider configuration is needed for
+    the question this check asks."""
     before = sha256(installed)
     loader_home = Path(tempfile.mkdtemp(prefix="ccc-pi-loader-home-"))
     try:
@@ -760,10 +789,6 @@ def _check_pi_loader(pi: str, home: Path, workspace: Path, session_id: str, inst
         copy = loader_home / relative
         copy.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(installed, copy)
-        for name in ("models.json", "settings.json"):
-            source = home / name
-            if source.is_file():
-                shutil.copyfile(source, loader_home / name)
         try:
             stdout, stderr = ask_pi_loader(pi, loader_home, workspace, session_id)
         except subprocess.TimeoutExpired:
@@ -830,22 +855,29 @@ def spelled_as_invocation(command: str, home_env: str) -> bool:
     return not (set(head) | set(tail)) & forbidden
 
 
-def reported_invocation(command: str, workspace, home, home_env: str, arguments: list[str]) -> bool:
-    """Whether `command` is the invocation as a POSIX shell reads it: the `cd`, then the assignment, then
-    `arguments`.
+def reported_invocation(command: str, workspace, home, home_env: str, arguments: list[str],
+                        session_dir_env: str | None = None) -> bool:
+    """Whether `command` is the invocation as a POSIX shell reads it: the `cd`, the environment
+    assignments, then `arguments`.
 
     The target's loader finds a session through the working directory it is started in (Pi resolves a
     session id through the project directory of the process's own working directory), and it takes its
     agent directory from the environment alone -- it has no flag for either -- so a pasted line that names
     neither resumes nothing, or resumes the caller's own session, rather than the one this run installed.
-    The full word vector is compared, exactly as the sibling ``scripts/claude-native-check.py``'s
-    ``reported_invocation`` does: any `cd <anything>` beside any `NAME=<anything>` beside any session id
-    reads back as the right *shape* and is still another invocation, so a substring or a shape test would
-    accept a line that resumes somewhere else. The words alone do not answer it either
-    (`spelled_as_invocation` reads the spelling too), which is why both halves decide this rule.
+    Pi also reads the sessions tree from ``session_dir_env`` ahead of the agent directory's own default,
+    so the route names that tree explicitly (``pi_session_tree``, the project directory the installer
+    filed the session under); a leftover setting of the caller's would otherwise send the line looking in
+    another tree. The full word vector is compared, exactly as the sibling
+    ``scripts/claude-native-check.py``'s ``reported_invocation`` does: any `cd <anything>` beside any
+    assignments beside any session id reads back as the right *shape* and is still another invocation, so
+    a substring or a shape test would accept a line that resumes somewhere else. The words alone do not
+    answer it either (``spelled_as_invocation`` reads the spelling too), which is why both halves decide
+    this rule.
     """
-    return (shell_words(command) == [CD_WORD, str(workspace), OPERATOR_WORD,
-                                     f"{home_env}={home}", *arguments]
+    words = [f"{home_env}={home}"]
+    if session_dir_env:
+        words.append(f"{session_dir_env}={pi_session_tree(home, workspace)}")
+    return (shell_words(command) == [CD_WORD, str(workspace), OPERATOR_WORD, *words, *arguments]
             and spelled_as_invocation(command, home_env))
 
 
@@ -860,7 +892,8 @@ def _check_invocation(target: dict, target_provider: str, workspace, home) -> No
         command = target.get(field, "")
         arguments = target.get(arguments_field) or []
         ok = (bool(command) and bool(arguments)
-              and reported_invocation(command, workspace, home, spec["home_env"], arguments))
+              and reported_invocation(command, workspace, home, spec["home_env"], arguments,
+                                      spec.get("session_dir_env")))
         record(f"the printed {field} reads as a POSIX shell line naming the session", ok,
                bounded(command, 200))
 

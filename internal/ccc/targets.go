@@ -521,6 +521,7 @@ func piRoute() targetRoute {
 				Home:        in.Home,
 				Binary:      in.Binary,
 				SessionID:   in.SessionID,
+				ProjectDir:  in.Directory,
 				Cwd:         in.Cwd,
 				SessionPath: in.Path,
 				Prompt:      in.Prompt,
@@ -533,16 +534,20 @@ func piRoute() targetRoute {
 			// this run probed and verified (invocationBinary): a bare name re-searched by a shell from
 			// there can find a different program.
 			binary := invocationBinary(in.Binary, in.Probe)
+			// The interactive line names the session and nothing else; the exec form is piResumeArguments,
+			// the invocation VerifyPiResume runs -- print mode included, so a pasted line runs the turn
+			// rather than opening the TUI.
 			arguments := []string{binary, "--session", session.ID}
-			execArguments := append(append([]string{}, arguments...), promptTerminator, resumePromptPlaceholder)
+			execArguments := append([]string{binary},
+				piResumeArguments(session.ID, resumePromptPlaceholder)...)
 			return targetInvocation{
 				Arguments:     arguments,
 				ExecArguments: execArguments,
-				// The home is named because Pi takes its agent directory from the environment alone: a
-				// caller that runs the argument vector without it would otherwise read their own
-				// extensions and context files into the resumed session, and look for the session in
-				// their own home.
-				Environment: map[string]string{piHomeEnv: in.Home},
+				// The environment is the check's own (piResumeEnvironment): the data directory and the
+				// sessions tree the session was installed into, so a caller's leftover
+				// PI_CODING_AGENT_SESSION_DIR cannot send the pasted line looking in another tree than
+				// the one the check verified.
+				Environment: piResumeEnvironment(in.Home, session.Directory),
 				// Measured: Pi resolves a session id through the project directory of the process's own
 				// working directory, so the invocation has to run from the session's own.
 				WorkingDir: session.Cwd,

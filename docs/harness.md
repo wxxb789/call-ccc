@@ -330,7 +330,19 @@ says so.
   found matching '…'`, which is what makes the first arm an answer about *this* session rather than about
   a process that started. With `--resume-prompt` the run also drives one real turn through the invocation
   the report printed, prints the target's own answer under `TURN_OUTPUT_MARKER`, and requires the session
-  file to have grown. The scratch home a run makes for itself holds a `models.json` seeded from the
+  file to have grown. Both the printed line and the loader stage name the **sessions tree inside the data
+  directory** explicitly (`PI_CODING_AGENT_SESSION_DIR`, the project directory the installer filed the
+  session under, `piSessionTree`), because Pi resolves a session directory as `--session-dir` first, then
+  that variable, then the data directory's own `settings.json` `sessionDir`, and only then its default
+  tree: measured on 1.5.2, a caller's leftover setting, or a `settings.json` naming another directory,
+  otherwise sends the printed line looking where the session is not, while the check — which used to
+  remove the variable — found it. The loader home is a throw-away directory holding the check's copy of
+  the session and **none of the caller's configuration**: a home the caller names with `--target-home`
+  may hold a `models.json` with literal API keys or authorization headers, and copying that document
+  would copy a secret the conversion contract copies nowhere (measured: with the sessions tree named, the
+  loader answers `get_state`/`get_messages` from a home holding the session alone, since an RPC run is
+  started with `--offline --no-tools`).
+  The scratch home a run makes for itself holds a `models.json` seeded from the
   host's provider definitions with every credential-bearing field dropped (`apiKey`, `headers`) and the
   chosen provider's key left as an `$ENV` reference, so nothing is read from or written to a credential
   store; a home the caller names with `--target-home` is **read, never written to** — the seed would

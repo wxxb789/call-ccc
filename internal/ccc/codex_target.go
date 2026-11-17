@@ -401,7 +401,7 @@ func (b *codexRolloutBuilder) sessionMeta(startedAt time.Time) {
 // (inactive_branch_records). The branch itself is still in the source session, where its own
 // conversation can be converted on demand.
 func (b *codexRolloutBuilder) writeConversation(conv Conversation) {
-	inactive := inactiveSourceRecords(conv.Messages)
+	inactive := inactiveSourceRecords(conv.Messages, conv.Source.Provider)
 	for index, message := range conv.Messages {
 		b.messageIndex = index
 		if inactive[index] {

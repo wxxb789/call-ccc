@@ -588,6 +588,71 @@ func TestCodexRolloutCarriesAToolRoleMessageOnlyThroughItsResult(t *testing.T) {
 	}
 }
 
+// TestCodexRolloutKeepsAnActiveResultAcrossAnInterveningBranch pins the same projection on the route
+// whose target log has no parent relation: the inherited Pi reader answers a record under a tool result
+// as hanging off the message that made the call, so a record the read answers that way may have hung off
+// the result. When a branch's turn was written in between, the result still stands on the source's own
+// line -- call → result → what follows -- so the result is written and only the branch's own turn is
+// omitted as inactive.
+func TestCodexRolloutKeepsAnActiveResultAcrossAnInterveningBranch(t *testing.T) {
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "start", Dialogue: "start",
+			SourceUUID: "u1"},
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "[grep: maxBackoff]",
+			DialogueProjected: true, SourceUUID: "c2", SourceParentUUID: "u1",
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_1", Name: "grep",
+				InputJSON: `{"pattern":"maxBackoff"}`}}},
+		Message{Ordinal: 2, Role: string(parser.RoleUser), SourceUUID: "r3", SourceParentUUID: "c2",
+			ToolResults: []ToolResult{{ToolUseID: "toolu_1",
+				ContentRaw: `"internal/retry/config.go:41"`, ContentSize: 28}}},
+		Message{Ordinal: 3, Role: string(parser.RoleAssistant), Content: "left turn",
+			Dialogue: "left turn", SourceUUID: "b4", SourceParentUUID: "u1"},
+		Message{Ordinal: 4, Role: string(parser.RoleAssistant), Content: "after the result",
+			Dialogue: "after the result", SourceUUID: "d5", SourceParentUUID: "c2"},
+	)
+	// The source is a Pi session: its reader answers a record under a tool result as hanging off the
+	// message that made the call, which is what makes this shape a projection rather than an exact link.
+	conversation.Source.Provider = string(parser.AgentPi)
+	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	loss := lossCount(t, rollout.Losses, "inactive_branch_records")
+	if loss.Count != 1 || loss.Disposition != DispositionOmitted {
+		t.Errorf("inactive_branch_records = %+v, want only the branch's own turn omitted: the result "+
+			"stands on the source's own line", loss)
+	}
+	data := string(rollout.Data)
+	if !strings.Contains(data, "internal/retry/config.go:41") {
+		t.Errorf("the rollout does not hold the recorded result:\n%s", data)
+	}
+	if strings.Contains(data, "left turn") {
+		t.Error("the rollout holds the abandoned branch's turn: a record written into this target's log " +
+			"becomes model-visible history, so the branch was revived as an active turn")
+	}
+	if rollout.Carried.ToolResults != 1 {
+		t.Errorf("carried = %+v, want the recorded result written", rollout.Carried)
+	}
+
+	// The other reading, for a source whose parent answers are exact: a Claude transcript's parentUuid
+	// names a record rather than a projection, so a record naming the call really hung off the call --
+	// the result stands off the line, is omitted as the read's own relations place it, and no relation
+	// is counted as unanswerable.
+	exact := conversation
+	exact.Source.Provider = "claude"
+	rollout, err = ConvertToCodexRollout(exact, testOptions())
+	if err != nil {
+		t.Fatalf("converting with an exact read: %v", err)
+	}
+	if loss := lossCount(t, rollout.Losses, "inactive_branch_records"); loss.Count != 2 {
+		t.Errorf("inactive_branch_records = %+v, want the result and the branch: the read answered the "+
+			"record's parent exactly, so nothing is projected", loss)
+	}
+	if strings.Contains(string(rollout.Data), "internal/retry/config.go:41") {
+		t.Error("the rollout holds the result although the read places it off the line")
+	}
+}
+
 // TestCodexRolloutPairsAnIdLessResultWithItsCall pins the pairing rule: the target pairs a call and its
 // output by id, so a source that recorded none gets one generated from the message's own position in the
 // document — and two id-less calls make the pairing a guess, which is reported as an unpaired result

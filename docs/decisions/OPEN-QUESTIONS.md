@@ -1908,3 +1908,63 @@ supersede it with a newer one and say which it supersedes.
   becomes active history), or refuse a branched source for that target (which would trade a disclosed
   omission for an unavailable conversion).
 - **Settled by:** nothing owner-only.
+
+## Q-0005-10 — A projected parent is read through the tool result standing between the records, and the reading is gated on the source's own reader
+
+- **Status:** resolved (default taken; 0005's second review round named the projection as a defect: a
+  record the Pi reader answers as hanging off the message that made a call may in the source's file have
+  hung off a result of it, and treating the answer as exact left the result off the target's walk — and,
+  for the Codex target, omitted it as an inactive branch)
+- **Question:** the inherited Pi reader resolves a record under a tool result to its visible ancestor, so
+  a record whose real parent is a tool result answers with the *call's* message. When another record (a
+  branch's own turn) was written between the result and that record, the writers' immediate-predecessor
+  rule no longer sees the result: the entry is chained straight to the call and the result stands off the
+  walk (or is omitted by the Codex target as inactive). Should the writers undo the projection by walking
+  back to the nearest result of the call the record names, and what should the report say about a relation
+  the read's projection cannot settle?
+- **Default taken:** where the read may answer projections, a record naming a call message is chained
+  through the nearest tool result of that call written before it — the reading the source's own file order
+  supports (`call → result → what follows`) — and the relation is counted
+  (`unresolved_source_parents`) because the read's answer cannot settle whether the record hung off the
+  call or off the result; the count's detail says exactly that. The reading is gated on the source's own
+  reader: only the Pi parser and the Pi-derived readers (the agents `internal/parser/provider.go` builds
+  with `newPiProviderFactory` and `newTauProviderFactory`) resolve descendants of a tool result to their
+  visible ancestor, and for a read whose parent answers are exact (a Claude transcript's `parentUuid`
+  names a record) the narrower immediate-predecessor reading is kept, so no relation is invented for a
+  read that did not project. The gate is a small name list in `internal/ccc/route_shared.go`
+  (`projectedParentProviders`) because the inherited registry exposes no format-family predicate and the
+  carried parser is not edited here.
+- **Reversal:** apply the reading to every reader (which invents a relation for an exact read: measured
+  against the Claude fixture's shape, a record naming a call while a result of that call stands between
+  them would be chained through the result and counted, although the read answered the relation exactly),
+  or leave the answer exact everywhere (measured wrong for Pi: the Codex target omitted the active result
+  as `inactive_branch_records` and the tree targets left it off the walk — the defect this entry answers).
+- **Settled by:** an upstream registry predicate naming the readers that project (the list would then be
+  read from it), or a reader that keeps the record's own parent answer beside the projected one. A
+  Pi-family agent this list does not name keeps the narrower reading, which under-discloses rather than
+  inventing a relation.
+
+## Q-0005-11 — A source whose selected leaf writes no entry is refused rather than converted
+
+- **Status:** resolved (default taken; 0005's second review round measured that an omitted final record can
+  make the target's loader select an abandoned branch's entry as its leaf)
+- **Question:** the target's own loader walks from the last entry a conversion wrote, while the source's
+  loader walks from the read's last record. When the read's last record writes no entry (an empty
+  assistant turn, a system record, a subagent's own row) and the entry written last stands for a record
+  the read's last record does not reach, the target would resume from a branch the source's conversation
+  left — a context substitution no per-record loss count discloses. Should the conversion write an entry
+  for the leaf anyway, silently keep the branch's entry as the last one (what it did), or refuse?
+- **Default taken:** refuse (`ErrUnrepresentableLeaf`, naming the record the last entry stands for and
+  that it is off the line the read's last record answers). The check runs after the walk, on the same
+  line computation the writers use, so it is the read's own answer that decides; a source whose last
+  record writes no entry *on* that line is unaffected (the last written entry is then an ancestor of the
+  leaf, and the walk the target makes is the written part of the source's line), and so is a read with no
+  relations at all, whose order is linear. The refusal is narrow by construction: it fires only when the
+  last written record is off the leaf's line, which requires an omitted tail *and* a branch written after
+  the last on-line entry.
+- **Reversal:** write a minimal entry for the omitted leaf so the target's last entry is the leaf's own
+  (narrowed by the omission's reason: a system record's text, a subagent's own words and a whitespace-only
+  dialogue must not be written as the conversation's own turn, so no single rule covers every reason), or
+  keep the silent substitution (measured wrong: the target resumes the abandoned branch).
+- **Settled by:** nothing owner-only. A target format that records its own selected leaf (a `leafId`-like
+  field) would make the refusal unnecessary where the format can name one.

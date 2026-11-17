@@ -184,6 +184,79 @@ func TestContinueIntoPiInvocationNamesTheHomeAndTheWorkingDirectory(t *testing.T
 	}
 }
 
+// TestContinueIntoPiPrintsTheInvocationItVerifies pins the printed command against the check that runs
+// it, word by word and variable by variable. The exec form must be print mode: measured on 1.5.2, `pi
+// --session <id> -- <prompt>` with terminal stdin and stdout opens the TUI and runs no turn, while
+// VerifyPiResume independently passes `-p` -- so without this a pasted "non-interactive" line would never
+// do what the report says. Both lines must also name the sessions tree the check runs with
+// (PI_CODING_AGENT_SESSION_DIR, the project directory the installer filed the session under), because Pi
+// reads that variable ahead of the agent directory's own default: a caller's leftover setting would
+// otherwise send the pasted line looking where the session is not.
+func TestContinueIntoPiPrintsTheInvocationItVerifies(t *testing.T) {
+	home, _ := piTargetHome(t)
+	result, err := Continue(context.Background(), ContinueOptions{
+		Ref:          claudeFixtureRef,
+		Target:       TargetPi,
+		Config:       fixtureConfig(t),
+		TargetHome:   home,
+		TargetBinary: missingTargetBinary,
+	})
+	if err != nil {
+		t.Fatalf("continuing: %v", err)
+	}
+	printed := result.TargetSession.ExecResumeArguments
+	if len(printed) < 5 || printed[1] != "-p" {
+		t.Fatalf("exec resume arguments = %v, want print mode first: the reported non-interactive line "+
+			"must not open the TUI", printed)
+	}
+	if printed[len(printed)-1] != resumePromptPlaceholder {
+		t.Errorf("exec resume arguments = %v, want the placeholder last", printed)
+	}
+	projectDir := filepath.Base(filepath.Dir(result.TargetSession.Path))
+	wantSessionDir := piSessionTree(home, projectDir)
+	if got := result.TargetSession.ResumeEnvironment[piSessionDirEnv]; got != wantSessionDir {
+		t.Errorf("the resume environment names %s = %q, want the sessions tree the session was installed "+
+			"into (%q)", piSessionDirEnv, got, wantSessionDir)
+	}
+	for _, command := range []string{result.TargetSession.ResumeCommand, result.TargetSession.ExecResumeCommand} {
+		if !strings.Contains(command, piSessionDirEnv+"="+shellQuote(wantSessionDir)) {
+			t.Errorf("rendered command = %q, want the sessions tree named so a shell reads it as one word",
+				command)
+		}
+	}
+
+	// The same question the other way round: the check that can verify a turn runs the printed argument
+	// vector (the prompt excepted, which is the caller's own turn), in the printed environment's tree.
+	turn := &fakePiTurn{growPath: result.TargetSession.Path, answer: "It is in the config file."}
+	withFakePiHarness(t, nil, turn)
+	verification := VerifyPiResume(context.Background(), PiResumeOptions{
+		Home: home, Binary: missingTargetBinary, SessionID: result.TargetSession.SessionID,
+		ProjectDir: projectDir, Cwd: result.TargetSession.Cwd,
+		SessionPath: result.TargetSession.Path, Prompt: "Where is the retry cap configured?",
+	})
+	if verification.State != VerificationStateVerified {
+		t.Fatalf("resume = %+v, want the fake turn verified through the printed invocation", verification)
+	}
+	if len(turn.calls) != 1 {
+		t.Fatalf("the check made %d turn(s), want one", len(turn.calls))
+	}
+	ran := turn.calls[0].arguments
+	if len(ran)+1 != len(printed) {
+		t.Fatalf("the check ran %v, want the printed %v (the binary excepted)", ran, printed)
+	}
+	if !slices.Equal(ran[:len(ran)-1], printed[1:len(printed)-1]) {
+		t.Errorf("the check ran %v, want the printed flags and session %v (printed %v)",
+			ran, printed[1:len(printed)-1], printed)
+	}
+	if ran[len(ran)-1] != "Where is the retry cap configured?" {
+		t.Errorf("the check's last word = %q, want the caller's own prompt", ran[len(ran)-1])
+	}
+	if turn.calls[0].sessionDir != wantSessionDir {
+		t.Errorf("the check named the sessions tree %q, want the printed one %q",
+			turn.calls[0].sessionDir, wantSessionDir)
+	}
+}
+
 // TestContinueIntoPiDryRunWritesNothing pins the dry run: the conversion is verified against a throw-away
 // copy of its own bytes and the target home is not created.
 func TestContinueIntoPiDryRunWritesNothing(t *testing.T) {

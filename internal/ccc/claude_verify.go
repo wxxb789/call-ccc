@@ -247,7 +247,7 @@ func runClaudeLoad(
 // removed. Nothing else is changed, so a host's PATH, locale and tool configuration still reach the
 // harness; childEnvironment spells how each name is read.
 func claudeEnvironment(home string, denied []string) []string {
-	return childEnvironment(home, claudeHomeEnv, denied)
+	return childEnvironment(home, claudeHomeEnv, denied, nil)
 }
 
 // ClaudeResumeOptions configures one real resume turn.

@@ -72,10 +72,15 @@ Consequences taken as this increment's defaults:
 - **The header's `cwd` is the source session's recorded working directory**, and the file is installed
   under the project directory Pi derives from it; a source that recorded none is refused
   (`ErrNoTargetCwd`) rather than installed where no lookup finds it.
-- **The printed resume command carries the working directory and the data directory**
-  (`cd <cwd> && PI_CODING_AGENT_DIR=<home> pi --session <id> …`): the first is the only way Pi's own
-  lookup sees a session that belongs to another project, the second selects the home it was installed
-  into.
+- **The printed resume command carries the working directory, the data directory and the sessions tree
+  inside it** (`cd <cwd> && PI_CODING_AGENT_DIR=<home> PI_CODING_AGENT_SESSION_DIR=<home>/sessions/<project> pi --session <id> …`,
+  and the exec form is `pi -p --session <id> -- <prompt>`, the invocation the resume check runs): the
+  first is the only way Pi's own lookup sees a session that belongs to another project, the second
+  selects the home it was installed into, and the third names the tree explicitly because Pi reads it
+  ahead of the home's default *and* ahead of the home's `settings.json` `sessionDir` — a caller's
+  leftover setting, or a settings file naming another directory, would otherwise send the printed line
+  looking where the session is not. Print mode is what makes the "non-interactive" line non-interactive:
+  `--session <id> -- <prompt>` with terminal stdin and stdout opens the TUI (measured on 1.5.2).
 - **A Pi session records no provider binding of its own** (a message may name a provider and a model),
   so `--to pi` never writes the source's provider as the session's own and never invents one: a resumed
   turn uses whatever the caller's Pi configuration offers.
@@ -138,17 +143,24 @@ recorded history, exactly where the source put it. A record whose named parent h
 target omitted it) is chained to the nearest ancestor that does have one; a record that follows a tool
 result is chained to the result, because the reader answers a Pi tool result as *not* a visible ancestor
 while the source's own file runs call → result → what follows, and writing the result after the record would
-leave a resumed session with a call and no result. A relation the read cannot resolve at all follows the
-entry before it and is counted (`unresolved_source_parents`) instead of being presented as the source's. The
-file ends with a line feed, and no entry is written after a message that was omitted, so the chain never
-points at something the file does not hold.
+leave a resumed session with a call and no result. The tool-result step is read across intervening records
+too, and there it is counted: the reader answers a record under a tool result as hanging off the message
+that made the call, so whether the record hung off the call or off a result of it is not answerable, and the
+entry is chained through the nearest result standing between them (`unresolved_source_parents`). A relation
+the read cannot resolve at all follows the entry before it and is counted (`unresolved_source_parents`)
+instead of being presented as the source's. The file ends with a line feed, and no entry is written after a
+message that was omitted, so the chain never points at something the file does not hold. **The selected
+leaf is part of this rule**: the target's own loader walks from the last entry written and the source's from
+the read's last record, so a source whose last record writes no entry while the entry written last stands
+for a record the read's last record does not reach is refused (`ErrUnrepresentableLeaf`) rather than written
+as a file that resumes a branch the source's conversation left.
 
 ### 2.3 Mapping rules, category by category
 
 | Category | Rule | Why |
 | --- | --- | --- |
 | Dialogue text | `dialogueText(message)` — the source's own dialogue projection when it made one, else `Content` for a message with no calls | the reader's `Content` renders calls into text (`[Read: <path>]`); writing it beside the blocks would duplicate the call |
-| Dialogue that holds only whitespace | **omitted**, counted (`whitespace_only_dialogue`) | the inherited Pi reader drops a record left with no text and no tool evidence, so a written entry would be in the file and absent from every read of it |
+| Dialogue that holds only whitespace | the whitespace **omitted**, counted (`whitespace_only_dialogue`); a record that also holds a reasoning trace keeps the trace (its own `thinking` block, with the `reasoning_text` caveat) | the inherited Pi reader drops a record left with no text and no tool evidence, so a written *dialogue* would be in the file and absent from every read of it — but the trace is not dialogue and Pi's `thinking` block is its own shape, so an assistant record holding both keeps what the reader does read |
 | Reasoning (`Message.Thinking`) | **carried** as the message's `thinking` block, counted with a caveat (`reasoning_text`) | Pi's `thinking` block is the format's own shape for a persisted reasoning trace; the source's trace is what the source recorded, and this read holds no signature to forge |
 | Tool calls | Pi's `toolCall` block with the recorded name, arguments and id | recorded evidence; the target's own tool vocabulary is unaffected and a resumed turn reads the call as history |
 | A call with no recorded id | a generated `ccc<message>_<index>` id, counted (`generated_call_ids`) | Pi pairs a call and its result by id |
@@ -277,7 +289,8 @@ offline half.
    `--session <id>` from the session's own directory), or a flat `--session-dir` root (found only when
    the process's cwd equals the session's recorded cwd and the file sits directly in that root).
    Default: the project-grouped layout, because it is the one Pi's own writes produce and the only one
-   the printed `cd <cwd> && PI_CODING_AGENT_DIR=<home> pi --session <id>` resolves without extra flags.
+   the printed `cd <cwd> && PI_CODING_AGENT_DIR=<home> PI_CODING_AGENT_SESSION_DIR=<home>/sessions/<project> pi --session <id>`
+   resolves whatever the caller's shell or the home's `settings.json` says about a session directory.
    Reversal: install into a flat root and print `--session-dir`.
 2. **A source with no recorded working directory.** Default: refuse (`ErrNoTargetCwd`), as 0003 does,
    because Pi's lookup is project-scoped. Reversal: install anyway and document the flag needed.

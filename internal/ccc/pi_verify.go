@@ -122,6 +122,9 @@ func VerifyPiLoad(ctx context.Context, opts PiLoadOptions) LoadVerification {
 		return verification
 	}
 	sessionsRoot := filepath.Join(scratch, piSessionsSubdir)
+	// The sessions tree the invocation names: the project directory below the scratch root the copy was
+	// installed into, which is where the installer files a session and what piResumeEnvironment names.
+	copySessionDir := filepath.Join(sessionsRoot, opts.Directory)
 
 	timeout := opts.Timeout
 	if timeout <= 0 {
@@ -133,7 +136,7 @@ func VerifyPiLoad(ctx context.Context, opts PiLoadOptions) LoadVerification {
 			"the installed session's native load could not be verified: %v", err)
 		return verification
 	}
-	state, err := piAskLoader(ctx, path, scratch, loaderCwd, opts.SessionID, opts.Data, timeout, opts.Stderr)
+	state, err := piAskLoader(ctx, path, scratch, copySessionDir, loaderCwd, opts.SessionID, opts.Data, timeout, opts.Stderr)
 	if err != nil {
 		verification.Detail = fmt.Sprintf(
 			"the harness's own loader did not answer for session %s: %v", opts.SessionID, err)
@@ -164,7 +167,7 @@ func VerifyPiLoad(ctx context.Context, opts PiLoadOptions) LoadVerification {
 		verification.Detail = fmt.Sprintf("a control identity could not be generated: %v", err)
 		return verification
 	}
-	_, controlErr := piAskLoader(ctx, path, scratch, loaderCwd, unknown, nil, timeout, opts.Stderr)
+	_, controlErr := piAskLoader(ctx, path, scratch, copySessionDir, loaderCwd, unknown, nil, timeout, opts.Stderr)
 	if controlErr == nil {
 		verification.Detail = fmt.Sprintf(
 			"the control arm answered for session %q, which this check never installed, so the loader is "+
@@ -275,17 +278,15 @@ type piRPCResponse struct {
 // matching` on stderr and exits zero after starting a fresh in-memory session, so the missing answer --
 // not the exit status -- is what this reads.
 func piAskLoader(
-	ctx context.Context, binary, home, cwd, sessionID string, data []byte,
+	ctx context.Context, binary, home, sessionDir, cwd, sessionID string, data []byte,
 	timeout time.Duration, stderr io.Writer,
 ) (piLoadState, error) {
 	// The check asks the loader the way the printed resume command does: the session is named by id and
-	// resolved through the agent directory's own default layout, which is where the copy was installed.
-	// The agent directory is the environment's (piHomeEnv, set by runPiRPC), and the process runs from
-	// the session's recorded working directory, because the harness resolves an id through the project
-	// directory of the process's own working directory and a pair that disagrees is answered with a fork
-	// offer rather than a load. Measured on the installed harness: naming the sessions tree with
-	// `--session-dir` instead does not resolve the id at all, while the layout below resolves it and
-	// answers `get_state` for it.
+	// resolved through the sessions tree the invocation names (piSessionDirEnv, set by piEnvironment) and
+	// the process runs from the session's recorded working directory, because the harness resolves an id
+	// through the project directory of the process's own working directory and a pair that disagrees is
+	// answered with a fork offer rather than a load. Measured on 1.5.2: with the sessions tree named, the
+	// harness resolves an id filed directly in it, which is where the installer files a session.
 	arguments := []string{
 		"--mode", "rpc",
 		"--session", sessionID,
@@ -296,7 +297,7 @@ func piAskLoader(
 		`{"id":"state","type":"get_state"}`,
 		`{"id":"messages","type":"get_messages"}`,
 	}, "\n") + "\n"
-	stdout, err := runPiLoaderRPC(ctx, binary, cwd, home, arguments, stdin, timeout, stderr)
+	stdout, err := runPiLoaderRPC(ctx, binary, cwd, home, sessionDir, arguments, stdin, timeout, stderr)
 	if err != nil {
 		return piLoadState{}, err
 	}
@@ -521,14 +522,14 @@ func readPiResponses(stdout string) []piRPCResponse {
 // The environment is the caller's own with the home variable set and the model variables removed: a
 // host's PATH and locale still reach the harness, and nothing in it can reach a model.
 func runPiRPC(
-	ctx context.Context, binary, cwd, home string, arguments []string, stdin string,
+	ctx context.Context, binary, cwd, home, sessionDir string, arguments []string, stdin string,
 	timeout time.Duration, stderr io.Writer,
 ) (string, error) {
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	command := exec.CommandContext(runCtx, binary, arguments...)
 	command.Dir = cwd
-	command.Env = piEnvironment(home, piLoadEnvDenied)
+	command.Env = piEnvironment(home, sessionDir, piLoadEnvDenied)
 	command.Stdin = strings.NewReader(stdin)
 	answer := newBoundedBuffer(harnessOutputMax)
 	diagnostics := newBoundedBuffer(harnessDiagnosticsMax)
@@ -555,10 +556,43 @@ func runPiRPC(
 var runPiLoaderRPC = runPiRPC
 
 // piEnvironment builds a child environment for one harness run: the caller's own environment with the
-// variable that selects the agent directory set to home, the named variables removed, and the session
-// directory variable removed too, so a leftover setting cannot point the harness at another tree.
-func piEnvironment(home string, denied []string) []string {
-	return childEnvironment(home, piHomeEnv, denied, piSessionDirEnv)
+// variable that selects the agent directory set to home, the named variables removed, and the sessions
+// tree named explicitly as the directory the session was installed into. Naming it is what makes the
+// check run the printed invocation's own environment (piResumeEnvironment): Pi reads a session directory
+// from PI_CODING_AGENT_SESSION_DIR ahead of the agent directory's default, so a caller's leftover setting
+// pointed the printed line at another tree while this check, which removed the variable, looked in the
+// default one -- a verified lookup the printed command did not make. Both halves now name the same tree.
+func piEnvironment(home, sessionDir string, denied []string) []string {
+	return childEnvironment(home, piHomeEnv, denied, map[string]string{piSessionDirEnv: sessionDir})
+}
+
+// piResumeEnvironment is the environment both the printed resume line and the resume check run the
+// harness with: the agent directory the session was installed into, and the sessions tree inside it that
+// holds the file. Both halves are explicit because Pi has no flag for either, and the session directory
+// is the project directory the installer filed the session under -- measured on 1.5.2: naming the
+// default `<home>/sessions` root does not resolve an id filed one project directory below it, while
+// naming the project directory itself does.
+func piResumeEnvironment(home, projectDir string) map[string]string {
+	return map[string]string{
+		piHomeEnv:       home,
+		piSessionDirEnv: piSessionTree(home, projectDir),
+	}
+}
+
+// piSessionTree is the directory one converted session is installed into and looked up in: the default
+// sessions tree inside the agent directory, one project directory below it. The installer and both halves
+// of the invocation name this one spelling, so the printed line, the check and the file agree.
+func piSessionTree(home, projectDir string) string {
+	return filepath.Join(home, piSessionsSubdir, projectDir)
+}
+
+// piResumeArguments is the one non-interactive resume invocation: print mode, the session's id, the
+// option terminator and the turn's words. Both the line the report prints and the check that runs a real
+// turn call it, so the invocation a caller pastes is the one that was verified. Print mode is not
+// decoration: measured on 1.5.2, `pi --session <id> -- <prompt>` with terminal stdin and stdout opens the
+// TUI and never runs the turn.
+func piResumeArguments(sessionID, prompt string) []string {
+	return []string{"-p", "--session", sessionID, promptTerminator, prompt}
 }
 
 // PiResumeOptions configures one real resume turn.
@@ -566,7 +600,12 @@ type PiResumeOptions struct {
 	Home      string
 	Binary    string
 	SessionID string
-	Cwd       string
+	// ProjectDir is the project directory below Home's sessions tree that the session was installed
+	// under, which is the sessions tree the invocation names (piResumeEnvironment): the check runs the
+	// printed environment, so a lookup the printed line would not make cannot verify a session the
+	// printed line cannot find.
+	ProjectDir string
+	Cwd        string
 	// SessionPath is the installed file, whose growth the turn is reported by.
 	SessionPath string
 	Prompt      string
@@ -602,13 +641,15 @@ func VerifyPiResume(ctx context.Context, opts PiResumeOptions) ResumeVerificatio
 		verification.Detail = fmt.Sprintf("%s is not on PATH, so no turn could be run in the installed session", binary)
 		return verification
 	}
-	// The invocation is the printed one: the session is named by id and resolved through its own data
-	// directory's default layout, which is where the installer filed it.
-	arguments := []string{"-p", "--session", opts.SessionID, promptTerminator, opts.Prompt}
+	// The invocation is the printed one -- piResumeArguments is what the route's printed line builds too
+	// -- with the printed environment: the agent directory the session was installed into and the
+	// sessions tree inside it, so a caller's leftover session-directory setting cannot make the printed
+	// line search somewhere this check did not verify.
+	arguments := piResumeArguments(opts.SessionID, opts.Prompt)
 	// The reported command is the invocation this check runs, the prompt included: a caller reading the
 	// report sees exactly the line that produced the answer beside it.
 	verification.Command = renderInvocation(append([]string{path}, arguments...),
-		map[string]string{piHomeEnv: opts.Home}, opts.Cwd)
+		piResumeEnvironment(opts.Home, opts.ProjectDir), opts.Cwd)
 
 	before, beforeErr := fileSize(opts.SessionPath)
 	if beforeErr != nil {
@@ -620,7 +661,8 @@ func VerifyPiResume(ctx context.Context, opts PiResumeOptions) ResumeVerificatio
 	if timeout <= 0 {
 		timeout = piResumeTimeout
 	}
-	answer, diagnostics, runErr := runPiResumeTurn(ctx, path, opts.Cwd, opts.Home, arguments, timeout, opts.Stderr)
+	answer, diagnostics, runErr := runPiResumeTurn(ctx, path, opts.Cwd, opts.Home,
+		piSessionTree(opts.Home, opts.ProjectDir), arguments, timeout, opts.Stderr)
 	after, afterErr := fileSize(opts.SessionPath)
 	verification.SessionBytesBefore = before
 	verification.SessionBytesAfter = after
@@ -679,9 +721,9 @@ const piResumeTimeout = 5 * time.Minute
 // both bounded. The command runs in the session's working directory when it exists, because the
 // harness's own lookup resolves a session through the directory it is started in.
 func runPiTurn(
-	ctx context.Context, executable, cwd, home string, args []string, timeout time.Duration, stderr io.Writer,
+	ctx context.Context, executable, cwd, home, sessionDir string, args []string, timeout time.Duration, stderr io.Writer,
 ) (string, string, error) {
-	return runRouteTurn(ctx, executable, cwd, args, piEnvironment(home, nil), timeout, stderr)
+	return runRouteTurn(ctx, executable, cwd, args, piEnvironment(home, sessionDir, nil), timeout, stderr)
 }
 
 // runPiResumeTurn is the seam the resume check drives the target harness's turn through. It is named for
@@ -750,7 +792,14 @@ func piConversationEntries(data []byte) []piConversationEntry {
 // caller's own default home rather than the directory the session was installed into.
 const piHomeEnv = "PI_CODING_AGENT_DIR"
 
-// piSessionDirEnv is the environment variable that relocates only the sessions tree. The checks remove
-// it from the child environment: a leftover setting of the caller's would point the harness at another
-// tree, and the flags the checks pass are what say which one to read.
+// piSessionDirEnv is the environment variable that names the sessions tree itself. Both the printed
+// invocation and the checks set it to the directory the session was installed into (piSessionTree),
+// because Pi resolves a session directory as `--session-dir` first, then this variable, then the data
+// directory's own `settings.json` `sessionDir` setting, and only then the default tree: a caller's
+// leftover setting, or a settings file naming another directory, would otherwise send the printed
+// command looking for a session the check found. Measured on 1.5.2: with `settings.json` naming another
+// directory and this variable naming the project directory, the loader resolved the id; with the
+// variable unset on the same data directory it answered `No session found matching`; and naming the
+// `<home>/sessions` root does not resolve an id filed one project directory below it, while naming the
+// project directory itself does.
 const piSessionDirEnv = "PI_CODING_AGENT_SESSION_DIR"

@@ -101,7 +101,17 @@ with their exit codes and counts).
   registered in `docs/harness.md`, re-runnable, and deliberately not a gate step. A target whose own
   loader resolves a session id through the process's working directory — Claude Code, and Pi — is
   installed under the project spelling of the source read's recorded working directory, and a source that
-  recorded none is refused (`ErrNoTargetCwd`) rather than installed where no lookup finds it.
+  recorded none is refused (`ErrNoTargetCwd`) rather than installed where no lookup finds it. The source's
+  own relation is reproduced as the read answered it, with the one step the read itself projects: a record
+  the Pi-family readers answer as hanging off the message that made a call is chained through the tool
+  result standing between them, and counted (`unresolved_source_parents`) where the projection cannot
+  settle which of the two the record named — a read whose parent answers are exact keeps the narrower
+  reading. A source whose *selected leaf* the target's loader would not reach — the entry written last
+  stands for a record off the line the read's last record answers — is refused
+  (`ErrUnrepresentableLeaf`) rather than written as a file that resumes a branch the conversation left. A
+  Pi invocation the report prints and the check runs names the sessions tree inside the data directory
+  explicitly (`PI_CODING_AGENT_SESSION_DIR`), so the printed line, the verified lookup and the
+  installation agree even when the caller's shell, or the home's own `settings.json`, names another tree.
 - Gate: `python3 scripts/gate.py`, which must print `GATE: PASS`; it runs `parity` and `selftest` as
   required steps, and its Go steps are narrowed to `./cmd/ccc/... ./internal/ccc/...` with the measured
   reasons in [`docs/harness.md`](docs/harness.md#why-the-go-steps-target-a-subset) — that narrowing is

@@ -115,10 +115,29 @@ func distinctCalls[C any](message Message, project func(index int, call ToolCall
 	return calls
 }
 
-// sourceTreeWalkMax bounds the walk from a source record to its nearest written ancestor, and the walk
-// over a read's own records: a source that recorded a cycle (a record naming itself or a longer loop)
-// would otherwise keep a conversion walking, and the bound is far above any real conversation's depth.
-const sourceTreeWalkMax = 4096
+// projectedParentProviders are the agents whose reader answers a record under a tool result as hanging
+// off the message that made the call (the parser resolves a result's descendants to their visible
+// ancestor): the Pi parser and the Pi-derived readers, which internal/parser/provider.go builds with
+// newPiProviderFactory and newTauProviderFactory. The list is spelled here because the inherited registry
+// exposes no format-family predicate (it has IsCodexFormatAgent and no Pi counterpart) and the carried
+// parser is not edited here. A provider the list does not name is read with exact parent answers --
+// a Claude transcript's parentUuid names a record, not a projection -- so the writers keep the narrower
+// reading there, which invents no relation for a read whose answers are its own.
+var projectedParentProviders = map[string]bool{
+	"pi":          true,
+	"tau":         true,
+	"omp":         true,
+	"omo":         true,
+	"stepcode":    true,
+	"prime-agent": true,
+	"direct-api":  true,
+}
+
+// projectedParentProvider reports whether a source read through this provider answers projections: a
+// parent it names may be the message that made a call rather than the record the source's file named.
+func projectedParentProvider(provider string) bool {
+	return projectedParentProviders[strings.ToLower(strings.TrimSpace(provider))]
+}
 
 // sourceRecordOrigin is what one written entry stands for in the source's own record stream: the
 // record's identity, the record *it* hangs off as the read answered it, the entry this conversion
@@ -149,6 +168,17 @@ type sourceTree struct {
 	sourceRecordParents map[string]string
 	// writtenEntryID maps a source record's identity to the final entry written for it.
 	writtenEntryID map[string]string
+	// toolResultEntry maps a call's source identity to the entry of the most recent tool result written
+	// for it, and is consulted only when projectedParents holds. The inherited Pi reader answers a record
+	// under a tool result as hanging off the message that made the call, so a later record naming that
+	// message may in the source's own file have hung off a result of it standing between them; that
+	// result is where such a record is chained, and the relation is counted
+	// (unresolved_source_parents) because which of the two the record named is not answerable from the
+	// read.
+	toolResultEntry map[string]string
+	// projectedParents says the read may answer a projection: projectedParentProvider of the source's own
+	// provider. A read whose answers are exact keeps the narrower reading below, which invents nothing.
+	projectedParents bool
 	// lastEntryID is the entry written last and lastOrigin what it stands for; pending is what the
 	// entries written next stand for.
 	lastEntryID *string
@@ -159,10 +189,12 @@ type sourceTree struct {
 	unresolved int
 }
 
-func newSourceTree() sourceTree {
+func newSourceTree(provider string) sourceTree {
 	return sourceTree{
 		sourceRecordParents: map[string]string{},
 		writtenEntryID:      map[string]string{},
+		toolResultEntry:     map[string]string{},
+		projectedParents:    projectedParentProvider(provider),
 	}
 }
 
@@ -212,6 +244,9 @@ func (t *sourceTree) wrote(id string) {
 	if t.pending.sourceID != "" {
 		t.writtenEntryID[t.pending.sourceID] = id
 	}
+	if t.projectedParents && t.pending.toolResult && t.pending.sourceParent != "" {
+		t.toolResultEntry[t.pending.sourceParent] = id
+	}
 	t.lastOrigin = t.pending
 	t.pending.parentID = nil
 	t.pending.toolResult = false
@@ -238,6 +273,12 @@ func (t *sourceTree) wrote(id string) {
 // document cannot resolve -- a record outside the read -- follows the entry before it and is counted
 // (unresolved): that is a relation this conversion invented, and the report says so rather than
 // presenting the entry as one the source recorded hanging where it does.
+//
+// The record that names a call the read answered for a descendant of a tool result is the other counted
+// answer: the read projects such a record onto the call's own message, so whether it hung off the call or
+// off a result of it is not answerable, and the entry is chained through the result standing between them
+// -- the reading the source's file order supports -- with the count naming the relation as one the read
+// did not establish.
 func (t *sourceTree) parentFor(parent string) *string {
 	parent = strings.TrimSpace(parent)
 	if parent == "" {
@@ -245,6 +286,10 @@ func (t *sourceTree) parentFor(parent string) *string {
 	}
 	if t.lastOrigin.toolResult && t.lastOrigin.sourceParent == parent {
 		return t.lastEntryID
+	}
+	if id, ok := t.toolResultEntry[parent]; ok && t.projectedParents {
+		t.unresolved++
+		return &id
 	}
 	if id, ok := t.writtenAncestor(parent); ok {
 		return &id
@@ -254,9 +299,12 @@ func (t *sourceTree) parentFor(parent string) *string {
 }
 
 // writtenAncestor answers the entry this conversion wrote for the nearest record a walk from sourceID
-// reaches, and whether it found one at all.
+// reaches, and whether it found one at all. The walk is bounded by the document's own size rather than by
+// a depth constant: it can step through each record the read holds at most once, so a linear history
+// longer than any fixed bound is still walked to its end, while a cycle the source recorded (a record
+// naming itself or a longer loop) cannot keep it going past the records the read answered.
 func (t *sourceTree) writtenAncestor(sourceID string) (string, bool) {
-	for steps := 0; sourceID != "" && steps < sourceTreeWalkMax; steps++ {
+	for steps := 0; sourceID != "" && steps <= len(t.sourceRecordParents); steps++ {
 		if id, ok := t.writtenEntryID[sourceID]; ok {
 			return id, true
 		}
@@ -281,7 +329,7 @@ func (t *sourceTree) writtenAncestor(sourceID string) (string, bool) {
 // report exists to prevent. The walk uses the writers' own tool-result rule, so a record the reader
 // answers as hanging off the message that made a call -- while the source's file runs call → result →
 // what follows -- keeps the result on the line.
-func inactiveSourceRecords(messages []Message) []bool {
+func inactiveSourceRecords(messages []Message, provider string) []bool {
 	inactive := make([]bool, len(messages))
 	if len(messages) == 0 {
 		return inactive
@@ -295,12 +343,15 @@ func inactiveSourceRecords(messages []Message) []bool {
 		}
 	}
 	onLine := make([]bool, len(messages))
-	for cursor, steps := len(messages)-1, 0; cursor >= 0 && steps <= sourceTreeWalkMax; steps++ {
+	// The walk needs no depth bound: each step moves to a record before the one it is at, so a record is
+	// visited at most once and a cycle cannot be entered -- a source's linear history of any length is
+	// walked to its end rather than cut off at a bound no real conversation was measured against.
+	for cursor := len(messages) - 1; cursor >= 0; {
 		if onLine[cursor] {
 			break
 		}
 		onLine[cursor] = true
-		next := sourceLineParent(messages, byIdentity, cursor)
+		next := sourceLineParent(messages, byIdentity, cursor, projectedParentProvider(provider))
 		if next >= cursor {
 			break
 		}
@@ -313,14 +364,16 @@ func inactiveSourceRecords(messages []Message) []bool {
 }
 
 // sourceLineParent answers the record a walk from index hangs off, by the writers' own rule: the record
-// the source named -- or the tool result standing between this record and the call it names -- and the
-// record before it where the read answered no relation or named one it does not hold.
-func sourceLineParent(messages []Message, byIdentity map[string]int, index int) int {
+// the source named -- or the tool result standing between this record and the call it names, the nearest
+// one when the read answers projections and other records were written in between -- and the record
+// before it where the read answered no relation or named one it does not hold.
+func sourceLineParent(messages []Message, byIdentity map[string]int, index int, projected bool) int {
 	parent := strings.TrimSpace(messages[index].SourceParentUUID)
 	previous := index - 1
-	if parent != "" && previous >= 0 && len(messages[previous].ToolResults) > 0 &&
-		strings.TrimSpace(messages[previous].SourceParentUUID) == parent {
-		return previous
+	if parent != "" {
+		if at, ok := sourceToolResultBefore(messages, index, parent, projected); ok {
+			return at
+		}
 	}
 	if parent == "" {
 		return previous
@@ -331,16 +384,76 @@ func sourceLineParent(messages []Message, byIdentity map[string]int, index int) 
 	return previous
 }
 
+// sourceToolResultBefore answers the record a tool-result step stands for: the record before index that is
+// a tool result answering the record parent names. When the read may answer projections, the nearest such
+// record is the reading the source's own file order gives -- a result's descendants resolve to their
+// visible ancestor there, so a record the read answers as a child of a call may in the file have hung off
+// a result of it, and the file runs call → result → what follows. When it may not, only the record
+// immediately before this one can be that step: an exact answer needs no projection undone, and walking
+// further back would invent a relation the source did not record.
+func sourceToolResultBefore(messages []Message, index int, parent string, projected bool) (int, bool) {
+	for at := index - 1; at >= 0; at-- {
+		if len(messages[at].ToolResults) > 0 &&
+			strings.TrimSpace(messages[at].SourceParentUUID) == parent {
+			return at, true
+		}
+		if !projected {
+			break
+		}
+	}
+	return 0, false
+}
+
 // unresolvedSourceParentsDetail words the caveat both tree-reproducing writers report for a relation the
 // read could not answer. The entries and their order are unaffected by it -- only the source's own place
 // in the tree is not the one written -- so the text is the same for either writer, and keeping one copy
 // is what stops the two from drifting apart.
 func unresolvedSourceParentsDetail() string {
-	return "the source's own relation named a record this read does not hold (a record with no " +
-		"identity of its own, or a parent outside the read) -- or recorded no parent for a record " +
-		"that is not the conversation's first -- so these entries follow the entry before them, " +
-		"which is a relation this conversion invented. The entries and their order are unaffected; " +
-		"what the count names is that the source's own place in the tree is not the one written"
+	return "a relation the read could not place exactly: the source named a record this read does not " +
+		"hold (a record with no identity of its own, or a parent outside the read); recorded no parent " +
+		"for a record that is not the conversation's first; or named the message that made a call where " +
+		"a result of that call stands between the two records in the file -- the read answers such a " +
+		"record as hanging off the call (a result's descendants resolve to their visible ancestor), " +
+		"while the source's own file runs call → result → what follows, so which of the two the record " +
+		"hung off is not answerable and the entry is chained through the result. These entries follow " +
+		"the entry before them, or the call's own tool result, which is a relation this conversion " +
+		"invented. The entries and their order are unaffected; what the count names is that the " +
+		"source's own place in the tree is not the one written"
+}
+
+// ErrUnrepresentableLeaf reports a source whose selected leaf the target cannot be given: the target's own
+// loader walks from the last entry a conversion wrote and the source's from the read's last record, so
+// when the entry written last stands for a record off the line the read's last record answers, a resumed
+// target session would continue a branch the source's conversation left -- a context substitution that no
+// per-record count discloses. The conversion refuses rather than writing it.
+var ErrUnrepresentableLeaf = errors.New(
+	"the source's own loader selects a leaf this conversion cannot write as the target's")
+
+// selectedLeafRefusal answers whether the entry a tree-reproducing conversion wrote last is one the
+// source's own loader reaches. The check is the read's own line, recorded by the same walk the writers
+// use (provider selects the same reading the tree does): the record the last entry stands for is on it,
+// or the conversion wrote an off-line branch's record as the file's last entry and the target would
+// resume from there. An empty identity (a record the read answered none for) or a record the read does
+// not hold is not this case: nothing was answered about its place, and the writers already follow the
+// read's own order there.
+func selectedLeafRefusal(messages []Message, lastWrittenSourceID, provider string) error {
+	lastWrittenSourceID = strings.TrimSpace(lastWrittenSourceID)
+	if lastWrittenSourceID == "" || len(messages) == 0 {
+		return nil
+	}
+	inactive := inactiveSourceRecords(messages, provider)
+	for index, message := range messages {
+		if strings.TrimSpace(message.SourceUUID) != lastWrittenSourceID {
+			continue
+		}
+		if inactive[index] {
+			return fmt.Errorf("%w: %s, the record its last entry stands for, is off the line the read's "+
+				"last record answers, so a resumed session would continue a branch the source's "+
+				"conversation left", ErrUnrepresentableLeaf, lastWrittenSourceID)
+		}
+		return nil
+	}
+	return nil
 }
 
 // preBoundaryHistoryDetail words the caveat both tree-reproducing writers report for the turns carried
@@ -546,24 +659,27 @@ func probeBinary(
 }
 
 // childEnvironment builds a child environment for one harness run: the caller's own environment with the
-// variable that selects the route's data directory (homeEnv) set to home, the named variables removed,
-// and any further names in alsoDeny removed too. Nothing else is changed, so a host's PATH, locale and
-// tool configuration still reach the harness.
+// variable that selects the route's data directory (homeEnv) set to home, every name in set set to its
+// own value, the named variables removed, and any further names in alsoDeny removed too. Nothing else is
+// changed, so a host's PATH, locale and tool configuration still reach the harness.
 //
 // Every name is read in its own upper case, the way the denylist and os/exec itself read one: Windows'
 // environment is case-insensitive and os/exec keeps the last value among the names it is handed, so a
-// leftover lower- or mixed-case spelling of the home variable would, after the sort below, sit after the
-// appended override and win there -- the check would then read the caller's own home instead of the
-// directory it installed into.
-func childEnvironment(home, homeEnv string, denied []string, alsoDeny ...string) []string {
-	blocked := make(map[string]struct{}, len(denied)+len(alsoDeny))
+// leftover lower- or mixed-case spelling of a set variable would, after the sort below, sit after the
+// appended override and win there -- the check would then read the caller's own value instead of the one
+// it means to run with.
+func childEnvironment(home, homeEnv string, denied []string, set map[string]string, alsoDeny ...string) []string {
+	blocked := make(map[string]struct{}, len(denied)+len(alsoDeny)+len(set))
 	for _, name := range denied {
 		blocked[strings.ToUpper(name)] = struct{}{}
 	}
 	for _, name := range alsoDeny {
 		blocked[strings.ToUpper(name)] = struct{}{}
 	}
-	environment := make([]string, 0, len(os.Environ())+1)
+	for name := range set {
+		blocked[strings.ToUpper(name)] = struct{}{}
+	}
+	environment := make([]string, 0, len(os.Environ())+1+len(set))
 	for _, entry := range os.Environ() {
 		name, _, found := strings.Cut(entry, "=")
 		if !found {
@@ -579,6 +695,14 @@ func childEnvironment(home, homeEnv string, denied []string, alsoDeny ...string)
 		environment = append(environment, entry)
 	}
 	environment = append(environment, homeEnv+"="+home)
+	names := make([]string, 0, len(set))
+	for name := range set {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		environment = append(environment, name+"="+set[name])
+	}
 	sort.Strings(environment)
 	return environment
 }

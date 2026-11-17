@@ -2,6 +2,7 @@ package ccc
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -874,6 +875,233 @@ func TestPiProjectDirMatchesTheTargetsOwnSpelling(t *testing.T) {
 	for cwd, want := range cases {
 		if got := PiProjectDir(cwd); got != want {
 			t.Errorf("PiProjectDir(%q) = %q, want %q", cwd, got, want)
+		}
+	}
+}
+
+// TestPiSessionKeepsAReasoningTraceUnderWhitespaceDialogue pins the shape a record with a trace and a
+// whitespace-only dialogue projects to: the inherited Pi reader drops a record left with no text and no
+// tool evidence, so the whitespace alone is what is dropped -- the thinking block stays, because the
+// trace is not dialogue and writing the record through writeCarriedCalls instead lost it while
+// reasoning_text reported it as carried.
+func TestPiSessionKeepsAReasoningTraceUnderWhitespaceDialogue(t *testing.T) {
+	at := func(second int) time.Time { return time.Date(2026, 5, 5, 10, 0, second, 0, time.UTC) }
+	conversation := Conversation{
+		Source: SourceIdentity{Provider: "claude", SessionID: "source-session", Cwd: "/work/project"},
+		Messages: []Message{
+			{Ordinal: 0, Role: string(parser.RoleUser), Content: "start", Dialogue: "start",
+				SourceUUID: "u1", Timestamp: at(0)},
+			{Ordinal: 1, Role: string(parser.RoleAssistant), DialogueProjected: true, Dialogue: "   ",
+				Thinking: "The retry cap is in the config file.", SourceUUID: "a1",
+				SourceParentUUID: "u1", Timestamp: at(1)},
+		},
+		Fidelity: Fidelity{ReadFrom: "source"},
+	}
+	session, err := ConvertToPiSession(conversation, PiTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	data := string(session.Data)
+	if !strings.Contains(data, `"thinking":"The retry cap is in the config file."`) {
+		t.Errorf("the written session holds no thinking block for the trace:\n%s", data)
+	}
+	if strings.Contains(data, `"type":"text"`) {
+		t.Errorf("the written session holds a text block for a whitespace-only dialogue:\n%s", data)
+	}
+	if loss := lossCount(t, session.Losses, "whitespace_only_dialogue"); loss.Count != 1 {
+		t.Errorf("whitespace_only_dialogue = %+v, want the record's whitespace counted", loss)
+	}
+	if loss := lossCount(t, session.Losses, "reasoning_text"); loss.Count != 1 ||
+		loss.Disposition != DispositionCarriedWithCaveat {
+		t.Errorf("reasoning_text = %+v, want the trace carried with a caveat", loss)
+	}
+	if roles := piModelVisibleRoles(session.Data); strings.Join(roles, ",") != "user,assistant" {
+		t.Errorf("the model-visible history = %v, want the record's own entry on the walk", roles)
+	}
+}
+
+// TestPiSessionChainsThroughAToolResultAcrossAnInterveningBranch pins the projection rule's other half:
+// the inherited Pi reader answers a record under a tool result as hanging off the message that made the
+// call (a result's descendants resolve to their visible ancestor), so a record the read answers that way
+// may in the source's own file have hung off the result. When another record was written in between --
+// here a branch the conversation left -- the result is still the reading the file's own order supports,
+// the entry is chained through it, and the report counts the relation as one the read did not establish.
+func TestPiSessionChainsThroughAToolResultAcrossAnInterveningBranch(t *testing.T) {
+	at := func(second int) time.Time { return time.Date(2026, 5, 5, 10, 0, second, 0, time.UTC) }
+	conversation := Conversation{
+		Source: SourceIdentity{Provider: "pi", SessionID: "source-session", Cwd: "/work/project"},
+		Messages: []Message{
+			{Ordinal: 0, Role: string(parser.RoleUser), Content: "start", Dialogue: "start",
+				SourceUUID: "u1", Timestamp: at(0)},
+			{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "[grep: maxBackoff]",
+				DialogueProjected: true, SourceUUID: "c2", SourceParentUUID: "u1", Timestamp: at(1),
+				ToolCalls: []ToolCall{{ToolUseID: "toolu_1", Name: "grep",
+					InputJSON: `{"pattern":"maxBackoff"}`}}},
+			// The result: the reader answers its parent as the call message.
+			{Ordinal: 2, Role: string(parser.RoleUser), SourceUUID: "r3", SourceParentUUID: "c2",
+				Timestamp: at(2), ToolResults: []ToolResult{{ToolUseID: "toolu_1",
+					ContentRaw: `"internal/retry/config.go:41"`, ContentSize: 28}}},
+			// The branch: a turn the conversation left, written after the result.
+			{Ordinal: 3, Role: string(parser.RoleAssistant), Content: "left turn", Dialogue: "left turn",
+				SourceUUID: "b4", SourceParentUUID: "u1", Timestamp: at(3)},
+			// The record that continues from the result: the reader answers its parent as the call too,
+			// because the result is not a visible ancestor.
+			{Ordinal: 4, Role: string(parser.RoleAssistant), Content: "after the result",
+				Dialogue: "after the result", SourceUUID: "d5", SourceParentUUID: "c2", Timestamp: at(4)},
+		},
+		Fidelity: Fidelity{ReadFrom: "source"},
+	}
+	session, err := ConvertToPiSession(conversation, PiTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	lines := decodePiSession(t, session.Data)
+	texts := piEntryTexts(t, lines)
+	ids := map[string]string{}
+	for id, text := range texts {
+		if text != "" {
+			ids[text] = id
+		}
+	}
+	parentTextOf := func(text string) string {
+		t.Helper()
+		id, ok := ids[text]
+		if !ok {
+			t.Fatalf("no entry carries the text %q:\n%s", text, session.Data)
+		}
+		for _, line := range lines[1:] {
+			if line.ID != id {
+				continue
+			}
+			if line.ParentID == nil {
+				return ""
+			}
+			return texts[*line.ParentID]
+		}
+		t.Fatalf("no entry carries the id %q", id)
+		return ""
+	}
+	if got := parentTextOf("after the result"); got != "internal/retry/config.go:41" {
+		t.Errorf("the record continuing from the result hangs off %q, want the result's own entry (%q): "+
+			"chaining it to the call instead leaves the recorded output off the walk a resumed session "+
+			"makes", got, "internal/retry/config.go:41")
+	}
+	onPath := piWalkIDs(t, lines)
+	for _, text := range []string{"start", "internal/retry/config.go:41", "after the result"} {
+		if !onPath[ids[text]] {
+			t.Errorf("%q is not on the walk the loader makes from the file's last entry", text)
+		}
+	}
+	if onPath[ids["left turn"]] {
+		t.Error("the abandoned turn is on the walk the loader makes: the branch was flattened into the " +
+			"active conversation")
+	}
+	if !strings.Contains(string(session.Data), "left turn") {
+		t.Error("the abandoned turn is not in the file at all: the branch is recorded history and must " +
+			"travel, off the walk rather than dropped")
+	}
+	loss := lossCount(t, session.Losses, "unresolved_source_parents")
+	if loss.Count != 1 {
+		t.Errorf("unresolved_source_parents = %+v, want the one relation the read's projection left "+
+			"unanswerable", loss)
+	}
+	for _, phrase := range []string{"visible ancestor", "tool result"} {
+		if !strings.Contains(loss.Detail, phrase) {
+			t.Errorf("the detail does not name the projection the count stands for (%q missing): %q",
+				phrase, loss.Detail)
+		}
+	}
+
+	// The other reading: with an exact read (a Claude transcript's parentUuid names a record, not a
+	// projection), the record's answer is its own, the entry hangs off the call it named, and nothing is
+	// counted as unanswerable -- the result stays in the file, off the walk, as the read places it.
+	exact := conversation
+	exact.Source.Provider = "claude"
+	session, err = ConvertToPiSession(exact, PiTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting with an exact read: %v", err)
+	}
+	lines = decodePiSession(t, session.Data)
+	texts = piEntryTexts(t, lines)
+	ids = map[string]string{}
+	for id, text := range texts {
+		if text != "" {
+			ids[text] = id
+		}
+	}
+	if got := parentTextOf("after the result"); got != "" {
+		t.Errorf("the record hangs off %q, want the call's own entry (no dialogue): the read answered "+
+			"the relation exactly and no projection is undone", got)
+	}
+	if loss := lossCount(t, session.Losses, "unresolved_source_parents"); loss.Count != 0 {
+		t.Errorf("unresolved_source_parents = %+v, want 0: an exact read leaves nothing unanswerable", loss)
+	}
+}
+
+// TestPiSessionRefusesASelectedLeafOffTheLine pins the refusal for a source whose selected leaf the
+// target cannot be given. The target's own loader walks from the last entry a conversion wrote and the
+// source's from the read's last record: here the read's last record is an empty assistant turn whose
+// parent is the first record, while the entry a conversion would write last stands for a branch the
+// conversation left -- so a resumed session would continue that branch. The refusal is narrow, and the
+// same document with a representable leaf converts: the branch then stays in the file, off the walk.
+func TestPiSessionRefusesASelectedLeafOffTheLine(t *testing.T) {
+	at := func(second int) time.Time { return time.Date(2026, 5, 5, 10, 0, second, 0, time.UTC) }
+	base := func(leaf Message) Conversation {
+		return Conversation{
+			Source: SourceIdentity{Provider: "pi", SessionID: "source-session", Cwd: "/work/project"},
+			Messages: []Message{
+				{Ordinal: 0, Role: string(parser.RoleUser), Content: "start", Dialogue: "start",
+					SourceUUID: "u1", Timestamp: at(0)},
+				{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "answer", Dialogue: "answer",
+					SourceUUID: "a2", SourceParentUUID: "u1", Timestamp: at(1)},
+				{Ordinal: 2, Role: string(parser.RoleAssistant), Content: "left turn",
+					Dialogue: "left turn", SourceUUID: "b3", SourceParentUUID: "a2", Timestamp: at(2)},
+				leaf,
+			},
+			Fidelity: Fidelity{ReadFrom: "source"},
+		}
+	}
+	empty := Message{Ordinal: 3, Role: string(parser.RoleAssistant), SourceUUID: "e4",
+		SourceParentUUID: "u1", Timestamp: at(3)}
+	if _, err := ConvertToPiSession(base(empty), PiTargetOptions{}); !errors.Is(err, ErrUnrepresentableLeaf) {
+		t.Fatalf("error = %v, want ErrUnrepresentableLeaf: the read's leaf is the empty turn, whose line "+
+			"does not hold the branch entry written last", err)
+	}
+	// The refusal names both records, so a caller can see which branch would have been continued.
+	_, err := ConvertToPiSession(base(empty), PiTargetOptions{})
+	if err == nil || !strings.Contains(err.Error(), "b3") {
+		t.Errorf("error = %v, want it to name the off-line record the last entry stands for", err)
+	}
+	// The same tree with a leaf that has an entry: the conversion is written, the leaf's entry is the
+	// file's last one, and the branch stays in the file off the walk.
+	spoken := empty
+	spoken.Content = "the last word"
+	spoken.Dialogue = "the last word"
+	session, err := ConvertToPiSession(base(spoken), PiTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting a representable leaf: %v", err)
+	}
+	lines := decodePiSession(t, session.Data)
+	texts := piEntryTexts(t, lines)
+	onPath := piWalkIDs(t, lines)
+	leafID := ""
+	for id, text := range texts {
+		if text == "the last word" {
+			leafID = id
+		}
+	}
+	if leafID == "" {
+		t.Fatalf("no entry carries the leaf's dialogue:\n%s", session.Data)
+	}
+	if lines[len(lines)-1].ID != leafID {
+		t.Errorf("the last entry is %q, want the leaf's own %q", lines[len(lines)-1].ID, leafID)
+	}
+	if !onPath[leafID] {
+		t.Error("the leaf's entry is not on the walk the loader makes")
+	}
+	for id, text := range texts {
+		if text == "left turn" && onPath[id] {
+			t.Error("the branch's turn is on the walk: the branch was flattened into the active conversation")
 		}
 	}
 }

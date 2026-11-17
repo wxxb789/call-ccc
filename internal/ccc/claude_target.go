@@ -190,13 +190,16 @@ func ConvertToClaudeTranscript(conv Conversation, opts ClaudeTargetOptions) (Cla
 		callOwners:     map[string]struct{}{},
 		opts:           opts,
 		sourceFidelity: conv.Fidelity,
-		tree:           newSourceTree(),
+		tree:           newSourceTree(conv.Source.Provider),
 	}
 	builder.encoder = json.NewEncoder(&builder.buffer)
 	builder.encoder.SetEscapeHTML(false)
 	builder.writeConversation(conv)
 	if builder.uuidErr != nil {
 		return ClaudeTranscript{}, builder.uuidErr
+	}
+	if err := selectedLeafRefusal(conv.Messages, builder.tree.lastOrigin.sourceID, conv.Source.Provider); err != nil {
+		return ClaudeTranscript{}, err
 	}
 	carried := builder.carried
 	carried.Bytes = builder.buffer.Len()

@@ -71,27 +71,34 @@ func TestPiLoadEnvironmentRemovesEveryModelPath(t *testing.T) {
 		t.Setenv(name, "a-model-credential")
 	}
 	// A second spelling of one denied name, and the two directory variables the check owns: the home is
-	// replaced, and the sessions tree is removed so no leftover setting can point the harness elsewhere.
+	// replaced, and the sessions tree is named -- a leftover setting of the caller's must not survive to
+	// win over it.
 	t.Setenv(strings.ToLower(documented[1]), "a-model-credential-under-another-spelling")
 	t.Setenv(piHomeEnv, "/somewhere/else")
 	t.Setenv(piSessionDirEnv, "/somewhere/else/sessions")
 	t.Setenv("UNRELATED_SETTING", "kept")
 
-	environment := piEnvironment("/scratch/home", piLoadEnvDenied)
+	environment := piEnvironment("/scratch/home", "/scratch/home/sessions/--project--", piLoadEnvDenied)
 	joined := strings.Join(environment, "\n")
 	denied := make(map[string]struct{}, len(documented)+1)
 	for _, name := range documented {
 		denied[strings.ToUpper(name)] = struct{}{}
 	}
-	denied[piSessionDirEnv] = struct{}{}
 	for _, entry := range environment {
 		name, _, _ := strings.Cut(entry, "=")
 		if _, still := denied[strings.ToUpper(name)]; still {
 			t.Errorf("the environment still carries %s, whatever its spelling", entry)
 		}
+		if strings.EqualFold(name, piSessionDirEnv) &&
+			entry != piSessionDirEnv+"=/scratch/home/sessions/--project--" {
+			t.Errorf("the environment names %s, want the session's own tree: %v", entry, environment)
+		}
 	}
 	if !strings.Contains(joined, piHomeEnv+"=/scratch/home") {
 		t.Errorf("the environment does not select the check's own data directory: %v", environment)
+	}
+	if strings.Contains(joined, "/somewhere/else/sessions") {
+		t.Errorf("the caller's own session directory survived: %v", environment)
 	}
 	if !strings.Contains(joined, "UNRELATED_SETTING=kept") {
 		t.Error("the check dropped a variable it does not own")
@@ -306,16 +313,17 @@ type fakePiRPCCall struct {
 	executable string
 	cwd        string
 	home       string
+	sessionDir string
 	arguments  []string
 	stdin      string
 }
 
 func (f *fakePiRPC) run(
-	_ context.Context, binary, cwd, home string, arguments []string, stdin string,
+	_ context.Context, binary, cwd, home, sessionDir string, arguments []string, stdin string,
 	_ time.Duration, _ io.Writer,
 ) (string, error) {
 	f.calls = append(f.calls, fakePiRPCCall{
-		executable: binary, cwd: cwd, home: home, arguments: arguments, stdin: stdin,
+		executable: binary, cwd: cwd, home: home, sessionDir: sessionDir, arguments: arguments, stdin: stdin,
 	})
 	sessionID := ""
 	if index := slices.Index(arguments, "--session"); index >= 0 && index+1 < len(arguments) {
@@ -403,14 +411,15 @@ type fakePiTurnCall struct {
 	executable string
 	cwd        string
 	home       string
+	sessionDir string
 	arguments  []string
 }
 
 func (f *fakePiTurn) run(
-	_ context.Context, executable, cwd, home string, args []string, _ time.Duration, _ io.Writer,
+	_ context.Context, executable, cwd, home, sessionDir string, args []string, _ time.Duration, _ io.Writer,
 ) (string, string, error) {
 	f.calls = append(f.calls, fakePiTurnCall{
-		executable: executable, cwd: cwd, home: home, arguments: args,
+		executable: executable, cwd: cwd, home: home, sessionDir: sessionDir, arguments: args,
 	})
 	if f.growPath != "" {
 		if file, err := os.OpenFile(f.growPath, os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
@@ -503,6 +512,10 @@ func TestVerifyPiLoadResolvesTheInstalledSessionAndItsControl(t *testing.T) {
 		}
 		if call.cwd != cwd {
 			t.Errorf("arm %d ran in %q, want the session's own working directory %q", index, call.cwd, cwd)
+		}
+		if want := filepath.Join(call.home, piSessionsSubdir, PiProjectDir(cwd)); call.sessionDir != want {
+			t.Errorf("arm %d named the sessions tree %q, want the copy's own %q: the printed invocation "+
+				"must be what the check runs", index, call.sessionDir, want)
 		}
 		if call.executable != probe.resolvedExecutable {
 			t.Errorf("arm %d ran %q, want the path the check resolved (%q)",
@@ -637,6 +650,7 @@ func TestVerifyPiResumeReportsTheTurnAndTheGrowth(t *testing.T) {
 
 	verification := VerifyPiResume(context.Background(), PiResumeOptions{
 		Home: home, Binary: PiBinaryDefault, SessionID: piFixtureRef.ID, Cwd: cwd,
+		ProjectDir:  PiProjectDir(cwd),
 		SessionPath: installed, Prompt: "Where is the retry cap configured?",
 	})
 	if verification.State != VerificationStateVerified {
@@ -664,11 +678,25 @@ func TestVerifyPiResumeReportsTheTurnAndTheGrowth(t *testing.T) {
 	if !strings.Contains(strings.Join(turn.calls[0].arguments, " "), "Where is the retry cap configured?") {
 		t.Error("the resume turn did not carry the caller's prompt")
 	}
+	// The check runs the printed invocation: print mode (without it Pi 1.5.2 opens the TUI for this
+	// argument vector when stdin and stdout are terminals), and the sessions tree the printed line names.
+	if !slices.Contains(turn.calls[0].arguments, "-p") {
+		t.Errorf("the turn ran %v, want the printed invocation's print mode", turn.calls[0].arguments)
+	}
+	if want := piSessionTree(home, PiProjectDir(cwd)); turn.calls[0].sessionDir != want {
+		t.Errorf("the turn named the sessions tree %q, want the printed line's own %q",
+			turn.calls[0].sessionDir, want)
+	}
+	if !strings.Contains(verification.Command, piSessionDirEnv+"=") {
+		t.Errorf("the reported command %q does not name the sessions tree the turn ran with",
+			verification.Command)
+	}
 
 	failing := &fakePiTurn{diagnostics: "Not logged in · Please run /login", runErr: errors.New("exit status 1")}
 	withFakePiHarness(t, nil, failing)
 	verification = VerifyPiResume(context.Background(), PiResumeOptions{
 		Home: home, Binary: PiBinaryDefault, SessionID: piFixtureRef.ID, Cwd: cwd,
+		ProjectDir:  PiProjectDir(cwd),
 		SessionPath: installed, Prompt: "Where is the retry cap configured?",
 	})
 	if verification.State == VerificationStateVerified {

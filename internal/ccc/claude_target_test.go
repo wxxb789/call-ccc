@@ -3,6 +3,7 @@ package ccc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -832,4 +833,40 @@ func readFixtureConversation(t *testing.T, ref Ref) Conversation {
 		t.Fatalf("reading %s:%s: %v", ref.Provider, ref.ID, err)
 	}
 	return conversation
+}
+
+// TestClaudeTranscriptRefusesASelectedLeafOffTheLine pins the shared tree rule on this writer too: the
+// target's loader walks from the transcript's last record and the source's from the read's last record,
+// so an empty leaf whose own line does not hold the record whose entry would be written last is refused
+// rather than written as a transcript that resumes the branch the source's conversation left. The same
+// document with a representable leaf converts.
+func TestClaudeTranscriptRefusesASelectedLeafOffTheLine(t *testing.T) {
+	at := func(second int) time.Time { return time.Date(2026, 5, 5, 10, 0, second, 0, time.UTC) }
+	base := func(leaf Message) Conversation {
+		return Conversation{
+			Source: SourceIdentity{Provider: "claude", SessionID: "source-session", Cwd: "/work/project"},
+			Messages: []Message{
+				{Ordinal: 0, Role: "user", Content: "start", Dialogue: "start", DialogueProjected: true,
+					SourceUUID: "u1", Timestamp: at(0)},
+				{Ordinal: 1, Role: "assistant", Content: "answer", Dialogue: "answer",
+					DialogueProjected: true, SourceUUID: "a2", SourceParentUUID: "u1", Timestamp: at(1)},
+				{Ordinal: 2, Role: "assistant", Content: "left turn", Dialogue: "left turn",
+					DialogueProjected: true, SourceUUID: "b3", SourceParentUUID: "a2", Timestamp: at(2)},
+				leaf,
+			},
+			Fidelity: Fidelity{ReadFrom: "source"},
+		}
+	}
+	empty := Message{Ordinal: 3, Role: "assistant", SourceUUID: "e4", SourceParentUUID: "u1",
+		Timestamp: at(3)}
+	if _, err := ConvertToClaudeTranscript(base(empty), ClaudeTargetOptions{}); !errors.Is(err, ErrUnrepresentableLeaf) {
+		t.Fatalf("error = %v, want ErrUnrepresentableLeaf for a leaf off the last written record's line", err)
+	}
+	spoken := empty
+	spoken.Content = "the last word"
+	spoken.Dialogue = "the last word"
+	spoken.DialogueProjected = true
+	if _, err := ConvertToClaudeTranscript(base(spoken), ClaudeTargetOptions{}); err != nil {
+		t.Fatalf("converting a representable leaf: %v", err)
+	}
 }

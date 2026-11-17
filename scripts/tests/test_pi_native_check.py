@@ -93,17 +93,22 @@ def load_native_check():
 NATIVE_CHECK = load_native_check()
 
 
-def invocation(cwd, home, home_env: str, arguments: list[str]) -> str:
-    """One invocation as the shipped renderer spells it: the `cd`, then the assignment, then the words.
+def invocation(cwd, home, home_env: str, arguments: list[str],
+               session_dir_env: str | None = None, session_dir: str | None = None) -> str:
+    """One invocation as the shipped renderer spells it: the `cd`, then the assignments, then the words.
 
     ``internal/ccc/continue.go``'s ``renderInvocation`` starts with ``cd <shellQuote(workingDir)> &&`` and
     then ``renderResumeCommand``'s ``NAME=<shellQuote(value)>`` plus one ``shellQuote`` per argument: the
     assignment's *name* and its `=` stay bare -- quoting them would turn the assignment into a program's
     name to a shell -- while the value and every other word are single-quoted exactly where a POSIX shell
-    would act on them, which is what ``shlex.quote`` does.
+    would act on them, which is what ``shlex.quote`` does. The assignments are sorted by name, which is
+    what puts the agent directory before the sessions tree.
     """
-    pieces = [shlex.quote(NATIVE_CHECK.CD_WORD), shlex.quote(str(cwd)), NATIVE_CHECK.OPERATOR_WORD,
-              f"{home_env}={shlex.quote(str(home))}"]
+    assignments = [(home_env, str(home))]
+    if session_dir_env:
+        assignments.append((session_dir_env, str(session_dir)))
+    pieces = [shlex.quote(NATIVE_CHECK.CD_WORD), shlex.quote(str(cwd)), NATIVE_CHECK.OPERATOR_WORD]
+    pieces += [f"{name}={shlex.quote(value)}" for name, value in sorted(assignments)]
     pieces += [shlex.quote(word) for word in arguments]
     return " ".join(pieces)
 
@@ -151,22 +156,27 @@ class ReportedInvocationReading(unittest.TestCase):
             with self.subTest(flavour=flavour.__name__):
                 self.assertFalse(
                     NATIVE_CHECK.reported_invocation(line, flavour(workspace), flavour(home),
-                                                     PI_HOME_ENV, arguments), line)
+                                                     PI_HOME_ENV, arguments,
+                                                     NATIVE_CHECK.PI_SESSION_DIR_ENV), line)
         target = {"session_id": SESSION, "resume_command": line, "exec_resume_command": line,
                   "resume_arguments": arguments, "exec_resume_arguments": arguments}
         states = invocation_states(target, "pi", workspace=workspace, home=home)
         self.assertNotIn("PASS", states.values(), f"{line!r} was accepted: {states}")
 
     def test_accepts_a_pi_rendering_the_renderer_emits(self) -> None:
-        """Both printed lines read back as the `cd`, the assignment and the argument vector."""
+        """Both printed lines read back as the `cd`, the assignments and the argument vector."""
         for cwd, home in RENDERINGS:
             for flavour in PATH_FLAVOURS:
                 with self.subTest(cwd=cwd, home=home, flavour=flavour.__name__):
-                    resume = invocation(flavour(cwd), flavour(home), PI_HOME_ENV, RESUME_ARGUMENTS)
+                    session_dir = NATIVE_CHECK.pi_session_tree(flavour(home), flavour(cwd))
+                    resume = invocation(flavour(cwd), flavour(home), PI_HOME_ENV, RESUME_ARGUMENTS,
+                                        NATIVE_CHECK.PI_SESSION_DIR_ENV, session_dir)
                     exec_resume = invocation(flavour(cwd), flavour(home), PI_HOME_ENV,
-                                             EXEC_RESUME_ARGUMENTS)
+                                             EXEC_RESUME_ARGUMENTS, NATIVE_CHECK.PI_SESSION_DIR_ENV,
+                                             session_dir)
                     words = [NATIVE_CHECK.CD_WORD, str(flavour(cwd)), NATIVE_CHECK.OPERATOR_WORD,
-                             f"{PI_HOME_ENV}={flavour(home)}"]
+                             f"{PI_HOME_ENV}={flavour(home)}",
+                             f"{NATIVE_CHECK.PI_SESSION_DIR_ENV}={session_dir}"]
                     self.assertEqual(NATIVE_CHECK.shell_words(resume), [*words, *RESUME_ARGUMENTS],
                                      resume)
                     self.assertEqual(NATIVE_CHECK.shell_words(exec_resume),
@@ -182,31 +192,73 @@ class ReportedInvocationReading(unittest.TestCase):
                                      f"a correct rendering was rejected: {exec_resume!r} — {states}")
                     self.assertTrue(NATIVE_CHECK.spelled_as_invocation(resume, PI_HOME_ENV), resume)
 
+    def test_rejects_a_pi_line_without_the_sessions_tree(self) -> None:
+        """A line naming only the data directory is not this run's invocation.
+
+        Pi reads ``PI_CODING_AGENT_SESSION_DIR`` ahead of the agent directory's own default, so a caller
+        whose shell holds the variable, or a data directory whose ``settings.json`` names another tree,
+        would send this line looking in that tree while the conversion installed the session under the
+        data directory's own sessions root. The route prints the tree for that reason, and a line without
+        it is another invocation however plausible it reads.
+        """
+        line = invocation("workspace", "pi-home", PI_HOME_ENV, RESUME_ARGUMENTS)
+        self.assert_rejected(
+            line, "workspace", "pi-home", RESUME_ARGUMENTS,
+            ["cd", "workspace", "&&", f"{PI_HOME_ENV}=pi-home", PI, "--session", SESSION])
+
+    def test_rejects_a_pi_line_that_names_another_sessions_tree(self) -> None:
+        self.assert_rejected(
+            invocation("workspace", "pi-home", PI_HOME_ENV, RESUME_ARGUMENTS,
+                       NATIVE_CHECK.PI_SESSION_DIR_ENV, "pi-home/sessions/--elsewhere--"),
+            "workspace", "pi-home", RESUME_ARGUMENTS,
+            ["cd", "workspace", "&&", f"{PI_HOME_ENV}=pi-home",
+             f"{NATIVE_CHECK.PI_SESSION_DIR_ENV}=pi-home/sessions/--elsewhere--",
+             PI, "--session", SESSION])
+
     def test_rejects_a_pi_line_for_another_working_directory(self) -> None:
         self.assert_rejected(
-            f"cd workspace-elsewhere && {PI_HOME_ENV}=pi-home {PI} --session {SESSION}",
+            invocation("workspace-elsewhere", "pi-home", PI_HOME_ENV, RESUME_ARGUMENTS,
+                       NATIVE_CHECK.PI_SESSION_DIR_ENV,
+                       NATIVE_CHECK.pi_session_tree("pi-home", "workspace-elsewhere")),
             "workspace", "pi-home", RESUME_ARGUMENTS,
-            ["cd", "workspace-elsewhere", "&&", f"{PI_HOME_ENV}=pi-home", PI, "--session", SESSION])
+            ["cd", "workspace-elsewhere", "&&", f"{PI_HOME_ENV}=pi-home",
+             f"{NATIVE_CHECK.PI_SESSION_DIR_ENV}="
+             + NATIVE_CHECK.pi_session_tree("pi-home", "workspace-elsewhere"),
+             PI, "--session", SESSION])
 
     def test_rejects_a_pi_line_that_names_another_home(self) -> None:
         self.assert_rejected(
-            f"cd workspace && {PI_HOME_ENV}=pi-elsewhere {PI} --session {SESSION}",
+            invocation("workspace", "pi-elsewhere", PI_HOME_ENV, RESUME_ARGUMENTS,
+                       NATIVE_CHECK.PI_SESSION_DIR_ENV,
+                       NATIVE_CHECK.pi_session_tree("pi-elsewhere", "workspace")),
             "workspace", "pi-home", RESUME_ARGUMENTS,
-            ["cd", "workspace", "&&", f"{PI_HOME_ENV}=pi-elsewhere", PI, "--session", SESSION])
+            ["cd", "workspace", "&&", f"{PI_HOME_ENV}=pi-elsewhere",
+             f"{NATIVE_CHECK.PI_SESSION_DIR_ENV}="
+             + NATIVE_CHECK.pi_session_tree("pi-elsewhere", "workspace"),
+             PI, "--session", SESSION])
 
     def test_rejects_a_pi_line_for_another_session(self) -> None:
         self.assert_rejected(
-            f"cd workspace && {PI_HOME_ENV}=pi-home {PI} --session {OTHER_SESSION}",
+            invocation("workspace", "pi-home", PI_HOME_ENV,
+                       [PI, "--session", OTHER_SESSION], NATIVE_CHECK.PI_SESSION_DIR_ENV,
+                       NATIVE_CHECK.pi_session_tree("pi-home", "workspace")),
             "workspace", "pi-home", RESUME_ARGUMENTS,
-            ["cd", "workspace", "&&", f"{PI_HOME_ENV}=pi-home", PI, "--session", OTHER_SESSION])
+            ["cd", "workspace", "&&", f"{PI_HOME_ENV}=pi-home",
+             f"{NATIVE_CHECK.PI_SESSION_DIR_ENV}="
+             + NATIVE_CHECK.pi_session_tree("pi-home", "workspace"),
+             PI, "--session", OTHER_SESSION])
 
     def test_rejects_a_pi_working_directory_a_shell_would_split(self) -> None:
         # The defect the quoted rendering prevents: a shell reads the space as the end of the directory
-        # word, so the loader is started somewhere else and finds another session, or none at all.
+        # word, so the loader is started somewhere else and finds another session, or none at all. The
+        # sessions tree is spelled as the renderer would quote it, so the split is the cwd's own.
+        sessions_tree = NATIVE_CHECK.pi_session_tree("pi-home", "work space")
         self.assert_rejected(
-            f"cd work space && {PI_HOME_ENV}=pi-home {PI} --session {SESSION}",
+            f"cd work space && {PI_HOME_ENV}=pi-home "
+            f"{NATIVE_CHECK.PI_SESSION_DIR_ENV}={shlex.quote(sessions_tree)} {PI} --session {SESSION}",
             "work space", "pi-home", RESUME_ARGUMENTS,
-            ["cd", "work", "space", "&&", f"{PI_HOME_ENV}=pi-home", PI, "--session", SESSION])
+            ["cd", "work", "space", "&&", f"{PI_HOME_ENV}=pi-home",
+             f"{NATIVE_CHECK.PI_SESSION_DIR_ENV}={sessions_tree}", PI, "--session", SESSION])
 
     def test_rejects_a_pi_assignment_a_shell_reads_as_a_command(self) -> None:
         """The words read back right and the line is still not the invocation.
@@ -236,20 +288,19 @@ class ReportedInvocationReading(unittest.TestCase):
         command line -- `;` ends the assignment and starts a program, a bare `&` does the same, `$HOME` is
         substituted before the variable is set, and a backquote substitutes a command. The rule is about
         spellings: a character a shell acts on has to be quoted, which `shellQuote` does for every one."""
-        for line, home in (
-            (f"cd workspace && {PI_HOME_ENV}=a;b {PI} --session {SESSION}", "a;b"),
-            (f"cd workspace && {PI_HOME_ENV}=a&b {PI} --session {SESSION}", "a&b"),
-            (f"cd workspace && {PI_HOME_ENV}=$HOME {PI} --session {SESSION}", "$HOME"),
-            (f"cd workspace && {PI_HOME_ENV}=`id` {PI} --session {SESSION}", "`id`"),
-            (f"cd workspace && {PI_HOME_ENV}=~ {PI} --session {SESSION}", "~"),
-        ):
+        for home in ("a;b", "a&b", "$HOME", "`id`", "~"):
+            line = (f"cd workspace && {PI_HOME_ENV}={home} "
+                    f"{NATIVE_CHECK.PI_SESSION_DIR_ENV}="
+                    f"{NATIVE_CHECK.pi_session_tree(home, 'workspace')} {PI} --session {SESSION}")
             with self.subTest(line=line):
                 self.assertFalse(NATIVE_CHECK.spelled_as_invocation(line, PI_HOME_ENV), line)
                 # The line's own value is the home this case names, so the word vector matches and only
-                # the spelling refuses it: that is what makes the case about the spelling rule.
+                # the spelling refuses it: that is what makes the case about the spelling rule. The
+                # sessions-tree value is the tree under that same home, spelled bare the same way.
                 self.assertFalse(
                     NATIVE_CHECK.reported_invocation(line, Path("workspace"), Path(home), PI_HOME_ENV,
-                                                     RESUME_ARGUMENTS), line)
+                                                     RESUME_ARGUMENTS,
+                                                     NATIVE_CHECK.PI_SESSION_DIR_ENV), line)
                 states = invocation_states(
                     {"session_id": SESSION, "resume_command": line, "exec_resume_command": line,
                      "resume_arguments": RESUME_ARGUMENTS,
@@ -610,13 +661,17 @@ class NativeCheckDriver(unittest.TestCase):
                 installed = target_home / "installed" / f"{thread_id}.jsonl"
                 if to_provider == "claude":
                     home_env = "CLAUDE_CONFIG_DIR"
+                    session_dir_env = None
+                    session_dir = None
                     resume_arguments = ["claude", "--resume", thread_id]
                     exec_arguments = ["claude", "-p", "--output-format", "json", "--resume", thread_id,
                                       "--", NATIVE_CHECK.PROMPT_PLACEHOLDER]
                 else:
                     home_env = PI_HOME_ENV
+                    session_dir_env = NATIVE_CHECK.PI_SESSION_DIR_ENV
+                    session_dir = NATIVE_CHECK.pi_session_tree(target_home, cwd_path)
                     resume_arguments = ["pi", "--session", thread_id]
-                    exec_arguments = ["pi", "--session", thread_id, "--",
+                    exec_arguments = ["pi", "-p", "--session", thread_id, "--",
                                       NATIVE_CHECK.PROMPT_PLACEHOLDER]
                 if write_installed:
                     installed.parent.mkdir(parents=True, exist_ok=True)
@@ -634,9 +689,11 @@ class NativeCheckDriver(unittest.TestCase):
                         "session_id": thread_id, "path": str(installed),
                         "resume_arguments": resume_arguments,
                         "exec_resume_arguments": exec_arguments,
-                        "resume_command": invocation(cwd_path, target_home, home_env, resume_arguments),
+                        "resume_command": invocation(cwd_path, target_home, home_env, resume_arguments,
+                                                     session_dir_env, session_dir),
                         "exec_resume_command": invocation(cwd_path, target_home, home_env,
-                                                          exec_arguments),
+                                                          exec_arguments, session_dir_env,
+                                                          session_dir),
                     },
                     "verification": {
                         "structure": {"state": "verified", "method": "the stub's read-back"},
@@ -872,6 +929,102 @@ class TheRunsOwnHomeIsSeededAndACallersIsNot(NativeCheckDriver):
         self.assertIsNotNone(state, f"no provider check was recorded: {results}")
         self.assertEqual(state[0], "SKIP", results)
         self.assertIn("a home the caller named is never written to", state[1], state[1])
+
+
+class LoaderCopyCarriesNoCredentials(unittest.TestCase):
+    """The loader half's throw-away copy holds the session and none of the caller's configuration.
+
+    A caller-named ``--target-home`` may hold literal API keys in its ``models.json`` (or authorization
+    headers, in that document or in ``settings.json``), and copying either document into the loader home
+    would copy a credential the conversion contract copies nowhere -- the original home staying unchanged
+    does not make a second copy of a secret acceptable. Measured on 1.5.2: with the sessions tree named
+    through ``PI_CODING_AGENT_SESSION_DIR``, the loader answers ``get_state``/``get_messages`` from a home
+    holding the session alone, because an RPC run is started with ``--offline --no-tools``; nothing about
+    the copy's configuration is needed for the question the check asks.
+    """
+
+    SESSION = "01a1e225-a986-7372-bf0f-2c51da684752"
+
+    def setUp(self) -> None:
+        self.home = Path(tempfile.mkdtemp(prefix="ccc-loader-case-home-"))
+        self.addCleanup(shutil.rmtree, self.home, ignore_errors=True)
+        self.workspace = Path("workspace")
+        self.installed = (self.home / NATIVE_CHECK.PI_SESSION_SUBDIR
+                          / NATIVE_CHECK.pi_project_dir(str(self.workspace))
+                          / f"2026-01-01T00-00-00-000Z_{self.SESSION}.jsonl")
+        self.installed.parent.mkdir(parents=True)
+        self.installed.write_text(json.dumps({"type": "session", "version": 3,
+                                              "id": self.SESSION}) + "\n", encoding="utf-8")
+        (self.home / "models.json").write_text(json.dumps({"providers": {"probe": {
+            "baseUrl": "https://example.invalid", "apiKey": "sk-literal-secret",
+            "headers": {"Authorization": "Bearer header-secret"}}}}), encoding="utf-8")
+        (self.home / "settings.json").write_text(json.dumps({"sessionDir": "/somewhere/else",
+                                                            "apiKey": "sk-settings-secret"}),
+                                                 encoding="utf-8")
+
+    def test_the_loader_home_holds_the_session_copy_and_no_configuration(self) -> None:
+        captured: dict = {}
+
+        def fake_ask_pi_loader(pi, loader_home, cwd, session_id, timeout=90):
+            loader_home = Path(loader_home)
+            if session_id == self.SESSION:
+                # The arm under test: the check's copy of the installed session. The control arm below
+                # asks about an id nothing holds, from an empty home of its own.
+                captured["home"] = loader_home
+                captured["cwd"] = str(cwd)
+                captured["files"] = {str(path.relative_to(loader_home)): path.read_text(encoding="utf-8")
+                                     for path in loader_home.rglob("*") if path.is_file()}
+                state = json.dumps({"type": "response", "command": "get_state", "success": True,
+                                    "data": {"sessionId": self.SESSION, "messageCount": 1}})
+                messages = json.dumps({"type": "response", "command": "get_messages", "success": True,
+                                       "data": {"messages": []}})
+                return state + "\n" + messages + "\n", ""
+            return "", f"No session found matching '{session_id}'"
+
+        before = len(NATIVE_CHECK.RESULTS)
+        try:
+            with mock.patch.object(NATIVE_CHECK, "ask_pi_loader", fake_ask_pi_loader), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                NATIVE_CHECK._check_pi_loader("pi", self.home, self.workspace, self.SESSION,
+                                              self.installed)
+            states = {name: state for name, state, _ in NATIVE_CHECK.RESULTS[before:]}
+        finally:
+            del NATIVE_CHECK.RESULTS[before:]
+
+        joined = json.dumps(captured.get("files", {}))
+        for secret in ("sk-literal-secret", "header-secret", "sk-settings-secret"):
+            self.assertNotIn(secret, joined,
+                             f"the loader copy holds the caller's credential: {joined}")
+        names = {PureWindowsPath(name).name for name in captured.get("files", {})}
+        self.assertNotIn("models.json", names, f"the loader home holds the caller's models.json: {names}")
+        self.assertNotIn("settings.json", names,
+                         f"the loader home holds the caller's settings.json: {names}")
+        # The session itself is what the copy is for, at the path the installed layout gives it.
+        self.assertIn(str(self.installed.relative_to(self.home)), captured.get("files", {}))
+        self.assertEqual(captured.get("cwd"), str(self.workspace))
+        self.assertIn("the harness's own loader answers about the installed session", states)
+
+    def test_the_loader_run_names_the_sessions_tree_the_printed_line_names(self) -> None:
+        """The check runs the printed environment: the agent directory, and the sessions tree inside it.
+
+        Pi reads ``PI_CODING_AGENT_SESSION_DIR`` ahead of the agent directory's own default, so a check
+        that removed the variable would verify a lookup the printed command does not make whenever the
+        caller's shell holds it, or the data directory's ``settings.json`` names another tree.
+        """
+        captured: dict = {}
+
+        def fake_run(command, cwd=None, env=None, timeout=None, **kwargs):
+            captured["command"] = [str(part) for part in command]
+            captured["env"] = dict(env or {})
+            captured["cwd"] = str(cwd)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with mock.patch.object(NATIVE_CHECK.subprocess, "run", fake_run):
+            NATIVE_CHECK.ask_pi_loader("pi", Path("/loader-home"), self.workspace, self.SESSION)
+        self.assertEqual(captured["env"].get(PI_HOME_ENV), "/loader-home")
+        self.assertEqual(captured["env"].get(NATIVE_CHECK.PI_SESSION_DIR_ENV),
+                         NATIVE_CHECK.pi_session_tree("/loader-home", self.workspace))
+        self.assertEqual(captured["cwd"], str(self.workspace))
 
 
 class BuildOutputStaysOutOfTheRepositoryRoot(NativeCheckDriver):
