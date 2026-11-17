@@ -570,7 +570,7 @@ module's `ResumeInvocationCheck` cases, which drive `PureWindowsPath` beside thi
 
 The fifth red is this increment's own case, added by the sweep: `gate
 (windows-latest)` failed the `test` step at head `37c0a10` on
-`TestResumeVerificationRequiresTheTurnToAppendToTheSession` — `main_test.go:1886: the reported resume command
+`TestResumeVerificationRequiresTheTurnToAppendToTheSession` — `main_test.go:1947: the reported resume command
 "CODEX_HOME='C:\Users\RUNNER~1\…\002' …" does not name "CODEX_HOME=C:\Users\RUNNER~1\…\002"`. The assertion
 the sweep added to read the reported command out of the run's own document spelled the data directory as
 *this host's* temp path (`"CODEX_HOME=" + target["home"]`), and a Windows temp path holds backslashes and a
@@ -584,21 +584,21 @@ the shape a Windows temp path has for this rule (a word it quotes) — rather th
 root the two cases above use: this
 case's stub harness looks the installed session up with `filepath.Glob` over the home, and on a POSIX host a
 backslash in the pattern is an escape, so a backslash-shaped `TMPDIR` fails the case for a reason the rule is
-not about (measured on the repaired tree: `main_test.go:1867: exit 1, want 0 (stderr "the stub harness found
+not about (measured on the repaired tree: `main_test.go:1924: exit 1, want 0 (stderr "the stub harness found
 no installed session for …")`).
 
 | run | observed |
 | --- | --- |
-| head `37c0a10`'s own case, `TMPDIR='/tmp/ccc quoted temp'` | `FAIL` — `main_test.go:1886: the reported resume command "CODEX_HOME='/tmp/ccc quoted temp/TestResume…/002' …" does not name "CODEX_HOME=/tmp/ccc quoted temp/TestResume…/002"` |
+| head `37c0a10`'s own case, `TMPDIR='/tmp/ccc quoted temp'` | `FAIL` — `main_test.go:1947: the reported resume command "CODEX_HOME='/tmp/ccc quoted temp/TestResume…/002' …" does not name "CODEX_HOME=/tmp/ccc quoted temp/TestResume…/002"` |
 | the repaired case, that `TMPDIR` | `ok` |
 | the repaired `cmd/ccc` package, that `TMPDIR` | `ok  	go.kenn.io/agentsview/cmd/ccc	1.830s` |
 | the repaired case, a plain host | `ok` |
-| the repaired case with the rule mutated (`continue.go:851`'s `shellUnsafeCharacters` with the space dropped, so a word holding one is left bare) | `FAIL` — `main_test.go:1890: the reported resume command "CODEX_HOME=…/codex home …" does not name "CODEX_HOME='…/codex home'"` |
+| the repaired case with the rule mutated (`continue.go:851`'s `shellUnsafeCharacters` with the space dropped, so a word holding one is left bare) | `FAIL` — `main_test.go:1947: the reported resume command "CODEX_HOME=…/codex home …" does not name "CODEX_HOME='…/codex home'"` |
 
 The case's own mutations were re-executed on this tree rather than renumbered, and the anchors every
-insertion in it moved are recorded with them: the matrix's E2 row carries all three (`main_test.go:1890` for
-the reported-command mutation, `:1934` for the exit-code one, and the growth rule's `codex_verify.go:374` →
-`main_test.go:1900`, now caught by the case's own exit-status assertion because the loader mode its audit
+insertion in it moved are recorded with them: the matrix's E2 row carries all three (`main_test.go:1947` for
+the reported-command mutation, `:1991` for the exit-code one, and the growth rule's `codex_verify.go:374` →
+`main_test.go:1924`, now caught by the case's own exit-status assertion because the loader mode its audit
 repair sets lets the unmutated run reach exit 0). `docs/harness.md` states the third case beside the two,
 with the reason a backslash-shaped root cannot stand in for it here.
 

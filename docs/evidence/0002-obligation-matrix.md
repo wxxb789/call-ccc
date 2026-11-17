@@ -76,7 +76,10 @@ their rows (`internal/ccc/reader.go` `95e68873…`, `cmd/ccc/main_test.go` `0ea5
   1. `internal/ccc/continue.go:677` — a **source I/O failure** (a fingerprint or a parse that could not
      read the file) escaped `readForConversion` as a bare error, before the archive was consulted; the
      A2 row's cited test covers a *deleted* source only → A2, A3.
-  2. `cmd/ccc/main_test.go:1771` — the CLI verification tests handed `continueDocumentOf` the constant
+  2. `cmd/ccc/main_test.go:1771` (the audited head's line for the constant-handing call site the round-15
+     repair replaced; this tree's call sites pass the run's own `code` — the E1 case's `:1849`, the E2
+     case's `:1924`, the E4 case's `:2023`/`:2044`/`:2059`) — the CLI verification tests handed
+     `continueDocumentOf` the constant
      `exitOK`, and the resume case left the stub loader's mode unset, so its positive case claimed a
      success the command had not produced → E1, E2, E4.
   3. `scripts/codex-native-check.py:388` — the stderr drainer appended every line to an unbounded list;
@@ -138,7 +141,7 @@ uncommitted edits).
 | Finding | Row | Correction | Mutation that now detects it |
 | --- | --- | --- | --- |
 | an omitted result (empty, whitespace only, or only blocks the output field cannot carry) returned before retiring its call, so a later id-less result could be attributed to an answered call, or refused as ambiguous while every call it could belong to was answered | B3 | `codex_target.go:737-739`: the call is retired as soon as the result is recognised as one of this conversion's, before the representability guard; the omission counting is unchanged | three executed mutations on the three new sequences (`codex_target_test.go:1206-1340`): the reported bug restored (rc=1 — and the pre-existing pairing case was green under it, so the sequences were genuinely unpinned), the counters neutered (rc=1), the over-retiring wrong fix (rc=1) |
-| the `--json` content needles were searched in the **serialized** document, where a quoted tool argument or a multiline output is escaped (`\"`, `\n`, `\u003c`) and never matches its raw needle | F2 | the document is decoded and its **string values** are searched (`assertNoSourceContent`/`jsonStrings`, `cmd/ccc/main_test.go:2063`/`:2081`); the needle list is unchanged, and the case now runs over both committed Claude fixtures — the ordinary one and the reasoning-bearing tooling fixture — with `sourceContentNeedles` answering the reasoning traces so the case can require one | three executed leaks, each failing the case at rc=1: a tool argument, a multiline output, and a reasoning trace (the tooling fixture only); for the first two, a captured `--json` document holds the raw needle `0` times while the decoded-value search finds it |
+| the `--json` content needles were searched in the **serialized** document, where a quoted tool argument or a multiline output is escaped (`\"`, `\n`, `\u003c`) and never matches its raw needle | F2 | the document is decoded and its **string values** are searched (`assertNoSourceContent`/`jsonStrings`, `cmd/ccc/main_test.go:2104`/`:2122`); the needle list is unchanged, and the case now runs over both committed Claude fixtures — the ordinary one and the reasoning-bearing tooling fixture — with `sourceContentNeedles` answering the reasoning traces so the case can require one | three executed leaks, each failing the case at rc=1: a tool argument, a multiline output, and a reasoning trace (the tooling fixture only); for the first two, a captured `--json` document holds the raw needle `0` times while the decoded-value search finds it |
 | the allowed-root test accepted any string that **began with** a root, and `/tmp` is a root without a separator, so a foreign absolute path under a sibling directory (`/tmp-elsewhere/…`, `/home/user-evil/…`) evaded the sanitizer | F3 | the roots are compared component-wise (`fixtures_test.go:644`, `:651-658`): the path equals the root or continues past it at a separator, so a sibling is never "below" a root | `/tmp-elsewhere/code/tooling` and `/home/user-evil/code/tooling` appended to a fixture each fail the scan at rc=1 (`fixtures_test.go:688`), while the pre-fix rule passes `/tmp-elsewhere/…` (`ok`, rc=0 — the evasion the audit reported) and the naive prefix fix passes both (`ok`, rc=0) |
 
 Every mutation above was applied as a temporary edit, run with the named test, observed (the exit status
@@ -228,6 +231,32 @@ not fresh measurements.
   171 at the audited head — the difference is the one case this repair adds
   (`internal/ccc/codex_target_test.go`: 20 against 19) — and the gate's Python `selftest` count is unchanged
   at 164, because the repair adds no harness rule.
+
+## Audit repair (2026-11-17, round 17) — the fifth acceptance finding
+
+A fifth acceptance audit read this file at head `9fda6dd` (clean) and returned exactly one P2 finding, in the
+F2 row: the case's needle set held only the **recorded** representation of a tool result's output while the
+writer carries the text it decodes out of that field, and the human half searched its one fixture's stdout
+literally although the block renders every warning and detail through `oneLine`. It is a test/evidence
+defect — no production leak was observed and no report on this tree carried conversation content. The
+finding is corrected in the case, and the close-out re-proved the surface with one executed mutation per
+rule, all six recorded in the row
+([F2](#f2--no-report-or-cli-document-carries-source-conversation-content)); two of them also measured the
+pre-fix blindness and the one-fixture coverage gap beside the fix.
+
+- Gate on the repaired tree, run by this lane: `python3 scripts/gate.py` → `GATE: PASS` (exit `0`) —
+  `gofmt 3582 file(s) gofmt-clean`; `build`/`vet` `rc=0`; `test 3 package(s) ok`; `selftest Ran 164 tests in
+  4.892s (rc=0)`; `parity` `5553 file(s) identical to the pinned revision … deviations: 27 upstream path(s)
+  declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as
+  declared`; `secrets no leaks found in 76 file(s) this repository owns (the carried upstream tree is
+  covered by the parity step, not by this scan)`.
+- The two affected packages carry **172** `func Test` declarations before and after (the repair extends two
+  existing cases and adds none), and the gate's Python `selftest` count is unchanged at **164**.
+- **Files this repair changed:** `cmd/ccc/main_test.go` (`ba9fa4a5…`), this record, and the re-mapped
+  `main_test.go` anchors in [`0002-claude-to-codex-continuation.md`](0002-claude-to-codex-continuation.md)
+  §6. `internal/ccc/continue.go` (`44d8e65e…`), `cmd/ccc/main.go` (`76dbd342…`), the committed fixtures and
+  every carried file are the bytes they already were; `parity` proves the carried half, and each of the six
+  mutations was restored byte-identically (`sha256sum -c` against a copy taken before it).
 
 ## Surface A — source selection and fidelity
 
@@ -1059,7 +1088,7 @@ obligation's number and place in the list are unchanged.)*
   a failure, while an absent harness is not).
 - **Executed mutation:** `cmd/ccc/main.go:506` (first statement of `continuationExit`) → inserted
   `return exitOK`. **Observed:** exit `1`; `FAIL`;
-  `main_test.go:1321: exit 0, want 1 for a verification that ran and failed (stderr "")`. Restored
+  `main_test.go:1362: exit 0, want 1 for a verification that ran and failed (stderr "")`. Restored
   `76dbd342…`.
 
 ### D7 — The target data directory is resolved, never invented
@@ -1113,10 +1142,10 @@ obligation's number and place in the list are unchanged.)*
   was the non-gate native harness.
 - **Executed mutations (two):**
   1. `codex_verify.go:256` `if loadedID != opts.SessionID {` → `if false {`. **Observed:** exit `1`;
-     `FAIL`; `main_test.go:1824: exit 0, want 1 for a loader that loaded another session (stderr "")`.
+     `FAIL`; `main_test.go:1865: exit 0, want 1 for a loader that loaded another session (stderr "")`.
   2. `codex_verify.go:270` `if opts.ExpectedPath != "" && !sameFile(loadedPath, opts.ExpectedPath) {` →
      `if false {`. **Observed:** exit `1`; `FAIL`;
-     `main_test.go:1845: exit 0, want 1 for a loader that named another file (stderr "")`.
+     `main_test.go:1886: exit 0, want 1 for a loader that named another file (stderr "")`.
   Restored `b79031c0…` after each.
 - **Audit repair (2026-11-16, finding 2 of the acceptance audit).** The positive case's exit status is now
   the run's own: `code, stdout, stderr := runCLI(…)` and `continueDocumentOf(t, code, stdout, stderr)`
@@ -1143,7 +1172,7 @@ obligation's number and place in the list are unchanged.)*
   command and exit code asserted); a turn that answers without appending is `not-verified` + exit 1 with
   "did not grow" in the detail; a turn the harness cannot run reports the harness's own nonzero status.
 - **Executed mutation:** `codex_verify.go:374` `if after <= before {` → `if false {`. **Observed:** exit
-  `1`; `FAIL`; `main_test.go:1916: exit 0, want 1 for a turn that appended nothing (stderr "")` — with the
+  `1`; `FAIL`; `main_test.go:1957: exit 0, want 1 for a turn that appended nothing (stderr "")` — with the
   growth rule gone the silent turn's run succeeds, so the case's own exit-status assertion catches it
   before the state assertion below it is reached (that assertion's evidence is the passing run, which
   asserts `state == not-verified` for the turn that appended nothing). Restored `b79031c0…`.
@@ -1154,13 +1183,13 @@ obligation's number and place in the list are unchanged.)*
   *before* it runs the turn — so the run it called a success had in fact failed: the loader refused
   `thread/resume`, the load block came back `not-verified`, and `continuationExit` answered `1`. The
   positive case now reads the run's own exit code and sets the loader's mode it needs
-  (`stubLoadModeEnv = stubLoadSelfMode`, `main_test.go:1878`), which makes it the genuinely successful run
+  (`stubLoadModeEnv = stubLoadSelfMode`, `main_test.go:1919`), which makes it the genuinely successful run
   it claims; the negative half sets the same mode, so it can fail only on the turn that appended nothing.
 - **Executed mutation (audit repair):** the repaired case with the loader's mode removed again (the
   pre-repair state) — `t.Setenv(stubLoadModeEnv, stubLoadSelfMode)` deleted. Command:
   `CGO_ENABLED=1 go test -tags fts5 -count=1 -run TestResumeVerificationRequiresTheTurnToAppendToTheSession
   ./cmd/ccc/...`. **Observed:** exit `1`; `FAIL`;
-  `main_test.go:1883: exit 1, want 0 (stderr "")` — the run's real status, which the pre-repair case could
+  `main_test.go:1924: exit 1, want 0 (stderr "")` — the run's real status, which the pre-repair case could
   not see because it was not looking at it. Restored `0ea5446a…` (`b10f8417…` after this lane's repair).
 - **Executed demonstration of the pre-repair shape (audit repair):** with the same missing loader mode
   *and* the assertion put back on the constant (`continueDocumentOf(t, exitOK, …)`, plus a temporary
@@ -1169,7 +1198,7 @@ obligation's number and place in the list are unchanged.)*
   the test agreed with itself. Restored `0ea5446a…`.
 - **Repair (2026-11-16, this lane — the sweep's declared E2: the reported `command` and `exit_code` were
   asserted by no case).** `TestResumeVerificationRequiresTheTurnToAppendToTheSession`
-  (`cmd/ccc/main_test.go:1866-1956`) now reads both fields out of the run's own document: the verified half
+  (`cmd/ccc/main_test.go:1907-1997`) now reads both fields out of the run's own document: the verified half
   asserts `exit_code == 0` and that `command` names `exec resume <the document's session id>`,
   `--skip-git-repo-check` and `CODEX_HOME='<the document's home>'` — the home's own spelling from the
   document, quoted the way the field's contract renders a word a shell would act on; the new third half
@@ -1182,27 +1211,28 @@ obligation's number and place in the list are unchanged.)*
      constant 0 in place of the turn's status). Command:
      `GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 -run
      TestResumeVerificationRequiresTheTurnToAppendToTheSession ./cmd/ccc/`. **Observed:** exit `1`; `FAIL`;
-     `main_test.go:1950: resume exit_code = 0, want the turn's own status 7`. Restored `fb9a0a18…`.
+     `main_test.go:1991: resume exit_code = 0, want the turn's own status 7`. Restored `fb9a0a18…`.
   2. `codex_verify.go:341` `verification.Command = resumeCommandLine(path, args, opts.Home)` →
      `verification.Command = ""`. Command: the test above. **Observed:** exit `1`; `FAIL`;
-     `main_test.go:1906: the reported resume command "" does not name "exec resume
+     `main_test.go:1947: the reported resume command "" does not name "exec resume
      01a1e52f-4d87-7670-97bf-149a3f508554"`, the same line for `--skip-git-repo-check`, and the same line
      for `CODEX_HOME='…/codex home'` — the third word is the quoted spelling the CI repair below pins.
      Restored `fb9a0a18…`.
   3. The renderer's own rule (E5's side of the same case, executed with this repair): `continue.go:851`'s
      `shellUnsafeCharacters` with the space dropped (a word holding one is left bare). Command: the test
      above. **Observed:** exit `1`; `FAIL`;
-     `main_test.go:1906: the reported resume command "CODEX_HOME=…/codex home …" does not name
+     `main_test.go:1947: the reported resume command "CODEX_HOME=…/codex home …" does not name
      "CODEX_HOME='…/codex home'"`. Restored `e5be4e8a…`.
 - **CI repair (2026-11-17, the red at head `37c0a10` — `gate (windows-latest)`, the `test` step).** The
   command assertion this lane added spelled the data directory as *this host's* temp path
   (`"CODEX_HOME=" + target["home"]`), and the renderer quotes a Windows path — a temp path there holds
   backslashes and a `~` — so the assertion failed against a line that was right. That is the class
   **Q-0002-13**'s default moves the test for, not the renderer. The case now installs into a home whose
-  name holds a space (`shellUnsafeHome`, `cmd/ccc/main_test.go:1871`) and asserts the quoted spelling
-  (`:1903`): one expectation for every host instead of whichever arm this host spells. Executed here: with
+  name holds a space (`shellUnsafeHome`, `cmd/ccc/main_test.go:1912`) and asserts the quoted spelling
+  (`:1943`, the `CODEX_HOME='…'` expectation): one expectation for every host instead of whichever arm this
+  host spells. Executed here: with
   `TMPDIR` pointing at a directory whose name holds a space (the same shape — a home the rule quotes) the
-  pre-repair assertion failed with `main_test.go:1902: the reported resume command "CODEX_HOME='…'" does
+  pre-repair assertion failed with `main_test.go:1947: the reported resume command "CODEX_HOME='…'" does
   not name "CODEX_HOME=…"` and the repaired case passes, while `TestContinueJSONDistinguishes…` and
   `TestContinueHumanOutputNamesTheResumeCommand` — the two cases the first CI repair fixed the same way —
   stayed green; mutation 3 above is the rule's own direction. The evidence record's §6 carries the run
@@ -1242,7 +1272,7 @@ obligation's number and place in the list are unchanged.)*
   configuration answers `target-config`.
 - **Executed mutation:** `codex_verify.go:140` `…; err == nil {` → `…; err == nil && false {` (the thread
   defaults' answer is never used). **Observed:** exit `1`; `FAIL`;
-  `main_test.go:1985: model_provider = <nil>, want the harness's own answer`. Restored `b79031c0…`.
+  `main_test.go:2026: model_provider = <nil>, want the harness's own answer`. Restored `b79031c0…`.
 - **Audit repair (2026-11-16, finding 2 of the acceptance audit).** Both of this row's cases now pass the
   run's own exit code to `continueDocumentOf` (the constant `exitOK` is what the helper compares against),
   so the "exit 0" half of each positive case is the command's answer rather than the case's own argument.
@@ -1250,7 +1280,7 @@ obligation's number and place in the list are unchanged.)*
   assertion; the mutation that detects the old shape (one temporary edit) is recorded in E2's row, which is
   the case the audit cited.
 - **Repair (2026-11-16, this lane — the sweep's declared E4: the dry-run half was asserted by no case).**
-  `TestProviderBindingIsTheTargetsOwnAnswer` (`cmd/ccc/main_test.go:1974-2034`) now ends with the dry run's
+  `TestProviderBindingIsTheTargetsOwnAnswer` (`cmd/ccc/main_test.go:2015-2075`) now ends with the dry run's
   own answer: `--dry-run --verify none` (with the stub harness available to be asked) records no
   `model_provider`, reports `model_provider_source: unrecorded`, names the dry run in
   `model_provider_detail`, and the report's warnings carry the sentence that a dry run records no provider
@@ -1258,9 +1288,9 @@ obligation's number and place in the list are unchanged.)*
 - **Executed mutation (this lane):** `continue.go:306` `if opts.DryRun {` → `if opts.DryRun && false {`
   (the dry run falls into the probe branch and starts the harness). Command:
   `GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 -run TestProviderBindingIsTheTargetsOwnAnswer
-  ./cmd/ccc/`. **Observed:** exit `1`; `FAIL`; `main_test.go:2021: a dry run recorded model_provider =
-  a-configured-provider, want none: it never starts the harness`; `:2024: model_provider_source =
-  target-config, want unrecorded for a dry run`; `:2027: the dry run's provider detail "" does not say the
+  `./cmd/ccc/`. **Observed:** exit `1`; `FAIL`; `main_test.go:2062: a dry run recorded model_provider =
+  a-configured-provider, want none: it never starts the harness`; `:2065: model_provider_source =
+  target-config, want unrecorded for a dry run`; `:2068: the dry run's provider detail "" does not say the
   dry run is why nothing is recorded`. Restored `44d8e65e…`.
 
 ### E5 — The reported invocation is the shell's reading of the command that ran
@@ -1464,28 +1494,31 @@ obligation's number and place in the list are unchanged.)*
 - **Repair (2026-11-16, this lane — the sweep's declared F2: the human block and the tool-content half were
   unpinned).** The row is split into its two halves, and each is now read by a case:
   - *the `--json` document and the difference report* — `TestContinueJSONCarriesNoSourceContent`
-    (`cmd/ccc/main_test.go:964`) now asserts absence of **every** piece of source content the committed
+    (`cmd/ccc/main_test.go:974`) now asserts absence of **every** piece of source content the committed
     fixture makes — each message's `Dialogue`/`Content`, the recorded `Thinking`, every tool call's
     `InputJSON` and every tool result's `ContentRaw`, read out of the same inherited reader the conversion
-    uses (`sourceContentNeedles`, `:924`) — for the installed and the dry-run document, the difference
+    uses (`sourceContentNeedles`, `:931`) — for the installed and the dry-run document, the difference
     report keeping its own mutation above;
-  - *the human block* — `TestContinueHumanBlockCarriesNoSourceContent` (`:1002`), new in this lane, runs
+  - *the human block* — `TestContinueHumanBlockCarriesNoSourceContent` (`:1016`), new in this lane, runs
     `ccc continue` installed and `--dry-run` without `--json` and asserts the same needles absent from
-    stdout, with the block's own lines asserted present so the case cannot pass vacuously.
+    stdout, with the block's own lines asserted present so the case cannot pass vacuously. *(Round 17
+    extended it to both committed fixtures; see that repair below.)*
 - **Executed mutations (2026-11-16, one per half; re-executed 2026-11-17 on this tree, whose case shape
   the round-15 repair below changed — the observed lines are this tree's call sites):**
   1. `continue.go:219-223` `conversionSourceReport` made to return `reportFrom(conversation)` (the preview
      kept). Command: `GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 -run
      TestContinueJSONCarriesNoSourceContent ./cmd/ccc/`. **Observed:** exit `1`; `FAIL`;
-     `main_test.go:988: the [--json] report for -home-user-code-example-api carries a first_user_message
+     `main_test.go:998: the [--json] report for -home-user-code-example-api carries a first_user_message
      field` and twelve findings at `:990` (`the [--json] report for … carries source content "Summarize
      the retry policy in internal/retry/policy.go." as the value …`) across the four documents (both
      fixtures × installed and dry run). Restored `44d8e65e…`.
   2. the same `conversionSourceReport` edit **and** one added line in `writeContinuation`
      (`cmd/ccc/main.go:542`, `fmt.Fprintf(out, "  prompt:       %s\n", source.FirstUserMessage)` — a
      leak a human block could plausibly grow). Command: the human case. **Observed:** exit `1`; `FAIL`;
-     `main_test.go:1024: the [] human block carries source content "Summarize the retry policy in
-     internal/retry/policy.go."`. Restored `44d8e65e…` and `cmd/ccc/main.go` to its HEAD bytes
+     `main_test.go:1049: the [] human block for -home-user-code-example-api carries source content
+     "Summarize the retry policy in internal/retry/policy.go."` (re-executed 2026-11-17, round 17: the
+     human case now reads both fixtures, so its message names the fixture and the line is this tree's).
+     Restored `44d8e65e…` and `cmd/ccc/main.go` to its HEAD bytes
      (`76dbd342…`).
 - **Repair (2026-11-17, round 15 — the third audit's F2 finding: escaped payloads were invisible to the
   `--json` check).** The finding: the needles were searched in the **serialized** document, where a quoted
@@ -1493,30 +1526,107 @@ obligation's number and place in the list are unchanged.)*
   needle, so the check was blind to exactly the payloads the clause names; the cited mutation only
   exercised an ordinary prompt (a plain text the raw search does see). The correction: the case decodes the
   document and searches the **values** (`assertNoSourceContent` and `jsonStrings`,
-  `cmd/ccc/main_test.go:2063`/`:2081`), the needle list is unchanged, and the case now runs over **both**
+  `cmd/ccc/main_test.go:2104`/`:2122`), the needle list is unchanged, and the case now runs over **both**
   committed Claude fixtures — the ordinary one and the reasoning-bearing tooling fixture — with
   `sourceContentNeedles` answering the reasoning traces on their own so the case can require the fixture
-  set to carry one (`:924-954`): the decoded path is exercised on a `Thinking` needle as well as on the
+  set to carry one (`:931-964`): the decoded path is exercised on a `Thinking` needle as well as on the
   prompt, the tool arguments and the multiline output.
-- **Executed mutations (this lane, this tree — the leaks the raw search could not have seen):**
+- **Executed mutations (round 15, on the round-15 tree; re-executed 2026-11-17 in round 17 on this tree —
+  the observed lines below are this tree's call sites, and the human half's findings are recorded in the
+  round-17 block below):**
   1. a tool-argument leak — `continue.go:277-282` appending every `ToolCall.InputJSON` to
      `result.Warnings` (serialized into the document). Command: `GOFLAGS=-mod=mod CGO_ENABLED=1 go test
      -tags fts5 -count=1 -run TestContinueJSONCarriesNoSourceContent ./cmd/ccc/`. **Observed:** exit `1`;
-     `FAIL`; `main_test.go:990: the [--json] report for -home-user-code-example-api carries source content
+     `FAIL`; `main_test.go:1000: the [--json] report for -home-user-code-example-api carries source content
      "{\"file_path\":\"/home/user/code/example-api/internal/retry/policy.go\"}" as the value …` (eight
      findings, both fixtures × installed and dry run). **Blindness executed too:** with the same mutation
      `ccc continue … --json` was captured to a file and the raw needle occurs `0` times in the serialized
      document while the decoded-value search finds it — the search the case used before this repair could
      not have failed. Restored `44d8e65e…`.
   2. a multiline output leak — the same line appending every `ToolResult.ContentRaw`. Command: the case
-     above. **Observed:** exit `1`; `FAIL`; `main_test.go:990: … carries source content
+     above. **Observed:** exit `1`; `FAIL`; `main_test.go:1000: … carries source content
      "\"package retry\\n\\nconst MaxAttempts = 4\\n\"" as the value …`; the raw needle occurs `0` times in
      the captured document, the decoded-value search finds it. Restored `44d8e65e…`.
   3. a reasoning-trace leak — the same line appending every non-empty `Message.Thinking`. Command: the
-     case above. **Observed:** exit `1`; `FAIL`; `main_test.go:990: the [--json] report for
+     case above. **Observed:** exit `1`; `FAIL`; `main_test.go:1000: the [--json] report for
      -home-user-code-tooling carries source content "Reading the policy before answering." as the value …`
      and `"Naming it from the constant rather than from memory."` — the tooling fixture only, which is the
      reasoning needle being exercised rather than vacuous. Restored `44d8e65e…`.
+- **Repair (2026-11-17, round 17 — the fifth audit's F2 finding: the decoded output a writer carries was
+  not a needle).** The finding: `sourceContentNeedles` added only `ToolResult.ContentRaw`, the **recorded**
+  content field — for the committed fixtures a JSON string literal, with its enclosing quotes and its
+  escaped newlines (`internal/parser/content.go`'s `parseToolResult` keeps the provider's field in
+  `ContentRaw`) — while the output the writer actually carries is the text `resultText`
+  (`internal/ccc/codex_target.go:1098`) decodes out of it. A warning or detail holding that decoded text
+  therefore matched neither the wire case's decoded-value search nor the human case's literal search, and
+  the cited mutation leaked `ContentRaw`, exercising only the encoded representation. Two further gaps sat
+  in the same surface, and this round's close-out measured them: the block prints every warning and detail
+  through `oneLine`, so a newline-bearing needle cannot match the collapsed text a leak arrives as; and the
+  human case read one fixture, which carries no reasoning trace, so the trace shape was unexercised there
+  entirely. The correction: the needles hold **both** representations of every tool result — the recorded
+  field and the text decoded from it through the inherited reader's own text channel
+  (`parser.DecodeContent`), which together are every text `resultText` can answer for one result (that
+  function returns the recorded field, the decoded text, or nothing) — so the needle set is the writer's
+  answer set, not one of its spellings (`cmd/ccc/main_test.go:931-964`); the human case reads **both**
+  committed fixtures, as the wire half does, and searches each needle in the block's `oneLine`-collapsed
+  form as well, applied only when normalizing changes the needle (`:1016`, its rule at `:1049`/`:1060`);
+  and the fixture guard the wire half carries (a reasoning trace must exist) is asserted here too.
+- **Executed mutations (round 17, this tree — one per rule of the surface; the case's own rules first, then
+  each pre-fix search's blindness):**
+  1. *the decoded output a writer carries* — `continue.go:285-291` appending `resultText(result)` for every
+     result to `result.Warnings`. Command: `GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 -run
+     'TestContinueJSONCarriesNoSourceContent|TestContinueHumanBlockCarriesNoSourceContent' ./cmd/ccc/`.
+     **Observed:** exit `1`; both cases `FAIL`; eight findings at `main_test.go:1000` — the decoded needle in
+     the document's own values, both fixtures × installed and dry run (`package retry` with its real
+     newlines, `Error: no such file or directory`, `"maxBackoffSeconds"`) — and four at `main_test.go:1060`
+     (`… carries source content "package retry\n\nconst MaxAttempts = 4", whitespace-collapsed by the
+     renderer to "package retry const MaxAttempts = 4"`), both fixtures. **Blindness executed too:** with
+     the **pre-fix** case the same mutation left both cases green (exit `0`), and the captured runs measure
+     it — in the `--json` document the raw needle occurs in `0` of its 140 string values while the decoded
+     needle occurs in `1` (the leaked warning's own value), and the human block holds only the collapsed
+     line `  warning:      package retry const MaxAttempts = 4`. Restored `44d8e65e…`.
+  2. *the recorded (encoded) representation* — the same line appending `ToolResult.ContentRaw`: exit `1`;
+     both cases `FAIL`; ten findings at `main_test.go:1000` and ten at `:1049` (the literal needle in the
+     block). Restored `44d8e65e…`.
+  3. *dialogue, the source's own words* — every non-empty `Message.Dialogue`: exit `1`; both cases `FAIL`;
+     46 findings each at `main_test.go:1000` and `:1049`, `"Summarize the retry policy in
+     internal/retry/policy.go."` first. Restored `44d8e65e…`.
+  4. *the recorded reasoning trace* — every non-empty `Message.Thinking`: exit `1`; both cases `FAIL`; the
+     findings name `"Reading the policy before answering."` / `"Naming it from the constant rather than from
+     memory."`, the tooling fixture only, which is the needle being exercised rather than vacuous. **And the
+     coverage gap measured:** against the **one-fixture** human case this mutation left it green (`ok`,
+     exit `0`) while the wire half failed — the reason the human half now reads both fixtures.
+     Restored `44d8e65e…`.
+  5. *tool arguments* — every non-empty `ToolCall.InputJSON`: exit `1`; both cases `FAIL`
+     (`{"file_path":"/home/user/code/example-api/internal/retry/policy.go"}` among the findings at
+     `main_test.go:1049`). Restored `44d8e65e…`.
+  6. *the preview a conversion's own report must not keep* — `conversionSourceReport` returning
+     `reportFrom(conversation)`: exit `1`; the wire case `FAIL`s at `main_test.go:998` (`carries a
+     first_user_message field`) with the prompt needle beside it at `:1000`; the block does not print the
+     preview, so the human case stays green — the split the row records above. Restored `44d8e65e…`.
+- **Anchors this repair moved.** It inserts 41 lines into `cmd/ccc/main_test.go` (a comment block on
+  `sourceContentNeedles`, the decoded-needle pair, and the human case's rewrite), so every anchor in this
+  record at or below old line 923 was recomputed by that file's delta and verified by content identity at
+  the new line: this row's `:964`→`:974`, `:924`→`:931`, `:1002`→`:1016`, `:2063`/`:2081`→`:2104`/`:2122`,
+  `:924-954`→`:931-964`, `:988`→`:998`, `:990`→`:1000`; D6's `:1321`→`:1362`; E1's `:1824`→`:1865`,
+  `:1845`→`:1886`; E2's `:1916`→`:1957`, `:1878`→`:1919`, `:1883`→`:1924`, `:1866-1956`→`:1907-1997`,
+  `:1950`→`:1991`, `:1906`→`:1947`, `:1871`→`:1912`, `:1903`→`:1943` (the quoted-spelling expectation),
+  `:1902`→`:1947` (the pre-repair failure line that citation meant; checked at the failing assertion
+  itself); E4's `:1985`→`:2026`,
+  `:1974-2034`→`:2015-2075`, `:2021`→`:2062`, `:2024`→`:2065`, `:2027`→`:2068`; and the two
+  historical-anchor lists above. The two observations whose *quoted text* moved (the round-15 human half,
+  the E2 CI-repair line) and the F2 round-15 mutation list were **re-executed** rather than shifted, so
+  their lines are freshly measured; `docs/evidence/0002-claude-to-codex-continuation.md` §6's
+  `main_test.go` observations were **re-mapped by content identity** rather than shifted: the numbers that
+  section carried (`:1886`, `:1867`, `:1890`, `:1900`, `:1934`) were the case's pre-CI-repair spellings and
+  named the wrong assertions even at the audited head, so each now cites the assertion its sentence quotes
+  (`:1947` for the reported resume command, `:1924` for the exit-status refusal, `:1991` for the
+  exit-code mutation).
+- **Files this repair changed:** `cmd/ccc/main_test.go` (`ba9fa4a5…`), this record, and
+  `docs/evidence/0002-claude-to-codex-continuation.md` §6's re-mapped anchors. `internal/ccc/continue.go`
+  (`44d8e65e…`), `cmd/ccc/main.go` (`76dbd342…`) and every other file are the bytes they already were (the
+  mutations that touched them were restored and verified byte-identically); no carried AgentsView file was
+  touched.
 
 ### F3 — The committed fixtures carry no host path and no credential
 
@@ -1680,7 +1790,7 @@ alone and passed before that mutation was applied.
 | Finding | Row | Repair | Pin (and its mutation) |
 | --- | --- | --- | --- |
 | 1 — `continue.go:677`, a source I/O failure bypassed the archive fallback | A2, A3 | `reader.go`: a failed `Fingerprint`/`Parse` travels as `ErrProviderFailed`, the sentinel the accepted set already holds; `continue.go`'s set documents why it is the gate | `TestContinueFallsBackToTheArchiveWhenTheSourceCannotBeRead` (three cases) + `TestUnreadableSourceFallsBackToTheArchive` (the inspection's same sentinel) — both wraps reverted, one at a time, each run failing |
-| 2 — `main_test.go:1771`, the positive cases passed a constant `exitOK`, and the resume case's load was unset | E1, E2, E4 | every positive case reads the run's own exit code; the resume case sets the loader's mode it needs, and its negative half sets it too | `TestResumeVerificationRequiresTheTurnToAppendToTheSession` — the mode removed again fails as `exit 1, want 0`; the pre-repair shape passed while the CLI exited `1` |
+| 2 — `main_test.go:1771` (the audited head's line; that call site no longer exists — every positive case now passes the run's own `code`), the positive cases passed a constant `exitOK`, and the resume case's load was unset | E1, E2, E4 | every positive case reads the run's own exit code; the resume case sets the loader's mode it needs, and its negative half sets it too | `TestResumeVerificationRequiresTheTurnToAppendToTheSession` — the mode removed again fails as `exit 1, want 0`; the pre-repair shape passed while the CLI exited `1` |
 | 3 — `codex-native-check.py:388`, diagnostics retained without a memory bound | E6 | the drainer writes into a ring (`APP_SERVER_DIAGNOSTICS_MAX`, `new_diagnostics`/`drain_diagnostics`), presentation unchanged | `BoundedAppServerDiagnostics` — the `maxlen` removed retains 5000 of 5000 lines |
 | 4 — `codex_target_test.go:1113`, the envelope assertion shared the writer's constant | C2 | both envelope spellings are literals taken from the carried reader (`response_item`, `event_msg`) | `TestCodexRolloutWritesTheTargetsOwnViewRecordForEachMessage` — a drifted writer spelling fails it; sharing the constant again hides the same drift |
 | — (same class, disclosed not found) `codex_target_test.go:128-135`, the record-*kind* list also read the writer's constants | C2 | the list is now the carried reader's own spellings as literals, with the source named in a comment; the operator repaired this one itself | `TestCodexRolloutRecordShape` — a drifted `codexRecordEventMsg` fails it with `record types = […want…]`; the pre-repair form moved with the writer and stayed green (the lane's disclosure, verified by an executed drift mutation and a byte-identical restore) |
@@ -1731,7 +1841,7 @@ and the reason each is safe is below.
 - **D4** — repaired above; otherwise the ordering (`finally`), the planted-session comparison and the `--keep`/`--codex-home` promises are as the row states.
 - **D5 — corrected with a recorded decision (see the declared-row table below).** "every check that did not run is reported `not-verified`" was not what the report answers for a check *nobody's level asked for*: those stay `not-requested` with their own detail (`continue.go:610`, `:616-625`), and the cited case's helper asserts exactly that (`continue_test.go:2108-2131`). The clause was narrowed to the two answers (`Q-0002-26`); the rest of the row holds, and the error accompanies the report instead of replacing it.
 - **D6, D7, D8** — each clause's behaviour is implemented at the cited site and each row's mutation is in that implementation with the cited case failing (stage-driven exit status; explicit/env/refused home resolution; the dry run's scratch install and its `not-verified` levels). D8's "no harness was started" half is pinned by the stub's own marker file.
-- **E1** — the id rule and the path rule are both mutated and both caught; the promised relation is the report's own path (`main_test.go:1814` compares the loaded path with the target's), not a constant. *(The one branch no case exercises — a loader answer with no path at all — is wording-only.)*
+- **E1** — the id rule and the path rule are both mutated and both caught; the promised relation is the report's own path (`main_test.go:1855` compares the loaded path with the target's), not a constant. *(The one branch no case exercises — a loader answer with no path at all — is wording-only.)*
 - **E2 — repaired to a decided state (see the declared-row table below).** The sweep measured that no case read the reported `exit_code` or `command`; both are now read out of the run's own document in `TestResumeVerificationRequiresTheTurnToAppendToTheSession` — `command` against the invocation the turn ran, `exit_code` against the turn's own status (the new failing-turn mode) — and two executed mutations fail those assertions (recorded in the row). The growth rule remains two-way.
 - **E3** — the relative-spelling mutation is caught by the cited case, and the plausible variants die on it too (a bare path, an absolute path, a directory change before resolution).
 - **E4 — repaired to a decided state (see the declared-row table below).** The clause's last half, "a dry run records none with that reason", is now asserted offline by `TestProviderBindingIsTheTargetsOwnAnswer`'s dry-run half — no provider, `unrecorded`, the reason naming the dry run, and the warning in the report's channel — with an executed mutation that makes the dry run start the probe (recorded in the row).
@@ -1760,7 +1870,7 @@ against a copy taken before the mutation).
 | D5 | (C) corrected | the clause narrowed to the two answers the report gives: asked-for-and-unreached → `not-verified`; unasked → `not-requested` | `Q-0002-26`; the row now cites the helper that asserts both (`continue_test.go:2108-2131`) |
 | E2 | (I) implemented (evidence) | the reported `command` and `exit_code` are asserted from the run's own document, with a new failing-turn stub mode (`stubTurnFailCode` = 7) | two executed mutations failing the case (rc=1 each, restored `fb9a0a18…`) |
 | E4 | (I) implemented (evidence) | the dry-run half is pinned offline: no `model_provider`, `model_provider_source: unrecorded`, the reason naming the dry run, and the warning in the report's own channel | executed mutation (`if opts.DryRun` falsified, so the dry run starts the probe) failing three assertions (rc=1, restored `44d8e65e…`) |
-| F2 | (I) implemented (evidence) | row split: the `--json`/difference-report half and the human-block half, each with the full content-needle set (dialogue, `Thinking`, tool arguments, tool results) read from the inherited reader | two executed mutations, one per half (rc=1 each), restored `44d8e65e…`; `cmd/ccc/main.go` reverted to its HEAD bytes `76dbd342…` |
+| F2 | (I) implemented (evidence) | row split: the `--json`/difference-report half and the human-block half, each with the full content-needle set (dialogue, `Thinking`, tool arguments, and tool results in **both** representations — the recorded field and the text the writer decodes out of it) read from the inherited reader, over both committed fixtures; the block's search also compares the needle `oneLine`-collapsed | six executed mutations in round 17, one per rule (decoded output, recorded output, dialogue, trace, arguments, preview), rc=1 each with both the pre-fix blindness and the one-fixture gap measured, restored `44d8e65e…`; `cmd/ccc/main.go` reverted to its HEAD bytes `76dbd342…`; the round-15 mutations re-executed on this tree |
 | F3 | (I) implemented | a host-independent path-shape rule beside the machine-specific needles: absolute paths outside the fixtures' invented roots, and Windows drive/UNC spellings | executed mutation with a foreign host's POSIX and Windows paths (rc=1), fixture restored to `415bbc31…` |
 | F4 | (I) implemented | the git case no longer needs an installed tool (the runner answers `git ls-files`); the expected-skip set is only the guard's own | two executed mutations: the vendor filter removed from `gate.py` → rc=1; a host-tool reach re-added to the case → the nested child fails (rc=1); restores `6b495a57…`, `949ea14b…` |
 | D2 (in-row limit) | (I) implemented (evidence) | "publication *is* the exclusive hard link" is asserted by a spy case on the link seam, not inferred from the code read | executed rename-behind-the-intact-guard mutation failing `continue_test.go:490` (rc=1) while `TestInstallCodexRolloutNeverReplacesASession` stays green (restored `0a26ebd5…`) |

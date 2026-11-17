@@ -14,6 +14,7 @@ import (
 
 	"go.kenn.io/agentsview/internal/ccc"
 	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/parser"
 )
 
 // fixtureRoot is the committed fixture tree: one directory per provider, each of which is that
@@ -921,6 +922,12 @@ func claudeOpeningPrompt(t *testing.T, path string) string {
 // would never exercise the thinking needle. The needles are read out of the conversation the committed
 // fixture makes -- through the same inherited reader the conversion uses -- so the assertions do not
 // repeat fixture text and they cover the shapes the rule names, not only the opening prompt.
+//
+// A tool result contributes both representations of its output, because the writer carries the decoded
+// one: a recorded content field goes through the inherited reader's text channel before it reaches the
+// target (`resultText`), so the decoded text is a different byte sequence from the field -- a leak of it
+// would never match the raw needle. The pair covers every text the writer can carry out of a result:
+// each recorded field, the text decoded from it, and (a read that already decoded) the text it holds.
 func sourceContentNeedles(t *testing.T, cfg config.Config, sessionID string) (needles, traces []string) {
 	t.Helper()
 	conversation, err := ccc.NewSourceReader(cfg).Read(context.Background(),
@@ -945,6 +952,9 @@ func sourceContentNeedles(t *testing.T, cfg config.Config, sessionID string) (ne
 		}
 		for _, result := range message.ToolResults {
 			add(result.ContentRaw)
+			if !result.ContentDecoded {
+				add(parser.DecodeContent(result.ContentRaw))
+			}
 		}
 	}
 	if len(needles) == 0 {
@@ -998,32 +1008,63 @@ func TestContinueJSONCarriesNoSourceContent(t *testing.T) {
 // TestContinueHumanBlockCarriesNoSourceContent pins the same rule for the human block: `ccc continue`
 // without `--json` prints the report to stdout, and a person reading it must not be handed the
 // conversation's words, its tool arguments or its tool output either. The block's own lines are asserted
-// to be there as well, so the case cannot pass by the report being empty.
+// to be there as well, so the case cannot pass by the report being empty. The block prints every detail
+// and warning through its own oneLine, so a needle the renderer would have collapsed is searched in its
+// collapsed form too: the representation a leak arrives as, not the one the source recorded. It reads
+// both committed fixtures, as the wire half does, so the shapes only one of them carries -- the recorded
+// reasoning trace, the tool outputs -- are exercised on this surface as well.
 func TestContinueHumanBlockCarriesNoSourceContent(t *testing.T) {
 	continueEnvironment(t)
-	sessionID, path := claudeFixture(t)
-	prompt := claudeOpeningPrompt(t, path)
 	cfg, err := config.LoadReadOnly()
 	if err != nil {
 		t.Fatalf("reading the configuration: %v", err)
 	}
-	needles, _ := sourceContentNeedles(t, cfg, sessionID)
-	needles = append(needles, prompt)
-	for _, extra := range [][]string{{}, {"--dry-run"}} {
-		code, stdout, stderr := runCLI(t, continueArgs(sessionID, extra...)...)
-		if code != exitOK {
-			t.Fatalf("exit %d for %v, stderr: %s", code, extra, stderr)
+	// The same two committed Claude fixtures the wire half reads: the ordinary conversation, whose
+	// multiline tool output is the needle the renderer's whitespace collapse would rewrite, and the
+	// tooling conversation, which adds recorded reasoning traces and further tool outputs. A case over
+	// one fixture leaves the other's shapes -- the trace above all -- unpinned in the block, while the
+	// renderer collapses every warning and detail the same way whatever carried one.
+	reasoning := false
+	for _, project := range []string{"-home-user-code-example-api", "-home-user-code-tooling"} {
+		fixture, ok := claudeFixtures(t)[project]
+		if !ok {
+			t.Fatalf("the committed fixtures hold no %s project", project)
 		}
-		for _, want := range []string{"source file:", "converted:", "structure:"} {
-			if !strings.Contains(stdout, want) {
-				t.Errorf("the %v human block is missing its own line %q:\n%s", extra, want, stdout)
+		needles, traces := sourceContentNeedles(t, cfg, fixture.sessionID)
+		reasoning = reasoning || len(traces) > 0
+		needles = append(needles, claudeOpeningPrompt(t, fixture.path))
+		for _, extra := range [][]string{{}, {"--dry-run"}} {
+			code, stdout, stderr := runCLI(t, continueArgs(fixture.sessionID, extra...)...)
+			if code != exitOK {
+				t.Fatalf("exit %d for %v on %s, stderr: %s", code, extra, project, stderr)
+			}
+			for _, want := range []string{"source file:", "converted:", "structure:"} {
+				if !strings.Contains(stdout, want) {
+					t.Errorf("the %v human block for %s is missing its own line %q:\n%s",
+						extra, project, want, stdout)
+				}
+			}
+			for _, needle := range needles {
+				if strings.Contains(stdout, needle) {
+					t.Errorf("the %v human block for %s carries source content %q:\n%s",
+						extra, project, needle, stdout)
+					continue
+				}
+				// The block renders every detail and every warning through oneLine, which collapses
+				// each whitespace run to a single space: a needle holding a newline or an indent cannot
+				// match the text a leak arrives as, and the plain search above would read green. The
+				// normalized needle is compared against the normalized block as well -- applied only
+				// when normalizing changes the needle, so the widened search covers exactly the content
+				// the renderer would have rewritten and nothing the plain search already reads literally.
+				if collapsed := oneLine(needle); collapsed != needle && strings.Contains(oneLine(stdout), collapsed) {
+					t.Errorf("the %v human block for %s carries source content %q, whitespace-collapsed by "+
+						"the renderer to %q:\n%s", extra, project, needle, collapsed, stdout)
+				}
 			}
 		}
-		for _, needle := range needles {
-			if strings.Contains(stdout, needle) {
-				t.Errorf("the %v human block carries source content %q:\n%s", extra, needle, stdout)
-			}
-		}
+	}
+	if !reasoning {
+		t.Fatal("no fixture conversation carried a reasoning trace: the thinking needle stays unexercised")
 	}
 }
 
