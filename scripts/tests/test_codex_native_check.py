@@ -589,13 +589,22 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
     it compared (a count of one) and the mutating run has to name the file it caught changing, so a
     capture that is never taken, or a comparison that never runs, fails these cases instead of agreeing
     with itself.
+
+    The copy the conversions read is the fourth subject, folded into the first check ("the source session
+    is unchanged") because that name is what a reader takes as the scenario's source having survived the
+    whole repeated transfer: a case changes the copy while the **second** session's own loader runs --
+    after the second conversion and its own comparison -- and exactly that check must fail, while the
+    intact run's detail has to name the copy's bytes it compared, so the clause cannot be green by not
+    being there.
     """
 
     def drive(self, mutate_during_resume: bool = False,
               installed_extra_line: str | None = None,
               mutate_first_session_by_second: bool = False,
               second_boundary: str | None = None,
-              include_growth_in_second: bool = True) -> tuple[int, dict[str, tuple[str, str]]]:
+              include_growth_in_second: bool = True,
+              mutate_copy_during_second_load: bool = False
+              ) -> tuple[int, dict[str, tuple[str, str]]]:
         """One run of the shipped ``main`` against stubs; answers its exit code and its recorded checks.
 
         ``installed_extra_line`` is a line the stub appends to the first installed file after its one
@@ -617,6 +626,12 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         the second conversion's file and the target's own view of it omit the appended turn's words, so
         the comparisons that require them -- and only they -- must fail. A search that looked for nothing,
         or one that searched the wrong file, would stay green here.
+
+        ``mutate_copy_during_second_load`` changes the copy the conversions read while the second
+        session's own loader runs -- after the second conversion and its own comparison. The final
+        comparison is the only one left that can answer for the copy, so exactly "the source session is
+        unchanged" must fail; the check's own name is what a reader takes as the scenario's source having
+        survived the whole repeated transfer.
         """
         # The scratch root is resolved before anything is derived from it, because the shipped ``main``
         # resolves what it is handed (``--repo`` always, and ``--codex-home`` when the caller names one,
@@ -726,6 +741,10 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             }
 
         conversions = {"made": 0}
+        #: The copy the *second* conversion read, as the harness named it in the command's own
+        #: environment: the app-server stub below changes that file, and the harness's scratch directory
+        #: is its own (this case cannot guess its name).
+        second_copy: dict[str, Path] = {}
 
         def fake_run(cmd, cwd=None, env=None, timeout=600):
             command = [str(part) for part in cmd]
@@ -736,6 +755,8 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                     conversions["made"] += 1
                     which = "first" if conversions["made"] == 1 else "second"
                     document = document_for(which, env)
+                    if which == "second":
+                        second_copy["path"] = source_copy(env)
                     path = Path(document["target_session"]["path"])
                     path.parent.mkdir(parents=True, exist_ok=True)
                     body = json.dumps({"type": "session_meta"}) + "\n"
@@ -782,6 +803,12 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                     raise AssertionError(f"the case's stub was asked for {method}")
                 session = str(params.get("threadId"))
                 path = second_installed if session == second_thread_id else installed
+                if session == second_thread_id and mutate_copy_during_second_load:
+                    # The copy the conversions read, changed while the target harness's own loader runs:
+                    # the second conversion and its own copy comparison are already over, so only the
+                    # final comparison can catch it.
+                    copy = second_copy["path"]
+                    copy.write_text(copy.read_text() + json.dumps({"type": "turn"}) + "\n")
                 return {"thread": {"id": session, "path": str(path), "historyMode": "legacy",
                                    "cwd": "/tmp"}}
 
@@ -847,6 +874,10 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         self.assertIn("1 pre-existing session file(s)", results[PROTECTED_CHECKS[2]][1],
                       "the run's pre-existing-session comparison did not name the session the home "
                       "already held: a capture that never happened agrees with itself")
+        # The first comparison's own evidence for its copy clause: it names the copy's bytes it compared,
+        # so a run that dropped the clause would not read as one that answered it.
+        self.assertIn("the converted copy identical too", results[PROTECTED_CHECKS[0]][1],
+                      "the source comparison did not name the converted copy it compared")
         # Every comparison of the repeat half is present and passing, so none of them can be green by
         # never running, and the only checks that did not run are the two real turns nobody asked for.
         for name in REPEAT_CHECKS:
@@ -897,6 +928,24 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                          f"session: {results}")
         detail = results["the first conversion's session is unchanged by the second"][1]
         self.assertIn(" before and after the second conversion", detail, detail)
+        self.assertEqual(code, 1, f"exit {code} for a run with a failed comparison: {results}")
+
+    def test_a_copy_mutated_during_the_second_load_is_caught_by_the_final_comparison(self) -> None:
+        """The copy the conversions read is part of the final "the source is unchanged" answer.
+
+        The stub changes the copy while the *second* session's own loader runs -- after the second
+        conversion and after that conversion's own copy comparison, so only the comparison that runs last
+        can answer for the copy. Its failure set must therefore be exactly that one check, and its detail
+        must name the copy's own wanted bytes: a run whose final comparison hashed only the committed
+        fixture tree and the growth fragment answers PASS here, which is the defect this pins.
+        """
+        code, results = self.drive(mutate_copy_during_second_load=True)
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed, ["the source session is unchanged"],
+                         f"the copy mutation's failures are not exactly the final comparison: {results}")
+        detail = results["the source session is unchanged"][1]
+        self.assertIn("the converted source copy changed after the second conversion", detail, detail)
+        self.assertIn("want sha256", detail, detail)
         self.assertEqual(code, 1, f"exit {code} for a run with a failed comparison: {results}")
 
     def test_a_second_boundary_that_is_not_the_grown_copy_fails(self) -> None:

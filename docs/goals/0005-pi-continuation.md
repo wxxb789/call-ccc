@@ -1,7 +1,7 @@
 # 0005 — Continue conversations into and out of Pi
 
 **Status:** Ready  
-**Prerequisite:** [0003 — Continue a Codex session in Claude Code](0003-codex-to-claude-continuation.md).
+**Prerequisite:** [0003 — Continue a Codex session in Claude Code](archive/0003-codex-to-claude-continuation.md).
 
 ## Intended advance
 

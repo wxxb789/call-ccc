@@ -1067,17 +1067,37 @@ def main(argv: list[str] | None = None) -> int:
         # when it ran — the real turn: a comparison recorded beside the read-back above would let a
         # mutation during either native stage stand on an earlier verdict, and the planted session is
         # only deleted once this block has run.
+        #
+        # The check below is the scenario's "the source is unchanged" promise, and the source this run
+        # actually converted is the *copy*: its digest was measured before the second conversion ("the
+        # source copy is unchanged by the second conversion" answers for that stage) and is measured once
+        # more here, after the second loader and the optional turn — otherwise a mutation of the copy
+        # during the second native stage would leave every check green while this check's own name said
+        # the source had survived the whole repeated transfer.
         fixture_after = tree_digest(fixture_root)
         moved = sorted([name for name, digest in fixture_before.items()
                         if fixture_after.get(name) != digest]
                        + [name for name in fixture_after if name not in fixture_before])
+        fragment_unchanged = sha256(fragment) == fragment_before
+        copy_unchanged = (copy.is_file() and sha256(copy) == grown_digest
+                          and copy.stat().st_size == grown_size)
+        if not moved and fragment_unchanged and copy_unchanged:
+            detail = (f"sha256 {sha256(source)[:16]}… (fixture tree identical, "
+                      f"{fragment.relative_to(repo)} identical; the converted copy identical too: "
+                      f"sha256 {grown_digest[:16]}…, {grown_size} bytes)")
+        elif moved:
+            detail = f"the fixture tree changed: {', '.join(moved)}"
+        elif not fragment_unchanged:
+            detail = f"{fragment.relative_to(repo)} changed"
+        elif copy.is_file():
+            detail = (f"the converted source copy changed after the second conversion: want sha256 "
+                      f"{grown_digest[:16]}…, {grown_size} bytes, found sha256 {sha256(copy)[:16]}…, "
+                      f"{copy.stat().st_size} bytes")
+        else:
+            detail = (f"the converted source copy is gone after the second conversion: it was "
+                      f"sha256 {grown_digest[:16]}…, {grown_size} bytes")
         record("the source session is unchanged",
-               not moved and sha256(fragment) == fragment_before,
-               f"sha256 {sha256(source)[:16]}… (fixture tree identical, "
-               f"{fragment.relative_to(repo)} identical)" if not moved
-               and sha256(fragment) == fragment_before
-               else f"the fixture tree changed: {', '.join(moved)}" if moved
-               else f"{fragment.relative_to(repo)} changed")
+               not moved and fragment_unchanged and copy_unchanged, detail)
         planted_unchanged = unrelated.is_file() and sha256(unrelated) == unrelated_before
         record("the unrelated session in the target home is unchanged",
                planted_unchanged,

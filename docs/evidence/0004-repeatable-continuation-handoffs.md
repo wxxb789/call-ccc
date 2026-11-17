@@ -233,7 +233,8 @@ assistant, tool-call and tool-result counts are identical, so the unfinished rec
 | `TestSourceBoundaryOfFileStatesTheRecordOffsets` | the pass itself: two complete lines (`records_end = 16`, tail 0), an unfinished last line (`records_end = 8` of 13, tail 5), a file with no line feed at all (`records_end = 0`, the whole 7 bytes unpublished), an empty file (0/0/0), a source whose records are *not* appended lines (the file's bytes and digest are still measured, and no record boundary is claimed: tail 0), and a path that names no file (the error itself — `os.ErrNotExist`, asserted by kind so the case holds on every platform — never a boundary with no bytes in it) |
 | `TestTakeSourceBoundaryAnswersTheReadsThatHaveNoFileToMeasure` | `not-taken` with its own reason for an archive read (`the conversion read an archive row, so no source file was open at all`) and for a container-member identity (`…member member-1 inside the container…`), with no bytes claimed |
 | `TestBoundaryWarningsNameAnUnfinishedRecord` | the warning channel: no boundary, a boundary that was not taken, and a complete file produce no warning; a measured tail produces one naming `1835`, `1792`, `43 byte(s)` and `converting again` |
-| `TestSourceRecordsAreLinesAsksTheProvidersOwnDeclarations` | the gate on the record offsets: `claude` and `codex` are declared line-recorded (`parser.SourceCapabilities.IncrementalAppend`/`parser.ContentCapabilities.MalformedLineCount`), an unknown name and an empty one are not, and a reader-less call claims nothing |
+| `TestSourceRecordsAreLinesAsksTheProvidersOwnDeclarations` | the gate on the record offsets: `claude` and `codex` are declared line-recorded (`parser.SourceCapabilities.IncrementalAppend`), an unknown name and an empty one are not, and a reader-less call claims nothing. Three providers whose source is a whole-file JSON document or a compressed container (QwenPaw, CodeBuddy, DeepSeek Harness — each declaring only `ContentCapabilities.MalformedLineCount`) are not (§10: the review round found the gate accepting that count and superseding `Q-0004-01` with `Q-0004-07`) |
+| `TestConversionOfAWholeFileJSONSourceClaimsNoRecordBoundary` | end to end (added in the review round, §10): a complete QwenPaw session — one whole-file JSON document, no trailing line feed — converts with `records_are_lines: false`, no record offset, no unpublished tail and no unfinished-record warning, and the boundary digest is the file's own |
 | `TestConversionFromAnArchiveReportsNoBoundaryToTake` | end to end: a conversion that fell back to the archive reports `not-taken`, no bytes, `source_check_state: not-verified` with the archive reason, and no unfinished-record warning |
 | `TestContinueJSONCarriesTheSourceBoundary` | the CLI's `--json` document: `state`, `path` (the file the conversion read), `bytes` (the file's own size), `sha256` (an independently computed digest), `records_are_lines`, `records_end_bytes`, and a non-empty `detail` |
 | `TestContinueHumanOutputStatesTheSourceBoundary` | the human block, on a real conversion and on the four shapes (complete, unfinished tail, not-taken, non-line source), including that a not-taken or non-line boundary prints *no* record-boundary claim and a report with no boundary prints no `boundary:` line at all |
@@ -269,7 +270,7 @@ ok  	go.kenn.io/agentsview/cmd/ccc	0.428s
 | the converted history before the growth, as the **answer** of a real turn in the *earlier* target | the recorded turn's answer names `maxBackoffSeconds` as the fact the converted history supplied, in the first answer block (§6) |
 | an unfinished trailing record (`165` bytes with no terminator) | `boundary.unpublished_tail_bytes`, the `unpublished:` line and the run's warning; no message of the conversation and no record of either target document holds its text (§3) |
 | an earlier conversion of the same source | unchanged by the second conversion (`sha256 c945f80f6c93bb49` before and after, §2 B4) — and unchanged in the native run after the first session had itself been resumed by Codex (§6) |
-| the source file during and after every run | `source file: unchanged (sha256 …, taken before and after the conversion)` in each CLI run (§1–§3); in the native check, the copy and the committed fixture tree are digested around each conversion (§6) |
+| the source file during and after every run | `source file: unchanged (sha256 …, taken before and after the conversion)` in each CLI run (§1–§3); in the native check, the copy and the committed fixture tree are digested around each conversion and compared once more at the end of the run, after the second loader and the optional turn (§6, §10) |
 
 The two "**answer**" rows are the ones this record cannot re-derive by re-running the *offline* half: they
 are the target model's own words, recorded verbatim below and in
@@ -304,11 +305,16 @@ PASS: the target harness's own loader opens the second installed session — thr
 PASS: the target's own view of the second session lists the appended turn — 7 item(s) in the reply's own turn list; the appended turn's own words are in its own view
 PASS: the first session's own view does not hold the appended turn — the first session's own view holds 5 item(s), none of them the turn the source gained after it was converted
 conversions: 2 session(s) installed (01a1e937-8f04-7056-9b08-3f3d22d57c8b then 01a1e937-911a-7139-96f7-dba7fa70aa72); real turn(s) run: 0
-PASS: the source session is unchanged — sha256 2bd510821d4abf83… (fixture tree identical, internal/ccc/testdata/growth/claude-complete-turn.jsonl identical)
+PASS: the source session is unchanged — sha256 2bd510821d4abf83… (fixture tree identical, internal/ccc/testdata/growth/claude-complete-turn.jsonl identical; the converted copy identical too: sha256 e2921e995915855d…, 2540 bytes)
 PASS: the unrelated session in the target home is unchanged — sha256 59ff49ca30baf622…
 PASS: no pre-existing session in the target home changed — 0 pre-existing session file(s)
 25 check(s) passed, 0 failed, 2 skipped
 ```
+
+*(The line above that names the converted copy is re-taken from the review round's own re-run of the
+offline half on the fixed tree — the same `25 check(s) passed, 0 failed, 2 skipped` and the same checks,
+and the copy's digests are the committed fixture's plus the committed fragment's, so they are the same
+numbers this run printed; §10 records why the comparison grew.)*
 
 Codex's own `thread/read` view of the *second* session, printed by the run (its own view of the later
 snapshot, with the turn the source gained as its last turn):
@@ -525,11 +531,16 @@ recorded above:
 
 ## 9. Limits and residual risks
 
-- **The record-boundary claim is gated on the provider's own declaration** (Q-0004-01). Claude and Codex
-  declare it; a provider whose format is line-recorded but which declares neither `IncrementalAppend` nor
-  `MalformedLineCount` (Copilot's transcript is the measured example) gets the file's bytes and digest with
-  `records_are_lines: false` and no record offset. The narrowing is stated per run rather than silently
-  guessed around.
+- **The record-boundary claim is gated on the provider's own declaration** (Q-0004-01, superseded by
+  Q-0004-07 in the review round — §10). The gate is `parser.SourceCapabilities.IncrementalAppend` alone,
+  the declaration that the source grows by appended lines: Claude and Codex make it, and no other carried
+  provider does. A provider whose format is line-recorded but which declares nothing (Copilot's transcript
+  is the measured example) gets the file's bytes and digest with `records_are_lines: false` and no record
+  offset — and so does a provider declaring only `parser.ContentCapabilities.MalformedLineCount`, a count
+  of malformed *entries* inside one whole-file document or container (QwenPaw, CodeBuddy, DeepSeek
+  Harness), because that count is not the claim the offsets rest on and reporting it as one stated
+  something false about a complete file. The narrowing is stated per run rather than silently guessed
+  around.
 - **The boundary is taken after the read** (Q-0004-05). A source that grows between the parse and the
   boundary instant makes the boundary newer than the bytes the parser consumed; the block's `detail` says
   when it was taken, no comparison against the parse's own stat is attempted (that number is a composite for
@@ -549,3 +560,116 @@ recorded above:
 - **What a provider's parser drops silently is disclosed, not repaired.** The boundary states that the file
   holds bytes beyond the last complete record; the record itself is not published, and nothing here tries to
   reconstruct it — the remedy the goal states is another conversion once the source has been written.
+
+## 10. The review round: findings, fixes, and the numbers re-measured
+
+An independent review read the frozen range `18d50b2..4ca30db` and reported four findings (two
+`MUST_FIX`). This round fixed all four; nothing outside them changed. The round's own re-measured numbers
+are at the end of this section.
+
+### R01 (P2, must fix) — the record-boundary gate accepted a declaration that does not mean "line records"
+
+The review measured the gate's premise false on a provider already in the carried tree. Reproduced here
+before the fix: a complete QwenPaw session (`{"agent":{"memory":{"content":[[…],[…]]}}}`, 370 bytes, one
+compact JSON document, no trailing line feed, two messages) converted with `records_are_lines: true`,
+`records_end_bytes: 0` and the whole file as `unpublished_tail_bytes`, and printed the human line *"the
+source's records end at byte 0 — the file holds more than this snapshot covers"*, an `unpublished:` line
+and a warning telling the caller to convert again once the source was written — for a file whose read had
+consumed every byte. The cause: the gate accepted `parser.ContentCapabilities.MalformedLineCount` as a
+line-transcript declaration, but QwenPaw counts malformed *message entries* inside one whole-file JSON
+document, CodeBuddy does the same for a manifest object, and DeepSeek Harness's source may be a compressed
+container whose bytes hold no line feed at all.
+
+The gate is now `parser.SourceCapabilities.IncrementalAppend` alone — the declaration that the source
+grows by appended lines — and `Q-0004-01` is superseded by the appended `Q-0004-07`. Two regression cases
+pin it, both measured red against the old gate and green against the new one:
+`TestSourceRecordsAreLinesAsksTheProvidersOwnDeclarations` gained the `qwenpaw`/`codebuddy`/
+`deepseek-harness` rows (`sourceRecordsAreLines("qwenpaw") = true, want false`, and likewise the other
+two, before the fix), and the new `TestConversionOfAWholeFileJSONSourceClaimsNoRecordBoundary` drives the
+whole-file document end to end and pins `records_are_lines: false`, no record offset, no unpublished tail,
+no unfinished-record warning, and the file's own digest.
+
+### R02 (P3, must fix) — four links to the archived 0003 resolved to nothing
+
+`docs/goals/0005-pi-continuation.md`, `0008-opencode-source-continuation.md` and `0009-selective-context.md`
+named `0003-codex-to-claude-continuation.md`, and the archived file's own prerequisite named
+`archive/0002-claude-to-codex-continuation.md` from inside `archive/` — four references that no longer
+resolve. All four now name their real locations. Verified by a one-off scan of every relative `*.md` link
+under `docs/goals/` (all resolve); the scan is not a gate step, so "nothing in the gate resolves relative
+links" remains the untested class the finding named.
+
+### R03 (P3) — the native check's final comparison did not cover the file the conversions read
+
+`scripts/codex-native-check.py` digested the copy for the last time right after the second conversion, while
+the second `thread/resume`, the target's own view read and the optional `--repeat-resume-prompt` turn all ran
+after it — so a mutation of the copy during the second native stage left every check green, including "the
+source session is unchanged". The final comparison now also measures the copy against the digest and size
+taken before the second conversion; the check keeps its name (that name is what a reader takes as the
+scenario's source having survived the whole repeated transfer) and its detail now names the copy it
+compared. The offline case
+`ProtectedArtifactsAfterNativeVerification.test_a_copy_mutated_during_the_second_load_is_caught_by_the_final_comparison`
+changes the copy while the second session's own loader runs and requires exactly that check to fail — red
+against the pre-fix comparison (the mutation was invisible: the run's failures were an empty list) and green
+after it, with the intact run's assertions requiring the copy clause to be named so it cannot be green by not
+being there.
+
+### R04 (P4, optional) — the plan's CLI illustration was stale
+
+`docs/plans/0004-repeatable-evolving-session-handoffs.md` §3.2 now quotes the wording the shipped CLI
+prints (`cmd/ccc/main.go`'s `writeBoundary`/`boundaryTailSuffix`), with its illustrative numbers labelled as
+such and §1 of this record cited for a real run's own lines.
+
+### The numbers this round re-measured
+
+`python3 scripts/gate.py`, exit code `0`:
+
+```console
+$ python3 scripts/gate.py
+gate: <repo>
+gate: go=~/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3592 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 199 tests in 5.531s (rc=0)
+  PASS     parity   — this record's elision of the step's long detail: 5 553 carried file(s) identical to
+                    the pinned revision, every declared deviation present, the same fields §7.1 quotes in full
+  PASS     secrets  no leaks found in 101 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+`./cmd/ccc/... ./internal/ccc/...` held 219 `func Test…` functions over 14 test files before this round and
+220 after it (the one new case above); the review round's Python case moved the `selftest` step's own count
+from `Ran 198 tests` to `Ran 199 tests` (§7.1's 198 is that step's earlier run, §10's count is this one).
+The seconds in that step's line are the wall clock, as §7.1 says of its own run: this round's runs of the
+tree printed `selftest`'s line with different seconds each time and every other field — `gofmt`'s 3592
+included — identical.
+
+`python3 scripts/codex-native-check.py` (the offline half, exit code `0`, no turn billed), re-run to
+re-derive the numbers §6 quotes:
+
+```console
+$ python3 scripts/codex-native-check.py
+…
+PASS: the source session is unchanged — sha256 2bd510821d4abf83… (fixture tree identical, internal/ccc/testdata/growth/claude-complete-turn.jsonl identical; the converted copy identical too: sha256 e2921e995915855d…, 2540 bytes)
+PASS: the unrelated session in the target home is unchanged — sha256 59ff49ca30baf622…
+PASS: no pre-existing session in the target home changed — 0 pre-existing session file(s)
+25 check(s) passed, 0 failed, 2 skipped
+```
+
+The count is unchanged (the copy clause joined an existing check rather than adding one), so §6's `25
+… 2 skipped` offline and `27 … 0 skipped` turned numbers are the counts this tree prints as well; the one
+line that differs from §6's quoted block is the final comparison, re-taken there with this run's own copy
+digests. The turned runs were not re-run (two billed turns each, and the clause they would exercise is the
+one this round's offline case pins), so §6's turn answers stand as the runs they were.
+
+`python3 scripts/tests/test_codex_native_check.py` (inside `selftest` above, and run alone): `Ran 28 tests
+… OK`, including the new copy-mutation case.
+
+**`AGENTS.md` and bookkeeping:** this round changed no repository layout, no gate step, no command, no read
+order and no rule an agent must follow — the gate's steps, its narrowing and its knobs are untouched, and the
+native check remains deliberately not a gate step — so `AGENTS.md` is unchanged (its snapshot bullet's "the
+record offsets are claimed only where the provider's own declarations say its source is a transcript of line
+records" is now exactly true, which is what R01 was about). `docs/goals/` holds no goal file whose
+implementation is merged-and-waiting: 0004 is this increment's own, still on its branch and awaiting operator
+acceptance, so nothing moves to `docs/goals/archive/` and `docs/goals/README.md`'s status table is unchanged.

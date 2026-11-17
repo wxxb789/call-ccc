@@ -855,14 +855,23 @@ func takeSourceBoundary(reader *SourceReader, conversation Conversation, readFro
 
 // sourceRecordsAreLines answers whether one provider's own declarations say its source is a transcript of
 // line records: the capability that says the source grows by appended lines (which its read can only
-// re-answer by parsing the whole file again), or the capability that says a read counts the records it
-// could not parse. Both are declarations only a line-recorded source has.
+// re-answer by parsing the whole file again). It is the declaration that makes the offset just after the
+// file's last line feed a *record* boundary rather than an arbitrary byte.
+//
+// The other candidate declaration this gate once accepted was the capability that says a read counts the
+// records it could not parse (ContentCapabilities.MalformedLineCount). It is not the same claim, and the
+// carried tree measures the difference: QwenPaw counts malformed *entries* inside one whole-file JSON
+// document (internal/parser/qwenpaw.go's entry loop, declared by qwenpaw_provider.go), CodeBuddy does the
+// same for a manifest object, and DeepSeek Harness's source may be a compressed container whose raw bytes
+// hold no line feed at all -- so a complete file of theirs was reported as a line-recorded source whose
+// entire content was one unfinished record (Q-0004-07). A gate decision is superseded by evidence, not by
+// a preference, and the record is appended rather than rewritten.
 //
 // Anything else answers false, including a provider this reader cannot resolve (a disabled provider, a
 // stored agent label with no factory of its own): the boundary then states the file's bytes and claims no
 // record boundary, because that claim is the provider's to make and never this build's guess about a
-// format. A provider whose format is line-recorded but that declares neither capability therefore gets no
-// byte-level record boundary, which is a narrowing this build states rather than a claim it invents.
+// format. A provider whose format is line-recorded but that declares nothing therefore gets no byte-level
+// record boundary, which is a narrowing this build states rather than a claim it invents.
 func sourceRecordsAreLines(reader *SourceReader, provider string) bool {
 	if reader == nil {
 		return false
@@ -871,9 +880,7 @@ func sourceRecordsAreLines(reader *SourceReader, provider string) bool {
 	if err != nil {
 		return false
 	}
-	capabilities := factory.Capabilities()
-	return capabilities.Source.IncrementalAppend == parser.CapabilitySupported ||
-		capabilities.Content.MalformedLineCount == parser.CapabilitySupported
+	return factory.Capabilities().Source.IncrementalAppend == parser.CapabilitySupported
 }
 
 // sourceBoundaryOfFile reads one file once, answering its size, the digest of exactly those bytes, and --

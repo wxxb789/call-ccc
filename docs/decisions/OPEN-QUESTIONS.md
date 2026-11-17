@@ -1494,3 +1494,32 @@ supersede it with a newer one and say which it supersedes.
 - **Settled by:** whether the owner wants an archived goal's own status line re-spelled (0001's practice) or
   frozen as the text the operator accepted (0002's and 0003's), and whether the evidence-record naming should
   follow the goal file's stem rather than the discovery rule.
+
+## Q-0004-07 — The record-boundary gate is `IncrementalAppend` alone (Q-0004-01 superseded)
+
+- **Status:** resolved (default taken)
+- **Question:** Q-0004-01 gated the boundary's record offsets on "either of the provider's two candidate
+  declarations", believing that conservative. The review round measured the premise false: in the carried
+  tree, `parser.ContentCapabilities.MalformedLineCount` is declared by providers whose source is not a line
+  transcript at all — QwenPaw counts malformed *message entries* inside one whole-file JSON document
+  (`internal/parser/qwenpaw_provider.go`), CodeBuddy counts them inside a manifest object, and DeepSeek
+  Harness's source may be a compressed container whose raw bytes hold no line feed. A complete QwenPaw file
+  converted with `records_are_lines: true`, `records_end_bytes: 0`, the whole file as
+  `unpublished_tail_bytes`, and a "converting again carries them" warning — a user-visible false statement,
+  and one `AGENTS.md`, `docs/conventions.md`, the plan, the evidence record and the code comment all rested
+  on. The gate's own premise ("both are declarations only a line-recorded source has") was simply wrong.
+- **Default taken:** claim the offsets only when `parser.SourceCapabilities.IncrementalAppend ==
+  CapabilitySupported` — the declaration that the source grows by appended lines, which is exactly what makes
+  the offset after the last line feed a *record* boundary. Claude and Codex declare it; no other carried
+  provider does. Every other provider (including one that declares only `MalformedLineCount`) gets the file's
+  bytes and digest with `records_are_lines: false`, no record offset and no unfinished-record warning. The
+  regression cases are `TestSourceRecordsAreLinesAsksTheProvidersOwnDeclarations` (QwenPaw, CodeBuddy,
+  DeepSeek Harness rows, each measured failing against the old gate) and
+  `TestConversionOfAWholeFileJSONSourceClaimsNoRecordBoundary` (a complete QwenPaw document converted end to
+  end, which reproduced the false statement before the fix).
+- **Reversal:** widen the gate again for a provider the owner names explicitly, but pair the widening with
+  the two claims it needs — stop calling the offsets "records" and warn of an "unfinished record" only where
+  `IncrementalAppend` is declared — so the words and the bytes agree whatever the gate admits.
+- **Settled by:** the same question Q-0004-01 asked (does a line-recorded provider that declares only a
+  malformed-entry count get the offsets?), now answered by measurement rather than by preference; a reversal
+  needs either that provider to declare `IncrementalAppend` or the owner to accept the renamed claims.

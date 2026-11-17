@@ -58,7 +58,7 @@ each one attributed, and one rule the clause below it demands. This increment ad
 | `state` | `taken` or `not-taken` | `taken` when the conversion read the session from its own file at a path that names one file; `not-taken` with the reason for an archive read, a container-member identity, or a read that named no path |
 | `detail` | the state's own words | e.g. *"the conversation's own source file, read after the session and before anything was written"*, or the reason it was not taken |
 | `path`, `bytes`, `sha256` | the source file, its size and the digest of exactly those bytes | one streamed pass, the same pass that already computed the pre-conversion digest |
-| `records_are_lines` | whether the record offsets beside it are claimed | the **provider's own declaration** (`parser.SourceCapabilities.IncrementalAppend` or `parser.ContentCapabilities.MalformedLineCount` = `CapabilitySupported`), never this build's guess about a format |
+| `records_are_lines` | whether the record offsets beside it are claimed | the **provider's own declaration** (`parser.SourceCapabilities.IncrementalAppend` = `CapabilitySupported`: the source grows by appended lines), never this build's guess about a format. A provider that declares only `parser.ContentCapabilities.MalformedLineCount` — a count of malformed *entries* inside one whole-file document — gets no record boundary (Q-0004-07) |
 | `records_end_bytes` | the offset at which the source's last complete line-recorded event ends | the offset just after the file's last line feed, read in that same pass |
 | `unpublished_tail_bytes` | the bytes after it: a record the file had not finished writing | `bytes − records_end_bytes` |
 
@@ -126,11 +126,16 @@ No new command and no new flag. The human block gains up to two lines, and the s
 `--json`:
 
 ```text
-  boundary:     2884 byte(s) read, the source's records end at byte 2884; nothing in the file is unpublished
-  unpublished:  151 byte(s) after the last record terminator: the record the source was writing is not part of this conversion
+  boundary:     2884 byte(s) read, the source's records end at byte 2884: nothing in the file is unpublished
+  boundary:     3035 byte(s) read, the source's records end at byte 2884 — the file holds more than this snapshot covers
+  unpublished:  151 byte(s) after that hold no record terminator: the record the source was writing is not part of this conversion
   boundary:     not taken (the conversion read an archive row, so no source file was open at all)
-  boundary:     3626 byte(s) read; this source's records are not lines the harness appends, so no record boundary is claimed
+  boundary:     3626 byte(s) read; this source is not a transcript of appended line records, so no record boundary is claimed
 ```
+
+*(The wording is re-taken from the tree that ships it — `cmd/ccc/main.go`'s `writeBoundary`/`boundaryTailSuffix`;
+the four numbers here are the shapes' own illustrations, and each run prints the file's own. §1 of the
+evidence record quotes the lines as a real run printed them.)*
 
 `ccc help` gains one paragraph: a conversion is a snapshot, converting again reads the source again and
 writes another new session, and each result names the source boundary it covers.

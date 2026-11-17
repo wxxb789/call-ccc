@@ -396,6 +396,13 @@ func TestBoundaryWarningsNameAnUnfinishedRecord(t *testing.T) {
 // TestSourceRecordsAreLinesAsksTheProvidersOwnDeclarations pins the gate on the record offsets: they are
 // claimed for the providers whose own declarations say their sources are line records, and not for a
 // provider that declares nothing this build may read as that -- the name it cannot resolve included.
+//
+// The three middle rows are the regression case for the gate's own premise (Q-0004-07): each is a provider
+// in the carried tree whose source is one whole-file JSON document (a QwenPaw session file, a CodeBuddy
+// manifest) or a possibly compressed container (DeepSeek Harness), each declares
+// ContentCapabilities.MalformedLineCount -- a count of malformed *entries*, not of unparsed lines -- and
+// none may be reported as a line-recorded source. The gate once accepted that count as the declaration and
+// reported a complete file of theirs as one unfinished record; this table is what fails when it does again.
 func TestSourceRecordsAreLinesAsksTheProvidersOwnDeclarations(t *testing.T) {
 	reader := NewSourceReader(fixtureConfig(t))
 	for _, testCase := range []struct {
@@ -404,6 +411,9 @@ func TestSourceRecordsAreLinesAsksTheProvidersOwnDeclarations(t *testing.T) {
 	}{
 		{"claude", true},
 		{"codex", true},
+		{string(parser.AgentQwenPaw), false},
+		{string(parser.AgentCodeBuddy), false},
+		{string(parser.AgentDeepSeekHarness), false},
 		{"no-such-provider", false},
 		{"", false},
 	} {
@@ -413,6 +423,70 @@ func TestSourceRecordsAreLinesAsksTheProvidersOwnDeclarations(t *testing.T) {
 	}
 	if sourceRecordsAreLines(nil, "claude") {
 		t.Error("a reader-less call claimed a record boundary: no declaration was read")
+	}
+}
+
+// TestConversionOfAWholeFileJSONSourceClaimsNoRecordBoundary is the end-to-end half of the gate's premise
+// (Q-0004-07): a complete QwenPaw session -- one whole-file JSON document, the provider's own shape, with no
+// trailing line feed -- converts without the run stating anything false about it. The boundary must state
+// the file's bytes and claim no record offset, no warning may call the file's own content an unfinished
+// record, and the digest must be the bytes the conversion read. The defect this pins reported
+// `records_are_lines: true` with the whole file as unpublished tail and a "converting again carries them"
+// warning for a file whose read had consumed every byte.
+func TestConversionOfAWholeFileJSONSourceClaimsNoRecordBoundary(t *testing.T) {
+	cfg := fixtureConfig(t)
+	root := t.TempDir()
+	directory := filepath.Join(root, "default", "sessions")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatalf("creating the QwenPaw sessions directory: %v", err)
+	}
+	// The provider's on-disk shape, as its own parser documents it: one document whose agent memory holds
+	// [message, metadata] pairs. Written compactly and without a trailing newline, the way the provider's
+	// writer leaves a session file.
+	document := `{"agent":{"memory":{"content":[[` +
+		`{"id":"u1","name":"user","role":"user","content":[{"type":"text","text":"Which file holds the retry budget?"}],"metadata":{},"timestamp":"2026-05-04 09:15:00.000"},[]],` +
+		`[{"id":"a1","name":"Friday","role":"assistant","content":[{"type":"text","text":"internal/retry/budget.go."}],"metadata":{},"timestamp":"2026-05-04 09:15:01.000"},[]]` +
+		`]}}}`
+	sourcePath := filepath.Join(directory, "mine.json")
+	if err := os.WriteFile(sourcePath, []byte(document), 0o600); err != nil {
+		t.Fatalf("writing the QwenPaw session: %v", err)
+	}
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentQwenPaw: {root}}
+
+	result, err := Continue(context.Background(), ContinueOptions{
+		Ref:          Ref{Provider: string(parser.AgentQwenPaw), ID: sourcePath},
+		Target:       TargetCodex,
+		Config:       cfg,
+		TargetHome:   t.TempDir(),
+		TargetBinary: missingTargetBinary,
+		Verify:       VerifyNone,
+	})
+	if err != nil {
+		t.Fatalf("continuing from the QwenPaw session: %v", err)
+	}
+	if result.Conversion.ReadFrom != "source" {
+		t.Fatalf("read_from = %q, want the source file this case wrote", result.Conversion.ReadFrom)
+	}
+	if result.Source.Counts.Messages != 2 {
+		t.Errorf("read %d message(s), want the document's own 2", result.Source.Counts.Messages)
+	}
+	boundary := boundaryOf(t, result)
+	if boundary.RecordsAreLines {
+		t.Errorf("boundary = %+v, want no record boundary claimed: the source is one JSON document, not a "+
+			"transcript of appended line records", boundary)
+	}
+	if boundary.Bytes != int64(len(document)) || boundary.SHA256 != sha256Of(t, mustRead(t, sourcePath)) {
+		t.Errorf("boundary = %+v, want the file's own %d bytes and digest", boundary, len(document))
+	}
+	if boundary.RecordsEndBytes != 0 || boundary.UnpublishedTailBytes != 0 {
+		t.Errorf("boundary = %+v, want no record offset and no unpublished tail claimed", boundary)
+	}
+	if warning := strings.Join(result.Warnings, " "); strings.Contains(warning, "unfinished record") {
+		t.Errorf("the conversion warned about an unfinished record in a complete file: %v", result.Warnings)
+	}
+	if result.Installation.SourceCheckState != SourceCheckUnchanged {
+		t.Errorf("source check = %q (%s), want the source reported unchanged",
+			result.Installation.SourceCheckState, result.Installation.Detail)
 	}
 }
 

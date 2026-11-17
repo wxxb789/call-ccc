@@ -203,11 +203,14 @@ says so.
   environment. The conversion reads a **copy** of the fixture under the run's own scratch directory,
   never the committed bytes: the copy is what grows, by the committed
   `internal/ccc/testdata/growth/claude-complete-turn.jsonl` fragment, and the copy — not the fixture —
-  is digested around each conversion. The script plants an unrelated session in that home, runs
-  `ccc continue … --json`, checks the resume invocation the conversion reported (its argument vector
-  names the binary, `resume` and the session; its environment selects the data directory the session
-  was installed into, which is the only way Codex is told where to look), re-reads the installed file
-  with its own `ccc inspect` invocation and compares what the inherited reader made of it with what the
+  is digested around each conversion and once more at the end of the run, after the second loader and the
+  repeat turn: the final comparison that answers "the source session is unchanged" covers the copy as well
+  as the committed fixture tree and the growth fragment, so a mutation of the copy during the second
+  native stage is caught by the comparison that runs last. The script plants an unrelated session in that
+  home, runs `ccc continue … --json`, checks the resume invocation the conversion reported (its argument
+  vector names the binary, `resume` and the session; its environment selects the data directory the
+  session was installed into, which is the only way Codex is told where to look), re-reads the installed
+  file with its own `ccc inspect` invocation and compares what the inherited reader made of it with what the
   conversion says it carried (a second process, so the conversion's own round-trip verdict cannot stand
   in for that read), asks Codex's own app server to load the session (`thread/resume`), prints Codex's
   own view of it (`thread/read`), runs — with `--resume-prompt` — one real turn from the reported
@@ -227,8 +230,9 @@ says so.
   turn per prompt flag, and the report line says how many ran), which is what answers the later
   snapshot's model-visible history with the target's own words; the script's own cases pin the ordering
   (the comparison about the first session runs after the second conversion, so a second conversion that
-  touched it is caught), that the attribution comparison is checked against the file rather than trusted
-  from the document, and that the search for the appended turn is live in both directions.
+  touched it is caught; and a copy changed while the second session's own loader runs is caught by the
+  final comparison, which covers it), that the attribution comparison is checked against the file rather
+  than trusted from the document, and that the search for the appended turn is live in both directions.
   **What the second half does not re-check:** the second conversion's installation block and its
   rendered resume line are not held to the two checks the first conversion's own are (the session is
   installed under the target's sessions tree; the reported command selects the installation home). The
