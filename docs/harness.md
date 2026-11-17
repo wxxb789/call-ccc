@@ -303,10 +303,36 @@ says so.
   access is **inherited** by that turn, never copied into an isolated home; the run hashes the source
   fixture, a planted unrelated session and every session the home already held before and after, so a
   mutation during the loader or the turn is answered by the comparison that runs last.
-- `scripts/native_check_common.py` — the mechanism the two native checks share, so neither keeps its own
+- `scripts/pi-native-check.py` — the target-side native verification for goal 0005, both directions, and
+  **deliberately not a gate step** for the same reason the other two are not: it needs the target harness
+  installed and, for a real turn, model access. It converts a **copy** of a committed fixture whose
+  recorded working directory has been rewritten mechanically to a directory inside the run's own scratch
+  tree (Pi resolves a session id through the project directory spelled from the process's own working
+  directory, so a session filed under a path no host has can never be loaded by it), plants an unrelated
+  session in the target home, and reads the conversion's own report rather than trusting it: the
+  structural read-back's state, the loss categories, and the installed file's own record shapes (one
+  `session` header, the message roles, the tool-call blocks and their `toolResult`, and the `usage` object
+  Pi's loader indexes into). It then asks **Pi's own loader**, offline, in its RPC mode
+  (`pi --mode rpc --session <id>`, then `get_state`/`get_messages`) — against a **throw-away copy** of the
+  converted bytes in a scratch agent directory, because measured on 1.5.2 an RPC run appends its own
+  records (a `thinking_level_change` among them) to the session it opens, so driving the loader against
+  the installed file would alter what the conversion published; the installed file's digest is compared
+  around that whole stage, which is what makes the copy an assertion rather than a preference. The loader
+  must answer with this session's id and with the file's own model-visible history (the compaction entry
+  it rebuilt from, rendered as `compactionSummary`, then every message entry after it — the count is
+  *not* the file's `message` count, measured), and an unknown-id control arm must answer `No session
+  found matching '…'`, which is what makes the first arm an answer about *this* session rather than about
+  a process that started. With `--resume-prompt` the run also drives one real turn through the invocation
+  the report printed, prints the target's own answer under `TURN_OUTPUT_MARKER`, and requires the session
+  file to have grown. The Pi home it uses is a scratch agent directory whose `models.json` holds the
+  host's provider definitions with every credential-bearing field dropped (`apiKey`, `headers`) and the
+  chosen provider's key left as an `$ENV` reference, so nothing is read from or written to a credential
+  store; a host without the harness installed ends as `RESULT: INCOMPLETE` (exit 2) naming what could not
+  run, never as a pass.
+- `scripts/native_check_common.py` — the mechanism the native checks share, so none keeps its own
   copy of it: the file digests (`sha256`, `tree_digest`), the check recorder (`record`, `RESULTS`), the
   subprocess runner (`run`), the POSIX-shell reading of a rendered command (`shell_words`,
-  `unquoted_text` and the character set a shell acts on), the JSONL record-shape test both checks report
+  `unquoted_text` and the character set a shell acts on), the JSONL record-shape test the checks report
   through (a line may be blank or one JSON **object**; anything else — unparseable, or a value that is not
   an object — is that check's FAIL with the line's number), and the two strings the record's own rules
   read (`TURN_OUTPUT_MARKER`, `PROMPT_PLACEHOLDER`).

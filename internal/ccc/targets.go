@@ -16,11 +16,12 @@ import (
 const (
 	TargetCodex  = "codex"
 	TargetClaude = "claude"
+	TargetPi     = "pi"
 )
 
 // Targets names every target harness this build writes, in the order a caller lists them.
 func Targets() []string {
-	return []string{TargetCodex, TargetClaude}
+	return []string{TargetCodex, TargetClaude, TargetPi}
 }
 
 // harnessProbe is what a target harness's own binary answered about itself: where it is, whether it is
@@ -176,6 +177,8 @@ func targetRouteFor(target string) (targetRoute, error) {
 		return codexRoute(), nil
 	case TargetClaude:
 		return claudeRoute(), nil
+	case TargetPi:
+		return piRoute(), nil
 	default:
 		return targetRoute{}, fmt.Errorf("%w: %q (this build writes %s)",
 			ErrUnsupportedTarget, target, strings.Join(Targets(), ", "))
@@ -451,3 +454,145 @@ func invocationBinary(binary string, probe harnessProbe) string {
 	}
 	return absolute
 }
+
+// piRoute is the route increment 0005 adds: a Pi session JSONL file, installed under the project
+// directory Pi's own discovery derives from the session's working directory, verified through Pi's own
+// RPC loader (no model turn) and one real turn through the reported invocation.
+func piRoute() targetRoute {
+	return targetRoute{
+		Name:          TargetPi,
+		Format:        PiTargetFormat,
+		HomeEnv:       piHomeEnv,
+		BinaryDefault: PiBinaryDefault,
+		PinVersion:    PiFormatVersion,
+		FormatLimits:  piFormatLimits(),
+		ResolveHome:   ResolvePiHome,
+		Probe:         ProbePiBinary,
+		Facts:         piFacts,
+		// A Pi session binds no model provider of its own: the writer records the source's per-message
+		// model where the source recorded one, and a dry run leaves nothing unfilled that the harness
+		// would otherwise have answered.
+		DryRunWarnings: func(targetFacts, harnessProbe) []string { return nil },
+		Convert: func(conv Conversation, in targetConvertInput) (convertedTarget, error) {
+			session, err := ConvertToPiSession(conv, PiTargetOptions{
+				CLIVersion:   in.CLIVersion,
+				Now:          in.Now,
+				MaxToolNames: in.MaxToolNames,
+			})
+			if err != nil {
+				return convertedTarget{}, err
+			}
+			return convertedTarget{
+				ID:        session.SessionID,
+				FileName:  session.FileName,
+				Directory: session.Directory,
+				Cwd:       session.Cwd,
+				StartedAt: session.StartedAt,
+				Data:      session.Data,
+				Carried:   session.Carried,
+				Losses:    session.Losses,
+				Raw:       session,
+			}, nil
+		},
+		Install: func(session convertedTarget, home string) (string, string, error) {
+			return InstallPiSession(session.Raw.(PiSession), home)
+		},
+		StructureRoot: func(home string) string { return filepath.Join(home, piSessionsSubdir) },
+		ReadBack: func(ctx context.Context, root string, session convertedTarget, cfg config.Config) (StructureVerification, error) {
+			return VerifyPiSessionStructure(ctx, root, session.Raw.(PiSession), cfg)
+		},
+		Load: func(ctx context.Context, in targetVerificationInput) LoadVerification {
+			return VerifyPiLoad(ctx, PiLoadOptions{
+				Home:      in.Home,
+				Binary:    in.Binary,
+				SessionID: in.SessionID,
+				Cwd:       in.Cwd,
+				Directory: in.Directory,
+				FileName:  in.FileName,
+				Data:      in.Data,
+				Installed: in.Path,
+				Timeout:   in.Timeout,
+				Stderr:    in.Stderr,
+			})
+		},
+		Resume: func(ctx context.Context, in targetVerificationInput) ResumeVerification {
+			// The turn is the invocation's own words, run through the same environment and working
+			// directory the printed line names, so the check exercises what the report prints.
+			return VerifyPiResume(ctx, PiResumeOptions{
+				Home:        in.Home,
+				Binary:      in.Binary,
+				SessionID:   in.SessionID,
+				Cwd:         in.Cwd,
+				SessionPath: in.Path,
+				Prompt:      in.Prompt,
+				Timeout:     in.Timeout,
+				Stderr:      in.Stderr,
+			})
+		},
+		Invocation: func(session convertedTarget, in targetInvocationInput) targetInvocation {
+			// This invocation changes into the session's working directory, so its words are the program
+			// this run probed and verified (invocationBinary): a bare name re-searched by a shell from
+			// there can find a different program.
+			binary := invocationBinary(in.Binary, in.Probe)
+			arguments := []string{binary, "--session", session.ID}
+			execArguments := append(append([]string{}, arguments...), promptTerminator, resumePromptPlaceholder)
+			return targetInvocation{
+				Arguments:     arguments,
+				ExecArguments: execArguments,
+				// The home is named because Pi takes its agent directory from the environment alone: a
+				// caller that runs the argument vector without it would otherwise read their own
+				// extensions and context files into the resumed session, and look for the session in
+				// their own home.
+				Environment: map[string]string{piHomeEnv: in.Home},
+				// Measured: Pi resolves a session id through the project directory of the process's own
+				// working directory, so the invocation has to run from the session's own.
+				WorkingDir: session.Cwd,
+			}
+		},
+		Fields: func(session convertedTarget, facts targetFacts) targetFacts {
+			// Pi's session records no provider binding of its own, so the report states the document's own
+			// format version and the last model the source's messages recorded.
+			target := session.Raw.(PiSession)
+			facts.CLIVersion = target.CLIVersion
+			facts.ModelProvider = target.ModelProvider
+			if target.ModelProvider != "" {
+				facts.ProviderSource = "source-messages"
+				facts.ProviderDetail = "the source's own messages recorded the provider these turns ran " +
+					"under; a Pi session binds no provider to itself, so no resumed turn is refused for it"
+			}
+			facts.Model = target.Model
+			return facts
+		},
+		StructureMethod:       structureMethodPi,
+		StructureMethodDryRun: structureMethodPiDryRun,
+		LoadMethod:            loadMethodPi,
+		ResumeMethod:          resumeMethodPi,
+		StructureReader:       structureReaderPi,
+	}
+}
+
+// piFacts records which version the session's records are written as: the probed one when the installed
+// binary answered, else the pinned version this writer's format was verified against. Pi's own session
+// records no version field of its own that a loader checks, and it binds no model provider, so nothing
+// else is asked of the harness here.
+func piFacts(_ context.Context, in targetFactsInput) targetFacts {
+	facts := targetFacts{CLIVersion: PiFormatVersion, CLIVersionSource: "writer-pin"}
+	if in.Probe.Version != "" {
+		facts.CLIVersion = in.Probe.Version
+		facts.CLIVersionSource = "probe"
+	}
+	return facts
+}
+
+// A Pi session binds no model to itself, and the models its turns record are the *source's* -- a
+// source-side provider label (`claude`, `codex`, `pi` as AgentsView spells the agent that wrote the words)
+// with a model id from that provider's catalog. Pi's own providers are the endpoints its configuration
+// defines, so the source's label names an endpoint the target home need not have, and the source's model
+// id may be ambiguous across the endpoints it does have or missing from them: measured, a printed
+// `--provider claude` stopped a run before it opened the session (`Unknown provider "claude"`), and a
+// printed `--model claude-sonnet-4-5` stopped one before it opened the session too ("ambiguous across
+// providers ... No matching provider is authenticated"). A resume command that cannot open the session is
+// not a resume command, so the route prints neither and the resumed turn runs under whatever model the
+// caller's own Pi configuration offers — which is what the `model_provider_binding` format limit and the
+// `message_model_attribution` caveat state, while the conversation itself carries the source's model on
+// every assistant entry it was recorded with.

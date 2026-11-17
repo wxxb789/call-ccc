@@ -27,14 +27,16 @@ with their exit codes and counts).
   plausible-looking one. Never fabricate tool results, reasoning, roles, resume identities or a
   success result; a valid file is not evidence that anything can resume it.
 - **A target writer's claim is shown through the target harness's own loader.** Call `ccc continue …
-  --to codex` or `--to claude` converts, installs and reports **converted / installed / natively
-  resumable** as three separate states; "resumable" is only ever `verification.load` or
+  --to codex`, `--to claude` or `--to pi` converts, installs and reports **converted / installed /
+  natively resumable** as three separate states; "resumable" is only ever `verification.load` or
   `verification.resume` coming back `verified`, and every one of a conversion's omissions or narrowing
   is named in `conversion.losses[]`. The native half needs the target harness installed and, for a real
-  turn, model access, so it is **not** a gate step: `scripts/codex-native-check.py` and
-  `scripts/claude-native-check.py` re-derive it and report each check's own verdict (the gate keeps
-  deciding the offline half — round-trip through the inherited reader, install rules, reported losses,
-  CLI shape). The Codex check also runs the repeat scenario goal 0004 added: it converts a *copy* of the
+  turn, model access, so it is **not** a gate step: `scripts/codex-native-check.py`,
+  `scripts/claude-native-check.py` and `scripts/pi-native-check.py` re-derive it and report each check's
+  own verdict (the gate keeps deciding the offline half — round-trip through the inherited reader,
+  install rules, reported losses, CLI shape). A check whose target harness is absent reports
+  `RESULT: INCOMPLETE` with exit 2 and names what it could not run, so a partial run is never quoted as
+  a pass. The Codex check also runs the repeat scenario goal 0004 added: it converts a *copy* of the
   fixture, loads it, appends the committed `internal/ccc/testdata/growth/` fragment to the copy,
   converts again, and shows Codex's own loader opening the second session with its own view holding the
   appended turn while the first session's bytes did not move (`--repeat-resume-prompt` adds one real
@@ -46,8 +48,12 @@ with their exit codes and counts).
   provider — asked of the harness itself — and no model, never the source's: recording nothing is
   refused by a home that has migrated to paginated threads, and recording the source's provider would
   be false. A Claude Code transcript has no provider field at all, so `--to claude` states that as the
-  `model_provider_binding` format limit and binds the session to no provider, and neither route ever
-  writes the source's.
+  `model_provider_binding` format limit and binds the session to no provider, and no route ever writes the
+  source's provider as the session's own. A Pi session binds no provider either — its records carry a
+  provider and a model per assistant message, which is the source's own attribution and travels verbatim —
+  and its printed resume command names no provider or model, because the source's provider label is a
+  source-side name the target home need not define and a flagged model can leave the target unable to open
+  the session at all.
 - **A conversion is a snapshot of the source at one boundary, and repeating it is the same operation.**
   The source is read again and written as *another* fresh target session; nothing ever merges later
   source history into an existing target session, and nothing rewrites the source. Every conversion's
@@ -74,13 +80,17 @@ with their exit codes and counts).
 
 - The continuation core and its per-harness target writers live in `internal/ccc` — the route table
   `targets.go` and the writers/installers/verifiers `codex_target.go`, `codex_install.go`,
-  `codex_verify.go`, `claude_target.go`, `claude_install.go`, `claude_verify.go`; its committed
+  `codex_verify.go`, `claude_target.go`, `claude_install.go`, `claude_verify.go`, `pi_target.go`,
+  `pi_install.go`, `pi_verify.go`; its committed
   native-shaped fixtures are `internal/ccc/testdata/fixtures/` and the growth fragments a run appends to
   a *copy* of one (`internal/ccc/testdata/growth/`, written by the same `internal/ccc/fixturegen` and
   pinned against it) are what makes one source session grow; `cmd/ccc` adds
   argument handling and presentation only, and a target-side native harness
-  (`scripts/codex-native-check.py`, `scripts/claude-native-check.py`) is registered in
-  `docs/harness.md`, re-runnable, and deliberately not a gate step.
+  (`scripts/codex-native-check.py`, `scripts/claude-native-check.py`, `scripts/pi-native-check.py`) is
+  registered in `docs/harness.md`, re-runnable, and deliberately not a gate step. A target whose own
+  loader resolves a session id through the process's working directory — Claude Code, and Pi — is
+  installed under the project spelling of the source read's recorded working directory, and a source that
+  recorded none is refused (`ErrNoTargetCwd`) rather than installed where no lookup finds it.
 - Gate: `python3 scripts/gate.py`, which must print `GATE: PASS`; it runs `parity` and `selftest` as
   required steps, and its Go steps are narrowed to `./cmd/ccc/... ./internal/ccc/...` with the measured
   reasons in [`docs/harness.md`](docs/harness.md#why-the-go-steps-target-a-subset) — that narrowing is

@@ -1711,3 +1711,115 @@ supersede it with a newer one and say which it supersedes.
   also failing the search for the last record's dialogue; and by reading the fragment's *first* text field
   instead of its last, which failed the Codex half alone with `the case searches for "What budget do retries
   share per session?", which is not in the fragment's last record …`.
+
+## Q-0005-01 — A Pi assistant entry always carries a `usage` object, with zero counts
+
+- **Status:** resolved (default taken)
+- **Question:** Pi's assistant records carry a `usage` object whose counts are the harness's own
+  accounting. A converted session's turns were produced by the source's provider, so what counts should
+  the record carry — the source's, a computed estimate, or none?
+- **Default taken:** always write a `usage` object, its counts zero, and name it in the report
+  (`unrecorded_token_usage`, carried-with-caveat, with what it costs). Measured on 1.5.2: the loader
+  indexes `message.usage.input` for every assistant message it loads, and a written message without a
+  usage object stops a resumed run with `undefined is not an object (evaluating 'message.usage.input')`
+  — so "none" is not available. Zero is the answer that attributes nothing: the source's provider billed
+  the source's session, and no number this build could write would be that provider's rate or this
+  session's spend.
+- **Reversal:** carry the source's recorded per-message counts (the inherited reader holds them per
+  message: `parser.ParsedMessage.TokenUsage`), which would make the target's own totals look like this
+  session's spending; or copy the source's cost table, which this build has no rates to justify.
+- **Settled by:** nothing owner-only. The caveat names the cost of the default: a long carried history
+  reads to Pi's own context estimate as cheaper than it is until the first resumed turn reports its own
+  usage.
+
+## Q-0005-02 — `firstKeptEntryId` is the boundary's own id, and `systemMessage` is null
+
+- **Status:** resolved (default taken)
+- **Question:** Pi's compaction entry names the first entry the boundary kept and may carry the prompt
+  checkpoint the context is rebuilt from. A source's compaction record (a Codex `compacted` record, a
+  Claude `compact_boundary` summary) names the summary and the boundary but not which entries were kept,
+  and no checkpoint at all.
+- **Default taken:** write `firstKeptEntryId` as the compaction entry's own id — Pi's own retain-none
+  shape, measured in the harness's `buildContextEntries`, where a boundary whose kept id is its own
+  leaves nothing before it retained — and `systemMessage` as an explicit null, because Pi installs its
+  own prompt and tool loadout at request time and a reconstructed checkpoint would be a prompt nobody
+  recorded. Measured on the converted fixture: the loader then reports the boundary's summary as the
+  leading `compactionSummary` entry of its model-visible history, with the turns after the boundary
+  following it.
+- **Reversal:** claim the entries after the source's boundary as the kept range (inventing a boundary
+  position the source never recorded), or reconstruct a checkpoint from the target's own prompt.
+- **Settled by:** nothing owner-only.
+
+## Q-0005-03 — A Pi native check drives the loader against a copy, from the session's recorded directory
+
+- **Status:** resolved (default taken)
+- **Question:** Pi's loader is driven offline by its RPC mode, and it resolves a session id through the
+  project directory spelled from the process's own working directory. Should the check run the loader
+  against the installed session, and from where?
+- **Default taken:** against a throw-away copy in a scratch agent directory, from the session's own
+  recorded working directory. Two measurements settled it: (1) an RPC run **appends** its own records (a
+  `thinking_level_change` among them) to the session it opens, so driving the loader against the
+  installed file alters what the conversion published — the installed file's digest is compared around
+  the whole stage, which is what makes the copy an assertion rather than a preference; and (2) a process
+  whose working directory spells another project is answered with `Session found in different project:
+  <recorded>` and a *fork* offer rather than a load, which is not the conversation's own resume command —
+  so the check runs from the recorded directory and reports a recorded directory that does not exist on
+  this machine as "the load could not be verified" rather than reading the fork offer as a pass. The
+  scratch copy is installed under the same project spelling as the real one, which is what makes the
+  lookup find it.
+- **Reversal:** run the loader against the installed file (mutating it), or recreate a stand-in path
+  inside the scratch tree (whose project spelling is a different project's, which is the fork offer
+  again).
+- **Settled by:** nothing owner-only.
+
+## Q-0005-04 — The Pi resume command prints no `--provider` and no `--model`
+
+- **Status:** resolved (default taken)
+- **Question:** the source's own last message records a provider and a model. Should the printed Pi
+  resume command carry them, so the resumed turn runs under the instruction the session records?
+- **Default taken:** neither is printed. The source's provider is a *source-side* label — AgentsView
+  spells the agent that wrote the words (`claude`, `codex`, `pi`) — and Pi's own provider ids are the
+  endpoints the caller's configuration defines, so the label names an endpoint the target home need not
+  have. Measured twice on 1.5.2, both times before the session was even opened: `--provider claude`
+  against a Pi home whose `models.json` defines one endpoint stopped with `Unknown provider "claude"`,
+  and `--model claude-sonnet-4-5` stopped with `ambiguous across providers … No matching provider is
+  authenticated`. A resume command that cannot open the session is not a resume command, and the earlier
+  candidate flags also failed goal 0005's own "resumed by Pi" evidence. The attribution is not lost: the
+  assistant entries carry the source's provider and model verbatim, and the report says so
+  (`message_model_attribution`, carried-with-caveat) beside the `model_provider_binding` format limit.
+- **Reversal:** print the model (risk: the target cannot open the session when the id is ambiguous or
+  unauthenticated), or print `provider/model` from the source's label (which Pi cannot resolve at all).
+- **Settled by:** nothing owner-only; a caller who wants a specific model passes Pi's own flags.
+
+## Q-0005-05 — `ccc continue --to pi` accepts a session whose recorded directory is not on this machine
+
+- **Status:** resolved (default taken)
+- **Question:** Pi's lookup is path-scoped, so a session installed under a working directory this host
+  does not have cannot be loaded here. Should the conversion be refused (as a missing recorded directory
+  is, `ErrNoTargetCwd`), or written and reported?
+- **Default taken:** written and reported. The design's rule is that a conversion is a snapshot and that
+  the native half needs the target installed; the target home is the caller's, and the session is
+  installed exactly where the target's own discovery will find it on a machine that has the directory —
+  which is the machine a cross-machine handoff is for. The load check reports `not-verified` naming the
+  missing directory, the run's warnings carry it, and the exit code is the one a verification that could
+  not run earns.
+- **Reversal:** refuse the conversion when the recorded directory is absent here (which would make a
+  cross-machine continuation impossible), or install into an invented directory (which is what
+  `ErrNoTargetCwd` exists to prevent).
+- **Settled by:** nothing owner-only.
+
+## Q-0005-06 — Which fixture the Pi parity oracle records
+
+- **Status:** resolved (default taken)
+- **Question:** goal 0005 adds two Pi fixtures. Which one gets a recorded upstream-parity dump, given
+  that `scripts/upstream-compare.py` needs network and a second checkout?
+- **Default taken:** the ordinary session (`pi/01a1c335-…`), which exercises the reader's identity,
+  ordering, tool-call/result pairing and per-message model fields in both trees. The branch/compaction
+  fixture has no recorded dump in this increment; its own properties are pinned offline by this tree's
+  tests (`TestPiHistoryFixtureBranchIsNotOnTheActivePath` walks the fixture's tree, and the continuation
+  cases pin what a conversion does with it), and the case can be added the next time the comparison is
+  run with `--record`.
+- **Reversal:** run `python3 scripts/upstream-compare.py --record` with the second fixture added to both
+  `Cases` and `CASES`; nothing depends on the omission except that the reader's projection of *that*
+  fixture is not proven against the pin.
+- **Settled by:** nothing owner-only.

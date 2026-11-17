@@ -693,6 +693,17 @@ const (
 
 	structureMethodClaude       = "the inherited AgentsView Claude reader over the installed session"
 	structureMethodClaudeDryRun = "the inherited AgentsView Claude reader over a throw-away copy (dry run)"
+
+	structureMethodPi       = "the inherited AgentsView Pi reader over the installed session"
+	structureMethodPiDryRun = "the inherited AgentsView Pi reader over a throw-away copy (dry run)"
+	// The Pi load check drives the harness's own RPC loader against a throw-away copy, with the
+	// variables that could reach a model removed, and asks the same question about an unknown id beside
+	// it: see pi_verify.go.
+	loadMethodPi = "the target harness's own loader (pi --mode rpc, get_state/get_messages, with no " +
+		"model variables in its environment, plus an unknown-id control)"
+
+	resumeMethodPi = "one turn in the installed session through the target harness's non-interactive " +
+		"resume (pi -p --session)"
 	// The Claude load check drives the harness's own loader with --bare and with the environment
 	// variables that could reach a model removed, so the loader resolves the installed session without a
 	// model turn, and runs an unknown-id control arm beside it: see claude_verify.go.
@@ -711,6 +722,7 @@ const (
 	// once per route and no target's check can name another target's reader.
 	structureReaderCodex  = "Codex"
 	structureReaderClaude = "Claude Code"
+	structureReaderPi     = "Pi"
 )
 
 // hasAnswer reports whether a check carries an answer of its own: it verified, or it came back

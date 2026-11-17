@@ -25,7 +25,7 @@ cmd/ccc/            the standalone CLI; no continuation-core types leak into it
 internal/ccc/       continuation core: conversation document, readers, archive access,
                     target writers and the route table (targets.go, codex_target.go,
                     codex_install.go, codex_verify.go, claude_target.go, claude_install.go,
-                    claude_verify.go, continue.go)
+                    claude_verify.go, pi_target.go, pi_install.go, pi_verify.go, continue.go)
 internal/ccc/parity the canonical dump and the oracle a pristine checkout runs too
 internal/ccc/testdata/fixtures  committed native-shaped sessions, written by internal/ccc/fixturegen
 internal/ccc/testdata/growth    committed fragments a run appends to a *copy* of one fixture, so one
@@ -37,8 +37,8 @@ docs/evidence/      one evidence record per increment: real commands, exit codes
 docs/upstream.md    the carried AgentsView pin, its declared deviations and the update procedure
 docs/decisions/     append-only record of decisions taken and defaults chosen
 scripts/            harness entry points (gate, knobs, carry importer, parity, comparison,
-                    codex-native-check and claude-native-check: the target-side native
-                    verifications, deliberately not gate steps)
+                    codex-native-check, claude-native-check and pi-native-check: the
+                    target-side native verifications, deliberately not gate steps)
 ```
 
 Inherited AgentsView packages keep their upstream paths and stay where upstream put them. The carry is
@@ -106,13 +106,21 @@ gate runs as a required step.
   container of those records is reported by its bytes and digest with no record offset claimed for it.
 - **A target session is discoverable where the target's own loader looks.** A target that finds a
   session only from the working directory its process runs in — Claude Code resolves a session through
-  the directory whose project-dir spelling matches the one it was installed under — is installed under
-  the directory the source read recorded, and the printed resume command carries that directory as well
-  as the target data home (`cd <cwd> && CLAUDE_CONFIG_DIR=<home> claude --resume <id>`). A source that
-  recorded no working directory is refused (`ErrNoTargetCwd`) rather than given an invented one, since
-  a session installed anywhere else is one no loader finds.
-- **Fixtures are sanitized native shapes.** Small, version-identified, committed fixtures; no real
-  personal session content, no secrets, no absolute host paths in committed evidence.
+  the directory whose project-dir spelling matches the one it was installed under, and Pi resolves a
+  session id through the project directory spelled from the process's own working directory — is
+  installed under the directory the source read recorded, and the printed resume command carries that
+  directory as well as the target data home (`cd <cwd> && CLAUDE_CONFIG_DIR=<home> claude --resume
+  <id>`, `cd <cwd> && PI_CODING_AGENT_DIR=<home> pi --session <id>`). A source that recorded no working
+  directory is refused (`ErrNoTargetCwd`) rather than given an invented one, since a session installed
+  anywhere else is one no loader finds. A native check of such a target runs the loader from the
+  session's own recorded directory and against a **copy** of the converted bytes: measured on Pi 1.5.2,
+  an RPC run appends its own records (a `thinking_level_change` among them) to the session it opens, so
+  driving the loader against the installed file would alter what the conversion published.
+- **Fixtures are sanitized native shapes.** Small, version-identified, committed fixtures — one
+  provider directory per source (`fixtures/claude/`, `fixtures/codex/`, `fixtures/pi/`) — with no real
+  personal session content, no secrets and no absolute host paths in committed evidence; a fixture that
+  must be driven by a harness whose lookup is path-scoped is copied into the run's own scratch tree with
+  its recorded working directory rewritten mechanically, never edited in place.
 - **Comments and docs state what the code does, not what it was meant to do.** A comment or test name
   claiming a rule the code no longer implements is a correctness defect.
 - **A test pins the rule it names, on every platform and every Python 3 these docs name.** An

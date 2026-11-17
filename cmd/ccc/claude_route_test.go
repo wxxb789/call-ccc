@@ -187,7 +187,7 @@ func TestContinueRefusesATargetThisBuildDoesNotWrite(t *testing.T) {
 	if code != exitUsage {
 		t.Fatalf("exit %d, want %d", code, exitUsage)
 	}
-	if !strings.Contains(stderr, `this build writes codex, claude, not "gemini"`) {
+	if !strings.Contains(stderr, `this build writes codex, claude, pi, not "gemini"`) {
 		t.Errorf("stderr = %q, want it to name every target this build writes", stderr)
 	}
 }

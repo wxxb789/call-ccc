@@ -58,6 +58,38 @@ const (
 		"*** Update File: internal/retry/policy.go\n" +
 		"*** End Patch"
 
+	// Pi fixtures. Pi's session format is a tree of entries linked by `id`/`parentId`, so a fixture is
+	// written with the small builder below rather than by a shared inherited helper: the entries are
+	// ordinary JSON objects with field names the format defines, and the generator writes them as
+	// literals the way the harness does.
+	//
+	// The first is an ordinary session: a header, the model and thinking-level records a run opens
+	// with, two turns, and a tool call answered by its result.
+	piSessionID    = "01a1c335-7098-71c2-a91b-b5295c0464f5"
+	piSessionCwd   = "/home/user/code/example-api"
+	piSessionStamp = "2026-05-04T09:15:00.000Z"
+
+	// The second carries what a conversion has to preserve rather than flatten: a compaction boundary
+	// whose summary stands in for the turns before it, and a branch the conversation left. The branch's
+	// own turn was recorded after the summary and its abandoned path hangs off an entry the active path
+	// does not continue from, which is what Pi's own tree navigation leaves behind.
+	piHistorySessionID    = "01a1c336-4b02-78d3-9e15-6c7a2f0b8d41"
+	piHistorySessionCwd   = "/home/user/code/history"
+	piHistorySessionStamp = "2026-05-05T11:00:00.000Z"
+
+	// The growth fragment's own entries: one further turn, chained onto the committed session's last
+	// entry so a copy that grew by it is one session rather than two roots.
+	piGrowthUserID          = "a1b2c3d4"
+	piGrowthAssistantID     = "e5f60718"
+	piGrowthStamp           = "2026-05-04T09:16:20.000Z"
+	piGrowthAssistantStamp  = "2026-05-04T09:16:24.000Z"
+	piSessionLastEntryID    = "1d4e7a90"
+	piGrowthMillis          = 1794938180000
+	piGrowthAssistantMillis = 1794938184000
+
+	piFixtureProvider = "example-proxy"
+	piFixtureModel    = "example-model-2"
+
 	// A line the writer was interrupted in the middle of, which is what a session being appended to
 	// while it is read looks like. The parsers must count it as malformed rather than guess a message
 	// from it, and an inspection must report that count.
@@ -102,8 +134,187 @@ func growthFiles() map[string]string {
 	return map[string]string{
 		"claude-complete-turn.jsonl":     canonicalJSONL(claudeGrowthTurn()),
 		"codex-complete-turn.jsonl":      canonicalJSONL(codexGrowthTurn()),
+		"pi-complete-turn.jsonl":         canonicalJSONL(piGrowthTurn()),
 		"claude-unfinished-record.jsonl": claudeGrowthTail,
 		"codex-unfinished-record.jsonl":  codexGrowthTail,
+	}
+}
+
+// piGrowthTurn is one further Pi turn as the harness records it: the user entry and the assistant entry
+// that answered it, chained to each other by id and parentId, in the shape the committed Pi session
+// carries. Every entry is appended to a copy of that session, so the fragment names the entry it chains
+// onto the way the harness does: the id of the entry the file's last record holds.
+//
+// The chained id is the *committed* fixture's last entry id, which is what makes the fragment a turn
+// appended to that session rather than to any session. A copy that grew by this fragment therefore has a
+// tree the target's own reader walks from its leaf back through the fixture's own records.
+func piGrowthTurn() string {
+	return testjsonl.JoinJSONL(
+		marshal(piEntryMap(piGrowthUserID, piSessionLastEntryID, piGrowthStamp, map[string]any{
+			"message": piMessageMap("user", growthQuestion, piGrowthMillis),
+		})),
+		marshal(piEntryMap(piGrowthAssistantID, piGrowthUserID, piGrowthAssistantStamp, map[string]any{
+			"message": piAssistantMap(growthAnswer, piGrowthAssistantMillis),
+		})),
+	)
+}
+
+// piSession is the first Pi fixture: an ordinary session with two turns and a tool call answered by its
+// result, in the shape the harness records (a header, the model and thinking-level entries a run opens
+// with, then the messages).
+func piSession() string {
+	return testjsonl.JoinJSONL(
+		marshal(map[string]any{
+			"type": "session", "version": 3, "id": piSessionID,
+			"timestamp": piSessionStamp, "cwd": piSessionCwd,
+		}),
+		marshal(map[string]any{
+			"type": "model_change", "id": "9e7a5bd5", "parentId": nil,
+			"timestamp": "2026-05-04T09:15:00.100Z",
+			"provider":  piFixtureProvider, "modelId": piFixtureModel,
+		}),
+		marshal(map[string]any{
+			"type": "thinking_level_change", "id": "74b241b5", "parentId": "9e7a5bd5",
+			"timestamp": "2026-05-04T09:15:00.200Z", "thinkingLevel": "low",
+		}),
+		marshal(piEntryMap("52fd5d0f", "74b241b5", "2026-05-04T09:15:01.000Z", map[string]any{
+			"message": piMessageMap("user", "Where is the retry cap configured?", 1794938101000),
+		})),
+		marshal(piEntryMap("b3c4d5e6", "52fd5d0f", "2026-05-04T09:15:04.000Z", map[string]any{
+			"message": piToolCallMap([]map[string]any{{
+				"type": "text", "text": "I will look for the retry configuration.",
+			}, {
+				"type": "toolCall", "id": "call_01Example000000000000000000", "name": "grep",
+				"arguments": map[string]any{"pattern": "maxBackoffSeconds"},
+			}}, 1794938104000, "toolUse"),
+		})),
+		marshal(piEntryMap("c7d8e9fa", "b3c4d5e6", "2026-05-04T09:15:06.000Z", map[string]any{
+			"message": map[string]any{
+				"role":       "toolResult",
+				"toolCallId": "call_01Example000000000000000000",
+				"toolName":   "grep",
+				"content": []map[string]any{{
+					"type": "text", "text": "internal/retry/config.go:41: maxBackoffSeconds = 30",
+				}},
+				"isError":   false,
+				"timestamp": 1794938106000,
+			},
+		})),
+		marshal(piEntryMap("2a3b4c5d", "c7d8e9fa", "2026-05-04T09:15:07.000Z", map[string]any{
+			"message": piAssistantMap("It is set in internal/retry/config.go.", 1794938107000),
+		})),
+		marshal(piEntryMap("1d4e7a90", "2a3b4c5d", "2026-05-04T09:15:09.000Z", map[string]any{
+			"message": piAssistantMap("The cap is 30 seconds of backoff between attempts.", 1794938109000),
+		})),
+	)
+}
+
+// piHistorySession is the second Pi fixture: a conversation compacted at a boundary, and a branch the
+// conversation left afterwards.
+//
+// The active path is the file's own tree from its last entry back: the compaction summary, then the
+// turn that followed it. The branch's own turn names an entry the summary replaced as its parent, so it
+// is recorded history the active conversation does not continue from -- exactly the shape a target must
+// not flatten into an invented active conversation.
+func piHistorySession() string {
+	summarizedID := "aa11bb22"
+	abandonedID := "cc33dd44"
+	summaryID := "ee55ff66"
+	keptID := "0011aa22"
+	answerID := "3344bb55"
+	headers := []string{
+		marshal(map[string]any{
+			"type": "session", "version": 3, "id": piHistorySessionID,
+			"timestamp": piHistorySessionStamp, "cwd": piHistorySessionCwd,
+		}),
+		marshal(map[string]any{
+			"type": "model_change", "id": "7f8e9d0c", "parentId": nil,
+			"timestamp": "2026-05-05T11:00:00.100Z",
+			"provider":  piFixtureProvider, "modelId": piFixtureModel,
+		}),
+		marshal(piEntryMap(summarizedID, "7f8e9d0c", "2026-05-05T11:00:01.000Z", map[string]any{
+			"message": piMessageMap("user", "How tall is the tower in the plaza?", 1795026001000),
+		})),
+		marshal(piEntryMap(abandonedID, summarizedID, "2026-05-05T11:00:04.000Z", map[string]any{
+			"message": piAssistantMap("The tower in the plaza is 42 metres tall.", 1795026004000),
+		})),
+	}
+	entries := []string{
+		marshal(map[string]any{
+			"type": "compaction", "id": summaryID, "parentId": abandonedID,
+			"timestamp":        "2026-05-05T11:01:00.000Z",
+			"summary":          "The user is working through the plaza measurements and settled on the tower height.",
+			"firstKeptEntryId": summaryID, "tokensBefore": 2048,
+		}),
+		marshal(piEntryMap(keptID, summaryID, "2026-05-05T11:02:00.000Z", map[string]any{
+			"message": piMessageMap("user", "And the retry cap?", 1795026120000),
+		})),
+		marshal(piEntryMap(answerID, keptID, "2026-05-05T11:02:03.000Z", map[string]any{
+			"message": piAssistantMap("Thirty seconds, in internal/retry/config.go.", 1795026123000),
+		})),
+		// The abandoned branch's own turn: recorded after the summary and chained to the entry the
+		// summary replaced, so the active path does not reach it.
+		marshal(piEntryMap("5566cc77", abandonedID, "2026-05-05T11:03:00.000Z", map[string]any{
+			"message": piAssistantMap("I should not have answered with only the height.", 1795026180000),
+		})),
+	}
+	return testjsonl.JoinJSONL(append(headers, entries...)...)
+}
+
+// piToolCallMap is one assistant message payload whose content holds calls: the text block and the call
+// blocks, with the stop reason the harness records for a turn that ended in a tool call.
+func piToolCallMap(content []map[string]any, timestamp int64, stopReason string) map[string]any {
+	message := piAssistantMap("", timestamp)
+	message["content"] = content
+	message["stopReason"] = stopReason
+	return message
+}
+
+// piEntryMap is one session entry: the base fields every entry carries, plus the entry kind's own.
+func piEntryMap(id, parentID, timestamp string, rest map[string]any) map[string]any {
+	entry := map[string]any{
+		"type":      "message",
+		"id":        id,
+		"parentId":  parentID,
+		"timestamp": timestamp,
+	}
+	for name, value := range rest {
+		entry[name] = value
+	}
+	return entry
+}
+
+// piMessageMap is one message payload with a plain-string content, which is how the harness records a
+// user turn.
+func piMessageMap(role string, content any, timestamp int64) map[string]any {
+	return map[string]any{"role": role, "content": content, "timestamp": timestamp}
+}
+
+// piAssistantMap is one assistant message payload: a text block, the provider and model the harness
+// records, and a usage object. Pi's own loader reads `message.usage.input` for every assistant message
+// it loads (a message without a usage object stops a resumed run), so every assistant entry a fixture
+// carries has one, and the fixture's numbers are invented like every other fixture value.
+func piAssistantMap(text string, timestamp int64) map[string]any {
+	return map[string]any{
+		"role":       "assistant",
+		"content":    []map[string]any{{"type": "text", "text": text}},
+		"api":        "openai-completions",
+		"provider":   piFixtureProvider,
+		"model":      piFixtureModel,
+		"stopReason": "stop",
+		"timestamp":  timestamp,
+		"usage": map[string]any{
+			"input":       412,
+			"output":      38,
+			"cacheRead":   0,
+			"cacheWrite":  0,
+			"reasoning":   0,
+			"totalTokens": 450,
+			"cost": map[string]any{
+				"input": 0.0000412, "output": 0.0000038, "cacheRead": 0.0,
+				"cacheWrite": 0.0, "total": 0.000045, "totalFromProvider": false,
+			},
+		},
 	}
 }
 
@@ -146,6 +357,8 @@ func fixtureFiles() map[string]string {
 		filepath.Join("claude", claudeToolingProject, claudeToolingSessionID+".jsonl"): canonicalJSONL(claudeToolingSession()),
 		filepath.Join("codex", "2026", "05", "04", codexRollout+".jsonl"):              canonicalJSONL(codexSession()),
 		filepath.Join("codex", "2026", "05", "06", codexPatchRollout+".jsonl"):         canonicalJSONL(codexPatchSession()),
+		filepath.Join("pi", piSessionID+".jsonl"):                                      canonicalJSONL(piSession()),
+		filepath.Join("pi", piHistorySessionID+".jsonl"):                               canonicalJSONL(piHistorySession()),
 	}
 }
 

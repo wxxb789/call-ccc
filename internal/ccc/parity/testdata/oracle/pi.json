@@ -1,0 +1,197 @@
+{
+  "tool": "call-ccc-parity-oracle/3",
+  "case": "pi",
+  "fixture": {
+    "relative_to_root": "01a1c335-7098-71c2-a91b-b5295c0464f5.jsonl",
+    "bytes": 2713,
+    "sha256": "7395c3b0309a09501d9041b36ad46f471c513584e220940eb325174bc111a2e6"
+  },
+  "parse": {
+    "session_id": "pi:01a1c335-7098-71c2-a91b-b5295c0464f5",
+    "provider": "pi",
+    "agent": "Pi",
+    "source_file": "01a1c335-7098-71c2-a91b-b5295c0464f5.jsonl",
+    "project": "example_api",
+    "cwd": "/home/user/code/example-api",
+    "read_from": "source",
+    "malformed_lines": 0,
+    "truncated": false,
+    "counts": {
+      "messages": 5,
+      "user_messages": 2,
+      "assistant_messages": 3,
+      "system_messages": 0,
+      "tool_messages": 0,
+      "system_records": 0,
+      "sidechain_messages": 0,
+      "compact_boundaries": 0,
+      "tool_calls": 1,
+      "tool_results": 1
+    },
+    "messages": [
+      {
+        "ordinal": 0,
+        "role": "user",
+        "timestamp": "2026-05-04T09:15:01Z",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "4ee21cba2a63ae4c1eedfc39ec2750f0d880ba4add167662cfbe2a9080a4fda8",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "ordinal": 1,
+        "role": "assistant",
+        "timestamp": "2026-05-04T09:15:04Z",
+        "model": "example-model-2",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "ca4700be3860c790d4c6fe3cf50c8d9c7f0107117c14b7d71f1c078a372c0b40",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "924a019b8925e47dfab554d6ebda5dc482d1795cd948167ef6816a35e3a189f8",
+        "tool_calls": [
+          {
+            "name": "grep",
+            "category": "Grep",
+            "tool_use_id": "call_01Example000000000000000000",
+            "input_sha256": "7820793d42192450b303368d8089e6b1460643f945aeef7d50573140c1e0d6cc",
+            "result_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        ]
+      },
+      {
+        "ordinal": 2,
+        "role": "user",
+        "timestamp": "2026-05-04T09:15:06Z",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "tool_results": [
+          {
+            "tool_use_id": "call_01Example000000000000000000",
+            "content_sha256": "c0f4f433eb7834aca99067d401697cb43f296feafecba4b752a261e13d497954",
+            "content_size": 51
+          }
+        ]
+      },
+      {
+        "ordinal": 3,
+        "role": "assistant",
+        "timestamp": "2026-05-04T09:15:07Z",
+        "model": "example-model-2",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "ba3598d63fc34fca054f9354d93295c7eed77349c0ae981c15dfa6068317fca6",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "ba3598d63fc34fca054f9354d93295c7eed77349c0ae981c15dfa6068317fca6"
+      },
+      {
+        "ordinal": 4,
+        "role": "assistant",
+        "timestamp": "2026-05-04T09:15:09Z",
+        "model": "example-model-2",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "99949d8ca4b7e02687490ea06c097ba4ff27e4bd57033067c0921069a1f166c6",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "99949d8ca4b7e02687490ea06c097ba4ff27e4bd57033067c0921069a1f166c6"
+      }
+    ]
+  },
+  "archive": {
+    "session_id": "pi:01a1c335-7098-71c2-a91b-b5295c0464f5",
+    "provider": "pi",
+    "agent": "",
+    "source_file": "01a1c335-7098-71c2-a91b-b5295c0464f5.jsonl",
+    "project": "example_api",
+    "cwd": "/home/user/code/example-api",
+    "read_from": "archive",
+    "content_shown": "tool-payloads",
+    "malformed_lines": 0,
+    "truncated": false,
+    "counts": {
+      "messages": 4,
+      "user_messages": 1,
+      "assistant_messages": 3,
+      "system_messages": 0,
+      "tool_messages": 0,
+      "system_records": 0,
+      "sidechain_messages": 0,
+      "compact_boundaries": 0,
+      "tool_calls": 1,
+      "tool_results": 0
+    },
+    "messages": [
+      {
+        "ordinal": 0,
+        "role": "user",
+        "timestamp": "2026-05-04T09:15:01Z",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "4ee21cba2a63ae4c1eedfc39ec2750f0d880ba4add167662cfbe2a9080a4fda8",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "ordinal": 1,
+        "role": "assistant",
+        "timestamp": "2026-05-04T09:15:04Z",
+        "model": "example-model-2",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "ca4700be3860c790d4c6fe3cf50c8d9c7f0107117c14b7d71f1c078a372c0b40",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "924a019b8925e47dfab554d6ebda5dc482d1795cd948167ef6816a35e3a189f8",
+        "tool_calls": [
+          {
+            "name": "grep",
+            "category": "Grep",
+            "tool_use_id": "call_01Example000000000000000000",
+            "input_sha256": "7820793d42192450b303368d8089e6b1460643f945aeef7d50573140c1e0d6cc",
+            "result_sha256": "26e2b1bdf14d9e911457cf2cf2c644d6e04ca652a82a48858c97e7083c8eab31",
+            "result_size": 51
+          }
+        ]
+      },
+      {
+        "ordinal": 3,
+        "role": "assistant",
+        "timestamp": "2026-05-04T09:15:07Z",
+        "model": "example-model-2",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "ba3598d63fc34fca054f9354d93295c7eed77349c0ae981c15dfa6068317fca6",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "ba3598d63fc34fca054f9354d93295c7eed77349c0ae981c15dfa6068317fca6"
+      },
+      {
+        "ordinal": 4,
+        "role": "assistant",
+        "timestamp": "2026-05-04T09:15:09Z",
+        "model": "example-model-2",
+        "is_system": false,
+        "is_sidechain": false,
+        "is_compact_boundary": false,
+        "content_sha256": "99949d8ca4b7e02687490ea06c097ba4ff27e4bd57033067c0921069a1f166c6",
+        "thinking_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dialogue_sha256": "99949d8ca4b7e02687490ea06c097ba4ff27e4bd57033067c0921069a1f166c6"
+      }
+    ]
+  },
+  "excluded_fields": [
+    "absolute paths (the two trees are checked out at different locations)",
+    "file mtime and inode (the fixtures are copied separately for each side)",
+    "archive created_at / sync bookkeeping timestamps (host clock)",
+    "database file name and data directory (per-side temporary directories)"
+  ]
+}
