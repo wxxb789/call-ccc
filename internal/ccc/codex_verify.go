@@ -218,7 +218,7 @@ type CodexLoadOptions struct {
 func VerifyCodexLoad(ctx context.Context, opts CodexLoadOptions) LoadVerification {
 	verification := LoadVerification{
 		State:  VerificationStateNotVerified,
-		Method: loadMethod,
+		Method: loadMethodCodex,
 	}
 	binary := opts.Binary
 	if strings.TrimSpace(binary) == "" {

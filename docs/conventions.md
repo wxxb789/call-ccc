@@ -23,7 +23,9 @@ wins; when they disagree about structure or method, this file wins unless the in
 ```
 cmd/ccc/            the standalone CLI; no continuation-core types leak into it
 internal/ccc/       continuation core: conversation document, readers, archive access,
-                    target writers (codex_target.go, codex_install.go, codex_verify.go, continue.go)
+                    target writers and the route table (targets.go, codex_target.go,
+                    codex_install.go, codex_verify.go, claude_target.go, claude_install.go,
+                    claude_verify.go, continue.go)
 internal/ccc/parity the canonical dump and the oracle a pristine checkout runs too
 docs/core-design/   the long-lived product and engineering boundaries
 docs/goals/         numbered outcome contracts (archive/ once accepted)
@@ -32,7 +34,8 @@ docs/evidence/      one evidence record per increment: real commands, exit codes
 docs/upstream.md    the carried AgentsView pin, its declared deviations and the update procedure
 docs/decisions/     append-only record of decisions taken and defaults chosen
 scripts/            harness entry points (gate, knobs, carry importer, parity, comparison,
-                    codex-native-check: the target-side native verification, deliberately not a gate step)
+                    codex-native-check and claude-native-check: the target-side native
+                    verifications, deliberately not gate steps)
 ```
 
 Inherited AgentsView packages keep their upstream paths and stay where upstream put them. The carry is
@@ -70,7 +73,9 @@ gate runs as a required step.
   answer about its configuration — never the source's, and never invented.
 - **A native-verification harness is a re-derivable script, not a gate step**, exactly like
   `scripts/upstream-compare.py`: it needs the target harness installed (and model access for a real
-  turn), so the gate keeps deciding the offline half. A check that cannot run says so.
+  turn), so the gate keeps deciding the offline half. A check that cannot run says so. The default
+  verification level never bills a model turn and never writes to the installed session: a level that
+  runs one is asked for explicitly and reported as the level that ran.
 - **Disclose loss by category.** Converted, installed and natively resumable are three different
   states; a report that conflates them is wrong even when the file is valid. Every category of
   omitted or narrowed evidence is named with its count on every run, and the format's own
@@ -78,6 +83,13 @@ gate runs as a required step.
 - **Non-destructive by default.** Never modify the source transcript, never overwrite an existing
   target session, never copy credentials or login stores, and never log conversation bodies, tool
   arguments or secrets by default. Write into isolated data directories for tests and demos.
+- **A target session is discoverable where the target's own loader looks.** A target that finds a
+  session only from the working directory its process runs in — Claude Code resolves a session through
+  the directory whose project-dir spelling matches the one it was installed under — is installed under
+  the directory the source read recorded, and the printed resume command carries that directory as well
+  as the target data home (`cd <cwd> && CLAUDE_CONFIG_DIR=<home> claude --resume <id>`). A source that
+  recorded no working directory is refused (`ErrNoTargetCwd`) rather than given an invented one, since
+  a session installed anywhere else is one no loader finds.
 - **Fixtures are sanitized native shapes.** Small, version-identified, committed fixtures; no real
   personal session content, no secrets, no absolute host paths in committed evidence.
 - **Comments and docs state what the code does, not what it was meant to do.** A comment or test name

@@ -162,11 +162,11 @@ func InstallCodexRollout(rollout CodexRollout, home string) (string, string, err
 // AgentsView Codex reader. The reader is upstream's implementation of the same format, so this compares
 // the file with an independent read of it rather than with the writer's own idea of it.
 type StructureVerification struct {
-	State      string        `json:"state"`
-	Method     string        `json:"method"`
-	Detail     string        `json:"detail,omitempty"`
-	TargetPath string        `json:"target_path,omitempty"`
-	ReadBack   CodexReadBack `json:"read_back,omitempty"`
+	State      string         `json:"state"`
+	Method     string         `json:"method"`
+	Detail     string         `json:"detail,omitempty"`
+	TargetPath string         `json:"target_path,omitempty"`
+	ReadBack   ReadBackCounts `json:"read_back,omitempty"`
 	// NotReadBackVerbatim counts the written dialogue messages the read-back does not show with their own
 	// text and the installed file's own dialogue record holds; one read-back message shows one written
 	// message, so a text the document writes twice needs the read-back to hold it twice. The inherited
@@ -180,8 +180,10 @@ type StructureVerification struct {
 	NotReadBackVerbatim int `json:"not_read_back_verbatim,omitempty"`
 }
 
-// CodexReadBack is what the inherited reader made of the target file.
-type CodexReadBack struct {
+// ReadBackCounts is what the inherited reader made of the target file: the session it found and the
+// evidence it read there. Every target's structural check reports these, so a consumer reads the same
+// block whichever target a conversion wrote.
+type ReadBackCounts struct {
 	SessionID            string `json:"session_id,omitempty"`
 	Messages             int    `json:"messages"`
 	UserMessages         int    `json:"user_messages"`
@@ -207,7 +209,7 @@ func VerifyCodexRolloutStructure(
 ) (StructureVerification, error) {
 	verification := StructureVerification{
 		State:      "not-verified",
-		Method:     structureMethod,
+		Method:     structureMethodCodex,
 		TargetPath: filepath.Join(sessionsDir, filepath.FromSlash(rollout.Directory), rollout.FileName),
 	}
 	readerConfig := cfg
@@ -228,7 +230,7 @@ func VerifyCodexRolloutStructure(
 		verification.Detail = "the inherited Codex reader could not read the installed session back: " + err.Error()
 		return verification, nil
 	}
-	verification.ReadBack = codexReadBack(conversation)
+	verification.ReadBack = readBackCounts(conversation)
 	// The comparison asks the file's own bytes about any written dialogue the read-back does not show:
 	// that is the one question the inherited reader's projection cannot answer for such a message, and
 	// it is asked of the bytes on disk rather than of the document the writer kept in memory.
@@ -249,9 +251,9 @@ func VerifyCodexRolloutStructure(
 	return verification, nil
 }
 
-func codexReadBack(conversation Conversation) CodexReadBack {
+func readBackCounts(conversation Conversation) ReadBackCounts {
 	counts := Summarize(conversation.Messages)
-	return CodexReadBack{
+	return ReadBackCounts{
 		SessionID:            conversation.Source.SessionID,
 		Messages:             counts.Messages,
 		UserMessages:         counts.UserMessages,

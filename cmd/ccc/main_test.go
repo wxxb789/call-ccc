@@ -1792,9 +1792,11 @@ func TestContinueHelpIsARequestNotAFailure(t *testing.T) {
 		t.Fatalf("help exit %d", code)
 	}
 	for _, want := range []string{
-		"ccc continue <provider>:<session-id-or-path> --to codex",
+		"ccc continue <provider>:<session-id-or-path> --to codex|claude",
 		"ccc continue claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to codex",
+		"ccc continue codex:0c8e5f21-6f24-4a57-9d59-0d1a51b4c8e3 --to claude",
 		"codex resume <session-id>",
+		"claude --resume <session-id>",
 		"--verify LEVEL",
 	} {
 		if !strings.Contains(stdout, want) {

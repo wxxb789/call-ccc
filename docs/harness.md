@@ -247,6 +247,21 @@ says so.
   can grow this harness's memory with it, while the pipe stays empty so the server cannot block on it.
   Every check prints its own verdict and the script exits non-zero when one fails, so a run that could
   not do the native half says so instead of reporting a pass.
+- `scripts/claude-native-check.py` — the target-side native verification for the Codex → Claude Code
+  route, and **deliberately not a gate step** for the same reason: it needs the Claude Code binary
+  installed, and its `resume` half also needs model access. The **`load` half needs no model access**: it
+  drives the installed binary (`claude --bare -p --output-format json --resume <id>`) against a
+  **throw-away copy** of the converted bytes in a scratch `CLAUDE_CONFIG_DIR`, with the environment
+  variables that could reach a model removed, and adds a **control arm** running the same command on a
+  fresh unknown session id, which must answer `No conversation found with session ID: <id>` — that
+  contrast is what makes the check an answer about *this* session rather than about any file, and no turn
+  is billed. The **`resume` half runs one real turn** through the invocation the conversion printed,
+  which carries the session's working directory as well as its home (`cd <cwd> && CLAUDE_CONFIG_DIR=<home>
+  claude --resume <id>`), because Claude Code resolves a session only from the directory whose project-dir
+  spelling matches the one it was installed under. The host's model access is **inherited** by that turn,
+  never copied into an isolated home; the run hashes the source fixture, a planted unrelated session and
+  every session the home already held before and after, so a mutation during the loader or the turn is
+  answered by the comparison that runs last.
 
 ## Why the Go steps target a subset
 

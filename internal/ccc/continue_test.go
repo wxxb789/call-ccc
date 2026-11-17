@@ -608,7 +608,9 @@ func TestContinueRefusesAnUnsupportedTargetOrLevel(t *testing.T) {
 	}{
 		{"no target", ContinueOptions{Ref: claudeFixtureRef, Config: cfg, TargetHome: t.TempDir()},
 			ErrUnsupportedTarget},
-		{"unknown target", ContinueOptions{Ref: claudeFixtureRef, Target: "claude", Config: cfg,
+		{"target this build does not write", ContinueOptions{Ref: claudeFixtureRef, Target: "gemini", Config: cfg,
+			TargetHome: t.TempDir()}, ErrUnsupportedTarget},
+		{"empty target", ContinueOptions{Ref: claudeFixtureRef, Target: " ", Config: cfg,
 			TargetHome: t.TempDir()}, ErrUnsupportedTarget},
 		{"unknown level", ContinueOptions{Ref: claudeFixtureRef, Target: TargetCodex, Config: cfg,
 			TargetHome: t.TempDir(), Verify: "perhaps", TargetBinary: missingTargetBinary}, nil},

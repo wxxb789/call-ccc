@@ -1192,3 +1192,128 @@ supersede it with a newer one and say which it supersedes.
   be a bounded failure too, and which of "kill it at the bound", "truncate the document" or "leave the
   subprocess's own deadline as the bound" is the acceptable failure shape.
 
+## Q-0003-01 — A source that records no working directory
+
+- **Status:** resolved (default taken)
+- **Question:** Claude Code's loader resolves a session only from the directory whose project-dir
+  spelling matches the one it was installed under (`claude -p --resume <id>` run elsewhere answers
+  `No conversation found with session ID`), so a source read that recorded no working directory cannot
+  be installed where any loader would find it. Invent a directory (the caller's, or a fixed one), or
+  refuse?
+- **Default taken:** refuse the conversion with `ErrNoTargetCwd`
+  (`internal/ccc/claude_target.go`'s `ConvertToClaudeTranscript`) before anything is written, and report
+  the conversion block without an installation, rather than invent a directory that would make the
+  session undiscoverable while the report called it installed. `claude_target_test.go` and
+  `continue_claude_test.go` pin the refusal.
+- **Reversal:** fall back to the caller's working directory (one branch in `claude_target.go`),
+  disclosed in the report as an invented location.
+- **Settled by:** whether the operator prefers a refused conversion over one installed at a disclosed
+  guessed directory.
+
+## Q-0003-02 — One record per source message, with a fresh `message.id`
+
+- **Status:** resolved (default taken)
+- **Question:** the inherited Claude reader merges *consecutive assistant records that share a
+  `message.id`* as streaming chunks of one response, and a message can carry several content blocks.
+  Write one record per message, or one record per block, and where does the id come from?
+- **Default taken:** one record per source message, carrying that message's content-block array, with a
+  fresh unique `message.id` per assistant record shared by that message's block records only — sharing
+  an id across two messages would merge them (measured), while a single multi-block record was measured
+  to reconstruct to exactly the request the harness's own block-per-record shape produces. The new UUID
+  v4 is both the file stem and every record's `sessionId`, because the inherited reader reads a record
+  whose `sessionId` differs from the stem as a *child* session.
+- **Reversal:** derive ids from the source's own message identity where it has one, which needs a
+  per-source mapping and a source identity the read does not always carry.
+- **Settled by:** whether the operator wants the target's message identity traceable to the source's.
+
+## Q-0003-03 — `is_error` only where the source recorded a failure
+
+- **Status:** resolved (default taken)
+- **Question:** `tool_result.is_error` is the target's own field (measured to survive resume), and a
+  source status has richer meanings than "failed". Write a flag for every non-success status, or only
+  where the source said the call failed?
+- **Default taken:** `is_error: true` is written **only** where the source's own status says the call
+  failed (`internal/ccc/claude_target.go`); every other status is carried as text and counted under
+  `tool_result_statuses`, because a status with no error meaning has no target field and inventing one
+  would assert a failure the source did not record.
+- **Reversal:** write no flag at all (0002's `tool_result_outcomes` caveat), or map every non-success
+  status to `is_error`.
+- **Settled by:** whether the operator wants the target's error flag to track the source's status
+  taxonomy or only its recorded failures.
+
+## Q-0003-04 — The model field, and the provider a Claude transcript records
+
+- **Status:** resolved (default taken)
+- **Question:** the source read carries a per-message model, and Claude Code's transcript has a
+  `message.model` field but no provider field. Carry the source's model — the only field-shaped place
+  for it — or omit it and record no provider binding?
+- **Default taken:** omit the source's per-message model and count it (`message_model_attribution`), and
+  record no provider binding anywhere in the transcript, because `message.model` states which model
+  produced the words and the conversation was not produced by one of the caller's target models; the
+  absence is disclosed as a loss category and as a format limit.
+- **Reversal:** write the source's model into `message.model`, which would attribute the conversation to
+  a model that did not produce it.
+- **Settled by:** whether the operator prefers a transcript bound to no model over one that names the
+  source's.
+
+## Q-0003-05 — The `load` check is offline, with an unknown-id control arm
+
+- **Status:** resolved (default taken)
+- **Question:** the default verification level could prove the loader by running a real turn against the
+  caller's own endpoint, or by driving the loader without model access and reading its own resolution of
+  the session. Which is the default?
+- **Default taken:** the offline one. `--verify load` (the default) runs the installed `claude` binary
+  with `claude --bare -p --output-format json --resume <id>` against a **throw-away copy** of the
+  converted bytes in a scratch `CLAUDE_CONFIG_DIR`, with the variables that could reach a model removed,
+  plus a **control arm** on a fresh unknown id that must answer `No conversation found with session ID`
+  (`internal/ccc/claude_verify.go`). The default level therefore bills no turn and alters no installed
+  session, and the contrast with the control arm is what makes it an answer about *this* session rather
+  than about any file.
+- **Reversal:** an online load check against the caller's own endpoint (one branch in `claude_verify.go`),
+  which costs a turn and cannot run without model access.
+- **Settled by:** whether the operator wants the default verification to prove the loader with a real
+  turn instead of the offline resolution.
+
+## Q-0003-06 — The resume command carries the working directory
+
+- **Status:** resolved (default taken)
+- **Question:** the session is discoverable only from a particular directory (`Q-0003-01`), so the
+  printed resume command could carry the directory itself or state the requirement in prose and leave the
+  caller to `cd`.
+- **Default taken:** carry it — `cd <cwd> && CLAUDE_CONFIG_DIR=<home> claude --resume <id>`, rendered the
+  way 0002 renders its commands (every word quoted where a POSIX shell would act on it), because without
+  the `cd` the loader's project-directory lookup cannot see the session and without the home it looks in
+  the caller's own (`internal/ccc/continue.go`'s `renderInvocation`).
+- **Reversal:** print the invocation without the `cd` and document the requirement instead.
+- **Settled by:** whether the operator wants the pasted command to carry the directory or the
+  documentation to.
+
+## Q-0003-07 — Pre-boundary history, and the boundary's own pair
+
+- **Status:** resolved (default taken)
+- **Question:** a source `compacted` record could truncate the written transcript, or be written as the
+  marker the target itself writes so the target applies its own compaction semantics while the file
+  keeps the history.
+- **Default taken:** carry the pre-boundary turns and count them (`pre_compaction_history`, with its
+  caveat), and write the boundary as the pair the harness itself writes —
+  `{"type":"system","subtype":"compact_boundary"}` followed by the `isCompactSummary` summary record.
+  Measured: that pair truncates the target's model-visible history at the boundary (the loader's request
+  began with the summary and a pre-boundary fact answered `NOT-IN-CONTEXT`), while the `isCompactSummary`
+  flag alone changed nothing.
+- **Reversal:** stop the file at the boundary.
+- **Settled by:** whether the operator wants pre-boundary turns in the file — the history the boundary
+  record is what withholds from the model — or omitted.
+
+## Q-0003-08 — `isSidechain` records are omitted
+
+- **Status:** resolved (default taken)
+- **Question:** the source read marks some messages `IsSidechain`; the transcript could carry them (with
+  the flag) or omit them and count the omission.
+- **Default taken:** omit them, counted (`sidechain_messages`), because the loader was measured to drop
+  `isSidechain` records from the model-visible history: carrying them would put evidence in the file that
+  no read of it — including the conversion's own round-trip check — could show, and the target has no
+  subagent attribution for a flat message.
+- **Reversal:** write them with the flag, and report that the target's own reads do not surface them.
+- **Settled by:** whether the operator wants a subagent's turns visible in the file even though no target
+  read shows them.
+

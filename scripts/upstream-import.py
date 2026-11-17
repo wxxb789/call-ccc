@@ -104,6 +104,7 @@ OWNED = (
     "scripts/gate-targets.txt",
     "scripts/gate.py",
     "scripts/tests/",
+    "scripts/claude-native-check.py",
     "scripts/codex-native-check.py",
     "scripts/upstream-compare.py",
     "scripts/upstream-import.py",

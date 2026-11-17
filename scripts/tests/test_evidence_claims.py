@@ -28,7 +28,12 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DOCUMENT = ROOT / "docs" / "evidence" / "0002-claude-to-codex-continuation.md"
+
+#: Every continuation evidence record: one file per increment that reports a converted route, each of
+#: which may quote a recorded run's answer in its §5 comparison. The rule below is about the records, not
+#: about one of them, so a new increment's record is covered by writing it the way the others are
+#: (rather than by remembering to add its name here).
+DOCUMENTS = sorted((ROOT / "docs" / "evidence").glob("*continuation*.md"))
 
 #: The line the harness prints above a turn's own output (``scripts/codex-native-check.py``, its
 #: ``record``/print pair for the resume stage). The block under it is that turn's answer, verbatim.
@@ -131,28 +136,33 @@ AUDITED_DOCUMENT = (
 
 
 class ComparisonCreditsTheRecordedRun(unittest.TestCase):
-    """§5's table may not credit the run's answer with words its recorded output does not hold."""
+    """§5's tables may not credit a run's answer with words its recorded output does not hold."""
 
-    def test_the_shipped_comparison_only_quotes_the_recorded_run(self) -> None:
-        document = DOCUMENT.read_text(encoding="utf-8")
-        blocks = recorded_answer_blocks(document)
-        self.assertGreaterEqual(
-            len(blocks), 2,
-            f"{DOCUMENT.name} records fewer than two answer blocks under {ANSWER_MARKER!r}, so the "
-            f"quotations this case checks have no recorded run to cite: {blocks}")
-        self.assertEqual(
-            uncited(document), [],
-            "a §5 cell credits the run's answer with words no recorded answer block holds: a cell may "
-            "only quote the run it names")
-        # Non-vacuity, the same reading's other direction: the shipped document must still credit the
-        # answer somewhere with a quotation, or this case would agree with itself. Reported with the
-        # claims it found, so a green run says what it checked.
-        claims = answer_claims(document)
+    def test_every_shipped_comparison_only_quotes_its_recorded_run(self) -> None:
         self.assertTrue(
-            claims,
-            "no §5 cell credits the run's answer with an inline-code quotation, so this case checked "
-            "nothing — either the comparison lost its answer evidence or the cells spell it without "
-            "quotes, and both need a decision here rather than silence")
+            DOCUMENTS,
+            f"no continuation evidence record under {ROOT / 'docs' / 'evidence'}: this case would "
+            f"agree with itself")
+        for document_path in DOCUMENTS:
+            document = document_path.read_text(encoding="utf-8")
+            blocks = recorded_answer_blocks(document)
+            self.assertEqual(
+                uncited(document), [],
+                f"{document_path.name}: a §5 cell credits the run's answer with words no recorded "
+                f"answer block holds — a cell may only quote the run it names")
+            # Non-vacuity, the same reading's other direction: a record that claims nothing about an
+            # answer is not this rule's subject, and one that claims something must have recorded the
+            # run it credits. So a record with answer claims needs two recorded blocks (the conversion
+            # run and the resumed turn), and one without them is reported rather than passed off as
+            # checked.
+            claims = answer_claims(document)
+            if not claims:
+                continue
+            self.assertGreaterEqual(
+                len(blocks), 2,
+                f"{document_path.name} quotes the run's answer in {len(claims)} cell(s) but records "
+                f"{len(blocks)} answer block(s) under {ANSWER_MARKER!r}: the quotations have no "
+                f"recorded run to cite")
 
     def test_the_cells_the_audit_corrected_are_reported(self) -> None:
         flagged = {quotation for quotation, _ in uncited(AUDITED_DOCUMENT)}
