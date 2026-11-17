@@ -565,13 +565,16 @@ gate: go=~/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./i
 GATE: PASS
 ```
 
-The leading `…` inside the `parity` line is the gate's own elision of a long step detail (its `tail()`
-keeps the last 2 500 characters and marks the cut), not an edit of this record: every character below is
-what the run printed. The block is one run's own output, quoted as it printed; a later run on this tree
-prints the same steps, the same counts and the same verdict apart from two fields, each stated with its
-cause: `selftest`'s wall-clock seconds (5.222s above; 12.579s and 6.584s on two re-runs), and the `gofmt`
-step's file count, which is the count of *tracked* `*.go` files — the run above was made while this
-increment's new `internal/ccc/continue_growth_test.go` was untracked, so it printed the pre-increment
+The leading `…` inside the `parity` line is the gate's own elision of a long step detail, not an edit of this
+record: the `parity` step renders the checker's own stdout as one line (`scripts/gate.py`'s `step_parity` —
+`tail(proc.stdout, 800).replace("\n", " | ")`: it keeps the last 800 characters of that stdout, spells the
+line feeds it kept as ` | `, and marks the cut with a leading `…`; the 2 500-character default is the gate's
+other steps' limit, not this step's) — so the line ends where the checker's own output ends, and every other
+character of the block is what the run printed. The block is one run's own output, quoted as it printed; a
+later run on this tree prints the same steps, the same counts and the same verdict apart from two fields,
+each stated with its cause: `selftest`'s wall-clock seconds (5.222s above; 12.579s and 6.584s on two re-runs),
+and the `gofmt` step's file count, which is the count of *tracked* `*.go` files — the run above was made while
+this increment's new `internal/ccc/continue_growth_test.go` was untracked, so it printed the pre-increment
 tree's `3591`, where the committed tree prints `3592` (`git ls-files '*.go' | grep -v '^vendor/' | wc -l`).
 Every other field of the re-run, including `parity`'s `files seen by git: 5650`, was byte-identical to the
 block above. (§13's re-run of the same tree prints the same steps and the same verdict with three counts
@@ -1241,14 +1244,16 @@ gate: go=~/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./i
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
   PASS     selftest Ran 202 tests in 5.544s (rc=0)
-  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 28 project-owned prefix(es); files seen by git: 5651 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 28 project-owned prefix(es); files seen by git: 5651 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     secrets  no leaks found in 102 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
 
 The header lines are this record's placeholders, as its own scheme states (the run printed the account's
-home); every other character is what the run printed, with the `parity` line cut exactly where the gate's own
-`tail()` cut it. Three counts moved from §12's run of the same steps, each by a cause this round names:
+home); every other character is what the run printed. The `parity` line is the gate's own rendering whole:
+its one cut is the gate's own leading `…` (`tail(proc.stdout, 800)`, §7.1's rule), so the line ends with the
+checker's own last line (`declared stored bytes verified: …`) rather than at a cut made here. Three counts
+moved from §12's run of the same steps, each by a cause this round names:
 `selftest` from `Ran 199 tests` to `Ran 202` (three cases joined
 `scripts/tests/test_codex_native_check.py`), `parity`'s `files seen by git` from `5650` to `5651` and
 `secrets`' from `101 file(s)` to `102` (the committed `internal/ccc/testdata/growth/codex-complete-turn.jsonl`
@@ -1309,3 +1314,113 @@ to, and the two rules this round pinned were already stated — as claims the re
 under-supported. `AGENTS.md` is therefore unchanged. `docs/goals/` holds no goal file whose implementation
 is merged-and-waiting: 0004 is this increment's own, still on its branch and awaiting operator acceptance, so
 nothing moves to `docs/goals/archive/` and `docs/goals/README.md`'s status table is unchanged.
+
+## 14. The fifth review round: findings, fixes, and the numbers re-measured
+
+An independent review read the frozen range `18d50b2..34845d1` — the head this increment's records had
+reached — and reported one finding, `P3`, about a claim this record's own transcript could not support: §7.1
+stated the gate's elision limit as a number the shipped gate does not use for that step, and the `parity`
+line §13 quoted had lost the end the gate's own elision keeps. Both halves are fixed: the quoted line is the
+run's own bytes again, and the limit is named from the gate's own call. Nothing outside them changed. The
+class — what a quoted gate transcript may claim about its own edits — had survived two rounds (§12's T04 was
+this same transcript stating something its own run could not support, the account's host paths, fixed by
+re-spelling its header lines), so this round closes it with a machine-checked pin per rule rather than an
+argument, and every pin was **executed** against this record's own bytes (the mutations below). The
+re-measured numbers are at the end of this section.
+
+### V01 (P3) — the transcript attributed the record's own cut to the gate
+
+§7.1 put the gate's elision of the `parity` detail at that detail's last 2 500 characters, with the cut
+marked — 2 500 is `tail()`'s default, which the Go steps' failed-output details use. The shipped gate does
+no such thing for this step: `scripts/gate.py`'s `step_parity` renders the checker's output as
+`tail(proc.stdout, 800).replace("\n", " | ")` — it keeps the last 800 characters, spells the kept line feeds
+` | `, and marks the cut with a leading `…`. §13's quoted line made the second half visible: it ended
+`… | declared stored byte…`, and the sentence beside it attributed that cut to the gate. A suffix-preserving
+elision cannot remove a detail's end: this round's own run of the same tree prints the line whole — 840
+characters, 816 after the mark, where 800 kept characters plus two for each of the 8 spelled line feeds is
+exactly 816 — ending at the checker's own last line,
+`declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json`
+(the transcript is `/tmp/evidence-0004/r4/gate.txt`, and this round's is `/tmp/evidence-0004/r5/gate.txt`).
+The quoted line held 740 characters after the mark with the same 8 separators: a 76-character cut only the
+record could have made.
+
+**Fix.** §13's line is the run's own 840-character line again (the transcript file's own bytes — it was that
+block's only edited line; its header placeholders are this record's own scheme, stated beside it), and its
+sentence now says the `parity` line is the gate's rendering whole, ending at the checker's own last line
+rather than at a cut made here. §7.1's claim now names the step's own call (`tail(proc.stdout, 800)`, the
+kept line feeds spelled ` | `, the leading `…`), says the line ends where the checker's own output ends, and
+names 2 500 as the gate's *other* steps' limit. §11's excerpt — labelled inline as this record's elision and
+carrying no gate mark — was already the shape the rule below pins, and is unchanged.
+
+### The close-out: the rules of this surface, each with its executed pin
+
+The surface is this record's gate-transcript claims. `scripts/tests/test_gate_transcript_claims.py` reads
+them from the shipped record: a record joins the rule by naming the gate's elision, this increment's record
+must be among those that do (so a rewording cannot retire the case quietly), and the case reads this
+section's own line too. Each rule below was mutated on the shipped record, the failure observed, and the
+line restored — the record's sha256 before and after every mutation matched:
+
+| Rule | Its pin | The mutation this round executed, and the failure observed |
+| --- | --- | --- |
+| a quoted `parity` line with the gate's own mark is the gate's rendering whole: it does not end in an ellipsis, and its body is the kept suffix (the limit plus two per spelled line feed) | `test_every_rule_record_quotes_the_gate_s_own_rendering` | §13's line cut where the review found it (740 characters after the mark): `line 1247: the parity line carries the gate's own elision mark and ends in an ellipsis: tail() keeps the detail's suffix, so this cut is the record's own`, and `line 1247: the elided parity body is 740 characters after the mark, where the gate's rendering leaves 816 (800 kept characters plus two for each of the 8 spelled line feeds)` |
+| a record's stated elision limit for that step is the gate's own call | the same case's stated-limit reading | §7.1's `800` put back to `2 500`: `line 570: the record states the gate's parity elision as '2 500' characters, where the gate's own call keeps the last 800` |
+| a record that states the rule is read by the case | the same case's coverage assertion | the phrase `the gate's own elision` removed from this record: `0004-repeatable-continuation-handoffs.md is the record this case was written for and states the rule, but it is not among the records discovered as stating it (found: [])` |
+
+The arithmetic's premise — the parity checker's stdout holds no ` | ` of its own, so every ` | ` a body holds
+was a spelled line feed — is documented in the case rather than mutated: the checker's *output* is not an
+artifact this tree holds, and a checker that ever printed one turns the rule into a visible false positive
+rather than a silent pass. An older increment's record is not read: 0003's record quotes the same
+2 500-character default for a *failed* `go test` step, which is that step's own limit, and its transcripts
+follow the scheme its own round chose.
+
+### The numbers this round re-measured
+
+`python3 scripts/gate.py`, exit code `0`, the verdict line `GATE: PASS` with no `(partial: …)` suffix — every
+step ran, including the two required ones:
+
+```console
+$ python3 scripts/gate.py
+gate: <repo>
+gate: go=~/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3592 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 204 tests in 5.275s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 28 project-owned prefix(es); files seen by git: 5652 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 103 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The header lines are this record's placeholders, as §7.1's scheme states (the run printed the account's
+home); every other character is what the run printed, and the `parity` line is the gate's own rendering
+whole — its one cut is the gate's own leading `…` (§7.1's rule), so it ends at the checker's own last line,
+which is the shape the case above now reads. Three counts moved from §13's run of the same steps, each by a
+cause this round names: `selftest` from `Ran 202 tests` to `Ran 204` (this round's two Python cases joined
+`scripts/tests/test_gate_transcript_claims.py`), `parity`'s `files seen by git` from `5651` to `5652` and
+`secrets`' from `102 file(s)` to `103` (the new, staged Python case file is one more file this repository
+owns). `gofmt`'s 3592 is unchanged — this round added no `*.go` file — and `selftest`'s wall clock varies per
+run.
+
+`python3 -m unittest scripts.tests.test_gate_transcript_claims` (and inside the `selftest` step above):
+`Ran 2 tests … OK`, the mutation case included. Nothing native was re-run: this round touched no Go code and
+no native path, so §6's turned runs and §13's offline count stand as those rounds recorded them.
+
+The evidence re-runs this round's blocks are taken from: `/tmp/evidence-0004/r5/gate.txt` (§14's transcript,
+offline, no turn billed, exit code `0`) and the three mutation runs quoted above, each executed on this tree
+and restored.
+
+### What this round changed in the files that carry the rules
+
+- `docs/evidence/0004-repeatable-continuation-handoffs.md`: §7.1's elision sentence corrected, §13's quoted
+  `parity` line restored to the run's own bytes and its sentence corrected (V01), and this section appended.
+- `scripts/tests/test_gate_transcript_claims.py`: new — the machine-checked pin for the rules above, run by
+  the `selftest` step. No gate step, no required step and no narrowing changed.
+- `docs/harness.md`: the `scripts/tests/` bullet now names the new case beside `test_evidence_claims.py`.
+- `docs/upstream.md` and the carried tree: untouched — the gate's `parity` step (above) is what proves it.
+
+**`AGENTS.md` and bookkeeping:** this round changed no repository layout, no gate step, no command, no read
+order and no rule an agent must follow — it corrected what this record's transcript claims and added a Python
+case that reads the gate's own call — so `AGENTS.md` is unchanged. `docs/goals/` holds no goal file whose
+implementation is merged-and-waiting: 0004 is this increment's own, still on its branch and awaiting operator
+acceptance, so nothing moves to `docs/goals/archive/` and `docs/goals/README.md`'s status table is unchanged.
