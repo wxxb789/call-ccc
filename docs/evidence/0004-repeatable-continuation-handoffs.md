@@ -465,9 +465,14 @@ GATE: PASS
 
 The leading `…` inside the `parity` line is the gate's own elision of a long step detail (its `tail()`
 keeps the last 2 500 characters and marks the cut), not an edit of this record: every character below is
-what the run printed. The block is one run's own output, quoted as it printed; a later run of the same tree
-prints the same steps, the same counts and the same verdict, with the `selftest` step's wall-clock seconds
-as the only field that varies between runs.
+what the run printed. The block is one run's own output, quoted as it printed; a later run on this tree
+prints the same steps, the same counts and the same verdict apart from two fields, each stated with its
+cause: `selftest`'s wall-clock seconds (5.222s above; 12.579s and 6.584s on two re-runs), and the `gofmt`
+step's file count, which is the count of *tracked* `*.go` files — the run above was made while this
+increment's new `internal/ccc/continue_growth_test.go` was untracked, so it printed the pre-increment
+tree's `3591`, where the committed tree prints `3592` (`git ls-files '*.go' | grep -v '^vendor/' | wc -l`).
+Every other field of the re-run, including `parity`'s `files seen by git: 5650`, was byte-identical to the
+block above.
 
 Exit code `0`, and the verdict line is `GATE: PASS` with no `(partial: …)` suffix: every step ran, including
 the two required ones (`parity`, `selftest`). Nothing in this increment changed the gate, its steps or its
