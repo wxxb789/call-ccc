@@ -448,9 +448,17 @@ func TestClaudeInvocationNamesTheExecutableItsProbeFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the Claude route is not in this build: %v", err)
 	}
-	// A probed path distinct from the spelling, with no host dependency: the answer comes from the probe
-	// the route is handed, exactly as a real run's does. It holds a space, so the line has to quote it.
-	const probed = "/opt/ccc tools/claude"
+	// A probed path distinct from the spelling, spelled the way a probe's own answer is spelled: a path
+	// this host's `filepath.IsAbs` calls absolute, taken from the host's own temp root. A POSIX-absolute
+	// literal such as "/opt/ccc tools/claude" is not absolute to Windows -- its answer needs a volume, and
+	// Go's own `isAbs` says so -- so `invocationBinary` would resolve it against the caller's directory
+	// there, and the case would pin Windows' arm of the rule instead of the rule. The probe the route
+	// really runs answers what `exec.LookPath` found: for the bare name this case hands over that is a PATH
+	// hit, spelled the way the host spells it, and both platforms refuse a hit that is not absolute
+	// (`ErrDot`) unless the caller opts out with `GODEBUG=execerrdot=0`. So this is the answer shape the
+	// case is about, and the host that reads it is the one that spells it. One component holds a space, so
+	// the printed line has to quote the word on every host.
+	probed := filepath.Join(t.TempDir(), "ccc tools", "claude")
 	invocation := route.Invocation(
 		convertedTarget{ID: "8f1a1d2c-0000-4000-8000-000000000001", Cwd: "/home/user/code/project"},
 		targetInvocationInput{

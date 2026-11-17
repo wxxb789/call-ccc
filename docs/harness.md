@@ -317,7 +317,7 @@ mode the installer *requests* (`codexSessionFileMode`) on Windows, and compares 
 own bits with that request where the platform reports them: a widened mode must fail on the platform
 where the answer is visible, so the two halves are asserted by one platform-aware branch.
 
-Four more Windows answers the tree pins rather than tolerates, all because the platform's own answer is
+Five more Windows answers the tree pins rather than tolerates, all because the platform's own answer is
 not the one the rule is about:
 
 - a missing binary raises `FileNotFoundError` **without a filename** on Windows — `CreateProcess`'s
@@ -391,6 +391,21 @@ not the one the rule is about:
   discover -s scripts/tests` (executed; the unresolved spelling is `FAILED (failures=4)` there — the two
   cases plus the two self-check cases that read the red child, CI's own number — and the repaired one
   `OK`, 153 cases).
+- a path is absolute by the **platform's** own answer, not by its spelling: on Windows `filepath.IsAbs`
+  answers false for a POSIX-absolute word like `/opt/tools/claude`, because its volume test wants a drive
+  letter, a device prefix or a `\\host\share` UNC form (in the toolchain this tree builds with,
+  `src/internal/filepathlite/path_windows.go`'s own `IsAbs`, and the table at
+  `src/path/filepath/path_test.go` that turns every POSIX entry false there). A case that hands such a
+  word to code which re-spells a word it does not call absolute pins that leg's *working directory*
+  instead of the rule: `gate (windows-latest)` failed the `test` step at head `a2670d1` because the case
+  the increment's evidence record §6.5 added for the probed executable spelled its probe answer that way,
+  while the probe's answer for a bare name is a `PATH` hit, which both platforms spell the way the host
+  reads it — `os/exec.LookPath` refuses a hit that is not absolute (`ErrDot`) rather than answering a
+  relative one. The case now takes its probe answer from the host's own temp root, with a component holding
+  a space so the quoting rule is still exercised everywhere, which is the shape the CLI cases above already
+  use; the code under it did not move, because the probe's word is handed over as it stands whenever the
+  host calls it absolute. The branch that fires is reproducible on any host by handing the route a probe
+  answer the running host does not call absolute (evidence record §6.6).
 
 ## CI
 

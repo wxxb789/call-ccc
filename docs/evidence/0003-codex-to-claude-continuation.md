@@ -823,6 +823,144 @@ than the caller's word, and its reversal), and `docs/goals/README.md` and `docs/
 unchanged — 0003 is still this increment's open goal, no accepted goal file is sitting under
 `docs/goals/`, and the bookkeeping rule therefore has nothing to move this round.
 
+### 6.6 The second CI repair round (`gate (windows-latest)`)
+
+The hosted gate failed this branch's head `a2670d1` in the leg and step §6.4 names — run `44056002123`,
+job `133945434046`, 2m32s — with `ubuntu-latest` and `macos-latest` green:
+
+```console
+$ gh run view 44056002123 --job 133945434046 --log-failed   # verbatim, its own truncated detail included
+  PASS     gofmt    3591 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  FAIL     test     go test -count=1 ./cmd/ccc/... ./internal/ccc/... -> rc=1
+…
+FAIL
+FAIL	go.kenn.io/agentsview/internal/ccc	21.168s
+?   	go.kenn.io/agentsview/internal/ccc/fixturegen	[no test files]
+ok  	go.kenn.io/agentsview/internal/ccc/parity	1.996s
+?   	go.kenn.io/agentsview/internal/ccc/parity/oracle	[no test files]
+FAIL
+  PASS     selftest Ran 190 tests in 16.479s (rc=0)
+GATE: FAIL · test
+```
+
+exit code **1** on that leg. The step prints a bounded tail of the test run (`gate.py`'s `tail()`, its
+last 2 500 characters), so the failing case's own line was not retained again and the identification is by
+inspection rather than by the leg's own words: the package it names is the one §6.5's four new Go cases
+are in, and of those exactly one reads the *host's* own answer about what a path is — the other three
+assert constant strings, constant bytes and counts, and the four are the same on every platform but for
+that one word. The mechanism below is what the leg then answers for that word.
+
+**The defect was in the case's fixture, not in the write path.**
+`TestClaudeInvocationNamesTheExecutableItsProbeFound` handed the route a probe answer spelled
+`"/opt/ccc tools/claude"` and asserted the invocation names that word back. `invocationBinary` trusts the
+platform's own answer about absoluteness — a found probe answer wins, and a word is re-spelled only when
+`filepath.IsAbs` says it is not a path (`internal/ccc/targets.go`) — and Go's **Windows** `IsAbs` answers
+false for that word: its `volumeNameLen` needs a drive letter, a device prefix (`\\.\`, `\\?\`, `\??\`) or
+a `\\host\share` UNC form, and one leading separator with none of them is not a volume
+(`$(go env GOROOT)/src/internal/filepathlite/path_windows.go:184` `IsAbs`, `:206` `volumeNameLen`, in the
+toolchain this tree builds with). The toolchain's own test table states the same as the authority's
+expectation: `$(go env GOROOT)/src/path/filepath/path_test.go:1105` — "All non-windows tests should fail,
+because they have no volume letter" — with `{"/", false}` in `winisabstests` (`:1077`) and
+`{"/usr/bin/gcc", true}` among the POSIX entries that table turns false there (`:1066`). An independent
+implementation of the same platform's path rules, executed on this host, agrees about which group that
+word is in:
+
+```console
+$ python3 -c "import ntpath, posixpath; print(ntpath.isabs('/opt/ccc tools/claude'), posixpath.isabs('/opt/ccc tools/claude'))"
+False True
+```
+
+So on that leg the probe's word was resolved against the runner's working directory and the case's two
+assertions fired. The consequential branch — a probe answer the running host does not call absolute — is
+reproduced here rather than assumed, with a scratch case (deleted after the run, never in the tree): the
+same route is handed two probe answers, one this host calls absolute and one it does not, and the
+invocation names the second one's re-resolution instead of the probe's word:
+
+```console
+$ go test -count=1 -tags fts5 -v -run TestScratchProbeAnswerPlatformArm ./internal/ccc/   # exit 0
+=== RUN   TestScratchProbeAnswerPlatformArm
+    zz_platform_arm_scratch_test.go:25: probe answered "/opt/ccc tools/claude"; filepath.IsAbs=true; the invocation names "/opt/ccc tools/claude"
+    zz_platform_arm_scratch_test.go:25: probe answered "opt/ccc tools/claude"; filepath.IsAbs=false; the invocation names "/home/azureuser/repos/call-ccc/internal/ccc/opt/ccc tools/claude"
+--- PASS: TestScratchProbeAnswerPlatformArm (0.00s)
+```
+
+The second logged line is the shape Windows takes for the first word, which is what the failing leg's
+assertion answered.
+
+**The repair is the fixture.** The case now takes the probed path from the host's own temp root
+(`probed := filepath.Join(t.TempDir(), "ccc tools", "claude")`), which is a path the host running the case
+calls absolute — the spelling this case's own probe answer has, because the route's probe answers what
+`os/exec.LookPath` found and a bare name's hit is a `PATH` hit: both platforms refuse a hit that is not
+absolute (`ErrDot`, unless the caller opts out with `GODEBUG=execerrdot=0`) rather than answering a
+relative one. One component holds a space, so the quoting rule the case is also about stays exercised on
+every host, and the assertions themselves did not move: both argument vectors and the rendered line are
+still compared with the probed path. `invocationBinary` and the write path are unchanged — a probe's word
+is handed over as it stands whenever the host calls it absolute, which its own answer is — so only the
+case's fixture moved.
+
+**The case still fails when the rule it pins is broken.** Restoring the reviewed shape in a scratch copy
+of `internal/ccc/targets.go` (`binary := invocationBinary(in.Binary, in.Probe)` → `binary := in.Binary`,
+the file restored afterwards; `git diff` clean for it):
+
+```console
+$ go test -count=1 -tags fts5 -run TestClaudeInvocationNamesTheExecutableItsProbeFound ./internal/ccc/   # exit 1
+--- FAIL: TestClaudeInvocationNamesTheExecutableItsProbeFound (0.00s)
+    continue_claude_test.go:471: arguments name "claude"/"claude", want the probed executable "/tmp/TestClaudeInvocationNamesTheExecutableItsProbeFound2665719200/001/ccc tools/claude"
+    continue_claude_test.go:478: the printed exec line "cd /home/user/code/project && CLAUDE_CONFIG_DIR='/tmp/ccc home' claude -p --output-format json --resume 8f1a1d2c-0000-4000-8000-000000000001 -- '<prompt>'" does not name the probed executable in the session's directory
+FAIL
+FAIL	go.kenn.io/agentsview/internal/ccc	0.023s
+```
+
+Both assertion lines fire; the repaired tree's own run of the same command is `ok … 0.021s`, exit **0**.
+
+**Re-runs on this tree** — the case, the whole Go suite in two host shapes, and the gate:
+
+```console
+$ go test -count=1 -tags fts5 -run TestClaudeInvocationNamesTheExecutableItsProbeFound ./internal/ccc/
+ok  	go.kenn.io/agentsview/internal/ccc	0.021s
+$ go test -count=1 -tags fts5 ./internal/ccc/... ./cmd/ccc/...
+ok  	go.kenn.io/agentsview/internal/ccc	10.806s
+ok  	go.kenn.io/agentsview/internal/ccc/parity	2.152s
+ok  	go.kenn.io/agentsview/cmd/ccc	3.527s
+$ TMPDIR='/tmp/ccc win' go test -count=1 -tags fts5 ./internal/ccc/... ./cmd/ccc/...
+ok  	go.kenn.io/agentsview/internal/ccc	10.152s
+ok  	go.kenn.io/agentsview/internal/ccc/parity	1.641s
+ok  	go.kenn.io/agentsview/cmd/ccc	3.120s
+```
+
+each exit code **0**.
+
+```console
+$ python3 scripts/gate.py
+  PASS     gofmt    3591 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 190 tests in 5.024s (rc=0)
+  PASS     parity   … owned: 28 project-owned prefix(es); files seen by git: 5644 | …
+  PASS     secrets  no leaks found in 95 file(s) this repository owns …
+GATE: PASS
+```
+
+exit code **0**. This block is the last gate run on this tree; the only edit after it is this section's own
+text (`docs/harness.md`'s bullet was written before it), and no gate step reads it — the `selftest` step's
+evidence case reads the `*continuation*.md` records' §5 tables, and this section is §6. No count moves:
+`gofmt` 3591, the three packages, `selftest` 190, `files seen by git` 5644 and `secrets` 95 are §6.5's
+numbers, because no case was added, removed, skipped or weakened — one fixture and its comment moved.
+
+`docs/harness.md` records this answer under the platform boundary, as it does the platform answers before
+it: it is a rule a case's author has to follow, not this round's history. `AGENTS.md` needed no change:
+no command, gate step, layout or read order moved, and the rule the case broke is one that file already
+states — no case may hold only on the host that runs it. `docs/goals/README.md` and
+`docs/goals/archive/` are unchanged: 0003 is still this increment's open goal, awaiting operator
+acceptance, so the bookkeeping rule has nothing to move. No owner-only question arose — the repair is
+the default Q-0002-13 already records (the case moves to the shape that holds on every host) rather than
+a decision — and no gate rule moved (`scripts/gate.py`, `scripts/upstream-parity.py`,
+`scripts/gate-required.txt`, `scripts/gate-goflags.txt` and the workflow are untouched), so no
+`goals/0003/ci-fix-declined-1.md` was written.
+
 ## 7. Limits and residual risks
 
 - **The `resume` level, and the native check's real turn, need model access.** On a host without it the
