@@ -106,12 +106,19 @@ func TestPiSessionRecordShape(t *testing.T) {
 	if session.Directory != "--work-project--" {
 		t.Errorf("directory = %q, want Pi's own spelling of the working directory", session.Directory)
 	}
-	if !strings.HasSuffix(session.FileName, "_"+session.SessionID+".jsonl") {
-		t.Errorf("file name = %q, want <timestamp>_<session id>.jsonl", session.FileName)
+	// The name is the session's own start instant with its separators replaced by dashes, pinned whole
+	// rather than by a suffix: a name pinned only by `_<id>.jsonl` would stay green for any stamp spelling
+	// (a padded millisecond field among them), and the stamp is the one part of the name the harness reads
+	// nothing else from -- the session it resolves is named by its id under the project directory.
+	if want := "2026-05-05T10-00-00Z_" + session.SessionID + ".jsonl"; session.FileName != want {
+		t.Errorf("file name = %q, want %q", session.FileName, want)
 	}
 
-	// The tree: the first entry has no parent, every later one points at the entry before it. A broken
-	// chain loads and then loses everything before the break, so it is the file's whole conversation.
+	// The tree: the first entry has no parent, and this document records no relation of its own (every
+	// message's SourceParentUUID is empty), so the entries keep the read's order -- every later one points
+	// at the entry before it. A broken chain loads and then loses everything before the break, so it is
+	// the file's whole conversation. The case that pins the *recorded* relation (a branch, a tool result,
+	// an omitted record) is TestPiSessionWritesTheSourcesOwnRelations below.
 	if lines[1].ParentID != nil {
 		t.Errorf("the first entry's parentId = %v, want null", *lines[1].ParentID)
 	}
@@ -248,6 +255,263 @@ func TestPiSessionEntryIDsAreDistinct(t *testing.T) {
 	}
 }
 
+// TestPiSessionWritesTheSourcesOwnRelations pins the tree rule: a document that records the source's own
+// relations (Message.SourceUUID and Message.SourceParentUUID, what the inherited readers answer) is
+// written as the tree the source recorded, never as one flat chain.
+//
+// The shape is the one this route's review measured going wrong. It holds a line that branched off an
+// earlier record -- so a turn the conversation left stands *off* the walk the target's own loader makes
+// from the file's last entry instead of being presented as an active one; a tool result, whose source
+// relation the reader answers as the message that made the call while the source's own file runs
+// call -> result -> what follows (writing the result after that message would leave a resumed session
+// with a call and no result); and a record the target omits, whose child must still be chained to the
+// nearest *written* ancestor. A writer that chained every entry to the one before it fails every one of
+// these assertions -- which is exactly the defect this case exists to keep out.
+func TestPiSessionWritesTheSourcesOwnRelations(t *testing.T) {
+	at := func(second int) time.Time { return time.Date(2026, 5, 5, 10, 0, second, 0, time.UTC) }
+	conversation := Conversation{
+		Source: SourceIdentity{Provider: "pi", SessionID: "source-session", Cwd: "/work/project"},
+		Messages: []Message{
+			{Ordinal: 0, Role: string(parser.RoleUser), Content: "start", Dialogue: "start",
+				SourceUUID: "s1", Timestamp: at(0)},
+			{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "answer", Dialogue: "answer",
+				SourceUUID: "s2", SourceParentUUID: "s1", Timestamp: at(1)},
+			{Ordinal: 2, Role: string(parser.RoleAssistant), Content: "[grep: maxBackoff]",
+				DialogueProjected: true, SourceUUID: "s3", SourceParentUUID: "s2", Timestamp: at(2),
+				ToolCalls: []ToolCall{{ToolUseID: "toolu_1", Name: "grep",
+					InputJSON: `{"pattern":"maxBackoff"}`}}},
+			// The tool result record: the reader answers its parent as the call message, and answers the
+			// record *after* it as hanging off that message too.
+			{Ordinal: 3, Role: string(parser.RoleUser), SourceUUID: "s4", SourceParentUUID: "s3",
+				Timestamp: at(3), ToolResults: []ToolResult{{ToolUseID: "toolu_1",
+					ContentRaw: `"internal/retry/config.go:41"`, ContentSize: 28}}},
+			{Ordinal: 4, Role: string(parser.RoleAssistant), Content: "after the result",
+				Dialogue: "after the result", SourceUUID: "s5", SourceParentUUID: "s3", Timestamp: at(4)},
+			// The branch: a turn recorded later that hangs off the second record.
+			{Ordinal: 5, Role: string(parser.RoleAssistant), Content: "left turn", Dialogue: "left turn",
+				SourceUUID: "s6", SourceParentUUID: "s2", Timestamp: at(5)},
+			// A record with nothing to write, and a turn whose parent it is.
+			{Ordinal: 6, Role: string(parser.RoleAssistant), SourceUUID: "s7", SourceParentUUID: "s5",
+				Timestamp: at(6)},
+			{Ordinal: 7, Role: string(parser.RoleAssistant), Content: "after the omitted record",
+				Dialogue: "after the omitted record", SourceUUID: "s8", SourceParentUUID: "s7",
+				Timestamp: at(7)},
+			// A record naming a parent this read does not hold: the entry follows the one before it, and
+			// the report counts the relation as one this conversion wrote rather than the source's.
+			{Ordinal: 8, Role: string(parser.RoleAssistant), Content: "parent outside the read",
+				Dialogue: "parent outside the read", SourceUUID: "s9", SourceParentUUID: "gone",
+				Timestamp: at(8)},
+		},
+		Fidelity: Fidelity{ReadFrom: "source"},
+	}
+	session, err := ConvertToPiSession(conversation, PiTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	lines := decodePiSession(t, session.Data)
+	texts := piEntryTexts(t, lines)
+	ids := map[string]string{}
+	for id, text := range texts {
+		if text != "" {
+			ids[text] = id
+		}
+	}
+	parentIDOf := func(text string) string {
+		t.Helper()
+		id, ok := ids[text]
+		if !ok {
+			t.Fatalf("no entry carries the text %q:\n%s", text, session.Data)
+		}
+		for _, line := range lines[1:] {
+			if line.ID != id {
+				continue
+			}
+			if line.ParentID == nil {
+				return ""
+			}
+			return *line.ParentID
+		}
+		t.Fatalf("no entry carries the id %q", id)
+		return ""
+	}
+	parentTextOf := func(text string) string {
+		t.Helper()
+		return texts[parentIDOf(text)]
+	}
+	if got := parentTextOf("answer"); got != "start" {
+		t.Errorf("the second record hangs off %q, want the record it named (%q)", got, "start")
+	}
+	if got := parentTextOf("start"); got != "" {
+		t.Errorf("the first record hangs off %q, want null: the source recorded no parent for it", got)
+	}
+	// The result follows the message that made the call, and the turn recorded after the result follows
+	// the result: the call/result pair stays on one line, as the source's own file holds it.
+	resultID := ""
+	for _, line := range lines[1:] {
+		if line.Type == "message" && strings.Contains(string(line.Message), `"role":"toolResult"`) {
+			resultID = line.ID
+		}
+	}
+	if resultID == "" {
+		t.Fatalf("no tool result entry was written:\n%s", session.Data)
+	}
+	resultParentID := ""
+	for _, line := range lines[1:] {
+		if line.ID == resultID {
+			if line.ParentID == nil {
+				t.Fatal("the tool result entry carries no parent, so it hangs off no call")
+			}
+			resultParentID = *line.ParentID
+		}
+	}
+	callBlocks := 0
+	for _, line := range lines[1:] {
+		if line.ID != resultParentID {
+			continue
+		}
+		var message struct {
+			Content []struct {
+				Type string `json:"type"`
+				ID   string `json:"id"`
+			} `json:"content"`
+		}
+		if err := json.Unmarshal(line.Message, &message); err != nil {
+			t.Fatalf("decoding the tool result's parent: %v", err)
+		}
+		for _, block := range message.Content {
+			if block.Type == "toolCall" && block.ID == "toolu_1" {
+				callBlocks++
+			}
+		}
+	}
+	if callBlocks != 1 {
+		t.Errorf("the tool result hangs off an entry holding %d block(s) calling toolu_1, want the "+
+			"message that made the call", callBlocks)
+	}
+	if got := parentIDOf("after the result"); got != resultID {
+		t.Errorf("the record after a tool result hangs off %q, want the tool result entry %q: a writer "+
+			"that wrote the result after it would leave a resumed session with a call and no result",
+			got, resultID)
+	}
+	// The branch: the abandoned turn hangs off the record it named, not off the entry written before it.
+	if got := parentTextOf("left turn"); got != "answer" {
+		t.Errorf("the abandoned turn hangs off %q, want the record it named (%q)", got, "answer")
+	}
+	// The omitted record: its child is chained past it to the nearest written ancestor.
+	if got := parentTextOf("after the omitted record"); got != "after the result" {
+		t.Errorf("the record after an omitted one hangs off %q, want the nearest written ancestor (%q)",
+			got, "after the result")
+	}
+	// The unresolvable relation: the entry follows the entry before it, and the report says so.
+	if got := parentTextOf("parent outside the read"); got != "after the omitted record" {
+		t.Errorf("the record naming a parent outside the read hangs off %q, want the entry before it", got)
+	}
+	if loss := lossCount(t, session.Losses, "unresolved_source_parents"); loss.Count != 1 {
+		t.Errorf("unresolved_source_parents = %d, want the one record whose named parent is not in the read",
+			loss.Count)
+	}
+	// The walk the target's loader makes from the file's last entry: the abandoned turn is not on it, and
+	// the call/result pair is.
+	onPath := piWalkIDs(t, lines)
+	for _, text := range []string{"start", "answer", "after the result", "after the omitted record",
+		"parent outside the read"} {
+		if !onPath[ids[text]] {
+			t.Errorf("%q is not on the walk the loader makes from the file's last entry, and it is part "+
+				"of the conversation", text)
+		}
+	}
+	for _, id := range []string{resultID, resultParentID} {
+		if !onPath[id] {
+			t.Errorf("the call/result pair is not on the walk the loader makes (entry %q): a resumed "+
+				"session would hold a call, or a result, without the other", id)
+		}
+	}
+	if onPath[ids["left turn"]] {
+		t.Error("the abandoned turn is on the walk the loader makes: the branch was flattened into the " +
+			"active conversation")
+	}
+	if !strings.Contains(string(session.Data), "left turn") {
+		t.Error("the abandoned turn is not in the file at all: the branch is recorded history and must " +
+			"travel, off the walk rather than dropped")
+	}
+	want := []string{"user", "assistant", "assistant", "toolResult", "assistant", "assistant", "assistant"}
+	roles := piModelVisibleRoles(session.Data)
+	if strings.Join(roles, ",") != strings.Join(want, ",") {
+		t.Errorf("the model-visible history = %v, want %v (the source's own line, with the abandoned turn "+
+			"off it)", roles, want)
+	}
+}
+
+// piEntryTexts answers each entry's own dialogue text, keyed by entry id: the plain content string a user
+// or tool-result record carries, or the text blocks an assistant record carries. It is what a case reads
+// a written session by, so an assertion can name an entry by what a reader would see in it.
+func piEntryTexts(t *testing.T, lines []piLine) map[string]string {
+	t.Helper()
+	texts := map[string]string{}
+	for _, line := range lines[1:] {
+		if line.Type != "message" {
+			continue
+		}
+		var message struct {
+			Content json.RawMessage `json:"content"`
+		}
+		if err := json.Unmarshal(line.Message, &message); err != nil {
+			t.Fatalf("decoding entry %s: %v", line.ID, err)
+		}
+		var text string
+		if err := json.Unmarshal(message.Content, &text); err != nil {
+			var blocks []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}
+			if err := json.Unmarshal(message.Content, &blocks); err != nil {
+				continue
+			}
+			var builder strings.Builder
+			for _, block := range blocks {
+				if block.Type != "text" || block.Text == "" {
+					continue
+				}
+				if builder.Len() > 0 {
+					builder.WriteString("\n")
+				}
+				builder.WriteString(block.Text)
+			}
+			text = builder.String()
+		}
+		texts[line.ID] = text
+	}
+	return texts
+}
+
+// piWalkIDs answers the ids of the entries one written session's walk covers: the path from the file's
+// last entry back through parentId, which is what the target's own loader follows (piModelVisibleRoles
+// reads the roles off the same walk). A case uses it to name the entries a loader would see -- and the
+// ones it would not, which is what makes a flattened branch visible to a test.
+func piWalkIDs(t *testing.T, lines []piLine) map[string]bool {
+	t.Helper()
+	if len(lines) < 2 {
+		t.Fatal("the session holds no entry")
+	}
+	byID := map[string]piLine{}
+	for _, line := range lines[1:] {
+		byID[line.ID] = line
+	}
+	onPath := map[string]bool{}
+	for cursor := lines[len(lines)-1].ID; cursor != ""; {
+		line, ok := byID[cursor]
+		if !ok || onPath[cursor] {
+			break
+		}
+		onPath[cursor] = true
+		if line.ParentID == nil {
+			break
+		}
+		cursor = *line.ParentID
+	}
+	return onPath
+}
+
 // TestPiSessionCarriesACompactionBoundaryAsTheTargetsOwnRecord pins what a compacted source becomes: a
 // `compaction` entry whose `firstKeptEntryId` is its own id (the target's own retain-none shape: the
 // source records the summary and the boundary, not which entries the boundary kept, so claiming a kept
@@ -299,13 +563,37 @@ func TestPiSessionCarriesACompactionBoundaryAsTheTargetsOwnRecord(t *testing.T) 
 	if !strings.Contains(string(session.Data), "Check the retry policy.") {
 		t.Error("the pre-boundary turns are not in the file: the target's own compaction keeps them")
 	}
-	// Three dialogue entries stand before the boundary (two user turns and one assistant turn; the
-	// fourth source message is the tool result, which is tool evidence rather than a message entry).
-	// The count is of the entry stream the boundary replaced, which is what the target rebuilds its
-	// context from.
+	// What stands before the boundary, read off the file rather than described: the fixture's prompt, the
+	// assistant turn that answered it and the call-only entry Pi records the tool call in -- three entries
+	// of the kind the report counts as messages, and two dialogue items among them (the call-only entry
+	// carries no words of its own) -- plus the tool result as an entry of its own, which the report counts
+	// as a result rather than as a message. That composition is what the count is of, so the count alone
+	// cannot state it: two dialogue items and three message entries are different claims.
+	roles := []string{}
+	for _, line := range lines {
+		if line.ID == boundary.ID {
+			break
+		}
+		if line.Type != "message" {
+			continue
+		}
+		var message struct {
+			Role string `json:"role"`
+		}
+		if err := json.Unmarshal(line.Message, &message); err != nil {
+			t.Fatalf("decoding an entry before the boundary: %v", err)
+		}
+		roles = append(roles, message.Role)
+	}
+	if want := "user,assistant,assistant,toolResult"; strings.Join(roles, ",") != want {
+		t.Errorf("the message entries before the boundary = %v, want %s: the prompt, the assistant turn, "+
+			"the call-only entry the call block is written in, and the tool result", roles, want)
+	}
 	preBoundary := lossCount(t, session.Losses, "pre_compaction_history")
 	if preBoundary.Count != 3 {
-		t.Errorf("pre_compaction_history = %d, want the three messages carried before the boundary", preBoundary.Count)
+		t.Errorf("pre_compaction_history = %d, want the three message entries carried before the boundary "+
+			"(the tool result is an entry of the file but a result in the report, not a message)",
+			preBoundary.Count)
 	}
 }
 
@@ -374,7 +662,7 @@ func TestPiSessionReportsEveryLossCategory(t *testing.T) {
 		"empty_tool_inputs", "generated_call_ids", "coalesced_tool_call_projections",
 		"subagent_session_links", "tool_name_vocabulary", "message_model_attribution",
 		"pre_compaction_history", "empty_compaction_summary", "malformed_source_lines",
-		"summary_transcript", "source_needs_retry",
+		"summary_transcript", "source_needs_retry", "unresolved_source_parents",
 	}
 	listed := make(map[string]struct{}, len(wanted))
 	for _, category := range wanted {

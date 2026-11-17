@@ -87,13 +87,33 @@ func TestContinueToPiConvertsInstallsAndReportsTheRoute(t *testing.T) {
 		t.Errorf("resume command = %q, want the data directory quoted, not left bare (the home holds a space)",
 			document.TargetSession.ResumeCommand)
 	}
-	// The source is untouched, and the target home holds exactly the session that was installed.
+	// The source is untouched, and the target home holds exactly the session that was installed: the home
+	// is an empty directory this case owns, so a run that published anything else beside it is red here
+	// rather than only in a later diff. The walk is over the whole sessions tree, because the install
+	// files the session under the project directory the working directory spells.
 	after, err := os.ReadFile(sourcePath)
 	if err != nil {
 		t.Fatalf("re-reading the source fixture: %v", err)
 	}
 	if string(after) != string(sourceBefore) {
 		t.Error("the conversion changed the source fixture")
+	}
+	sessions := []string{}
+	walkErr := filepath.WalkDir(filepath.Join(home, "sessions"), func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".jsonl") {
+			sessions = append(sessions, entry.Name())
+		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("enumerating the target home: %v", walkErr)
+	}
+	if len(sessions) != 1 || sessions[0] != filepath.Base(document.TargetSession.Path) {
+		t.Errorf("the home holds %v, want exactly the installed session %q",
+			sessions, filepath.Base(document.TargetSession.Path))
 	}
 	installed, err := os.ReadFile(document.TargetSession.Path)
 	if err != nil {

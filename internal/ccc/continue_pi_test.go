@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -587,7 +587,8 @@ func isPlainTextContent(content json.RawMessage) bool {
 // property the goal names: the branch the conversation left hangs off an entry the active path does not
 // continue from, so a conversion cannot present it as an active turn by following the file's own parent
 // links. The walk is over the fixture's bytes -- the shape a real Pi file has -- rather than over any
-// product of this build.
+// product of this build, and the walk's own answer is what the conversion is measured against in the
+// case below this one.
 func TestPiHistoryFixtureBranchIsNotOnTheActivePath(t *testing.T) {
 	data, err := os.ReadFile(fixturePath(t, filepath.Join("pi", piHistoryFixtureRef.ID+".jsonl")))
 	if err != nil {
@@ -598,6 +599,9 @@ func TestPiHistoryFixtureBranchIsNotOnTheActivePath(t *testing.T) {
 		ID       string  `json:"id"`
 		ParentID *string `json:"parentId"`
 		Summary  string  `json:"summary"`
+		Message  struct {
+			Role string `json:"role"`
+		} `json:"message"`
 	}
 	var entries []entry
 	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
@@ -636,19 +640,140 @@ func TestPiHistoryFixtureBranchIsNotOnTheActivePath(t *testing.T) {
 		t.Fatal("the last entry is not on its own path")
 	}
 	offPath := []string{}
+	offPathMessages, offPathUserRecords := 0, 0
 	for _, item := range entries {
-		if !onPath[item.ID] {
-			offPath = append(offPath, item.ID)
+		if onPath[item.ID] {
+			continue
+		}
+		offPath = append(offPath, item.ID)
+		if item.Type == "message" {
+			offPathMessages++
+			if item.Message.Role == "user" {
+				offPathUserRecords++
+			}
 		}
 	}
 	if len(offPath) == 0 {
 		t.Fatal("every entry is on the active path: the fixture holds no branch the conversation left")
 	}
-	// The branch hangs off an entry the active path does not continue from, which is what makes it a
-	// branch rather than another link in one line.
-	branchParent := byID[offPath[0]].ParentID
-	if branchParent == nil || !onPath[*branchParent] {
-		t.Fatalf("the off-path entry's parent %v is not an entry on the active path", branchParent)
+	if offPathMessages == 0 {
+		t.Fatal("no message entry is off the active path: the fixture cannot show a turn the " +
+			"conversation left")
+	}
+	// The prompt matters and is checked by name: a conversion that flattened the branch presents an
+	// abandoned *user prompt* as an active turn, which is the shape this fixture exists to catch.
+	if offPathUserRecords == 0 {
+		t.Fatal("no user record is off the active path: the fixture cannot show a conversion turning an " +
+			"abandoned prompt into an active turn")
+	}
+	// Every off-path entry hangs off the active line: walking its own parents reaches an entry that is on
+	// the path. An off-path entry that reached none would be a line of its own rather than a branch this
+	// conversation left, and the walk above would still report it as off-path.
+	for _, id := range offPath {
+		reaches := false
+		for cursor, steps := id, 0; cursor != "" && steps < len(entries); steps++ {
+			item, ok := byID[cursor]
+			if !ok {
+				break
+			}
+			if onPath[cursor] {
+				reaches = true
+				break
+			}
+			if item.ParentID == nil {
+				break
+			}
+			cursor = *item.ParentID
+		}
+		if !reaches {
+			t.Errorf("the off-path entry %s does not reach the active path through its own parents, so "+
+				"it is a line of its own rather than a branch the conversation left", id)
+		}
+	}
+}
+
+// TestContinueIntoPiKeepsABranchedSourcesOwnConversation pins the goal's branch clause for the Pi
+// *target*: converting a branched and compacted Pi session into a Pi session must leave the target's own
+// loader with the source's conversation, not a flattened one in which an abandoned branch's prompt has
+// become an active user turn.
+//
+// The measurement is the file's own walk: piModelVisibleRoles answers the roles the harness's own loader
+// builds from a session file (its `get_state`/`get_messages` answer, re-derived by
+// scripts/pi-native-check.py against the installed binary), so requiring the converted file's walk to
+// equal the source file's walk is requiring a loader to see the same conversation in both. The writer
+// this route shipped before its review -- chaining every entry to the one before it -- answered the
+// source with [user assistant assistant] and its own conversion with
+// [compactionSummary user assistant assistant]: the abandoned prompt "And the retry cap?" presented as
+// live, and the source's own line hidden behind a compaction record that stood off it.
+func TestContinueIntoPiKeepsABranchedSourcesOwnConversation(t *testing.T) {
+	fixture, err := os.ReadFile(fixturePath(t, filepath.Join("pi", piHistoryFixtureRef.ID+".jsonl")))
+	if err != nil {
+		t.Fatalf("reading the history fixture: %v", err)
+	}
+	home := t.TempDir()
+	result, err := Continue(context.Background(), ContinueOptions{
+		Ref:          piHistoryFixtureRef,
+		Target:       TargetPi,
+		Config:       fixtureConfig(t),
+		TargetHome:   home,
+		TargetBinary: missingTargetBinary,
+	})
+	if err != nil {
+		t.Fatalf("continuing the history fixture into Pi: %v", err)
+	}
+	installed, err := os.ReadFile(result.TargetSession.Path)
+	if err != nil {
+		t.Fatalf("reading the installed session: %v", err)
+	}
+	sourceWalk := piModelVisibleRoles(fixture)
+	targetWalk := piModelVisibleRoles(installed)
+	if want := []string{"user", "assistant", "assistant"}; !slices.Equal(sourceWalk, want) {
+		t.Fatalf("the source fixture's own model-visible history = %v, want the measured %v", sourceWalk, want)
+	}
+	if !slices.Equal(targetWalk, sourceWalk) {
+		t.Errorf("the converted session's model-visible history = %v, while the source file's is %v: the "+
+			"target's own loader would read a different conversation than the source holds",
+			targetWalk, sourceWalk)
+	}
+	// The abandoned line travels as recorded history and stays off the walk; the source's own last turn is
+	// on it. A conversion that dropped the branch fails the first half and one that flattened it the
+	// second.
+	lines := decodePiSession(t, installed)
+	texts := piEntryTexts(t, lines)
+	onPath := piWalkIDs(t, lines)
+	walkTexts := map[string]bool{}
+	for id := range onPath {
+		walkTexts[texts[id]] = true
+	}
+	for _, abandoned := range []string{"And the retry cap?", "Thirty seconds, in internal/retry/config.go."} {
+		if !strings.Contains(string(installed), abandoned) {
+			t.Errorf("the abandoned branch's %q is not in the converted file at all: the branch is "+
+				"recorded history and must travel", abandoned)
+		}
+		if walkTexts[abandoned] {
+			t.Errorf("the abandoned branch's %q is on the walk the target's loader makes, so a turn the "+
+				"conversation left was presented as an active one", abandoned)
+		}
+	}
+	if !walkTexts["I should not have answered with only the height."] {
+		t.Error("the source's own last turn is not on the walk the target's loader makes")
+	}
+	// The compaction entry the source recorded *off* its own path stays off the walk in the target too:
+	// recorded history, which is what the source's own file holds (its loader rebuilds nothing from it).
+	compactions := 0
+	for _, line := range lines {
+		if line.Type != "compaction" {
+			continue
+		}
+		compactions++
+		if onPath[line.ID] {
+			t.Error("a compaction entry stands on the walk the target's loader makes, while the source " +
+				"recorded it off its own path: the target would rebuild its context from a boundary the " +
+				"source's conversation does not stand behind")
+		}
+	}
+	if compactions != 1 {
+		t.Errorf("the converted session holds %d compaction entr(ies), want the source's one", compactions)
 	}
 }
 
@@ -656,10 +781,13 @@ func TestPiHistoryFixtureBranchIsNotOnTheActivePath(t *testing.T) {
 // target resolves a session id through the process's own working directory, so a session whose recorded
 // directory does not exist on this machine cannot be loaded here -- and the check says that instead of
 // reading the target's fork offer as a pass.
+//
+// The working directory is one this case owns and never creates, and the harness's executable lookup is
+// answered by the test's own seam, so the refusal is exercised on every host: the case decides when it
+// runs, not whether the host happens to have Pi installed or happens to have the fixture's own recorded
+// directory (/home/user/code/example-api) absent.
 func TestPiLoadCheckRefusesWhenTheRecordedWorkingDirectoryIsNotHere(t *testing.T) {
-	if _, err := exec.LookPath(PiBinaryDefault); err != nil {
-		t.Skip("pi is not installed on this host")
-	}
+	withFakePiHarness(t, nil, nil)
 	home := t.TempDir()
 	result, err := Continue(context.Background(), ContinueOptions{
 		Ref:          claudeFixtureRef,
@@ -671,14 +799,14 @@ func TestPiLoadCheckRefusesWhenTheRecordedWorkingDirectoryIsNotHere(t *testing.T
 	if err != nil {
 		t.Fatalf("continuing: %v", err)
 	}
-	// The Claude fixture records /home/user/code/example-api, which this host does not have.
-	if _, err := os.Stat(result.TargetSession.Cwd); err == nil {
-		t.Skipf("this host has %s, so the refusal cannot be exercised here", result.TargetSession.Cwd)
+	missing := filepath.Join(t.TempDir(), "a-directory-this-host-does-not-have")
+	if _, err := os.Stat(missing); err == nil {
+		t.Fatalf("%s exists, so this case cannot exercise the refusal it is about", missing)
 	}
 	load := VerifyPiLoad(context.Background(), PiLoadOptions{
 		SessionID: result.TargetSession.SessionID,
-		Cwd:       result.TargetSession.Cwd,
-		Directory: PiProjectDir(result.TargetSession.Cwd),
+		Cwd:       missing,
+		Directory: PiProjectDir(missing),
 		FileName:  result.TargetSession.FileName,
 		Data:      []byte{},
 		Installed: result.TargetSession.Path,
@@ -687,7 +815,8 @@ func TestPiLoadCheckRefusesWhenTheRecordedWorkingDirectoryIsNotHere(t *testing.T
 	if load.State != VerificationStateNotVerified {
 		t.Fatalf("load = %+v, want not-verified for a working directory this host does not have", load)
 	}
-	if !strings.Contains(load.Detail, "working directory") {
-		t.Errorf("load detail = %q, want it to name the working directory the harness needs", load.Detail)
+	if !strings.Contains(load.Detail, "working directory") || !strings.Contains(load.Detail, missing) {
+		t.Errorf("load detail = %q, want it to name the working directory the harness needs (%s)",
+			load.Detail, missing)
 	}
 }

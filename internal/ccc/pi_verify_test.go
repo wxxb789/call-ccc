@@ -210,10 +210,14 @@ func TestPiRPCReadsAndComparesTheLoadersAnswer(t *testing.T) {
 }
 
 // TestPiModelVisibleRolesAndExpectedMessageCount pins the byte-level walk the load check compares the
-// harness's answer with, against the committed fixtures' own bytes and with literals: the history
-// fixture's boundary shape (its compaction entry rendered first, as the loader reports it) matters, and
-// the count is pinned against a literal rather than against the walk's own length, which would be a
-// tautology.
+// harness's answer with, against the committed fixtures' own bytes and against literals.
+//
+// The walk is the harness's own -- from the file's last entry back through parentId, which is what its
+// loader builds a session's path from -- so an entry the file holds but no later record hangs off is
+// recorded history rather than context, and only a compaction entry *on* that path is the boundary the
+// loader rebuilds its context from. The counts are pinned as literals (measured through the harness's own
+// `get_state` answers for these files, and re-derived in 0005's evidence record), never as the walk's own
+// length, which would be a tautology.
 func TestPiModelVisibleRolesAndExpectedMessageCount(t *testing.T) {
 	ordinary, err := os.ReadFile(fixturePath(t, filepath.Join("pi", piFixtureRef.ID+".jsonl")))
 	if err != nil {
@@ -230,13 +234,40 @@ func TestPiModelVisibleRolesAndExpectedMessageCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading the Pi history fixture: %v", err)
 	}
-	// The boundary stands first: the compaction the loader rebuilds its context from is reported as the
-	// one compactionSummary entry, and the turns the boundary replaced are not in the walk.
-	if got, want := piModelVisibleRoles(history), []string{"compactionSummary", "user", "assistant", "assistant"}; !slices.Equal(got, want) {
+	// The history fixture's compaction entry -- and the turn that follows it -- hang off an entry the
+	// file's last record does not continue from, so they are recorded history rather than context.
+	// Measured on the tested harness: its own loader answers this file with `messageCount` 3 and exactly
+	// the roles below, no `compactionSummary` among them. A walk that read "the last compaction entry in
+	// file order, then every message after it" would answer 4 and report a boundary the loader never
+	// rebuilt anything from -- the reading the reader's own answer for a Pi file does not support, since
+	// a record after a tool result names the message that made the call rather than the result.
+	if got, want := piModelVisibleRoles(history), []string{"user", "assistant", "assistant"}; !slices.Equal(got, want) {
 		t.Errorf("piModelVisibleRoles(history fixture) = %v, want %v", got, want)
 	}
-	if got := piExpectedMessageCount(history); got != 4 {
-		t.Errorf("piExpectedMessageCount(history fixture) = %d, want the literal 4", got)
+	if got := piExpectedMessageCount(history); got != 3 {
+		t.Errorf("piExpectedMessageCount(history fixture) = %d, want the literal 3", got)
+	}
+
+	// The other side of the boundary rule, written here rather than taken from a fixture: a compaction
+	// entry *on* the walk is the boundary the loader rebuilds from, so it is reported as the one
+	// compactionSummary entry and the messages before it on the path leave the count.
+	compacted := []byte(strings.Join([]string{
+		`{"type":"session","version":3,"id":"01a1c335-0000-4000-8000-000000000000",` +
+			`"timestamp":"2026-05-05T11:00:00.000Z","cwd":"/tmp/x"}`,
+		`{"type":"message","id":"aaaa1111","parentId":null,"timestamp":"2026-05-05T11:00:01.000Z",` +
+			`"message":{"role":"user","content":"before the boundary","timestamp":1795026001000}}`,
+		`{"type":"compaction","id":"bbbb2222","parentId":"aaaa1111",` +
+			`"timestamp":"2026-05-05T11:01:00.000Z","summary":"what came before","firstKeptEntryId":"bbbb2222",` +
+			`"systemMessage":null}`,
+		`{"type":"message","id":"cccc3333","parentId":"bbbb2222","timestamp":"2026-05-05T11:02:00.000Z",` +
+			`"message":{"role":"user","content":"after the boundary","timestamp":1795026120000}}`,
+		"",
+	}, "\n"))
+	if got, want := piModelVisibleRoles(compacted), []string{"compactionSummary", "user"}; !slices.Equal(got, want) {
+		t.Errorf("piModelVisibleRoles(a compacted file) = %v, want %v", got, want)
+	}
+	if got := piExpectedMessageCount(compacted); got != 2 {
+		t.Errorf("piExpectedMessageCount(a compacted file) = %d, want the literal 2", got)
 	}
 }
 
@@ -257,6 +288,14 @@ type fakePiRPC struct {
 	controlSucceeds bool
 	// controlErrorText replaces the missing-session text of the unknown arm.
 	controlErrorText string
+	// plantControl makes the unknown arm leave a session file of its own behind, in the scratch sessions
+	// tree below the home it was driven with and one project directory down -- the shape a harness's own
+	// write takes -- so the check's tree scan is exercised by an arm that *did* write a session while
+	// still reporting the missed lookup.
+	plantControl bool
+	// removeSessionsRoot makes the unknown arm delete the scratch sessions tree, so the check is answered
+	// with a tree it cannot read rather than with "nothing was written there".
+	removeSessionsRoot bool
 	// mutateInstalledPath, when non-empty, is appended to once the installed arm runs, so the check
 	// observes the installed file changing underneath it.
 	mutateInstalledPath string
@@ -285,6 +324,21 @@ func (f *fakePiRPC) run(
 	if sessionID != f.installed {
 		if f.controlSucceeds {
 			return piRPCStdout(sessionID, 1, []string{"user"}), nil
+		}
+		if f.plantControl {
+			planted := filepath.Join(home, "sessions", "--planted-project--",
+				"2026-01-01T00-00-00-000Z_"+sessionID+".jsonl")
+			if err := os.MkdirAll(filepath.Dir(planted), 0o700); err != nil {
+				return "", fmt.Errorf("the fake could not plant a control session: %w", err)
+			}
+			if err := os.WriteFile(planted, []byte(`{"type":"session","version":3,"id":"`+sessionID+`"}`+"\n"), 0o600); err != nil {
+				return "", fmt.Errorf("the fake could not plant a control session: %w", err)
+			}
+		}
+		if f.removeSessionsRoot {
+			if err := os.RemoveAll(filepath.Join(home, "sessions")); err != nil {
+				return "", fmt.Errorf("the fake could not remove the scratch sessions tree: %w", err)
+			}
 		}
 		text := f.controlErrorText
 		if text == "" {
@@ -528,6 +582,35 @@ func TestVerifyPiLoadRefusesEveryBadAnswer(t *testing.T) {
 		}
 		if !strings.Contains(verification.Detail, "did not report the unknown session as missing") {
 			t.Errorf("detail = %q, want it to name the control arm's missing answer", verification.Detail)
+		}
+	})
+	t.Run("a control arm that wrote a session of its own", func(t *testing.T) {
+		rpc := base()
+		rpc.plantControl = true
+		verification := load(t, rpc)
+		if verification.State == VerificationStateVerified {
+			t.Fatalf("load = %+v, want it refused: the control arm left a session behind, so the missed "+
+				"lookup did not stop before a new session was created", verification)
+		}
+		if !strings.Contains(verification.Detail, "wrote a session file") {
+			t.Errorf("detail = %q, want it to name the session the control arm wrote", verification.Detail)
+		}
+		// The scan must be a walk of the sessions tree, not a listing of its own entries: the planted
+		// session sits under a project directory, where a listing of the root's children never looks.
+		if !strings.Contains(verification.Detail, "--planted-project--") {
+			t.Errorf("detail = %q, want it to name the planted session's own path", verification.Detail)
+		}
+	})
+	t.Run("a sessions tree the check cannot read", func(t *testing.T) {
+		rpc := base()
+		rpc.removeSessionsRoot = true
+		verification := load(t, rpc)
+		if verification.State == VerificationStateVerified {
+			t.Fatalf("load = %+v, want it refused: the check could not read the tree it has to scan for a "+
+				"session the control arm may have written", verification)
+		}
+		if !strings.Contains(verification.Detail, "could not read") {
+			t.Errorf("detail = %q, want it to say the tree could not be read", verification.Detail)
 		}
 	})
 	t.Run("the installed file changed underneath the check", func(t *testing.T) {

@@ -1823,3 +1823,34 @@ supersede it with a newer one and say which it supersedes.
   `Cases` and `CASES`; nothing depends on the omission except that the reader's projection of *that*
   fixture is not proven against the pin.
 - **Settled by:** nothing owner-only.
+
+## Q-0005-07 — A Pi target reproduces the source's own parent relation, rather than being flattened or cut
+
+- **Status:** resolved (default taken; the review named the choice as an operator decision and this is the
+  reversible default it landed on)
+- **Question:** the target's session format is a tree (`id`/`parentId`), and the inherited readers answer
+  each record's own identity and the record it hangs off (`Message.SourceUUID` / `Message.SourceParentUUID`;
+  a Pi session's `parentId`, a Claude transcript's `parentUuid`). 0005's first writer chained every written
+  entry to the one before it and dropped those two fields. That was measured wrong: for the committed
+  branch fixture the pre-fix conversion made Pi's own loader read
+  `[compactionSummary, user, assistant, assistant]` — the abandoned prompt "And the retry cap?" standing as
+  an active user turn — where the source file answers `[user, assistant, assistant]`. The goal forbids
+  exactly that (`Bounds`: "do not treat unrelated inactive branches as additional user turns"). Should the
+  writer reproduce the source's tree, or write only the source's active path and count the rest as omitted?
+- **Default taken:** reproduce the source's tree. Each entry is chained to the entry of the record the
+  source named as its parent, so the target's loader walks the source's own active path from the file's
+  last entry and an abandoned branch stays off it as *recorded history* — which is where the source's own
+  file keeps it, so nothing is dropped either. Three consequences are part of the rule: a record whose
+  named parent the target omitted is chained to the nearest ancestor that was written; a record that
+  follows a tool result is chained to the *result* (the reader answers a Pi tool result as not a visible
+  ancestor, while the source's file runs call → result → what follows, and the other reading would leave a
+  resumed session with a call and no result); and a parent the read cannot resolve at all follows the entry
+  before it and is counted (`unresolved_source_parents`), because that relation is this conversion's and
+  not the source's. Re-derived natively (offline, Pi's own RPC loader on the source and on the conversion):
+  both answer `messageCount 3`, `[user, assistant, assistant]`.
+- **Reversal:** write only the source's active path, omitting and counting the off-path records (a smaller
+  file, at the cost of the recorded history the source's own compaction leaves in place), or write a
+  `branch_summary` entry for an abandoned path (which would require inventing a summary the source never
+  recorded). Neither is needed to satisfy the goal's clause; the default keeps every record the read
+  produced.
+- **Settled by:** nothing owner-only; the review's own alternative (omit-and-count) is the reversal above.

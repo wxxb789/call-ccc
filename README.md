@@ -26,9 +26,12 @@ cd <session working directory> && CLAUDE_CONFIG_DIR=<installed home> claude --re
 cd <session working directory> && PI_CODING_AGENT_DIR=<installed home> pi --session <new session id>
 ```
 
-The two harnesses that resolve a session through their working directory are named above; both find a
-session id only from the directory whose project spelling matches the one the session was installed
-under, which is why their resume lines carry a `cd`.
+The two harnesses that resolve a session through their working directory are named above, and each one's
+lookup is scoped to the directory the process runs in: measured on Claude Code 2.1.326, a session id
+answers `No conversation found with session ID: …` from any directory whose project spelling differs,
+and Pi resolves an id across its sessions root but *offers to fork* a session it finds only under another
+project rather than resuming it in place — which is why neither printed resume line is a resume without
+its `cd`.
 
 `ccc inspect` locates a session with the provider's own reader, parses it, and reports its identity,
 agent, source, conversation shape (counts, tool calls, compaction boundaries, malformed lines) and —
@@ -78,9 +81,10 @@ the file is written reads it again.
 The continuation engine itself lives in [`internal/ccc`](internal/ccc) and is callable without the
 CLI: `SourceReader` reads a native session into a typed, transient Conversation document,
 `Archive`/`Ingestor` cover the inherited read and write paths, `targets.go` routes `Continue` to the
-target writer, `ConvertToCodexRollout`/`ConvertToClaudeTranscript` convert into the two target formats,
-and `Inspect` is what the `inspect` command calls. Further targets
-(Pi, OpenCode, GitHub Copilot CLI, …) arrive with the goals that specify them.
+target writer, `ConvertToCodexRollout`/`ConvertToClaudeTranscript`/`ConvertToPiSession` convert into the
+three target formats (a Codex rollout, a Claude Code transcript, a Pi session), and `Inspect` is what the
+`inspect` command calls. Further targets
+(OpenCode, GitHub Copilot CLI, …) arrive with the goals that specify them.
 
 - Design and scope: [`docs/core-design/README.md`](docs/core-design/README.md)
 - Outcome contracts: [`docs/goals/README.md`](docs/goals/README.md)

@@ -210,12 +210,14 @@ func piSession() string {
 }
 
 // piHistorySession is the second Pi fixture: a conversation compacted at a boundary, and a branch the
-// conversation left afterwards.
+// conversation left.
 //
-// The active path is the file's own tree from its last entry back: the compaction summary, then the
-// turn that followed it. The branch's own turn names an entry the summary replaced as its parent, so it
-// is recorded history the active conversation does not continue from -- exactly the shape a target must
-// not flatten into an invented active conversation.
+// The file's last entry is the branch's own turn -- an assistant record chained to the entry the summary
+// replaced, recorded after the summary and the exchange that followed it -- so the active path, which the
+// target's own loader walks from the file's last entry back through parentId, is that turn and the two
+// records it hangs off (the prompt and the answer before the boundary). The compaction entry and the turn
+// that followed it stand *off* that path: recorded history the active conversation does not continue from,
+// and exactly the shape a target must not flatten into an invented active conversation.
 func piHistorySession() string {
 	summarizedID := "aa11bb22"
 	abandonedID := "cc33dd44"
@@ -252,8 +254,9 @@ func piHistorySession() string {
 		marshal(piEntryMap(answerID, keptID, "2026-05-05T11:02:03.000Z", map[string]any{
 			"message": piAssistantMap("Thirty seconds, in internal/retry/config.go.", 1795026123000),
 		})),
-		// The abandoned branch's own turn: recorded after the summary and chained to the entry the
-		// summary replaced, so the active path does not reach it.
+		// The branch's own turn, and the file's last entry: it names the entry the summary replaced as its
+		// parent, so the active path runs through it and the summary's own line -- the compaction entry and
+		// the exchange after it, written before this one -- is what the walk from here never reaches.
 		marshal(piEntryMap("5566cc77", abandonedID, "2026-05-05T11:03:00.000Z", map[string]any{
 			"message": piAssistantMap("I should not have answered with only the height.", 1795026180000),
 		})),

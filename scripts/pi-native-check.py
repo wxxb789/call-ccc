@@ -72,20 +72,28 @@ PI_BACK_SOURCE_SESSION = "01a1c335-7098-71c2-a91b-b5295c0464f5"
 PI_BACK_TARGET = "claude"
 
 GO_TAGS = "fts5"
-BINARY = "ccc-native-check-bin"
+
+#: The binary this harness builds and drives. It lives under `bin/`, which `.gitignore` covers, so a run
+#: leaves the repository exactly as it found it: `scripts/upstream-parity.py` refuses a tree holding a
+#: file that is neither carried nor project-owned, and a build output written to the repository root
+#: would be exactly that. It is a name of its own, not a sibling route's binary, so two harnesses run
+#: side by side cannot overwrite each other's build mid-run.
+BINARY = Path("bin", "ccc-native-check-pi")
 
 #: The environment variables that name a source root for the conversion's reader, per provider, and the
 #: variable that names the Pi data directory. They mirror the names the configuration resolves.
 SOURCE_ROOT_ENV = {"claude": "CLAUDE_PROJECTS_DIR", "pi": "PI_DIR"}
 PI_HOME_ENV = "PI_CODING_AGENT_DIR"
 
-#: How each target harness's printed invocation names the data directory and the session, so this
-#: harness checks the command the *route* prints rather than one route's spelling twice. The home
-#: variable is the one the harness reads its data directory from (none of them has a flag for it), and
-#: the session word is the flag its own resume takes.
+#: How each target harness's printed invocation names its data directory, so this harness reads the
+#: assignment out of the route's own line rather than assuming one route's spelling twice. The home
+#: variable is the one the harness reads its data directory from: none of them has a flag for it, so it
+#: is set as a leading assignment. (The session word itself is not spelled here: the check compares the
+#: printed line against the argument vector the report printed, which already carries the route's own
+#: session flag.)
 TARGET_INVOCATION = {
-    "pi": {"home_env": PI_HOME_ENV, "session_flag": "--session"},
-    "claude": {"home_env": "CLAUDE_CONFIG_DIR", "session_flag": "--resume"},
+    "pi": {"home_env": PI_HOME_ENV},
+    "claude": {"home_env": "CLAUDE_CONFIG_DIR"},
 }
 
 PI_SESSION_SUBDIR = "sessions"
@@ -120,6 +128,27 @@ def pi_session_file_name(timestamp: str, session_id: str) -> str:
     return f"{stamp}_{session_id}.jsonl"
 
 
+def host_pi_providers(host_agent_dir: Path) -> dict:
+    """The provider definitions the host's own Pi ``models.json`` holds, or an empty mapping when the
+    host has none.
+
+    "A host with no provider configured for the chosen model" is a state the module docstring promises to
+    report as a named skip, not a crash: a missing file, or a file that holds no ``providers`` object (its
+    own schema is all-or-nothing), is that state, and a run that meets one still has to reach its
+    ``RESULT:`` line. The read is guarded here so every caller -- the seeding below and the run's own
+    provider selection -- answers the same document rather than each re-reading the file.
+    """
+    models_path = host_agent_dir / "models.json"
+    if not models_path.is_file():
+        return {}
+    try:
+        document = json.loads(models_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    providers = document.get("providers") if isinstance(document, dict) else None
+    return providers if isinstance(providers, dict) else {}
+
+
 def seed_pi_home(home: Path, host_agent_dir: Path, providers: list[str]) -> tuple[list[str], list[str]]:
     """Seed a scratch Pi agent directory with the host's provider definitions, minus every credential.
 
@@ -128,13 +157,10 @@ def seed_pi_home(home: Path, host_agent_dir: Path, providers: list[str]) -> tupl
     ``apiKey`` is dropped must still resolve a credential from the environment, which is why the key is
     written back as an ``$ENV`` reference. Answers the provider names seeded and the ones left out.
     """
-    models_path = host_agent_dir / "models.json"
-    if not models_path.is_file():
-        return [], []
-    host_models = json.loads(models_path.read_text(encoding="utf-8"))
+    host_models = host_pi_providers(host_agent_dir)
     seeded: dict[str, object] = {}
     left_out: list[str] = []
-    for name, provider in (host_models.get("providers") or {}).items():
+    for name, provider in host_models.items():
         if name not in providers:
             left_out.append(name)
             continue
@@ -208,6 +234,76 @@ def installed_entry_counts(session: Path) -> dict[str, int]:
     return counts
 
 
+def assistant_messages_without_usage(session: Path) -> tuple[int, int]:
+    """How many `message` records one session file holds whose role is `assistant`, and how many of them
+    lack a `usage` object.
+
+    Pi's own loader indexes `message.usage` on every assistant message it reads, so an assistant record
+    without one is a file the target would not read as written. The count is taken from the parsed
+    records, the same walk `installed_entry_counts` makes: a whole-file substring search for `usage` is
+    satisfied by a *message text* that happens to spell the word, which is not a usage object and is not
+    what the target's loader reads.
+    """
+    assistants = 0
+    without = 0
+    for line in session.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            entry = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if entry.get("type") != "message":
+            continue
+        message = entry.get("message")
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        assistants += 1
+        if not isinstance(message.get("usage"), dict):
+            without += 1
+    return assistants, without
+
+
+def session_id_from_header(session: Path) -> str:
+    """The session id one Pi session file's own header line records, or "" when it holds none.
+
+    A Pi session file is named ``<timestamp>_<id>.jsonl`` and its first record is the `session` entry
+    whose `id` field is the identity the harness's own writer gave it. The identity is read from that
+    record, never inferred from the file's name: the name's stem carries the timestamp as well, so two
+    files recording the *same* session id under different timestamps read back as two different names.
+    """
+    for line in session.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            entry = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if entry.get("type") == "session":
+            return str(entry.get("id", ""))
+    return ""
+
+
+def home_holds_id(home: Path, session_id: str, exclude: Path | None = None) -> bool:
+    """Whether any session file below `home`, other than `exclude`, records `session_id` in its header.
+
+    The ids are read from each file's own header (`session_id_from_header`) rather than from its name, so
+    a conversion that reused an id the home already held under another timestamp is caught instead of
+    passing on a differing file name. `exclude` is the file this run just installed, whose header holds
+    the same id by construction.
+    """
+    if not session_id:
+        return False
+    for path in home.rglob("*.jsonl"):
+        if exclude is not None and path == exclude:
+            continue
+        if session_id_from_header(path) == session_id:
+            return True
+    return False
+
+
 def pi_tool_names(session: Path) -> list[str]:
     """Every tool name one session file's call blocks record, in order."""
     names: list[str] = []
@@ -277,8 +373,21 @@ def rpc_answer(stdout: str, command: str) -> dict | None:
 
 def model_visible_roles(session: Path) -> list[str]:
     """The roles the harness's own loader builds from one session file, in order: the latest compaction
-    entry (reported as ``compactionSummary``), every message entry after it, and nothing before it. It
-    mirrors the Go function ``piModelVisibleRoles`` (internal/ccc/pi_verify.go)."""
+    entry **on the path the loader walks** (reported as ``compactionSummary``), then every message entry
+    after it on that path, and nothing off the path. It mirrors the Go function ``piModelVisibleRoles``
+    (internal/ccc/pi_verify.go).
+
+    The walk is the harness's own, re-derived from its answer rather than assumed (measured on 1.5.2): the
+    loader starts at the file's **last** entry, follows ``parentId`` back to the tree's root and rebuilds
+    the reversed path, so an entry the file holds but no later record hangs off is recorded history and
+    not context, and a compaction entry standing off that path is not a boundary anything is rebuilt from.
+    The path is read from the file's own ``parentId`` values, never from file order: a parentId the file
+    does not hold, a record naming itself and a loop each end the walk where they are reached, which is the
+    same partial path the loader would have. Reading the latest compaction in file order instead is only
+    accidentally right for single-chain files -- the committed branch fixture's compaction entry and the
+    turn after it stand off its last entry's path, and the loader answers ``[user, assistant, assistant]``
+    (no ``compactionSummary``).
+    """
     records: list[dict] = []
     for line in session.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
@@ -291,19 +400,33 @@ def model_visible_roles(session: Path) -> list[str]:
         if entry.get("type") in ("", "session"):
             continue
         records.append(entry)
+    if not records:
+        return []
+    index_by_id = {entry.get("id"): index for index, entry in enumerate(records) if entry.get("id")}
+    reversed_path: list[dict] = []
+    visited: set[int] = set()
+    index = len(records) - 1
+    while index not in visited:
+        visited.add(index)
+        entry = records[index]
+        reversed_path.append(entry)
+        parent = entry.get("parentId")
+        if not isinstance(parent, str) or parent not in index_by_id:
+            break
+        index = index_by_id[parent]
+    path = list(reversed(reversed_path))
     boundary = -1
-    for index, entry in enumerate(records):
+    for index, entry in enumerate(path):
         if entry.get("type") == "compaction":
             boundary = index
     roles: list[str] = []
-    start = 0
     if boundary >= 0:
-        start = boundary + 1
         roles.append("compactionSummary")
-    for entry in records[start:]:
+    for entry in path[boundary + 1:]:
         if entry.get("type") != "message":
             continue
-        roles.append((entry.get("message") or {}).get("role", ""))
+        message = entry.get("message")
+        roles.append(message.get("role", "") if isinstance(message, dict) else "")
     return roles
 
 
@@ -325,6 +448,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parent.parent)
     parser.add_argument("--pi", default="pi", help="the Pi binary to verify against")
+    parser.add_argument("--claude", default="claude",
+                        help="the Claude Code binary to verify against for the pi-to-claude direction "
+                             "(default: claude on PATH)")
     parser.add_argument("--direction", choices=("claude-to-pi", "pi-to-claude"), default="claude-to-pi",
                         help="which route to verify (default: the Pi target)")
     parser.add_argument("--source", default=None,
@@ -386,9 +512,17 @@ def main(argv: list[str] | None = None) -> int:
     if target_provider == TARGET_PROVIDER:
         wanted = [reference for reference in [os.environ.get("CCC_PI_NATIVE_PROVIDER")] if reference]
         if not wanted:
-            host_models = host_pi_dir / "models.json"
-            wanted = sorted((json.loads(host_models.read_text(encoding="utf-8")).get("providers") or {}))
+            wanted = sorted(host_pi_providers(host_pi_dir))
         seeded_providers, left_out = seed_pi_home(home, host_pi_dir, wanted)
+        if not wanted:
+            # The module docstring's promise: a host with no provider configured for the chosen model is
+            # a named skip with that reason, not a crash and not a pass. The conversion can still run --
+            # the provider is what a *turn* needs -- so the run continues and records the skip beside its
+            # other checks rather than stopping at the first state this host cannot satisfy.
+            record("a Pi provider is configured for the chosen model", False,
+                   f"no provider configured: {host_pi_dir / 'models.json'} names no provider and "
+                   f"$CCC_PI_NATIVE_PROVIDER is unset, so no provider definition was seeded for this run",
+                   skipped=True)
 
     unrelated = home / PI_SESSION_SUBDIR / f"--{UNRELATED_PROJECT}--" / \
         pi_session_file_name("2026-01-01T00-00-00-000Z", UNRELATED_SESSION)
@@ -403,12 +537,18 @@ def main(argv: list[str] | None = None) -> int:
         "records": "a session this run must not touch",
     }) + "\n", encoding="utf-8")
 
-    target_binary = target_binary_name(target_provider)
+    # The pi-to-claude direction's target harness is named by `--claude` (the sibling's own flag), so a
+    # Claude Code binary that is not on PATH can be named directly; every other direction drives the Pi
+    # binary the `--pi` flag resolves. The same word is passed to the CLI as `--target-binary` and read
+    # back out of the report, so the invocation this run checks is the one it drove.
+    target_binary = args.claude if target_provider == PI_BACK_TARGET else target_binary_name(target_provider)
     target_path = shutil.which(target_binary)
 
     print(f"repo:        {repo}")
     print(f"direction:   {args.direction} ({source_provider}:{source_session} → {target_provider})")
     print(f"target:      {target_binary} ({target_path or 'not on PATH'})")
+    if target_provider == PI_BACK_TARGET:
+        print(f"claude:      {target_binary}")
     if target_provider == TARGET_PROVIDER:
         print(f"pi:          {pi}" + (f" ({run([pi, '--version']).stdout.strip()[:40]})" if pi else ""))
     print(f"source:      {source.relative_to(repo)} (copied to {destination})")
@@ -432,132 +572,158 @@ def main(argv: list[str] | None = None) -> int:
     planted_before = sha256(unrelated)
     existing_sessions = {path: sha256(path) for path in home.rglob("*.jsonl") if path != unrelated}
 
-    build = run([go, "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY), "./cmd/ccc"], cwd=repo)
-    if build.returncode != 0:
-        record("ccc builds with the flags upstream ships", False, build.stderr.strip()[:400])
-        return 2
-    record("ccc builds with the flags upstream ships", True)
-
-    env = {SOURCE_ROOT_ENV[source_provider]: str(source_root)}
-    command = [str(repo / BINARY), "continue", f"{source_provider}:{source_session}", "--to", target_provider,
-               "--target-home", str(home), "--target-binary", target_binary, "--json"]
-    if args.resume_prompt:
-        command += ["--verify", "resume", "--resume-prompt", args.resume_prompt]
-    convert = run(command, cwd=repo, env=env)
-
-    document: dict = {}
+    # Everything below runs inside a `finally` that removes the fabricated unrelated session this harness
+    # planted: it is removed however the run ends -- after every check, or from any of the branches that
+    # return early -- so a caller-named `--target-home` is left as it was found apart from the converted
+    # session this run installed, and a second run against the same home plants its own session instead of
+    # meeting its own leftover.
     try:
-        document = json.loads(convert.stdout)
-    except json.JSONDecodeError:
-        record("ccc continue writes one JSON result document", False,
-               bounded(convert.stdout or convert.stderr, 400))
-        return 1
-    record("ccc continue writes one JSON result document", True)
+        build_parent = (repo / BINARY).parent
+        build_parent.mkdir(parents=True, exist_ok=True)
+        build = run([go, "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY), "./cmd/ccc"], cwd=repo)
+        if build.returncode != 0:
+            record("ccc builds with the flags upstream ships", False, build.stderr.strip()[:400])
+            return 2
+        record("ccc builds with the flags upstream ships", True)
 
-    conversion = document.get("conversion") or {}
-    installation = document.get("installation") or {}
-    target = document.get("target_session") or {}
-    verification = document.get("verification") or {}
-    losses = {loss.get("category"): loss.get("count") for loss in conversion.get("losses") or []}
-    carried = conversion.get("carried") or {}
+        env = {SOURCE_ROOT_ENV[source_provider]: str(source_root)}
+        command = [str(repo / BINARY), "continue", f"{source_provider}:{source_session}", "--to",
+                   target_provider, "--target-home", str(home), "--target-binary", target_binary, "--json"]
+        if args.resume_prompt:
+            command += ["--verify", "resume", "--resume-prompt", args.resume_prompt]
+        convert = run(command, cwd=repo, env=env)
 
-    record("the conversion reports the conversation it carried and every loss category",
-           conversion.get("state") == "converted" and carried.get("messages", 0) > 0 and bool(losses),
-           f"carried {carried.get('messages')} message(s), {carried.get('tool_calls')} call(s), "
-           f"{carried.get('tool_results')} result(s); loss categories named: {len(losses)}")
-    record("the structural read-back verified the installed session",
-           (verification.get("structure") or {}).get("state") == "verified",
-           bounded((verification.get("structure") or {}).get("detail", ""), 300))
-    load_state = (verification.get("load") or {}).get("state", "")
-    load_detail = (verification.get("load") or {}).get("detail", "")
-    if target_path is None:
-        # The target harness is not installed: its own loader cannot run, and this harness says so with
-        # the CLI's own words instead of reading the absent verification as a failed conversion.
-        record(f"the target harness ({target_binary}) is installed", False,
-               f"not on PATH; the CLI reported the load check as {load_state or 'absent'}"
-               + (f": {bounded(load_detail, 200)}" if load_detail else ""))
-        record("ccc continue exits 0 for a conversion whose conversion and read-back ran",
-               convert.returncode == 0,
-               f"exit {convert.returncode}; stderr {bounded(convert.stderr, 300)}")
-    else:
-        record("ccc continue exits 0 for a conversion whose verification ran", convert.returncode == 0,
-               f"exit {convert.returncode}; stderr {bounded(convert.stderr, 300)}")
-    session_id = target.get("session_id", "")
-    installed = Path(target.get("path", ""))
-    if not session_id or not installed.is_file():
-        record("the installed session exists at the reported path", False,
-               f"session_id={session_id!r} path={target.get('path')!r}")
+        document: dict = {}
+        try:
+            document = json.loads(convert.stdout)
+        except json.JSONDecodeError:
+            record("ccc continue writes one JSON result document", False,
+                   bounded(convert.stdout or convert.stderr, 400))
+            return 1
+        record("ccc continue writes one JSON result document", True)
+
+        conversion = document.get("conversion") or {}
+        installation = document.get("installation") or {}
+        target = document.get("target_session") or {}
+        verification = document.get("verification") or {}
+        losses = {loss.get("category"): loss.get("count") for loss in conversion.get("losses") or []}
+        carried = conversion.get("carried") or {}
+
+        record("the conversion reports the conversation it carried and every loss category",
+               conversion.get("state") == "converted" and carried.get("messages", 0) > 0 and bool(losses),
+               f"carried {carried.get('messages')} message(s), {carried.get('tool_calls')} call(s), "
+               f"{carried.get('tool_results')} result(s); loss categories named: {len(losses)}")
+        record("the structural read-back verified the installed session",
+               (verification.get("structure") or {}).get("state") == "verified",
+               bounded((verification.get("structure") or {}).get("detail", ""), 300))
+        load_state = (verification.get("load") or {}).get("state", "")
+        load_detail = (verification.get("load") or {}).get("detail", "")
+        if target_path is None:
+            # The target harness is not installed: its own loader cannot run, and this harness says so
+            # with the CLI's own words instead of reading the absent verification as a failed conversion.
+            record(f"the target harness ({target_binary}) is installed", False,
+                   f"not on PATH; the CLI reported the load check as {load_state or 'absent'}"
+                   + (f": {bounded(load_detail, 200)}" if load_detail else ""))
+            record("ccc continue exits 0 for a conversion whose conversion and read-back ran",
+                   convert.returncode == 0,
+                   f"exit {convert.returncode}; stderr {bounded(convert.stderr, 300)}")
+        else:
+            record("ccc continue exits 0 for a conversion whose verification ran", convert.returncode == 0,
+                   f"exit {convert.returncode}; stderr {bounded(convert.stderr, 300)}")
+        session_id = target.get("session_id", "")
+        installed = Path(target.get("path", ""))
+        if not session_id or not installed.is_file():
+            record("the installed session exists at the reported path", False,
+                   f"session_id={session_id!r} path={target.get('path')!r}")
+            _report(args, scratch, document)
+            return 1
+        record("the installed session exists at the reported path", True,
+               f"{installed.relative_to(home)} [{(installation or {}).get('mechanism')}]")
+
+        counts = installed_entry_counts(installed)
+        if target_provider == TARGET_PROVIDER:
+            record("the installed file is a Pi session, installed where its working directory spells",
+                   installed.parent == home / PI_SESSION_SUBDIR / pi_project_dir(str(workspace))
+                   and counts.get("session") == 1,
+                   f"{installed.relative_to(home)}; entries {dict(sorted(counts.items()))}")
+            prompt = first_user_text(destination)
+            record("the installed file carries the source's own first prompt",
+                   bool(prompt) and prompt.strip() in installed.read_text(encoding="utf-8"),
+                   f"{prompt[:60]!r}")
+            tools = pi_tool_names(installed)
+            record("the installed file holds the source's tool call and its result",
+                   bool(tools) and counts.get("role:toolResult", 0) >= 1
+                   and carried.get("tool_calls", 0) == len(tools),
+                   f"call block(s) {tools}, toolResult record(s) {counts.get('role:toolResult', 0)}")
+            assistants, without_usage = assistant_messages_without_usage(installed)
+            record("the installed file's assistant records carry a usage object",
+                   assistants > 0 and without_usage == 0,
+                   f"{assistants} assistant message(s), {without_usage} without a usage object")
+
+        # The report's own load state, and then Pi's loader asked again by this harness: the report is one
+        # read of the harness's answer, and this is another, against the file rather than against the
+        # report.
+        if target_provider == TARGET_PROVIDER:
+            report = verification.get("load") or {}
+            record("the load check verified the installed session natively",
+                   report.get("state") == "verified", bounded(report.get("detail", ""), 400))
+            _check_pi_loader(pi, home, workspace, session_id, installed)
+        else:
+            # The target here is not Pi: the CLI's own verification ran that harness's loader
+            # (`verification.load`), and its state is recorded so a PASS for this direction rests on the
+            # loader's own answer and not only on the CLI's exit code. When the harness is absent there is
+            # no loader answer to verify, and the dedicated check above already says why -- so this one is
+            # recorded only when the harness was there to answer.
+            if target_path is not None:
+                record("the load check verified the installed session natively",
+                       load_state == "verified", bounded(load_detail, 400))
+
+        resume = verification.get("resume") or {}
+        if args.resume_prompt:
+            record("the resume check verified one real turn through the printed invocation",
+                   resume.get("state") == "verified", bounded(resume.get("detail", ""), 400))
+            print_answer(resume.get("output", ""))
+            if args.expect:
+                record(f"the turn's answer contains {args.expect!r}",
+                       args.expect in (resume.get("output") or ""),
+                       bounded(resume.get("output", ""), 160))
+
+        _check_invocation(target, target_provider, workspace, home)
+
+        source_root_after = tree_digest(source_root)
+        record("the source fixture tree is unchanged", source_root_after == source_root_before,
+               f"{len(source_root_before)} file(s) digested before and after")
+        record("the planted unrelated session is unchanged", sha256(unrelated) == planted_before)
+        moved = [str(path) for path, digest in existing_sessions.items()
+                 if not path.exists() or sha256(path) != digest]
+        record("every session the home already held is unchanged", not moved, "; ".join(moved[:3]))
+        if target_provider == TARGET_PROVIDER:
+            record("the conversion wrote no id the home already held",
+                   not home_holds_id(home, session_id, exclude=installed),
+                   f"{session_id} is new among the session id(s) the home's own header lines record")
+
         _report(args, scratch, document)
-        return 1
-    record("the installed session exists at the reported path", True,
-           f"{installed.relative_to(home)} [{(installation or {}).get('mechanism')}]")
-
-    counts = installed_entry_counts(installed)
-    if target_provider == TARGET_PROVIDER:
-        record("the installed file is a Pi session, installed where its working directory spells",
-               installed.parent == home / PI_SESSION_SUBDIR / pi_project_dir(str(workspace))
-               and counts.get("session") == 1,
-               f"{installed.relative_to(home)}; entries {dict(sorted(counts.items()))}")
-        prompt = first_user_text(destination)
-        record("the installed file carries the source's own first prompt",
-               bool(prompt) and prompt.strip() in installed.read_text(encoding="utf-8"),
-               f"{prompt[:60]!r}")
-        tools = pi_tool_names(installed)
-        record("the installed file holds the source's tool call and its result",
-               bool(tools) and counts.get("role:toolResult", 0) >= 1
-               and carried.get("tool_calls", 0) == len(tools),
-               f"call block(s) {tools}, toolResult record(s) {counts.get('role:toolResult', 0)}")
-        record("the installed file's assistant records carry a usage object",
-               "usage" in installed.read_text(encoding="utf-8"),
-               "measured: the target's loader indexes message.usage on every assistant message it reads")
-
-    # The report's own load state, and then Pi's loader asked again by this harness: the report is one
-    # read of the harness's answer, and this is another, against the file rather than against the report.
-    if target_provider == TARGET_PROVIDER:
-        report = verification.get("load") or {}
-        record("the load check verified the installed session natively",
-               report.get("state") == "verified", bounded(report.get("detail", ""), 400))
-        _check_pi_loader(pi, home, workspace, session_id, installed)
-
-    resume = verification.get("resume") or {}
-    if args.resume_prompt:
-        record("the resume check verified one real turn through the printed invocation",
-               resume.get("state") == "verified", bounded(resume.get("detail", ""), 400))
-        print_answer(resume.get("output", ""))
-        if args.expect:
-            record(f"the turn's answer contains {args.expect!r}",
-                   args.expect in (resume.get("output") or ""),
-                   bounded(resume.get("output", ""), 160))
-
-    _check_invocation(target, target_provider)
-
-    source_root_after = tree_digest(source_root)
-    record("the source fixture tree is unchanged", source_root_after == source_root_before,
-           f"{len(source_root_before)} file(s) digested before and after")
-    record("the planted unrelated session is unchanged", sha256(unrelated) == planted_before)
-    moved = [str(path) for path, digest in existing_sessions.items()
-             if not path.exists() or sha256(path) != digest]
-    record("every session the home already held is unchanged", not moved, "; ".join(moved[:3]))
-    if target_provider == TARGET_PROVIDER:
-        new_ids = [path.stem for path in home.rglob("*.jsonl")]
-        record("the conversion wrote no id the home already held", len(new_ids) == len(set(new_ids)))
-
-    _report(args, scratch, document)
-    failures = [name for name, state, _ in RESULTS if state == "FAIL"]
-    missing_target = f"the target harness ({target_binary}) is installed"
-    if failures == [missing_target]:
-        # Everything this harness can check without the target harness's own loader passed, and the one
-        # check that needs it says why it could not run. That is an INCOMPLETE run, not a failed one: it
-        # is the same distinction scripts/upstream-parity.py draws for a tree it cannot enumerate, and a
-        # reader of the verdict must not take it for either a pass or a defect.
-        print(f"RESULT: INCOMPLETE — {len(RESULTS) - 1} check(s) ran, none failed; "
-              f"{target_binary} is not on PATH, so the native half of {args.direction} could not run")
-        return 2
-    if failures:
-        print(f"RESULT: FAIL — {len(failures)} check(s) failed: {', '.join(failures)}")
-        return 1
-    print(f"RESULT: PASS — {len(RESULTS)} check(s), none failed")
-    return 0
+        failures = [name for name, state, _ in RESULTS if state == "FAIL"]
+        missing_target = f"the target harness ({target_binary}) is installed"
+        if failures == [missing_target]:
+            # Everything this harness can check without the target harness's own loader passed, and the
+            # one check that needs it says why it could not run. That is an INCOMPLETE run, not a failed
+            # one: it is the same distinction scripts/upstream-parity.py draws for a tree it cannot
+            # enumerate, and a reader of the verdict must not take it for either a pass or a defect.
+            print(f"RESULT: INCOMPLETE — {len(RESULTS) - 1} check(s) ran, none failed; "
+                  f"{target_binary} is not on PATH, so the native half of {args.direction} could not run")
+            return 2
+        if failures:
+            print(f"RESULT: FAIL — {len(failures)} check(s) failed: {', '.join(failures)}")
+            return 1
+        print(f"RESULT: PASS — {len(RESULTS)} check(s), none failed")
+        return 0
+    finally:
+        # The fabricated session belongs to this harness and no one else: it is removed even from a home
+        # the caller named with `--target-home`, so the home is left as it was found apart from the
+        # converted session this run installed, and a second run does not meet this harness's own
+        # leftover.
+        unrelated.unlink(missing_ok=True)
 
 
 def _check_pi_loader(pi: str, home: Path, workspace: Path, session_id: str, installed: Path) -> None:
@@ -640,23 +806,37 @@ def spelled_as_invocation(command: str, home_env: str) -> bool:
     return not (set(head) | set(tail)) & forbidden
 
 
-def _check_invocation(target: dict, target_provider: str) -> None:
+def reported_invocation(command: str, workspace, home, home_env: str, arguments: list[str]) -> bool:
+    """Whether `command` is the invocation as a POSIX shell reads it: the `cd`, then the assignment, then
+    `arguments`.
+
+    The target's loader finds a session through the working directory it is started in (Pi resolves a
+    session id through the project directory of the process's own working directory), and it takes its
+    agent directory from the environment alone -- it has no flag for either -- so a pasted line that names
+    neither resumes nothing, or resumes the caller's own session, rather than the one this run installed.
+    The full word vector is compared, exactly as the sibling ``scripts/claude-native-check.py``'s
+    ``reported_invocation`` does: any `cd <anything>` beside any `NAME=<anything>` beside any session id
+    reads back as the right *shape* and is still another invocation, so a substring or a shape test would
+    accept a line that resumes somewhere else. The words alone do not answer it either
+    (`spelled_as_invocation` reads the spelling too), which is why both halves decide this rule.
+    """
+    return (shell_words(command) == [CD_WORD, str(workspace), OPERATOR_WORD,
+                                     f"{home_env}={home}", *arguments]
+            and spelled_as_invocation(command, home_env))
+
+
+def _check_invocation(target: dict, target_provider: str, workspace, home) -> None:
     """Check the printed resume commands by reading them the way a POSIX shell reads them: word by word,
-    with the data directory and the session named, and nothing a shell would split or act on left bare
-    (the spelling `spelled_as_invocation` reads, the same rule the sibling harness applies)."""
+    against the working directory and the data directory this run used and the argument vector the report
+    itself printed, with nothing a shell would split or act on left bare (the spelling
+    `spelled_as_invocation` reads, the same rule the sibling harness applies)."""
     spec = TARGET_INVOCATION[target_provider]
-    for field, prompt_word in (("resume_command", False), ("exec_resume_command", True)):
+    for field, arguments_field in (("resume_command", "resume_arguments"),
+                                   ("exec_resume_command", "exec_resume_arguments")):
         command = target.get(field, "")
-        words = shell_words(command) if command else None
-        if words is None:
-            record(f"the printed {field} reads as a POSIX shell line", False, bounded(command, 200))
-            continue
-        names_home = any(word.startswith(spec["home_env"] + "=") for word in words)
-        changes_directory = bool(words) and words[0] == CD_WORD
-        names_session = spec["session_flag"] in words and target.get("session_id", "") in words
-        ok = (names_session and names_home and changes_directory
-              and spelled_as_invocation(command, spec["home_env"])
-              and (not prompt_word or PROMPT_PLACEHOLDER in words))
+        arguments = target.get(arguments_field) or []
+        ok = (bool(command) and bool(arguments)
+              and reported_invocation(command, workspace, home, spec["home_env"], arguments))
         record(f"the printed {field} reads as a POSIX shell line naming the session", ok,
                bounded(command, 200))
 

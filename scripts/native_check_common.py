@@ -2,13 +2,16 @@
 
 ``scripts/claude-native-check.py``, ``scripts/codex-native-check.py`` and ``scripts/pi-native-check.py``
 verify their routes the same way: each digests the trees it must not change, records one named check at a
-time, runs a command with this process's environment, reads a rendered invocation back the way a POSIX
-shell reads it, and drives a **copy** of the fixture whose recorded working directory this module's
-record-field rewrite replaces. Those mechanisms are one implementation here, so a fix or a stricter rule is
-not a fix to one route and a silent drift for the others -- the divergence between the two spellings of the
-invocation rule is what disclosed this. Each script imports the names it needs into its own namespace (its
-module-level ``run`` is the seam its offline cases replace, and it slices its own import of ``RESULTS``),
-so the run's exit code is computed from the one list every script reports into.
+time, runs a command with this process's environment, and reads a rendered invocation back the way a POSIX
+shell reads it. The Claude and Pi harnesses also drive a **copy** of the fixture whose recorded working
+directory this module's record-field rewrite replaces, because a Claude Code transcript and a Pi session are
+each filed under the working directory's own spelling; ``scripts/codex-native-check.py`` does not, because a
+Codex rollout is filed by day and this module's rewrite is not part of that route. Those mechanisms are one
+implementation here, so a fix or a stricter rule is not a fix to one route and a silent drift for the
+others -- the divergence between the two spellings of the invocation rule is what disclosed this. Each
+script imports the names it needs into its own namespace (its module-level ``run`` is the seam its offline
+cases replace, and it slices its own import of ``RESULTS``), so the run's exit code is computed from the one
+list every script reports into.
 """
 
 from __future__ import annotations

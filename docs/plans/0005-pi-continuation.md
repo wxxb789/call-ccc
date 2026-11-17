@@ -1,7 +1,7 @@
 # Plan — 0005 Continue conversations into and out of Pi
 
 Contract: [`docs/goals/0005-pi-continuation.md`](../goals/0005-pi-continuation.md).
-Governing design: [`docs/core-design/README.md`](../docs/core-design/README.md).
+Governing design: [`docs/core-design/README.md`](../core-design/README.md).
 Shape reference: increment 0003 ([`docs/plans/0003-codex-to-claude-continuation.md`](0003-codex-to-claude-continuation.md)).
 
 Written before implementation. Every Pi-side fact below was **measured on this host against the
@@ -65,9 +65,10 @@ Consequences taken as this increment's defaults:
 - **Write the session file, not a store.** Pi's own session JSONL is what its loader reads, what the
   inherited AgentsView Pi reader parses (so both halves of the evidence are independent
   implementations), and the only artifact a resume picks up.
-- **One entry per piece of evidence**, linked by `id`/`parentId` into a single path: the `parentId`
-  chain is what Pi's own `buildSessionPath` walks from the last entry, so a file whose chain is broken
-  would load but lose everything before the break.
+- **One entry per piece of evidence**, linked by `id`/`parentId` into the source's own tree: the
+  `parentId` chain is what Pi's own `buildSessionPath` walks from the last entry, so a file whose chain is
+  broken would load but lose everything before the break, and a file whose chain is a single line this
+  build invented would present a branch the conversation left as an active turn.
 - **The header's `cwd` is the source session's recorded working directory**, and the file is installed
   under the project directory Pi derives from it; a source that recorded none is refused
   (`ErrNoTargetCwd`) rather than installed where no lookup finds it.
@@ -92,11 +93,17 @@ Consequences taken as this increment's defaults:
   prompt in at request time), and the pre-boundary entries stay in the file exactly as Pi's own
   compaction leaves them. The target's own loader then rebuilds its model-visible history from the
   summary, which is the source's own semantic.
-- **A branch the source recorded is not flattened**: the inherited reader hands this writer the session's
-  *active path* (its parser marks inactive branches as separate sessions or sidechains, and a Pi
-  `branch_summary` record's abandoned path is not part of the active path Pi itself sends), so the
-  writer never synthesises the inactive branch into user turns; what the reader marked as a sidechain is
-  omitted and counted, and the fixture test pins both directions.
+- **A branch the source recorded is not flattened**: the inherited reader answers each record's own
+  identity and the record it hangs off (a Pi `parentId`, a Claude `parentUuid`), and this writer chains
+  every entry to the entry of the record the source named — so the target file is the source's own tree,
+  the target's own loader walks the source's active path from the file's last entry, and a branch the
+  conversation left stays off that path as recorded history. Nothing is synthesised: no `branch_summary`
+  is invented for an abandoned path, and no inactive branch is written as an active user turn. What the
+  reader marks as a sidechain is omitted and counted (`sidechain_messages`), and a source relation the read
+  cannot resolve is counted too (`unresolved_source_parents`). 0005's review measured the alternative this
+  rule replaced: chaining every entry to the one before it put an abandoned branch's user prompt on the
+  active path and hid the source's own line behind a compaction record that stood off it — the fixtures,
+  the writer case and the conversion case pin the source's tree and the loader's own answer for it.
 
 ### 2.2 The exact records written
 
@@ -111,12 +118,22 @@ message timestamps are Unix milliseconds, which is what Pi writes inside `messag
 | each assistant message with dialogue | `{"type":"message",…,"message":{"role":"assistant","content":[{…}],"provider":<source provider>,"model":<source model>,"usage":{…},"stopReason":"stop","timestamp":<ms>}}` — `content` holds a `thinking` block for recorded reasoning, a `text` block for dialogue, and one `toolCall` block per call, in that order; `usage` is always present (measured: the loader reads `message.usage.input` for every assistant message it loads) with zero counts and is reported as a caveat |
 | tool calls | `{"type":"toolCall","id":<recorded tool-use id or a generated one>,"name":<source tool name>,"arguments":<recorded input object, compacted>}` inside the assistant message's content |
 | tool results | `{"type":"message",…,"message":{"role":"toolResult","toolCallId":…,"toolName":…,"content":[{"type":"text","text":<decoded output>}],"isError":<only when the source's own status says the call failed>,"timestamp":<ms>}}` |
-| a compaction boundary | `{"type":"compaction","id":…,"parentId":<the last entry written>,"timestamp":…,"summary":<the source's summary text>,"firstKeptEntryId":<its own id>,"systemMessage":null}` — the kept id is the record's own (Pi's retain-none shape) and the checkpoint is null, because this build has no prompt checkpoint to write and claiming a kept range would invent one |
+| a compaction boundary | `{"type":"compaction","id":…,"parentId":<the entry of the record the boundary's own parent names>,"timestamp":…,"summary":<the source's summary text>,"firstKeptEntryId":<its own id>,"systemMessage":null}` — the kept id is the record's own (Pi's retain-none shape) and the checkpoint is null, because this build has no prompt checkpoint to write and claiming a kept range would invent one |
 | a message the source recorded with the tool role | written as the toolResult shape above, paired with its call, and counted (`tool_role_messages`), exactly as the other two writers treat a native tool row |
 
-Every entry carries `id` (8 hex characters, Pi's own shape) and `parentId` (the previous entry's id,
-`null` only for the first). The file ends with a line feed; no entry is written after a message that
-was omitted, so the chain never points at something the file does not hold.
+Every entry carries `id` (8 hex characters, Pi's own shape) and `parentId`: the entry of the record the
+*source* named as this record's parent (`Message.SourceParentUUID`, which the inherited reader answers from
+a Pi session's `parentId` and a Claude transcript's `parentUuid`), `null` for a record the read answers with
+no parent at all — so the file is the source's own tree rather than one chain this build invented, and a
+branch the conversation left stands off the path the target's loader walks from the file's last entry, as
+recorded history, exactly where the source put it. A record whose named parent has no entry of its own (the
+target omitted it) is chained to the nearest ancestor that does have one; a record that follows a tool
+result is chained to the result, because the reader answers a Pi tool result as *not* a visible ancestor
+while the source's own file runs call → result → what follows, and writing the result after the record would
+leave a resumed session with a call and no result. A relation the read cannot resolve at all follows the
+entry before it and is counted (`unresolved_source_parents`) instead of being presented as the source's. The
+file ends with a line feed, and no entry is written after a message that was omitted, so the chain never
+points at something the file does not hold.
 
 ### 2.3 Mapping rules, category by category
 
@@ -201,7 +218,7 @@ message's list, `Targets()`).
 | --- | --- |
 | a representative Claude-origin conversation converts to a new Pi-native session and **is resumed by Pi** (native load/resume, not a parser round-trip) | `scripts/pi-native-check.py` on this host: the `load` half's own report (Pi's `get_state`/`get_messages` answers naming the installed session, plus the control arm), and `--resume-prompt` for one real turn whose answer and session growth are quoted; the raw transcript of the run in the evidence record |
 | a representative Pi-origin conversation continues in a previously supported target harness, with native load/resume evidence, demonstrating the common intermediate model | `scripts/pi-native-check.py --direction pi-to-claude` (Pi fixture → `--to claude`), the same native check 0003 established, plus the converter's own JSON report naming the inherited Pi reader as the source of the read and the Claude reader as the structural check's reader; `internal/ccc` route tests pin that no Pi-specific branch exists in the pipeline |
-| tests/fixtures show ordered dialogue and tool-call/result relationships stay coherent, and a branched or compacted Pi history is not flattened into an invented active conversation; material loss explicit | the committed Pi fixtures and the tests over them: parse identity and order, round-trip through the writer and the installed file, call/result pairing, the compaction record's own semantics (`firstKeptEntryId` = its own id, summary text carried, pre-boundary entries still present), the branch fixture's active path vs. its inactive branch, and the `losses[]` block with counts for the branched/compacted fixture in the evidence record |
+| tests/fixtures show ordered dialogue and tool-call/result relationships stay coherent, and a branched or compacted Pi history is not flattened into an invented active conversation; material loss explicit | the committed Pi fixtures and the tests over them: parse identity and order, round-trip through the writer and the installed file, call/result pairing, the compaction record's own semantics (`firstKeptEntryId` = its own id, summary text carried, pre-boundary entries still present), the branch fixture's own tree walk (a message entry off it, and each off-path entry reaching the path through its parents), the writer case that pins the source relation (branch, tool result, omitted record, unresolvable parent), the conversion case that requires the target file's model-visible walk to equal the source file's, and the `losses[]` block with counts for the branched/compacted fixture in the evidence record |
 | the source and existing target sessions remain intact; accepted Claude/Codex behaviour not regressed; inherited AgentsView code unchanged | the native check's before/after digests (source fixture, a planted unrelated session, every session the home already held), the existing `internal/ccc` and `cmd/ccc` suites in the gate's `test` step, and `parity` (no carried file changes) |
 | the CLI exposes both directions with the same help, JSON result and error conventions | `ccc help`/`ccc continue -h` text, the JSON documents of both directions in the evidence record, `cmd/ccc` tests for the new target and for the refusal list, and the exit codes reported beside each run |
 
@@ -260,8 +277,12 @@ offline half.
 4. **`firstKeptEntryId` and `systemMessage` on a carried compaction.** Default: the record's own id
    (no kept range claimed) and no system message (Pi installs its own prompt at request time).
    Reversal: reconstruct a checkpoint, which would mean inventing a prompt.
-5. **Inactive branches.** Default: never synthesise them; a sidechain is omitted and counted. Reversal:
-   write a `branch_summary` entry, which would require inventing a summary the source did not record.
+5. **Inactive branches.** Default: never synthesise them, and reproduce the source's own relation instead
+   — every entry hangs off the entry of the record the source named, so an abandoned branch is off the
+   target's active path as recorded history (the source's own semantic, and what its loader shows), and a
+   sidechain is omitted and counted. Reversal: write only the source's active path and count the off-path
+   records as omitted, or write a `branch_summary` entry, which would require inventing a summary the
+   source did not record.
 6. **The resume command's model flags.** Default: print neither a provider nor a model. The source's
    provider is a source-side label Pi's own configuration need not define, and a flagged model can leave
    the target unable to open the session at all; the model attribution travels on the entries instead and

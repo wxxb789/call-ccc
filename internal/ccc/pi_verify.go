@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -176,15 +177,18 @@ func VerifyPiLoad(ctx context.Context, opts PiLoadOptions) LoadVerification {
 			summariseText(controlErr.Error(), 300))
 		return verification
 	}
-	if entries, err := os.ReadDir(sessionsRoot); err == nil {
-		for _, entry := range entries {
-			if strings.Contains(entry.Name(), unknown) {
-				verification.Detail = fmt.Sprintf(
-					"the control arm wrote a session file for the unknown id %s, so the missed lookup did "+
-						"not stop before a new session was created", unknown)
-				return verification
-			}
-		}
+	planted, plantedErr := piSessionNamed(sessionsRoot, unknown)
+	if plantedErr != nil {
+		verification.Detail = fmt.Sprintf(
+			"the control arm did not report the unknown session as missing from a tree this check could "+
+				"not read: %v", plantedErr)
+		return verification
+	}
+	if planted != "" {
+		verification.Detail = fmt.Sprintf(
+			"the control arm wrote a session file for the unknown id %s (%s), so the missed lookup did "+
+				"not stop before a new session was created", unknown, planted)
+		return verification
 	}
 
 	if beforeErr != nil {
@@ -209,6 +213,35 @@ func VerifyPiLoad(ctx context.Context, opts PiLoadOptions) LoadVerification {
 			"loader read the session without a model turn, and the installed file is unchanged (%s)",
 		stateSummary(state), copyPath, strings.Join(piLoadEnvDenied, ", "), shortDigest(before))
 	return verification
+}
+
+// piSessionNamed answers the path of a session file below root whose own name contains name, and "" when
+// the tree holds none.
+//
+// The walk is over the whole tree and not over the sessions root's direct children: the harness files a
+// session under the project directory it spells from the session's working directory
+// (`<root>/--<project>--/<timestamp>_<id>.jsonl`), so a session a harness wrote while this check was
+// asking about an unknown id sits one level below the root, where a listing of the root's own entries
+// would never see it. A tree this cannot read is an error, because the answer "no such session was
+// written" is exactly what the caller derives from finding none.
+func piSessionNamed(root, name string) (string, error) {
+	found := ""
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || found != "" {
+			return nil
+		}
+		if strings.Contains(entry.Name(), name) {
+			found = path
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return found, nil
 }
 
 // piLoadState is the part of the harness's own `get_state` answer this check reads.
@@ -392,23 +425,64 @@ func piMessageDetail(stdout string, data []byte) (string, error) {
 }
 
 // piModelVisibleRoles answers the roles one session file's model-visible history holds, in order: the
-// compaction entry the context is rebuilt from (reported by the harness as `compactionSummary`), then
-// every message entry after it, and nothing before it.
+// latest compaction entry the harness's own loader finds *on the path it walks* (reported by the harness
+// as `compactionSummary`), then every message entry after it on that path, and nothing off the path.
+//
+// The walk is the harness's own, re-derived from its answer rather than assumed (measured on the tested
+// version): it starts at the file's last entry, follows parentId back to the tree's root, and reports the
+// reversed path -- so an entry the file holds but no later record hangs off is recorded history and not
+// context, and a compaction entry that stands off that path is not a boundary the loader rebuilds
+// anything from (the inherited reader's own answer for a Pi tool result additionally *names* a record
+// after a result as hanging off the message that made the call, which is why the path is read from the
+// file's own parentId values and never from a document this build holds). The count and the roles cannot
+// drift: both are this walk's own answer.
 func piModelVisibleRoles(data []byte) []string {
 	records := piConversationEntries(data)
-	boundary := -1
+	if len(records) == 0 {
+		return nil
+	}
+	indexByID := make(map[string]int, len(records))
 	for index, entry := range records {
+		if entry.ID != "" {
+			indexByID[entry.ID] = index
+		}
+	}
+	// The path: from the file's last entry back through parentId, in file order. A parentId the file does
+	// not hold, a record naming itself and a loop each end the walk where they are reached, which is the
+	// same partial path the harness's own loader would have.
+	reversed := make([]piConversationEntry, 0, len(records))
+	visited := make(map[int]bool, len(records))
+	for index := len(records) - 1; ; {
+		if visited[index] {
+			break
+		}
+		visited[index] = true
+		entry := records[index]
+		reversed = append(reversed, entry)
+		if entry.ParentID == nil {
+			break
+		}
+		next, ok := indexByID[*entry.ParentID]
+		if !ok {
+			break
+		}
+		index = next
+	}
+	path := make([]piConversationEntry, len(reversed))
+	for index, entry := range reversed {
+		path[len(reversed)-1-index] = entry
+	}
+	boundary := -1
+	for index, entry := range path {
 		if entry.Type == piEntryCompaction {
 			boundary = index
 		}
 	}
-	var roles []string
-	from := 0
+	roles := make([]string, 0, len(path))
 	if boundary >= 0 {
-		from = boundary + 1
 		roles = append(roles, "compactionSummary")
 	}
-	for _, entry := range records[from:] {
+	for _, entry := range path[boundary+1:] {
 		if entry.Type != piEntryMessage {
 			continue
 		}
@@ -637,11 +711,13 @@ func piExpectedMessageCount(data []byte) int {
 	return len(piModelVisibleRoles(data))
 }
 
-// piConversationEntry is the part of one entry these reads ask about: its record type and, for a message
-// entry, the role its payload records.
+// piConversationEntry is the part of one entry these reads ask about: its record type, the tree link the
+// model-visible walk follows, and, for a message entry, the role its payload records.
 type piConversationEntry struct {
-	Type    string `json:"type"`
-	Message struct {
+	Type     string  `json:"type"`
+	ID       string  `json:"id"`
+	ParentID *string `json:"parentId"`
+	Message  struct {
 		Role string `json:"role"`
 	} `json:"message"`
 }

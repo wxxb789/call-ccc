@@ -318,9 +318,15 @@ says so.
   records (a `thinking_level_change` among them) to the session it opens, so driving the loader against
   the installed file would alter what the conversion published; the installed file's digest is compared
   around that whole stage, which is what makes the copy an assertion rather than a preference. The loader
-  must answer with this session's id and with the file's own model-visible history (the compaction entry
-  it rebuilt from, rendered as `compactionSummary`, then every message entry after it — the count is
-  *not* the file's `message` count, measured), and an unknown-id control arm must answer `No session
+  must answer with this session's id and with the file's own model-visible history — the walk the loader
+  itself makes from the file's last entry back through `parentId`: the latest compaction entry *on that
+  path*, rendered as `compactionSummary`, then every message entry after it on the path. The count is
+  *not* the file's `message` count, measured, and not every entry in the file either: an entry the file
+  holds but no later record hangs off is recorded history the loader does not build context from, and a
+  compaction entry that stands off the path is not a boundary it rebuilds from (the Pi provider's own
+  reader answers a record after a tool result as hanging off the message that made the call, so the path
+  is read from the file's own `parentId` values and never from a document this build holds). An
+  unknown-id control arm must answer `No session
   found matching '…'`, which is what makes the first arm an answer about *this* session rather than about
   a process that started. With `--resume-prompt` the run also drives one real turn through the invocation
   the report printed, prints the target's own answer under `TURN_OUTPUT_MARKER`, and requires the session
@@ -328,7 +334,12 @@ says so.
   host's provider definitions with every credential-bearing field dropped (`apiKey`, `headers`) and the
   chosen provider's key left as an `$ENV` reference, so nothing is read from or written to a credential
   store; a host without the harness installed ends as `RESULT: INCOMPLETE` (exit 2) naming what could not
-  run, never as a pass.
+  run, never as a pass. It builds `ccc` into `bin/`, which `.gitignore` covers, so a run leaves no
+  untracked file for the `parity` step to report; its `--target-home`-shaped flag is `--pi` for the Pi
+  binary and, for the `--direction pi-to-claude` half, `--claude PATH` names the Claude Code binary to
+  drive (its absence from `PATH` is exactly the case that flag exists for), and the fabricated unrelated
+  session it plants is removed again in a `finally`, so a home the caller named is left as it was found
+  apart from the converted session.
 - `scripts/native_check_common.py` — the mechanism the native checks share, so none keeps its own
   copy of it: the file digests (`sha256`, `tree_digest`), the check recorder (`record`, `RESULTS`), the
   subprocess runner (`run`), the POSIX-shell reading of a rendered command (`shell_words`,

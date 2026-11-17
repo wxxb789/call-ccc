@@ -25,7 +25,12 @@ with their exit codes and counts).
   step — proves the carried files are still the pin's. Change a carried file only upstream.
 - **Precision over apparent completeness.** An explicitly partial translation beats a
   plausible-looking one. Never fabricate tool results, reasoning, roles, resume identities or a
-  success result; a valid file is not evidence that anything can resume it.
+  success result; a valid file is not evidence that anything can resume it. A target format that is
+  itself a tree (Pi's session JSONL) is written as the *source's* own tree: each entry hangs off the
+  entry of the record the source named as its parent, so the target's own loader walks the source's
+  active path and an inactive branch stays off it as recorded history rather than being chained in as an
+  active turn. A relation the read cannot answer is counted (`unresolved_source_parents`) instead of
+  being presented as one the source recorded.
 - **A target writer's claim is shown through the target harness's own loader.** Call `ccc continue …
   --to codex`, `--to claude` or `--to pi` converts, installs and reports **converted / installed /
   natively resumable** as three separate states; "resumable" is only ever `verification.load` or
@@ -34,9 +39,9 @@ with their exit codes and counts).
   turn, model access, so it is **not** a gate step: `scripts/codex-native-check.py`,
   `scripts/claude-native-check.py` and `scripts/pi-native-check.py` re-derive it and report each check's
   own verdict (the gate keeps deciding the offline half — round-trip through the inherited reader,
-  install rules, reported losses, CLI shape). A check whose target harness is absent reports
-  `RESULT: INCOMPLETE` with exit 2 and names what it could not run, so a partial run is never quoted as
-  a pass. The Codex check also runs the repeat scenario goal 0004 added: it converts a *copy* of the
+  install rules, reported losses, CLI shape). A check whose target harness is absent exits 2 naming the
+  harness it needs — the Pi check ends its run with `RESULT: INCOMPLETE` and the reason, the Codex and
+  Claude checks print the reason on stderr — so a partial run is never quoted as a pass. The Codex check also runs the repeat scenario goal 0004 added: it converts a *copy* of the
   fixture, loads it, appends the committed `internal/ccc/testdata/growth/` fragment to the copy,
   converts again, and shows Codex's own loader opening the second session with its own view holding the
   appended turn while the first session's bytes did not move (`--repeat-resume-prompt` adds one real

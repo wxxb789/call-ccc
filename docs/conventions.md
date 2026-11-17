@@ -73,8 +73,11 @@ gate runs as a required step.
   **converted**, **installed** and **natively resumable** as separate states; the last one comes from
   the harness's own loader (and, at the level that runs one, from a real turn), never from the file
   parsing. The target's records are written the way the target writes them (the model-visible item
-  *and* the harness's own view of the turn), and the provider the session records is the target's own
-  answer about its configuration — never the source's, and never invented.
+  *and* the harness's own view of the turn): where the target format is itself a tree, it is written as
+  the *source's* own tree — each entry hangs off the entry of the record the source named as its parent —
+  so the target's loader walks the source's active path instead of one this build invented. The provider
+  the session records is the target's own answer about its configuration — never the source's, and never
+  invented.
 - **A native-verification harness is a re-derivable script, not a gate step**, exactly like
   `scripts/upstream-compare.py`: it needs the target harness installed (and model access for a real
   turn), so the gate keeps deciding the offline half. A check that cannot run says so. The default

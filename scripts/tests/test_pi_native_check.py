@@ -108,11 +108,17 @@ def invocation(cwd, home, home_env: str, arguments: list[str]) -> str:
     return " ".join(pieces)
 
 
-def invocation_states(target: dict, target_provider: str = "pi") -> dict[str, str]:
-    """The check states ``_check_invocation`` records for ``target``, restored afterwards."""
+def invocation_states(target: dict, target_provider: str = "pi", *, workspace="workspace",
+                      home="pi-home") -> dict[str, str]:
+    """The check states ``_check_invocation`` records for ``target``, restored afterwards.
+
+    ``workspace`` and ``home`` are the working directory and the data directory the check is told this run
+    used: the printed line is compared against them (and against the argument vector the report printed),
+    so a case that hands the check other values is a case about the full word-vector rule.
+    """
     before = len(NATIVE_CHECK.RESULTS)
     with contextlib.redirect_stdout(io.StringIO()):
-        NATIVE_CHECK._check_invocation(target, target_provider)
+        NATIVE_CHECK._check_invocation(target, target_provider, workspace, home)
     states = {name: state for name, state, _ in NATIVE_CHECK.RESULTS[before:]}
     del NATIVE_CHECK.RESULTS[before:]
     return states
@@ -121,12 +127,35 @@ def invocation_states(target: dict, target_provider: str = "pi") -> dict[str, st
 class ReportedInvocationReading(unittest.TestCase):
     """The printed resume commands are read the way a POSIX shell reads them.
 
-    The rule is the sibling ``scripts/claude-native-check.py``'s: the words a shell splits the line into
-    are one half, and the line's own spelling -- what a shell reads as *syntax* once the quoting is taken
-    into account -- is the other. A check that applied only the word reading would accept an unquoted
-    value a shell acts on, so the refusal cases below are the ones that make this rule answer for the Pi
-    route and not only the Claude one.
+    The rule is the sibling ``scripts/claude-native-check.py``'s, and it reads two halves: the *words* a
+    shell splits the line into -- compared with the `cd`, the working directory the loader is started from,
+    the data directory the session was installed into and the exact argument vector the report itself
+    printed -- and the line's own *spelling* (``spelled_as_invocation``), what a shell reads once the
+    quoting is taken into account. A check with only the spelling half would accept any `cd <anything>`
+    beside any `NAME=<anything>` beside any session id, because those are the right words in the right
+    order; a check with only the word half would accept an unquoted value a shell acts on, because that
+    reads back as the same word. Both refusal families are below, so a check that dropped either half
+    would accept a line this run did not print.
     """
+
+    def assert_rejected(self, line: str, workspace, home, arguments: list[str],
+                        words: list[str]) -> None:
+        """``line`` is not the invocation, and the shell's own reading says why.
+
+        The words are asserted first, so a refusal cannot come from a spelling accident: the case names the
+        vector a shell splits the line into (another directory, another home, another session, a directory
+        the shell splits), and then both halves of the rule refuse it.
+        """
+        self.assertEqual(NATIVE_CHECK.shell_words(line), words, line)
+        for flavour in PATH_FLAVOURS:
+            with self.subTest(flavour=flavour.__name__):
+                self.assertFalse(
+                    NATIVE_CHECK.reported_invocation(line, flavour(workspace), flavour(home),
+                                                     PI_HOME_ENV, arguments), line)
+        target = {"session_id": SESSION, "resume_command": line, "exec_resume_command": line,
+                  "resume_arguments": arguments, "exec_resume_arguments": arguments}
+        states = invocation_states(target, "pi", workspace=workspace, home=home)
+        self.assertNotIn("PASS", states.values(), f"{line!r} was accepted: {states}")
 
     def test_accepts_a_pi_rendering_the_renderer_emits(self) -> None:
         """Both printed lines read back as the `cd`, the assignment and the argument vector."""
@@ -136,14 +165,48 @@ class ReportedInvocationReading(unittest.TestCase):
                     resume = invocation(flavour(cwd), flavour(home), PI_HOME_ENV, RESUME_ARGUMENTS)
                     exec_resume = invocation(flavour(cwd), flavour(home), PI_HOME_ENV,
                                              EXEC_RESUME_ARGUMENTS)
+                    words = [NATIVE_CHECK.CD_WORD, str(flavour(cwd)), NATIVE_CHECK.OPERATOR_WORD,
+                             f"{PI_HOME_ENV}={flavour(home)}"]
+                    self.assertEqual(NATIVE_CHECK.shell_words(resume), [*words, *RESUME_ARGUMENTS],
+                                     resume)
+                    self.assertEqual(NATIVE_CHECK.shell_words(exec_resume),
+                                     [*words, *EXEC_RESUME_ARGUMENTS], exec_resume)
                     target = {"session_id": SESSION, "resume_command": resume,
-                              "exec_resume_command": exec_resume}
-                    states = invocation_states(target, "pi")
+                              "exec_resume_command": exec_resume,
+                              "resume_arguments": RESUME_ARGUMENTS,
+                              "exec_resume_arguments": EXEC_RESUME_ARGUMENTS}
+                    states = invocation_states(target, "pi", workspace=flavour(cwd), home=flavour(home))
                     self.assertEqual(states.get(RESUME_CHECK), "PASS",
                                      f"a correct rendering was rejected: {resume!r} — {states}")
                     self.assertEqual(states.get(EXEC_RESUME_CHECK), "PASS",
                                      f"a correct rendering was rejected: {exec_resume!r} — {states}")
                     self.assertTrue(NATIVE_CHECK.spelled_as_invocation(resume, PI_HOME_ENV), resume)
+
+    def test_rejects_a_pi_line_for_another_working_directory(self) -> None:
+        self.assert_rejected(
+            f"cd workspace-elsewhere && {PI_HOME_ENV}=pi-home {PI} --session {SESSION}",
+            "workspace", "pi-home", RESUME_ARGUMENTS,
+            ["cd", "workspace-elsewhere", "&&", f"{PI_HOME_ENV}=pi-home", PI, "--session", SESSION])
+
+    def test_rejects_a_pi_line_that_names_another_home(self) -> None:
+        self.assert_rejected(
+            f"cd workspace && {PI_HOME_ENV}=pi-elsewhere {PI} --session {SESSION}",
+            "workspace", "pi-home", RESUME_ARGUMENTS,
+            ["cd", "workspace", "&&", f"{PI_HOME_ENV}=pi-elsewhere", PI, "--session", SESSION])
+
+    def test_rejects_a_pi_line_for_another_session(self) -> None:
+        self.assert_rejected(
+            f"cd workspace && {PI_HOME_ENV}=pi-home {PI} --session {OTHER_SESSION}",
+            "workspace", "pi-home", RESUME_ARGUMENTS,
+            ["cd", "workspace", "&&", f"{PI_HOME_ENV}=pi-home", PI, "--session", OTHER_SESSION])
+
+    def test_rejects_a_pi_working_directory_a_shell_would_split(self) -> None:
+        # The defect the quoted rendering prevents: a shell reads the space as the end of the directory
+        # word, so the loader is started somewhere else and finds another session, or none at all.
+        self.assert_rejected(
+            f"cd work space && {PI_HOME_ENV}=pi-home {PI} --session {SESSION}",
+            "work space", "pi-home", RESUME_ARGUMENTS,
+            ["cd", "work", "space", "&&", f"{PI_HOME_ENV}=pi-home", PI, "--session", SESSION])
 
     def test_rejects_a_pi_assignment_a_shell_reads_as_a_command(self) -> None:
         """The words read back right and the line is still not the invocation.
@@ -162,27 +225,36 @@ class ReportedInvocationReading(unittest.TestCase):
         ):
             with self.subTest(line=line):
                 self.assertFalse(NATIVE_CHECK.spelled_as_invocation(line, PI_HOME_ENV), line)
-                states = invocation_states({"session_id": SESSION, "resume_command": line,
-                                            "exec_resume_command": line}, "pi")
-                self.assertNotIn("PASS", states, f"{line!r} was accepted: {states}")
+                states = invocation_states(
+                    {"session_id": SESSION, "resume_command": line, "exec_resume_command": line,
+                     "resume_arguments": RESUME_ARGUMENTS,
+                     "exec_resume_arguments": RESUME_ARGUMENTS}, "pi")
+                self.assertNotIn("PASS", states.values(), f"{line!r} was accepted: {states}")
 
     def test_rejects_pi_syntax_the_value_leaves_unquoted(self) -> None:
         """A value the renderer quotes, spelled bare: the words read back right and the line is another
         command line -- `;` ends the assignment and starts a program, a bare `&` does the same, `$HOME` is
         substituted before the variable is set, and a backquote substitutes a command. The rule is about
         spellings: a character a shell acts on has to be quoted, which `shellQuote` does for every one."""
-        for line in (
-            f"cd workspace && {PI_HOME_ENV}=a;b {PI} --session {SESSION}",
-            f"cd workspace && {PI_HOME_ENV}=a&b {PI} --session {SESSION}",
-            f"cd workspace && {PI_HOME_ENV}=$HOME {PI} --session {SESSION}",
-            f"cd workspace && {PI_HOME_ENV}=`id` {PI} --session {SESSION}",
-            f"cd workspace && {PI_HOME_ENV}=~ {PI} --session {SESSION}",
+        for line, home in (
+            (f"cd workspace && {PI_HOME_ENV}=a;b {PI} --session {SESSION}", "a;b"),
+            (f"cd workspace && {PI_HOME_ENV}=a&b {PI} --session {SESSION}", "a&b"),
+            (f"cd workspace && {PI_HOME_ENV}=$HOME {PI} --session {SESSION}", "$HOME"),
+            (f"cd workspace && {PI_HOME_ENV}=`id` {PI} --session {SESSION}", "`id`"),
+            (f"cd workspace && {PI_HOME_ENV}=~ {PI} --session {SESSION}", "~"),
         ):
             with self.subTest(line=line):
                 self.assertFalse(NATIVE_CHECK.spelled_as_invocation(line, PI_HOME_ENV), line)
-                states = invocation_states({"session_id": SESSION, "resume_command": line,
-                                            "exec_resume_command": line}, "pi")
-                self.assertNotIn("PASS", states, f"{line!r} was accepted: {states}")
+                # The line's own value is the home this case names, so the word vector matches and only
+                # the spelling refuses it: that is what makes the case about the spelling rule.
+                self.assertFalse(
+                    NATIVE_CHECK.reported_invocation(line, Path("workspace"), Path(home), PI_HOME_ENV,
+                                                     RESUME_ARGUMENTS), line)
+                states = invocation_states(
+                    {"session_id": SESSION, "resume_command": line, "exec_resume_command": line,
+                     "resume_arguments": RESUME_ARGUMENTS,
+                     "exec_resume_arguments": RESUME_ARGUMENTS}, "pi", home=home)
+                self.assertNotIn("PASS", states.values(), f"{line!r} was accepted: {states}")
 
     def test_rejects_a_pi_operator_glued_to_a_word(self) -> None:
         """``PI_CODING_AGENT_DIR=a&&b`` is one word to the shell's reading and two commands to a shell.
@@ -192,9 +264,11 @@ class ReportedInvocationReading(unittest.TestCase):
         """
         line = f"cd workspace && {PI_HOME_ENV}=a&&b {PI} --session {SESSION}"
         self.assertFalse(NATIVE_CHECK.spelled_as_invocation(line, PI_HOME_ENV), line)
-        states = invocation_states({"session_id": SESSION, "resume_command": line,
-                                    "exec_resume_command": line}, "pi")
-        self.assertNotIn("PASS", states, states)
+        states = invocation_states(
+            {"session_id": SESSION, "resume_command": line, "exec_resume_command": line,
+             "resume_arguments": RESUME_ARGUMENTS, "exec_resume_arguments": RESUME_ARGUMENTS},
+            "pi", home="a&&b")
+        self.assertNotIn("PASS", states.values(), states)
 
     def test_rejects_a_quoted_operator_a_shell_would_read_as_a_word(self) -> None:
         """A quoted `&&` reads back as the same words and is not the operator.
@@ -204,9 +278,10 @@ class ReportedInvocationReading(unittest.TestCase):
         """
         line = f"cd workspace '&&' {PI_HOME_ENV}=pi-home {PI} --session {SESSION}"
         self.assertFalse(NATIVE_CHECK.spelled_as_invocation(line, PI_HOME_ENV), line)
-        states = invocation_states({"session_id": SESSION, "resume_command": line,
-                                    "exec_resume_command": line}, "pi")
-        self.assertNotIn("PASS", states, states)
+        states = invocation_states(
+            {"session_id": SESSION, "resume_command": line, "exec_resume_command": line,
+             "resume_arguments": RESUME_ARGUMENTS, "exec_resume_arguments": RESUME_ARGUMENTS}, "pi")
+        self.assertNotIn("PASS", states.values(), states)
 
     def test_rejects_a_pi_line_a_shell_cannot_read(self) -> None:
         # An unbalanced quote is not a command line at all: a shell would keep reading. The word reading
@@ -214,9 +289,10 @@ class ReportedInvocationReading(unittest.TestCase):
         line = f"cd 'workspace && {PI_HOME_ENV}=pi-home {PI} --session {SESSION}"
         self.assertIsNone(NATIVE_CHECK.shell_words(line))
         self.assertFalse(NATIVE_CHECK.spelled_as_invocation(line, PI_HOME_ENV), line)
-        states = invocation_states({"session_id": SESSION, "resume_command": line,
-                                    "exec_resume_command": line}, "pi")
-        self.assertNotIn("PASS", states, states)
+        states = invocation_states(
+            {"session_id": SESSION, "resume_command": line, "exec_resume_command": line,
+             "resume_arguments": RESUME_ARGUMENTS, "exec_resume_arguments": RESUME_ARGUMENTS}, "pi")
+        self.assertNotIn("PASS", states.values(), states)
 
 
 class AnswerBlockShape(unittest.TestCase):
@@ -289,6 +365,137 @@ class SourceCopyRewritesTheRecordField(unittest.TestCase):
         self.assertEqual(destination.read_text(encoding="utf-8").splitlines()[-1], torn)
 
 
+class AssistantUsageRule(unittest.TestCase):
+    """An assistant record without a ``usage`` object is caught by the parsed records, not a substring.
+
+    Pi's own loader indexes ``message.usage`` on every assistant message it reads, so the check walks the
+    file's records the way ``installed_entry_counts`` does and requires every assistant *message* to carry
+    the object. A whole-file substring search for ``usage`` would be satisfied by a message whose text
+    merely spells the word -- which is not a usage object, and a revert to one must fail this case.
+    """
+
+    def test_a_message_text_spelling_usage_is_not_a_usage_object(self) -> None:
+        scratch = Path(tempfile.mkdtemp(prefix="ccc-pi-usage-")).resolve()
+        self.addCleanup(shutil.rmtree, scratch, ignore_errors=True)
+        session = scratch / "session.jsonl"
+        session.write_text("\n".join([
+            json.dumps({"type": "session", "id": SESSION}),
+            json.dumps({"type": "message",
+                        "message": {"role": "assistant",
+                                    "content": "the field is spelled usage in this prose"}}),
+            json.dumps({"type": "message", "message": {"role": "assistant", "usage": {"input": 1}}}),
+            json.dumps({"type": "message", "message": {"role": "user", "content": "hi"}}),
+        ]) + "\n", encoding="utf-8")
+        assistants, without = NATIVE_CHECK.assistant_messages_without_usage(session)
+        self.assertEqual((assistants, without), (2, 1),
+                         "the count did not read the records: a prose `usage` must not satisfy it, and a "
+                         "user message must not be counted")
+
+
+class SessionIdentityRule(unittest.TestCase):
+    """A session id is read from each file's header, never from its name.
+
+    A Pi session file is named ``<timestamp>_<id>.jsonl``; the stem carries the timestamp too, so a
+    conversion that reused an id the home already held under *another* timestamp would compare as a
+    different name. The rule reads the `session` record's own `id`, so the collision is caught.
+    """
+
+    def test_an_id_colliding_under_another_timestamp_is_already_held(self) -> None:
+        scratch = Path(tempfile.mkdtemp(prefix="ccc-pi-identity-")).resolve()
+        self.addCleanup(shutil.rmtree, scratch, ignore_errors=True)
+        home = scratch / "home" / "--x--"
+        home.mkdir(parents=True)
+        first = home / "2026-01-01T00-00-00-000Z_11111111-1111-4111-8111-111111111111.jsonl"
+        installed = home / "2026-02-02T00-00-00-000Z_11111111-1111-4111-8111-111111111111.jsonl"
+        collision = "11111111-1111-4111-8111-111111111111"
+        for path in (first, installed):
+            path.write_text(json.dumps({"type": "session", "id": collision}) + "\n", encoding="utf-8")
+        self.assertNotEqual(first.stem, installed.stem,
+                            "the case is vacuous unless the two names differ")
+        self.assertEqual(NATIVE_CHECK.session_id_from_header(first), collision)
+        self.assertTrue(NATIVE_CHECK.home_holds_id(scratch / "home", collision, exclude=installed),
+                        "a colliding id under another timestamp was not seen as already held")
+
+
+class HostProvidersReadIsGuarded(unittest.TestCase):
+    """A host with no usable ``models.json`` reads as no providers rather than crashing.
+
+    The module docstring promises "a host with no provider configured for the chosen model is reported as
+    a named skip with that reason, not as a pass"; the guarded read is what keeps a missing file, an empty
+    document and a ``providers`` value that is not an object from raising out of the run before its
+    ``RESULT:`` line.
+    """
+
+    def test_a_missing_empty_or_malformed_models_file_reads_as_no_providers(self) -> None:
+        scratch = Path(tempfile.mkdtemp(prefix="ccc-pi-providers-")).resolve()
+        self.addCleanup(shutil.rmtree, scratch, ignore_errors=True)
+        self.assertEqual(NATIVE_CHECK.host_pi_providers(scratch / "missing"), {})
+        models = scratch / "models.json"
+        models.write_text("{}", encoding="utf-8")
+        self.assertEqual(NATIVE_CHECK.host_pi_providers(scratch), {})
+        models.write_text('{"providers": [1, 2]}', encoding="utf-8")
+        self.assertEqual(NATIVE_CHECK.host_pi_providers(scratch), {})
+        models.write_text("not json", encoding="utf-8")
+        self.assertEqual(NATIVE_CHECK.host_pi_providers(scratch), {})
+
+
+class ModelVisibleHistoryWalk(unittest.TestCase):
+    """``model_visible_roles`` walks the file's own ``parentId`` chain, not its file order.
+
+    Measured on the harness's own loader: it starts at the file's last entry, follows ``parentId`` back to
+    the root and rebuilds the reversed path, so an entry no later record hangs off is recorded history and
+    not context. The flat reading -- take the latest compaction in file order, then every message after it,
+    off the path or not -- is only accidentally right for a single-chain file, and both halves of the walk
+    are pinned here: a compaction off the last entry's path must not report a ``compactionSummary``, and a
+    branch hanging off a path entry must not be folded into the context.
+    """
+
+    def test_a_compaction_and_a_branch_off_the_last_entrys_path_are_not_context(self) -> None:
+        scratch = Path(tempfile.mkdtemp(prefix="ccc-pi-walk-")).resolve()
+        self.addCleanup(shutil.rmtree, scratch, ignore_errors=True)
+        session = scratch / "session.jsonl"
+        # The last entry's path is root -> user -> assistant -> last: the compaction entry, the turn after
+        # it and the branch entry all hang off that path's assistant, so no later record names them.
+        session.write_text("\n".join([
+            json.dumps({"type": "session", "id": "header"}),
+            json.dumps({"type": "message", "id": "u", "parentId": None,
+                        "message": {"role": "user"}}),
+            json.dumps({"type": "message", "id": "a1", "parentId": "u",
+                        "message": {"role": "assistant"}}),
+            json.dumps({"type": "compaction", "id": "c", "parentId": "a1"}),
+            json.dumps({"type": "message", "id": "u2", "parentId": "c",
+                        "message": {"role": "user"}}),
+            json.dumps({"type": "message", "id": "a2", "parentId": "u2",
+                        "message": {"role": "assistant"}}),
+            json.dumps({"type": "message", "id": "branch", "parentId": "a1",
+                        "message": {"role": "assistant"}}),
+            json.dumps({"type": "message", "id": "last", "parentId": "a1",
+                        "message": {"role": "assistant"}}),
+        ]) + "\n", encoding="utf-8")
+        self.assertEqual(NATIVE_CHECK.model_visible_roles(session), ["user", "assistant", "assistant"])
+
+    def test_a_compaction_on_the_path_is_still_a_boundary(self) -> None:
+        # The other half, so the walk is not merely "never report a compaction": when the last entry does
+        # hang off the compaction, the summary is reported and only the messages after it on the path.
+        scratch = Path(tempfile.mkdtemp(prefix="ccc-pi-walk-")).resolve()
+        self.addCleanup(shutil.rmtree, scratch, ignore_errors=True)
+        session = scratch / "session.jsonl"
+        session.write_text("\n".join([
+            json.dumps({"type": "session", "id": "header"}),
+            json.dumps({"type": "message", "id": "u", "parentId": None,
+                        "message": {"role": "user"}}),
+            json.dumps({"type": "message", "id": "a1", "parentId": "u",
+                        "message": {"role": "assistant"}}),
+            json.dumps({"type": "compaction", "id": "c", "parentId": "a1"}),
+            json.dumps({"type": "message", "id": "u2", "parentId": "c",
+                        "message": {"role": "user"}}),
+            json.dumps({"type": "message", "id": "a2", "parentId": "u2",
+                        "message": {"role": "assistant"}}),
+        ]) + "\n", encoding="utf-8")
+        self.assertEqual(NATIVE_CHECK.model_visible_roles(session),
+                         ["compactionSummary", "user", "assistant"])
+
+
 class NativeCheckDriver(unittest.TestCase):
     """One run of the shipped ``main`` against stubs, shared by the cases below.
 
@@ -301,9 +508,21 @@ class NativeCheckDriver(unittest.TestCase):
     """
 
     def drive(self, direction: str = "claude-to-pi", *, claude_on_path: bool = False,
-              write_installed: bool = True) -> tuple[int, dict[str, tuple[str, str]], str, dict]:
+              write_installed: bool = True, pi_provider: str | None = "probe",
+              load_state: str = "verified", claude: str | None = None,
+              pi_loader_answer: tuple[str, str] | None = None
+              ) -> tuple[int, dict[str, tuple[str, str]], str, dict]:
         """One run of the shipped ``main`` against stubs; answers its exit code, its recorded checks, its
-        printed output and the facts the stub captured (the conversion's ``--to`` target among them)."""
+        printed output and the facts the stub captured (the conversion's ``--to`` target, the
+        ``--target-binary`` it was given, among them).
+
+        ``pi_provider`` is what ``$CCC_PI_NATIVE_PROVIDER`` holds for the run (``None`` sets it empty, so
+        the run takes the "no provider configured" path); ``load_state`` is what the stub's conversion
+        report says its load verification answered; ``claude`` names the binary for the pi-to-claude
+        direction, which the ``--claude`` flag carries. ``pi_loader_answer`` is what the Pi loader seam
+        answers when a case drives a Pi-target run far enough to reach it -- the default is to refuse,
+        because a case that does not name it is not a case about the loader.
+        """
         scratch = Path(tempfile.mkdtemp(prefix="ccc-pi-native-check-case-")).resolve()
         self.addCleanup(shutil.rmtree, scratch, ignore_errors=True)
         repo = scratch / "repo"
@@ -322,21 +541,26 @@ class NativeCheckDriver(unittest.TestCase):
         home.mkdir()
         pi = str(scratch / "pi")
         go = str(scratch / "go")
-        claude = str(scratch / "claude")
+        claude_binary = str(scratch / "claude") if claude is None else claude
         thread_id = "01a1e000-0000-7000-8000-000000000002"
         captured: dict = {}
 
         def fake_which(name, *args, **kwargs):
-            if name == "claude":
-                return claude if claude_on_path else None
+            # The Claude Code binary may be named by the ``--claude`` flag, so the name can be a path;
+            # its basename is what says it is the Claude binary this case stands up.
+            if os.path.basename(str(name)) == "claude":
+                return claude_binary if claude_on_path else None
             return str(scratch / name)
 
         def fake_ask_pi_loader(*args, **kwargs):
-            raise AssertionError("this case's run reached the Pi loader seam it did not stub")
+            if pi_loader_answer is None:
+                raise AssertionError("this case's run reached the Pi loader seam it did not stub")
+            return pi_loader_answer
 
         def fake_run(cmd, cwd=None, env=None, timeout=600):
             command = [str(part) for part in cmd]
             if command[0] == go:
+                captured["build"] = command
                 return subprocess.CompletedProcess(cmd, 0, "", "")
             if command[0] == pi and "--version" in command:
                 return subprocess.CompletedProcess(cmd, 0, "1.5.2\n", "")
@@ -344,6 +568,7 @@ class NativeCheckDriver(unittest.TestCase):
                 env = env or {}
                 to_provider = command[command.index("--to") + 1]
                 captured["to"] = to_provider
+                captured["target_binary"] = command[command.index("--target-binary") + 1]
                 target_home = Path(command[command.index("--target-home") + 1])
                 source_root = Path(env.get("CLAUDE_PROJECTS_DIR") or env.get("PI_DIR"))
                 cwd_path = source_root.parent / NATIVE_CHECK.WORKSPACE
@@ -372,13 +597,15 @@ class NativeCheckDriver(unittest.TestCase):
                                      "mechanism": "hard-link"},
                     "target_session": {
                         "session_id": thread_id, "path": str(installed),
+                        "resume_arguments": resume_arguments,
+                        "exec_resume_arguments": exec_arguments,
                         "resume_command": invocation(cwd_path, target_home, home_env, resume_arguments),
                         "exec_resume_command": invocation(cwd_path, target_home, home_env,
                                                           exec_arguments),
                     },
                     "verification": {
                         "structure": {"state": "verified", "method": "the stub's read-back"},
-                        "load": {"state": "not-run", "detail": "the stub ran no loader"},
+                        "load": {"state": load_state, "detail": "the stub's own loader answered"},
                         "resume": {"state": "not-requested"},
                     },
                 }
@@ -389,10 +616,12 @@ class NativeCheckDriver(unittest.TestCase):
         printed = io.StringIO()
         argv = ["--repo", str(repo), "--target-home", str(home), "--direction", direction,
                 "--pi-dir", str(scratch / "pi-agent")]
+        if claude is not None:
+            argv += ["--claude", claude]
         try:
             with mock.patch.object(NATIVE_CHECK, "run", fake_run), \
                     mock.patch.object(NATIVE_CHECK, "ask_pi_loader", fake_ask_pi_loader), \
-                    mock.patch.dict(os.environ, {"CCC_PI_NATIVE_PROVIDER": "probe"}), \
+                    mock.patch.dict(os.environ, {"CCC_PI_NATIVE_PROVIDER": pi_provider or ""}), \
                     mock.patch("shutil.which", fake_which), \
                     contextlib.redirect_stdout(printed):
                 code = NATIVE_CHECK.main(argv)
@@ -460,6 +689,82 @@ class IncompleteWhenTheTargetHarnessIsAbsent(NativeCheckDriver):
         self.assertEqual(failed, [], f"a run with the harness present failed a check: {results}")
         self.assertEqual(code, 0, f"exit {code} for a run whose checks all passed: {results}")
         self.assertNotIn("INCOMPLETE", printed, printed)
+
+    def test_the_non_pi_direction_records_the_load_state(self) -> None:
+        # The loader's own answer has to appear for a non-Pi target too, so a PASS rests on it rather
+        # than only on the CLI's exit code.
+        _, results, _, _ = self.drive("pi-to-claude", claude_on_path=True)
+        state = results.get("the load check verified the installed session natively")
+        self.assertIsNotNone(state, f"the non-Pi load check was not recorded: {results}")
+        self.assertEqual(state[0], "PASS", results)
+
+    def test_a_non_verified_load_state_fails(self) -> None:
+        code, results, printed, _ = self.drive("pi-to-claude", claude_on_path=True,
+                                               load_state="not-run")
+        self.assertEqual(results.get("the load check verified the installed session natively", (None,))[0],
+                         "FAIL", results)
+        self.assertIn("RESULT: FAIL", printed, printed)
+        self.assertEqual(code, 1, results)
+
+
+class NoProviderConfiguredIsANamedSkip(NativeCheckDriver):
+    """A host with no provider configured is reported as a named SKIP, not a crash and not a pass.
+
+    The docstring's promise is the check's own words: the run reaches its ``RESULT:`` line (the gate's
+    offline run has no provider configured) and the check that needs one says so, so the run does not
+    traceback out of ``models.json``.
+    """
+
+    def test_a_host_with_no_provider_records_a_named_skip(self) -> None:
+        # The loader seam answers so the run reaches its verdict: the skip is what this case is about,
+        # and a run that stopped before its RESULT line would not show that the skip did not stop it.
+        loader_answer = "\n".join([
+            json.dumps({"type": "response", "command": "get_state", "success": True,
+                        "data": {"sessionId": "the-stub", "messageCount": 0}}),
+            json.dumps({"type": "response", "command": "get_messages", "data": {"messages": []}}),
+        ]) + "\n"
+        _, results, printed, _ = self.drive("claude-to-pi", pi_provider=None,
+                                            pi_loader_answer=(loader_answer, ""))
+        state = results.get("a Pi provider is configured for the chosen model")
+        self.assertIsNotNone(state, f"no skip was recorded for a host without a provider: {results}")
+        self.assertEqual(state[0], "SKIP", results)
+        self.assertIn("no provider configured", state[1], state[1])
+        self.assertIn("RESULT:", printed, printed)
+
+
+class ClaudeBinaryFlag(NativeCheckDriver):
+    """``--claude PATH`` names the Claude Code binary for the pi-to-claude direction.
+
+    The flag is the sibling's own spelling, and it does what the sibling's does: the named path is printed
+    in the header and handed to the CLI as ``--target-binary``, so a Claude Code binary that is not on
+    ``PATH`` can be named directly instead of by a ``PATH`` prefix.
+    """
+
+    def test_the_claude_flag_names_the_target_binary_and_is_printed(self) -> None:
+        _, _, printed, captured = self.drive("pi-to-claude", claude_on_path=True,
+                                             claude="/opt/named/claude")
+        self.assertIn("claude:      /opt/named/claude", printed, printed)
+        self.assertEqual(captured.get("target_binary"), "/opt/named/claude", captured)
+
+
+class BuildOutputStaysOutOfTheRepositoryRoot(NativeCheckDriver):
+    """The built binary lives under ``bin/``, which the ignore rules cover.
+
+    A build output written into the repository root is a file that is neither carried nor
+    project-owned, which is exactly what ``scripts/upstream-parity.py`` refuses; the sibling harnesses
+    build under ``bin/`` and so does this one.
+    """
+
+    def test_the_binary_constant_is_a_bin_path(self) -> None:
+        self.assertEqual(NATIVE_CHECK.BINARY, Path("bin", "ccc-native-check-pi"))
+
+    def test_the_build_writes_into_bin(self) -> None:
+        _, _, _, captured = self.drive("pi-to-claude", write_installed=False)
+        build = captured.get("build")
+        self.assertIsNotNone(build, f"the run did not build: {captured}")
+        output = Path(build[build.index("-o") + 1])
+        self.assertEqual(output.parent.name, "bin", build)
+        self.assertEqual(output.name, "ccc-native-check-pi", build)
 
 
 if __name__ == "__main__":
