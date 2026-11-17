@@ -326,19 +326,28 @@ the target harness's own view of the installed session:
         agentMessage: internal/retry/config.go, as maxBackoffSeconds.
 ```
 
-| Source evidence | Target view (the harness's own `thread/read`, above) | Reported as |
+| Source evidence | Target side — the harness's own `thread/read` above, or this run's recorded answer where the cell credits one | Reported as |
 | --- | --- | --- |
 | user "Check the retry policy and tell me the attempt limit." | `userMessage: Check the retry policy and tell me the attempt limit.` | carried |
 | assistant "I will read the policy file first." (with a persisted reasoning trace) | `agentMessage: I will read the policy file first.` | carried; the reasoning trace omitted (`reasoning_text ×2`, both traces) |
 | the reasoning-only turn (the provider projects an empty dialogue; `Content` renders the trace) | absent, and the trace's own words appear nowhere in the file | omitted (`reasoning_text ×2`); never written as the agent's dialogue |
-| `Read` call + its result ("package retry … MaxAttempts = 4") | reached the resumed turn (the answer names `Read` and its first return: "the contents of … `package retry` followed by `const MaxAttempts = 4`") and the file holds the pair | carried (`tool_calls ×3`, `tool_results ×3`) |
-| `Bash` call whose result the source marked `is_error` | the file holds the pair, and this run's answer names `Bash` among the tools that appear (its wording does not quote the failure) | carried; the recorded outcome has no target field (`tool_result_outcomes ×1`) |
-| `Bash` call whose result text is a JSON string (`"maxBackoffSeconds"`), recorded on the same record as a system reminder | reached the resumed turn as that text, quotation marks included (the answer's last return: `"maxBackoffSeconds"`) | carried, decoded exactly once; the record's reminder text is not written (`system_records ×1`, round 4 below) |
+| `Read` call + its result ("package retry … MaxAttempts = 4") | the file holds the pair: written under the call id the source recorded, with the tool's recorded text, and read back by the conversion's own check of the file it installed; this run's answer does not mention this call | carried (`tool_calls ×3`, `tool_results ×3`) |
+| `Bash` call whose result the source marked `is_error` | the file holds the pair (as above); this run's answer names the two shell calls it reports (`exec_command`) and quotes this one's `Error: no such file or directory` as its first return | carried; the recorded outcome has no target field (`tool_result_outcomes ×1`) |
+| `Bash` call whose result text is a JSON string (`"maxBackoffSeconds"`), recorded on the same record as a system reminder | reached the resumed turn as that text, quotation marks included; this run's answer quotes it as its last return: `"maxBackoffSeconds"` | carried, decoded exactly once; the record's reminder text is not written (`system_records ×1`, round 4 below) |
 | assistant "The attempt limit is four." | `agentMessage: The attempt limit is four.` | carried |
 | a subagent turn marked `isSidechain` | absent | omitted (`sidechain_messages ×1`) |
 | the provider's `system` record | absent (the inherited reader drops it before the document, too) | not a message the source read produces, so no writer category counts it |
 | tool names `Read`/`Bash`, arguments verbatim | the calls are in the file with those names and inputs; the target's own tool set is Codex's | carried with caveat (`tool_name_vocabulary ×2`) |
 | the session's provider | recorded as the target's own effective provider | carried with caveat (`provider_binding ×1`) |
+
+The middle column carries two kinds of evidence and says which one each cell reports: the harness's own
+`thread/read` view and the read-back line above are re-derivable from the run and the file, and the
+file-side claims in them are the conversion's own counts plus the round-trip check (§6 names the tests)
+— or, where a cell credits **this run's answer**, the words that run's own output printed in §3, which
+differ from run to run and are no re-run's. `scripts/tests/test_evidence_claims.py` holds that
+distinction: every inline-code quotation in a cell that credits the answer must occur in a recorded
+answer block, so a cell cannot attribute a sentence to the run that its output does not hold (round 18
+corrected two cells that did, carried over from an earlier run's answer).
 
 Everything a conversion cannot carry is named by category with a count and a reason on *every* run
 (`internal/ccc/codex_target_test.go`'s `TestCodexRolloutReportsEveryCategoryItKnows` requires all
@@ -396,6 +405,7 @@ ok  	go.kenn.io/agentsview/internal/ccc/parity	0.838s
 | the native check compares the source tree and the planted session **after** the loader and the real turn, so a mutation during either stage fails the run — and an intact run passes the same comparisons | `scripts/tests/test_codex_native_check.py`'s `ProtectedArtifactsAfterNativeVerification` |
 | the native check's throw-away home is seeded with settings that cannot hold a credential — never with a copy of the host's `config.toml` — and its report line names what was copied and what was left behind (round 12) | `scripts/tests/test_codex_native_check.py`'s `SeededHostConfiguration` |
 | a nested run that breaks inside a subtest is named by the case that read the child, not raised as an `IndexError` in the reader itself | `test_a_child_broken_inside_a_subtest_is_reported_by_name` |
+| a §5 comparison cell that credits the recorded run's answer quotes words its recorded output holds — the two cells round 18 corrected are driven through the same reading | `scripts/tests/test_evidence_claims.py` (the `selftest` step) |
 | the printed resume invocation names the data directory the session was installed into, quoted where a shell would act on a word, and a resume verification reports the command it ran the same way — the case that reads it back does so from a home whose name holds a space, so the quoted spelling is asserted on every host (the fifth red) | `TestContinuePrintsAResumeCommandThatSelectsTheInstallationHome`, `TestResumeVerificationCommandNamesTheHomeItRanAgainst`, `TestContinueHumanOutputNamesTheResumeCommand`, `TestContinueJSONDistinguishesConversionInstallationAndVerification`, `TestResumeVerificationRequiresTheTurnToAppendToTheSession` |
 | exclusive install (a taken name refused, a filesystem without hard links refused rather than renamed over) and dry run writes nothing (no directory for a home the caller named that is not there yet, and the target harness is never started), dry run reports its own states, prompt required, target/level validation, home resolution | `TestInstallCodexRolloutNeverReplacesASession`, `TestInstallCodexRolloutRefusesAFilesystemWithoutHardLinks`, `TestContinueDryRunWritesNothing`, `TestContinueDryRunReportsWhatItVerified`, `TestContinueDryRunInstallsNothingThroughTheCLI`, `TestContinueRequiresAPromptBeforeItRunsATurn`, `TestContinueRefusesAnUnsupportedTargetOrLevel`, `TestContinueTargetHomeResolution` |
 | the round-trip check compares rather than agrees | `TestStructureVerificationNamesWhatTheFileDoesNotHold` |
@@ -414,9 +424,9 @@ gate: go=<home>/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/..
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 164 tests in 5.205s (rc=0)
-  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 26 project-owned prefix(es); files seen by git: 5627 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
-  PASS     secrets  no leaks found in 76 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+  PASS     selftest Ran 166 tests in 4.871s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 26 project-owned prefix(es); files seen by git: 5628 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 78 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
 
@@ -427,7 +437,11 @@ the operator committed is tracked now.
 The file this increment adds outside the Go packages, `scripts/codex-native-check.py`, is inside a
 prefix the carry manifest calls project-owned (added to `scripts/upstream-import.py`'s `OWNED` and to the
 generated manifest, which `scripts/tests/test_upstream_parity.py` requires to agree; the Go files are
-under the already-owned `internal/ccc/`). The oracle comparison's cases now name the
+under the already-owned `internal/ccc/`, and round 18's `scripts/tests/test_evidence_claims.py` is inside
+the already-owned `scripts/tests/`, which is why the gate's own counts move by it: `selftest` 164 → 166
+cases, and the `secrets` scope 76 → 78 file(s), the new case's source plus the interpreter cache
+`__pycache__` writes for it — a git-ignored build artifact, not a second project file). The oracle
+comparison's cases now name the
 fixture each one reads (`internal/ccc/parity`'s `Cases`, mirrored by `scripts/upstream-compare.py`), so
 adding a transcript shape cannot silently change what a recorded dump describes. The second Claude
 fixture is a new file rather than a change to an existing record, and it is not one of the oracle's

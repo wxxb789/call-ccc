@@ -185,8 +185,10 @@ says so.
   and `selftest`. The Go steps are deliberately *not* listed: on Windows without a C compiler they are
   a disclosed platform boundary (below), not a failure.
 - `scripts/upstream-parity.py` — the source-side parity check (above).
-- `scripts/tests/` — the gate's, the parity checker's, the importer's and the native check's
-  regression tests, run by the `selftest` step.
+- `scripts/tests/` — regression tests for the gate, the parity checker, the importer, the native check
+  and the continuation evidence's own claims (`test_evidence_claims.py`: a §5 comparison cell that
+  credits a recorded run's answer may only quote words that run's recorded output holds), run by the
+  `selftest` step.
 - `CALLCCC_GATE_ROOT` — run the gate against another tree. Most cases in `scripts/tests/` pin a rule
   against a throw-away tree instead of trusting the reader.
 - `scripts/codex-native-check.py` — the target-side native verification for the Claude Code → Codex

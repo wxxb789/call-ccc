@@ -142,7 +142,7 @@ uncommitted edits).
 | --- | --- | --- | --- |
 | an omitted result (empty, whitespace only, or only blocks the output field cannot carry) returned before retiring its call, so a later id-less result could be attributed to an answered call, or refused as ambiguous while every call it could belong to was answered | B3 | `codex_target.go:737-739`: the call is retired as soon as the result is recognised as one of this conversion's, before the representability guard; the omission counting is unchanged | three executed mutations on the three new sequences (`codex_target_test.go:1206-1340`): the reported bug restored (rc=1 — and the pre-existing pairing case was green under it, so the sequences were genuinely unpinned), the counters neutered (rc=1), the over-retiring wrong fix (rc=1) |
 | the `--json` content needles were searched in the **serialized** document, where a quoted tool argument or a multiline output is escaped (`\"`, `\n`, `\u003c`) and never matches its raw needle | F2 | the document is decoded and its **string values** are searched (`assertNoSourceContent`/`jsonStrings`, `cmd/ccc/main_test.go:2104`/`:2122`); the needle list is unchanged, and the case now runs over both committed Claude fixtures — the ordinary one and the reasoning-bearing tooling fixture — with `sourceContentNeedles` answering the reasoning traces so the case can require one | three executed leaks, each failing the case at rc=1: a tool argument, a multiline output, and a reasoning trace (the tooling fixture only); for the first two, a captured `--json` document holds the raw needle `0` times while the decoded-value search finds it |
-| the allowed-root test accepted any string that **began with** a root, and `/tmp` is a root without a separator, so a foreign absolute path under a sibling directory (`/tmp-elsewhere/…`, `/home/user-evil/…`) evaded the sanitizer | F3 | the roots are compared component-wise (`fixtures_test.go:644`, `:651-658`): the path equals the root or continues past it at a separator, so a sibling is never "below" a root | `/tmp-elsewhere/code/tooling` and `/home/user-evil/code/tooling` appended to a fixture each fail the scan at rc=1 (`fixtures_test.go:688`), while the pre-fix rule passes `/tmp-elsewhere/…` (`ok`, rc=0 — the evasion the audit reported) and the naive prefix fix passes both (`ok`, rc=0) |
+| the allowed-root test accepted any string that **began with** a root, and `/tmp` is a root without a separator, so a foreign absolute path under a sibling directory (`/tmp-elsewhere/…`, `/home/user-evil/…`) evaded the sanitizer | F3 | the roots are compared component-wise (`fixtures_test.go:660`, `:667-674`): the path equals the root or continues past it at a separator, so a sibling is never "below" a root | `/tmp-elsewhere/code/tooling` and `/home/user-evil/code/tooling` appended to a fixture each fail the scan at rc=1 (`fixtures_test.go:704`), while the pre-fix rule passes `/tmp-elsewhere/…` (`ok`, rc=0 — the evasion the audit reported) and the naive prefix fix passes both (`ok`, rc=0) |
 
 Every mutation above was applied as a temporary edit, run with the named test, observed (the exit status
 and the failure text in each row), and restored from a byte-identical copy whose sha256 was compared after
@@ -258,6 +258,77 @@ pre-fix blindness and the one-fixture coverage gap beside the fix.
   every carried file are the bytes they already were; `parity` proves the carried half, and each of the six
   mutations was restored byte-identically (`sha256sum -c` against a copy taken before it).
 
+## Repair (2026-11-17, round 18) — the comparison's unsupported native-answer claims
+
+Round 18's review read the diff at head `4f8d338` and returned one P2 finding, in
+[`0002-claude-to-codex-continuation.md`](0002-claude-to-codex-continuation.md) §5: two cells of the
+source-to-target comparison credited the tooling run's resumed answer with words its recorded output does
+not hold. The `Read` cell reported "the contents of … `package retry` followed by `const MaxAttempts = 4`"
+as the answer's first return; the `is_error` cell said the answer named `Bash` and did not quote the
+failure. §3's recorded run names `exec_command` twice, calls the `grep` failure its first return and quotes
+it, and quotes the third result's `"maxBackoffSeconds"` as its last return — both cells had been carried
+over from an earlier run's answer into the cell of a later one. It is an evidence defect, not a behaviour
+one: the file-side claims in the same rows hold (the pairs are written and read back), and the answer is the
+one claim in that record no re-run reproduces.
+
+The correction: the two cells now say what each evidence kind establishes — the pair is written under the
+call id the source recorded, with the tool's own text, and the conversion's own check reads it back, which
+`TestToolingFixtureCarriesTheShapesTheWriterMustNotMisread` now asserts for **all three** recorded results
+(round 18 extended it: unpinned before, a count alone could not tell a wrong-id pairing from the right
+one); an answer sentence is a quotation from §3's recorded run. The table's header and a paragraph under it
+state the distinction, and the class is machine-pinned rather than argued: the new
+`scripts/tests/test_evidence_claims.py` reads §5's table and every recorded answer block the harness
+printed, and reports any inline-code quotation in a cell that credits the answer which no recorded block
+holds — with the audit's two cells driven through that same reading as a case, so the rule is exercised on
+the finding itself. **What it cannot check is stated rather than hidden:** the harness records the answer,
+not its reading of it, so a quotation credited to the wrong return of the right run stays invisible. No
+behaviour on any shipped path changed and no assertion, limit or gate step was weakened; no clause's
+wording was wrong, so no `OPEN-QUESTIONS.md` entry accompanies this repair.
+
+| rule of the touched surface | mutation | observed |
+| --- | --- | --- |
+| every recorded result is written under the call id its source recorded, with the tool's own text (the three corrected rows' file-side claim) | `codex_target.go:729` `} else if _, ok := b.callOwners[callID]; !ok {` → `… !ok \|\| true {` (no recorded id is trusted) | rc=1; `fixtures_test.go:282` FAILs for all three ids (`= ""`, want the tools' texts) and `:286` (`0 function_call_output record(s)`); `TestContinueKeepsTheSourceAndItsDirectoryIntactForBothFixtures` FAILs at `continue_test.go:292` (`ToolResults:0`), with `:289` beside it |
+| an encoded content field is decoded exactly once — the JSON-string result keeps the quotation marks the tool printed | `codex_target.go:1103` `parser.DecodeContent(result.ContentRaw)` → `parser.DecodeContent(parser.DecodeContent(result.ContentRaw))` | rc=1; `fixtures_test.go:282` (`toolu_…003 = "maxBackoffSeconds"`, want `"\"maxBackoffSeconds\""`; the other two results decode to `""`) and `codex_target_test.go:926` |
+| a recorded result's outcome has no target field and is counted (`tool_result_outcomes ×1`) | `codex_target.go:775` `if strings.TrimSpace(result.Status) != "" {` → `if false {` | rc=1; `continue_test.go:289` (`tool_result_outcomes` `Count:0`) and `codex_target_test.go:428` (`want count 1 and disposition "carried-with-caveat"`) |
+| the conversion's own check reads back the file it installed (the round-trip comparison the `Read` cell names) | `codex_install.go:363` `compareSequences(categoryToolResult, …, intendedResults, readResults)` → `…, intendedResults, intendedResults)` (the check agrees with itself) | rc=1; `codex_install_test.go:49`: `differences` = 2 instead of one per altered item, the `tool result 1 differs` entry gone |
+| a §5 cell that credits the run's answer quotes only words its recorded output holds | the two audited cells restored in the shipped record (its pre-fix bytes) | rc=1; `test_evidence_claims.py:143` reports four uncited claims — `Read`, `package retry`, `const MaxAttempts = 4`, `Bash`; restored, the case is green and the second case drives those same cells through the reading it pins |
+| A1's recorded mutation (re-executed while re-mapping this file's anchors) | `reader.go:632` `return &AmbiguousError{Ref: ref, Candidates: candidates}` → `return nil` | rc=1; `FAIL: TestReadReportsAForkedPathAsAmbiguous`; the fresh failure line is `fixtures_test.go:1081` — its recorded `:1053` was the sweep lane's and already stale at this head, where the same text stood at `:1065` — and the row now carries that line and `reader.go`'s restored digest `8d8a418a…` |
+
+Every mutation above was applied as a temporary edit, run with the named test (its own exit status
+recorded), and restored from a copy taken before it; the restored bytes hash to `codex_target.go`
+`7d838056…`, `codex_install.go` `0a26ebd5…`, `reader.go` `8d8a418a…` and the continuation record
+`834545e8…` (the record's digest at the time of the doc mutation; it carries the round-18 cells since).
+No mutation survived.
+
+**Anchors this lane's edit moved, recomputed to this tree.** The repair inserts 16 lines into
+`internal/ccc/fixtures_test.go` (5 in the case's docstring, 11 in its assertion block), so every anchor of
+that file at or below the insertion shifts by +16: `:631`→`:647`, `:644`→`:660`, `:651-658`→`:667-674`,
+`:664`→`:680`, `:683`→`:699`, `:688`→`:704`, `:693`→`:709`, `:1005`→`:1021`, `:1050`→`:1066`,
+`:1053`→`:1081` (re-measured, above). Every citation of those anchors in this file was recomputed (F3's row
+and the round-15 section); the sweep's own anchor-map note (its `fixtures_test.go:1005→:1050` and
+`:651`→`:680` pairs) and the other files' anchors are untouched, since no other file moved. A1's row is the
+one whose **recorded values** changed rather than shifted: its old line number and digest were stale before
+this lane's edit.
+
+- Gate on the repaired tree (`python3 scripts/gate.py`, exit `0`): `GATE: PASS` —
+  `gofmt 3582 file(s) gofmt-clean`; `build`/`vet` rc=0; `test 3 package(s) ok`;
+  `selftest Ran 166 tests in 4.871s (rc=0)` (164 before this repair: the new case's two);
+  `parity … carried: 5553 file(s) identical to the pinned revision (compared through git's own object
+  store) … deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) +
+  1 generated input(s), all present as declared … files seen by git: 5628`;
+  `secrets no leaks found in 78 file(s) this repository owns` (76 before: the new case's source plus the
+  `__pycache__` artifact its import writes — git-ignored, not a committed file). The Go packages this lane
+  touches also ran the mutation tests alone, each named test passing on the unmutated tree before its
+  mutation was applied (the extended case at `fixtures_test.go:282`/`:286` green; the packages themselves
+  run whole in the gate's own `test` step, `go test -tags fts5 -count=1 ./cmd/ccc/... ./internal/ccc/...`).
+- The affected packages carry **172** `func Test` declarations before and after (the repair extends one
+  existing case and adds none); the harness suite carries **166** cases against 164.
+- **Files this repair changed:** `internal/ccc/fixtures_test.go` (`ad60c587…`),
+  `scripts/tests/test_evidence_claims.py` (`94a82479…`, new), `docs/harness.md` (`f6a6858d…`),
+  [`0002-claude-to-codex-continuation.md`](0002-claude-to-codex-continuation.md) (`3526c076…`) and this
+  record. `internal/ccc/codex_target.go` (`7d838056…`), `internal/ccc/codex_install.go` (`0a26ebd5…`),
+  `internal/ccc/reader.go` (`8d8a418a…`) and every carried file are the bytes they already were.
+
 ## Surface A — source selection and fidelity
 
 
@@ -275,8 +346,11 @@ pre-fix blindness and the one-fixture coverage gap beside the fix.
 - **Executed mutation:** `reader.go:632` `return &AmbiguousError{Ref: ref, Candidates: candidates}` →
   `return nil` (a path ambiguity resolves the way an unambiguous reference does). Command: the test above.
   **Observed:** exit `1`; `FAIL: TestReadReportsAForkedPathAsAmbiguous`;
-  `fixtures_test.go:1053: reading a forked transcript by path answered session not found: … , want an
-  ambiguity report`. Restored `ad2a15ce85f7a3549b7da800917798ca57788d7f1a31d61c6a0806fdbf18932b`.
+  `fixtures_test.go:1081: reading a forked transcript by path answered session not found: … , want an
+  ambiguity report`. Restored `8d8a418a8db23346c8ca805942baa5d947a2cd23915452b93f70c5b356d22f24`. (The
+  mutation, the observed line and the digest were re-measured on this tree by round 18: the line it
+  recorded before — `fixtures_test.go:1053` — was the sweep lane's and already stale at the audited head,
+  where the same text stood at `:1065`, and `reader.go`'s restored bytes are the digest above.)
 
 ### A2 — A source that cannot be read falls back to the archive, and the report says so
 
@@ -1643,18 +1717,18 @@ obligation's number and place in the list are unchanged.)*
   `internal/ccc/testdata/fixtures/claude/-home-user-code-tooling/b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef.jsonl`
   whose content named the repository root as an absolute path below the builder's home (written `<home>` in
   this file's own convention, as every host path here is). **Observed:** exit `1`; `FAIL`;
-  `fixtures_test.go:683: claude/-home-user-code-tooling/b6d93f07-…jsonl contains
+  `fixtures_test.go:699: claude/-home-user-code-tooling/b6d93f07-…jsonl contains
   "/home/<user>/repos/call-ccc/internal"` (the repository-root needle; the home needle is spelled the same
-  way in the file the scan reads) — with the host-independent shape check failing beside it at `:688`, since
+  way in the file the scan reads) — with the host-independent shape check failing beside it at `:704`, since
   the appended path is outside the invented roots as well.
   Restored `415bbc31a6cd541f9bc1ff2b99dc4532abe81f218e14dc5c97c7399f3b212873` (the digest the evidence
   record also reports for that fixture).
 - **Repair (2026-11-16, this lane — the sweep's declared F3: a leak from another host passed).** The scan
   now carries a host-independent *shape* rule beside the machine-specific needles:
-  `fixtures_test.go:631-658` declares the fixtures' invented roots (`/home/user`, the sanitized home
+  `fixtures_test.go:647-674` declares the fixtures' invented roots (`/home/user`, the sanitized home
   placeholder, and `/tmp`, the synthetic Codex rollout's working directory) and two shapes — an absolute
   POSIX path at a token boundary (`fixtureAbsolutePathShape`) and a Windows drive or UNC spelling
-  (`fixtureWindowsPathShape`) — and `TestFixturesCarryNoHostPathsOrSecrets` (`:664`) fails, naming the file
+  (`fixtureWindowsPathShape`) — and `TestFixturesCarryNoHostPathsOrSecrets` (`:680`) fails, naming the file
   and the string, for any absolute path outside those roots. The machine-specific needles stay (they catch
   a *value* leak the shape rule does not describe), so nothing the check caught before is dropped: the rule
   only adds the shapes that do not depend on which host runs it. The needles are what the sweep measured
@@ -1665,8 +1739,8 @@ obligation's number and place in the list are unchanged.)*
   Command:
   `GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 -run
   'TestFixturesCarryNoHostPathsOrSecrets|TestFixturesMatchTheirGenerator' ./internal/ccc/`. **Observed:**
-  exit `1`; `FAIL`; `fixtures_test.go:688: …jsonl holds the absolute path "/Users/someone-else/code/tooling",
-  which is not one of the invented fixture roots [/home/user /tmp]`; `:693: …jsonl holds the Windows path
+  exit `1`; `FAIL`; `fixtures_test.go:704: …jsonl holds the absolute path "/Users/someone-else/code/tooling",
+  which is not one of the invented fixture roots [/home/user /tmp]`; `:709: …jsonl holds the Windows path
   shape "C:\\"` (and `TestFixturesMatchTheirGenerator` fails beside it at `:114`, as an altered fixture
   must). Restored to the digest above (`sha256sum -c`: OK).
 - **Repair (2026-11-17, round 15 — the third audit's F3 finding: allowed-root matching accepted sibling
@@ -1674,21 +1748,21 @@ obligation's number and place in the list are unchanged.)*
   `/tmp` is a root without a trailing separator, so a foreign absolute path under a sibling directory that
   merely shares the root's prefix (`/tmp-elsewhere/…`, and — once the roots are spelled without the
   separator — `/home/user-evil/…`) evaded the sanitizer. The correction: the roots are compared
-  component-wise (`fixtures_test.go:644`, `:651-658`) — a path is the root itself or continues past it at a
+  component-wise (`fixtures_test.go:660`, `:667-674`) — a path is the root itself or continues past it at a
   separator (`path == root || strings.HasPrefix(path, root+"/")`), and the roots are spelled without their
   trailing separator so the test does not depend on which spelling a root happens to carry.
 - **Executed mutations (this lane, this tree — the sibling-prefix class, the case the finding names):**
   1. `/tmp-elsewhere/code/tooling` appended to the tooling fixture (a `cwd` field). Command:
      `GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 -run
      TestFixturesCarryNoHostPathsOrSecrets ./internal/ccc/`. **Observed:** exit `1`; `FAIL`;
-     `fixtures_test.go:688: …jsonl holds the absolute path "/tmp-elsewhere/code/tooling", which is not one
+     `fixtures_test.go:704: …jsonl holds the absolute path "/tmp-elsewhere/code/tooling", which is not one
      of the invented fixture roots [/home/user /tmp]`. **Two-way:** with the **pre-fix** rule restored
      (`inventedFixtureRoots = []string{"/home/user/", "/tmp"}` and the prefix test
      `path == strings.TrimSuffix(root, "/") || strings.HasPrefix(path, root)`), the same fixture passes —
      `ok` (exit `0`) — which is the evasion the audit reported; and the **naive fix** (roots without the
      separator, plain `strings.HasPrefix(path, root)`) also passes `/tmp-elsewhere/…` (`ok`).
   2. `/home/user-evil/code/tooling` appended beside it: under the fixed rule the scan fails naming it
-     (`fixtures_test.go:688`, same command, exit `1`), while the naive fix passes it (`ok`, exit `0`) — so
+     (`fixtures_test.go:704`, same command, exit `1`), while the naive fix passes it (`ok`, exit `0`) — so
      the component boundary, not a shorter root spelling, is what closes the sibling hole.
   Restored the fixture to `415bbc31…` (byte-identical; verified) after each run.
 

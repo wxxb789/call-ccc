@@ -223,6 +223,11 @@ func TestFixtureParseReportsIdentityAndConversation(t *testing.T) {
 // back to Content would write the reasoning as the agent's own words while the report said the trace was
 // omitted. The second is a tool result whose recorded text is itself a JSON string -- a tool that printed
 // a JSON-encoded value -- which a second decode would change.
+//
+// The same pass asserts what the file holds for every recorded pair: each result written under the call
+// id its source recorded, with the tool's own output text -- the file read's contents, the failed shell
+// call's error text, and the JSON string -- so the evidence a resumed turn continues from is pinned as
+// pairs rather than as a count.
 func TestToolingFixtureCarriesTheShapesTheWriterMustNotMisread(t *testing.T) {
 	cfg := fixtureConfig(t)
 	conversation, err := NewSourceReader(cfg).Read(context.Background(), claudeToolingFixtureRef)
@@ -259,15 +264,26 @@ func TestToolingFixtureCarriesTheShapesTheWriterMustNotMisread(t *testing.T) {
 	if loss := lossCount(t, rollout.Losses, "reasoning_text"); loss.Count != 2 {
 		t.Errorf("reasoning_text = %+v, want both persisted traces counted", loss)
 	}
+	// Every recorded result, under the id its source recorded, holding the tool's own text. Asserted as
+	// the whole map rather than for the decoded one alone: this is the evidence the resumed turn reads,
+	// and a pairing that wrote the right count of records under the wrong ids would satisfy a count.
 	outputs := map[string]string{}
 	for _, line := range decodeRollout(t, rollout.Data) {
 		if payloadField(t, line, "type") == codexItemFunctionOutput {
 			outputs[payloadField(t, line, "call_id")] = payloadField(t, line, "output")
 		}
 	}
-	if got := outputs["toolu_01Tooling00000000000000003"]; got != `"maxBackoffSeconds"` {
-		t.Errorf("the JSON-string result was written as %q, want the text the tool printed, quotation "+
-			"marks included", got)
+	for callID, want := range map[string]string{
+		"toolu_01Tooling00000000000000001": "package retry\n\nconst MaxAttempts = 4\n",
+		"toolu_01Tooling00000000000000002": "Error: no such file or directory",
+		"toolu_01Tooling00000000000000003": `"maxBackoffSeconds"`,
+	} {
+		if got := outputs[callID]; got != want {
+			t.Errorf("the output written for %s = %q, want the tool's recorded text %q", callID, got, want)
+		}
+	}
+	if len(outputs) != 3 {
+		t.Errorf("the rollout holds %d function_call_output record(s), want one per recorded pair", len(outputs))
 	}
 }
 
