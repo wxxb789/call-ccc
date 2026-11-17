@@ -1356,3 +1356,29 @@ supersede it with a newer one and say which it supersedes.
   `Implemented on `feat/0003-codex-to-claude-continuation`; awaiting operator acceptance`.
 - **Settled by:** whether the owner wants an active goal's own status line to track the index row while
   the increment awaits acceptance, or to stay the text the increment was dispatched against.
+
+## Q-0003-11 — The printed invocation names the probed path, not the caller's word
+
+- **Status:** resolved (default taken)
+- **Question:** the Claude route's invocation runs from the session's own working directory (Q-0003-06),
+  so a bare `--target-binary claude` printed as `cd <session dir> && … claude --resume <id>` is read by a
+  shell that searches `PATH` *again* from that directory. Review round 2 asked for the probe's own answer
+  to be named instead; the alternative is that a pasted line can run a different program than the one the
+  conversion asked and the native checks ran — and, on a host whose `PATH` holds a relative entry, one
+  beside the session rather than beside the caller.
+- **Default taken:** name the path the probe found (`invocationBinary(in.Binary, in.Probe)`,
+  `internal/ccc/targets.go`), keeping the caller's spelling only when the probe found nothing (a path-like
+  spelling still resolved against the caller's directory, a bare name left as written). The report's own
+  `target_session.binary` / `binary_found` fields already carry that same answer, so the printed line and
+  the report agree. The cost is that a default `--target-binary` now prints an absolute path — a line that
+  names an installed program rather than the word the caller typed, and that may need editing before it is
+  pasted on another host.
+- **Reversal:** one branch in `invocationBinary`: return the caller's spelling whenever it is the bare
+  name the route defaults to (or unconditionally), and keep the probe's answer only in the report's
+  `binary` fields.
+- **Scope:** the Codex route's printed invocation is *not* changed here: it runs from the caller's own
+  directory, where a bare name is the PATH lookup the probe itself made, and 0002's printed form is
+  accepted evidence this increment does not rewrite. The same shell-versus-probe question can be asked of
+  its `codex resume <id>` line, and answering it belongs to a 0002-scoped change.
+- **Settled by:** whether the operator wants the printed resume command to name exactly the program this
+  run probed and verified, or to stay the spelling a caller typed.

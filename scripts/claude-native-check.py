@@ -68,6 +68,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from native_check_common import (  # noqa: E402  (path set up above)
+    CONTINUE_TERMINATOR,
     PROMPT_PLACEHOLDER,
     RESULTS,
     SHELL_SYNTAX_CHARACTERS,
@@ -533,8 +534,11 @@ def main(argv: list[str] | None = None) -> int:
         resume_command = str(target.get("resume_command") or "")
         exec_resume_command = str(target.get("exec_resume_command") or "")
         want_resume = [claude, "--resume", session_id]
+        # The exec form carries the option terminator before the caller's turn: without it a prompt whose
+        # own first word is an option is read as one by the harness, so the printed line would run
+        # something other than the turn the resume verification runs.
         want_exec_resume = [claude, "-p", "--output-format", "json", "--resume", session_id,
-                            PROMPT_PLACEHOLDER]
+                            CONTINUE_TERMINATOR, PROMPT_PLACEHOLDER]
         record("the reported resume command names the binary, the session, the working directory and the "
                "data directory",
                resume_arguments == want_resume and exec_resume_arguments == want_exec_resume

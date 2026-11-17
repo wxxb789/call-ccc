@@ -60,7 +60,7 @@ OTHER_SESSION = "00000000-0000-0000-0000-000000000000"
 CLAUDE = "claude"
 
 RESUME_ARGUMENTS = [CLAUDE, "--resume", SESSION]
-EXEC_RESUME_ARGUMENTS = [CLAUDE, "-p", "--output-format", "json", "--resume", SESSION, "<prompt>"]
+EXEC_RESUME_ARGUMENTS = [CLAUDE, "-p", "--output-format", "json", "--resume", SESSION, "--", "<prompt>"]
 
 #: ``(the working directory, the data directory)``. Each is a single-segment name, a Windows-shaped path
 #: or a name holding a quote, so both ``pathlib`` flavours spell it exactly as the case does. The word a
@@ -334,6 +334,11 @@ PROTECTED_CHECKS = ("the source session is unchanged",
                     "the unrelated session in the target home is unchanged",
                     "no pre-existing session in the target home changed")
 
+#: The check that reads the reported invocation back, named as the harness records it: the case that
+#: changes the reported exec form drives this one, and nothing else.
+REPORTED_INVOCATION_CHECK = ("the reported resume command names the binary, the session, the working "
+                             "directory and the data directory")
+
 #: The session this case's home already holds before the run starts: the third comparison's subject. It
 #: is kept as a *name* here, so the assertion on the run's own report holds whatever separator the host
 #: spells paths with.
@@ -374,7 +379,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
     """
 
     def drive(self, mutate_during_resume: bool, posix_mode_bits: bool | None = None,
-              malformed_installed: bool = False,
+              malformed_installed: bool = False, exec_terminator: bool = True,
               posix_shell: str | None = SHELL_SEAM_ANSWER) -> tuple[int, dict[str, tuple[str, str]], str, str | None]:
         """One run of the shipped ``main`` against stubs; answers its exit code, its recorded checks, its
         printed output and the shell the stub turn was asked to run through (``None`` when no turn ran).
@@ -383,10 +388,13 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         own answer, so a case that does not name it holds on a host that reports POSIX mode bits and on
         one that does not (``False`` drives the Windows answer explicitly), and ``malformed_installed``
         makes the stub's installed file carry a line that is not JSON, so the JSONL check's own failure
-        path is exercised. ``posix_shell`` is what the shell seam answers, defaulted to ``SHELL_SEAM_ANSWER``
-        rather than to this host's own so that a case holds under an isolated ``PATH`` (the suite's child
-        runs hold no tool) and on every platform; ``None`` drives the host with no POSIX shell, whose turn
-        the run must report as a boundary instead of running it through the wrong shell.
+        path is exercised. ``exec_terminator`` is whether the stub's reported exec form carries the option
+        terminator before its placeholder: ``False`` is the shape a printed command without one has, which
+        the check's reading of the reported invocation must refuse. ``posix_shell`` is what the shell seam
+        answers, defaulted to ``SHELL_SEAM_ANSWER`` rather than to this host's own so that a case holds
+        under an isolated ``PATH`` (the suite's child runs hold no tool) and on every platform; ``None``
+        drives the host with no POSIX shell, whose turn the run must report as a boundary instead of
+        running it through the wrong shell.
         """
         # The scratch root is resolved before anything is derived from it, because the shipped ``main``
         # resolves what it is handed (``--repo`` and ``--claude-home``) and resolves its own scratch root
@@ -450,8 +458,14 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                     state["source"] = codex_root / fixture.relative_to(
                         repo / NATIVE_CHECK.FIXTURE_ROOT / NATIVE_CHECK.SOURCE_PROVIDER)
                     resume_arguments = [claude, "--resume", thread_id]
+                    # The exec form as the route prints it, the option terminator included;
+                    # ``exec_terminator=False`` is the pre-fix spelling (the prompt bare), which the
+                    # check's reading of the reported invocation must refuse.
                     exec_resume_arguments = [claude, "-p", "--output-format", "json", "--resume",
-                                             thread_id, "<prompt>"]
+                                             thread_id,
+                                             *((NATIVE_CHECK.CONTINUE_TERMINATOR,)
+                                               if exec_terminator else ()),
+                                             NATIVE_CHECK.PROMPT_PLACEHOLDER]
                     document = {
                         "conversion": {
                             "state": "converted", "format": "claude-code-transcript-jsonl",
@@ -639,6 +653,35 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         self.assertIn("line 2 is not JSON", detail, detail)
         self.assertEqual(code, 1, f"exit {code} for a run whose JSONL check failed: {results}")
         self.assertIn("FAIL: the installed file is one JSON object per line", printed)
+
+    def test_the_reported_exec_form_must_carry_the_prompt_terminator(self) -> None:
+        """The check refuses a printed exec form whose prompt is not behind the option terminator.
+
+        The route runs the resume verification's prompt behind `--` (`internal/ccc/claude_verify.go`), and
+        the printed exec form is that command with the placeholder in the prompt's place: without the
+        terminator a prompt whose own first word is an option (`--help`) is read as one by the harness, so
+        the printed line would run something other than the turn the verification ran. The check's reading
+        of the reported invocation is where that rule is answerable with no harness installed, so this case
+        drives both shapes against the stub document: the intact vector passes, and the pre-fix vector --
+        the placeholder where the prompt goes with no terminator before it -- fails exactly that check.
+        """
+        code, results, _, _ = self.drive(mutate_during_resume=False)
+        state, detail = results.get(REPORTED_INVOCATION_CHECK, ("missing", ""))
+        self.assertEqual(state, "PASS",
+                         f"the intact exec form did not pass the invocation check: {state} — {detail}")
+        self.assertEqual(code, 0, f"exit {code} for an intact run: {results}")
+
+        code, results, _, _ = self.drive(mutate_during_resume=False, exec_terminator=False)
+        state, detail = results.get(REPORTED_INVOCATION_CHECK, ("missing", ""))
+        self.assertEqual(state, "FAIL",
+                         f"a printed exec form without the terminator was accepted: {results}")
+        self.assertNotIn(f" {NATIVE_CHECK.CONTINUE_TERMINATOR} '{NATIVE_CHECK.PROMPT_PLACEHOLDER}'",
+                         detail,
+                         f"the failure's own evidence shows the terminator it is about: {detail}")
+        self.assertEqual(sorted(name for name, (state_, _) in results.items() if state_ == "FAIL"),
+                         [REPORTED_INVOCATION_CHECK],
+                         f"the pre-fix shape failed more than the check that reads it: {results}")
+        self.assertEqual(code, 1, f"exit {code} for a run whose reported form was refused: {results}")
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -129,8 +130,17 @@ func TestContinueIntoClaudeConvertsInstallsAndReadsBack(t *testing.T) {
 	if !strings.Contains(result.TargetSession.ResumeCommand, claudeHomeEnv+"='"+home+"'") {
 		t.Errorf("resume command %q does not select the data directory it installed into", result.TargetSession.ResumeCommand)
 	}
-	if !strings.Contains(result.TargetSession.ExecResumeCommand, "-p --output-format json --resume "+result.TargetSession.SessionID) {
-		t.Errorf("exec resume command %q does not name the non-interactive resume", result.TargetSession.ExecResumeCommand)
+	if want := []string{missingTargetBinary, "-p", "--output-format", "json", "--resume",
+		result.TargetSession.SessionID, promptTerminator, resumePromptPlaceholder}; !slices.Equal(result.TargetSession.ExecResumeArguments, want) {
+		// The exec form is the check's own command plus the placeholder, terminator included: the resume
+		// verification runs its prompt behind one (claude_verify.go), and without it a prompt whose own
+		// first word is an option would be read as one by the harness.
+		t.Errorf("exec resume arguments = %q, want %q", result.TargetSession.ExecResumeArguments, want)
+	}
+	if !strings.Contains(result.TargetSession.ExecResumeCommand,
+		"-p --output-format json --resume "+result.TargetSession.SessionID+" "+promptTerminator) {
+		t.Errorf("exec resume command %q does not name the non-interactive resume behind the prompt terminator",
+			result.TargetSession.ExecResumeCommand)
 	}
 	if got := result.TargetSession.ResumeEnvironment[claudeHomeEnv]; got != home {
 		t.Errorf("resume environment = %q, want the data directory %q", got, home)
@@ -391,8 +401,10 @@ func TestContinueResolvesARelativeTargetBinaryForTheDirectoryChangingInvocation(
 		t.Errorf("resume arguments = %q, want the executable resolved to %q beside the session id",
 			args, binary)
 	}
-	if args := report.ExecResumeArguments; len(args) != 7 || args[0] != binary {
-		t.Errorf("exec resume arguments = %q, want the same resolved executable", args)
+	if args := report.ExecResumeArguments; len(args) != 8 || args[0] != binary ||
+		args[6] != promptTerminator || args[7] != resumePromptPlaceholder {
+		t.Errorf("exec resume arguments = %q, want the same resolved executable and the prompt behind %q",
+			args, promptTerminator)
 	}
 	// The word the line spells for the executable is the one a POSIX shell reads back as the resolved
 	// path, which is the quoted form here: the caller's directory holds a space.
@@ -402,13 +414,15 @@ func TestContinueResolvesARelativeTargetBinaryForTheDirectoryChangingInvocation(
 		t.Errorf("resume command %q does not change into %q and name the executable there",
 			report.ResumeCommand, report.Cwd)
 	}
-	if !strings.Contains(report.ExecResumeCommand, quoted+" -p ") {
-		t.Errorf("exec resume command %q does not name the executable in the caller's directory",
-			report.ExecResumeCommand)
+	if !strings.Contains(report.ExecResumeCommand, quoted+" -p ") ||
+		!strings.HasSuffix(report.ExecResumeCommand, " "+promptTerminator+" '"+resumePromptPlaceholder+"'") {
+		t.Errorf("exec resume command %q does not name the executable in the caller's directory with the "+
+			"prompt behind %q", report.ExecResumeCommand, promptTerminator)
 	}
 
-	// A bare name is a PATH lookup, which the directory change does not affect: it stays the word the
-	// caller wrote, and this is what keeps the two cases apart rather than resolving every spelling.
+	// A bare name the probe could not resolve is a PATH lookup, which the directory change does not
+	// affect: it stays the word the caller wrote, and this is what keeps the two cases apart rather than
+	// resolving every spelling.
 	otherHome, _ := claudeTargetHome(t)
 	other, err := Continue(context.Background(), ContinueOptions{
 		Ref: codexFixtureRef, Target: TargetClaude, Config: cfg,
@@ -419,6 +433,116 @@ func TestContinueResolvesARelativeTargetBinaryForTheDirectoryChangingInvocation(
 	}
 	if args := other.TargetSession.ResumeArguments; len(args) != 3 || args[0] != missingTargetBinary {
 		t.Errorf("resume arguments = %q, want the bare name %q it was given", args, missingTargetBinary)
+	}
+}
+
+// TestClaudeInvocationNamesTheExecutableItsProbeFound pins the other half of the same rule: when the probe
+// found the executable, the printed invocation names the path it found -- the program the conversion asked
+// and the native checks resolved and ran -- rather than the word the caller typed. A shell that reads the
+// line after its `cd` would otherwise search PATH again from the session's directory and can run a
+// different program there, which is what a bare `claude` passed to a route whose invocation changes
+// directory leaves open. The probe's answer is what the report's own binary fields already carry, so the
+// line and those fields cannot disagree.
+func TestClaudeInvocationNamesTheExecutableItsProbeFound(t *testing.T) {
+	route, err := targetRouteFor(TargetClaude)
+	if err != nil {
+		t.Fatalf("the Claude route is not in this build: %v", err)
+	}
+	// A probed path distinct from the spelling, with no host dependency: the answer comes from the probe
+	// the route is handed, exactly as a real run's does. It holds a space, so the line has to quote it.
+	const probed = "/opt/ccc tools/claude"
+	invocation := route.Invocation(
+		convertedTarget{ID: "8f1a1d2c-0000-4000-8000-000000000001", Cwd: "/home/user/code/project"},
+		targetInvocationInput{
+			Binary: "claude",
+			Probe:  harnessProbe{Binary: probed, Found: true, Version: "2.1.326"},
+			Home:   "/tmp/ccc home",
+		},
+	)
+	if invocation.Arguments[0] != probed || invocation.ExecArguments[0] != probed {
+		t.Errorf("arguments name %q/%q, want the probed executable %q",
+			invocation.Arguments[0], invocation.ExecArguments[0], probed)
+	}
+	line := renderInvocation(invocation.ExecArguments, invocation.Environment, invocation.WorkingDir)
+	if !strings.HasPrefix(line, "cd /home/user/code/project && ") ||
+		!strings.Contains(line, "'"+probed+"' -p --output-format json --resume "+
+			"8f1a1d2c-0000-4000-8000-000000000001 "+promptTerminator+" '"+resumePromptPlaceholder+"'") {
+		t.Errorf("the printed exec line %q does not name the probed executable in the session's directory", line)
+	}
+
+	// A probe that found nothing leaves the caller's spelling alone: there is no program to name, and the
+	// report's own binary fields say so beside it.
+	unresolved := route.Invocation(
+		convertedTarget{ID: "8f1a1d2c-0000-4000-8000-000000000002", Cwd: "/home/user/code/project"},
+		targetInvocationInput{
+			Binary: "claude",
+			Probe:  harnessProbe{Binary: "claude", Detail: "claude is not on PATH"},
+			Home:   "/tmp/ccc home",
+		},
+	)
+	if unresolved.Arguments[0] != "claude" || unresolved.ExecArguments[0] != "claude" {
+		t.Errorf("a probe that found nothing changed the word: %q/%q",
+			unresolved.Arguments[0], unresolved.ExecArguments[0])
+	}
+}
+
+// TestContinueIntoClaudeKeepsAWorkingDirectoryEndingInWhitespace pins the recorded working directory end
+// to end: the project directory the session is filed under, the `cwd` every record carries and the
+// printed `cd` all spell the string the source recorded, so a directory whose last component ends in
+// whitespace is filed under the project directory *that* string spells to rather than under another
+// one -- and the printed line quotes it the way a shell reads it back.
+func TestContinueIntoClaudeKeepsAWorkingDirectoryEndingInWhitespace(t *testing.T) {
+	sourceRoot := t.TempDir()
+	const sessionID = "0c8e5f21-0000-4000-8000-00000000cafe"
+	// A directory name whose last component ends in whitespace: valid on the platforms this build runs on,
+	// and a string the inherited Codex reader carries from session_meta verbatim.
+	const cwd = "/home/user/code/project "
+	relative := filepath.Join("2026", "05", "04", "rollout-2026-05-04T09-15-00-"+sessionID+".jsonl")
+	path := filepath.Join(sourceRoot, relative)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("creating the source directory: %v", err)
+	}
+	lines := []string{
+		`{"timestamp":"2026-05-04T09:15:00Z","type":"session_meta","payload":{"cwd":"` + cwd + `","id":"` + sessionID + `","originator":"codex_cli_rs"}}`,
+		`{"timestamp":"2026-05-04T09:15:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("writing the source session: %v", err)
+	}
+	cfg := fixtureConfig(t)
+	dirs := make(map[parser.AgentType][]string, len(cfg.AgentDirs)+1)
+	for agent, roots := range cfg.AgentDirs {
+		dirs[agent] = roots
+	}
+	dirs[parser.AgentCodex] = []string{sourceRoot}
+	cfg.AgentDirs = dirs
+
+	home, _ := claudeTargetHome(t)
+	result, err := Continue(context.Background(), ContinueOptions{
+		Ref: Ref{Provider: "codex", ID: sessionID}, Target: TargetClaude, Config: cfg,
+		TargetHome: home, TargetBinary: missingTargetBinary,
+	})
+	if err != nil {
+		t.Fatalf("continuing: %v", err)
+	}
+	if got := result.TargetSession.Cwd; got != cwd {
+		t.Errorf("target working directory = %q, want the source's own %q", got, cwd)
+	}
+	// The directory the target's own discovery spells for that string: every character outside
+	// [A-Za-z0-9] one dash, the trailing space included.
+	wantInstalled := filepath.Join(home, claudeProjectsSubdir, ClaudeProjectDir(cwd),
+		result.TargetSession.SessionID+".jsonl")
+	if result.Installation.Path != wantInstalled {
+		t.Errorf("installed at %q, want %q", result.Installation.Path, wantInstalled)
+	}
+	// The home and the working directory both hold a space, so the printed line quotes both.
+	if !strings.HasPrefix(result.TargetSession.ResumeCommand, "cd '"+cwd+"' && ") {
+		t.Errorf("resume command %q does not start by the source's own working directory %q",
+			result.TargetSession.ResumeCommand, cwd)
+	}
+	if result.Verification.Structure.State != VerificationStateVerified {
+		t.Errorf("structure = %+v, want the installed file to read back as what was written",
+			result.Verification.Structure)
 	}
 }
 

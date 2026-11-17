@@ -336,7 +336,7 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 	if resumeName == "" {
 		resumeName = route.BinaryDefault
 	}
-	invocation := route.Invocation(session, targetInvocationInput{Binary: resumeName, Home: home})
+	invocation := route.Invocation(session, targetInvocationInput{Binary: resumeName, Probe: probe, Home: home})
 	fields := route.Fields(session, facts)
 	result.TargetSession = TargetReport{
 		Provider:            route.Name,
@@ -852,6 +852,12 @@ const claudeHomeEnv = "CLAUDE_CONFIG_DIR"
 // resumePromptPlaceholder is where the exec form of the resume invocation takes the caller's turn. It is
 // a word of its own, not quoted shell syntax: a caller replaces it with the prompt's own words.
 const resumePromptPlaceholder = "<prompt>"
+
+// promptTerminator is the option terminator a target's non-interactive form puts between its own flags
+// and the caller's prompt. Without it a prompt whose own first word is an option is read as one -- a
+// turn asking about `--help` would print help instead of reaching the session -- so the printed exec
+// form carries it, and the resume verification and the load check run behind it.
+const promptTerminator = "--"
 
 // shellUnsafeCharacters are the characters a POSIX shell reads as syntax inside a word, so a word
 // holding any of them has to be quoted; an empty word would vanish, so it is quoted too.

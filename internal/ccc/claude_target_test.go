@@ -318,6 +318,7 @@ func TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers(t *testing.T) {
 		"whitespace_only_dialogue", "unpaired_tool_results", "empty_tool_results",
 		"whitespace_only_tool_results", "unrepresentable_result_blocks", "unresolved_tool_outputs",
 		"tool_result_statuses", "empty_tool_inputs", "generated_call_ids", "coalesced_tool_call_projections",
+		"subagent_session_links",
 		"tool_name_vocabulary",
 		"message_model_attribution", "pre_compaction_history", "empty_compaction_summary",
 		"malformed_source_lines", "summary_transcript", "source_needs_retry",
@@ -337,6 +338,7 @@ func TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers(t *testing.T) {
 		{"whitespace_only_tool_results", 1},
 		{"message_model_attribution", 1},
 		{"tool_name_vocabulary", 1},
+		{"subagent_session_links", 0},
 		{"pre_compaction_history", 3},
 		{"empty_user_messages", 0},
 		{"summary_transcript", 0},
@@ -607,6 +609,97 @@ func TestClaudeWriterPairsAnIdlessResultOnlyWithSoleOutstandingCall(t *testing.T
 	}
 	if got := lossCount(t, transcript.Losses, "unpaired_tool_results").Count; got != 1 {
 		t.Errorf("unpaired_tool_results = %d, want 1: two calls were outstanding and the pairing would be a guess", got)
+	}
+}
+
+// TestClaudeWriterCountsADiscardedSubagentSessionLink pins the disclosure for the one piece of a
+// `spawn_agent` call the target cannot hold: which session the call spawned. The inherited Codex parser
+// records that child session's id on the call (ToolCall.SubagentSessionID) and the reader preserves it,
+// but the target's tool_use block carries an id, a name and an input only, so the call travels while the
+// link does not -- and the structure check cannot see the difference, because the item list it compares
+// holds no such field either. The omission is counted rather than left silent, the child session is
+// neither read nor converted, and the count is of the calls this conversion wrote, so a projection
+// coalesced into the call it repeats is not counted twice.
+func TestClaudeWriterCountsADiscardedSubagentSessionLink(t *testing.T) {
+	const childSession = "codex:019c9c96-6ee7-77c0-ba4c-380f844289d5"
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "run a child agent", Dialogue: "run a child agent",
+			DialogueProjected: true},
+		Message{Ordinal: 1, Role: "assistant", Content: "spawning a child", Dialogue: "spawning a child",
+			DialogueProjected: true,
+			ToolCalls: []ToolCall{
+				{ToolUseID: "call_spawn", Name: "spawn_agent",
+					InputJSON: `{"agent_type":"awaiter"}`, SubagentSessionID: childSession},
+				// The same call as the per-file projection shape repeats it: one id, one input, one link.
+				{ToolUseID: "call_spawn", Name: "spawn_agent",
+					InputJSON: `{"agent_type":"awaiter"}`, SubagentSessionID: childSession},
+				{ToolUseID: "call_wait", Name: "wait", InputJSON: `{"ids":["019c9c96"]}`},
+			}},
+	)
+	transcript, err := ConvertToClaudeTranscript(conversation, ClaudeTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting the document: %v", err)
+	}
+	loss := lossCount(t, transcript.Losses, "subagent_session_links")
+	if loss.Count != 1 || loss.Disposition != DispositionOmitted {
+		t.Errorf("subagent_session_links = %+v, want the one written call's link counted as omitted", loss)
+	}
+	if !strings.Contains(loss.Detail, "child session") {
+		t.Errorf("the category's reason does not name the relationship it counts: %q", loss.Detail)
+	}
+	// The same shape's other rule: a repeated call id is one call, not a second one.
+	if got := lossCount(t, transcript.Losses, "coalesced_tool_call_projections").Count; got != 1 {
+		t.Errorf("coalesced_tool_call_projections = %d, want the repeated id counted once", got)
+	}
+	installed := string(transcript.Data)
+	for _, want := range []string{`"id":"call_spawn"`, `"name":"spawn_agent"`, `"id":"call_wait"`} {
+		if !strings.Contains(installed, want) {
+			t.Errorf("the installed transcript does not hold %s:\n%s", want, installed)
+		}
+	}
+	if strings.Contains(installed, "019c9c96-6ee7-77c0-ba4c-380f844289d5") {
+		t.Errorf("the child session's id is in the file although the report says the link is omitted:\n%s",
+			installed)
+	}
+	if transcript.Carried.ToolCalls != 2 {
+		t.Errorf("carried %d call(s), want the two written calls", transcript.Carried.ToolCalls)
+	}
+}
+
+// TestConvertToClaudeTranscriptKeepsAWorkingDirectoryEndingInWhitespace pins the value every use of the
+// working directory rests on: the source's own recorded string. Trimming it would file the session under
+// another project directory, record another `cwd` in every record and print a `cd` into a directory the
+// source never named -- and the trim still has to answer whether a directory was recorded at all, which
+// is what a directory of whitespace alone is refused for.
+func TestConvertToClaudeTranscriptKeepsAWorkingDirectoryEndingInWhitespace(t *testing.T) {
+	// A directory name whose last component ends in whitespace: valid on the platforms this build runs on,
+	// and a string the source's own reader carries verbatim.
+	const cwd = "/home/user/code/project "
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "hello", Dialogue: "hello", DialogueProjected: true})
+	conversation.Source.Cwd = cwd
+	transcript, err := ConvertToClaudeTranscript(conversation, ClaudeTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting the document: %v", err)
+	}
+	if transcript.Cwd != cwd {
+		t.Errorf("the target session records cwd %q, want the source's own %q", transcript.Cwd, cwd)
+	}
+	if want := ClaudeProjectDir(cwd); transcript.Directory != want {
+		t.Errorf("the project directory is %q, want %q, the spelling of the source's own directory",
+			transcript.Directory, want)
+	}
+	for index, record := range decodeTranscript(t, transcript) {
+		if got := record["cwd"]; got != cwd {
+			t.Errorf("record %d carries cwd %v, want the source's own %q", index, got, cwd)
+		}
+	}
+
+	blank := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "hello", Dialogue: "hello", DialogueProjected: true})
+	blank.Source.Cwd = "   "
+	if _, err := ConvertToClaudeTranscript(blank, ClaudeTargetOptions{}); err != ErrNoTargetCwd {
+		t.Errorf("error = %v, want ErrNoTargetCwd for a recorded directory of whitespace alone", err)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -114,8 +115,19 @@ func TestContinueToClaudeConvertsInstallsAndReportsTheRoute(t *testing.T) {
 			t.Errorf("resume command %q does not carry %q", document.TargetSession.ResumeCommand, want)
 		}
 	}
-	if !strings.Contains(document.TargetSession.ExecResumeCommand, "-p --output-format json --resume "+document.TargetSession.SessionID) {
-		t.Errorf("exec resume command = %q, want the non-interactive form", document.TargetSession.ExecResumeCommand)
+	// The exec form is the non-interactive resume with the caller's turn behind an option terminator:
+	// without it a prompt whose own first word is an option (`--help`) would be read as one, so the
+	// printed line would run something other than the turn the resume verification runs.
+	wantExecArguments := []string{missingTargetBinary, "-p", "--output-format", "json", "--resume",
+		document.TargetSession.SessionID, "--", "<prompt>"}
+	if !slices.Equal(document.TargetSession.ExecResumeArguments, wantExecArguments) {
+		t.Errorf("exec resume arguments = %q, want %q",
+			document.TargetSession.ExecResumeArguments, wantExecArguments)
+	}
+	if !strings.Contains(document.TargetSession.ExecResumeCommand,
+		"-p --output-format json --resume "+document.TargetSession.SessionID+" -- '<prompt>'") {
+		t.Errorf("exec resume command = %q, want the non-interactive form with the prompt behind the terminator",
+			document.TargetSession.ExecResumeCommand)
 	}
 
 	if document.Verification.Structure.State != "verified" {

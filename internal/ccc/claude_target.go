@@ -145,8 +145,12 @@ type ClaudeTranscript struct {
 // resumed while a report called it installed. A document that records none is refused here, before
 // anything is written.
 func ConvertToClaudeTranscript(conv Conversation, opts ClaudeTargetOptions) (ClaudeTranscript, error) {
-	cwd := strings.TrimSpace(conv.Source.Cwd)
-	if cwd == "" {
+	// The recorded directory travels as it was recorded: trimming answers only whether one was recorded
+	// at all. A directory name may legitimately end in whitespace, and every use this value has -- the
+	// project directory the target's own discovery spells (ClaudeProjectDir), the recorded `cwd`, the
+	// printed `cd`, and the directory the native verification runs from -- has to agree with the source.
+	cwd := conv.Source.Cwd
+	if strings.TrimSpace(cwd) == "" {
 		return ClaudeTranscript{}, ErrNoTargetCwd
 	}
 	now := opts.Now
@@ -293,6 +297,7 @@ type claudeTranscriptBuilder struct {
 	lossEmptyInputs            int
 	lossGeneratedIDs           int
 	lossCoalescedProjections   int
+	lossSubagentLinks          int
 	lossEmptyResults           int
 	lossWhitespaceResults      int
 	lossResultBlocks           int
@@ -649,6 +654,15 @@ func (b *claudeTranscriptBuilder) toolCall(message Message, index int, call Tool
 		name = "unknown_tool"
 	}
 	b.noteToolName(name)
+	if strings.TrimSpace(call.SubagentSessionID) != "" {
+		// The source recorded which session this call spawned: the inherited Codex parser sets the child
+		// session id on a spawn_agent call, and the archive read carries the same column. The target's
+		// tool_use block carries an id, a name and an input and has no field for a child session, so the
+		// link has no shape to travel in -- and a conversion's unit is the selected session, not the
+		// sessions it spawned, so the child is neither read nor converted. Counted rather than dropped in
+		// silence: the call itself is written below.
+		b.lossSubagentLinks++
+	}
 	b.write(claudeRecord{
 		ParentUUID:  b.parentUUID,
 		IsSidechain: false,
@@ -995,6 +1009,19 @@ func (b *claudeTranscriptBuilder) losses() []Loss {
 			Disposition: DispositionCarriedWithCaveat,
 			Count:       b.lossCoalescedProjections,
 			Detail:      coalescedDetail,
+		},
+		{
+			Category:    "subagent_session_links",
+			Disposition: DispositionOmitted,
+			Count:       b.lossSubagentLinks,
+			Detail: "the source recorded which session these carried calls spawned (the inherited " +
+				"Codex parser sets a spawn_agent call's child session id, and the archive read carries " +
+				"the same column). The target's tool_use block carries an id, a name and an input, so " +
+				"there is no field for a child session: the call itself is written, and what is omitted " +
+				"is the attribution of the session it spawned. The child session is neither read nor " +
+				"converted -- a conversion's unit is the selected session -- and the count is of the " +
+				"calls this conversion wrote, so a projection coalesced into another call is not " +
+				"counted twice",
 		},
 		{
 			Category:    "tool_name_vocabulary",

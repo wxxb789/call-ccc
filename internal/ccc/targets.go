@@ -85,10 +85,16 @@ type targetConvertInput struct {
 	MaxToolNames int
 }
 
-// targetInvocationInput names the harness the printed resume commands must name.
+// targetInvocationInput names the harness the printed resume commands must name, and carries the probe
+// that answered about it.
 type targetInvocationInput struct {
 	Binary string
-	Home   string
+	// Probe is the target probe's own answer about Binary. Found says it located the executable, and
+	// Binary is then where it found it -- the program the conversion asked and the native checks ran. A
+	// route whose invocation changes its working directory names that path rather than a spelling a
+	// shell would search PATH for again from the new directory (invocationBinary).
+	Probe harnessProbe
+	Home  string
 }
 
 // targetInvocation is how one installed session is resumed: the argument vector, the environment that
@@ -367,14 +373,18 @@ func claudeRoute() targetRoute {
 			})
 		},
 		Invocation: func(session convertedTarget, in targetInvocationInput) targetInvocation {
-			// This invocation changes into the session's working directory, so the executable is resolved
-			// against the caller's own directory first (invocationBinary): a relative spelling would
-			// otherwise name a path beside the session rather than the program this run probed and
-			// verified.
-			binary := invocationBinary(in.Binary)
+			// This invocation changes into the session's working directory, so its words are the program
+			// this run probed and verified: the probe's own answer when it found one (already the path the
+			// native checks resolved), and otherwise the caller's spelling resolved against the caller's
+			// directory (invocationBinary). A bare name re-searched by a shell from the session's
+			// directory can find a different program there, which is what naming the probed path closes.
+			binary := invocationBinary(in.Binary, in.Probe)
 			return targetInvocation{
-				Arguments:     []string{binary, "--resume", session.ID},
-				ExecArguments: []string{binary, "-p", "--output-format", "json", "--resume", session.ID, resumePromptPlaceholder},
+				Arguments: []string{binary, "--resume", session.ID},
+				// The `--` is the terminator this route's own turn runs behind (claude_verify.go): without
+				// it a prompt whose own first word is an option (`--help`) is read as one by the harness,
+				// so the printed command would run something other than the turn verification ran.
+				ExecArguments: []string{binary, "-p", "--output-format", "json", "--resume", session.ID, promptTerminator, resumePromptPlaceholder},
 				Environment:   map[string]string{claudeHomeEnv: in.Home},
 				// Measured: the loader finds a session through the working directory it is run from, so
 				// the invocation has to run from the session's own (the printed command says so).
@@ -407,18 +417,25 @@ func claudeFacts(_ context.Context, in targetFactsInput) targetFacts {
 	return facts
 }
 
-// invocationBinary answers the word an invocation's own argument vector carries for the target binary: a
-// spelling that names a path is resolved against the caller's working directory, and a bare name is left
-// exactly as the caller wrote it.
+// invocationBinary answers the word an invocation's own argument vector carries for the target binary.
 //
-// A route whose invocation changes its working directory has to resolve the executable first: the
-// argument vector and the printed line are a command a caller runs from the session's directory, so
-// `--target-binary tools/claude` there would name a path beside the session rather than the program the
-// conversion probed and the native verification ran in the caller's own directory -- two different
-// programs answered by one report. A name with no separator is a PATH lookup, which a directory change
-// does not affect. The resolution is textual (filepath.Abs), so it also answers for a spelling that names
-// nothing at all; whether a program is there is the probe's own answer beside it.
-func invocationBinary(binary string) string {
+// The probe's own answer wins whenever it found one: that path is the program this run asked, and the
+// one the native checks resolved and ran, so a printed command that changes its working directory names
+// that program rather than a word a shell searches PATH for again from the new directory -- a search
+// that can find a different program there. When the probe found nothing there is nothing better to name
+// than the caller's spelling: a spelling that names a path is resolved against the caller's working
+// directory (the directory change would otherwise make `--target-binary tools/claude` name a path beside
+// the session), and a name with no separator is left exactly as the caller wrote it.
+//
+// The resolution is textual (filepath.Abs), so it also answers for a spelling that names nothing at all;
+// whether a program is there is the probe's own answer beside it. A bare name the probe could not
+// resolve -- Go's own lookup refuses a path found through a relative PATH entry rather than answering
+// one silently -- stays the word the caller wrote, which is what keeps the printed line honest about
+// having verified nothing.
+func invocationBinary(binary string, probe harnessProbe) string {
+	if probe.Found && probe.Binary != "" {
+		binary = probe.Binary
+	}
 	if binary == "" || filepath.IsAbs(binary) {
 		return binary
 	}

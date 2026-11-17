@@ -23,6 +23,12 @@ from pathlib import Path
 #: ``resumePromptPlaceholder`` (``internal/ccc/continue.go``), which renders both routes' exec forms.
 PROMPT_PLACEHOLDER = "<prompt>"
 
+#: The option terminator the Claude route's printed exec form carries before that placeholder. It mirrors
+#: the Go constant ``promptTerminator`` (``internal/ccc/continue.go``), which is what the route's resume
+#: verification runs its own prompt behind: a prompt whose first word is an option (`--help`) is an option
+#: to the harness unless the command says where its own flags end.
+CONTINUE_TERMINATOR = "--"
+
 #: The marker each harness prints the target's own answer under. It is part of the reporting contract:
 #: ``scripts/tests/test_evidence_claims.py`` reads the answer a recorded run credits from this marker, so
 #: the answer is printed under it, one answer line per printed line.

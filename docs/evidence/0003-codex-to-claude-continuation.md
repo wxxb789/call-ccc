@@ -39,27 +39,29 @@ is recorded with the observation it produced.
 
 ## 1. One documented, non-interactive command, with the native identity and the resume command
 
-The command converts the committed Codex fixture into an isolated Claude Code home:
+The command converts the committed Codex fixture — copied into a scratch source root with its recorded
+working directory rewritten, the one mechanical edit §6.1's native check also makes — into an isolated
+Claude Code home:
 
 ```console
-$ CODEX_SESSIONS_DIR=$PWD/internal/ccc/testdata/fixtures/codex \
+$ CODEX_SESSIONS_DIR=/tmp/smoke2/src \
   ./bin/ccc continue codex:0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812 --to claude \
   --target-home /tmp/smoke2/home \
   --target-binary /home/azureuser/.local/share/ccc-native/claude-cli/node_modules/.bin/claude
 codex:0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812 → claude
-  source:       /home/azureuser/repos/call-ccc/internal/ccc/testdata/fixtures/codex/2026/05/04/rollout-2026-05-04T09-15-00-0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812.jsonl
+  source:       /tmp/smoke2/src/rollout-2026-05-04T09-15-00-0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812.jsonl
   read from:    source
   conversation: 6 message(s), 2 user, 4 assistant, 1 tool call(s), 1 compaction boundary(ies)
   converted:    claude-code-transcript-jsonl, 3314 bytes: 4 message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies), 0 turn(s)
   carried-with-caveat: tool_name_vocabulary ×1
   omitted:      message_model_attribution ×5
   carried-with-caveat: pre_compaction_history ×2
-  installed:    /tmp/smoke2/home/projects/-tmp-smoke2-ws/df9d4f48-baa7-4b6b-ac53-85791680941d.jsonl [hard-link]
+  installed:    /tmp/smoke2/home/projects/-tmp-smoke2-ws/bf066719-a469-4450-b281-d45e258dd2f8.jsonl [hard-link]
   source file:  unchanged (sha256 605998b9b8f367c2fe09ae208b2e8c012bfec08b115a9c3cb2acac0f7d1452b8, taken before and after the conversion)
-  target id:    df9d4f48-baa7-4b6b-ac53-85791680941d
+  target id:    bf066719-a469-4450-b281-d45e258dd2f8
   working dir:  /tmp/smoke2/ws
-  resume:       cd /tmp/smoke2/ws && CLAUDE_CONFIG_DIR=/tmp/smoke2/home /home/azureuser/.local/share/ccc-native/claude-cli/node_modules/.bin/claude --resume df9d4f48-baa7-4b6b-ac53-85791680941d
-  non-interactive resume: cd /tmp/smoke2/ws && CLAUDE_CONFIG_DIR=/tmp/smoke2/home /home/azureuser/.local/share/ccc-native/claude-cli/node_modules/.bin/claude -p --output-format json --resume df9d4f48-baa7-4b6b-ac53-85791680941d '<prompt>'
+  resume:       cd /tmp/smoke2/ws && CLAUDE_CONFIG_DIR=/tmp/smoke2/home /home/azureuser/.local/share/ccc-native/claude-cli/node_modules/.bin/claude --resume bf066719-a469-4450-b281-d45e258dd2f8
+  non-interactive resume: cd /tmp/smoke2/ws && CLAUDE_CONFIG_DIR=/tmp/smoke2/home /home/azureuser/.local/share/ccc-native/claude-cli/node_modules/.bin/claude -p --output-format json --resume bf066719-a469-4450-b281-d45e258dd2f8 -- '<prompt>'
   cli_version:  2.1.326 (probe)
   structure:    verified (the inherited AgentsView Claude reader over the installed session)
   native load:  verified (the target harness's own loader (claude --bare --resume, with no model credentials in its environment, plus an unknown-id control))
@@ -67,9 +69,16 @@ codex:0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812 → claude
   carried:      AgentsView 83195c8a6861b8c74a4b6cb87512817fed6f8584, unmodified (scripts/upstream-parity.py)
 ```
 
-(exit code 0. The `cd /tmp/smoke2/ws` in the command is the fixture's recorded working directory after
-the run's own copy relocated it; the committed fixture records `/home/user/code/example-api`, and
-§3's native-check run shows the committed one.)
+(exit code 0. The `load` check's own sentence under `native load:` is abridged here to its state, as the
+earlier recording abridged it; §6.5's re-measurement prints the check's own words and states the same
+result. The `cd /tmp/smoke2/ws` in the command is the working directory the *copy* records: the committed
+fixture records `/home/user/code/example-api`, and §6.1's native-check run reads the committed file's
+own.)
+
+**This block is the fix round's own re-recording** (§6.5, finding 3): it is the same command run again on
+the fixed tree, so the printed non-interactive form carries the option terminator it did not have before,
+and the `source:` line names the copy the run actually read — the earlier block showed the committed
+fixture's path beside a digest that was always the copy's (the apply round's own note at §6.2).
 
 `ccc help` and `ccc continue -h` state the invocation, both targets and the meaning of every flag;
 `cmd/ccc/claude_route_test.go` pins the line, the identity and the resume spelling, and
@@ -633,6 +642,186 @@ the real Windows leg, where `cmd/ccc` is otherwise unchanged but for one `--help
 follows the rule that file already states — a case whose subject is what a check makes of a target
 harness's answer must hold on every host the docs name, not only on the host that runs it.
 `docs/goals/README.md` and `docs/goals/archive/` are unchanged: 0003 is still this increment's open goal.
+
+### 6.5 The fix round (review round 2's four findings)
+
+Review round 2 read `8e1c5026…238d7bc9` and found four defects. Each was reproduced before it was fixed,
+and each changed behaviour, a case or a document — none is a comment. No `Done when` clause moved. One
+finding's stated mechanism is answered with evidence rather than accepted as written (finding 2), and the
+remedy it asks for was applied anyway, because the shape it closes is real.
+
+**(1) A recorded working directory whose last component ends in whitespace was trimmed.**
+`ConvertToClaudeTranscript` read `strings.TrimSpace(conv.Source.Cwd)`, and that trimmed value is what the
+transcript's `cwd`, the project directory the session is filed under, the printed `cd` and the native
+verification's own `Dir` were derived from — while the inherited reader carries the source's string
+verbatim. Reproduced by restoring the trim on this tree; the two new cases fail:
+
+```console
+$ go test -count=1 -tags fts5 -run 'TestConvertToClaudeTranscriptKeepsAWorkingDirectoryEndingInWhitespace|TestContinueIntoClaudeKeepsAWorkingDirectoryEndingInWhitespace' ./internal/ccc/   # exit 1
+--- FAIL: TestConvertToClaudeTranscriptKeepsAWorkingDirectoryEndingInWhitespace (0.00s)
+    claude_target_test.go:686: the target session records cwd "/home/user/code/project", want the source's own "/home/user/code/project "
+    claude_target_test.go:689: the project directory is "-home-user-code-project", want "-home-user-code-project-", the spelling of the source's own directory
+    claude_target_test.go:694: record 0 carries cwd /home/user/code/project, want the source's own "/home/user/code/project "
+--- FAIL: TestContinueIntoClaudeKeepsAWorkingDirectoryEndingInWhitespace (0.07s)
+    continue_claude_test.go:529: target working directory = "/home/user/code/project", want the source's own "/home/user/code/project "
+    continue_claude_test.go:536: installed at "…/projects/-home-user-code-project/b2757ccb-….jsonl", want "…/projects/-home-user-code-project-/b2757ccb-….jsonl"
+FAIL
+```
+
+The recorded string now travels as it was recorded, and the trim answers only *whether* one was recorded
+(`strings.TrimSpace(cwd) == ""` → `ErrNoTargetCwd`), in the writer and in `runClaudeTurn`'s `Dir` alike.
+Pinned by the writer's case (the record bytes, the project spelling, the whitespace-only refusal) and the
+route's (the installed path below `projects/-home-user-code-project-`, the printed
+`cd '/home/user/code/project ' && …`, and the structure read-back still `verified`).
+
+**(2) The printed Claude invocation re-searched PATH after its `cd`.** The review's remedy is what this
+round applied: `invocationBinary` now takes the probe's own answer and names it when it found one
+(`invocationBinary(in.Binary, in.Probe)`), keeping the caller's spelling only where the probe found
+nothing — a path-like spelling still resolved against the caller's directory, a bare name still left
+exactly as written. The report's own `binary`/`binary_found` fields carry that same answer, so the
+printed line and the report cannot disagree. Pinned by `TestClaudeInvocationNamesTheExecutableItsProbeFound`
+(both argument vectors and the rendered line, with a probed path the renderer has to quote; and the
+unresolved probe leaving the word alone), and the relative-spelling case still pins its own two arms.
+Removing the probe from the call fires the new case:
+
+```console
+$ go test -count=1 -tags fts5 -run TestClaudeInvocationNamesTheExecutableItsProbeFound ./internal/ccc/   # exit 1
+--- FAIL: TestClaudeInvocationNamesTheExecutableItsProbeFound (0.00s)
+    continue_claude_test.go:463: arguments name "claude"/"claude", want the probed executable "/opt/ccc tools/claude"
+FAIL
+```
+
+**The mechanism the finding states is not reachable on this build, and that is measured rather than
+assumed.** With a relative PATH entry, a *bare* name is not found at all: Go's `os/exec.LookPath`
+answers `ErrDot` for a resolution that is relative to the working directory (since Go 1.19). A two-line
+program calling `exec.LookPath("fakeclaude")`, built here with go1.27.4 and run with
+`PATH="tools:/usr/bin:/bin"` from a directory holding an executable `tools/fakeclaude`:
+
+```text
+bare lookup with a relative PATH entry: path="" err=exec: "fakeclaude": cannot run executable found relative to current directory
+path-like lookup: path="tools/fakeclaude" err=<nil>
+```
+
+So the probe answers *found nothing* there and the report says so; what remains real is the step after it:
+the printed line is read by a **shell**, and a shell resolves a relative PATH entry against the directory
+it is in — the session's, after the `cd` — so a pasted bare name can select `<session dir>/tools/claude`
+while the probe and the native verification ran another program. Naming the probed path is what closes
+that, and it is why the remedy was applied even though the reviewed mechanism as written cannot occur.
+
+**(3) The reported exec form omitted the prompt's option terminator.** `VerifyClaudeResume` runs its prompt
+behind `--` while the printed exec form did not, so replacing `<prompt>` with `--help` made the reported
+command ask for help instead of submitting the turn the verification ran. The terminator is now one named
+constant (`promptTerminator`, `internal/ccc/continue.go`) used by the resume verification, the load check
+and the route's printed exec form, whose vector is
+`[binary, -p, --output-format, json, --resume, <id>, --, <prompt>]`. The Go cases compare the whole vector
+and the rendered line (`internal/ccc/continue_claude_test.go`, `cmd/ccc/claude_route_test.go`), the native
+check's own reading carries it (`scripts/claude-native-check.py`'s `want_exec_resume`, the constant
+mirrored as `native_check_common.CONTINUE_TERMINATOR`), and the new offline case drives both shapes
+through the shipped `main`: the intact vector passes the invocation check, the pre-fix vector fails
+exactly that check and exits 1. Dropping the terminator fires the Go side:
+
+```console
+$ go test -count=1 -tags fts5 -run 'TestContinueIntoClaudeConvertsInstallsAndReadsBack|TestContinueResolvesARelativeTargetBinaryForTheDirectoryChangingInvocation' ./internal/ccc/   # exit 1
+--- FAIL: TestContinueIntoClaudeConvertsInstallsAndReadsBack (0.13s)
+    continue_claude_test.go:138: exec resume arguments = [ … "--resume" "e9e3a821-…" "<prompt>"], want [ … "--resume" "e9e3a821-…" "--" "<prompt>"]
+--- FAIL: TestContinueResolvesARelativeTargetBinaryForTheDirectoryChangingInvocation (0.02s)
+    continue_claude_test.go:406: exec resume arguments = [ … ], want the same resolved executable and the prompt behind "--"
+FAIL
+```
+
+and `cmd/ccc`'s route case fails the same way (its two assertions name the full vector and the rendered
+`… --resume <id> -- '<prompt>'`).
+
+**(4) A discarded subagent-session link was invisible.** The inherited Codex parser records which session
+a `spawn_agent` call spawned (`ToolCall.SubagentSessionID`; the carried case is
+`internal/parser/codex_parser_test.go`'s "spawn_agent links child session…", which pins
+`codex:<child id>`) and the shared reader preserves it (`internal/ccc/reader.go:800`), but the Claude
+writer's `tool_use` block carries an id, a name and an input only — so the call travelled, the link did
+not, and neither the item list nor the structure check could see the difference. It is now counted as its
+own category, `subagent_session_links` (disposition `omitted`), whose reason states that the target has no
+field for a child session and that the child session is neither read nor converted — a conversion's unit
+is the selected session. The count is of the calls this conversion wrote, so a projection coalesced into
+the call it repeats is not counted twice. Pinned by
+`TestClaudeWriterCountsADiscardedSubagentSessionLink` (count, disposition, the reason's words, the
+coalesced-projection discipline, the call's own evidence still in the file, and the child id in none of
+it) and read through the category enumeration of `TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers`.
+Removing the count fires it:
+
+```console
+$ go test -count=1 -tags fts5 -run TestClaudeWriterCountsADiscardedSubagentSessionLink ./internal/ccc/   # exit 1
+--- FAIL: TestClaudeWriterCountsADiscardedSubagentSessionLink (0.00s)
+    claude_target_test.go:645: subagent_session_links = {Category:subagent_session_links Disposition:omitted Count:0 Detail:the source recorded which session these carried calls spawned (…)} …, want the one written call's link counted as omitted
+FAIL
+```
+
+**Re-measured in this round**, on this tree, against the installed harness — the load half and the
+printed line's own turn path (this round had no model access, §7):
+
+```console
+$ python3 scripts/claude-native-check.py --claude …/claude-cli/node_modules/.bin/claude      # exit 0
+PASS: the reported resume command names the binary, the session, the working directory and the data directory — resume_command='cd …/workspace/example-api && CLAUDE_CONFIG_DIR=…/claude-home …/claude --resume 42eea641-…' exec_resume_command="cd …/workspace/example-api && CLAUDE_CONFIG_DIR=…/claude-home …/claude -p --output-format json --resume 42eea641-… -- '<prompt>'" environment={'CLAUDE_CONFIG_DIR': '…/claude-home'}
+PASS: the target harness's own loader resolves the installed session — verified — … "Not logged in · Please run /login" …
+SKIP: a real turn continues from the installed session — not attempted: pass --resume-prompt to run one
+PASS: the source session is unchanged — sha256 399cbe7e15e07df7… (the scratch source root is identical)
+13 check(s) passed, 0 failed, 1 skipped
+
+$ python3 scripts/claude-native-check.py --claude …/claude --resume-prompt "Summarise in one sentence what this conversation records about retry attempts and where that is set."   # exit 1
+FAIL: a real turn continues from the installed session — exit 1, session 3674 -> 85802 bytes; ran through /bin/sh: cd /tmp/…/workspace/example-api && CLAUDE_CONFIG_DIR=/tmp/…/claude-home …/claude -p --output-format json --resume b0422b4f-… -- 'Summarise in one sentence …'
+13 check(s) passed, 1 failed, 0 skipped
+```
+
+The second run is §7's documented boundary again, and it is the strongest evidence this round can offer
+for finding 3 without model access: the printed line *with the terminator* was read by the shell the
+script names, reached the harness, and the harness wrote its own records into the installed session
+(3674 → 85802 bytes) before answering with the not-logged-in words §7 records. The single failure is the
+turn's own verdict, which needs a model. A turn that actually *answered* is §6.1's earlier run;
+the exec spelling it shows (`… --resume 6038ac68-… 'Summarise in one sentence …'`) is the pre-fix one,
+as are §6.3's FAIL line and §6.4's quoted failures — they are the runs that printed them and are left as
+recorded, and §1's receipt above is the fix round's own re-recording.
+
+**The gate, re-run on this tree**, after every code, script, case and record edit this round made:
+
+```console
+$ python3 scripts/gate.py
+  PASS     gofmt    3591 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 190 tests in 5.024s (rc=0)
+  PASS     parity   … owned: 28 project-owned prefix(es); files seen by git: 5644 | …
+  PASS     secrets  no leaks found in 95 file(s) this repository owns …
+GATE: PASS
+```
+
+exit code **0**. This block is the round's final run. Two record edits followed it — the timing text inside
+it and `docs/evidence/0003-obligation-matrix.md`'s own sweep section — and no gate step reads either: the
+`selftest` step's evidence case reads §5's tables of the `*continuation*.md` records, and this round does
+not touch them.
+
+Counts that moved, and why: `selftest` **189 → 190** (one new offline case — the exec form's terminator,
+driven in both shapes through the shipped `main`). `gofmt`'s 3591, the three packages,
+`parity`'s 28 owned prefixes, `files seen by git` 5644 and `secrets` 95 do not move: this round edits
+existing files and adds none. No case was deleted, skipped or weakened; four Go cases were added
+(`TestConvertToClaudeTranscriptKeepsAWorkingDirectoryEndingInWhitespace`,
+`TestContinueIntoClaudeKeepsAWorkingDirectoryEndingInWhitespace`,
+`TestClaudeInvocationNamesTheExecutableItsProbeFound`,
+`TestClaudeWriterCountsADiscardedSubagentSessionLink`) and the exec-form assertions in
+`internal/ccc/continue_claude_test.go` and `cmd/ccc/claude_route_test.go` were replaced by stronger ones
+(the whole argument vector plus the rendered line, where a substring of the vector was read before).
+
+**The `--target-binary` help line was corrected a second time**, with the rule finding 2 gave it: it had
+said the printed commands name the binary "the way it is given here, resolved against this directory"
+(round 1's wording), which the probe's answer makes untrue for a bare name the probe resolved. It now says
+the printed commands name the path the probe found, else the spelling given, and `README.md`'s sentence
+about the same flag was corrected with it.
+
+`AGENTS.md` needed no change in this round: no command, gate step, layout, read order or rule an agent
+follows moved — the round changes what one writer records for one source field, what one printed
+invocation names, and one loss category. Two records outside this file moved with it:
+`docs/decisions/OPEN-QUESTIONS.md` gained Q-0003-11 (the printed invocation naming the probed path rather
+than the caller's word, and its reversal), and `docs/goals/README.md` and `docs/goals/archive/` are
+unchanged — 0003 is still this increment's open goal, no accepted goal file is sitting under
+`docs/goals/`, and the bookkeeping rule therefore has nothing to move this round.
 
 ## 7. Limits and residual risks
 

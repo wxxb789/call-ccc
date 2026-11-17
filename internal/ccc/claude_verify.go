@@ -258,7 +258,7 @@ func runClaudeLoad(
 	ctx context.Context, binary, home, cwd, sessionID string, timeout time.Duration, stderr io.Writer,
 ) (string, string, error) {
 	options := ClaudeResumeOptions{Home: home, Binary: binary, SessionID: sessionID, Cwd: cwd}
-	arguments := []string{"--bare", "-p", "--output-format", "json", "--resume", sessionID, "--", "load check"}
+	arguments := []string{"--bare", "-p", "--output-format", "json", "--resume", sessionID, promptTerminator, "load check"}
 	return runClaudeHarnessTurn(ctx, binary, options, timeout, arguments, claudeEnvironment(home, claudeLoadEnvDenied), stderr)
 }
 
@@ -326,7 +326,7 @@ func VerifyClaudeResume(ctx context.Context, opts ClaudeResumeOptions) ResumeVer
 		verification.Detail = "no resume prompt was given, and call/ccc does not invent one: it becomes part of the session"
 		return verification
 	}
-	arguments := []string{"-p", "--output-format", "json", "--resume", opts.SessionID, "--", opts.Prompt}
+	arguments := []string{"-p", "--output-format", "json", "--resume", opts.SessionID, promptTerminator, opts.Prompt}
 	path, err := resolveClaudeExecutable(binary)
 	if err != nil {
 		verification.Detail = fmt.Sprintf("%s is not on PATH, so no turn could be run in the installed session", binary)
@@ -437,7 +437,9 @@ func runClaudeTurn(
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	command := exec.CommandContext(runCtx, executable, args...)
-	if dir := strings.TrimSpace(opts.Cwd); dir != "" {
+	// The directory is the source's own recorded value, as the transcript records it: trimming decides
+	// only whether one was recorded, because a directory name may end in whitespace.
+	if dir := opts.Cwd; strings.TrimSpace(dir) != "" {
 		if info, err := os.Stat(dir); err == nil && info.IsDir() {
 			command.Dir = dir
 		}
