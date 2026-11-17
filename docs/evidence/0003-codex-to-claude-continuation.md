@@ -1171,6 +1171,194 @@ lines and the obligation matrix's round-3 wording, which no gate step reads. The
 these records — the `selftest` step's evidence case, over the `*continuation*.md` records' §5 tables and
 their answer blocks — was re-run on the file as it then stood: `Ran 191 tests in 5.073s`, exit 0.
 
+### 6.8 The fix round (review round 4's three findings)
+
+Review round 4 read `8e1c5026…ccb8a828` and found three defects, all in the surface 0003 added: the
+environment one check builds for the target harness, the home one installer resolves, and the shared
+reading both native checks report the installed file through. Each changed behaviour or a case — none is
+a comment. No `Done when` clause moved. The round's close-out asked for a machine-checked pin per rule on
+the touched surface rather than one patch per finding, so every rule of the three functions was broken on
+this tree, the case that names it run, and the tree restored, with each file's `sha256` re-checked
+against its pre-mutation bytes (the fourteen mutations and their clause mappings are tabulated in the
+obligation matrix's round-4 sweep; the failures are quoted below). The sweep's script is a throwaway
+under `/tmp`, not in this tree. The sweep also found one rule of the touched code that **survived** its
+mutation — `jsonl_parse_error` skips a blank line, a rule its own docstring states and no case observed —
+which is pinned by a new case below rather than left as a static claim.
+
+**(1) A differently-spelled home variable was left in the child environment**
+(`internal/ccc/claude_verify.go`'s `claudeEnvironment`). The build removed `CLAUDE_CONFIG_DIR` by exact
+spelling and then sorted; on Windows the environment is case-insensitive, `os/exec` compares the names it
+is handed with `strings.ToLower` and keeps the **last** occurrence (measured here in the toolchain this
+tree builds with — `os/exec/exec.go`'s `dedupEnv`/`dedupEnvCase`, Go 1.27.4: `caseInsensitive =
+runtime.GOOS == "windows"`, keys folded with `strings.ToLower`, output built in reverse to *"preserve the
+last occurrence of each key"*), so an inherited `claude_config_dir` sorted after the appended
+`CLAUDE_CONFIG_DIR` would have won there: the load check and the resume turn would have read the caller's
+own home instead of the scratch copy or `--target-home` the check installed into. Every name is now
+folded for both the denylist and the home variable, so exactly one spelling — the check's own — survives,
+whatever order the sort produces; the fix does not depend on the sort at all. The Codex route
+(`codex_verify.go`: `command.Env = append(os.Environ(), "CODEX_HOME="+opts.Home)`) was checked and needs
+no equivalent change: it does not sort, so its appended override is the last entry and the toolchain's
+last-occurrence dedup selects it there.
+
+**(2) The configured home lost leading and trailing whitespace**
+(`internal/ccc/claude_install.go`'s `ResolveClaudeHome`). `CLAUDE_CONFIG_DIR` was read through
+`strings.TrimSpace` and *that* value resolved, while `--target-home` has always resolved the caller's
+string as written — so a directory whose name really begins or ends with a space was installed into under
+a different name, or reported missing, depending on which of the two documented selectors named it. The
+value is now trimmed only to answer whether a directory was named at all; the resolved answer is the
+value as written, and a whitespace-only value falls through to `~/.claude` exactly as an empty one does.
+
+**(3) The shared JSONL check accepted any parseable value**
+(`scripts/native_check_common.py`'s `jsonl_parse_error`). It discarded `json.loads`'s return value, so a
+line holding `null`, `false` or `[]` produced no error and both native checks printed **PASS: the
+installed file is one JSON object per line** for a file whose lines are not records — a weaker rule than
+the Codex check's own replaced `all(json.loads(…))` predicate, and its regression cases covered only
+invalid JSON syntax. Each parsed value must now be a dictionary, and the reason names the line's number
+and the value's own kind (`null`, `a boolean`, `a number`, `a string`, `an array`; `JSON_VALUE_KINDS`),
+not Python's type name.
+
+**The mutation sweep, quoted.** Each spec ran its case green on the intact tree (`rc=0`) and under the
+mutation (`rc=1`); every mutation was reverted and the file re-checked byte-for-byte. The Go cases:
+
+```console
+$ go test -count=1 -tags fts5 -run TestClaudeLoadEnvironmentRemovesEveryModelPath ./internal/ccc/  # case-sensitively matched denylist: exit 1
+--- FAIL: TestClaudeLoadEnvironmentRemovesEveryModelPath (0.00s)
+    claude_verify_test.go:83: the environment still carries anthropic_api_key=sk-also-secret, whatever its spelling
+
+$ go test -count=1 -tags fts5 -run TestClaudeLoadEnvironmentReplacesEverySpellingOfTheHomeVariable ./internal/ccc/  # home removed by exact spelling: exit 1
+--- FAIL: TestClaudeLoadEnvironmentReplacesEverySpellingOfTheHomeVariable (0.00s)
+    claude_verify_test.go:113: the environment selects 2 spelling(s) of CLAUDE_CONFIG_DIR ([/scratch/home /the-callers-own-home]), want exactly the check's own data directory
+
+$ go test -count=1 -tags fts5 -run TestClaudeLoadEnvironmentRemovesEveryModelPath ./internal/ccc/  # no inherited entry preserved: exit 1
+    claude_verify_test.go:90: the check dropped a variable it does not own
+
+$ go test -count=1 -tags fts5 -run TestResolveClaudeHome ./internal/ccc/  # the explicit branch never consulted: exit 1
+    claude_install_test.go:20: ResolveClaudeHome("/tmp/TestResolveClaudeHome3784776171/001") = "/home/azureuser/.claude", false, <nil>; want it used and reported as the caller's
+
+$ go test -count=1 -tags fts5 -run TestResolveClaudeHome ./internal/ccc/  # the env value trimmed at the read again: exit 1
+    claude_install_test.go:48: environment home = "/tmp/TestResolveClaudeHome888828432/003/ claude home", want the value as written, "/tmp/TestResolveClaudeHome888828432/003/ claude home "
+
+$ go test -count=1 -tags fts5 -run TestResolveClaudeHome ./internal/ccc/  # the default renamed: exit 1
+    claude_install_test.go:57: ResolveClaudeHome("") with a whitespace-only CLAUDE_CONFIG_DIR = "/tmp/TestResolveClaudeHome3218030302/004/.claude-elsewhere", false, <nil>; want the default
+
+$ go test -count=1 -tags fts5 -run TestResolveClaudeHome ./internal/ccc/  # a whitespace-only value counts as named: exit 1
+    claude_install_test.go:57: ResolveClaudeHome("") with a whitespace-only CLAUDE_CONFIG_DIR = "/home/azureuser/repos/call-ccc/internal/ccc/   ", false, <nil>; want the default
+
+$ go test -count=1 -tags fts5 -run TestResolveClaudeHome ./internal/ccc/  # the env answer reported as the caller's (return home, true, nil): exit 1
+    claude_install_test.go:30: ResolveClaudeHome("") with CLAUDE_CONFIG_DIR set = "/tmp/TestResolveClaudeHome1948076686/002", true, <nil>; want the environment's answer
+```
+
+The two native checks' cases (the shared reading mutated, both shipped scripts driven with the planted
+line):
+
+```console
+$ python3 -m unittest test_claude_native_check.ProtectedArtifactsAfterNativeVerification.test_a_malformed_claude_installed_line_is_a_named_failure   # an unparseable line skipped: exit 1
+AssertionError: 'PASS' != 'FAIL'
+ : the malformed installed line did not fail the JSONL check: {… 'the installed file is one JSON object per line': ('PASS', "81 bytes (the target's own read of it is the load check)"), …}
+
+$ python3 -m unittest test_codex_native_check.ProtectedArtifactsAfterNativeVerification.test_a_malformed_codex_installed_line_is_a_named_failure   # the same, through the Codex run: exit 1
+ : the malformed installed line did not fail the JSONL check: {… 'the installed file is one JSON object per line': ('PASS', "36 bytes (the target's own read of it is the load check)"), …}
+
+$ python3 -m unittest test_claude_native_check.ProtectedArtifactsAfterNativeVerification.test_a_non_object_claude_installed_line_is_a_named_failure   # the object test removed: exit 1
+FAILED (failures=3)
+ : the non-object installed line 'null\n' did not fail the JSONL check: {… ('PASS', "73 bytes …") …}
+ : the non-object installed line 'false\n' did not fail the JSONL check: {…}
+ : the non-object installed line '[]\n' did not fail the JSONL check: {…}
+
+$ python3 -m unittest test_codex_native_check.ProtectedArtifactsAfterNativeVerification.test_a_non_object_codex_installed_line_is_a_named_failure   # the same, through the Codex run: exit 1
+FAILED (failures=3)   # one per planted kind
+
+$ python3 -m unittest test_claude_native_check.ProtectedArtifactsAfterNativeVerification.test_a_non_object_claude_installed_line_is_a_named_failure   # bool named as a number: exit 1
+AssertionError: 'line 2 is not a JSON object, but a boolean' not found in 'line 2 is not a JSON object, but a number' : line 2 is not a JSON object, but a number
+
+$ python3 -m unittest test_claude_native_check.ProtectedArtifactsAfterNativeVerification.test_blank_claude_installed_lines_are_not_records   # the blank-line skip removed: exit 1
+AssertionError: 'FAIL' != 'PASS'
+ : a blank installed line was reported rather than skipped: FAIL — line 2 is not JSON: Expecting value: line 1 column 1 (char 0)
+```
+
+Under the removed object test all three planted kinds are accepted (`FAILED (failures=3)`: one per
+subtest), which is the finding's own scenario — the check answering PASS for a line that is not a record.
+Under the removed blank-line skip a line holding nothing is reported as unparseable JSON, which no
+writer's contract forbids, so the reading that skips it is the one the new case now holds. The sweep's
+script prints each spec's pre-mutation `rc=0`, mutated `rc=1` and `restored byte-for-byte: True`; it
+ended `SWEEP: OK`.
+
+**Native re-measure on this tree.** The shared module is a measured consumer of both native checks, so
+both were re-run against the installed harnesses the way §6.7 did. The Claude check's offline half ran to
+completion and the turn arm was **not** attempted (this host's harness has no provider configured, so a
+turn would answer only the no-model boundary) — the conversion's own numbers are §6.1's and §6.7's
+exactly (3674 bytes, the same three non-zero loss categories):
+
+```console
+$ python3 scripts/claude-native-check.py --claude /home/azureuser/.local/share/ccc-native/claude-cli/node_modules/.bin/claude   # exit 0
+PASS: the installed file is one JSON object per line — 3674 bytes (the target's own read of it is the load check)
+PASS: the target harness's own loader resolves the installed session — verified — … the same command with an unknown session id answered "No conversation found with session ID: …"
+SKIP: a real turn continues from the installed session — not attempted: pass --resume-prompt to run one
+PASS: the source session is unchanged — sha256 db99b1fdb583bdec… (the scratch source root is identical)
+13 check(s) passed, 0 failed, 1 skipped
+```
+
+The Codex check was re-run the same way (offline half only, for the same reason §6.7 names):
+
+```console
+$ python3 scripts/codex-native-check.py   # exit 0
+PASS: the installed file is one JSON object per line — 3928 bytes (the target's own read of it is the load check)
+PASS: the target's own view lists the converted turns — 5 item(s) in the reply's own turn list
+SKIP: a real turn continues from the installed session — not attempted: pass --resume-prompt to run one
+12 check(s) passed, 0 failed, 1 skipped
+```
+
+**Re-runs and the gate.** The whole Go suite ran once with `TMPDIR` pointed at a directory whose name
+holds a space (the shell-unsafe root §6.6 exercises the quoting rules with; the round's own cases build
+paths holding spaces on purpose) and the gate ran from the tree:
+
+```console
+$ TMPDIR='/tmp/ccc win' go test -count=1 -tags fts5 ./cmd/ccc/... ./internal/ccc/...   # exit 0
+ok  	go.kenn.io/agentsview/cmd/ccc	2.801s
+ok  	go.kenn.io/agentsview/internal/ccc	10.045s
+ok  	go.kenn.io/agentsview/internal/ccc/parity	1.279s
+
+$ python3 scripts/gate.py   # exit 0
+  PASS     gofmt    3591 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 194 tests in 5.081s (rc=0)
+  PASS     parity   … carried: 5553 file(s) identical to the pinned revision … | owned: 28 project-owned prefix(es); files seen by git: 5644 | …
+  PASS     secrets  no leaks found in 95 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+Counts that moved, and why: Go top-level cases **207 → 208** (one new case,
+`TestClaudeLoadEnvironmentReplacesEverySpellingOfTheHomeVariable`; `internal/ccc` 176 → 177, `cmd/ccc`
+31 unchanged; the two existing cases that gained assertions — `TestClaudeLoadEnvironmentRemovesEveryModelPath`
+and `TestResolveClaudeHome` — kept their names), and `selftest` **191 → 194** (three new offline cases:
+the non-object installed line in each native check, and the blank-line rule the sweep found unpinned,
+pinned in the Claude check). No case was deleted, skipped, weakened or renamed;
+`gofmt` 3591, the three packages, `carried` 5553, `owned` 28, `files seen by git` 5644 and `secrets` 95
+are unchanged from §6.7.
+
+**Nothing else moved.** `README.md`, `AGENTS.md` and the gate files are untouched: no command, gate step,
+layout, read order or agent rule changed — the changed rules are two functions' own and one shared
+reading's, and each is described where it lives (the functions' comments, `JSON_VALUE_KINDS` and the
+checks' case docstrings) and pinned by the sweep above. `docs/harness.md` moved one clause and nothing
+else: the shared module's inventory said it carries "the JSONL readability test both checks report
+through", which no longer says what the round's rule is — it now says the JSONL record-shape test, whose
+per-line rule is named (a blank line or one JSON **object**; anything else is that check's FAIL with the
+line's number). That is the only document the round changed, and it is a project-owned path in the carry
+manifest (`owned docs/harness.md`), so `parity` stays green (it declares ownership, not bytes, for owned
+paths — the gate block above is the run after every file edit of this round, that clause included).
+`docs/goals/README.md` and `docs/goals/archive/` are unchanged too: 0003 is still this increment's open
+goal, awaiting operator acceptance. No owner-only question arose: the two judgements this round took
+alone (fold every spelling of the home variable rather than relying on the sort; refuse every non-object
+line, which is the stricter half of the Codex check's own replaced predicate) are implementation
+defaults, not decisions the owner must make, and both are reversible by the mutation recorded above.
+
+That gate block is the last gate run on this tree, and it ran after every file edit of this round except
+this section's own prose: the block's copy above and this closing note. The one step that does read these
+records — the `selftest` step's evidence case, over the `*continuation*.md` records' §5 tables and their
+answer blocks — was re-run on the records as they then stood: `Ran 194 tests in 6.044s`, exit 0.
+
 ## 7. Limits and residual risks
 
 - **The `resume` level, and the native check's real turn, need model access.** On a host without it the

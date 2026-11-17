@@ -339,6 +339,11 @@ PROTECTED_CHECKS = ("the source session is unchanged",
 REPORTED_INVOCATION_CHECK = ("the reported resume command names the binary, the session, the working "
                              "directory and the data directory")
 
+#: The check that reads the installed transcript back line by line, named as the harness records it: the
+#: cases that plant a bad line in the installed file drive this one, and the name is the promise those
+#: cases hold the reading to -- every line has to be one JSON *object*.
+JSONL_CHECK = "the installed file is one JSON object per line"
+
 #: The session this case's home already holds before the run starts: the third comparison's subject. It
 #: is kept as a *name* here, so the assertion on the run's own report holds whatever separator the host
 #: spells paths with.
@@ -379,18 +384,20 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
     """
 
     def drive(self, mutate_during_resume: bool, posix_mode_bits: bool | None = None,
-              malformed_installed: bool = False, exec_terminator: bool = True,
+              installed_extra_line: str | None = None, exec_terminator: bool = True,
               posix_shell: str | None = SHELL_SEAM_ANSWER) -> tuple[int, dict[str, tuple[str, str]], str, str | None]:
         """One run of the shipped ``main`` against stubs; answers its exit code, its recorded checks, its
         printed output and the shell the stub turn was asked to run through (``None`` when no turn ran).
 
         ``posix_mode_bits`` is what the platform seam answers; ``None`` (the default) means *this* host's
         own answer, so a case that does not name it holds on a host that reports POSIX mode bits and on
-        one that does not (``False`` drives the Windows answer explicitly), and ``malformed_installed``
-        makes the stub's installed file carry a line that is not JSON, so the JSONL check's own failure
-        path is exercised. ``exec_terminator`` is whether the stub's reported exec form carries the option
-        terminator before its placeholder: ``False`` is the shape a printed command without one has, which
-        the check's reading of the reported invocation must refuse. ``posix_shell`` is what the shell seam
+        one that does not (``False`` drives the Windows answer explicitly), and ``installed_extra_line``
+        is a line the stub appends to the installed file after its one object, so the JSONL check's own
+        failure paths are exercised -- the line may be unparseable JSON or a valid JSON value that is not
+        an object, and the check has to name each as the failure the check promises. ``exec_terminator``
+        is whether the stub's reported exec form carries the option terminator before its placeholder:
+        ``False`` is the shape a printed command without one has, which the check's reading of the
+        reported invocation must refuse. ``posix_shell`` is what the shell seam
         answers, defaulted to ``SHELL_SEAM_ANSWER`` rather than to this host's own so that a case holds
         under an isolated ``PATH`` (the suite's child runs hold no tool) and on every platform; ``None``
         drives the host with no POSIX shell, whose turn the run must report as a boundary instead of
@@ -451,7 +458,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                     installed.parent.mkdir(parents=True, exist_ok=True)
                     installed.write_text(
                         json.dumps({"type": "user", "sessionId": thread_id}) + "\n"
-                        + ("{not json}\n" if malformed_installed else ""))
+                        + (installed_extra_line or ""))
                     os.chmod(installed, 0o600)
                     state["installed"] = installed
                     state["cwd"] = cwd_path
@@ -646,13 +653,57 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         very reporting contract the harness promises never to break. The run must therefore return 1 with
         that check recorded as a FAIL whose detail names the line and the parse error.
         """
-        code, results, printed, _ = self.drive(mutate_during_resume=False, malformed_installed=True)
-        state, detail = results.get("the installed file is one JSON object per line", ("missing", ""))
+        code, results, printed, _ = self.drive(mutate_during_resume=False,
+                                               installed_extra_line="{not json}\n")
+        state, detail = results.get(JSONL_CHECK, ("missing", ""))
         self.assertEqual(state, "FAIL",
                          f"the malformed installed line did not fail the JSONL check: {results}")
         self.assertIn("line 2 is not JSON", detail, detail)
         self.assertEqual(code, 1, f"exit {code} for a run whose JSONL check failed: {results}")
-        self.assertIn("FAIL: the installed file is one JSON object per line", printed)
+        self.assertIn(f"FAIL: {JSONL_CHECK}", printed)
+
+    def test_a_non_object_claude_installed_line_is_a_named_failure(self) -> None:
+        """A line that parses but is not a JSON object is a FAIL the check names, not a pass.
+
+        ``json.loads`` also accepts ``null``, ``false`` and ``[]``, and a line holding one of those is not
+        a record either harness writes. A reading that asked only whether the line parses would answer
+        PASS on the check's own name -- "one JSON object per line" -- for a file the target's loader meets
+        as a value it cannot read as a record. Each kind is driven through the shipped run, which must
+        record that check's FAIL with the line's number and the value's kind, and still exit 1 rather than
+        raising out of ``main``.
+        """
+        for line, kind in (("null\n", "null"), ("false\n", "a boolean"), ("[]\n", "an array")):
+            with self.subTest(installed_line=line):
+                code, results, printed, _ = self.drive(mutate_during_resume=False,
+                                                       installed_extra_line=line)
+                state, detail = results.get(JSONL_CHECK, ("missing", ""))
+                self.assertEqual(state, "FAIL",
+                                 f"the non-object installed line {line!r} did not fail the JSONL "
+                                 f"check: {results}")
+                self.assertIn(f"line 2 is not a JSON object, but {kind}", detail, detail)
+                self.assertEqual(code, 1,
+                                 f"exit {code} for a run whose JSONL check failed: {results}")
+                self.assertIn(f"FAIL: {JSONL_CHECK}", printed)
+
+    def test_blank_claude_installed_lines_are_not_records(self) -> None:
+        """An empty or whitespace-only installed line is skipped, not reported.
+
+        ``jsonl_parse_error``'s rule is stated over the file's **non-blank** lines, and a writer that ends
+        every record with a newline leaves such a line where a caller appended a stray one: a blank line
+        is not a record either harness writes, so the reading reports the objects and says nothing about
+        it. The failure mode this rules out is the opposite of the non-object case's -- a reading that
+        refused a blank line would fail an installed file for padding no writer's contract forbids -- so
+        the shipped run is driven with an empty and a whitespace-only line appended, and that check (and
+        the run's exit code) must answer the objects above them.
+        """
+        code, results, printed, _ = self.drive(mutate_during_resume=False,
+                                               installed_extra_line="\n   \n")
+        state, detail = results.get(JSONL_CHECK, ("missing", ""))
+        self.assertEqual(state, "PASS",
+                         f"a blank installed line was reported rather than skipped: {state} — {detail}")
+        self.assertEqual(code, 0,
+                         f"exit {code} for a run whose installed file holds blank lines: {results}")
+        self.assertIn(f"PASS: {JSONL_CHECK}", printed)
 
     def test_the_reported_exec_form_must_carry_the_prompt_terminator(self) -> None:
         """The check refuses a printed exec form whose prompt is not behind the option terminator.

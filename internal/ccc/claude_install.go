@@ -24,6 +24,12 @@ const claudeSessionFileMode os.FileMode = 0o600
 // ResolveClaudeHome answers the Claude Code data directory a conversion installs into: the caller's
 // explicit directory, else $CLAUDE_CONFIG_DIR, else ~/.claude. The boolean reports whether the answer
 // came from the caller, which is what decides whether a missing directory may be created.
+//
+// A value is read to answer two things, and only the first of them trims: trimming decides whether a
+// directory was named at all, and the value is then resolved exactly as it was written. A directory
+// name may begin or end with a space, and the flag and the environment have to name the same directory
+// they were given -- the explicit branch has never rewritten the caller's own string, and the
+// environment is a caller's string too.
 func ResolveClaudeHome(explicit string) (string, bool, error) {
 	if strings.TrimSpace(explicit) != "" {
 		home, err := filepath.Abs(explicit)
@@ -32,7 +38,7 @@ func ResolveClaudeHome(explicit string) (string, bool, error) {
 		}
 		return home, true, nil
 	}
-	if fromEnv := strings.TrimSpace(os.Getenv(claudeHomeEnv)); fromEnv != "" {
+	if fromEnv := os.Getenv(claudeHomeEnv); strings.TrimSpace(fromEnv) != "" {
 		home, err := filepath.Abs(fromEnv)
 		if err != nil {
 			return "", false, fmt.Errorf("resolving $%s: %w", claudeHomeEnv, err)

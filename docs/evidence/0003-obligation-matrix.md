@@ -94,3 +94,37 @@ lines.
 The sweep is **not** exhaustive here either: it covers the five mutations above (two of them the same
 generated-id rule in the two writers, and one the finding's own on-disk scenario); every other row in
 this file still names a case rather than a mutation.
+
+## Mutation sweep — the fix round that followed review round 4
+
+Review round 4's close-out asked for a pin per rule on the surface the round touched, and for the *class*
+that had survived rounds: every rule of the three touched functions and of the reading the two native
+checks report through was broken on this tree, the case that names it run, and the tree restored
+byte-for-byte (each spec's `sha256` was re-checked against the pre-mutation bytes afterwards). Each spec
+also ran its case on the intact tree first (`rc=0`) and under the mutation (`rc=1`); the sweep's own
+script (a throwaway under `/tmp`, not in this tree) is the record's §6.8. The case names below are the
+ones that fired, with the failure line's own words.
+
+| Clause | Mutation (broken rule) | Case that fired |
+| --- | --- | --- |
+| D2 | the denied model-path names are matched case-sensitively again (`folded := name`) | `TestClaudeLoadEnvironmentRemovesEveryModelPath` — `the environment still carries anthropic_api_key=sk-also-secret, whatever its spelling` — exit 1 |
+| D2, D5 | the home variable is removed by exact spelling again (`if name == claudeHomeEnv`) | `TestClaudeLoadEnvironmentReplacesEverySpellingOfTheHomeVariable` — `the environment selects 2 spelling(s) of CLAUDE_CONFIG_DIR ([/scratch/home /the-callers-own-home]), want exactly the check's own data directory` — exit 1 |
+| D2 | no inherited entry is preserved at all (the append dropped) | `TestClaudeLoadEnvironmentRemovesEveryModelPath` — `the check dropped a variable it does not own` — exit 1 |
+| D1 | the caller's explicit directory is not consulted (`--target-home` ignored) | `TestResolveClaudeHome` — `ResolveClaudeHome("…") = "/home/azureuser/.claude", false, <nil>; want it used and reported as the caller's` — exit 1 |
+| D1 | the environment's value is trimmed at the read again (`fromEnv := strings.TrimSpace(os.Getenv(claudeHomeEnv))`) | `TestResolveClaudeHome` — `environment home = "…/003/ claude home", want the value as written, "…/003/ claude home "` — exit 1 |
+| D1 | the default is not `~/.claude` (the fallback renamed) | `TestResolveClaudeHome` — `with a whitespace-only CLAUDE_CONFIG_DIR = "…/004/.claude-elsewhere", false, <nil>; want the default` — exit 1 |
+| D1 | a whitespace-only value counts as a named directory (the presence test stops trimming) | `TestResolveClaudeHome` — `with a whitespace-only CLAUDE_CONFIG_DIR = "…/internal/ccc/   ", false, <nil>; want the default` — exit 1 |
+| D2 | an unparseable line is skipped instead of reported (the Claude check's run) | `test_a_malformed_claude_installed_line_is_a_named_failure` — `the malformed installed line did not fail the JSONL check: {…'the installed file is one JSON object per line': ('PASS', …)}` — exit 1 |
+| D2 | the same skip, read through the Codex check | `test_a_malformed_codex_installed_line_is_a_named_failure` — the same failure line with the Codex run's results — exit 1 |
+| D2 | a valid JSON value that is not an object is accepted (the object test removed) | `test_a_non_object_claude_installed_line_is_a_named_failure` — `the non-object installed line 'null\n' did not fail the JSONL check` (and one failure per planted kind: `'null\n'`, `'false\n'`, `'[]\n'`) — exit 1 |
+| D2 | the same acceptance, read through the Codex check | `test_a_non_object_codex_installed_line_is_a_named_failure` — the same three failure lines with the Codex run's results — exit 1 |
+| D2 | the reason names the wrong kind (`bool: "a number"`) | `test_a_non_object_claude_installed_line_is_a_named_failure` — `AssertionError: 'line 2 is not a JSON object, but a boolean' not found in 'line 2 is not a JSON object, but a number'` — exit 1 |
+| D2 | a blank line is a malformed record again (the blank-line skip removed — the one rule the sweep found unpinned, pinned by the new case) | `test_blank_claude_installed_lines_are_not_records` — `a blank installed line was reported rather than skipped: FAIL — line 2 is not JSON: Expecting value: line 1 column 1 (char 0)` — exit 1 |
+| D1 | the environment's answer is reported as the caller's (`return home, true, nil`) | `TestResolveClaudeHome` — `ResolveClaudeHome("") with CLAUDE_CONFIG_DIR set = "…/002", true, <nil>; want the environment's answer` — exit 1 |
+
+The sweep found one rule that **survived** its mutation on the first pass — `jsonl_parse_error` skips a
+blank line, stated by the function's own docstring and observed by no case — and it is pinned by
+`test_blank_claude_installed_lines_are_not_records` above, whose mutation is the row before last. The
+sweep is **not** exhaustive over the whole file: it covers the rules of the surface this round touched
+(`claudeEnvironment`, `ResolveClaudeHome`, `jsonl_parse_error` and the two checks' report of it), which is
+what the round's close-out asked for; every other row above still names a case rather than a mutation.

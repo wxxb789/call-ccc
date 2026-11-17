@@ -272,8 +272,10 @@ says so.
 - `scripts/native_check_common.py` — the mechanism the two native checks share, so neither keeps its own
   copy of it: the file digests (`sha256`, `tree_digest`), the check recorder (`record`, `RESULTS`), the
   subprocess runner (`run`), the POSIX-shell reading of a rendered command (`shell_words`,
-  `unquoted_text` and the character set a shell acts on), the JSONL readability test both checks report
-  through, and the two strings the record's own rules read (`TURN_OUTPUT_MARKER`, `PROMPT_PLACEHOLDER`).
+  `unquoted_text` and the character set a shell acts on), the JSONL record-shape test both checks report
+  through (a line may be blank or one JSON **object**; anything else — unparseable, or a value that is not
+  an object — is that check's FAIL with the line's number), and the two strings the record's own rules
+  read (`TURN_OUTPUT_MARKER`, `PROMPT_PLACEHOLDER`).
   It is project-owned (`OWNED` and the manifest), imports nothing, and each check stays runnable on its
   own; what the shared module does **not** absorb is the checks' independent restatements of the
   contracts they check (the spelling rules their case files re-implement, the marker their case files

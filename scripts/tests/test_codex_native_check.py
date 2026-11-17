@@ -564,11 +564,13 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
     """
 
     def drive(self, mutate_during_resume: bool,
-              malformed_installed: bool = False) -> tuple[int, dict[str, tuple[str, str]]]:
+              installed_extra_line: str | None = None) -> tuple[int, dict[str, tuple[str, str]]]:
         """One run of the shipped ``main`` against stubs; answers its exit code and its recorded checks.
 
-        ``malformed_installed`` makes the stub's installed file carry a line that is not JSON, so the JSONL
-        check's own failure path is exercised.
+        ``installed_extra_line`` is a line the stub appends to the installed file after its one object, so
+        the JSONL check's own failure paths are exercised: the line may be unparseable JSON or a valid
+        JSON value that is not an object, and the check has to name each as the failure its own name
+        promises.
         """
         # The scratch root is resolved before anything is derived from it, because the shipped ``main``
         # resolves what it is handed (``--repo`` always, and ``--codex-home`` when the caller names one,
@@ -648,7 +650,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 if command[1] == "continue":
                     installed.parent.mkdir(parents=True, exist_ok=True)
                     installed.write_text(json.dumps({"type": "session_meta"}) + "\n"
-                                         + ("{not json}\n" if malformed_installed else ""))
+                                         + (installed_extra_line or ""))
                     return subprocess.CompletedProcess(cmd, 0, json.dumps(document), "")
                 if command[1] == "inspect":
                     counts = {"user_messages": 1, "tool_calls": 1, "tool_results": 1,
@@ -741,12 +743,33 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         very reporting contract the harness promises never to break. The run must therefore return 1 with
         that check recorded as a FAIL whose detail names the line and the parse error.
         """
-        code, results = self.drive(mutate_during_resume=False, malformed_installed=True)
+        code, results = self.drive(mutate_during_resume=False, installed_extra_line="{not json}\n")
         state, detail = results.get("the installed file is one JSON object per line", ("missing", ""))
         self.assertEqual(state, "FAIL",
                          f"the malformed installed line did not fail the JSONL check: {results}")
         self.assertIn("line 2 is not JSON", detail, detail)
         self.assertEqual(code, 1, f"exit {code} for a run whose JSONL check failed: {results}")
+
+    def test_a_non_object_codex_installed_line_is_a_named_failure(self) -> None:
+        """A line that parses but is not a JSON object is a FAIL the check names, not a pass.
+
+        ``json.loads`` also accepts ``null``, ``false`` and ``[]``, so a reading that asked only whether
+        the line parses -- the Codex check's own replaced predicate asked more -- would answer PASS on
+        "one JSON object per line" for a file whose records are not records. Each kind is driven through
+        the shipped run, which must record that check's FAIL with the line's number and the value's kind,
+        and still exit 1 rather than raising out of ``main``.
+        """
+        for line, kind in (("null\n", "null"), ("false\n", "a boolean"), ("[]\n", "an array")):
+            with self.subTest(installed_line=line):
+                code, results = self.drive(mutate_during_resume=False, installed_extra_line=line)
+                state, detail = results.get("the installed file is one JSON object per line",
+                                            ("missing", ""))
+                self.assertEqual(state, "FAIL",
+                                 f"the non-object installed line {line!r} did not fail the JSONL "
+                                 f"check: {results}")
+                self.assertIn(f"line 2 is not a JSON object, but {kind}", detail, detail)
+                self.assertEqual(code, 1,
+                                 f"exit {code} for a run whose JSONL check failed: {results}")
 
 
 if __name__ == "__main__":

@@ -44,7 +44,10 @@ func TestProbeClaudeBinaryReportsAMissingBinary(t *testing.T) {
 // TestClaudeLoadEnvironmentRemovesEveryModelPath pins what the offline load check hands its harness: the
 // data directory it must read, and none of the variables that could reach a model. The documented set is
 // written out here as literals: a case that looped over the check's own list could not fail for a name
-// the list is missing, and that is the failure this contract has to catch.
+// the list is missing, and that is the failure this contract has to catch. One name is also placed under
+// a second spelling, because the environment it is removed from is case-insensitive on Windows: the
+// scan below reads every name the built environment carries in its own upper case, so a spelling the
+// check forgot to fold is red here rather than silently handed to the harness there.
 func TestClaudeLoadEnvironmentRemovesEveryModelPath(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-secret")
 	t.Setenv("ANTHROPIC_BASE_URL", "https://example.invalid")
@@ -67,11 +70,17 @@ func TestClaudeLoadEnvironmentRemovesEveryModelPath(t *testing.T) {
 		t.Errorf("claudeLoadEnvDenied = %v, want the harness's documented model paths %v",
 			claudeLoadEnvDenied, documented)
 	}
+	t.Setenv(strings.ToLower(documented[0]), "sk-also-secret")
 	environment := claudeEnvironment("/scratch/home", claudeLoadEnvDenied)
 	joined := strings.Join(environment, "\n")
-	for _, denied := range documented {
-		if strings.Contains(joined, denied+"=") {
-			t.Errorf("the environment still carries %s", denied)
+	denied := make(map[string]struct{}, len(documented))
+	for _, name := range documented {
+		denied[strings.ToUpper(name)] = struct{}{}
+	}
+	for _, entry := range environment {
+		name, _, _ := strings.Cut(entry, "=")
+		if _, still := denied[strings.ToUpper(name)]; still {
+			t.Errorf("the environment still carries %s, whatever its spelling", entry)
 		}
 	}
 	if !strings.Contains(joined, claudeHomeEnv+"=/scratch/home") {
@@ -79,6 +88,30 @@ func TestClaudeLoadEnvironmentRemovesEveryModelPath(t *testing.T) {
 	}
 	if !strings.Contains(joined, "UNRELATED_SETTING=kept") {
 		t.Error("the check dropped a variable it does not own")
+	}
+}
+
+// TestClaudeLoadEnvironmentReplacesEverySpellingOfTheHomeVariable pins the other half of the same rule,
+// and the failure it prevents is the opposite one: the home variable must be *replaced*, not merely
+// left alone. Windows' environment is case-insensitive and os/exec keeps the last value among the names
+// it is handed, and the built list is sorted -- so a lower- or mixed-case spelling of the variable left
+// in place sorts after the appended override and wins there, and the harness reads the caller's own home
+// instead of the directory the check installed into. Exactly one spelling may survive, carrying the
+// check's own home; the alternate spelling is set here rather than assumed to exist in the caller's
+// environment.
+func TestClaudeLoadEnvironmentReplacesEverySpellingOfTheHomeVariable(t *testing.T) {
+	t.Setenv(strings.ToLower(claudeHomeEnv), "/the-callers-own-home")
+	environment := claudeEnvironment("/scratch/home", claudeLoadEnvDenied)
+	var selected []string
+	for _, entry := range environment {
+		name, value, found := strings.Cut(entry, "=")
+		if found && strings.ToUpper(name) == claudeHomeEnv {
+			selected = append(selected, value)
+		}
+	}
+	if len(selected) != 1 || selected[0] != "/scratch/home" {
+		t.Errorf("the environment selects %d spelling(s) of %s (%v), want exactly the check's own "+
+			"data directory", len(selected), claudeHomeEnv, selected)
 	}
 }
 

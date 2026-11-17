@@ -266,6 +266,12 @@ func runClaudeLoad(
 // the variable that selects the target's data directory set to home, and with the named variables
 // removed. Nothing else is changed, so a host's PATH, locale and tool configuration still reach the
 // harness.
+//
+// Every name is read in its own upper case, the way the denylist and os/exec itself read one: Windows'
+// environment is case-insensitive and os/exec keeps the last value among the names it is handed, so a
+// leftover lower- or mixed-case spelling of the home variable would, after the sort below, sit after
+// the appended override and win there -- the check would then read the caller's own home instead of the
+// directory it installed into.
 func claudeEnvironment(home string, denied []string) []string {
 	blocked := make(map[string]struct{}, len(denied))
 	for _, name := range denied {
@@ -277,10 +283,11 @@ func claudeEnvironment(home string, denied []string) []string {
 		if !found {
 			continue
 		}
-		if _, deny := blocked[strings.ToUpper(name)]; deny {
+		folded := strings.ToUpper(name)
+		if _, deny := blocked[folded]; deny {
 			continue
 		}
-		if claudeHomeEnv == name {
+		if folded == claudeHomeEnv {
 			continue
 		}
 		environment = append(environment, entry)

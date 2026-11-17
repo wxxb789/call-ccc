@@ -33,6 +33,30 @@ func TestResolveClaudeHome(t *testing.T) {
 		t.Errorf("environment home = %q, want %q", home, want)
 	}
 
+	// The environment's value is resolved as it was written, the way the explicit branch resolves the
+	// caller's string: a directory name may begin or end with a space, and trimming it here would install
+	// into a differently-named directory than the one the environment selected. Nothing has to exist for
+	// this: the answer is a spelling, and whether a missing directory may be created is the boolean's
+	// answer, not this function's business.
+	spaced := filepath.Join(t.TempDir(), " claude home ")
+	t.Setenv(claudeHomeEnv, spaced)
+	home, named, err = ResolveClaudeHome("")
+	if err != nil || named {
+		t.Fatalf("ResolveClaudeHome(\"\") with a whitespace-bearing %s = %q, %v, %v; want it used", claudeHomeEnv, home, named, err)
+	}
+	if want, _ := filepath.Abs(spaced); home != want {
+		t.Errorf("environment home = %q, want the value as written, %q", home, want)
+	}
+
+	// A value that is only whitespace named no directory at all, so it falls through to the default: the
+	// presence test's own trimming is the half that trimming is for.
+	t.Setenv(claudeHomeEnv, "   ")
+	t.Setenv("HOME", t.TempDir())
+	home, named, err = ResolveClaudeHome("")
+	if err != nil || named || filepath.Base(home) != ".claude" {
+		t.Fatalf("ResolveClaudeHome(\"\") with a whitespace-only %s = %q, %v, %v; want the default", claudeHomeEnv, home, named, err)
+	}
+
 	t.Setenv(claudeHomeEnv, "")
 	t.Setenv("HOME", t.TempDir())
 	home, named, err = ResolveClaudeHome("")

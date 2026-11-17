@@ -67,21 +67,36 @@ def record(name: str, ok: bool, detail: str = "", skipped: bool = False) -> None
     print(f"{state}: {name}" + (f" — {detail}" if detail else ""))
 
 
+#: How a valid JSON value that is not an object is named in a check's own reason: both harnesses' records
+#: are objects, so a line holding anything else is refused, and a reader of the FAIL line should meet the
+#: value's kind rather than Python's own type name (``NoneType`` for ``null``, for instance). The lookup is
+#: by exact type, so ``bool`` needs its own entry even though it is an ``int`` subclass.
+JSON_VALUE_KINDS = {type(None): "null", bool: "a boolean", int: "a number", float: "a number",
+                    str: "a string", list: "an array"}
+
+
 def jsonl_parse_error(text: str) -> str:
-    """The first non-blank line of `text` that is not JSON, as a named reason, or "" when every one is.
+    """The first non-blank line of `text` that is not one JSON object, as a named reason, or "" when every one is.
 
     Both harnesses answer "the installed file is one JSON object per line" with this reading, and a
     malformed line has to be that check's FAIL with its own reason: ``json.loads`` raises, and an
     exception out of the run would print no FAIL line and no summary, which is the reporting contract
     that check exists to keep. The reason names the line's number so a reader can find it.
+
+    The rule is the *object* rule, and not merely the parse rule: ``json.loads`` also accepts ``null``,
+    ``false``, a number, a string and an array, and a line holding one of those is not a record either
+    harness writes. A check that asked only whether the line parses would report such a file as one JSON
+    object per line -- evidence of an install the target cannot read the way the check claims.
     """
     for number, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
             continue
         try:
-            json.loads(line)
+            value = json.loads(line)
         except json.JSONDecodeError as error:
             return f"line {number} is not JSON: {error}"
+        if not isinstance(value, dict):
+            return f"line {number} is not a JSON object, but {JSON_VALUE_KINDS.get(type(value), 'a value')}"
     return ""
 
 
