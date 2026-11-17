@@ -1854,3 +1854,57 @@ supersede it with a newer one and say which it supersedes.
   recorded). Neither is needed to satisfy the goal's clause; the default keeps every record the read
   produced.
 - **Settled by:** nothing owner-only; the review's own alternative (omit-and-count) is the reversal above.
+
+## Q-0005-08 — A converted Pi assistant entry records the model and no provider (Q-0005-04's attribution clause superseded)
+
+- **Status:** resolved (default taken; 0005's review named the substitution as a defect)
+- **Question:** Pi's `message` record has a `provider` field beside its `model`, and the read reports a
+  session-level provider too. 0005's first revision wrote that session-level provider — the *harness*
+  label, `claude` / `codex` / `pi` as AgentsView spells the agent that wrote the words — into the field,
+  and reported it as `model_provider_source: source-messages` with a detail saying the source's own
+  provider travelled verbatim. That is false twice over: the committed ordinary Pi fixture records
+  `example-proxy` while the conversion wrote `pi`, and the read's provider is not an endpoint Pi's own
+  configuration defines. Should the entry name the harness, omit the field, or invent an endpoint?
+- **Default taken:** the model travels verbatim and **no provider is written**. The read answers the model
+  each source message recorded (`Message.Model`, which the inherited Pi reader projects: reading the
+  committed fixture through it answers `example-model-2` per assistant message) and no endpoint
+  attribution at all — the Pi reader does not project a message's `provider` field — while the session-level
+  provider names the harness. The report records none (`model_provider_source: unrecorded`) and states why
+  in `model_provider_detail`, and `message_model_attribution`'s detail says the endpoint attribution is
+  what the read cannot answer. Q-0005-04's own conclusion is unaffected (the printed resume command still
+  names no provider or model); only its closing claim that "the assistant entries carry the source's
+  provider and model verbatim" was wrong and is superseded here.
+- **Reversal:** write the harness label as before (measured wrong: it states an endpoint the caller's
+  configuration need not define), or add a per-message provider to the interchange document and fill it
+  from the parse where the reader answers one (`ParsedMessage.ProviderID`: Codex's service tier, Cline's,
+  Posit's). That would be a real option for a later increment, but a billing identity is not necessarily
+  an endpoint either, and for this route the Pi reader answers none — the reversal changes nothing here.
+- **Settled by:** nothing owner-only.
+
+## Q-0005-09 — A target whose format is one line writes the source's own line and counts the rest (Q-0005-07 extended)
+
+- **Status:** resolved (default taken; 0005's second review round named the flattening as the same defect
+  Q-0005-07 had fixed for the Pi target)
+- **Question:** the outbound routes write a source's records into targets whose formats differ. Pi's
+  session JSONL and a Claude Code transcript are trees — a record names its parent — while a Codex rollout
+  is one sequence of records with no parent relation. Both routes wrote *every* record of the branch
+  fixture as ordinary history, so the compaction boundary and the abandoned retry exchange became part of
+  the target's model-visible conversation (measured: the installed Claude transcript's `parentUuid` walk
+  held the summary, the abandoned prompt and its answer, where the source file's own walk holds three
+  turns). Should those routes reproduce the source's tree too, or drop what the source's own line does not
+  reach?
+- **Default taken:** the tree-shaped targets are written as the source's own tree, exactly as Q-0005-07
+  decided for Pi: each record hangs off the record the source named as its parent (a record's *final*
+  entry, when it writes more than one, and the tool result standing between a call and what follows),
+  so the target's loader walks the source's active path and the branch stays in the file beside it as
+  recorded history — the shape Claude Code's own transcripts have when a conversation is rewound. A
+  Codex rollout cannot hold one: a response item written into it becomes model-visible history (measured:
+  the same fixture converted to a rollout read back as `6` messages where the source's own line holds
+  `3`), so that route writes the source's own line and omits the records the source's relations place off
+  it, counted as `inactive_branch_records`; the boundary that stood on the branch is not written at all,
+  because a `compacted` record there would cut a line it was never on. Every omission is named in
+  `conversion.losses[]`, and the branch itself is still in the source session, convertible on demand.
+- **Reversal:** write the branch into the Codex rollout as well (measured wrong: an abandoned turn
+  becomes active history), or refuse a branched source for that target (which would trade a disclosed
+  omission for an unavailable conversion).
+- **Settled by:** nothing owner-only.

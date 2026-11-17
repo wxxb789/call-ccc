@@ -442,6 +442,168 @@ func TestPiSessionWritesTheSourcesOwnRelations(t *testing.T) {
 	}
 }
 
+// TestPiSessionWritesNoProviderItCannotAnswer pins the attribution rule for an assistant entry: the
+// source read answers the *model* each message recorded -- which travels verbatim, so the target's own
+// totals count the turn under the model that wrote it -- and no endpoint attribution at all, while the
+// read's session-level provider names the harness that wrote the words. Writing that label into Pi's
+// `provider` field would name an endpoint the caller's configuration need not define; the entry records
+// the model alone and the report says why.
+func TestPiSessionWritesNoProviderItCannotAnswer(t *testing.T) {
+	conversation := piFixtureConversation()
+	// The harness label the read reports as the session's provider: if the writer used it, the file would
+	// hold this string.
+	conversation.Source.Provider = "example-harness"
+	session, err := ConvertToPiSession(conversation, PiTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	data := string(session.Data)
+	if strings.Contains(data, `"provider"`) || strings.Contains(data, "example-harness") {
+		t.Errorf("the converted session names a provider (%q appears in it), while the read answers none "+
+			"for the source's turns:\n%s", "example-harness", data)
+	}
+	if !strings.Contains(data, `"model":"claude-sonnet-4-5"`) {
+		t.Errorf("the converted session does not carry the model the source's messages recorded:\n%s", data)
+	}
+	loss := lossCount(t, session.Losses, "message_model_attribution")
+	if loss.Count != 2 {
+		t.Errorf("message_model_attribution = %+v, want the fixture's two model-bearing messages", loss)
+	}
+	if !strings.Contains(loss.Detail, "endpoint") {
+		t.Errorf("the loss detail does not say the endpoint attribution is what could not travel: %q",
+			loss.Detail)
+	}
+}
+
+// TestPiSessionCountsAnIdentifiedRecordTheReadLeftParentless pins the count's own edge: a record the read
+// answered an identity for but *no* parent is not the conversation's first, and the entry written for it
+// follows the entry before it -- a relation this conversion invented and the report counts, exactly as
+// the category's detail says. A read that records no identity at all is the other case: its order is
+// linear, following it invents nothing, and the count stays zero.
+func TestPiSessionCountsAnIdentifiedRecordTheReadLeftParentless(t *testing.T) {
+	at := func(second int) time.Time { return time.Date(2026, 5, 5, 10, 0, second, 0, time.UTC) }
+	base := func(messages []Message) Conversation {
+		return Conversation{
+			Source:   SourceIdentity{Provider: "pi", SessionID: "source-session", Cwd: "/work/project"},
+			Messages: messages,
+			Fidelity: Fidelity{ReadFrom: "source"},
+		}
+	}
+	session, err := ConvertToPiSession(base([]Message{
+		{Ordinal: 0, Role: string(parser.RoleUser), Content: "start", Dialogue: "start",
+			SourceUUID: "s1", Timestamp: at(0)},
+		{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "one", Dialogue: "one",
+			SourceUUID: "s2", SourceParentUUID: "s1", Timestamp: at(1)},
+		{Ordinal: 2, Role: string(parser.RoleAssistant), Content: "two", Dialogue: "two",
+			SourceUUID: "s3", Timestamp: at(2)},
+	}), PiTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if loss := lossCount(t, session.Losses, "unresolved_source_parents"); loss.Count != 1 {
+		t.Errorf("unresolved_source_parents = %d, want the one identified record the read left parentless",
+			loss.Count)
+	}
+	lines := decodePiSession(t, session.Data)
+	texts := piEntryTexts(t, lines)
+	for _, line := range lines[1:] {
+		if texts[line.ID] != "two" {
+			continue
+		}
+		if line.ParentID == nil || texts[*line.ParentID] != "one" {
+			t.Errorf("the parentless record's entry does not follow the entry before it: %s", session.Data)
+		}
+	}
+	// The same document without identities: a linear read, whose order is followed rather than invented.
+	plain, err := ConvertToPiSession(base([]Message{
+		{Ordinal: 0, Role: string(parser.RoleUser), Content: "start", Dialogue: "start", Timestamp: at(0)},
+		{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "one", Dialogue: "one", Timestamp: at(1)},
+		{Ordinal: 2, Role: string(parser.RoleAssistant), Content: "two", Dialogue: "two", Timestamp: at(2)},
+	}), PiTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting an identity-less document: %v", err)
+	}
+	if loss := lossCount(t, plain.Losses, "unresolved_source_parents"); loss.Count != 0 {
+		t.Errorf("unresolved_source_parents = %d for an identity-less read, want 0: its order is the read's "+
+			"own answer", loss.Count)
+	}
+}
+
+// TestPiSessionChainsPastAMixedRecordToItsResult pins the rule for the record shape a Claude transcript
+// actually writes: one user record can hold both the prompt text and a tool result (the harness puts a
+// blocked call's output and whatever the user typed in the same record). Pi has no such record, so the
+// conversion writes the text as a user entry and the result as its own toolResult entry -- and the
+// record that follows hangs off the *result*, the final entry the source record became, not off the
+// text. Mapping the source record to its first entry instead was measured wrong: the tool result ended
+// up off the walk the target's loader makes, so a resumed session read a call's output as missing while
+// the file held it.
+func TestPiSessionChainsPastAMixedRecordToItsResult(t *testing.T) {
+	at := func(second int) time.Time { return time.Date(2026, 5, 5, 10, 0, second, 0, time.UTC) }
+	conversation := Conversation{
+		Source: SourceIdentity{Provider: "claude", SessionID: "source-session", Cwd: "/work/project"},
+		Messages: []Message{
+			{Ordinal: 0, Role: string(parser.RoleUser), Content: "run the tests", Dialogue: "run the tests",
+				SourceUUID: "u1", Timestamp: at(0)},
+			{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "running them",
+				Dialogue: "running them", SourceUUID: "a1", SourceParentUUID: "u1", Timestamp: at(1),
+				ToolCalls: []ToolCall{{ToolUseID: "toolu_1", Name: "bash",
+					InputJSON: `{"command":"go test"}`}}},
+			// The mixed record: the prompt text and the call's result in one source record.
+			{Ordinal: 2, Role: string(parser.RoleUser), Dialogue: "the output:", DialogueProjected: true,
+				Content: "the output:", SourceUUID: "u2", SourceParentUUID: "a1", Timestamp: at(2),
+				ToolResults: []ToolResult{{ToolUseID: "toolu_1", ContentRaw: `"ok"`, ContentSize: 4}}},
+			{Ordinal: 3, Role: string(parser.RoleAssistant), Content: "all green", Dialogue: "all green",
+				SourceUUID: "a2", SourceParentUUID: "u2", Timestamp: at(3)},
+		},
+		Fidelity: Fidelity{ReadFrom: "source"},
+	}
+	session, err := ConvertToPiSession(conversation, PiTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	lines := decodePiSession(t, session.Data)
+	texts := piEntryTexts(t, lines)
+	ids := map[string]string{}
+	for id, text := range texts {
+		if text != "" {
+			ids[text] = id
+		}
+	}
+	parentTextOf := func(text string) string {
+		t.Helper()
+		id, ok := ids[text]
+		if !ok {
+			t.Fatalf("no entry carries the text %q:\n%s", text, session.Data)
+		}
+		for _, line := range lines[1:] {
+			if line.ID != id {
+				continue
+			}
+			if line.ParentID == nil {
+				return ""
+			}
+			return texts[*line.ParentID]
+		}
+		t.Fatalf("no entry carries the id %q", id)
+		return ""
+	}
+	if got := parentTextOf("all green"); got != "ok" {
+		t.Errorf("the record after the mixed record hangs off the entry holding %q, want the mixed "+
+			"record's tool result (%q): mapping the source record to its first entry instead leaves the "+
+			"result off the walk the target's loader makes", got, "ok")
+	}
+	resultID := ids["ok"]
+	if onPath := piWalkIDs(t, lines); !onPath[resultID] {
+		t.Error("the mixed record's tool result is not on the walk the loader makes from the file's last " +
+			"entry, so a resumed session reads a call whose output the file holds but the conversation " +
+			"does not")
+	}
+	want := []string{"user", "assistant", "user", "toolResult", "assistant"}
+	if got := piModelVisibleRoles(session.Data); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("the model-visible history = %v, want %v", got, want)
+	}
+}
+
 // piEntryTexts answers each entry's own dialogue text, keyed by entry id: the plain content string a user
 // or tool-result record carries, or the text blocks an assistant record carries. It is what a case reads
 // a written session by, so an assertion can name an entry by what a reader would see in it.

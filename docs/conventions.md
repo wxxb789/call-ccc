@@ -75,9 +75,13 @@ gate runs as a required step.
   parsing. The target's records are written the way the target writes them (the model-visible item
   *and* the harness's own view of the turn): where the target format is itself a tree, it is written as
   the *source's* own tree — each entry hangs off the entry of the record the source named as its parent —
-  so the target's loader walks the source's active path instead of one this build invented. The provider
-  the session records is the target's own answer about its configuration — never the source's, and never
-  invented.
+  so the target's loader walks the source's active path instead of one this build invented, and a branch
+  the conversation left stays in the file off that walk; where the target is one line of records with no
+  parent relation (a Codex rollout), the source's own line is written and the records the source placed
+  off it are omitted and counted (`inactive_branch_records`), because a record written there becomes
+  model-visible history. The provider a record states is the provider the read actually answered — the
+  target's own configured endpoint where the harness was asked, and none where the read answers the model
+  alone — never the source's, and never invented.
 - **A native-verification harness is a re-derivable script, not a gate step**, exactly like
   `scripts/upstream-compare.py`: it needs the target harness installed (and model access for a real
   turn), so the gate keeps deciding the offline half. A check that cannot run says so. The default
@@ -89,7 +93,10 @@ gate runs as a required step.
   unrepresentable limits are stated as limits rather than as this run's counts.
 - **Non-destructive by default.** Never modify the source transcript, never overwrite an existing
   target session, never copy credentials or login stores, and never log conversation bodies, tool
-  arguments or secrets by default. Write into isolated data directories for tests and demos.
+  arguments or secrets by default. Write into isolated data directories for tests and demos, and a
+  native check seeds its provider configuration only into the scratch home it made itself: a home the
+  caller named is read, never written to, because replacing a configuration there (and the credential
+  references in it) is a change no session digest would show.
 - **A conversion is a snapshot at a stated boundary, and repeating it is the same operation.** A source
   that grew is read again and written as *another* fresh target session: no run merges later source
   history into a session an agent may already have continued, and no run rewrites the source or an

@@ -510,16 +510,24 @@ class NativeCheckDriver(unittest.TestCase):
     def drive(self, direction: str = "claude-to-pi", *, claude_on_path: bool = False,
               write_installed: bool = True, pi_provider: str | None = "probe",
               load_state: str = "verified", claude: str | None = None,
+              pi: str | None = None, pi_on_path: bool = True, give_home: bool = True,
+              host_models: dict | None = None,
               pi_loader_answer: tuple[str, str] | None = None
               ) -> tuple[int, dict[str, tuple[str, str]], str, dict]:
         """One run of the shipped ``main`` against stubs; answers its exit code, its recorded checks, its
         printed output and the facts the stub captured (the conversion's ``--to`` target, the
-        ``--target-binary`` it was given, among them).
+        ``--target-binary`` it was given, whether the target home held a seeded ``models.json`` while the
+        stub ran, among them).
 
         ``pi_provider`` is what ``$CCC_PI_NATIVE_PROVIDER`` holds for the run (``None`` sets it empty, so
         the run takes the "no provider configured" path); ``load_state`` is what the stub's conversion
         report says its load verification answered; ``claude`` names the binary for the pi-to-claude
-        direction, which the ``--claude`` flag carries. ``pi_loader_answer`` is what the Pi loader seam
+        direction, which the ``--claude`` flag carries; ``pi`` is what the ``--pi`` flag names (the
+        default is left off the command line, which is the shipped default ``pi``), and ``pi_on_path``
+        says whether the executable lookup answers it -- ``False`` is the host without the harness.
+        ``give_home`` says whether the run is handed ``--target-home`` (``False`` leaves it the scratch
+        home it makes itself); ``host_models`` is what the host agent directory's ``models.json`` holds,
+        which is what the scratch home's seeding copies. ``pi_loader_answer`` is what the Pi loader seam
         answers when a case drives a Pi-target run far enough to reach it -- the default is to refuse,
         because a case that does not name it is not a case about the loader.
         """
@@ -539,18 +547,33 @@ class NativeCheckDriver(unittest.TestCase):
                                           "cwd": "/home/user/code/example-api"}) + "\n")
         home = scratch / "target-home"
         home.mkdir()
-        pi = str(scratch / "pi")
         go = str(scratch / "go")
         claude_binary = str(scratch / "claude") if claude is None else claude
         thread_id = "01a1e000-0000-7000-8000-000000000002"
         captured: dict = {}
+        if host_models is not None:
+            host_agent_dir = scratch / "pi-agent"
+            host_agent_dir.mkdir(parents=True, exist_ok=True)
+            (host_agent_dir / "models.json").write_text(json.dumps({"providers": host_models}),
+                                                        encoding="utf-8")
+
+        # The Pi spelling this run resolves: the ``--pi`` flag's own value, or the shipped default. The
+        # lookup is answered under that spelling so a case can read back which executable ``--pi``
+        # produced -- a name the case spelled as a path is answered as that path, and a bare name as one
+        # inside this case's scratch tree.
+        pi_spelling = pi or "pi"
 
         def fake_which(name, *args, **kwargs):
             # The Claude Code binary may be named by the ``--claude`` flag, so the name can be a path;
             # its basename is what says it is the Claude binary this case stands up.
-            if os.path.basename(str(name)) == "claude":
+            spelled = str(name)
+            if os.path.basename(spelled) == "claude":
                 return claude_binary if claude_on_path else None
-            return str(scratch / name)
+            if spelled == pi_spelling:
+                captured.setdefault("which", {})[spelled] = None if not pi_on_path else (
+                    spelled if spelled != Path(spelled).name else str(scratch / spelled))
+                return captured["which"][spelled]
+            return str(scratch / spelled)
 
         def fake_ask_pi_loader(*args, **kwargs):
             if pi_loader_answer is None:
@@ -562,7 +585,11 @@ class NativeCheckDriver(unittest.TestCase):
             if command[0] == go:
                 captured["build"] = command
                 return subprocess.CompletedProcess(cmd, 0, "", "")
-            if command[0] == pi and "--version" in command:
+            if "--version" in command:
+                # The one version query a run makes is the Pi binary's own, and the executable it names is
+                # what a case reads back: a case that names one with `--pi` must reach its own assertions,
+                # not the stub's refusal, and the query is one of the stages `--pi` has to reach.
+                captured["version_query"] = command
                 return subprocess.CompletedProcess(cmd, 0, "1.5.2\n", "")
             if command[0] == str(repo / NATIVE_CHECK.BINARY):
                 env = env or {}
@@ -570,6 +597,14 @@ class NativeCheckDriver(unittest.TestCase):
                 captured["to"] = to_provider
                 captured["target_binary"] = command[command.index("--target-binary") + 1]
                 target_home = Path(command[command.index("--target-home") + 1])
+                captured["target_home"] = str(target_home)
+                # What the target home held **while the conversion ran**: a seeded `models.json` is the
+                # only way a real turn reaches a provider here, and whether one is there is what tells a
+                # seeded scratch home from a caller's home this harness must not write to.
+                captured["home_models"] = (target_home / "models.json").is_file()
+                if captured["home_models"]:
+                    captured["home_models_seeded"] = json.loads(
+                        (target_home / "models.json").read_text(encoding="utf-8")).get("providers")
                 source_root = Path(env.get("CLAUDE_PROJECTS_DIR") or env.get("PI_DIR"))
                 cwd_path = source_root.parent / NATIVE_CHECK.WORKSPACE
                 installed = target_home / "installed" / f"{thread_id}.jsonl"
@@ -614,10 +649,13 @@ class NativeCheckDriver(unittest.TestCase):
 
         before = len(NATIVE_CHECK.RESULTS)
         printed = io.StringIO()
-        argv = ["--repo", str(repo), "--target-home", str(home), "--direction", direction,
-                "--pi-dir", str(scratch / "pi-agent")]
+        argv = ["--repo", str(repo), "--direction", direction, "--pi-dir", str(scratch / "pi-agent")]
+        if give_home:
+            argv += ["--target-home", str(home)]
         if claude is not None:
             argv += ["--claude", claude]
+        if pi is not None:
+            argv += ["--pi", pi]
         try:
             with mock.patch.object(NATIVE_CHECK, "run", fake_run), \
                     mock.patch.object(NATIVE_CHECK, "ask_pi_loader", fake_ask_pi_loader), \
@@ -723,7 +761,10 @@ class NoProviderConfiguredIsANamedSkip(NativeCheckDriver):
                         "data": {"sessionId": "the-stub", "messageCount": 0}}),
             json.dumps({"type": "response", "command": "get_messages", "data": {"messages": []}}),
         ]) + "\n"
-        _, results, printed, _ = self.drive("claude-to-pi", pi_provider=None,
+        # `give_home=False` is what puts this case on the seeding path: a run that makes its own scratch
+        # home seeds it from the host's configuration, and *that* is the path whose skip names the host's
+        # models.json and $CCC_PI_NATIVE_PROVIDER (the caller's-home path has its own case below).
+        _, results, printed, _ = self.drive("claude-to-pi", pi_provider=None, give_home=False,
                                             pi_loader_answer=(loader_answer, ""))
         state = results.get("a Pi provider is configured for the chosen model")
         self.assertIsNotNone(state, f"no skip was recorded for a host without a provider: {results}")
@@ -745,6 +786,92 @@ class ClaudeBinaryFlag(NativeCheckDriver):
                                              claude="/opt/named/claude")
         self.assertIn("claude:      /opt/named/claude", printed, printed)
         self.assertEqual(captured.get("target_binary"), "/opt/named/claude", captured)
+
+
+class PiBinaryFlag(NativeCheckDriver):
+    """``--pi PATH`` names the executable the *conversion* is driven through, not only the one this
+    harness queries.
+
+    The resolved path is what the CLI is handed as ``--target-binary`` and what the version query names
+    beside it, so a caller with Pi outside ``PATH`` -- or with a second installation on ``PATH`` -- has
+    the installation they named verified instead of whichever one a bare name finds.
+    """
+
+    def test_the_pi_flag_resolves_the_executable_the_conversion_is_driven_through(self) -> None:
+        for named in ("pi-named", "/opt/pi/bin/pi"):
+            with self.subTest(named=named):
+                _, _, printed, captured = self.drive("claude-to-pi", pi=named, write_installed=False)
+                resolved = captured.get("which", {}).get(named)
+                self.assertIsNotNone(resolved, captured)
+                self.assertIn(f"pi:          {resolved}", printed, printed)
+                self.assertEqual(captured.get("target_binary"), resolved,
+                                 "the conversion was driven through a different executable than the one "
+                                 "--pi resolved")
+                self.assertEqual(captured.get("version_query", [None])[0], resolved,
+                                 "the version query and the conversion named different installations")
+
+
+class MissingPiEndsInIncomplete(NativeCheckDriver):
+    """A host without Pi gets the script's own INCOMPLETE verdict, not a bare exit code.
+
+    The Pi target is the claude-to-pi direction's target harness: with no binary there is no loader to
+    drive and no version to record, so its native half cannot run, and that is the verdict the other
+    native checks already report for an absent harness -- exit 2 with the reason on its own RESULT line.
+    The reverse direction does not need Pi at all: its source is a committed fixture read by the inherited
+    reader and its native half is Claude's loader, so a host with no Pi still verifies it.
+    """
+
+    def test_the_pi_target_direction_reports_incomplete(self) -> None:
+        code, _, printed, _ = self.drive("claude-to-pi", pi_on_path=False)
+        self.assertIn("RESULT: INCOMPLETE", printed, printed)
+        self.assertIn("pi is not on PATH", printed, printed)
+        self.assertIn("native half of claude-to-pi", printed, printed)
+        self.assertEqual(code, 2, printed)
+
+    def test_the_reverse_direction_does_not_need_a_pi_binary(self) -> None:
+        code, results, printed, _ = self.drive("pi-to-claude", pi_on_path=False, claude_on_path=True)
+        self.assertNotIn("INCOMPLETE", printed, printed)
+        self.assertEqual(code, 0, f"exit {code} for a run whose checks all passed: {results}")
+
+
+class TheRunsOwnHomeIsSeededAndACallersIsNot(NativeCheckDriver):
+    """The scratch home a run makes is seeded; a home the caller names is only read.
+
+    Seeding is what lets a real turn reach a model: the provider definitions are the host's own, with
+    every credential-bearing field dropped and the key left as an ``$ENV`` reference. Writing that
+    document into a home the caller named would replace whatever configuration the caller keeps there --
+    provider definitions and credential references among it -- and the comparisons a run makes cover
+    session files only, so nothing it reports would have seen the loss.
+    """
+
+    HOST_PROVIDERS = {
+        "probe": {"apiKey": "$PROBE_API_KEY", "baseUrl": "https://example.invalid",
+                  "headers": {"x-api-key": "a-host-secret"}, "models": []},
+        "unused": {"apiKey": "a-host-secret"},
+    }
+
+    def test_the_scratch_home_is_seeded_without_credentials(self) -> None:
+        _, _, printed, captured = self.drive("claude-to-pi", write_installed=False, give_home=False,
+                                             host_models=self.HOST_PROVIDERS)
+        seeded = captured.get("home_models_seeded")
+        self.assertIsNotNone(seeded, f"the run's own scratch home was not seeded: {captured}")
+        self.assertEqual(sorted(seeded), ["probe"], seeded)
+        self.assertNotIn("a-host-secret", json.dumps(seeded), seeded)
+        self.assertEqual(seeded["probe"].get("apiKey"), "$PROBE_API_KEY", seeded)
+        self.assertIn("seeded provider(s) probe", printed, printed)
+
+    def test_a_callers_home_is_never_written_to(self) -> None:
+        _, results, printed, captured = self.drive("claude-to-pi", write_installed=False,
+                                                   host_models=self.HOST_PROVIDERS)
+        self.assertFalse(captured.get("home_models"),
+                         "the run seeded models.json into a home the caller named")
+        self.assertFalse(Path(captured["target_home"], "models.json").exists(),
+                         "the run left a models.json in the caller's home")
+        self.assertIn("nothing was seeded into it", printed, printed)
+        state = results.get("a Pi provider is configured for the chosen model")
+        self.assertIsNotNone(state, f"no provider check was recorded: {results}")
+        self.assertEqual(state[0], "SKIP", results)
+        self.assertIn("a home the caller named is never written to", state[1], state[1])
 
 
 class BuildOutputStaysOutOfTheRepositoryRoot(NativeCheckDriver):

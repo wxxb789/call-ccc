@@ -25,8 +25,10 @@ What it does, for the direction it is asked about:
 The Pi home it uses is a scratch directory seeded with the **provider definitions** the host's own
 ``models.json`` holds, with every credential-bearing field dropped (``apiKey``, ``headers``) and the
 chosen provider's key taken from the environment through a ``$NAME`` reference; nothing in a credential
-store is read, copied or written. A host with no provider configured for the chosen model is reported as
-a named skip with that reason, not as a pass.
+store is read, copied or written. A home the caller names with ``--target-home`` is used exactly as it is
+found: this harness writes nothing into one, so a configuration (and the credential references in it) the
+caller put there is not replaced by the seed above. A host with no provider configured for the chosen
+model is reported as a named skip with that reason, not as a pass.
 """
 
 from __future__ import annotations
@@ -326,11 +328,6 @@ def pi_tool_names(session: Path) -> list[str]:
     return names
 
 
-def target_binary_name(target_provider: str) -> str:
-    """The executable a run's target harness is driven through, per target provider."""
-    return {"pi": "pi", "claude": "claude", "codex": "codex"}[target_provider]
-
-
 def ask_pi_loader(pi: str, home: Path, cwd: Path, session_id: str, timeout: int = 90) -> tuple[str, str]:
     """Ask Pi's own loader for one session's state and messages, offline, and answer its stdout and
     stderr. The session is resolved by id through the agent directory's default layout, which is where a
@@ -471,9 +468,12 @@ def main(argv: list[str] | None = None) -> int:
     repo = args.repo.resolve()
     fixture_root = repo / FIXTURE_ROOT
     pi = shutil.which(args.pi)
-    if pi is None:
-        print(f"{args.pi} is not on PATH: this harness verifies native behaviour, which needs the target "
-              f"harness installed", file=sys.stderr)
+    # The Pi binary is this direction's target harness only where the Pi target is the one driven; the
+    # pi-to-claude direction's source is a committed fixture read by the inherited reader, and its native
+    # half is Claude's own loader, so a host without Pi can still verify it.
+    if pi is None and args.direction == "claude-to-pi":
+        print(f"RESULT: INCOMPLETE — 0 check(s) ran; {args.pi} is not on PATH, so the native half of "
+              f"{args.direction} (whose target harness is Pi) could not run")
         return 2
     go = shutil.which("go")
     if go is None:
@@ -505,11 +505,13 @@ def main(argv: list[str] | None = None) -> int:
     destination = source_root / source.relative_to(fixture_root / source_provider)
     recorded_cwd = rewrite_source_cwd(source, destination, workspace)
 
+    named_home = args.target_home is not None
     home = args.target_home.resolve() if args.target_home else scratch / f"{target_provider}-home"
     home.mkdir(parents=True, exist_ok=True)
     seeded_providers: list[str] = []
     left_out: list[str] = []
-    if target_provider == TARGET_PROVIDER:
+    configured_providers: list[str] = []
+    if target_provider == TARGET_PROVIDER and not named_home:
         wanted = [reference for reference in [os.environ.get("CCC_PI_NATIVE_PROVIDER")] if reference]
         if not wanted:
             wanted = sorted(host_pi_providers(host_pi_dir))
@@ -523,6 +525,20 @@ def main(argv: list[str] | None = None) -> int:
                    f"no provider configured: {host_pi_dir / 'models.json'} names no provider and "
                    f"$CCC_PI_NATIVE_PROVIDER is unset, so no provider definition was seeded for this run",
                    skipped=True)
+    elif target_provider == TARGET_PROVIDER:
+        # A home the caller named is the caller's data directory and this harness writes nothing into it:
+        # seeding `models.json` there would replace provider definitions and credential references the
+        # caller put in it, and the comparisons this run makes cover session files only, so the loss
+        # would be invisible. What a real turn needs is a provider the home already defines, and that is
+        # what the check below reports.
+        configured_providers = sorted(host_pi_providers(home))
+        record("a Pi provider is configured for the chosen model", bool(configured_providers),
+               f"the caller's home already names {len(configured_providers)} provider(s): "
+               f"{', '.join(configured_providers)}" if configured_providers else
+               f"the caller's home {home} names no provider in its models.json, and this run does not "
+               f"write one there: a home the caller named is never written to, so a turn "
+               f"(--resume-prompt) needs a provider that home already defines",
+               skipped=not configured_providers)
 
     unrelated = home / PI_SESSION_SUBDIR / f"--{UNRELATED_PROJECT}--" / \
         pi_session_file_name("2026-01-01T00-00-00-000Z", UNRELATED_SESSION)
@@ -541,7 +557,12 @@ def main(argv: list[str] | None = None) -> int:
     # Claude Code binary that is not on PATH can be named directly; every other direction drives the Pi
     # binary the `--pi` flag resolves. The same word is passed to the CLI as `--target-binary` and read
     # back out of the report, so the invocation this run checks is the one it drove.
-    target_binary = args.claude if target_provider == PI_BACK_TARGET else target_binary_name(target_provider)
+    # The executable this run resolved is the one the conversion is driven through: a bare name handed to
+    # the CLI would be searched for again by its own process, so an installation outside PATH could not
+    # verify its conversion at all and a second installation on PATH would be exercised by one stage and
+    # not the other.
+    target_binary = args.claude if target_provider == PI_BACK_TARGET else pi
+    assert target_binary is not None
     target_path = shutil.which(target_binary)
 
     print(f"repo:        {repo}")
@@ -559,10 +580,13 @@ def main(argv: list[str] | None = None) -> int:
         # directory for this direction would name a directory that does not exist.
         print(f"workspace:   {workspace}")
     print(f"target home: {home}")
-    if target_provider == TARGET_PROVIDER:
+    if target_provider == TARGET_PROVIDER and not named_home:
         print(f"pi models:   seeded provider(s) {', '.join(seeded_providers) or '(none)'} from {host_pi_dir}"
               + (f"; left out (not needed here): {', '.join(left_out)}" if left_out else "")
               + "; every credential field dropped, keys resolved from the environment")
+    elif target_provider == TARGET_PROVIDER:
+        print(f"pi models:   the caller's home names {len(configured_providers)} provider(s); nothing was "
+              f"seeded into it (a home the caller named is never written to)")
     print(f"the source fixture's recorded working directory ({recorded_cwd or 'none recorded'}) is rewritten "
           f"to the workspace, so the session belongs to a path this run owns and the target's own lookup "
           f"can find what it installs")

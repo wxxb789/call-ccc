@@ -26,11 +26,14 @@ with their exit codes and counts).
 - **Precision over apparent completeness.** An explicitly partial translation beats a
   plausible-looking one. Never fabricate tool results, reasoning, roles, resume identities or a
   success result; a valid file is not evidence that anything can resume it. A target format that is
-  itself a tree (Pi's session JSONL) is written as the *source's* own tree: each entry hangs off the
-  entry of the record the source named as its parent, so the target's own loader walks the source's
-  active path and an inactive branch stays off it as recorded history rather than being chained in as an
-  active turn. A relation the read cannot answer is counted (`unresolved_source_parents`) instead of
-  being presented as one the source recorded.
+  itself a tree (Pi's session JSONL, a Claude Code transcript) is written as the *source's* own tree:
+  each entry hangs off the entry of the record the source named as its parent, so the target's own
+  loader walks the source's active path and an inactive branch stays off it as recorded history rather
+  than being chained in as an active turn. A target that is one line of records with no parent relation
+  (a Codex rollout) cannot hold a branch that way, so it writes the source's own line and omits the
+  records the source's relations place off it, counted as `inactive_branch_records`. A relation the read
+  cannot answer is counted (`unresolved_source_parents`) instead of being presented as one the source
+  recorded.
 - **A target writer's claim is shown through the target harness's own loader.** Call `ccc continue …
   --to codex`, `--to claude` or `--to pi` converts, installs and reports **converted / installed /
   natively resumable** as three separate states; "resumable" is only ever `verification.load` or
@@ -55,10 +58,12 @@ with their exit codes and counts).
   be false. A Claude Code transcript has no provider field at all, so `--to claude` states that as the
   `model_provider_binding` format limit and binds the session to no provider, and no route ever writes the
   source's provider as the session's own. A Pi session binds no provider either — its records carry a
-  provider and a model per assistant message, which is the source's own attribution and travels verbatim —
-  and its printed resume command names no provider or model, because the source's provider label is a
-  source-side name the target home need not define and a flagged model can leave the target unable to open
-  the session at all.
+  model and a provider per assistant message, and the read answers the model each source message recorded
+  but not the endpoint that served it, so a converted entry carries that model and no provider (writing
+  the read's session-level harness label in the endpoint's place was measured wrong) and the report names
+  that as the attribution it cannot answer — and its printed resume command names no provider or model,
+  because the source's provider label is a source-side name the target home need not define and a flagged
+  model can leave the target unable to open the session at all.
 - **A conversion is a snapshot of the source at one boundary, and repeating it is the same operation.**
   The source is read again and written as *another* fresh target session; nothing ever merges later
   source history into an existing target session, and nothing rewrites the source. Every conversion's

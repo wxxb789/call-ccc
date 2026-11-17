@@ -355,6 +355,7 @@ type codexRolloutBuilder struct {
 	lossEmptyResults       int
 	lossWhitespaceResults  int
 	lossResultBlocks       int
+	lossInactiveBranch     int
 
 	ledger
 
@@ -392,9 +393,21 @@ func (b *codexRolloutBuilder) sessionMeta(startedAt time.Time) {
 // writeConversation walks the document once and writes every record it can express. The message's place
 // in the walk keys the ids generated for calls that recorded none (toolCall), so two messages whose
 // ordinals were never assigned cannot collapse into one call.
+//
+// A record the source's own relations place off the line its loader walks is not written. This target's
+// log is one sequence of records with no parent relation to hang a record off, and a response item
+// written into it becomes part of the conversation a resumed turn reads: an abandoned branch cannot
+// travel here as recorded history without being revived as an active turn, so it is omitted and counted
+// (inactive_branch_records). The branch itself is still in the source session, where its own
+// conversation can be converted on demand.
 func (b *codexRolloutBuilder) writeConversation(conv Conversation) {
+	inactive := inactiveSourceRecords(conv.Messages)
 	for index, message := range conv.Messages {
 		b.messageIndex = index
+		if inactive[index] {
+			b.lossInactiveBranch++
+			continue
+		}
 		b.writeMessage(message)
 	}
 }
@@ -940,6 +953,18 @@ func (b *codexRolloutBuilder) losses() []Loss {
 				"loader checks when the session is resumed; the value is a binding to the target's " +
 				"configuration, not a claim that a target model produced the conversation, and changing " +
 				"that configuration later makes the target refuse to resume it",
+		},
+		{
+			Category:    "inactive_branch_records",
+			Disposition: DispositionOmitted,
+			Count:       b.lossInactiveBranch,
+			Detail: "the source's own relations record these turns as a branch the conversation left: " +
+				"no later record descends from them, so the source's own loader does not build context " +
+				"from them. This target's log is one sequence of records with no parent relation to hang " +
+				"a record off, and a response item written into it becomes part of the conversation a " +
+				"resumed turn reads, so the branch cannot travel here as recorded history without being " +
+				"revived as an active turn; it is omitted instead. The branch is still in the source " +
+				"session, and its own conversation can be converted on demand like any other history",
 		},
 		{
 			Category:    "pre_compaction_history",

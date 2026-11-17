@@ -320,7 +320,8 @@ func TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers(t *testing.T) {
 		"tool_result_statuses", "empty_tool_inputs", "generated_call_ids", "coalesced_tool_call_projections",
 		"subagent_session_links",
 		"tool_name_vocabulary",
-		"message_model_attribution", "pre_compaction_history", "empty_compaction_summary",
+		"message_model_attribution", "unresolved_source_parents", "pre_compaction_history",
+		"empty_compaction_summary",
 		"malformed_source_lines", "summary_transcript", "source_needs_retry",
 	} {
 		lossCount(t, transcript.Losses, category)
@@ -339,6 +340,7 @@ func TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers(t *testing.T) {
 		{"message_model_attribution", 1},
 		{"tool_name_vocabulary", 1},
 		{"subagent_session_links", 0},
+		{"unresolved_source_parents", 0},
 		{"pre_compaction_history", 3},
 		{"empty_user_messages", 0},
 		{"summary_transcript", 0},

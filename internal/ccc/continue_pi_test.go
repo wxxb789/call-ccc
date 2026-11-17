@@ -375,10 +375,12 @@ func carriedWithoutBytes(carried Carried) Carried {
 
 // TestContinueFromPiKeepsACompactedAndBranchedHistoryCoherent pins the goal's own clause for the shape
 // that is easiest to get wrong: a Pi session compacted at a boundary, whose file also holds a branch the
-// conversation left. The conversion carries the boundary as the target's own boundary record (so the
-// target rebuilds its context from the summary, as the source's own compaction would), keeps the
-// pre-boundary turns in the file as recorded history, reports how much of the conversation the boundary
-// stands in front of, and never invents the branch as another active turn.
+// conversation left. The conversion carries the boundary as the target's own boundary record, keeps the
+// pre-boundary turns and the abandoned branch in the file as recorded history, and reports how much of
+// the conversation the boundary stands in front of. What the case measures is the *context* the target's
+// loader builds -- the walk from the installed transcript's last record back through its own parent
+// links, compared with the walk the source file's last record answers -- rather than a file-wide role
+// count, because a file can hold every record and still hand a resumed turn an invented conversation.
 func TestContinueFromPiKeepsACompactedAndBranchedHistoryCoherent(t *testing.T) {
 	conversation, err := NewSourceReader(fixtureConfig(t)).Read(context.Background(), piHistoryFixtureRef)
 	if err != nil {
@@ -416,31 +418,32 @@ func TestContinueFromPiKeepsACompactedAndBranchedHistoryCoherent(t *testing.T) {
 	if preBoundary.Count == 0 {
 		t.Error("no pre_compaction_history count: the turns the boundary stands in front of are unaccounted for")
 	}
+	if result.Verification.Structure.State != VerificationStateVerified {
+		t.Errorf("structure = %+v, want the installed transcript read back as written",
+			result.Verification.Structure)
+	}
 	if result.Verification.Structure.ReadBack.CompactionBoundaries != 1 {
 		t.Errorf("read-back boundaries = %d, want the boundary the conversion wrote",
 			result.Verification.Structure.ReadBack.CompactionBoundaries)
 	}
 
-	// The abandoned branch is the other half of the goal's clause, and it is taken from the fixture's own
-	// bytes rather than restated: the assistant record whose parent is the pre-boundary assistant and
-	// which was recorded after the compaction, with its own text, and the fixture's two user prompts.
-	// The installed target transcript must hold the branch once, as an assistant record, and must hold
-	// the two prompts and nothing else -- so a conversion that drops the branch, re-roles it as a prompt,
-	// or invents a third prompt is red here.
+	// The abandoned branch is taken from the fixture's own bytes rather than restated: the message texts
+	// the walk from the file's last record never reaches are the branch the conversation left, and the
+	// target transcript must hold every one of them -- recorded history a conversion has no business
+	// dropping -- while no record on the walk may hand off to it.
 	fixtureBytes, err := os.ReadFile(fixturePath(t, filepath.Join("pi", piHistoryFixtureRef.ID+".jsonl")))
 	if err != nil {
 		t.Fatalf("reading the history fixture's bytes: %v", err)
 	}
 	type historyEntry struct {
-		Type     string  `json:"type"`
-		ID       string  `json:"id"`
-		ParentID *string `json:"parentId"`
-		Message  struct {
+		Type    string `json:"type"`
+		Message struct {
 			Role    string          `json:"role"`
 			Content json.RawMessage `json:"content"`
 		} `json:"message"`
 	}
-	var history []historyEntry
+	var prompts []string
+	var fixtureTexts []string
 	for _, line := range strings.Split(strings.TrimSpace(string(fixtureBytes)), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -449,54 +452,56 @@ func TestContinueFromPiKeepsACompactedAndBranchedHistoryCoherent(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &decoded); err != nil {
 			t.Fatalf("decoding a fixture line: %v", err)
 		}
-		if decoded.Type == "session" {
+		if decoded.Type != "message" {
 			continue
 		}
-		history = append(history, decoded)
-	}
-	compactionIndex := -1
-	for index, entry := range history {
-		if entry.Type == "compaction" {
-			compactionIndex = index
-		}
-	}
-	if compactionIndex < 0 {
-		t.Fatal("the fixture holds no compaction entry")
-	}
-	preBoundaryAssistant := ""
-	for index := compactionIndex - 1; index >= 0; index-- {
-		if history[index].Type == "message" && history[index].Message.Role == "assistant" {
-			preBoundaryAssistant = history[index].ID
-			break
-		}
-	}
-	branchText := ""
-	for index := compactionIndex + 1; index < len(history) && preBoundaryAssistant != ""; index++ {
-		entry := history[index]
-		if entry.Type != "message" || entry.Message.Role != "assistant" ||
-			entry.ParentID == nil || *entry.ParentID != preBoundaryAssistant {
+		text := transcriptContentText(decoded.Message.Content)
+		if strings.TrimSpace(text) == "" {
 			continue
 		}
-		branchText = transcriptContentText(entry.Message.Content)
-		break
-	}
-	if strings.TrimSpace(branchText) == "" {
-		t.Fatalf("the fixture holds no abandoned-branch record under the pre-boundary assistant %q",
-			preBoundaryAssistant)
-	}
-	var prompts []string
-	for _, entry := range history {
-		if entry.Type == "message" && entry.Message.Role == "user" {
-			prompts = append(prompts, transcriptContentText(entry.Message.Content))
+		fixtureTexts = append(fixtureTexts, text)
+		if decoded.Message.Role == "user" {
+			prompts = append(prompts, text)
 		}
 	}
 	if len(prompts) != 2 {
-		t.Fatalf("the fixture holds %d user prompt(s), want the two active-path prompts", len(prompts))
+		t.Fatalf("the fixture holds %d user prompt(s), want its two", len(prompts))
+	}
+	sourceWalk := transcriptWalkTexts(t, fixtureBytes)
+	if len(sourceWalk) != 3 {
+		t.Fatalf("the source fixture's own walk = %q, want the three turns of the last record's path",
+			sourceWalk)
+	}
+	var abandoned []string
+	for _, text := range fixtureTexts {
+		if !slices.Contains(sourceWalk, text) {
+			abandoned = append(abandoned, text)
+		}
+	}
+	if len(abandoned) == 0 {
+		t.Fatal("the fixture holds no message off the walk from its last record: the fixture cannot " +
+			"show a branch the conversation left")
 	}
 
 	installedBytes, err := os.ReadFile(result.TargetSession.Path)
 	if err != nil {
 		t.Fatalf("reading the installed target transcript: %v", err)
+	}
+	// The context the target's own loader builds: Claude Code walks the installed transcript from its
+	// last record back through parentUuid, exactly as Pi's loader walks a Pi session's parentId chain,
+	// and that walk must be the one the source's own file answers. What makes the branch recorded history
+	// is that it is in the file and no record on the walk hands off to it -- not that it is absent.
+	targetWalk := transcriptWalkTexts(t, installedBytes)
+	if !slices.Equal(targetWalk, sourceWalk) {
+		t.Errorf("the installed transcript's model-visible history = %q, while the source file's own walk "+
+			"is %q: the target's loader would read a different conversation than the source holds",
+			targetWalk, sourceWalk)
+	}
+	for _, text := range abandoned {
+		if slices.Contains(targetWalk, text) {
+			t.Errorf("the abandoned branch's %q is on the walk the target's loader makes, so a turn the "+
+				"conversation left was presented as an active one", text)
+		}
 	}
 	type targetRecord struct {
 		Type             string `json:"type"`
@@ -506,7 +511,6 @@ func TestContinueFromPiKeepsACompactedAndBranchedHistoryCoherent(t *testing.T) {
 			Content json.RawMessage `json:"content"`
 		} `json:"message"`
 	}
-	branchRoles := map[string]int{}
 	promptsSeen := map[string]int{}
 	for _, line := range strings.Split(strings.TrimSpace(string(installedBytes)), "\n") {
 		if strings.TrimSpace(line) == "" {
@@ -516,25 +520,18 @@ func TestContinueFromPiKeepsACompactedAndBranchedHistoryCoherent(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &decoded); err != nil {
 			t.Fatalf("decoding an installed record: %v", err)
 		}
-		text := transcriptContentText(decoded.Message.Content)
-		if text == branchText {
-			branchRoles[decoded.Type]++
-		}
 		// A prompt record is the target's own user record that is not the compaction summary and whose
 		// content is a plain string: the shape the writer gives a written prompt, as opposed to a
 		// tool_result block or the summary record.
 		if decoded.Type == "user" && !decoded.IsCompactSummary && isPlainTextContent(decoded.Message.Content) {
-			promptsSeen[text]++
+			promptsSeen[transcriptContentText(decoded.Message.Content)]++
 		}
 	}
-	if len(branchRoles) != 1 || branchRoles["assistant"] != 1 {
-		t.Errorf("the abandoned branch %q appears in %v, want it exactly once and in an assistant record"+
-			" (so a conversion that drops the branch or re-roles it as a prompt is red)",
-			branchText, branchRoles)
-	}
-	if branchRoles["user"] != 0 {
-		t.Errorf("the abandoned branch %q appears in a user record, so the left turn was re-roled as a "+
-			"prompt", branchText)
+	for _, text := range abandoned {
+		if !strings.Contains(string(installedBytes), text) {
+			t.Errorf("the abandoned branch's %q is not in the converted file at all: the branch is recorded "+
+				"history and must travel", text)
+		}
 	}
 	for _, prompt := range prompts {
 		if promptsSeen[prompt] != 1 {
@@ -545,6 +542,157 @@ func TestContinueFromPiKeepsACompactedAndBranchedHistoryCoherent(t *testing.T) {
 	if len(promptsSeen) != len(prompts) {
 		t.Errorf("the installed transcript holds %d distinct prompt(s) %v, want the fixture's two %v "+
 			"(a conversion that invents a third prompt is red)", len(promptsSeen), promptsSeen, prompts)
+	}
+}
+
+// TestContinueFromTheArchiveKeepsAPiSessionsBranch pins the archive half of the source-relation rule: a
+// Pi session read out of the inherited SQLite projection must answer the same record identities and
+// parents the native read does, so an archive-backed continuation preserves the source's own tree --
+// leaving a branch the conversation left off the walk the target's loader makes -- instead of flattening
+// it into the active path, and counts no relation as unresolved that the read answered. The archive
+// adapter dropped both columns while the inherited messages table held them, which is what this case
+// keeps out: the fallback is exercised through the pipeline, with the source file gone and the archive
+// holding the session.
+func TestContinueFromTheArchiveKeepsAPiSessionsBranch(t *testing.T) {
+	ctx := context.Background()
+	cfg := fixtureConfig(t)
+	fixtureBytes, err := os.ReadFile(fixturePath(t, filepath.Join("pi", piHistoryFixtureRef.ID+".jsonl")))
+	if err != nil {
+		t.Fatalf("reading the committed fixture: %v", err)
+	}
+	sourceWalk := transcriptWalkTexts(t, fixtureBytes)
+	if len(sourceWalk) != 3 {
+		t.Fatalf("the source fixture's own walk = %q, want the three turns of the last record's path",
+			sourceWalk)
+	}
+
+	// A throw-away provider root: the archived copy is the one removed, never the committed fixture.
+	root := t.TempDir()
+	relative := filepath.Join("-home-user-code-history", piHistoryFixtureRef.ID+".jsonl")
+	copyPath := filepath.Join(root, "pi", relative)
+	if err := os.MkdirAll(filepath.Dir(copyPath), 0o755); err != nil {
+		t.Fatalf("preparing the provider root: %v", err)
+	}
+	if err := os.WriteFile(copyPath, fixtureBytes, 0o600); err != nil {
+		t.Fatalf("writing the fixture copy: %v", err)
+	}
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentPi: {filepath.Join(root, "pi")}}
+
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(cfg, archivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	if err := ingestor.IngestPaths(ctx, copyPath); err != nil {
+		t.Fatalf("ingesting the fixture copy: %v", err)
+	}
+	if err := os.Remove(copyPath); err != nil {
+		t.Fatalf("removing the source copy: %v", err)
+	}
+
+	home := t.TempDir()
+	result, err := Continue(ctx, ContinueOptions{
+		Ref:          piHistoryFixtureRef,
+		Target:       TargetPi,
+		Config:       cfg,
+		TargetHome:   home,
+		TargetBinary: missingTargetBinary,
+		ArchivePath:  archivePath,
+	})
+	if err != nil {
+		t.Fatalf("continuing the archived session: %v", err)
+	}
+	if result.Conversion.ReadFrom != "archive" {
+		t.Fatalf("read from %q, want the archive fallback for a source file that is gone",
+			result.Conversion.ReadFrom)
+	}
+	installed, err := os.ReadFile(result.TargetSession.Path)
+	if err != nil {
+		t.Fatalf("reading the installed session: %v", err)
+	}
+	if got := transcriptWalkTexts(t, installed); !slices.Equal(got, sourceWalk) {
+		t.Errorf("the archive-backed conversion's model-visible history = %q, while the source file's "+
+			"own walk is %q: the archive read lost the relations the native read answers", got, sourceWalk)
+	}
+	if loss := lossCount(t, result.Conversion.Losses, "unresolved_source_parents"); loss.Count != 0 {
+		t.Errorf("unresolved_source_parents = %d, want 0: the archive read answers the same relations "+
+			"the source read does", loss.Count)
+	}
+}
+
+// TestContinueFromPiIntoCodexOmitsAnAbandonedBranch pins the same clause for the route whose target
+// cannot hold a branch at all: the target's log is one sequence of records with no parent relation to
+// hang a record off, and a response item written into it becomes part of the conversation a resumed turn
+// reads. The conversion therefore writes the source's own active line, omits the records the source's
+// relations place off it, counts them (inactive_branch_records), and the target's own reader reads back
+// exactly the conversation the source file's last record answers -- with no boundary record, because the
+// boundary the source recorded stands on the branch and must not cut the line it was not on.
+func TestContinueFromPiIntoCodexOmitsAnAbandonedBranch(t *testing.T) {
+	fixtureBytes, err := os.ReadFile(fixturePath(t, filepath.Join("pi", piHistoryFixtureRef.ID+".jsonl")))
+	if err != nil {
+		t.Fatalf("reading the history fixture's bytes: %v", err)
+	}
+	sourceWalk := transcriptWalkTexts(t, fixtureBytes)
+	if len(sourceWalk) != 3 {
+		t.Fatalf("the source fixture's own walk = %q, want the three turns of the last record's path",
+			sourceWalk)
+	}
+
+	home := t.TempDir()
+	result, err := Continue(context.Background(), ContinueOptions{
+		Ref:          piHistoryFixtureRef,
+		Target:       TargetCodex,
+		Config:       fixtureConfig(t),
+		TargetHome:   home,
+		TargetBinary: missingTargetBinary,
+	})
+	if err != nil {
+		t.Fatalf("continuing the history fixture into codex: %v", err)
+	}
+	if result.Installation.SourceCheckState != SourceCheckUnchanged {
+		t.Errorf("source check = %q, want the source unchanged", result.Installation.SourceCheckState)
+	}
+	omitted := lossCount(t, result.Conversion.Losses, "inactive_branch_records")
+	if omitted.Count != 3 || omitted.Disposition != DispositionOmitted {
+		t.Errorf("inactive_branch_records = %+v, want the fixture's three off-line records omitted",
+			omitted)
+	}
+	if result.Conversion.Carried.CompactionBoundaries != 0 {
+		t.Errorf("carried boundaries = %d, want none: the fixture's boundary stands on the branch the "+
+			"conversion omits, and the target must not cut the line it was not on",
+			result.Conversion.Carried.CompactionBoundaries)
+	}
+	installedBytes, err := os.ReadFile(result.TargetSession.Path)
+	if err != nil {
+		t.Fatalf("reading the installed rollout: %v", err)
+	}
+	if strings.Contains(string(installedBytes), `"compacted"`) {
+		t.Error("the installed rollout holds a compacted record, so the target would replace the " +
+			"conversation's model-visible history with the summary of a boundary that stood off it")
+	}
+	if result.Verification.Structure.State != VerificationStateVerified {
+		t.Fatalf("structure = %+v, want the installed rollout read back as written",
+			result.Verification.Structure)
+	}
+	// The context the target's own reader builds from the installed rollout: the inherited Codex reader
+	// reads its response items in order, and that must be the source's own line -- neither shortened nor
+	// holding a turn the conversation left.
+	if got := result.Verification.Structure.ReadBack; got.Messages != 3 || got.UserMessages != 1 ||
+		got.AssistantMessages != 2 {
+		t.Errorf("read-back = %+v, want the source's own line (three messages: one user, two assistant)",
+			got)
+	}
+	for _, text := range sourceWalk {
+		if !strings.Contains(string(installedBytes), text) {
+			t.Errorf("the source's own turn %q is not in the installed rollout", text)
+		}
+	}
+	for _, abandoned := range []string{"And the retry cap?", "Thirty seconds, in internal/retry/config.go."} {
+		if strings.Contains(string(installedBytes), abandoned) {
+			t.Errorf("the abandoned branch's %q is in the installed rollout: a record written into this "+
+				"target's log becomes model-visible history, so the branch was revived as an active turn",
+				abandoned)
+		}
 	}
 }
 
@@ -574,6 +722,97 @@ func transcriptContentText(content json.RawMessage) string {
 		builder.WriteString(block.Text)
 	}
 	return builder.String()
+}
+
+// transcriptWalkTexts reads one transcript's own loader walk: the path from its last record back
+// through the record each one names as its parent (`parentUuid` in a Claude transcript, `parentId` in a
+// Pi session), reversed into file order, with each message record's own dialogue text. Both loaders walk
+// exactly this path, and both formats spell the relation with one of those two fields, so one reader
+// measures either side of a conversion -- which is what lets a case compare the conversation a target's
+// loader would build with the one the source's own file answers, rather than comparing counts. A record
+// the walk reaches that carries no message (a session header, a compaction record) contributes no text:
+// the walk is read for its dialogue, and a test that needs to assert a boundary's placement reads the
+// records themselves.
+func transcriptWalkTexts(t *testing.T, data []byte) []string {
+	t.Helper()
+	type record struct {
+		Type       string          `json:"type"`
+		ID         string          `json:"id"`
+		UUID       string          `json:"uuid"`
+		ParentID   *string         `json:"parentId"`
+		ParentUUID *string         `json:"parentUuid"`
+		Message    json.RawMessage `json:"message"`
+	}
+	var records []record
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		decoded := record{}
+		if err := json.Unmarshal([]byte(line), &decoded); err != nil {
+			t.Fatalf("decoding a transcript record: %v", err)
+		}
+		if decoded.Type == "session" {
+			continue
+		}
+		records = append(records, decoded)
+	}
+	if len(records) == 0 {
+		t.Fatal("the transcript holds no record")
+	}
+	identity := func(entry record) string {
+		if entry.UUID != "" {
+			return entry.UUID
+		}
+		return entry.ID
+	}
+	parentOf := func(entry record) string {
+		if entry.ParentUUID != nil {
+			return *entry.ParentUUID
+		}
+		if entry.ParentID != nil {
+			return *entry.ParentID
+		}
+		return ""
+	}
+	byIdentity := map[string]int{}
+	for index, entry := range records {
+		if id := identity(entry); id != "" {
+			byIdentity[id] = index
+		}
+	}
+	onPath := map[int]bool{}
+	var reversed []int
+	for cursor := len(records) - 1; cursor >= 0 && !onPath[cursor]; {
+		onPath[cursor] = true
+		reversed = append(reversed, cursor)
+		parent := parentOf(records[cursor])
+		if parent == "" {
+			break
+		}
+		next, ok := byIdentity[parent]
+		if !ok {
+			break
+		}
+		cursor = next
+	}
+	walk := make([]string, 0, len(reversed))
+	for index := len(reversed) - 1; index >= 0; index-- {
+		entry := records[reversed[index]]
+		if len(entry.Message) == 0 {
+			continue
+		}
+		var message struct {
+			Content json.RawMessage `json:"content"`
+		}
+		if err := json.Unmarshal(entry.Message, &message); err != nil {
+			continue
+		}
+		if text := transcriptContentText(message.Content); strings.TrimSpace(text) != "" {
+			walk = append(walk, text)
+		}
+	}
+	return walk
 }
 
 // isPlainTextContent reports whether a record's content is a JSON string rather than a block array: the

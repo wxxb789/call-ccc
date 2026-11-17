@@ -190,6 +190,7 @@ func ConvertToClaudeTranscript(conv Conversation, opts ClaudeTargetOptions) (Cla
 		callOwners:     map[string]struct{}{},
 		opts:           opts,
 		sourceFidelity: conv.Fidelity,
+		tree:           newSourceTree(),
 	}
 	builder.encoder = json.NewEncoder(&builder.buffer)
 	builder.encoder.SetEscapeHTML(false)
@@ -306,17 +307,25 @@ type claudeTranscriptBuilder struct {
 	ledger
 
 	sawBoundary bool
-	// parentUUID is the uuid of the record written last, which the next record's parentUuid names. The
-	// loader walks that chain (measured: it warns "none carry parentUuid links; only N reached the
-	// resumed conversation" for a file whose records are not linked), so the writer always links.
-	parentUUID *string
+	// tree maps the source's own record relations onto the transcript's records. The loader walks a
+	// record's ancestors from the file's last record (measured: it warns "none carry parentUuid links;
+	// only N reached the resumed conversation" for a file whose records are not linked), so every record
+	// this writer publishes beyond the first carries a parent: the record the source named, the result
+	// standing between it and the call it names, or -- for a relation the read cannot answer -- the
+	// record before it, which the report counts (unresolved_source_parents). Chaining every record to
+	// the one before it instead would put an abandoned branch's prompt on the walk the loader makes and
+	// leave the source's own line behind a compaction marker that stands off it, which is what the
+	// source's own relation is read to prevent.
+	tree sourceTree
 }
 
 func (b *claudeTranscriptBuilder) write(record claudeRecord) {
+	if record.ParentUUID == nil {
+		record.ParentUUID = b.tree.entryParent()
+	}
 	b.encoder.Encode(record)
 	if record.UUID != "" {
-		uuid := record.UUID
-		b.parentUUID = &uuid
+		b.tree.wrote(record.UUID)
 	}
 }
 
@@ -331,6 +340,8 @@ func (b *claudeTranscriptBuilder) writeConversation(conv Conversation) {
 }
 
 func (b *claudeTranscriptBuilder) writeMessage(message Message) {
+	b.tree.startRecord(message.SourceUUID, message.SourceParentUUID)
+	defer b.tree.endRecord()
 	if message.IsSidechain {
 		// A subagent's turn recorded in the same transcript. Measured on the tested version: the loader
 		// drops records flagged isSidechain from the model-visible history, so a written record would be
@@ -349,17 +360,15 @@ func (b *claudeTranscriptBuilder) writeMessage(message Message) {
 		b.lossPreBoundary = b.carried.Messages
 		b.sawBoundary = true
 		b.write(claudeRecord{
-			ParentUUID: b.parentUUID,
-			Type:       claudeTypeSystem,
-			UUID:       b.newUUID(),
-			Timestamp:  b.clock.next(message.Timestamp),
-			Cwd:        b.cwd,
-			SessionID:  b.sessionID,
-			Version:    b.cliVersion,
-			Subtype:    claudeSubtypeCompactBoundary,
+			Type:      claudeTypeSystem,
+			UUID:      b.newUUID(),
+			Timestamp: b.clock.next(message.Timestamp),
+			Cwd:       b.cwd,
+			SessionID: b.sessionID,
+			Version:   b.cliVersion,
+			Subtype:   claudeSubtypeCompactBoundary,
 		})
 		b.write(claudeRecord{
-			ParentUUID:       b.parentUUID,
 			IsSidechain:      false,
 			Type:             claudeTypeUser,
 			UUID:             b.newUUID(),
@@ -469,7 +478,6 @@ func (b *claudeTranscriptBuilder) writeMessage(message Message) {
 // multi-block record reconstruct to exactly the same request).
 func (b *claudeTranscriptBuilder) assistantRecord(text string, message Message, at time.Time) {
 	b.write(claudeRecord{
-		ParentUUID:  b.parentUUID,
 		IsSidechain: false,
 		Type:        claudeTypeAssistant,
 		UUID:        b.newUUID(),
@@ -510,7 +518,6 @@ func (b *claudeTranscriptBuilder) messageID() string {
 // record whose dialogue is empty is counted by writeMessage rather than written.
 func (b *claudeTranscriptBuilder) userRecord(text string, at time.Time) {
 	b.write(claudeRecord{
-		ParentUUID:  b.parentUUID,
 		IsSidechain: false,
 		Type:        claudeTypeUser,
 		UUID:        b.newUUID(),
@@ -584,8 +591,8 @@ func (b *claudeTranscriptBuilder) writeToolEvidence(message Message) {
 	// A record's results travel together on one user record, the shape the harness writes for the
 	// results of one assistant message.
 	if len(pending) > 0 {
+		b.tree.markToolResult()
 		b.write(claudeRecord{
-			ParentUUID:  b.parentUUID,
 			IsSidechain: false,
 			Type:        claudeTypeUser,
 			UUID:        b.newUUID(),
@@ -654,7 +661,6 @@ func (b *claudeTranscriptBuilder) toolCall(index int, call ToolCall, at time.Tim
 		b.lossSubagentLinks++
 	}
 	b.write(claudeRecord{
-		ParentUUID:  b.parentUUID,
 		IsSidechain: false,
 		Type:        claudeTypeAssistant,
 		UUID:        b.newUUID(),
@@ -801,10 +807,7 @@ func (b *claudeTranscriptBuilder) losses() []Loss {
 	toolDetail := toolVocabularyDetail(names, b.opts.MaxToolNames, "input objects")
 	preBoundaryDetail := "no compaction boundary was carried"
 	if b.sawBoundary {
-		preBoundaryDetail = "the turns before a compaction boundary stay in the file and are counted " +
-			"here: the target applies the boundary to its model-visible history (measured: a resumed " +
-			"turn could not answer from the pre-boundary turns), so those turns are recorded history " +
-			"the target does not continue from"
+		preBoundaryDetail = preBoundaryHistoryDetail()
 	}
 	unreadableLinesDetail := malformedLinesLossDetail(b.sourceFidelity)
 	summaryTranscriptDetail := summaryTranscriptLossDetail(b.sourceFidelity)
@@ -1003,6 +1006,12 @@ func (b *claudeTranscriptBuilder) losses() []Loss {
 			Disposition: DispositionOmitted,
 			Count:       b.lossModels,
 			Detail:      modelDetail,
+		},
+		{
+			Category:    "unresolved_source_parents",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.tree.unresolved,
+			Detail:      unresolvedSourceParentsDetail(),
 		},
 		{
 			Category:    "pre_compaction_history",

@@ -115,6 +115,251 @@ func distinctCalls[C any](message Message, project func(index int, call ToolCall
 	return calls
 }
 
+// sourceTreeWalkMax bounds the walk from a source record to its nearest written ancestor, and the walk
+// over a read's own records: a source that recorded a cycle (a record naming itself or a longer loop)
+// would otherwise keep a conversion walking, and the bound is far above any real conversation's depth.
+const sourceTreeWalkMax = 4096
+
+// sourceRecordOrigin is what one written entry stands for in the source's own record stream: the
+// record's identity, the record *it* hangs off as the read answered it, the entry this conversion
+// chained the record's first entry to, and whether the entry was written as a tool result. The entry the
+// next record hangs off is decided from it, because a record that follows a tool result in the source's
+// file hangs off that result while the read answers with the message that made the call.
+type sourceRecordOrigin struct {
+	sourceID     string
+	sourceParent string
+	parentID     *string
+	toolResult   bool
+}
+
+// sourceTree maps the source's own record relations onto the entries a conversion writes.
+//
+// A target format that is itself a tree is written as the *source's* own tree: each entry hangs off the
+// entry of the record the source named as its parent, so the target's own loader walks the source's
+// active path and a branch the conversation left stays off it as recorded history rather than being
+// chained in as an active turn. One record is one place in that tree even where the target writes it as
+// several entries (a prompt and a tool result it also carries): the record that follows hangs off the
+// *final* entry written for it, which is what keeps the tool result on the walk the target's loader
+// makes.
+type sourceTree struct {
+	// sourceRecordParents is every source record the document holds, keyed by its own identity: the
+	// record it hangs off, as the read answered it. It is filled for the records the target writes and
+	// for the ones it leaves out, so an entry whose own parent has no entry of its own can still be
+	// chained to the nearest ancestor that was written.
+	sourceRecordParents map[string]string
+	// writtenEntryID maps a source record's identity to the final entry written for it.
+	writtenEntryID map[string]string
+	// lastEntryID is the entry written last and lastOrigin what it stands for; pending is what the
+	// entries written next stand for.
+	lastEntryID *string
+	lastOrigin  sourceRecordOrigin
+	pending     sourceRecordOrigin
+	// unresolved counts the source relations this conversion could not place: the entries written for
+	// their records follow the entry before them, which is a relation this build invented.
+	unresolved int
+}
+
+func newSourceTree() sourceTree {
+	return sourceTree{
+		sourceRecordParents: map[string]string{},
+		writtenEntryID:      map[string]string{},
+	}
+}
+
+// startRecord names the source record the entries written next stand for and resolves the entry its
+// first entry hangs off from the source's own relation.
+//
+// A record the read answered an identity for but no parent is counted when an entry was already written:
+// the record is not the conversation's first, so the entry written for it follows the entry before it --
+// a relation this conversion invented. A document that records no identity at all is the other case: the
+// read's own order is linear, following it invents nothing, and nothing is counted.
+func (t *sourceTree) startRecord(id, parent string) {
+	id = strings.TrimSpace(id)
+	parent = strings.TrimSpace(parent)
+	if id != "" {
+		t.sourceRecordParents[id] = parent
+	}
+	if id != "" && parent == "" && t.lastEntryID != nil {
+		t.unresolved++
+	}
+	t.pending = sourceRecordOrigin{sourceID: id, sourceParent: parent, parentID: t.parentFor(parent)}
+}
+
+// endRecord ends the record's walk, so a record that produced no entry cannot leak its relation onto the
+// next record's first entry.
+func (t *sourceTree) endRecord() { t.pending = sourceRecordOrigin{} }
+
+// markToolResult says the entry about to be written is a tool result: the record after it then hangs off
+// the result rather than off the message that made the call, because that is the order the source's own
+// file holds (call → result → what follows), and the other reading would put the result off the walk.
+func (t *sourceTree) markToolResult() { t.pending.toolResult = true }
+
+// entryParent answers the parent the entry about to be written carries: the entry the source's relation
+// resolved for the record's first entry, else the entry written last, because a record written as
+// several entries is one place in the tree and its later entries follow each other.
+func (t *sourceTree) entryParent() *string {
+	if t.pending.parentID != nil {
+		return t.pending.parentID
+	}
+	return t.lastEntryID
+}
+
+// wrote records one written entry: it is the entry the record being walked stands for -- the last of
+// them, overwriting the map so the record's *final* entry is the place its children hang off -- and the
+// parent the next entry written for that record follows.
+func (t *sourceTree) wrote(id string) {
+	t.lastEntryID = &id
+	if t.pending.sourceID != "" {
+		t.writtenEntryID[t.pending.sourceID] = id
+	}
+	t.lastOrigin = t.pending
+	t.pending.parentID = nil
+	t.pending.toolResult = false
+}
+
+// parentFor answers the entry a source record's first written entry is chained to: the entry this
+// conversion wrote for the record the source named as its parent.
+//
+// The source's own relation decides, not the order the file happens to hold its records in. A target
+// format that is a tree is written as the source's own tree, so an entry follows the record it hangs
+// off and a branch the conversation left stays off the path the target's own loader walks from the
+// file's last entry. Three answers are possible for a record that *does* name a parent:
+//
+//   - the named record was written: its final entry is the parent;
+//   - the named record was left out of the target (an omitted record, or one with no entry of its own):
+//     the nearest ancestor that *was* written, walked through the document's own relations;
+//   - the record that follows a tool result: the tool result itself, because the source's own file runs
+//     call → result → what follows while the read answers the next record as hanging off the call.
+//
+// A record that names no parent at all is read as the read's own order: this conversion cannot tell a
+// record the source placed at the head of a line from one whose identity or parent the provider did not
+// write, and chaining it to the entry before it keeps a record the read *did* carry visible, where a
+// written null could cut the conversation into pieces the target's loader never walks. A parent the
+// document cannot resolve -- a record outside the read -- follows the entry before it and is counted
+// (unresolved): that is a relation this conversion invented, and the report says so rather than
+// presenting the entry as one the source recorded hanging where it does.
+func (t *sourceTree) parentFor(parent string) *string {
+	parent = strings.TrimSpace(parent)
+	if parent == "" {
+		return t.lastEntryID
+	}
+	if t.lastOrigin.toolResult && t.lastOrigin.sourceParent == parent {
+		return t.lastEntryID
+	}
+	if id, ok := t.writtenAncestor(parent); ok {
+		return &id
+	}
+	t.unresolved++
+	return t.lastEntryID
+}
+
+// writtenAncestor answers the entry this conversion wrote for the nearest record a walk from sourceID
+// reaches, and whether it found one at all.
+func (t *sourceTree) writtenAncestor(sourceID string) (string, bool) {
+	for steps := 0; sourceID != "" && steps < sourceTreeWalkMax; steps++ {
+		if id, ok := t.writtenEntryID[sourceID]; ok {
+			return id, true
+		}
+		next, ok := t.sourceRecordParents[sourceID]
+		if !ok || next == sourceID {
+			return "", false
+		}
+		sourceID = next
+	}
+	return "", false
+}
+
+// inactiveSourceRecords answers, for every message of a read, whether the source's own relations place
+// it off the line the source's loader builds context from: the line the walk from the read's *last*
+// record reaches. It is the record-level counterpart of the relation the tree writers resolve, for the
+// targets whose format is a single line of records -- one where a record written becomes part of the
+// conversation a resumed turn reads, so a branch the conversation left cannot travel there as recorded
+// history without being revived as an active turn.
+//
+// A record the read answered no identity for is never marked inactive: the read recorded no place for it
+// in the source's tree, and omitting evidence on a relation the read did not give is exactly what the
+// report exists to prevent. The walk uses the writers' own tool-result rule, so a record the reader
+// answers as hanging off the message that made a call -- while the source's file runs call → result →
+// what follows -- keeps the result on the line.
+func inactiveSourceRecords(messages []Message) []bool {
+	inactive := make([]bool, len(messages))
+	if len(messages) == 0 {
+		return inactive
+	}
+	byIdentity := make(map[string]int, len(messages))
+	for index, message := range messages {
+		if id := strings.TrimSpace(message.SourceUUID); id != "" {
+			if _, seen := byIdentity[id]; !seen {
+				byIdentity[id] = index
+			}
+		}
+	}
+	onLine := make([]bool, len(messages))
+	for cursor, steps := len(messages)-1, 0; cursor >= 0 && steps <= sourceTreeWalkMax; steps++ {
+		if onLine[cursor] {
+			break
+		}
+		onLine[cursor] = true
+		next := sourceLineParent(messages, byIdentity, cursor)
+		if next >= cursor {
+			break
+		}
+		cursor = next
+	}
+	for index, message := range messages {
+		inactive[index] = strings.TrimSpace(message.SourceUUID) != "" && !onLine[index]
+	}
+	return inactive
+}
+
+// sourceLineParent answers the record a walk from index hangs off, by the writers' own rule: the record
+// the source named -- or the tool result standing between this record and the call it names -- and the
+// record before it where the read answered no relation or named one it does not hold.
+func sourceLineParent(messages []Message, byIdentity map[string]int, index int) int {
+	parent := strings.TrimSpace(messages[index].SourceParentUUID)
+	previous := index - 1
+	if parent != "" && previous >= 0 && len(messages[previous].ToolResults) > 0 &&
+		strings.TrimSpace(messages[previous].SourceParentUUID) == parent {
+		return previous
+	}
+	if parent == "" {
+		return previous
+	}
+	if at, ok := byIdentity[parent]; ok && at < index {
+		return at
+	}
+	return previous
+}
+
+// unresolvedSourceParentsDetail words the caveat both tree-reproducing writers report for a relation the
+// read could not answer. The entries and their order are unaffected by it -- only the source's own place
+// in the tree is not the one written -- so the text is the same for either writer, and keeping one copy
+// is what stops the two from drifting apart.
+func unresolvedSourceParentsDetail() string {
+	return "the source's own relation named a record this read does not hold (a record with no " +
+		"identity of its own, or a parent outside the read) -- or recorded no parent for a record " +
+		"that is not the conversation's first -- so these entries follow the entry before them, " +
+		"which is a relation this conversion invented. The entries and their order are unaffected; " +
+		"what the count names is that the source's own place in the tree is not the one written"
+}
+
+// preBoundaryHistoryDetail words the caveat both tree-reproducing writers report for the turns carried
+// before a compaction boundary. Whether the target rebuilds its model-visible history from the boundary
+// depends on where the source recorded it: on the source's own line the target applies the boundary (a
+// resumed turn cannot answer from the pre-boundary turns), while a boundary the source recorded off that
+// line -- standing beside a branch the conversation left -- stands off the target's walk exactly as the
+// source's own file holds it, and the turns on the line remain the target's history.
+func preBoundaryHistoryDetail() string {
+	return "the entries before a compaction boundary stay in the file, which is what the source's own " +
+		"compaction leaves behind. Where the source recorded the boundary on its own line, the target " +
+		"rebuilds its model-visible history from the boundary's summary (measured: a resumed turn could " +
+		"not answer from the pre-boundary turns), so those turns are recorded history the target does " +
+		"not continue from; where the source recorded it off that line, the boundary stands off the " +
+		"target's walk beside the branch it belongs to, as the source's own file holds it, and the turns " +
+		"on the line remain the target's history. The count names how many turns were carried before the " +
+		"boundary"
+}
+
 // installFile writes one converted session into a target data directory and returns the path it
 // occupies, plus the mechanism that put it there. The route names only what differs: the subdirectory it
 // installs under, the project directory inside it, the file name, the bytes and the mode.

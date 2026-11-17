@@ -550,15 +550,18 @@ func piRoute() targetRoute {
 		},
 		Fields: func(session convertedTarget, facts targetFacts) targetFacts {
 			// Pi's session records no provider binding of its own, so the report states the document's own
-			// format version and the last model the source's messages recorded.
+			// format version and the last model the source's messages recorded -- and, where it names no
+			// provider, says why: the read answers the model each source message recorded rather than the
+			// endpoint that served it, and recording the harness label (`pi`, `claude`, `codex`) in the
+			// provider's place would name a Pi provider the caller's configuration need not define.
 			target := session.Raw.(PiSession)
 			facts.CLIVersion = target.CLIVersion
-			facts.ModelProvider = target.ModelProvider
-			if target.ModelProvider != "" {
-				facts.ProviderSource = "source-messages"
-				facts.ProviderDetail = "the source's own messages recorded the provider these turns ran " +
-					"under; a Pi session binds no provider to itself, so no resumed turn is refused for it"
-			}
+			facts.ProviderSource = "unrecorded"
+			facts.ProviderDetail = "no provider is recorded: a Pi session binds none to itself, and the " +
+				"source read answers the model each message recorded rather than the endpoint that " +
+				"served it (the read's session-level provider names the harness that wrote the words). " +
+				"Every converted assistant entry carries that model; model_provider_binding states the " +
+				"format's own limit"
 			facts.Model = target.Model
 			return facts
 		},

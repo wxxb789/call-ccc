@@ -93,7 +93,6 @@ type piEntry struct {
 type piMessage struct {
 	Role       string   `json:"role"`
 	Content    any      `json:"content"`
-	Provider   string   `json:"provider,omitempty"`
 	Model      string   `json:"model,omitempty"`
 	Usage      *piUsage `json:"usage,omitempty"`
 	StopReason string   `json:"stopReason,omitempty"`
@@ -309,7 +308,6 @@ func (m piMessage) MarshalJSON() ([]byte, error) {
 			name  string
 			value any
 		}{
-			{name: "provider", value: m.Provider},
 			{name: "model", value: m.Model},
 			{name: "usage", value: m.Usage},
 			{name: "stopReason", value: m.StopReason},
@@ -355,11 +353,10 @@ type PiSession struct {
 	Carried    Carried
 	Losses     []Loss
 	Items      []TargetItem
-	// ModelProvider and Model are the last model the source's own messages recorded, which is what the
-	// printed resume command names when it resumes with the instruction the session carries. Empty when
+	// Model is the last model the source's own messages recorded: what each converted assistant entry
+	// carries, and what the report names beside the provider it deliberately does not record. Empty when
 	// the source recorded none.
-	ModelProvider string
-	Model         string
+	Model string
 }
 
 // ConvertToPiSession turns a Conversation into a Pi session: a fresh identity, one entry per piece of
@@ -394,36 +391,33 @@ func ConvertToPiSession(conv Conversation, opts PiTargetOptions) (PiSession, err
 		startedAt = time.Unix(0, 0).UTC()
 	}
 	builder := &piSessionBuilder{
-		sessionID:           sessionID,
-		cwd:                 conv.Source.Cwd,
-		cliVersion:          cliVersion,
-		opts:                opts,
-		clock:               newEntryClock(startedAt, piEntryTimestampLayout),
-		headerTimestamp:     startedAt.UTC().Format(piEntryTimestampLayout),
-		provider:            strings.TrimSpace(conv.Source.Provider),
-		callNames:           map[string]string{},
-		ledger:              ledger{pendingCalls: map[string]struct{}{}},
-		sourceFidelity:      conv.Fidelity,
-		sourceRecordParents: map[string]string{},
-		writtenEntryID:      map[string]string{},
+		sessionID:       sessionID,
+		cwd:             conv.Source.Cwd,
+		cliVersion:      cliVersion,
+		opts:            opts,
+		clock:           newEntryClock(startedAt, piEntryTimestampLayout),
+		headerTimestamp: startedAt.UTC().Format(piEntryTimestampLayout),
+		callNames:       map[string]string{},
+		ledger:          ledger{pendingCalls: map[string]struct{}{}},
+		sourceFidelity:  conv.Fidelity,
+		tree:            newSourceTree(),
 	}
 	builder.writeConversation(conv)
 	if builder.idErr != nil {
 		return PiSession{}, builder.idErr
 	}
 	return PiSession{
-		SessionID:     sessionID,
-		FileName:      piSessionFileName(sessionID, startedAt),
-		Directory:     PiProjectDir(conv.Source.Cwd),
-		Cwd:           conv.Source.Cwd,
-		StartedAt:     startedAt,
-		CLIVersion:    cliVersion,
-		Data:          builder.bytes(),
-		Carried:       builder.carried,
-		Losses:        builder.losses(),
-		Items:         builder.items,
-		ModelProvider: builder.lastProvider,
-		Model:         builder.lastModel,
+		SessionID:  sessionID,
+		FileName:   piSessionFileName(sessionID, startedAt),
+		Directory:  PiProjectDir(conv.Source.Cwd),
+		Cwd:        conv.Source.Cwd,
+		StartedAt:  startedAt,
+		CLIVersion: cliVersion,
+		Data:       builder.bytes(),
+		Carried:    builder.carried,
+		Losses:     builder.losses(),
+		Items:      builder.items,
+		Model:      builder.lastModel,
 	}, nil
 }
 
@@ -450,53 +444,27 @@ func PiProjectDir(cwd string) string {
 	return "--" + trimmed + "--"
 }
 
-// piParentWalkMax bounds the walk from a record to its nearest written ancestor: a source that recorded
-// a cycle (a record naming itself or a longer loop) would otherwise keep this conversion walking, and the
-// bound is far above any real conversation's depth.
-const piParentWalkMax = 4096
-
-// piEntryOrigin is what one written entry stands for in the source's own record stream: the record's
-// identity, the record *it* hangs off as the read answered it, the entry the conversion chained it to,
-// and whether it was written as a tool result. The next record's parent is decided from it, because a
-// record that follows a tool result in the source's file hangs off that result while the read answers
-// with the message that made the call.
-type piEntryOrigin struct {
-	sourceID     string
-	sourceParent string
-	parentID     *string
-	toolResult   bool
-}
-
 // piSessionBuilder accumulates the session's entries and the report while it walks the document.
 type piSessionBuilder struct {
-	buffer      bytes.Buffer
-	sessionID   string
-	cwd         string
-	cliVersion  string
-	clock       *entryClock
-	opts        PiTargetOptions
-	provider    string
-	lastEntryID *string
-	carried     Carried
-	items       []TargetItem
-	idErr       error
-	callNames   map[string]string
+	buffer     bytes.Buffer
+	sessionID  string
+	cwd        string
+	cliVersion string
+	clock      *entryClock
+	opts       PiTargetOptions
+	carried    Carried
+	items      []TargetItem
+	idErr      error
+	callNames  map[string]string
 	ledger
-	lastProvider   string
 	lastModel      string
 	sourceFidelity Fidelity
 
-	// sourceRecordParents is every source record the document holds, keyed by its own identity: the
-	// record it hangs off, as the read answered it. It is filled for the records the target writes and
-	// for the ones it leaves out, so an entry whose own parent has no entry of its own can still be
-	// chained to the nearest ancestor that was written.
-	sourceRecordParents map[string]string
-	// writtenEntryID maps a source record's identity to the entry this conversion wrote for it.
-	writtenEntryID map[string]string
-	// lastOrigin is what the entry before this one stands for; pending is what the next entry written
-	// carries. Both carry a record's own parent relation, which is what the tool result rule below reads.
-	lastOrigin piEntryOrigin
-	pending    piEntryOrigin
+	// tree maps the source's own record relations onto this session's entries, so the file is the
+	// source's own shape rather than a flat chain: each entry hangs off the entry of the record the
+	// source named as its parent, and a branch the conversation left stays off the walk the target's own
+	// loader makes. Its unresolved count is what the report's unresolved_source_parents names.
+	tree sourceTree
 
 	writtenMessages        int
 	lossReasoning          int
@@ -523,7 +491,6 @@ type piSessionBuilder struct {
 	lossUnrecordedUsage    int
 	lossPreBoundary        int
 	lossEmptySummary       int
-	lossUnresolvedParents  int
 	sawBoundary            bool
 	// headerTimestamp is the session's own start instant, fixed when the builder is made: the header's
 	// timestamp is the session's identity rather than a position in the entry stream, so it must not be
@@ -564,19 +531,17 @@ func (b *piSessionBuilder) writeConversation(conv Conversation) {
 }
 
 // write adds one entry to the session, chaining it to the entry the source's own relation names for the
-// record it stands for -- the relation the pending origin holds -- and to the entry before it when the
-// record's first entry has no parent of its own (a record written as a second piece of evidence, a
-// conversation's first record). It also records what the entry stands for, because the record that
-// follows decides its parent from it.
+// record it stands for and to the entry before it when the record's first entry has no parent of its
+// own (a record written as a second piece of evidence, a conversation's first record). It also records
+// what the entry stands for, because the record that follows decides its parent from it -- and the
+// record's *final* entry is the one it leaves behind, so a record written as several entries is one
+// place in the tree.
 func (b *piSessionBuilder) write(entry piEntry) {
 	if entry.ID == "" {
 		entry.ID = b.newEntryID()
 	}
 	if entry.ParentID == nil {
-		entry.ParentID = b.pending.parentID
-		if entry.ParentID == nil {
-			entry.ParentID = b.lastEntryID
-		}
+		entry.ParentID = b.tree.entryParent()
 	}
 	encoded, err := json.Marshal(entry)
 	if err != nil {
@@ -587,75 +552,7 @@ func (b *piSessionBuilder) write(entry piEntry) {
 	}
 	b.buffer.Write(encoded)
 	b.buffer.WriteByte('\n')
-	id := entry.ID
-	b.lastEntryID = &id
-	origin := b.pending
-	if origin.sourceID != "" {
-		b.writtenEntryID[origin.sourceID] = id
-	}
-	b.lastOrigin = origin
-	b.pending = piEntryOrigin{}
-}
-
-// parentFor answers the entry a source record's first written entry is chained to: the entry this
-// conversion wrote for the record the source named as its parent.
-//
-// The source's own relation decides, not the order the file happens to hold its records in. A Pi session
-// and a Claude transcript are trees, and so is the target's format: an entry follows the record it hangs
-// off, so a branch the conversation left stays off the path the target's own loader walks from the
-// file's last entry, and the source's visible conversation -- not a flattened invented one -- is what a
-// resumed turn reads. (This route's 0005 review measured the alternative: chaining every entry to the
-// one before it put an abandoned branch's user prompt on the active path and hid the source's own line
-// behind a compaction record that stood off it.)
-//
-// Three answers are possible for a record that *does* name a parent:
-//
-//   - the named record was written: its entry is the parent;
-//   - the named record was left out of the target (an omitted record, or one with no message of its
-//     own): the nearest ancestor that *was* written, walked through the document's own relations;
-//   - the record that follows a tool result: the tool result itself. A Pi tool result is not a visible
-//     ancestor in the reader's answer -- a record after one names the message that made the call -- while
-//     the source's own file runs call -> result -> what follows. Writing the record after the message
-//     would put the result off the path the loader walks, leaving a resumed session with a call and no
-//     result, so the result is what the next record follows.
-//
-// A record that names no parent at all is read as the read's own order: this conversion cannot tell a
-// record the source placed at the head of a line (a provider that writes a null parent for one) from a
-// record whose identity or parent the provider did not write, and chaining it to the entry before it
-// keeps a record the read *did* carry visible, where a written null could cut the conversation into
-// pieces the target's loader never walks. A parent the document cannot resolve -- a record outside the
-// read -- follows the entry before it and is counted (unresolved_source_parents): that is a relation
-// this conversion invented, and the report says so rather than presenting the entry as one the source
-// recorded hanging where it does.
-func (b *piSessionBuilder) parentFor(message Message) *string {
-	parent := strings.TrimSpace(message.SourceParentUUID)
-	if parent == "" {
-		return b.lastEntryID
-	}
-	if b.lastOrigin.toolResult && b.lastOrigin.sourceParent == parent {
-		return b.lastEntryID
-	}
-	if id, ok := b.writtenAncestor(parent); ok {
-		return &id
-	}
-	b.lossUnresolvedParents++
-	return b.lastEntryID
-}
-
-// writtenAncestor answers the entry this conversion wrote for the nearest record a walk from sourceID
-// reaches, and whether it found one at all.
-func (b *piSessionBuilder) writtenAncestor(sourceID string) (string, bool) {
-	for steps := 0; sourceID != "" && steps < piParentWalkMax; steps++ {
-		if id, ok := b.writtenEntryID[sourceID]; ok {
-			return id, true
-		}
-		next, ok := b.sourceRecordParents[sourceID]
-		if !ok || next == sourceID {
-			return "", false
-		}
-		sourceID = next
-	}
-	return "", false
+	b.tree.wrote(entry.ID)
 }
 
 // newEntryID is one entry's id: eight lowercase hex characters, which is the shape Pi's own entries
@@ -675,20 +572,14 @@ func (b *piSessionBuilder) newEntryID() string {
 }
 
 func (b *piSessionBuilder) writeMessage(message Message) {
-	// Every record the document holds is registered, written or not: a record the target leaves out has
-	// no entry of its own, and the records that hang off it must still be chained to the nearest ancestor
-	// this conversion *did* write.
-	sourceID := strings.TrimSpace(message.SourceUUID)
-	sourceParent := strings.TrimSpace(message.SourceParentUUID)
-	if sourceID != "" {
-		b.sourceRecordParents[sourceID] = sourceParent
-	}
-	// The record's first entry is chained by the source's own relation, and the origin carries what the
-	// next record's parent resolution asks about (this record's identity, its own parent, and whether it
-	// is written as a tool result). Cleared however this record ends, so an omitted record cannot leak a
-	// relation onto the next one's first entry.
-	b.pending = piEntryOrigin{sourceID: sourceID, sourceParent: sourceParent, parentID: b.parentFor(message)}
-	defer func() { b.pending = piEntryOrigin{} }()
+	// The record is registered whether or not it is written: a record the target leaves out has no entry
+	// of its own, and the records that hang off it must still be chained to the nearest ancestor this
+	// conversion *did* write. Its first entry is chained by the source's own relation, and the origin
+	// carries what the next record's parent resolution asks about (this record's identity, its own
+	// parent, and whether it is written as a tool result). Cleared however this record ends, so an
+	// omitted record cannot leak a relation onto the next one's first entry.
+	b.tree.startRecord(message.SourceUUID, message.SourceParentUUID)
+	defer b.tree.endRecord()
 	if message.IsSidechain {
 		// A subagent's turn recorded in the same session file. Pi's own loader keeps sidechain records
 		// out of the session's context and the target has no subagent attribution for a flat message,
@@ -805,21 +696,15 @@ func (b *piSessionBuilder) writeAssistantMessage(text string, message Message, c
 	for _, entry := range calls {
 		blocks = append(blocks, b.callBlock(entry.index, entry.call))
 	}
-	provider, model := b.modelFields(message)
-	stop := piStopEndTurn
-	if len(calls) > 0 {
-		stop = piStopToolUse
-	}
 	b.write(piEntry{
 		Type:      piEntryMessage,
 		Timestamp: b.clock.next(message.Timestamp),
 		message: &piMessage{
 			Role:       piRoleAssistant,
 			Content:    blocks,
-			Provider:   provider,
-			Model:      model,
+			Model:      b.modelField(message),
 			Usage:      b.usageFor(),
-			StopReason: stop,
+			StopReason: b.stopReasonFor(calls),
 			Timestamp:  piMessageMillis(message.Timestamp),
 		},
 	})
@@ -831,26 +716,37 @@ func (b *piSessionBuilder) writeAssistantMessage(text string, message Message, c
 	}
 }
 
-// modelFields answers the provider and model one assistant entry records.
+// modelField answers the model one assistant entry records, or "" when the source recorded none.
 //
-// Pi's fields mean "the provider and the model that produced these words", which is exactly what a
-// source read records: the model travels verbatim, and the provider travels beside it when the source
-// recorded one -- an AgentsView read reports the session's agent (`pi`, `claude`, `codex`) as the
-// message's provider where the native message recorded no provider of its own, so that label is what
-// goes into the field rather than a second one this build picked.
+// The model travels verbatim: Pi's `model` field means the model that produced these words, which is
+// what the source's own message recorded, and the target's own totals then count the turn under the
+// model that wrote it rather than under one of the caller's.
 //
-// Neither is a *session-level* binding: Pi has no such field, so a resumed turn still runs under
-// whatever model the caller's configuration selects, and the count says the attribution travelled.
-func (b *piSessionBuilder) modelFields(message Message) (string, string) {
+// The provider is deliberately *not* written. Pi's `provider` field means the endpoint that served the
+// words, and the inherited read does not answer that: it reports the model each source message recorded
+// (Message.Model) but not the endpoint, and its session-level provider names the *harness* that wrote
+// the words (`pi`, `claude`, `codex`) -- a label the target's own configuration need not define as a
+// provider. Writing that label into the record was measured wrong (0005's review): the committed Pi
+// fixture records `example-proxy`, and the conversion wrote `pi` while the report claimed the source's
+// own provider travelled verbatim. Nothing is written in its place, and the report says so
+// (message_model_attribution).
+func (b *piSessionBuilder) modelField(message Message) string {
 	model := strings.TrimSpace(message.Model)
 	if model == "" {
-		return "", ""
+		return ""
 	}
-	provider := b.provider
 	b.lastModel = model
-	b.lastProvider = provider
 	b.lossModels++
-	return provider, model
+	return model
+}
+
+// stopReasonFor answers the entry's stop reason: a turn that made calls stopped to make them, and one
+// that did not finished its own turn.
+func (b *piSessionBuilder) stopReasonFor(calls []piProjectedCall) string {
+	if len(calls) > 0 {
+		return piStopToolUse
+	}
+	return piStopEndTurn
 }
 
 // usageFor answers the usage object one assistant entry carries. Measured: Pi's own loader reads
@@ -1068,7 +964,7 @@ func (b *piSessionBuilder) writeToolResult(result ToolResult, at time.Time) bool
 			b.lossStatuses++
 		}
 	}
-	b.pending.toolResult = true
+	b.tree.markToolResult()
 	b.write(piEntry{
 		Type:      piEntryMessage,
 		Timestamp: b.clock.next(at),
@@ -1093,19 +989,19 @@ func (b *piSessionBuilder) losses() []Loss {
 	toolDetail := toolVocabularyDetail(b.toolNameOrder, b.opts.MaxToolNames, "argument objects")
 	preBoundaryDetail := "no compaction boundary was carried"
 	if b.sawBoundary {
-		preBoundaryDetail = "the entries before a compaction boundary stay in the file, which is what " +
-			"Pi's own compaction leaves behind, and the compaction entry is what makes the target " +
-			"rebuild its model-visible history from the summary: the pre-boundary turns are recorded " +
-			"history the target does not continue from, and this count names how much of it that is"
+		preBoundaryDetail = preBoundaryHistoryDetail()
 	}
 	modelDetail := "the source recorded no model on any message"
 	if b.lossModels > 0 {
-		modelDetail = "Pi's message record states which provider and model produced the words, which is " +
-			"exactly what the source recorded for its own turns, so both travel verbatim (an AgentsView " +
-			"read reports the session's own agent as the provider where the native message recorded none). " +
-			"A Pi session binds no provider to itself, so nothing is refused when the resumed session runs " +
-			"under another model, and the target's own totals count these turns under the model that wrote " +
-			"them rather than under one of the caller's"
+		modelDetail = "Pi's message record states which model and which provider produced the words. The " +
+			"model travels verbatim -- it is what the source's own message recorded, and the target's own " +
+			"totals then count the turn under the model that wrote it. The provider does not: the " +
+			"inherited read answers no endpoint attribution for a message (the Pi reader projects a " +
+			"message's model and not its provider), and the read's session-level provider names the " +
+			"*harness* that wrote the words -- `claude`, `codex`, `pi` -- which is not an endpoint the " +
+			"target's own configuration defines, so no provider is written rather than that label. A Pi " +
+			"session binds no provider to itself, so nothing is refused when the resumed session runs " +
+			"under another model"
 	}
 	return []Loss{
 		{
@@ -1297,12 +1193,8 @@ func (b *piSessionBuilder) losses() []Loss {
 		{
 			Category:    "unresolved_source_parents",
 			Disposition: DispositionCarriedWithCaveat,
-			Count:       b.lossUnresolvedParents,
-			Detail: "the source's own relation named a record this read does not hold (a record with no " +
-				"identity of its own, or a parent outside the read) -- or recorded no parent for a record " +
-				"that is not the conversation's first -- so these entries follow the entry before them, " +
-				"which is a relation this conversion invented. The entries and their order are unaffected; " +
-				"what the count names is that the source's own place in the tree is not the one written",
+			Count:       b.tree.unresolved,
+			Detail:      unresolvedSourceParentsDetail(),
 		},
 		{
 			Category:    "pre_compaction_history",
@@ -1353,10 +1245,10 @@ func piFormatLimits() []FormatLimit {
 		},
 		{
 			Category: "model_provider_binding",
-			Detail: "a Pi session binds no model provider to itself: its records carry a provider and a " +
-				"model per assistant message, and a resumed turn uses whatever model the caller's Pi " +
-				"configuration selects. A converted session therefore records none of its own and " +
-				"cannot be refused for recording the wrong one",
+			Detail: "a Pi session binds no model provider to itself: a resumed turn uses whatever model " +
+				"and provider the caller's Pi configuration selects, whatever the records name. A " +
+				"converted session records no provider (the source read answers none -- see " +
+				"message_model_attribution) and therefore cannot be refused for recording the wrong one",
 		},
 		{
 			Category: "turn_boundaries",

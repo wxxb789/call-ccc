@@ -330,16 +330,24 @@ says so.
   found matching '…'`, which is what makes the first arm an answer about *this* session rather than about
   a process that started. With `--resume-prompt` the run also drives one real turn through the invocation
   the report printed, prints the target's own answer under `TURN_OUTPUT_MARKER`, and requires the session
-  file to have grown. The Pi home it uses is a scratch agent directory whose `models.json` holds the
+  file to have grown. The scratch home a run makes for itself holds a `models.json` seeded from the
   host's provider definitions with every credential-bearing field dropped (`apiKey`, `headers`) and the
   chosen provider's key left as an `$ENV` reference, so nothing is read from or written to a credential
-  store; a host without the harness installed ends as `RESULT: INCOMPLETE` (exit 2) naming what could not
-  run, never as a pass. It builds `ccc` into `bin/`, which `.gitignore` covers, so a run leaves no
-  untracked file for the `parity` step to report; its `--target-home`-shaped flag is `--pi` for the Pi
-  binary and, for the `--direction pi-to-claude` half, `--claude PATH` names the Claude Code binary to
-  drive (its absence from `PATH` is exactly the case that flag exists for), and the fabricated unrelated
-  session it plants is removed again in a `finally`, so a home the caller named is left as it was found
-  apart from the converted session.
+  store; a home the caller names with `--target-home` is **read, never written to** — the seed would
+  replace a configuration the caller keeps there, and the comparisons this run makes cover session files
+  only — and the provider check then reports what that home already defines. A host whose harness is
+  absent ends as `RESULT: INCOMPLETE` (exit 2) naming what could not run, never as a pass: for
+  `--direction claude-to-pi` a missing Pi binary is that verdict before any check runs, while the
+  `pi-to-claude` direction needs no Pi at all (its source is a committed fixture read by the inherited
+  reader and its native half is Claude's loader). It builds `ccc` into `bin/`, which `.gitignore` covers,
+  so a run leaves no untracked file for the `parity` step to report; `--pi PATH` names the Pi binary the
+  *conversion* is driven through — the resolved executable is what the CLI is handed as
+  `--target-binary` and what the version query and the loader stage name, so a binary outside `PATH` is
+  the one verified rather than a second installation a bare name would find — and, for the
+  `--direction pi-to-claude` half, `--claude PATH` names the Claude Code binary to drive (its absence
+  from `PATH` is exactly the case that flag exists for). The fabricated unrelated session it plants is
+  removed again in a `finally`, so a home the caller named is left as it was found apart from the
+  converted session (and its own configuration, which the run never touched).
 - `scripts/native_check_common.py` — the mechanism the native checks share, so none keeps its own
   copy of it: the file digests (`sha256`, `tree_digest`), the check recorder (`record`, `RESULTS`), the
   subprocess runner (`run`), the POSIX-shell reading of a rendered command (`shell_words`,

@@ -56,25 +56,25 @@ claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 → pi
   fidelity:     1 malformed line(s)
   boundary:     2051 byte(s) read; the file is the size the read's own snapshot recorded (a size match, not a byte-identity check)
   records:      the source's records end at a line feed at byte 2051: the file ends at a record boundary
-  converted:    pi-session-jsonl, 3091 bytes: 6 message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies), 0 turn(s)
+  converted:    pi-session-jsonl, 3051 bytes: 6 message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies), 0 turn(s)
   carried-with-caveat: unrecorded_token_usage ×4
   carried-with-caveat: tool_name_vocabulary ×1
   carried-with-caveat: message_model_attribution ×2
   carried-with-caveat: pre_compaction_history ×4
   omitted:      malformed_source_lines ×1
-  installed:    /tmp/ev5/pi-home/sessions/--home-user-code-example-api--/2026-05-04T09-15-00Z_01a1e9f2-d50d-755d-a9ac-1d2a2d227bd1.jsonl [hard-link]
+  installed:    /tmp/ev5/pi-home/sessions/--home-user-code-example-api--/2026-05-04T09-15-00Z_01a1ea58-e204-746f-b763-6725d96fba38.jsonl [hard-link]
   source file:  unchanged (sha256 2bd510821d4abf83235752eff81e0e9824d0c41b3d2d4b84956d1130992467b6, taken before and after the conversion)
-  target id:    01a1e9f2-d50d-755d-a9ac-1d2a2d227bd1
+  target id:    01a1ea58-e204-746f-b763-6725d96fba38
   working dir:  /home/user/code/example-api
-  resume:       cd /home/user/code/example-api && PI_CODING_AGENT_DIR=/tmp/ev5/pi-home ccc-no-such-harness --session 01a1e9f2-d50d-755d-a9ac-1d2a2d227bd1
-  non-interactive resume: cd /home/user/code/example-api && PI_CODING_AGENT_DIR=/tmp/ev5/pi-home ccc-no-such-harness --session 01a1e9f2-d50d-755d-a9ac-1d2a2d227bd1 -- '<prompt>'
+  resume:       cd /home/user/code/example-api && PI_CODING_AGENT_DIR=/tmp/ev5/pi-home ccc-no-such-harness --session 01a1ea58-e204-746f-b763-6725d96fba38
+  non-interactive resume: cd /home/user/code/example-api && PI_CODING_AGENT_DIR=/tmp/ev5/pi-home ccc-no-such-harness --session 01a1ea58-e204-746f-b763-6725d96fba38 -- '<prompt>'
   cli_version:  1.5.2 (writer-pin)
   structure:    verified (the inherited AgentsView Pi reader over the installed session)
   native load:  not-verified (the target harness's own loader (pi --mode rpc, get_state/get_messages, with no model variables in its environment, plus an unknown-id control))
                 ccc-no-such-harness is not on PATH, so the installed session's native load could not be verified (ccc-no-such-harness is not on PATH)
   native resume: not-requested (one turn in the installed session through the target harness's non-interactive resume (pi -p --session))
                 not requested (--verify load)
-  warning:      the target harness was not found on PATH: the conversation is converted and installed at /tmp/ev5/pi-home/sessions/--home-user-code-example-api--/2026-05-04T09-15-00Z_01a1e9f2-d50d-755d-a9ac-1d2a2d227bd1.jsonl, and its native load is unverified
+  warning:      the target harness was not found on PATH: the conversation is converted and installed at /tmp/ev5/pi-home/sessions/--home-user-code-example-api--/2026-05-04T09-15-00Z_01a1ea58-e204-746f-b763-6725d96fba38.jsonl, and its native load is unverified
   carried:      AgentsView 83195c8a6861b8c74a4b6cb87512817fed6f8584, unmodified (scripts/upstream-parity.py)
 ```
 
@@ -82,10 +82,10 @@ The same run without a target binary present exits 0 (the native half could not 
 not failed), and the installed session's bytes are what its record says:
 
 ```console
-{"type":"session","version":3,"id":"01a1e9f2-d50d-755d-a9ac-1d2a2d227bd1","timestamp":"2026-05-04T09-15-00.000Z","cwd":"/home/user/code/example-api"}
+{"type":"session","version":3,"id":"01a1ea58-e204-746f-b763-6725d96fba38","timestamp":"2026-05-04T09-15-00.000Z","cwd":"/home/user/code/example-api"}
 {"type":"message","id":"…","parentId":null,"timestamp":"2026-05-04T09-15-00.000Z","message":{"role":"user","content":"Summarize the retry policy in internal/retry/policy.go.","timestamp":1777886100000}}
 …
-{"type":"message","id":"…","parentId":"…","timestamp":"2026-05-04T09-15-09.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Four attempts with exponential backoff, capped at 30s between attempts."}],"provider":"claude","model":"claude-sonnet-4-5","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0,"totalFromProvider":false}},"stopReason":"stop","timestamp":1777886109000}}
+{"type":"message","id":"…","parentId":"…","timestamp":"2026-05-04T09-16:36.000Z","message":{"role":"assistant","content":[{"type":"text","text":"The cap is configured in internal/retry/config.go as maxBackoffSeconds."}],"model":"claude-sonnet-4-5","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0,"totalFromProvider":false}},"stopReason":"stop","timestamp":1777886196000}}
 ```
 
 (The installed file's own bytes are printed in the native run below's `entries {'compaction': 1, …}`
@@ -102,36 +102,36 @@ PASS: ccc builds with the flags upstream ships
 PASS: ccc continue writes one JSON result document
 PASS: the conversion reports the conversation it carried and every loss category — carried 6 message(s), 1 call(s), 1 result(s); loss categories named: 29
 PASS: the structural read-back verified the installed session
-PASS: ccc continue exits 0 for a conversion whose verification ran — exit 0; stderr No session found matching '53d26c35-5ceb-4e4a-b391-3f0c925eee38'
-PASS: the installed session exists at the reported path — sessions/--tmp-ccc-pi-native-check-456iff4z-workspace--/2026-05-04T09-15-00Z_01a1ea30-ddec-7896-9b8b-9b7e738df4aa.jsonl [hard-link]
-PASS: the installed file is a Pi session, installed where its working directory spells — sessions/--tmp-ccc-pi-native-check-456iff4z-workspace--/2026-05-04T09-15-00Z_01a1ea30-ddec-7896-9b8b-9b7e738df4aa.jsonl; entries {'compaction': 1, 'message': 10, 'role:assistant': 5, 'role:system': 1, 'role:toolResult': 1, 'role:user': 3, 'session': 1, 'thinking_level_change': 1}
+PASS: ccc continue exits 0 for a conversion whose verification ran — exit 0; stderr No session found matching '578ff735-2104-4477-9fcd-241d85cb02a3'
+PASS: the installed session exists at the reported path — sessions/--tmp-ccc-pi-native-check-b_riuzfm-workspace--/2026-05-04T09-15-00Z_01a1ea56-ad10-7cd0-ae0b-b54550b6e52f.jsonl [hard-link]
+PASS: the installed file is a Pi session, installed where its working directory spells — sessions/--tmp-ccc-pi-native-check-b_riuzfm-workspace--/2026-05-04T09-15-00Z_01a1ea56-ad10-7cd0-ae0b-b54550b6e52f.jsonl; entries {'compaction': 1, 'message': 10, 'role:assistant': 5, 'role:system': 1, 'role:toolResult': 1, 'role:user': 3, 'session': 1, 'thinking_level_change': 1}
 PASS: the installed file carries the source's own first prompt — 'Summarize the retry policy in internal/retry/policy.go.'
 PASS: the installed file holds the source's tool call and its result — call block(s) ['Read'], toolResult record(s) 1
 PASS: the installed file's assistant records carry a usage object — 5 assistant message(s), 0 without a usage object
-PASS: the load check verified the installed session natively — the harness's own loader read the session and answered about it (sessionId "01a1ea30-ddec-7896-9b8b-9b7e738df4aa", messageCount 3); the same question with an unknown session id answered "No session found matching". The check ran against a throw-away copy of the converted bytes (/tmp/ccc-pi-load-4104021790/sessions/--tmp-ccc-pi-native-check-456iff4z-workspace--/2026-05-04T09-15-00Z_01a1ea30-ddec-78 …[the rest of this output was dropped]
-PASS: the harness's own loader answers about the installed session — sessionId '01a1ea30-ddec-7896-9b8b-9b7e738df4aa', messageCount 6
+PASS: the load check verified the installed session natively — the harness's own loader read the session and answered about it (sessionId "01a1ea56-ad10-7cd0-ae0b-b54550b6e52f", messageCount 3); the same question with an unknown session id answered "No session found matching". The check ran against a throw-away copy of the converted bytes (/tmp/ccc-pi-load-1726339470/sessions/--tmp-ccc-pi-native-check-b_riuzfm-workspace--/2026-05-04T09-15-00Z_01a1ea56-ad10-7c …[the rest of this output was dropped]
+PASS: the harness's own loader answers about the installed session — sessionId '01a1ea56-ad10-7cd0-ae0b-b54550b6e52f', messageCount 6
 PASS: the loader's own message list is the file's model-visible history — loader ['compactionSummary', 'user', 'assistant', 'system', 'user', 'assistant'] vs file ['compactionSummary', 'user', 'assistant', 'system', 'user', 'assistant']
 PASS: the unknown-id control arm reports no such session — No session found matching '01a1c335-dead-beef-0000-000000000000'
 PASS: the load check ran against a copy and left the installed file alone
-PASS: the resume check verified one real turn through the printed invocation — the harness answered from the installed session in one turn and wrote its own records into it (the session file went from 3107 to 33039 bytes)
 ```
 
 the turn's own output (the target's answer, as the harness printed it):
     PROBE-TURN-OK
 
 ```console
+PASS: the resume check verified one real turn through the printed invocation — the harness answered from the installed session in one turn and wrote its own records into it (the session file went from 3067 to 32985 bytes)
 PASS: the turn's answer contains 'PROBE-TURN-OK' — PROBE-TURN-OK
-PASS: the printed resume_command reads as a POSIX shell line naming the session — cd /tmp/ccc-pi-native-check-456iff4z/workspace && PI_CODING_AGENT_DIR=/tmp/ccc-pi-native-check-456iff4z/pi-home /home/azureuser/.local/share/mise/installs/pi/latest/pi/pi --session 01a1ea30-ddec-7896- …[the rest of this output was dropped]
-PASS: the printed exec_resume_command reads as a POSIX shell line naming the session — cd /tmp/ccc-pi-native-check-456iff4z/workspace && PI_CODING_AGENT_DIR=/tmp/ccc-pi-native-check-456iff4z/pi-home /home/azureuser/.local/share/mise/installs/pi/latest/pi/pi --session 01a1ea30-ddec-7896- …[the rest of this output was dropped]
+PASS: the printed resume_command reads as a POSIX shell line naming the session — cd /tmp/ccc-pi-native-check-b_riuzfm/workspace && PI_CODING_AGENT_DIR=/tmp/ccc-pi-native-check-b_riuzfm/pi-home /home/azureuser/.local/share/mise/installs/pi/latest/pi/pi --session 01a1ea56-ad10-7cd0- …[the rest of this output was dropped]
+PASS: the printed exec_resume_command reads as a POSIX shell line naming the session — cd /tmp/ccc-pi-native-check-b_riuzfm/workspace && PI_CODING_AGENT_DIR=/tmp/ccc-pi-native-check-b_riuzfm/pi-home /home/azureuser/.local/share/mise/installs/pi/latest/pi/pi --session 01a1ea56-ad10-7cd0- …[the rest of this output was dropped]
 PASS: the source fixture tree is unchanged — 1 file(s) digested before and after
 PASS: the planted unrelated session is unchanged
 PASS: every session the home already held is unchanged
-PASS: the conversion wrote no id the home already held — 01a1ea30-ddec-7896-9b8b-9b7e738df4aa is new among the session id(s) the home's own header lines record
+PASS: the conversion wrote no id the home already held — 01a1ea56-ad10-7cd0-ae0b-b54550b6e52f is new among the session id(s) the home's own header lines record
 RESULT: PASS — 23 check(s), none failed
 ```
 
 What the two arms answer, in Pi's own words rather than this record's: `get_state` for the installed
-session — `{"sessionId":"01a1ea30-ddec-7896-9b8b-9b7e738df4aa","messageCount":3, …}` (the count is the
+session — `{"sessionId":"01a1ea56-ad10-7cd0-ae0b-b54550b6e52f","messageCount":3, …}` (the count is the
 message-visible history *at the moment each arm asked*, which is why the CLI's own load check — the arm
 that drives a throw-away copy of the bytes the conversion installed — answers `3`, while the check's own
 re-ask below, made after the real turn appended the harness's records, answers `6`) — and the unknown-id
@@ -144,7 +144,7 @@ session without a model turn. Three of the block's lines end where the script's 
 (`…[the rest of this output was dropped]`): the load check's detail at 400 characters and the two printed
 invocation lines at 200 each. The second half
 ran one real turn through the invocation the report printed: the harness answered from the installed
-session and wrote its own records into it (`3107 → 33039` bytes), and the answer is the block above.
+session and wrote its own records into it (`3067 → 32985` bytes), and the answer is the block above.
 
 Note what the *file* holds after the turn, because the `entries` line and the two counts must reconcile:
 the `10` message entries the check counted are the `7` the pre-turn file held — the conversion's own `6`
@@ -172,19 +172,19 @@ pi:01a1c335-7098-71c2-a91b-b5295c0464f5 → claude
   converted:    claude-code-transcript-jsonl, 2773 bytes: 4 message(s), 1 tool call(s), 1 tool result(s), 0 boundary(ies), 0 turn(s)
   carried-with-caveat: tool_name_vocabulary ×1
   omitted:      message_model_attribution ×3
-  installed:    /tmp/ev5/claude-home/projects/-home-user-code-example-api/6d326207-d7e8-42f1-aa5d-a3540725e418.jsonl [hard-link]
+  installed:    /tmp/ev5/claude-home/projects/-home-user-code-example-api/7dd0e2c1-547f-4674-bdbc-376948e43d4a.jsonl [hard-link]
   source file:  unchanged (sha256 7395c3b0309a09501d9041b36ad46f471c513584e220940eb325174bc111a2e6, taken before and after the conversion)
-  target id:    6d326207-d7e8-42f1-aa5d-a3540725e418
+  target id:    7dd0e2c1-547f-4674-bdbc-376948e43d4a
   working dir:  /home/user/code/example-api
-  resume:       cd /home/user/code/example-api && CLAUDE_CONFIG_DIR=/tmp/ev5/claude-home ccc-no-such-harness --resume 6d326207-d7e8-42f1-aa5d-a3540725e418
-  non-interactive resume: cd /home/user/code/example-api && CLAUDE_CONFIG_DIR=/tmp/ev5/claude-home ccc-no-such-harness -p --output-format json --resume 6d326207-d7e8-42f1-aa5d-a3540725e418 -- '<prompt>'
+  resume:       cd /home/user/code/example-api && CLAUDE_CONFIG_DIR=/tmp/ev5/claude-home ccc-no-such-harness --resume 7dd0e2c1-547f-4674-bdbc-376948e43d4a
+  non-interactive resume: cd /home/user/code/example-api && CLAUDE_CONFIG_DIR=/tmp/ev5/claude-home ccc-no-such-harness -p --output-format json --resume 7dd0e2c1-547f-4674-bdbc-376948e43d4a -- '<prompt>'
   cli_version:  2.1.326 (writer-pin)
   structure:    verified (the inherited AgentsView Claude reader over the installed session)
   native load:  not-verified (the target harness's own loader (claude --bare --resume, with no model credentials in its environment, plus an unknown-id control))
                 ccc-no-such-harness is not on PATH, so the installed session's native load could not be verified (ccc-no-such-harness is not on PATH)
   native resume: not-requested (one turn in the installed session through the target harness's non-interactive resume (claude -p --resume))
                 not requested (--verify load)
-  warning:      the target harness was not found on PATH: the conversation is converted and installed at /tmp/ev5/claude-home/projects/-home-user-code-example-api/6d326207-d7e8-42f1-aa5d-a3540725e418.jsonl, and its native load is unverified
+  warning:      the target harness was not found on PATH: the conversation is converted and installed at /tmp/ev5/claude-home/projects/-home-user-code-example-api/7dd0e2c1-547f-4674-bdbc-376948e43d4a.jsonl, and its native load is unverified
   carried:      AgentsView 83195c8a6861b8c74a4b6cb87512817fed6f8584, unmodified (scripts/upstream-parity.py)
 ```
 
@@ -213,13 +213,13 @@ The same direction through the route's own native harness,
 ```console
 PASS: ccc builds with the flags upstream ships
 PASS: ccc continue writes one JSON result document
-PASS: the conversion reports the conversation it carried and every loss category — carried 4 message(s), 1 call(s), 1 result(s); loss categories named: 26
+PASS: the conversion reports the conversation it carried and every loss category — carried 4 message(s), 1 call(s), 1 result(s); loss categories named: 27
 PASS: the structural read-back verified the installed session
-PASS: ccc continue exits 0 for a conversion whose verification ran — exit 0; stderr No conversation found with session ID: b79b21f7-1ff1-4dec-8457-09c91501ac17
-PASS: the installed session exists at the reported path — projects/-tmp-ccc-pi-native-check-kb11tuuq-workspace/afc702a9-efc3-478e-9e52-7c1004448a1f.jsonl [hard-link]
-PASS: the load check verified the installed session natively — the harness's loader resolved the installed session and answered about it (subtype "success", ter…[the rest of this output was dropped]
-PASS: the printed resume_command reads as a POSIX shell line naming the session — cd /tmp/ccc-pi-native-check-kb11tuuq/workspace && CLAUDE_CONFIG_DIR=/tmp/ccc-pi-native-check-kb11tuuq/claude-home /home/azureuser/.local/share/ccc-native/cla…[the rest of this output was dropped]
-PASS: the printed exec_resume_command reads as a POSIX shell line naming the session — cd /tmp/ccc-pi-native-check-kb11tuuq/workspace && CLAUDE_CONFIG_DIR=/tmp/ccc-pi-native-check-kb11tuuq/claude-home /home/azureuser/.local/share/ccc-native/cla…[the rest of this output was dropped]
+PASS: ccc continue exits 0 for a conversion whose verification ran — exit 0; stderr No conversation found with session ID: ca993503-d705-4596-8ad7-f97d41710810
+PASS: the installed session exists at the reported path — projects/-tmp-ccc-pi-native-check-f20uwg36-workspace/fddd665a-79a8-461f-b277-03ab3137a34d.jsonl [hard-link]
+PASS: the load check verified the installed session natively — the harness's loader resolved the installed session and answered about it (subtype "success", terminal reason "api_error", result "Not logged in · Please run /login"); the same command with an unknown session id answered "No conversation found with session ID: ca993503-d705-4596-8ad7-f97d41710810". The check ran against a throw-away copy of the converted bytes (/tmp/ccc-claude-load-381753810/proje …[the rest of this output was dropped]
+PASS: the printed resume_command reads as a POSIX shell line naming the session — cd /tmp/ccc-pi-native-check-f20uwg36/workspace && CLAUDE_CONFIG_DIR=/tmp/ccc-pi-native-check-f20uwg36/claude-home /home/azureuser/.local/share/ccc-native/claude-cli/node_modules/.bin/claude --resume f …[the rest of this output was dropped]
+PASS: the printed exec_resume_command reads as a POSIX shell line naming the session — cd /tmp/ccc-pi-native-check-f20uwg36/workspace && CLAUDE_CONFIG_DIR=/tmp/ccc-pi-native-check-f20uwg36/claude-home /home/azureuser/.local/share/ccc-native/claude-cli/node_modules/.bin/claude -p --outpu …[the rest of this output was dropped]
 PASS: the source fixture tree is unchanged — 1 file(s) digested before and after
 PASS: the planted unrelated session is unchanged
 PASS: every session the home already held is unchanged
@@ -288,12 +288,29 @@ same message list:   True
 | the boundary's record names no kept range and no checkpoint | `TestPiSessionCarriesACompactionBoundaryAsTheTargetsOwnRecord`: `firstKeptEntryId` is the record's own id (Pi's retain-none shape) and `systemMessage` is an explicit `null` |
 | the branch's turn is *recorded history*, not an invented active turn | the writer writes exactly the entries the reader gave it, in the file's own order, and the walk the target's own loader makes is the source's; the assistant turn the conversation left stays in the file, off that walk, as the source's own file holds it (the BEFORE/AFTER block above is that assertion taken natively) |
 
-What the conversion does **not** do, and says so: it never synthesises a `branch_summary` entry (the
-source records no summary for the abandoned path, and writing one would invent it), it never presents the
-abandoned turn as an active one, and it never drops the branch either — the records the source wrote stay
-in the file. `sidechain_messages` is the category for records the *reader* marks as a subagent's turn;
-those are omitted and counted, and `unresolved_source_parents` counts the relations the read could not
-answer.
+The same fixture is the shape this increment's *outbound* routes had to be told about, and the review
+round this pass answers measured the difference there too: the Piper → Claude Code and Pi → Codex
+conversions this build shipped wrote every record/message, so the compaction boundary and the retry
+exchange the fixture records *off* its own line became part of the target's model-visible conversation —
+the abandoned prompt standing as an active user turn. The two routes now handle it in the two ways their
+formats allow, and each is pinned by a case that measures the *context* (the walk the target's loader
+makes from the file's last record) rather than a file-wide role count:
+
+| Property | Evidence |
+| --- | --- |
+| a Claude Code target is written as the source's own tree | `TestContinueFromPiKeepsACompactedAndBranchedHistoryCoherent` converts the fixture `pi:… → --to claude` and requires the installed transcript's own walk — the path from its last record back through `parentUuid`, read by `transcriptWalkTexts` from the file's own bytes — to equal the source file's walk (`[user, assistant, assistant]`): the abandoned prompt and its answer are in the file *off* that walk, and the compaction pair stands beside the branch as the source recorded it. Read back through the inherited Claude reader: `structure: verified` with the boundary the conversion wrote. The case is red against the sequential chain this build shipped (measured while this pass was written: that walk held the summary, the abandoned prompt and its answer, in the file's own order). |
+| a Codex rollout target writes the source's line and counts the rest | `TestContinueFromPiIntoCodexOmitsAnAbandonedBranch`: the conversion reports `inactive_branch_records = 3` (omitted), `carried.CompactionBoundaries = 0`, and the installed rollout holds no `compacted` record — the boundary stood on the branch, and a record written there would cut a line it was never on; the read-back is the source's three turns and the branch's words are absent from the file, because a response item written into this target's log becomes model-visible history. |
+| the archive read answers the same relations as the source read | `TestContinueFromTheArchiveKeepsAPiSessionsBranch`: the fixture is ingested into an isolated archive, its source copy removed, and the pipeline's fallback conversion (`read from: archive`) must write the same model-visible walk as the source file's own, with `unresolved_source_parents = 0`. It is red on the tree before this pass (`messageFromArchive` dropped the two identity columns while the inherited `messages` table held them): that conversion's walk was `[user, assistant, user, assistant, assistant]`. |
+| a record that emits dialogue and a result is one place in the tree | `TestPiSessionChainsPastAMixedRecordToItsResult`: the entry written for the record's tool result is what the record after it hangs off (the record's *final* entry), the result is on the loader's walk, and the walk's roles are `[user, assistant, user, toolResult, assistant]` — red against mapping the source record to its first entry, which leaves the result off the walk while the file still holds it. |
+
+What the conversions do **not** do, and say so: none synthesises a `branch_summary` entry (the source
+records no summary for the abandoned path, and writing one would invent it) and none presents the
+abandoned turn as an active one. The two tree-shaped targets keep every record the source wrote — off the
+walk when the source held it off one — while the Codex target, whose log has no parent relation to hang a
+record off, omits the off-line records and counts them (`inactive_branch_records`) instead of reviving
+them as active history. `sidechain_messages` is the category for records the *reader* marks as a
+subagent's turn; those are omitted and counted, and `unresolved_source_parents` counts the relations the
+read could not answer.
 
 ## 5. What travels, source side and target side
 
@@ -303,8 +320,9 @@ answer.
 | the tool call and its result | `PASS: the installed file holds the source's tool call and its result — call block(s) ['Read'], toolResult record(s) 1` (§2); the inherited Pi reader agrees on the round trip (`structure: verified` in §1 and §3) |
 | the source's own words | `PASS: the installed file carries the source's own first prompt — 'Summarize the retry policy in internal/retry/policy.go.'` (§2) |
 | a Pi conversation with a tool call and its result, as a **source** | converted into a Claude Code transcript with `1 tool call(s), 1 tool result(s)` carried (§3), read back `verified` by the inherited Claude Code reader |
-| the source's recorded provider and model | carried verbatim on each converted Pi assistant entry (`"provider":"claude","model":"claude-sonnet-4-5"` in §1's excerpt) and reported as the `message_model_attribution` caveat, while the session binds no model of its own (`model_provider_binding` in the format limits) |
-| the converted history as the **answer** of a real turn in the installed Pi session | the recorded turn's answer holds the words the check asked for — `PROBE-TURN-OK` (§2); the same run reports the turn's own growth beside it (3107 → 33039 bytes, §2, and §8 explains why a re-run's number differs) |
+| the model the source's messages recorded | carried verbatim on each converted Pi assistant entry (`"model":"claude-sonnet-4-5"` in §1's excerpt) and reported as the `message_model_attribution` caveat; **no provider** is written, because the read answers the model each source message recorded but not the endpoint that served it (the read's session-level provider names the harness that wrote the words), and the report records none (`model_provider_source` = `unrecorded`, with the reason in `model_provider_detail`), while the session binds no model of its own (`model_provider_binding` in the format limits) |
+| a Pi conversation with a branch the conversation left, as a **source** | `pi:… → --to claude` is written as the source's own tree, so the target's own walk is the source's; `pi:… → --to codex` omits the records the source placed off its line and counts them (`inactive_branch_records ×3`) — both pinned by the cases §4's table names |
+| the converted history as the **answer** of a real turn in the installed Pi session | the recorded turn's answer holds the words the check asked for — `PROBE-TURN-OK` (§2); the same run reports the turn's own growth beside it (3067 → 32985 bytes, §2, and §8 explains why a re-run's number differs) |
 | the source file during and after every run | `source file: unchanged (sha256 …, taken before and after the conversion)` in each CLI run (§1, §3), and in the native run `PASS: the source fixture tree is unchanged — 1 file(s) digested before and after` with the planted unrelated session and every session the home already held unchanged beside it (§2) |
 | a session the target home already held | untouched in every run: `PASS: the planted unrelated session is unchanged` and `PASS: every session the home already held is unchanged` (§2), and `PASS: the conversion wrote no id the home already held` |
 
@@ -324,7 +342,7 @@ gate: go=… targets=./cmd/ccc/... ./internal/ccc/...
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 237 tests in 7.928s (rc=0)
+  PASS     selftest Ran 242 tests in 8.074s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 29 project-owned prefix(es); files seen by git: 5669 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     secrets  no leaks found in 114 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
@@ -353,6 +371,9 @@ Test counts and the changes to existing cases:
 | one existing case lost a `t.Skip` and now runs on every host: `TestPiLoadCheckRefusesWhenTheRecordedWorkingDirectoryIsNotHere` owns the missing directory it asks about and answers the harness lookup through the check's own seam | `internal/ccc/continue_pi_test.go` |
 | one existing case gained the third provider's row: the no-line-feed rule now holds for a Pi source too, with the boundary's offset claim asserted per provider (the Pi provider's declarations claim none, and its boundary says so) | `internal/ccc/continue_growth_test.go` (the `pi-complete-turn.jsonl` fragment is now consumed, which is what it was committed for) |
 | the native harness's own cases: the walk, the full invocation word vector, the session identity read from headers, the usage rule, the guarded provider read, the named skip for a host with no provider, the `--claude` flag, and the build output's location | `scripts/tests/test_pi_native_check.py` (15 → 30 cases) |
+| the fix pass this round answers: the Pi → Claude Code history conversion measured by the installed transcript's own walk, the Pi → Codex conversion that omits the off-line records and reports no boundary, the archive fallback that must answer the same relations as the source read, the mixed dialogue/result record that must leave its result on the walk, the assistant entry that records the model and no provider it cannot answer, and the identified-but-parentless record whose invented relation the count covers | `internal/ccc/continue_pi_test.go` (9 → 11 cases), `internal/ccc/pi_target_test.go` (9 → 12) |
+| the two loss-category lists gained the categories the new code paths report (`unresolved_source_parents` for the Claude target; `inactive_branch_records` for the Codex target), and one existing case was retargeted at the path it now pins (`NoProviderConfiguredIsANamedSkip` runs with `give_home=False`, so it still exercises the seeded-scratch-home path whose skip names the host's configuration) | `internal/ccc/claude_target_test.go`, `internal/ccc/codex_target_test.go`, `scripts/tests/test_pi_native_check.py` |
+| the native harness's own cases for the fixes: `--pi PATH` resolving the executable the conversion is driven through (asserted against the version query and `--target-binary`), the missing-Pi run's `RESULT: INCOMPLETE` verdict and the reverse direction needing no Pi at all, and the run's own home being seeded while a caller-named home is never written to (asserted both in the report and against the file system) | `scripts/tests/test_pi_native_check.py` (30 → 35 cases) |
 
 The upstream comparison (`python3 scripts/upstream-compare.py --record`, network + a pristine checkout at
 the pin) ran three cases and agreed on all three:
@@ -400,13 +421,44 @@ conversion was re-derived unchanged (same counts, bytes and source digest — on
 and file name differ per run); §8 lists them, and §4's BEFORE/AFTER block is the fix's own native
 measurement.
 
+The fix pass this round answers changed, for the outbound routes, `internal/ccc/route_shared.go` (the
+shared `sourceTree`: one relation-resolution rule — a record's final entry is the place its children hang
+off, a tool result stands between a call and what follows it, a relation the read cannot answer follows
+the entry before it and is counted, and `inactiveSourceRecords` answers the same question for a target
+whose format is a single line), `internal/ccc/claude_target.go` (each record is chained to the entry of
+the record the source named as its parent, and the boundary pair's records stay beside the branch the
+source recorded them beside), `internal/ccc/codex_target.go` (the source's own line is written; records
+the source's relations place off it are omitted and counted as `inactive_branch_records`),
+`internal/ccc/archive.go` (`messageFromArchive` carries `SourceUUID`/`SourceParentUUID`, which the
+inherited messages table held and the adapter dropped), `internal/ccc/pi_target.go` and
+`internal/ccc/targets.go` (a converted assistant entry records the source's model and **no provider**,
+because the read answers no endpoint attribution — the read's session-level provider names the harness —
+so the report records none and says why, instead of writing the harness label the earlier revision
+wrote), `internal/ccc/route_shared.go`'s shared caveat texts (`unresolvedSourceParentsDetail`,
+`preBoundaryHistoryDetail` — the pre-boundary caveat now says what the target does where the source
+recorded the boundary *off* its own line), `scripts/pi-native-check.py` (the seed is written only into
+the scratch home the run makes itself and a caller-named `--target-home` is read, never written to;
+`--pi PATH` names the executable the *conversion* is driven through, not only the one this harness
+queries; a missing Pi for `--direction claude-to-pi` is the `RESULT: INCOMPLETE` verdict before any check
+runs, while the reverse direction runs without Pi), `AGENTS.md`, `docs/conventions.md`,
+`docs/harness.md`, `docs/goals/archive/0004-repeatable-evolving-session-handoffs.md` (the prerequisite
+link now resolves inside `archive/` and the status matches the index), `README.md`, and the cases §6's
+table names (Go test functions `258 → 263`, none removed; the suite `237 → 242`). §1's and §3's CLI
+blocks and §2's, §3's and §6's native/gate blocks above are this pass's re-derived runs (the Pi document
+is `3051` bytes where the earlier revision's was `3091` — the two `"provider":"…"` fields it no longer
+writes — and the Pi → Claude Code transcript is unchanged at `2773` bytes, because that source is one
+line), and §8 lists the numbers.
+
 **Goal 0004 moved to the archive in this increment.** It was still sitting in `docs/goals/` with a
 "Implemented on `feat/0004-repeatable-evolving-session-handoffs`" status while `origin/main` already
 carried its merge (`8a8265a feat(0004): Repeat continuation as source history grows (#6)`), which is the
-condition `AGENTS.md` states for archiving. The file moved unchanged to
-`docs/goals/archive/0004-repeatable-evolving-session-handoffs.md`, its own `Status` line was left as the
-record of its acceptance, and the three links that named it from `docs/plans/` and `docs/evidence/` were
-retargeted at the archive path.
+condition `AGENTS.md` states for archiving. The file moved to
+`docs/goals/archive/0004-repeatable-evolving-session-handoffs.md`, the three links that named it from
+`docs/plans/` and `docs/evidence/` were retargeted at the archive path, and — in this fix pass, after the
+review round found both — its own prerequisite link now resolves inside `archive/` (it had been left
+spelling `archive/0002-…`, which the move made `archive/archive/0002-…`) and its `Status` line reads
+`Accepted: merged onto main as 8a8265a; archived`, matching the index row instead of still awaiting
+acceptance.
 
 ## 7. Limits and residual risks
 
@@ -426,11 +478,26 @@ retargeted at the archive path.
 - **The Pi route writes no session-level provider binding and prints no model flag** (Q-0005-04): a
   resumed turn runs under whatever the caller's Pi configuration selects. A caller who needs a specific
   model passes Pi's own `--provider`/`--model` flags, which this route deliberately does not guess.
-- **An unanswerable source relation is carried as the entry before it.** Where a record names a parent the
-  read does not hold, the written entry follows the entry before it and the run counts
-  `unresolved_source_parents`; the count names the *relation* this conversion invented, not a dropped
-  record — every record the reader produced is still written. Reversal: write only the source's active
-  path and count the off-path records as omitted (Q-0005-07).
+- **An unanswerable source relation is carried as the entry before it, on the tree-shaped targets.** Where
+  a record names a parent the read does not hold, the written entry follows the entry before it and the
+  run counts `unresolved_source_parents`; the count names the *relation* this conversion invented, not a
+  dropped record — every record the reader produced is still written (Q-0005-07). The Codex target takes
+  that decision's other branch, because its format has no parent relation at all: it writes the source's
+  line and counts the records the source placed off it as `inactive_branch_records` (Q-0005-09), so that
+  route *does* omit records by design where the two tree-shaped routes keep them.
+- **The Pi → Claude Code route's branch handling is pinned offline, not by driving Claude Code against a
+  branch-bearing transcript.** The case asserts the installed transcript's own `parentUuid` walk (the walk
+  the loader follows, measured for the loader's link requirement) against the source file's, and the
+  inherited reader's round trip; the native check that drives Claude Code's loader converts the *ordinary*
+  fixture, and this record has no measured Claude loader answer for a transcript whose last record's path
+  bypasses a compaction pair. The Pi → Codex half is the same shape: its context is pinned by the
+  inherited reader's read-back and the file's own bytes, not by driving Codex's app server against the
+  omitted-branch rollout.
+- **A converted Pi assistant entry records the model and no provider** (Q-0005-08). The inherited read
+  answers the model each source message recorded but no endpoint attribution, and the read's session-level
+  provider names the harness that wrote the words, so the entry states the model and the report says a
+  provider is not recorded (`model_provider_source` = `unrecorded`). A reader that needs the source
+  endpoint has to ask the source side; this build does not guess it.
 - **The parity oracle's Pi case covers the ordinary fixture only** (Q-0005-06). The branch/compaction
   fixture's reader projection is pinned by this tree's tests and by the conversation the conversion
   carries; it has no recorded upstream dump yet.
@@ -442,10 +509,12 @@ retargeted at the archive path.
 | Number | Where it came from |
 | --- | --- |
 | `2051 bytes` / `sha256 2bd510821d4abf83…` | the Claude fixture's boundary in §1 (the same digest 0002–0004's records hold for that fixture) |
-| `3091 bytes`, `6 message(s)`, `1 call(s)`, `1 result(s)`, `1 boundary(ies)` | the Pi document §1 converted (`pi-session-jsonl`), and the installed file's own size |
-| `29 loss categories named` | the native run's own count of `conversion.losses[]` entries for the Pi target (§2); the fix pass added `unresolved_source_parents`, which the writer reports with its count on every run |
-| `26 loss categories named`, `4 message(s)`, `1 call(s)`, `1 result(s)` | the Pi → Claude Code conversion (§3); unchanged by the fix pass, because the category it added belongs to the Pi *target*'s report |
-| `3107 → 33039 bytes` | the installed Pi session's growth across one real turn (§2). What the check asserts is that the file grew, not a byte count, so a later run of the same check measures a different end: the run §2 quotes measured it as printed here, and the block it replaced had measured `3123 → 33055` (an earlier re-run of that one `3123 → 33042`) |
-| `23 checks, none failed` / `12 checks, none failed` | the two native runs' verdicts (§2, §3); both were re-run for the fix pass this record names. §3's run has one check more than the `11` the first run reported, because the fix pass records the non-Pi target's load state as a check of its own |
+| `3051 bytes`, `6 message(s)`, `1 call(s)`, `1 result(s)`, `1 boundary(ies)` | the Pi document §1 converted (`pi-session-jsonl`), and the installed file's own size; `3091` before this pass dropped the two `"provider":"…"` fields a converted assistant entry no longer writes |
+| `2773 bytes`, `4 message(s)`, `1 call(s)`, `1 result(s)` | the Pi → Claude Code transcript §3 converted — unchanged by this pass, because that source's records are one line and the tree rule writes the same parents the sequential chain did |
+| `29 loss categories named` | the native run's own count of `conversion.losses[]` entries for the Pi target (§2); the earlier fix pass added `unresolved_source_parents`, which the writer reports with its count on every run |
+| `27 loss categories named`, `4 message(s)`, `1 call(s)`, `1 result(s)` | the Pi → Claude Code conversion (§3); `26` before this pass, which gave the Claude writer the `unresolved_source_parents` category too |
+| `inactive_branch_records = 3`, `carried.CompactionBoundaries = 0` | the Pi → Codex conversion of the branch fixture (§4): the three records the source's relations place off its line, omitted; the Codex-target loss list gained that category in this pass |
+| `3067 → 32985 bytes` | the installed Pi session's growth across one real turn (§2). What the check asserts is that the file grew, not a byte count, so a later run measures different ends: the runs this record has quoted measured `3123 → 33055` / `3123 → 33042` (the first revision), `3107 → 33039` (the earlier fix pass) and this pass's `3067 → 32985` |
+| `23 checks, none failed` / `12 checks, none failed` | the two native runs' verdicts (§2, §3); both were re-run for this pass. §3's run has one check more than the `11` the first run reported, because the earlier fix pass records the non-Pi target's load state as a check of its own |
 | the branch fixture's loader answers | `messageCount 3` / `[user, assistant, assistant]` for the *source* file and for its conversion, against `messageCount 4` / `[compactionSummary, user, assistant, assistant]` for the conversion the pre-fix writer produced (§4) |
-| `237 selftest cases`, `5553 carried files`, `29 owned prefixes`, `3601 gofmt-clean files`, `114 owned file(s)` scanned | the gate run (§6); the selftest count was `222` before the fix pass's cases |
+| `242 selftest cases`, `263 Go test functions` (`258` before this pass), `5553 carried files`, `29 owned prefixes`, `3601 gofmt-clean files`, `114 owned file(s)` scanned | the gate run (§6) and this pass's case count; the selftest count was `222` before the earlier fix pass's cases and `237` before this one's |

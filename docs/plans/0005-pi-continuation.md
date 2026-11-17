@@ -76,14 +76,16 @@ Consequences taken as this increment's defaults:
   (`cd <cwd> && PI_CODING_AGENT_DIR=<home> pi --session <id> …`): the first is the only way Pi's own
   lookup sees a session that belongs to another project, the second selects the home it was installed
   into.
-- **A Pi session records no provider binding of its own** (only per-message `provider`/`model`, and
-  those travelled with the source's words), so `--to pi` never writes the source's provider as the
-  session's own and never invents one: a resumed turn uses whatever the caller's Pi configuration
-  offers.
-- **The source's per-message model and provider are carried verbatim** on the assistant entries (Pi's
-  fields mean "which model produced these words", which is exactly what the source recorded); the
-  session itself binds no model, and the printed resume command names neither a provider nor a model,
-  because measured a flagged provider or model stops Pi before it opens the session.
+- **A Pi session records no provider binding of its own** (a message may name a provider and a model),
+  so `--to pi` never writes the source's provider as the session's own and never invents one: a resumed
+  turn uses whatever the caller's Pi configuration offers.
+- **The source's per-message *model* is carried verbatim on the assistant entries; no provider is
+  written** (Pi's `provider` field means the endpoint that served the words, and the read answers no
+  endpoint attribution — it reports the model each source message recorded and a *session-level* provider
+  that names the harness; this pass's review measured the earlier revision writing that harness label
+  where the fixture records `example-proxy`, so the entry now states the model and the report records no
+  provider, Q-0005-08). The session itself binds no model, and the printed resume command names neither a
+  provider nor a model, because measured a flagged provider or model stops Pi before it opens the session.
 - **Reasoning is carried as the source recorded it**: Pi's `thinking` block *is* its native shape, and
   unlike Claude Code's signed thinking blocks there is no target signature to forge. This narrows the
   loss list relative to the other routes and is reported.
@@ -100,10 +102,16 @@ Consequences taken as this increment's defaults:
   conversation left stays off that path as recorded history. Nothing is synthesised: no `branch_summary`
   is invented for an abandoned path, and no inactive branch is written as an active user turn. What the
   reader marks as a sidechain is omitted and counted (`sidechain_messages`), and a source relation the read
-  cannot resolve is counted too (`unresolved_source_parents`). 0005's review measured the alternative this
-  rule replaced: chaining every entry to the one before it put an abandoned branch's user prompt on the
-  active path and hid the source's own line behind a compaction record that stood off it — the fixtures,
-  the writer case and the conversion case pin the source's tree and the loader's own answer for it.
+  cannot resolve is counted too (`unresolved_source_parents`). a target that is *not* a tree takes the
+  other branch of the same rule: a Codex rollout has no parent relation to hang a record off, and a
+  response item written into it becomes model-visible history (measured: the branch fixture converted to a
+  rollout read back as `6` messages where the source's own line holds `3`), so that route writes the
+  source's own line and omits the records the source placed off it, counted as `inactive_branch_records`
+  (Q-0005-09). 0005's review measured the alternative this rule replaced, for both kinds of target:
+  chaining every entry to/writing every record beside the one before it put an abandoned branch's user
+  prompt on the active path and hid the source's own line behind a compaction record that stood off it —
+  the fixtures, the writer case and the conversion cases pin the source's tree, the loader's own answer
+  and the rollout's own line.
 
 ### 2.2 The exact records written
 
@@ -113,9 +121,9 @@ message timestamps are Unix milliseconds, which is what Pi writes inside `messag
 | Source evidence | Pi entry |
 | --- | --- |
 | file header | `{"type":"session","version":3,"id":<fresh uuid v7 (Pi's own `createSessionId`)>,"timestamp":<the session's own start, fixed before the entries>,"cwd":<source cwd>}` |
-| the source's recorded model and provider | carried per assistant entry (`provider`/`model`, below); no session-level `model_change` is written, because a Pi session binds no model and the model that wrote these words is carried where the words are |
+| the source's recorded model | carried per assistant entry (`model`, below); no provider is written (the read answers no endpoint attribution, Q-0005-08) and no session-level `model_change` is written, because a Pi session binds no model and the model that wrote these words is carried where the words are |
 | each user message with dialogue | `{"type":"message","id":…,"parentId":…,"timestamp":…,"message":{"role":"user","content":<text>,"timestamp":<ms>}}` |
-| each assistant message with dialogue | `{"type":"message",…,"message":{"role":"assistant","content":[{…}],"provider":<source provider>,"model":<source model>,"usage":{…},"stopReason":"stop","timestamp":<ms>}}` — `content` holds a `thinking` block for recorded reasoning, a `text` block for dialogue, and one `toolCall` block per call, in that order; `usage` is always present (measured: the loader reads `message.usage.input` for every assistant message it loads) with zero counts and is reported as a caveat |
+| each assistant message with dialogue | `{"type":"message",…,"message":{"role":"assistant","content":[{…}],"model":<source model>,"usage":{…},"stopReason":"stop","timestamp":<ms>}}` — `content` holds a `thinking` block for recorded reasoning, a `text` block for dialogue, and one `toolCall` block per call, in that order; `usage` is always present (measured: the loader reads `message.usage.input` for every assistant message it loads) with zero counts and is reported as a caveat |
 | tool calls | `{"type":"toolCall","id":<recorded tool-use id or a generated one>,"name":<source tool name>,"arguments":<recorded input object, compacted>}` inside the assistant message's content |
 | tool results | `{"type":"message",…,"message":{"role":"toolResult","toolCallId":…,"toolName":…,"content":[{"type":"text","text":<decoded output>}],"isError":<only when the source's own status says the call failed>,"timestamp":<ms>}}` |
 | a compaction boundary | `{"type":"compaction","id":…,"parentId":<the entry of the record the boundary's own parent names>,"timestamp":…,"summary":<the source's summary text>,"firstKeptEntryId":<its own id>,"systemMessage":null}` — the kept id is the record's own (Pi's retain-none shape) and the checkpoint is null, because this build has no prompt checkpoint to write and claiming a kept range would invent one |
@@ -156,7 +164,7 @@ points at something the file does not hold.
 | An assistant message with neither dialogue, reasoning nor tool evidence | **omitted**, counted (`empty_assistant_messages`) | Pi has no record for an empty message |
 | A user message with neither dialogue nor tool evidence | **omitted**, counted (`empty_user_messages` or `non_dialogue_content`) | as above, and a rendered non-dialogue payload must not be put in the user's mouth |
 | `IsSidechain` messages | **omitted**, counted (`sidechain_messages`) | a subagent's turn in the same file; Pi's own loader keeps them out of the session's context, and writing one as an ordinary turn would state the conversation's agent said it |
-| The session's recorded model on each message | **carried** (`model`/`provider`), counted with a caveat (`message_model_attribution`) | Pi's field means "the model that produced these words", which is what the source recorded |
+| The model the source recorded on a message | **carried** (`model`, with no provider written), counted with a caveat (`message_model_attribution`) | Pi's field means the model that produced these words, which is what the source recorded; the endpoint is not answered by the read (Q-0005-08) |
 | Pre-boundary history | **carried**, counted (`pre_compaction_history`) | the entries stay in the file as Pi's own compaction leaves them; the compaction record is what makes Pi rebuild context from the summary |
 | A compaction boundary whose summary holds no text | the record is still written, counted (`empty_compaction_summary`) | Pi requires a summary field; an empty one is the honest record of a boundary whose text the source did not hold |
 | Lines the source reader could not parse / a summary-fallback read / a read the provider says needs a retry | reported from the read's own fidelity (`malformed_source_lines`, `summary_transcript`, `source_needs_retry`) | identical to the other writers, because it is the read's own property |
@@ -168,8 +176,8 @@ the Codex and Claude writers do.
 timestamp and working directory, so a source's own session-level metadata (a Codex `session_meta`'s
 originator/cli version/source kind, a Claude transcript's version field) has no field to travel in;
 provider bindings on the *session* (Codex's `model_provider`, whose loader refuses a mismatch) have no
-counterpart — a Pi session records providers per message and none for itself, so a conversion records
-none and a resumed turn takes whichever model the caller's configuration selects; turn boundaries
+counterpart — a Pi session records no provider for itself, so a conversion records none and a resumed
+turn takes whichever model the caller's configuration selects; turn boundaries
 (Codex's `turn_context`) have no Pi record; attachments and images carry no bytes through this read;
 tool names travel as the source's own vocabulary.
 
@@ -243,7 +251,8 @@ offline half.
   acceptance". 0004 is *implemented on its branch, not merged*, so it stays where it is.
 - `docs/decisions/OPEN-QUESTIONS.md`: entries for the defaults this run had to take alone (the rpc-based
   offline load oracle and its control arm; the carried reasoning trace; `firstKeptEntryId` = own id;
-  the branch/sidechain rule; the model fields carried verbatim; the resume command's working directory;
+  the branch/sidechain rule (and Q-0005-09 for the one-line target); the model field carried and the
+  provider the read cannot answer (Q-0005-08); the resume command's working directory;
   the fixture's invented home path).
 - `docs/upstream.md` and the carry are untouched: no carried file changes.
 
@@ -278,11 +287,13 @@ offline half.
    (no kept range claimed) and no system message (Pi installs its own prompt at request time).
    Reversal: reconstruct a checkpoint, which would mean inventing a prompt.
 5. **Inactive branches.** Default: never synthesise them, and reproduce the source's own relation instead
-   — every entry hangs off the entry of the record the source named, so an abandoned branch is off the
-   target's active path as recorded history (the source's own semantic, and what its loader shows), and a
-   sidechain is omitted and counted. Reversal: write only the source's active path and count the off-path
-   records as omitted, or write a `branch_summary` entry, which would require inventing a summary the
-   source did not record.
+   — on the tree-shaped targets every record hangs off the record the source named, so an abandoned branch
+   is off the target's active path as recorded history (the source's own semantic, and what its loader
+   shows), and a sidechain is omitted and counted. A target whose format is one line of records takes the
+   reversal for its own shape: the Codex rollout writes the source's own line and counts the records the
+   source placed off it (`inactive_branch_records`), because a response item written there is
+   model-visible history (Q-0005-09). The remaining reversal — write a `branch_summary` entry — would
+   require inventing a summary the source did not record.
 6. **The resume command's model flags.** Default: print neither a provider nor a model. The source's
    provider is a source-side label Pi's own configuration need not define, and a flagged model can leave
    the target unable to open the session at all; the model attribution travels on the entries instead and

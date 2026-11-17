@@ -418,6 +418,7 @@ func TestCodexRolloutReportsEveryCategoryItKnows(t *testing.T) {
 		"generated_call_ids":            {0, DispositionCarriedWithCaveat},
 		"tool_name_vocabulary":          {2, DispositionCarriedWithCaveat},
 		"provider_binding":              {0, DispositionCarriedWithCaveat},
+		"inactive_branch_records":       {0, DispositionOmitted},
 		"pre_compaction_history":        {0, DispositionCarriedWithCaveat},
 		"malformed_source_lines":        {0, DispositionOmitted},
 		"summary_transcript":            {0, DispositionCarriedWithCaveat},
