@@ -287,14 +287,17 @@ attempted. The round's own edits to the script (the shared-mechanism module, the
 the renames) are therefore exercised end to end against the installed harness; the run recorded above
 stays the round that had model access.
 
-`scripts/tests/test_claude_native_check.py` pins the harness offline (18 cases, no `claude`, no `go`):
+`scripts/tests/test_claude_native_check.py` pins the harness offline (19 cases, no `claude`, no `go`):
 the shell reading of both reported command lines (the renderer's own rendering accepted; a quoted
 assignment, an unquoted shell metacharacter — a bare `&` included — a glued `&&`, a quoted operator, a
 split working directory and a line naming another session/home refused), the project-directory spelling,
 the comparison ordering — driven through the shipped `main` with its subprocess seams, where a mutating
 run must fail exactly the three protected comparisons and exit 1 — and, since the apply round, the
 platform branch of the owner-only mode check (a host that reports no POSIX mode bits answers SKIP, never
-FAIL) and the named failure of a malformed installed line (both checks' case files carry that one).
+FAIL) and the named failure of a malformed installed line (both checks' case files carry that one), and
+since the fix round the shell the turn is read by: every turn case asserts it is the shell the seam
+answered, and a host whose seam answers none gets a named SKIP with that reason rather than a line read by
+whatever `shell=True` would select (§6.3, finding 4).
 
 ### 6.2 The gate
 
@@ -397,6 +400,142 @@ record the same pin, and the only ownership changes are the two new scripts
 module `scripts/native_check_common.py`, whose line the apply round added: `scripts/upstream-import.py`'s
 `OWNED` tuple and the manifest's `owned` records), which the step reports as part of the project-owned
 set.
+
+### 6.3 The fix round (review round 1's four findings)
+
+Review round 1 read `8e1c5026…6de08c4b` and found four defects. Each was reproduced before it was fixed,
+and each changed behaviour, a document or a case — none is a comment. No `Done when` clause moved.
+
+**(1) One multi-file patch was written as two native tool calls.** The inherited Codex reader projects one
+`apply_patch` into one call per file it names (`internal/parser`'s `handleFunctionCall`), every projection
+sharing the call's id and its input — which is what the archive's file-keyed views group by. The Claude
+writer wrote a `tool_use` record per projection under one `message.id`, and the inherited Claude reader
+puts records that share a message id back into one message and keeps one block per id, so the installed
+file held one call while the writer's item list claimed two: the mandatory structure check refused the
+conversion *after* installing it. Reproduced on a new committed fixture (§ below) against the reviewed
+tree, in the check's own words:
+
+```text
+the installed session does not hold the evidence in the target document: tool call 2 is in the target
+document but not in the file: call call_02Example000000000000000000 to apply_patch (128 bytes, sha256 552563bd117ce783…)
+```
+
+`claudeTranscriptBuilder.distinctCalls` now writes the first projection of a call id and counts the ones
+it did not write as their own record; that count is reported as its own category,
+`coalesced_tool_call_projections` (carried with caveat: the call and its input travel — the patch's own
+text names every file it touched — while a second projection's per-file attribution has no field in the
+target). Pinned by `TestContinueIntoClaudeCoalescesOneCallsPerFileProjections` (the route's carried
+counts, the reported category and its reason, exactly one `tool_use` and one `tool_result` block for the
+call id in the installed file, the inherited reader's own read-back of one call, and structure
+`verified`), and the category is read through `lossCount` in
+`TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers`, which requires every known category to be
+reported on every run.
+
+**(2) A call whose only outcome was the archive's summary column vanished in silence.** `ToolCall.ResultContent`
+is the summary an archive read holds beside a call; the Codex writer already carries it for a call with no
+recorded result of its own (`callHasRecordedResult`), and the Claude writer never read the field — so the
+outcome left the transcript *and* the item list, and the structure check passed over the omission, which
+is what the finding is about. The same fallback now runs for this target under the same rule (the summary
+is a view of the archive's own recorded events, so it is written only where no result was recorded).
+Reproduced by removing the loop again: the file held `toolu_1`, `toolu_2 ×2` and no `toolu_3`, carried
+three results instead of four, and the read-back showed three — with structure `verified` either way.
+Pinned by `TestClaudeWriterWritesAnArchiveSummaryOnlyForACallWithoutResults` (the written blocks and
+carried count, no `empty_tool_results` count, and the round trip: install, read back through the inherited
+reader, structure `verified`).
+
+**(3) A relative `--target-binary` was printed unresolved for an invocation that changes directory.** A
+Claude invocation runs from the session's working directory (measured: the loader finds a session through
+the directory it is run from), so the reviewed line was
+`cd /home/user/code/example-api && CLAUDE_CONFIG_DIR=… tools/claude --resume …` while the conversion, the
+probe and the native verification had resolved `tools/claude` in the caller's own directory — two
+programs answered by one report, and a printed command that fails even after a successful verification.
+Reproduced with the caller's directory and the session's directory distinct (the failure is the test's own
+output against the reviewed tree):
+
+```text
+resume command "cd /home/user/code/example-api && CLAUDE_CONFIG_DIR='/tmp/…/003/claude home' tools/claude
+--resume 93502ad1-…" does not name the executable in the caller's directory
+```
+
+`invocationBinary` resolves a spelling that names a path against the caller's working directory before the
+route builds either vector or line, and leaves a bare name alone (a PATH lookup is not affected by a
+directory change; the Codex route's invocation changes no directory and is untouched). Pinned by
+`TestContinueResolvesARelativeTargetBinaryForTheDirectoryChangingInvocation`, which runs from a caller
+directory distinct from the session's and asserts both argument vectors, both printed lines, and that a
+bare name still travels verbatim. The `--target-binary` help line was corrected with it: it had said the
+printed commands name the binary "the way it is given here", which this rule makes untrue for a path.
+
+**(4) The native check executed a POSIX line through the platform's own command shell.** `run_shell` used
+`subprocess.run(..., shell=True)`, which selects `cmd.exe` on Windows, where `cd … && CLAUDE_CONFIG_DIR=…
+claude …` and its single-quote escaping are not a command at all: the real-turn check would fail before
+the harness was reached and report the platform instead of the conversion. The offline cases replace
+`run_shell`, so none of them could see it. The script now names the shell it reads the line with
+(`posix_shell`: `/bin/sh` on a POSIX host, else the first `sh`/`bash` on `PATH`), passes it to
+`run_shell(line, cwd, env, shell)`, and reports a host with no POSIX shell as a named **skip** with that
+reason — the shape the owner-only mode check already uses for its platform boundary. Reproduced by
+restoring the reviewed shape for one run (the platform's own shell, no boundary): the new case recorded
+`PASS` instead of `SKIP`, and the intact case was handed `"the platform's own shell"` instead of the
+seam's answer. Pinned by `test_a_host_with_no_posix_shell_reports_the_turn_as_a_boundary` (named skip with
+the reason, no turn output printed, exit 0, and the shell runner never called) and by
+`test_an_intact_claude_run_passes_the_comparisons` / `test_a_mutation_during_…`, which now also assert
+which shell the turn was handed.
+
+**The fixture the multi-file patch case needed** is committed and generated like the others:
+`codex/2026/05/06/rollout-2026-05-06T10-30-00-5b2d7c14-…jsonl` (one `apply_patch` naming
+`internal/retry/config.go` and `internal/retry/policy.go`), written by `internal/ccc/fixturegen` through
+the pinned builders, so `TestFixturesMatchTheirGenerator` pins its bytes. It is project-owned
+(`internal/ccc/` is an `owned` prefix), and it adds no manifest or `OWNED` entry: the parity step's
+project-owned set is unchanged at 28 prefixes, with `files seen by git` 5643 → 5644.
+
+**Re-measured in this round**, on this tree, against the installed harness — the load half (no model
+access used, §7) and the turn's own code path:
+
+```console
+$ python3 scripts/claude-native-check.py --claude …/claude-cli/node_modules/.bin/claude      # exit 0
+PASS: the conversion reports carried evidence and a non-zero loss category — carried 4 message(s), … 3674 byte(s); non-zero loss categories: tool_name_vocabulary=1, message_model_attribution=5, pre_compaction_history=2
+PASS: the target harness's own loader resolves the installed session — verified — … "Not logged in · Please run /login" …
+SKIP: a real turn continues from the installed session — not attempted: pass --resume-prompt to run one
+13 check(s) passed, 0 failed, 1 skipped
+
+$ python3 scripts/claude-native-check.py --claude …/claude --resume-prompt "Summarise in one sentence what this conversation records about retry attempts and where that is set."   # exit 1
+FAIL: a real turn continues from the installed session — exit 1, session 3674 -> 85802 bytes; ran through /bin/sh: cd /tmp/…/workspace/example-api && CLAUDE_CONFIG_DIR=/tmp/…/claude-home …/claude -p --output-format json --resume 071aaca2-… 'Summarise in one sentence …'
+13 check(s) passed, 1 failed, 0 skipped
+```
+
+The second run is the documented boundary, not a regression: the line was read by the shell the script
+named and reached the harness, whose own answer is the not-logged-in one this record already names in §7;
+the file grew (3674 → 85802 bytes) and no protected artifact moved. Its check's detail line is the one
+shape this round changed: it now says `ran through /bin/sh: …` so the report names the shell that read the
+line. §6.1's block is the earlier round's run and is left as it was recorded.
+
+**The gate, re-run on this tree** (§6.2's block is the apply round's run):
+
+```console
+$ python3 scripts/gate.py
+  PASS     gofmt    3591 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 189 tests in 5.773s (rc=0)
+  PASS     parity   … owned: 28 project-owned prefix(es); files seen by git: 5644 | …
+  PASS     secrets  no leaks found in 95 file(s) this repository owns …
+GATE: PASS
+```
+
+exit code **0**. Counts that moved, and why: `selftest` **188 → 189** (one new offline case — the host
+with no POSIX shell), `files seen by git` **5643 → 5644** and `secrets` **94 → 95** (the new committed
+Codex fixture), while `gofmt`'s 3591, the three packages and `parity`'s 28 owned prefixes do not move. The
+Go-side cases added are `TestContinueIntoClaudeCoalescesOneCallsPerFileProjections`,
+`TestContinueResolvesARelativeTargetBinaryForTheDirectoryChangingInvocation` and
+`TestClaudeWriterWritesAnArchiveSummaryOnlyForACallWithoutResults`; no existing case was deleted,
+skipped or weakened, and the two that changed do so by reading more (the category enumeration, and the
+turn cases' assertion about the shell).
+
+`AGENTS.md` needed no change in this round: it carries the read order, the parity rule, the gate command
+and the stage rules, none of which moved — the round added no command, no step and no rule an agent has
+to follow. `docs/goals/README.md` and `docs/goals/archive/` likewise stay as the apply round left them:
+0003 is this increment's open goal (`Implemented on …; awaiting operator acceptance`), and the accepted
+0002 was archived in the previous round.
 
 ## 7. Limits and residual risks
 

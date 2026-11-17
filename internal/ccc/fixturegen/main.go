@@ -44,6 +44,20 @@ const (
 	codexRollout   = "rollout-2026-05-04T09-15-00-" + codexSessionID
 	codexCwd       = "/home/user/code/example-api"
 
+	// A third Codex fixture whose one tool call is a patch touching two files. The inherited reader
+	// projects one `apply_patch` call into one call per file it names (internal/parser's
+	// handleFunctionCall, so file-keyed views can group by path), all sharing the call's own id and its
+	// input. It is the source shape a writer must coalesce rather than write once per projection: a
+	// target whose format carries one block per call id reads fewer calls back than such a file claims.
+	codexPatchSessionID = "5b2d7c14-6e8a-4f31-b0c5-9d7e21a4c8fe"
+	codexPatchRollout   = "rollout-2026-05-06T10-30-00-" + codexPatchSessionID
+	codexPatchCwd       = "/home/user/code/patchwork"
+	codexPatchCallID    = "call_02Example000000000000000000"
+	codexPatchBody      = "*** Begin Patch\n" +
+		"*** Update File: internal/retry/config.go\n" +
+		"*** Update File: internal/retry/policy.go\n" +
+		"*** End Patch"
+
 	// A line the writer was interrupted in the middle of, which is what a session being appended to
 	// while it is read looks like. The parsers must count it as malformed rather than guess a message
 	// from it, and an inspection must report that count.
@@ -56,6 +70,7 @@ func fixtureFiles() map[string]string {
 		filepath.Join("claude", claudeProject, claudeSessionID+".jsonl"):               canonicalJSONL(claudeSession()),
 		filepath.Join("claude", claudeToolingProject, claudeToolingSessionID+".jsonl"): canonicalJSONL(claudeToolingSession()),
 		filepath.Join("codex", "2026", "05", "04", codexRollout+".jsonl"):              canonicalJSONL(codexSession()),
+		filepath.Join("codex", "2026", "05", "06", codexPatchRollout+".jsonl"):         canonicalJSONL(codexPatchSession()),
 	}
 }
 
@@ -366,6 +381,28 @@ func codexSession() string {
 		codexCompacted(),
 		testjsonl.CodexMsgJSON("user", "And the attempt limit?", "2026-05-04T09:16:10.000Z"),
 		testjsonl.CodexMsgJSON("assistant", "Four attempts, in internal/retry/policy.go.", "2026-05-04T09:16:12.000Z"),
+	)
+}
+
+// codexPatchSession is a Codex rollout whose one tool call is a patch touching two files: the shape the
+// inherited reader projects into one call per file, every projection sharing the call's id and its input.
+func codexPatchSession() string {
+	return testjsonl.JoinJSONL(
+		testjsonl.CodexSessionMetaJSON(codexPatchSessionID, codexPatchCwd, "codex_cli_rs", "2026-05-06T10:30:00.000Z"),
+		testjsonl.CodexTurnContextJSON("gpt-5.2-codex", "2026-05-06T10:30:01.000Z"),
+		testjsonl.CodexMsgJSON("user", "Raise the retry cap and the attempt limit in one patch.", "2026-05-06T10:30:02.000Z"),
+		testjsonl.CodexFunctionCallWithCallIDJSON(
+			"apply_patch",
+			codexPatchCallID,
+			map[string]any{"patch": codexPatchBody},
+			"2026-05-06T10:30:05.000Z",
+		),
+		testjsonl.CodexFunctionCallOutputJSON(
+			codexPatchCallID,
+			"Success. Updated the following files:\nM internal/retry/config.go\nM internal/retry/policy.go",
+			"2026-05-06T10:30:06.000Z",
+		),
+		testjsonl.CodexMsgJSON("assistant", "Both caps are patched.", "2026-05-06T10:30:07.000Z"),
 	)
 }
 

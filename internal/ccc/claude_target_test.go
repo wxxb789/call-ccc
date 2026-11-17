@@ -3,6 +3,8 @@ package ccc
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -315,7 +317,8 @@ func TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers(t *testing.T) {
 		"unclassified_role_messages", "empty_user_messages", "non_dialogue_content",
 		"whitespace_only_dialogue", "unpaired_tool_results", "empty_tool_results",
 		"whitespace_only_tool_results", "unrepresentable_result_blocks", "unresolved_tool_outputs",
-		"tool_result_statuses", "empty_tool_inputs", "generated_call_ids", "tool_name_vocabulary",
+		"tool_result_statuses", "empty_tool_inputs", "generated_call_ids", "coalesced_tool_call_projections",
+		"tool_name_vocabulary",
 		"message_model_attribution", "pre_compaction_history", "empty_compaction_summary",
 		"malformed_source_lines", "summary_transcript", "source_needs_retry",
 	} {
@@ -471,6 +474,91 @@ func TestClaudeWriterReportsACompactionBoundaryWhoseSummaryHoldsNoText(t *testin
 	if !boundarySeen || !summarySeen {
 		t.Errorf("the transcript holds boundary=%v summary=%v, want both: the pair is what applies the boundary",
 			boundarySeen, summarySeen)
+	}
+}
+
+// TestClaudeWriterWritesAnArchiveSummaryOnlyForACallWithoutResults pins the archive rule for this
+// target, which is the Codex writer's rule: the archive keeps a call's outcome as the result events it
+// recorded on the call and holds their derived summary in the column beside them (internal/db restores
+// the sole event's text into that column, or stores the aggregate it derives from several events). A
+// summary is therefore a view of the recorded evidence, and a conversion writes it only when the call has
+// no recorded result of its own -- the shape of an archive row whose events were not written -- where it
+// is the only evidence of that outcome. Writing it beside its own events would present a display
+// aggregate as a separately recorded tool output, and omitting it altogether would drop the only outcome
+// the read holds while the structure check passed over the omission.
+func TestClaudeWriterWritesAnArchiveSummaryOnlyForACallWithoutResults(t *testing.T) {
+	// The archive shape: the outcome is folded onto the call's own message, so the events sit beside the
+	// calls they answer (messageFromArchive), and the call's summary is the column the archive holds.
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "Ask", Dialogue: "Ask", DialogueProjected: true},
+		Message{Ordinal: 1, Role: "assistant", Content: "[a batch of calls]",
+			ToolCalls: []ToolCall{
+				// One event, its own text restored into the column by the read: the same outcome.
+				{ToolUseID: "toolu_1", Name: "Bash", InputJSON: `{"command":"ls"}`,
+					ResultContent: "the recorded output", ResultContentSize: 19},
+				// Two events and the aggregate the inherited write path derives from them, stored in
+				// the column because it is not either event's text: still the same two outcomes.
+				{ToolUseID: "toolu_2", Name: "Task", InputJSON: `{"prompt":"x"}`,
+					ResultContent:     "agent-1:\nfirst\n\nagent-2:\nsecond",
+					ResultContentSize: len("agent-1:\nfirst\n\nagent-2:\nsecond")},
+				// A summary whose call carries no result at all: the only evidence of that outcome.
+				{ToolUseID: "toolu_3", Name: "Bash", InputJSON: `{"command":"du"}`,
+					ResultContent: "summary-only outcome", ResultContentSize: 20},
+			},
+			ToolResults: []ToolResult{
+				{ToolUseID: "toolu_1", ContentRaw: "the recorded output", ContentDecoded: true},
+				{ToolUseID: "toolu_2", ContentRaw: "first", ContentDecoded: true},
+				{ToolUseID: "toolu_2", ContentRaw: "second", ContentDecoded: true},
+			}},
+	)
+	transcript, err := ConvertToClaudeTranscript(conversation, ClaudeTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	outputs := []string{}
+	for _, record := range decodeTranscript(t, transcript) {
+		for _, block := range recordBlocks(record) {
+			if block["type"] != claudeBlockToolResult {
+				continue
+			}
+			content, _ := block["content"].(string)
+			id, _ := block["tool_use_id"].(string)
+			outputs = append(outputs, id+": "+content)
+		}
+	}
+	want := []string{
+		"toolu_1: the recorded output",
+		"toolu_2: first",
+		"toolu_2: second",
+		"toolu_3: summary-only outcome",
+	}
+	sort.Strings(outputs)
+	sort.Strings(want)
+	if strings.Join(outputs, " | ") != strings.Join(want, " | ") || transcript.Carried.ToolResults != 4 {
+		t.Errorf("tool_result blocks = %q (carried %d results), want the recorded results once each and "+
+			"the summary only where no result was recorded: %q", outputs, transcript.Carried.ToolResults, want)
+	}
+	if got := lossCount(t, transcript.Losses, "empty_tool_results").Count; got != 0 {
+		t.Errorf("empty_tool_results = %d, want 0: the summary-only outcome held text and was written", got)
+	}
+
+	// The written summary is in the item list too, so the check this conversion owes its caller reads it
+	// back from the installed file rather than passing over an outcome the file does not hold.
+	home := t.TempDir()
+	if _, _, err := InstallClaudeTranscript(transcript, home); err != nil {
+		t.Fatalf("installing: %v", err)
+	}
+	verification, err := VerifyClaudeTranscriptStructure(context.Background(),
+		filepath.Join(home, claudeProjectsSubdir), transcript, fixtureConfig(t))
+	if err != nil {
+		t.Fatalf("verifying: %v", err)
+	}
+	if verification.State != VerificationStateVerified {
+		t.Errorf("structure = %+v, want the installed file to read back as what was written", verification)
+	}
+	if verification.ReadBack.ToolResults != 4 {
+		t.Errorf("read-back = %+v, want the summary-only outcome read back beside the recorded results",
+			verification.ReadBack)
 	}
 }
 

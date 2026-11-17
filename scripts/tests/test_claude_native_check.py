@@ -339,6 +339,13 @@ PROTECTED_CHECKS = ("the source session is unchanged",
 #: spells paths with.
 PRE_EXISTING_NAME = "01a1e000-0000-7000-8000-000000000003.jsonl"
 
+#: What the shell seam answers in every case that runs a turn. The cases drive the seam rather than
+#: reading this host's own answer, for the same reason they drive the platform probe: the suite also runs
+#: in a child whose ``PATH`` holds no tool, where ``posix_shell`` would answer differently (or nothing at
+#: all) than it does on the host the case happens to run on. It is a value no host is asked to have: it is
+#: only handed to the stub and compared.
+SHELL_SEAM_ANSWER = "/the-shell-the-seam-answered/sh"
+
 
 class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
     """The source fixture copy, the planted session and every session the home already held are compared
@@ -346,7 +353,8 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
 
     The native half cannot run offline -- it needs the Claude Code binary and, for a turn, model access --
     so these cases drive the shipped ``main`` with the seams that half stands on replaced: the subprocess
-    runner, the shell runner the turn goes through, and ``shutil.which`` for the two tools. The stub for
+    runner, the shell runner the turn goes through with the shell the run resolved for it, the shell
+    probe that answers which POSIX shell that is, and ``shutil.which`` for the two tools. The stub for
     ``ccc continue`` installs a real file into a throw-away home (at the path the shipped ``main``
     computes from the scratch source root it spawned, so the installation check is answered honestly),
     and the stub for the resume turn answers like a turn that continued (the installed file grows) while
@@ -366,15 +374,19 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
     """
 
     def drive(self, mutate_during_resume: bool, posix_mode_bits: bool | None = None,
-              malformed_installed: bool = False) -> tuple[int, dict[str, tuple[str, str]], str]:
-        """One run of the shipped ``main`` against stubs; answers its exit code, its recorded checks and
-        its printed output.
+              malformed_installed: bool = False,
+              posix_shell: str | None = SHELL_SEAM_ANSWER) -> tuple[int, dict[str, tuple[str, str]], str, str | None]:
+        """One run of the shipped ``main`` against stubs; answers its exit code, its recorded checks, its
+        printed output and the shell the stub turn was asked to run through (``None`` when no turn ran).
 
         ``posix_mode_bits`` is what the platform seam answers; ``None`` (the default) means *this* host's
         own answer, so a case that does not name it holds on a host that reports POSIX mode bits and on
         one that does not (``False`` drives the Windows answer explicitly), and ``malformed_installed``
         makes the stub's installed file carry a line that is not JSON, so the JSONL check's own failure
-        path is exercised.
+        path is exercised. ``posix_shell`` is what the shell seam answers, defaulted to ``SHELL_SEAM_ANSWER``
+        rather than to this host's own so that a case holds under an isolated ``PATH`` (the suite's child
+        runs hold no tool) and on every platform; ``None`` drives the host with no POSIX shell, whose turn
+        the run must report as a boundary instead of running it through the wrong shell.
         """
         # The scratch root is resolved before anything is derived from it, because the shipped ``main``
         # resolves what it is handed (``--repo`` and ``--claude-home``) and resolves its own scratch root
@@ -487,9 +499,11 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                         cmd, 0, json.dumps({"source": {"counts": counts}}), "")
             raise AssertionError(f"the case's stub was asked for an unexpected command: {command}")
 
-        def fake_shell(line, cwd, env, timeout=900):
+        def fake_shell(line, cwd, env, shell, timeout=900):
             # The resume stage: a turn that continued (the installed file grows) and, when this case asks
-            # for it, the mutation all three protected artifacts have to survive.
+            # for it, the mutation all three protected artifacts have to survive. The shell the shipped
+            # ``main`` resolved is recorded here, so a case can assert which shell the line was read by.
+            state["shell"] = shell
             installed = state["installed"]
             installed.write_text(installed.read_text() + json.dumps({"type": "assistant"}) + "\n")
             if mutate_during_resume:
@@ -511,6 +525,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 mock.patch.object(NATIVE_CHECK, "run_shell", fake_shell), \
                 mock.patch.object(NATIVE_CHECK, "reports_posix_mode_bits",
                                   lambda: host_posix_mode_bits), \
+                mock.patch.object(NATIVE_CHECK, "posix_shell", lambda: posix_shell), \
                 mock.patch("shutil.which", fake_which), \
                 contextlib.redirect_stdout(printed):
             code = NATIVE_CHECK.main(["--repo", str(repo), "--claude", "claude",
@@ -518,10 +533,13 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                                       "--resume-prompt", "Summarise this conversation."])
         results = {name: (state_, detail) for name, state_, detail in NATIVE_CHECK.RESULTS[before:]}
         del NATIVE_CHECK.RESULTS[before:]
-        return code, results, printed.getvalue()
+        return code, results, printed.getvalue(), state.get("shell")
 
     def test_a_mutation_during_the_claude_resume_stage_is_caught_by_the_last_comparison(self) -> None:
-        code, results, printed = self.drive(mutate_during_resume=True)
+        code, results, printed, shell = self.drive(mutate_during_resume=True)
+        self.assertEqual(shell, SHELL_SEAM_ANSWER,
+                         f"the turn was handed {shell!r} rather than the shell the seam answered, so "
+                         f"this case is not about the turn it stubs: {results}")
         self.assertEqual(results.get("a real turn continues from the installed session", ("", ""))[0],
                          "PASS",
                          f"the stub's turn did not run, so its mutation would not be what the "
@@ -544,7 +562,10 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         self.assertIn("\n    the stub turn answered\n", printed, printed)
 
     def test_an_intact_claude_run_passes_the_comparisons(self) -> None:
-        code, results, _ = self.drive(mutate_during_resume=False)
+        code, results, _, shell = self.drive(mutate_during_resume=False)
+        self.assertEqual(shell, SHELL_SEAM_ANSWER,
+                         f"the turn was handed {shell!r}, so the run did not read the line through the "
+                         f"shell the seam answered")
         for name in PROTECTED_CHECKS:
             state, detail = results.get(name, ("missing", ""))
             self.assertEqual(state, "PASS", f"{name}: {state} — {detail}; all results: {results}")
@@ -570,7 +591,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         run exit 1 on that leg, contradicting the harness's own exit-code contract -- so it is recorded as
         a SKIP that names the platform reason, and the intact run still exits 0.
         """
-        code, results, printed = self.drive(mutate_during_resume=False, posix_mode_bits=False)
+        code, results, printed, _ = self.drive(mutate_during_resume=False, posix_mode_bits=False)
         state, detail = results.get("the installed session is readable and writable only by its owner",
                                     ("missing", ""))
         self.assertEqual(state, "SKIP",
@@ -580,6 +601,30 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         self.assertEqual(code, 0,
                          f"exit {code} for an intact run on a host without POSIX mode bits: {results}")
 
+    def test_a_host_with_no_posix_shell_reports_the_turn_as_a_boundary(self) -> None:
+        """The turn is a POSIX line, so a host with no POSIX shell reports the boundary, not a failure.
+
+        The reported line is `cd <dir> && CLAUDE_CONFIG_DIR=<home> claude …`, each word quoted where a
+        POSIX shell would act on it: `cmd.exe` cannot read that at all, and running it there would fail
+        before the harness was reached. Leaving the shell to `subprocess`'s `shell=True` therefore made
+        the real-turn check answer about the platform's command shell on Windows rather than about the
+        conversion -- a failure this host alone could produce, which is why the shell is named instead.
+        With the seam answering that there is none, the run must record the turn as a named SKIP with the
+        reason, must not call the shell runner at all, and must still exit 0: a boundary is not a failure.
+        """
+        code, results, printed, shell = self.drive(mutate_during_resume=False, posix_shell=None)
+        state, detail = results.get("a real turn continues from the installed session", ("missing", ""))
+        self.assertEqual(state, "SKIP",
+                         f"a host with no POSIX shell did not report the turn as a boundary: {results}")
+        self.assertIn("no POSIX shell", detail, detail)
+        self.assertEqual(shell, None,
+                         "the shell runner was called on a host the seam answered has no POSIX shell, so "
+                         "the line was read by whatever the platform's own command shell is")
+        self.assertNotIn(TURN_OUTPUT_MARKER, printed,
+                         f"the run printed a turn's output on a host where no turn ran: {printed}")
+        self.assertIn("SKIP: a real turn continues from the installed session", printed)
+        self.assertEqual(code, 0, f"exit {code} for a run whose turn is a boundary: {results}")
+
     def test_a_malformed_claude_installed_line_is_a_named_failure(self) -> None:
         """An unparseable installed line is a FAIL the run reports, not a traceback out of ``main``.
 
@@ -587,7 +632,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         very reporting contract the harness promises never to break. The run must therefore return 1 with
         that check recorded as a FAIL whose detail names the line and the parse error.
         """
-        code, results, printed = self.drive(mutate_during_resume=False, malformed_installed=True)
+        code, results, printed, _ = self.drive(mutate_during_resume=False, malformed_installed=True)
         state, detail = results.get("the installed file is one JSON object per line", ("missing", ""))
         self.assertEqual(state, "FAIL",
                          f"the malformed installed line did not fail the JSONL check: {results}")

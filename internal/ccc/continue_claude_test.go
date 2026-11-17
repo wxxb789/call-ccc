@@ -2,6 +2,7 @@ package ccc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -344,5 +345,146 @@ func TestContinueIntoClaudeReportsACompactionBoundaryWhoseSummaryHoldsNoText(t *
 	if result.Verification.Structure.State != VerificationStateVerified {
 		t.Errorf("structure = %+v, want the installed file to read back as what was written",
 			result.Verification.Structure)
+	}
+}
+
+// TestContinueResolvesARelativeTargetBinaryForTheDirectoryChangingInvocation pins the word this route's
+// reported invocation carries when the caller names the harness by a relative path. The invocation runs
+// from the session's own working directory (measured: the loader finds a session through the directory it
+// is run from), so `tools/claude` would be evaluated there -- beside the session, not beside the caller
+// whose directory the conversion and the native verification resolved it from -- and the printed line
+// would name a program that is not the one the run verified. The caller's own spelling is therefore
+// resolved before the argument vector and the line are rendered, while a bare name is left alone: it is a
+// PATH lookup, which the directory change does not affect.
+func TestContinueResolvesARelativeTargetBinaryForTheDirectoryChangingInvocation(t *testing.T) {
+	cfg := fixtureConfig(t)
+	caller := t.TempDir()
+	binary := filepath.Join(caller, "tools", "claude")
+	if err := os.MkdirAll(filepath.Dir(binary), 0o700); err != nil {
+		t.Fatalf("creating the caller's tools directory: %v", err)
+	}
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatalf("writing the caller's harness: %v", err)
+	}
+	t.Chdir(caller)
+	relative := filepath.Join("tools", "claude")
+
+	home, _ := claudeTargetHome(t)
+	result, err := Continue(context.Background(), ContinueOptions{
+		Ref: codexFixtureRef, Target: TargetClaude, Config: cfg,
+		TargetHome: home, TargetBinary: relative,
+	})
+	if err != nil {
+		t.Fatalf("continuing: %v", err)
+	}
+	report := result.TargetSession
+	// The case is only about a relative spelling while the directory the invocation changes into is a
+	// different one: with the caller's own directory there, both spellings would resolve alike.
+	if cwd := report.Cwd; cwd == "" || cwd == caller {
+		t.Fatalf("the session's working directory is %q, want one that is not the caller's %q", cwd, caller)
+	}
+	if args := report.ResumeArguments; len(args) != 3 || args[0] != binary || args[2] != report.SessionID {
+		t.Errorf("resume arguments = %q, want the executable resolved to %q beside the session id",
+			args, binary)
+	}
+	if args := report.ExecResumeArguments; len(args) != 7 || args[0] != binary {
+		t.Errorf("exec resume arguments = %q, want the same resolved executable", args)
+	}
+	if !strings.Contains(report.ResumeCommand, "cd "+report.Cwd+" && ") ||
+		!strings.Contains(report.ResumeCommand, binary+" --resume "+report.SessionID) {
+		t.Errorf("resume command %q does not change into %q and name the executable there",
+			report.ResumeCommand, report.Cwd)
+	}
+	if !strings.Contains(report.ExecResumeCommand, binary+" -p ") {
+		t.Errorf("exec resume command %q does not name the executable in the caller's directory",
+			report.ExecResumeCommand)
+	}
+
+	// A bare name is a PATH lookup, which the directory change does not affect: it stays the word the
+	// caller wrote, and this is what keeps the two cases apart rather than resolving every spelling.
+	otherHome, _ := claudeTargetHome(t)
+	other, err := Continue(context.Background(), ContinueOptions{
+		Ref: codexFixtureRef, Target: TargetClaude, Config: cfg,
+		TargetHome: otherHome, TargetBinary: missingTargetBinary,
+	})
+	if err != nil {
+		t.Fatalf("continuing with a bare name: %v", err)
+	}
+	if args := other.TargetSession.ResumeArguments; len(args) != 3 || args[0] != missingTargetBinary {
+		t.Errorf("resume arguments = %q, want the bare name %q it was given", args, missingTargetBinary)
+	}
+}
+
+// TestContinueIntoClaudeCoalescesOneCallsPerFileProjections reproduces the source shape a multi-file
+// patch produces: the inherited Codex reader projects one `apply_patch` call into one call per file it
+// names (internal/parser's handleFunctionCall), every projection sharing the call's own id and input,
+// which is what the archive's file-keyed views group by. The inherited Claude reader puts the records
+// that share a message id back into one message and keeps one tool block per id, so the writer has to
+// write the projections as the single call they are projections of: a record per projection would leave
+// the installed file holding fewer calls than the report claims to have carried, and the mandatory
+// structure check would refuse the conversion after installing it. The projections it did not write as
+// their own record are named in the report rather than dropped in silence.
+func TestContinueIntoClaudeCoalescesOneCallsPerFileProjections(t *testing.T) {
+	sourcePath := fixturePath(t, filepath.Join("codex", "2026", "05", "06",
+		"rollout-2026-05-06T10-30-00-"+codexPatchFixtureRef.ID+".jsonl"))
+	sourceBefore := hashFile(t, sourcePath)
+	home, _ := claudeTargetHome(t)
+
+	result, err := Continue(context.Background(), ContinueOptions{
+		Ref: codexPatchFixtureRef, Target: TargetClaude, Config: fixtureConfig(t),
+		TargetHome: home, TargetBinary: missingTargetBinary,
+	})
+	if err != nil {
+		t.Fatalf("continuing: %v", err)
+	}
+	carried := result.Conversion.Carried
+	if carried.ToolCalls != 1 || carried.ToolResults != 1 {
+		t.Errorf("carried = %+v, want the patch's one call and the one result that answered it", carried)
+	}
+	loss := lossCount(t, result.Conversion.Losses, "coalesced_tool_call_projections")
+	if loss.Count != 1 || loss.Disposition != DispositionCarriedWithCaveat {
+		t.Errorf("coalesced_tool_call_projections = %+v, want the one projection written as the call it "+
+			"is a projection of counted as carried with a caveat", loss)
+	}
+	if !strings.Contains(loss.Detail, "per file") {
+		t.Errorf("the category's reason does not name the shape it counts: %q", loss.Detail)
+	}
+
+	installed, err := os.ReadFile(result.Installation.Path)
+	if err != nil {
+		t.Fatalf("reading the installed session: %v", err)
+	}
+	var calls, results int
+	for _, line := range strings.Split(strings.TrimRight(string(installed), "\n"), "\n") {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("the installed session holds a line that is not one JSON object: %v\n%s", err, line)
+		}
+		for _, block := range recordBlocks(record) {
+			switch block["type"] {
+			case claudeBlockToolUse:
+				if block["id"] == "call_02Example000000000000000000" {
+					calls++
+				}
+			case claudeBlockToolResult:
+				if block["tool_use_id"] == "call_02Example000000000000000000" {
+					results++
+				}
+			}
+		}
+	}
+	if calls != 1 || results != 1 {
+		t.Errorf("the installed session holds %d tool_use and %d tool_result block(s) for the patch's "+
+			"call, want one of each: the projections are one call", calls, results)
+	}
+	if readBack := result.Verification.Structure.ReadBack; readBack.ToolCalls != 1 || readBack.ToolResults != 1 {
+		t.Errorf("read-back = %+v, want the inherited reader to show the one call and its result", readBack)
+	}
+	if result.Verification.Structure.State != VerificationStateVerified {
+		t.Errorf("structure = %+v, want the installed file to read back as what was written",
+			result.Verification.Structure)
+	}
+	if digest := hashFile(t, sourcePath); digest != sourceBefore {
+		t.Error("the conversion changed the source session")
 	}
 }

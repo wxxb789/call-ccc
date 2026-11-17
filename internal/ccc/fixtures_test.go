@@ -29,6 +29,9 @@ var (
 	// report (a reasoning trace, a subagent turn, an errored tool result).
 	claudeToolingFixtureRef = Ref{Provider: "claude", ID: "b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef"}
 	codexFixtureRef         = Ref{Provider: "codex", ID: "0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812"}
+	// codexPatchFixtureRef is the third Codex rollout: one `apply_patch` touching two files, which the
+	// inherited reader projects into one call per file, every projection sharing the call's id and input.
+	codexPatchFixtureRef = Ref{Provider: "codex", ID: "5b2d7c14-6e8a-4f31-b0c5-9d7e21a4c8fe"}
 )
 
 // fixtureRoot is the directory the committed sanitized fixtures live in; each provider subdirectory

@@ -258,10 +258,17 @@ says so.
   is billed. The **`resume` half runs one real turn** through the invocation the conversion printed,
   which carries the session's working directory as well as its home (`cd <cwd> && CLAUDE_CONFIG_DIR=<home>
   claude --resume <id>`), because Claude Code resolves a session only from the directory whose project-dir
-  spelling matches the one it was installed under. The host's model access is **inherited** by that turn,
-  never copied into an isolated home; the run hashes the source fixture, a planted unrelated session and
-  every session the home already held before and after, so a mutation during the loader or the turn is
-  answered by the comparison that runs last.
+  spelling matches the one it was installed under. That line is a POSIX one (`cd … && CLAUDE_CONFIG_DIR=…
+  claude …`, each word quoted where a POSIX shell would act on a character in it), so the shell that reads
+  it is **named by the script** rather than left to whatever `subprocess`'s `shell=True` selects: on a
+  POSIX host the platform's own `/bin/sh`, on any other host the first `sh`/`bash` on `PATH` (`posix_shell`),
+  and a host with neither is reported as a named **skip** with that reason — the way a host without POSIX
+  mode bits skips the owner-only check — because `cmd.exe` cannot read that line at all and running it
+  there would fail before the harness was reached, answering about the host's command shell instead of the
+  conversion. The check's own line says which shell read it (`ran through /bin/sh: …`). The host's model
+  access is **inherited** by that turn, never copied into an isolated home; the run hashes the source
+  fixture, a planted unrelated session and every session the home already held before and after, so a
+  mutation during the loader or the turn is answered by the comparison that runs last.
 - `scripts/native_check_common.py` — the mechanism the two native checks share, so neither keeps its own
   copy of it: the file digests (`sha256`, `tree_digest`), the check recorder (`record`, `RESULTS`), the
   subprocess runner (`run`), the POSIX-shell reading of a rendered command (`shell_words`,

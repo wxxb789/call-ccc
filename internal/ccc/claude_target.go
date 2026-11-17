@@ -292,6 +292,7 @@ type claudeTranscriptBuilder struct {
 	lossPreBoundary            int
 	lossEmptyInputs            int
 	lossGeneratedIDs           int
+	lossCoalescedProjections   int
 	lossEmptyResults           int
 	lossWhitespaceResults      int
 	lossResultBlocks           int
@@ -527,16 +528,54 @@ func (b *claudeTranscriptBuilder) userRecord(text string, at time.Time) {
 // writeToolEvidence writes the calls and results a record carries: each call as a tool_use block on an
 // assistant record, each result as a tool_result block on a user record -- the target's own shapes for
 // the two halves of a tool interaction, and the shape the loader passes through to the model unchanged.
+//
+// The source read can carry one call more than once: the inherited Codex reader projects one multi-file
+// apply_patch into one call per file it names, every projection sharing the call's id and its input
+// (internal/parser's handleFunctionCall, so file-keyed views can group by path). The target's tool_use
+// block carries one id and one input and its reader keeps one block per id, so the projections are
+// written as the single call they are projections of, and the ones not written are counted
+// (coalesced_tool_call_projections) rather than leaving a file whose read-back holds fewer calls than
+// the report claims to have carried.
+//
+// An archive read can also hold a call's only outcome in the summary column beside it (ToolCall's
+// ResultContent) with no result event of its own; that summary is written for such a call, under the
+// same rule the Codex writer follows (callHasRecordedResult).
 func (b *claudeTranscriptBuilder) writeToolEvidence(message Message) {
-	pending := make([]claudeContentBlock, 0, len(message.ToolResults)+len(message.ToolCalls))
-	for index, call := range message.ToolCalls {
+	calls := b.distinctCalls(message)
+	pending := make([]claudeContentBlock, 0, len(message.ToolResults)+len(calls))
+	for _, entry := range calls {
 		// A call is written on a record of its own -- the shape the harness writes for one block of one
 		// message -- carrying the id its message's dialogue record shares, so both readers put them back
 		// into one message.
-		b.toolCall(message, index, call, message.Timestamp)
+		b.toolCall(message, entry.index, entry.call, message.Timestamp)
 	}
 	for _, result := range message.ToolResults {
 		block, ok := b.toolResult(result, message.Timestamp)
+		if ok {
+			pending = append(pending, block)
+		}
+	}
+	// An archive read carries a call's outcome both as the result events the archive kept on the call and
+	// as the summary it holds in ResultContent. That summary is derived from those same events by the
+	// inherited write path (internal/db stores it only when it is not the sole content-bearing event's
+	// text, and restores it from that event when the column was cleared), so beside them it is a view of
+	// the recorded evidence rather than another outcome recorded there -- writing it too would present a
+	// normalized display aggregate as a separately recorded tool output. A summary whose call carries no
+	// result at all is the only evidence the read holds of that outcome, and it is written.
+	for _, entry := range calls {
+		call := entry.call
+		if strings.TrimSpace(call.ResultContent) == "" && call.ResultContentSize == 0 {
+			continue
+		}
+		if callHasRecordedResult(message.ToolResults, call.ToolUseID) {
+			continue
+		}
+		block, ok := b.toolResult(ToolResult{
+			ToolUseID:      call.ToolUseID,
+			ContentRaw:     call.ResultContent,
+			ContentSize:    call.ResultContentSize,
+			ContentDecoded: true,
+		}, message.Timestamp)
 		if ok {
 			pending = append(pending, block)
 		}
@@ -557,6 +596,35 @@ func (b *claudeTranscriptBuilder) writeToolEvidence(message Message) {
 			Message:     &claudeMessage{Role: claudeTypeUser, Content: b.blocksContent(pending)},
 		})
 	}
+}
+
+// projectedCall is one call the writer writes, with the place it holds in the source message: an id-less
+// call's generated id is derived from that place (toolCall), so the projection list has to keep it.
+type projectedCall struct {
+	index int
+	call  ToolCall
+}
+
+// distinctCalls answers one message's calls as this target writes them, in the message's own order: a
+// call whose id the message already carried is another projection of that call (the per-file expansion
+// above) and not a second invocation, so only the first of them is written and each one skipped is
+// counted. A call with no recorded id is never treated as a repeat: its id is generated from its own
+// place in the message, so two of them are two calls.
+func (b *claudeTranscriptBuilder) distinctCalls(message Message) []projectedCall {
+	calls := make([]projectedCall, 0, len(message.ToolCalls))
+	seen := make(map[string]struct{}, len(message.ToolCalls))
+	for index, call := range message.ToolCalls {
+		id := strings.TrimSpace(call.ToolUseID)
+		if id != "" {
+			if _, ok := seen[id]; ok {
+				b.lossCoalescedProjections++
+				continue
+			}
+			seen[id] = struct{}{}
+		}
+		calls = append(calls, projectedCall{index: index, call: call})
+	}
+	return calls
 }
 
 // toolCall writes one call as an assistant record holding a single tool_use block.
@@ -773,6 +841,18 @@ func (b *claudeTranscriptBuilder) losses() []Loss {
 			"the conversation to it. The target keeps choosing its own model, and the target's own " +
 			"loader warns when a transcript names a model it cannot restore"
 	}
+	coalescedDetail := "the source read recorded no call more than once"
+	if b.lossCoalescedProjections > 0 {
+		coalescedDetail = "the source read recorded these calls once for every file they touched: the " +
+			"inherited Codex reader projects one apply_patch into one call per file it names, every " +
+			"projection sharing the call's id and its input, so the archive's file-keyed views can " +
+			"group by path. The target's tool_use block carries one id and one input, and its reader " +
+			"keeps one block per id, so the call is written as the single call those projections are " +
+			"projections of, and a call whose recorded id repeats with some other input is answered the " +
+			"same way. The call and its input travel -- the patch's own text names every file it " +
+			"touched -- and what has no field in the target is the per-file attribution of a second " +
+			"projection, which is what this count names"
+	}
 	return []Loss{
 		{
 			Category:    "reasoning_text",
@@ -909,6 +989,12 @@ func (b *claudeTranscriptBuilder) losses() []Loss {
 			Count:       b.lossGeneratedIDs,
 			Detail: "the source recorded no tool-use id for these calls or results; the target pairs a " +
 				"call and its result by id, so one was generated from the message's own position",
+		},
+		{
+			Category:    "coalesced_tool_call_projections",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.lossCoalescedProjections,
+			Detail:      coalescedDetail,
 		},
 		{
 			Category:    "tool_name_vocabulary",

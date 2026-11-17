@@ -64,7 +64,8 @@ continuation options:
   --target-home DIR  that harness's data directory (codex: $CODEX_HOME, else ~/.codex; claude:
                      $CLAUDE_CONFIG_DIR, else ~/.claude)
   --target-binary P  that harness's executable (default: codex, or claude, on PATH); the printed resume
-                     commands name it the way it is given here
+                     commands name it the way it is given here, resolved against this directory where the
+                     target's session is resumed from the session's own working directory (Claude Code)
   --data-dir DIR     read the AgentsView archive in DIR (%s/sessions.db) when the source file itself
                      cannot answer the reference
   --verify LEVEL     none, load (default) or resume: load asks the target harness's own loader to

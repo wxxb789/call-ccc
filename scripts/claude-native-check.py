@@ -184,16 +184,43 @@ def reported_invocation(command: str, cwd: Path, home: Path, arguments: list[str
             and spelled_as_invocation(command))
 
 
-def run_shell(line: str, cwd: Path, env: dict[str, str],
+def posix_shell() -> str | None:
+    """The POSIX shell the reported line is read by, or None when this host has none.
+
+    Every rendered line is a POSIX one (`cd <dir> && CLAUDE_CONFIG_DIR=<home> claude …`, each word quoted
+    where a POSIX shell would act on a character in it), so the shell that reads it has to be one: leaving
+    the choice to `subprocess`'s `shell=True` selects `cmd.exe` on Windows, where the assignment syntax
+    and the single-quote escaping are not a command at all and the real turn would fail before the harness
+    was reached -- a failure about this host's command shell rather than about the conversion. This
+    answers the platform's own shell on a POSIX host, and the first `sh`/`bash` on `PATH` on any other; a
+    host with neither is a boundary `main` reports as a named skip, the way it reports a host without
+    POSIX mode bits.
+
+    This is a seam: the offline cases drive `main` with it replaced, the way they replace `run`.
+    """
+    if os.name != "nt":
+        return "/bin/sh"
+    for name in ("sh", "bash"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def run_shell(line: str, cwd: Path, env: dict[str, str], shell: str,
               timeout: int = 900) -> subprocess.CompletedProcess:
-    """Run one printed command line through a POSIX shell, from the session's working directory.
+    """Run one printed command line through `shell`, the POSIX shell that reads it, from the session's
+    working directory.
 
     The line is the report's own rendering (`cd <dir> && CLAUDE_CONFIG_DIR=<home> claude …`), and this is
-    what a caller pasting it does: a shell reads the `cd` and the assignment, so the harness runs in the
-    working directory and against the data directory the report named. This is a seam as well -- the
-    offline cases drive `main` with it replaced, the way they replace `run`.
+    what a caller pasting it does: a POSIX shell reads the `cd` and the assignment, so the harness runs in
+    the working directory and against the data directory the report named. The caller names that shell
+    (`posix_shell`'s answer) instead of leaving the choice to `shell=True`, whose answer on Windows is
+    `cmd.exe` and cannot read this line at all; a host with no POSIX shell is reported as a boundary before
+    this is called, so the check never runs the line through the wrong shell. This is a seam as well --
+    the offline cases drive `main` with it replaced, the way they replace `run`.
     """
-    return subprocess.run(line, shell=True, cwd=cwd, env=env, capture_output=True, text=True,
+    return subprocess.run([shell, "-c", line], cwd=cwd, env=env, capture_output=True, text=True,
                           timeout=timeout)
 
 
@@ -534,21 +561,34 @@ def main(argv: list[str] | None = None) -> int:
         # (f) One real turn, run from the printed exec resume line with the caller's prompt in the
         # placeholder's place: the line a caller would paste, through a shell, from the session's working
         # directory, with the caller's own environment (this script supplies no credential of its own).
-        if args.resume_prompt:
+        # The printed line is a POSIX one, so the turn runs through a POSIX shell or not at all: a host
+        # whose own command shell is cmd.exe cannot read this line, and running it there would fail for
+        # the host rather than answer about the conversion. The boundary is reported with that reason,
+        # exactly as a host without POSIX mode bits is.
+        shell = posix_shell()
+        if args.resume_prompt and shell is None:
+            print()
+            record("a real turn continues from the installed session", False,
+                   "not attempted: this host has no POSIX shell (sh or bash) on PATH, and the reported "
+                   "line is a POSIX one (`cd <dir> && CLAUDE_CONFIG_DIR=<home> claude …`, quoted the way "
+                   "a POSIX shell reads it); running it through the platform's own command shell would "
+                   "fail before the harness was reached, so this is reported as a boundary rather than "
+                   "as a failed turn", skipped=True)
+        elif args.resume_prompt:
             print()
             session_before = installed.stat().st_size
             line, problem = resume_line(exec_resume_command, args.resume_prompt)
             if line is None:
                 record("a real turn continues from the installed session", False, problem)
             else:
-                turn = run_shell(line, cwd=cwd, env=os.environ.copy(), timeout=900)
+                turn = run_shell(line, cwd=cwd, env=os.environ.copy(), shell=shell, timeout=900)
                 session_after = installed.stat().st_size
                 answer = turn_answer(turn.stdout, turn.stderr)
                 expected = args.expect in answer if args.expect else True
                 ok = (turn.returncode == 0 and bool(answer.strip())
                       and session_after > session_before and expected)
                 detail = (f"exit {turn.returncode}, session {session_before} -> {session_after} bytes; "
-                          f"ran: {line}")
+                          f"ran through {shell}: {line}")
                 if args.expect:
                     detail += (f"; the answer {'holds' if expected else 'does not hold'} "
                                f"{args.expect!r}, and that comparison decides this check")

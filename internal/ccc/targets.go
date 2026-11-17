@@ -367,9 +367,14 @@ func claudeRoute() targetRoute {
 			})
 		},
 		Invocation: func(session convertedTarget, in targetInvocationInput) targetInvocation {
+			// This invocation changes into the session's working directory, so the executable is resolved
+			// against the caller's own directory first (invocationBinary): a relative spelling would
+			// otherwise name a path beside the session rather than the program this run probed and
+			// verified.
+			binary := invocationBinary(in.Binary)
 			return targetInvocation{
-				Arguments:     []string{in.Binary, "--resume", session.ID},
-				ExecArguments: []string{in.Binary, "-p", "--output-format", "json", "--resume", session.ID, resumePromptPlaceholder},
+				Arguments:     []string{binary, "--resume", session.ID},
+				ExecArguments: []string{binary, "-p", "--output-format", "json", "--resume", session.ID, resumePromptPlaceholder},
 				Environment:   map[string]string{claudeHomeEnv: in.Home},
 				// Measured: the loader finds a session through the working directory it is run from, so
 				// the invocation has to run from the session's own (the printed command says so).
@@ -400,4 +405,32 @@ func claudeFacts(_ context.Context, in targetFactsInput) targetFacts {
 		facts.CLIVersionSource = "probe"
 	}
 	return facts
+}
+
+// invocationBinary answers the word an invocation's own argument vector carries for the target binary: a
+// spelling that names a path is resolved against the caller's working directory, and a bare name is left
+// exactly as the caller wrote it.
+//
+// A route whose invocation changes its working directory has to resolve the executable first: the
+// argument vector and the printed line are a command a caller runs from the session's directory, so
+// `--target-binary tools/claude` there would name a path beside the session rather than the program the
+// conversion probed and the native verification ran in the caller's own directory -- two different
+// programs answered by one report. A name with no separator is a PATH lookup, which a directory change
+// does not affect. The resolution is textual (filepath.Abs), so it also answers for a spelling that names
+// nothing at all; whether a program is there is the probe's own answer beside it.
+func invocationBinary(binary string) string {
+	if binary == "" || filepath.IsAbs(binary) {
+		return binary
+	}
+	// "/" is a separator on every platform this build runs on, and filepath.Separator is this platform's
+	// own: a name holding neither is a PATH lookup, and a backslash on a platform where it is an ordinary
+	// filename character is not read as a path.
+	if !strings.ContainsAny(binary, "/"+string(filepath.Separator)) {
+		return binary
+	}
+	absolute, err := filepath.Abs(binary)
+	if err != nil {
+		return binary
+	}
+	return absolute
 }
