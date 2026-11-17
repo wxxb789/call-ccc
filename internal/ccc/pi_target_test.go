@@ -1036,6 +1036,103 @@ func TestPiSessionChainsThroughAToolResultAcrossAnInterveningBranch(t *testing.T
 	if loss := lossCount(t, session.Losses, "unresolved_source_parents"); loss.Count != 0 {
 		t.Errorf("unresolved_source_parents = %+v, want 0: an exact read leaves nothing unanswerable", loss)
 	}
+
+	// The adjacent shape: a record naming a call *immediately after* that call's result, where the
+	// reader has nothing to project and the read's answers are its own. The record hangs off the call it
+	// named; the result -- here carrying a user turn beside its output, the shape a Claude transcript
+	// writes -- stays in the file off the walk, as recorded history, instead of being chained in as an
+	// ancestor.
+	adjacent := func(provider string, siblingDialogue bool) Conversation {
+		dialogue := ""
+		if siblingDialogue {
+			dialogue = "SIBLING-DIALOGUE"
+		}
+		return Conversation{
+			Source: SourceIdentity{Provider: provider, SessionID: "source-session", Cwd: "/work/project"},
+			Messages: []Message{
+				{Ordinal: 0, Role: string(parser.RoleUser), Content: "start", Dialogue: "start",
+					SourceUUID: "u1", Timestamp: at(0)},
+				{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "[grep: maxBackoff]",
+					DialogueProjected: true, SourceUUID: "c2", SourceParentUUID: "u1", Timestamp: at(1),
+					ToolCalls: []ToolCall{{ToolUseID: "toolu_1", Name: "grep",
+						InputJSON: `{"pattern":"maxBackoff"}`}}},
+				{Ordinal: 2, Role: string(parser.RoleUser), Content: dialogue, Dialogue: dialogue,
+					SourceUUID: "r3", SourceParentUUID: "c2", Timestamp: at(2),
+					ToolResults: []ToolResult{{ToolUseID: "toolu_1",
+						ContentRaw: `"internal/retry/config.go:41"`, ContentSize: 28}}},
+				{Ordinal: 3, Role: string(parser.RoleAssistant), Content: "after the result",
+					Dialogue: "after the result", SourceUUID: "d4", SourceParentUUID: "c2",
+					Timestamp: at(3)},
+			},
+			Fidelity: Fidelity{ReadFrom: "source"},
+		}
+	}
+	// readAdjacent converts one spelling of the shape and re-reads the outer variables the assertions
+	// below use, because every assertion here is about the file's own bytes and the parent chain in it.
+	readAdjacent := func(conversation Conversation) []Loss {
+		t.Helper()
+		converted, err := ConvertToPiSession(conversation, PiTargetOptions{})
+		if err != nil {
+			t.Fatalf("converting the adjacent shape: %v", err)
+		}
+		session = converted
+		lines = decodePiSession(t, session.Data)
+		texts = piEntryTexts(t, lines)
+		ids = map[string]string{}
+		for id, text := range texts {
+			if text != "" {
+				ids[text] = id
+			}
+		}
+		onPath = piWalkIDs(t, lines)
+		return session.Losses
+	}
+
+	losses := readAdjacent(adjacent("claude", true))
+	if got := parentTextOf("after the result"); got != "" {
+		t.Errorf("the adjacent record hangs off %q, want the call's own entry (no dialogue): the read "+
+			"answered the relation exactly, and the result is a sibling it placed beside it", got)
+	}
+	for _, text := range []string{"SIBLING-DIALOGUE", "internal/retry/config.go:41"} {
+		if !strings.Contains(string(session.Data), text) {
+			t.Errorf("the sibling result's %q is not in the file at all: it is recorded history and must "+
+				"travel, off the walk rather than dropped", text)
+		}
+		if onPath[ids[text]] {
+			t.Errorf("%q is on the walk the loader makes: a record chained through the sibling result "+
+				"would revive that turn as active history", text)
+		}
+	}
+	if loss := lossCount(t, losses, "unresolved_source_parents"); loss.Count != 0 {
+		t.Errorf("unresolved_source_parents = %+v, want 0: nothing stands between the record and the "+
+			"call it named, so the read's answer is the whole relation", loss)
+	}
+	for _, text := range []string{"start", "after the result"} {
+		if !onPath[ids[text]] {
+			t.Errorf("the conversation's own turn %q is not on the walk the loader makes", text)
+		}
+	}
+
+	// The reading a projected source keeps for the same shape: the reader answers the record as hanging
+	// off the call even though the result is the record before it, and the file's own continuation
+	// (call → result → what follows) is the writers' tool-result step -- taken here (the result stands
+	// immediately before the record, so the place is the file's own and not counted), which keeps the
+	// result on the walk. The fixture is the ordinary Pi shape: the result is a record of its own, with
+	// no dialogue beside it.
+	losses = readAdjacent(adjacent("pi", false))
+	if got := parentTextOf("after the result"); got != "internal/retry/config.go:41" {
+		t.Errorf("the adjacent record hangs off %q, want the result's own entry: a projected read's "+
+			"record follows the tool result standing before it", got)
+	}
+	for _, text := range []string{"internal/retry/config.go:41", "after the result"} {
+		if !onPath[ids[text]] {
+			t.Errorf("%q is not on the walk the loader makes from the file's last entry", text)
+		}
+	}
+	if loss := lossCount(t, losses, "unresolved_source_parents"); loss.Count != 0 {
+		t.Errorf("unresolved_source_parents = %+v, want 0: the result stands immediately before the "+
+			"record, which is the reading the source's own file order holds", loss)
+	}
 }
 
 // TestPiSessionRefusesASelectedLeafOffTheLine pins the refusal for a source whose selected leaf the

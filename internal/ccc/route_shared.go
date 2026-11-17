@@ -142,8 +142,9 @@ func projectedParentProvider(provider string) bool {
 // sourceRecordOrigin is what one written entry stands for in the source's own record stream: the
 // record's identity, the record *it* hangs off as the read answered it, the entry this conversion
 // chained the record's first entry to, and whether the entry was written as a tool result. The entry the
-// next record hangs off is decided from it, because a record that follows a tool result in the source's
-// file hangs off that result while the read answers with the message that made the call.
+// next record hangs off is decided from it, where the read may answer a projection: a record that
+// follows a tool result in the source's file hangs off that result while the read answers it with the
+// message that made the call, and an exact read answers where the record hangs off itself.
 type sourceRecordOrigin struct {
 	sourceID     string
 	sourceParent string
@@ -221,9 +222,10 @@ func (t *sourceTree) startRecord(id, parent string) {
 // next record's first entry.
 func (t *sourceTree) endRecord() { t.pending = sourceRecordOrigin{} }
 
-// markToolResult says the entry about to be written is a tool result: the record after it then hangs off
-// the result rather than off the message that made the call, because that is the order the source's own
-// file holds (call → result → what follows), and the other reading would put the result off the walk.
+// markToolResult says the entry about to be written is a tool result. Where the read may answer a
+// projection, the record after it then hangs off the result rather than off the message that made the
+// call, because that is the order the source's own file holds (call → result → what follows) and the
+// other reading would put the result off the walk the target's loader makes.
 func (t *sourceTree) markToolResult() { t.pending.toolResult = true }
 
 // entryParent answers the parent the entry about to be written carries: the entry the source's relation
@@ -263,8 +265,15 @@ func (t *sourceTree) wrote(id string) {
 //   - the named record was written: its final entry is the parent;
 //   - the named record was left out of the target (an omitted record, or one with no entry of its own):
 //     the nearest ancestor that *was* written, walked through the document's own relations;
-//   - the record that follows a tool result: the tool result itself, because the source's own file runs
-//     call → result → what follows while the read answers the next record as hanging off the call.
+//   - the record that follows a tool result, where the read may answer a projection: the tool result
+//     itself, because the source's own file runs call → result → what follows while the read answers
+//     the next record as hanging off the call.
+//
+// The third answer is the projection undone, so it is taken only where the read may project
+// (projectedParents); an exact read's answer names the record it means (a Claude transcript's
+// parentUuid), and chaining a record through a result that merely stands beside the record it named
+// would chain it to a sibling the source placed elsewhere -- reviving that sibling as an ancestor. An
+// exact read resolves every named parent above and below by the read's own answer.
 //
 // A record that names no parent at all is read as the read's own order: this conversion cannot tell a
 // record the source placed at the head of a line from one whose identity or parent the provider did not
@@ -284,7 +293,7 @@ func (t *sourceTree) parentFor(parent string) *string {
 	if parent == "" {
 		return t.lastEntryID
 	}
-	if t.lastOrigin.toolResult && t.lastOrigin.sourceParent == parent {
+	if t.projectedParents && t.lastOrigin.toolResult && t.lastOrigin.sourceParent == parent {
 		return t.lastEntryID
 	}
 	if id, ok := t.toolResultEntry[parent]; ok && t.projectedParents {
@@ -324,15 +333,22 @@ func (t *sourceTree) writtenAncestor(sourceID string) (string, bool) {
 // conversation a resumed turn reads, so a branch the conversation left cannot travel there as recorded
 // history without being revived as an active turn.
 //
+// The second answer is the count of places the walk took for a relation the read did not establish
+// (unresolved), the same category the tree writers report (unresolved_source_parents): this target has
+// no entry to chain, but a record's place on the line is likewise this conversion's answer where the
+// read's own answer could not give one -- a record the read left parentless or gave a parent this read
+// does not hold, and a record chained through a tool result standing between it and the call it named.
+// The detail the report carries names each of the three.
+//
 // A record the read answered no identity for is never marked inactive: the read recorded no place for it
 // in the source's tree, and omitting evidence on a relation the read did not give is exactly what the
 // report exists to prevent. The walk uses the writers' own tool-result rule, so a record the reader
 // answers as hanging off the message that made a call -- while the source's file runs call → result →
 // what follows -- keeps the result on the line.
-func inactiveSourceRecords(messages []Message, provider string) []bool {
+func inactiveSourceRecords(messages []Message, provider string) ([]bool, int) {
 	inactive := make([]bool, len(messages))
 	if len(messages) == 0 {
-		return inactive
+		return inactive, 0
 	}
 	byIdentity := make(map[string]int, len(messages))
 	for index, message := range messages {
@@ -343,6 +359,7 @@ func inactiveSourceRecords(messages []Message, provider string) []bool {
 		}
 	}
 	onLine := make([]bool, len(messages))
+	unresolved := 0
 	// The walk needs no depth bound: each step moves to a record before the one it is at, so a record is
 	// visited at most once and a cycle cannot be entered -- a source's linear history of any length is
 	// walked to its end rather than cut off at a bound no real conversation was measured against.
@@ -351,7 +368,11 @@ func inactiveSourceRecords(messages []Message, provider string) []bool {
 			break
 		}
 		onLine[cursor] = true
-		next := sourceLineParent(messages, byIdentity, cursor, projectedParentProvider(provider))
+		next, counted := sourceLineParent(messages, byIdentity, cursor,
+			projectedParentProvider(provider))
+		if counted {
+			unresolved++
+		}
 		if next >= cursor {
 			break
 		}
@@ -360,45 +381,55 @@ func inactiveSourceRecords(messages []Message, provider string) []bool {
 	for index, message := range messages {
 		inactive[index] = strings.TrimSpace(message.SourceUUID) != "" && !onLine[index]
 	}
-	return inactive
+	return inactive, unresolved
 }
 
-// sourceLineParent answers the record a walk from index hangs off, by the writers' own rule: the record
-// the source named -- or the tool result standing between this record and the call it names, the nearest
-// one when the read answers projections and other records were written in between -- and the record
-// before it where the read answered no relation or named one it does not hold.
-func sourceLineParent(messages []Message, byIdentity map[string]int, index int, projected bool) int {
+// sourceLineParent answers the record a walk from index hangs off, by the writers' own rule, and whether
+// that place is a relation the read did not establish: the record the source named -- or the tool result
+// standing between this record and the call it named, where the read may answer a projection -- and the
+// record before it where the read answered no relation or named one it does not hold.
+//
+// The tool-result step is the writers' own projection rule, taken only where the read may project, and
+// it is counted only when the result stands between the record and the call it named: there the read's
+// answer cannot settle whether the record hung off the call or off a result of it. The result
+// immediately before the record is the other reading -- the file's own continuation, call → result →
+// what follows -- which the source's file order supports and the writers take without counting it.
+//
+// The other two places are counted too, exactly as the tree writers count them: a record the read gave
+// an identity but no parent is not the conversation's first, so following the record before it is this
+// conversion's relation and not the read's answer (a read that records no identity at all is the other
+// case -- its order is linear, and nothing is counted); and a record naming a parent the read does not
+// hold follows the record before it, which is likewise this conversion's place.
+func sourceLineParent(messages []Message, byIdentity map[string]int, index int, projected bool) (int, bool) {
 	parent := strings.TrimSpace(messages[index].SourceParentUUID)
 	previous := index - 1
-	if parent != "" {
-		if at, ok := sourceToolResultBefore(messages, index, parent, projected); ok {
-			return at
+	if parent == "" {
+		return previous, strings.TrimSpace(messages[index].SourceUUID) != "" && index > 0
+	}
+	if projected {
+		if at, ok := sourceToolResultBefore(messages, index, parent); ok {
+			return at, at < previous
 		}
 	}
-	if parent == "" {
-		return previous
-	}
 	if at, ok := byIdentity[parent]; ok && at < index {
-		return at
+		return at, false
 	}
-	return previous
+	return previous, true
 }
 
-// sourceToolResultBefore answers the record a tool-result step stands for: the record before index that is
-// a tool result answering the record parent names. When the read may answer projections, the nearest such
-// record is the reading the source's own file order gives -- a result's descendants resolve to their
-// visible ancestor there, so a record the read answers as a child of a call may in the file have hung off
-// a result of it, and the file runs call → result → what follows. When it may not, only the record
-// immediately before this one can be that step: an exact answer needs no projection undone, and walking
-// further back would invent a relation the source did not record.
-func sourceToolResultBefore(messages []Message, index int, parent string, projected bool) (int, bool) {
+// sourceToolResultBefore answers the record a tool-result step stands for: the nearest record before
+// index that is a tool result answering the record parent names. It is the writers' own projection rule,
+// so it is consulted only where the read may answer projections: the inherited Pi reader resolves a
+// result's descendants to their visible ancestor, so a record the read answers as a child of a call may
+// in the file have hung off a result of it, and the file runs call → result → what follows. An exact
+// read's answer names the record it means (a Claude transcript's parentUuid), so no step is taken there:
+// a result standing beside a record the read chains to the same message is a *sibling* of it, and
+// chaining through the sibling would place the record under a branch the source did not record.
+func sourceToolResultBefore(messages []Message, index int, parent string) (int, bool) {
 	for at := index - 1; at >= 0; at-- {
 		if len(messages[at].ToolResults) > 0 &&
 			strings.TrimSpace(messages[at].SourceParentUUID) == parent {
 			return at, true
-		}
-		if !projected {
-			break
 		}
 	}
 	return 0, false
@@ -441,7 +472,10 @@ func selectedLeafRefusal(messages []Message, lastWrittenSourceID, provider strin
 	if lastWrittenSourceID == "" || len(messages) == 0 {
 		return nil
 	}
-	inactive := inactiveSourceRecords(messages, provider)
+	// The refusal is about the line, not about the count: the walk's own unresolved answer names the
+	// relations the conversion placed, and the leaf check only asks whether the entry written last is on
+	// the line that walk reached.
+	inactive, _ := inactiveSourceRecords(messages, provider)
 	for index, message := range messages {
 		if strings.TrimSpace(message.SourceUUID) != lastWrittenSourceID {
 			continue

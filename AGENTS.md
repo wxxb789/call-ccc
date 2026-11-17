@@ -31,9 +31,10 @@ with their exit codes and counts).
   loader walks the source's active path and an inactive branch stays off it as recorded history rather
   than being chained in as an active turn. A target that is one line of records with no parent relation
   (a Codex rollout) cannot hold a branch that way, so it writes the source's own line and omits the
-  records the source's relations place off it, counted as `inactive_branch_records`. A relation the read
-  cannot answer is counted (`unresolved_source_parents`) instead of being presented as one the source
-  recorded.
+  records the source's relations place off it, counted as `inactive_branch_records`; and a relation the
+  read cannot answer is counted (`unresolved_source_parents`) instead of being presented as one the
+  source recorded — on that route too, where the count is the line walk's own accounting of the places it
+  chose, not only of the records it left out.
 - **A target writer's claim is shown through the target harness's own loader.** Call `ccc continue …
   --to codex`, `--to claude` or `--to pi` converts, installs and reports **converted / installed /
   natively resumable** as three separate states; "resumable" is only ever `verification.load` or
@@ -105,9 +106,11 @@ with their exit codes and counts).
   own relation is reproduced as the read answered it, with the one step the read itself projects: a record
   the Pi-family readers answer as hanging off the message that made a call is chained through the tool
   result standing between them, and counted (`unresolved_source_parents`) where the projection cannot
-  settle which of the two the record named — a read whose parent answers are exact keeps the narrower
-  reading. A source whose *selected leaf* the target's loader would not reach — the entry written last
-  stands for a record off the line the read's last record answers — is refused
+  settle which of the two the record named. The step is taken only where the read may project, because it
+  exists to undo a projection: an exact answer — a Claude transcript's `parentUuid` — names the record it
+  means, and a result standing beside a record the read chains to the same message is that record's
+  sibling, not its place. A source whose *selected leaf* the target's loader would not reach — the entry
+  written last stands for a record off the line the read's last record answers — is refused
   (`ErrUnrepresentableLeaf`) rather than written as a file that resumes a branch the conversation left. A
   Pi invocation the report prints and the check runs names the sessions tree inside the data directory
   explicitly (`PI_CODING_AGENT_SESSION_DIR`), so the printed line, the verified lookup and the

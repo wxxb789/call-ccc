@@ -490,6 +490,76 @@ class HostProvidersReadIsGuarded(unittest.TestCase):
         self.assertEqual(NATIVE_CHECK.host_pi_providers(scratch), {})
 
 
+class SeedPiHomeDropsEveryCredentialLevel(unittest.TestCase):
+    """``seed_pi_home`` copies the host's provider definitions with no credential, at every level.
+
+    Pi resolves a literal secret wherever its schema allows one: a provider's own ``apiKey`` and
+    ``headers``, a ``models`` entry's ``headers``, and a ``modelOverrides`` entry's ``headers`` (Pi's own
+    reference says a header's values "resolve like apiKey"). A filter that looked only at the provider's
+    own level would write a model-level ``Authorization`` header into the scratch ``models.json`` -- a
+    second copy of a secret, in a home ``--keep`` prints and leaves on disk.
+    """
+
+    def test_nested_definitions_are_scrubbed_and_the_key_is_an_env_reference(self) -> None:
+        host = Path(tempfile.mkdtemp(prefix="ccc-pi-seed-host-")).resolve()
+        self.addCleanup(shutil.rmtree, host, ignore_errors=True)
+        home = Path(tempfile.mkdtemp(prefix="ccc-pi-seed-home-")).resolve()
+        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        (host / "models.json").write_text(json.dumps({"providers": {
+            "probe": {
+                "apiKey": "sk-literal-provider-secret",
+                "baseUrl": "https://example.invalid",
+                "headers": {"Authorization": "Bearer a-provider-header-secret"},
+                "models": [{"id": "probe-model", "baseUrl": "https://example.invalid",
+                            "headers": {"Authorization": "Bearer a-model-header-secret"}}],
+                "modelOverrides": {"probe-model": {"headers": {"x-api-key": "an-override-secret"}}},
+            },
+            "unneeded": {"apiKey": "an-unneeded-secret"},
+        }}), encoding="utf-8")
+
+        seeded, left_out = NATIVE_CHECK.seed_pi_home(home, host, ["probe"])
+
+        self.assertEqual(seeded, ["probe"], seeded)
+        self.assertEqual(left_out, ["unneeded"], left_out)
+        document = json.loads((home / "models.json").read_text(encoding="utf-8"))
+        probe = document["providers"]["probe"]
+        self.assertEqual(probe["apiKey"], "$PROBE_API_KEY", probe)
+        self.assertEqual(probe["models"],
+                         [{"id": "probe-model", "baseUrl": "https://example.invalid"}], probe)
+        self.assertEqual(probe["modelOverrides"], {"probe-model": {}}, probe)
+        # A provider the run does not need is left out entirely: its definitions (and every credential
+        # in them) never reach the scratch document.
+        self.assertEqual(sorted(document["providers"]), ["probe"], document)
+        for secret in ("sk-literal-provider-secret", "a-provider-header-secret",
+                       "a-model-header-secret", "an-override-secret", "an-unneeded-secret"):
+            self.assertNotIn(secret, json.dumps(document), secret)
+
+    def test_a_key_reference_survives_and_a_header_reference_does_not(self) -> None:
+        """The two fields' rules are different on purpose, and both are the shipped ones: the document's
+        ``apiKey`` is re-spelled as the ``$ENV`` reference the seeded home resolves its credential from
+        (dropping the host's literal or ``!command`` value either way), while a ``headers`` object is
+        dropped at every level, reference or not, exactly as the provider's own ``headers`` have been."""
+        host = Path(tempfile.mkdtemp(prefix="ccc-pi-seed-host-")).resolve()
+        self.addCleanup(shutil.rmtree, host, ignore_errors=True)
+        home = Path(tempfile.mkdtemp(prefix="ccc-pi-seed-home-")).resolve()
+        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        (host / "models.json").write_text(json.dumps({"providers": {"probe": {
+            "apiKey": "$HOST_NAMED_KEY",
+            "headers": {"Authorization": "$A_HOST_HEADER_REFERENCE"},
+            "models": [{"id": "probe-model", "headers": {"Authorization": "$HOST_NAMED_HEADER"}}],
+        }}}), encoding="utf-8")
+
+        NATIVE_CHECK.seed_pi_home(home, host, ["probe"])
+
+        document = json.loads((home / "models.json").read_text(encoding="utf-8"))
+        probe = document["providers"]["probe"]
+        self.assertEqual(probe["apiKey"], "$HOST_NAMED_KEY", document)
+        self.assertNotIn("headers", probe, document)
+        self.assertEqual(probe["models"], [{"id": "probe-model"}], document)
+        for reference in ("A_HOST_HEADER_REFERENCE", "HOST_NAMED_HEADER"):
+            self.assertNotIn(reference, json.dumps(document), reference)
+
+
 class ModelVisibleHistoryWalk(unittest.TestCase):
     """``model_visible_roles`` walks the file's own ``parentId`` chain, not its file order.
 
@@ -903,7 +973,10 @@ class TheRunsOwnHomeIsSeededAndACallersIsNot(NativeCheckDriver):
 
     HOST_PROVIDERS = {
         "probe": {"apiKey": "$PROBE_API_KEY", "baseUrl": "https://example.invalid",
-                  "headers": {"x-api-key": "a-host-secret"}, "models": []},
+                  "headers": {"x-api-key": "a-host-secret"},
+                  "models": [{"id": "probe-model", "baseUrl": "https://example.invalid",
+                              "headers": {"Authorization": "Bearer a-model-secret"}}],
+                  "modelOverrides": {"probe-model": {"headers": {"x-api-key": "an-override-secret"}}}},
         "unused": {"apiKey": "a-host-secret"},
     }
 
@@ -913,8 +986,12 @@ class TheRunsOwnHomeIsSeededAndACallersIsNot(NativeCheckDriver):
         seeded = captured.get("home_models_seeded")
         self.assertIsNotNone(seeded, f"the run's own scratch home was not seeded: {captured}")
         self.assertEqual(sorted(seeded), ["probe"], seeded)
-        self.assertNotIn("a-host-secret", json.dumps(seeded), seeded)
         self.assertEqual(seeded["probe"].get("apiKey"), "$PROBE_API_KEY", seeded)
+        self.assertEqual(seeded["probe"].get("models"),
+                         [{"id": "probe-model", "baseUrl": "https://example.invalid"}], seeded)
+        self.assertEqual(seeded["probe"].get("modelOverrides"), {"probe-model": {}}, seeded)
+        for secret in ("a-host-secret", "a-model-secret", "an-override-secret"):
+            self.assertNotIn(secret, json.dumps(seeded), seeded)
         self.assertIn("seeded provider(s) probe", printed, printed)
 
     def test_a_callers_home_is_never_written_to(self) -> None:

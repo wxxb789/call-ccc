@@ -112,7 +112,10 @@ Consequences taken as this increment's defaults:
   response item written into it becomes model-visible history (measured: the branch fixture converted to a
   rollout read back as `6` messages where the source's own line holds `3`), so that route writes the
   source's own line and omits the records the source placed off it, counted as `inactive_branch_records`
-  (Q-0005-09). 0005's review measured the alternative this rule replaced, for both kinds of target:
+  (Q-0005-09); the same walk's own accounting -- the places it chose that the read did not answer -- is
+  counted under the same `unresolved_source_parents` category, because a record kept on the line by a
+  relation the read never established must not be presented as the source's own (Q-0005-12). 0005's review
+  measured the alternative this rule replaced, for both kinds of target:
   chaining every entry to/writing every record beside the one before it put an abandoned branch's user
   prompt on the active path and hid the source's own line behind a compaction record that stood off it —
   the fixtures, the writer case and the conversion cases pin the source's tree, the loader's own answer
@@ -141,14 +144,20 @@ no parent at all — so the file is the source's own tree rather than one chain 
 branch the conversation left stands off the path the target's loader walks from the file's last entry, as
 recorded history, exactly where the source put it. A record whose named parent has no entry of its own (the
 target omitted it) is chained to the nearest ancestor that does have one; a record that follows a tool
-result is chained to the result, because the reader answers a Pi tool result as *not* a visible ancestor
-while the source's own file runs call → result → what follows, and writing the result after the record would
-leave a resumed session with a call and no result. The tool-result step is read across intervening records
-too, and there it is counted: the reader answers a record under a tool result as hanging off the message
-that made the call, so whether the record hung off the call or off a result of it is not answerable, and the
-entry is chained through the nearest result standing between them (`unresolved_source_parents`). A relation
-the read cannot resolve at all follows the entry before it and is counted (`unresolved_source_parents`)
-instead of being presented as the source's. The file ends with a line feed, and no entry is written after a
+result is chained to the result **where the read may answer a projection**, because the reader answers a Pi
+tool result as *not* a visible ancestor while the source's own file runs call → result → what follows, and
+writing the result after the record would leave a resumed session with a call and no result. The step is
+taken only where the read may project: it exists to undo a projection, and an exact answer (a Claude
+transcript's `parentUuid`) names the record it means, so a result standing beside a record the read chains
+to the same message is that record's *sibling* — chaining through it would chain the record to a place the
+source placed it elsewhere and revive the sibling's own words as an ancestor (Q-0005-12). Where it is
+taken across an intervening record it is counted: the reader answers a record under a tool result as
+hanging off the message that made the call, so whether the record hung off the call or off a result of it
+is not answerable, and the entry is chained through the nearest result standing between them
+(`unresolved_source_parents`); the result immediately before the record is the other reading — the file's
+own continuation — and is taken without counting it. A relation the read cannot resolve at all follows the
+entry before it and is counted (`unresolved_source_parents`) instead of being presented as the source's.
+The file ends with a line feed, and no entry is written after a
 message that was omitted, so the chain never points at something the file does not hold. **The selected
 leaf is part of this rule**: the target's own loader walks from the last entry written and the source's from
 the read's last record, so a source whose last record writes no entry while the entry written last stands
@@ -305,7 +314,9 @@ offline half.
    shows), and a sidechain is omitted and counted. A target whose format is one line of records takes the
    reversal for its own shape: the Codex rollout writes the source's own line and counts the records the
    source placed off it (`inactive_branch_records`), because a response item written there is
-   model-visible history (Q-0005-09). The remaining reversal — write a `branch_summary` entry — would
+   model-visible history (Q-0005-09), and its walk's own accounting of the places it chose travels as the
+   same `unresolved_source_parents` category the tree writers report (Q-0005-12). The remaining
+   reversal — write a `branch_summary` entry — would
    require inventing a summary the source did not record.
 6. **The resume command's model flags.** Default: print neither a provider nor a model. The source's
    provider is a source-side label Pi's own configuration need not define, and a flagged model can leave

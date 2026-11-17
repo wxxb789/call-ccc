@@ -343,10 +343,12 @@ says so.
   loader answers `get_state`/`get_messages` from a home holding the session alone, since an RPC run is
   started with `--offline --no-tools`).
   The scratch home a run makes for itself holds a `models.json` seeded from the
-  host's provider definitions with every credential-bearing field dropped (`apiKey`, `headers`) and the
-  chosen provider's key left as an `$ENV` reference, so nothing is read from or written to a credential
-  store; a home the caller names with `--target-home` is **read, never written to** — the seed would
-  replace a configuration the caller keeps there, and the comparisons this run makes cover session files
+  host's provider definitions with every credential-bearing field dropped — a provider's `apiKey` and
+  `headers`, a `models` entry's `headers` and a `modelOverrides` entry's `headers`, every level Pi's own
+  schema allows one — and the chosen provider's key left as an `$ENV` reference, so nothing is read from
+  or written to a credential store; a home the caller names with `--target-home` is **read, never written
+  to** — the seed would replace a configuration the caller keeps there, and the comparisons this run
+  makes cover session files
   only — and the provider check then reports what that home already defines. A host whose harness is
   absent ends as `RESULT: INCOMPLETE` (exit 2) naming what could not run, never as a pass: for
   `--direction claude-to-pi` a missing Pi binary is that verdict before any check runs, while the

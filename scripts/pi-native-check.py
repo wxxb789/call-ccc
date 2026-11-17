@@ -23,9 +23,10 @@ What it does, for the direction it is asked about:
    else moved" is a measurement rather than a claim.
 
 The Pi home it uses is a scratch directory seeded with the **provider definitions** the host's own
-``models.json`` holds, with every credential-bearing field dropped (``apiKey``, ``headers``) and the
-chosen provider's key taken from the environment through a ``$NAME`` reference; nothing in a credential
-store is read, copied or written. A home the caller names with ``--target-home`` is used exactly as it is
+``models.json`` holds, with every credential-bearing field dropped (a provider's ``apiKey``/``headers``,
+a ``models`` entry's ``headers`` and a ``modelOverrides`` entry's ``headers``) and the chosen provider's
+key taken from the environment through a ``$NAME`` reference; nothing in a credential store is read,
+copied or written. A home the caller names with ``--target-home`` is used exactly as it is
 found: this harness writes nothing into one, so a configuration (and the credential references in it) the
 caller put there is not replaced by the seed above. A host with no provider configured for the chosen
 model is reported as a named skip with that reason, not as a pass.
@@ -168,13 +169,40 @@ def host_pi_providers(host_agent_dir: Path) -> dict:
     return providers if isinstance(providers, dict) else {}
 
 
+#: The fields a Pi provider definition resolves as a credential: the provider's own ``apiKey`` and
+#: ``headers``, and the ``headers`` a ``models`` entry or a ``modelOverrides`` entry may carry (Pi's own
+#: reference -- docs/models-configuration.md -- says a header's values "resolve like apiKey", at all three
+#: levels). They are named once here and dropped wherever they appear in a definition, so a level Pi's
+#: schema adds later cannot leave a literal secret in a document this harness copies.
+CREDENTIAL_FIELDS = ("apiKey", "headers")
+
+
+def scrub_credentials(value):
+    """One provider definition with every credential-bearing field dropped, at any depth.
+
+    A filter that looked only at the provider's own level would keep a literal ``Authorization`` header
+    inside a ``models`` entry or a ``modelOverrides`` entry -- both supported by Pi 1.5.2, and both
+    written into the scratch ``models.json`` -- so the walk is by shape rather than by a fixed list of
+    paths, and a definition embedded anywhere in the document is scrubbed the same way.
+    """
+    if isinstance(value, dict):
+        return {key: scrub_credentials(item) for key, item in value.items()
+                if key not in CREDENTIAL_FIELDS}
+    if isinstance(value, list):
+        return [scrub_credentials(item) for item in value]
+    return value
+
+
 def seed_pi_home(home: Path, host_agent_dir: Path, providers: list[str]) -> tuple[list[str], list[str]]:
     """Seed a scratch Pi agent directory with the host's provider definitions, minus every credential.
 
     Pi's ``models.json`` is read as a whole document and its schema is all-or-nothing, so a provider the
     host holds that this run does not need is left out rather than copied and hoped about; a provider whose
     ``apiKey`` is dropped must still resolve a credential from the environment, which is why the key is
-    written back as an ``$ENV`` reference. Answers the provider names seeded and the ones left out.
+    written back as an ``$ENV`` reference. Every definition is scrubbed at every level (``scrub_credentials``
+    -- the provider's own fields, its ``models`` entries and its ``modelOverrides`` entries), so a literal
+    header a model-level definition carries is dropped like the provider's own. Answers the provider names
+    seeded and the ones left out.
     """
     host_models = host_pi_providers(host_agent_dir)
     seeded: dict[str, object] = {}
@@ -183,7 +211,7 @@ def seed_pi_home(home: Path, host_agent_dir: Path, providers: list[str]) -> tupl
         if name not in providers:
             left_out.append(name)
             continue
-        kept = {k: v for k, v in provider.items() if k not in ("apiKey", "headers")}
+        kept = scrub_credentials(provider)
         reference = provider.get("apiKey")
         if isinstance(reference, str) and reference.startswith("$"):
             kept["apiKey"] = reference

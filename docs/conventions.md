@@ -79,7 +79,12 @@ gate runs as a required step.
   the conversation left stays in the file off that walk; where the target is one line of records with no
   parent relation (a Codex rollout), the source's own line is written and the records the source placed
   off it are omitted and counted (`inactive_branch_records`), because a record written there becomes
-  model-visible history. The provider a record states is the provider the read actually answered — the
+  model-visible history, and the walk's own accounting — the places it chose that the read did not answer
+  (`unresolved_source_parents`) — is disclosed on that route as it is on the tree writers. A record that
+  follows a tool result is chained through it only where the read itself projects (the Pi-family readers
+  resolve a result's descendants to their visible ancestor); an exact answer names the record it means, so
+  a result standing beside a record the read chains to the same message is that record's sibling and not
+  its place. The provider a record states is the provider the read actually answered — the
   target's own configured endpoint where the harness was asked, and none where the read answers the model
   alone — never the source's, and never invented.
 - **A native-verification harness is a re-derivable script, not a gate step**, exactly like

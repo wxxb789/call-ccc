@@ -363,9 +363,9 @@ gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./c
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 246 tests in 8.056s (rc=0)
+  PASS     selftest Ran 248 tests in 5.877s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 29 project-owned prefix(es); files seen by git: 5669 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
-  PASS     secrets  no leaks found in 115 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+  PASS     secrets  no leaks found in 121 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
 
@@ -396,6 +396,7 @@ Test counts and the changes to existing cases:
 | the fix pass this round answers: the Pi → Claude Code history conversion measured by the installed transcript's own walk, the Pi → Codex conversion that omits the off-line records and reports no boundary, the archive fallback that must answer the same relations as the source read, the mixed dialogue/result record that must leave its result on the walk, the assistant entry that records the model and no provider it cannot answer, and the identified-but-parentless record whose invented relation the count covers | `internal/ccc/continue_pi_test.go` (9 → 11 cases), `internal/ccc/pi_target_test.go` (9 → 12) |
 | the two loss-category lists gained the categories the new code paths report (`unresolved_source_parents` for the Claude target; `inactive_branch_records` for the Codex target), and one existing case was retargeted at the path it now pins (`NoProviderConfiguredIsANamedSkip` runs with `give_home=False`, so it still exercises the seeded-scratch-home path whose skip names the host's configuration) | `internal/ccc/claude_target_test.go`, `internal/ccc/codex_target_test.go`, `scripts/tests/test_pi_native_check.py` |
 | the native harness's own cases for the fixes: `--pi PATH` resolving the executable the conversion is driven through (asserted against the version query and `--target-binary`), the missing-Pi run's `RESULT: INCOMPLETE` verdict and the reverse direction needing no Pi at all, and the run's own home being seeded while a caller-named home is never written to (asserted both in the report and against the file system) | `scripts/tests/test_pi_native_check.py` (30 → 35 cases) |
+| the third review round's cases: the adjacent exact-parent shape (a record naming a call immediately after that call's result) on both the tree writer and the Codex walk, the Codex report's accounting of the places its walk could not answer, and the seed's nested credential levels (a provider's `models` entry and its `modelOverrides` entry, plus the two fields' asymmetry — the key re-spelled as an `$ENV` reference, a header reference dropped) | `internal/ccc/pi_target_test.go`, `internal/ccc/codex_target_test.go` (one new case), `scripts/tests/test_pi_native_check.py` (39 → 41 cases) |
 
 The upstream comparison (`python3 scripts/upstream-compare.py --record`, network + a pristine checkout at
 the pin) ran three cases and agreed on all three:
@@ -497,6 +498,36 @@ spelling `archive/0002-…`, which the move made `archive/archive/0002-…`) and
 `Accepted: merged onto main as 8a8265a; archived`, matching the index row instead of still awaiting
 acceptance.
 
+**The third review round's fix pass** answers that round's three findings. `internal/ccc/route_shared.go`
+gates the tool-result step on the read that projects — the step exists to undo a projection, and an exact
+answer (a Claude transcript's `parentUuid`) names the record it means, so a result standing beside a
+record the read chains to the same message is that record's *sibling*; chaining through it revived the
+sibling — a user record can hold dialogue beside its result — as an ancestor of the active path, on both
+the tree writers and the Codex walk — and `inactiveSourceRecords` answers the count beside its flags: the
+places the Codex line walk chose that the read did not answer (a record chained through a result standing
+between it and the call it named; a record the read left parentless that is not the conversation's first;
+a record naming a parent this read does not hold). `internal/ccc/codex_target.go` reports it as
+`unresolved_source_parents` (carried-with-caveat) with its own detail; the records themselves are still
+written. The fixture-backed conversions' other counts are unchanged (the whole narrowed suite is green and
+the branch fixture's `inactive_branch_records = 3` still holds). `scripts/pi-native-check.py`'s seed
+scrubs credential-bearing fields at every level Pi's schema allows one (a provider's `apiKey`/`headers`, a
+`models` entry's `headers`, a `modelOverrides` entry's `headers`) instead of only the provider's own
+level; on this host no provider definition carries a nested credential field, so the seeded document (and
+every printed number the harness reports) is byte-identical, and the check was re-run anyway:
+`claude-to-pi` PASS — 23 checks, none failed, one real turn through the printed invocation — and
+`pi-to-claude` PASS — 12 checks, none failed.
+
+Each rule this pass adds is pinned by one executed mutation (revert the line, run the case that claims it,
+restore the line, record the failure): the ungated tree step fails
+`TestPiSessionChainsThroughAToolResultAcrossAnInterveningBranch`, the ungated Codex walk, the uncounted
+projection, the uncounted parentless-identified place and the uncounted parent-not-held place fail
+`TestCodexRolloutKeepsAnActiveResultAcrossAnInterveningBranch` /
+`TestCodexRolloutCountsThePlacesItsWalkCouldNotAnswer`, and the shallow seed filter fails the three
+seeding cases — measured in this pass, every mutation reverted before the gate run. `AGENTS.md`,
+`docs/conventions.md`, `docs/plans/0005-pi-continuation.md`, `docs/harness.md` and a new Q-0005-12 (with
+Q-0005-10's exact-read clause corrected) carry the rule, and §6's and §8's numbers are this pass's gate
+run (`248 selftest cases`, `270 Go test functions`, `121 owned file(s)` scanned).
+
 ## 7. Limits and residual risks
 
 - **The Pi → previously-supported-target native half did not run for the harness's first run here**
@@ -521,7 +552,9 @@ acceptance.
   dropped record — every record the reader produced is still written (Q-0005-07). The Codex target takes
   that decision's other branch, because its format has no parent relation at all: it writes the source's
   line and counts the records the source placed off it as `inactive_branch_records` (Q-0005-09), so that
-  route *does* omit records by design where the two tree-shaped routes keep them.
+  route *does* omit records by design where the two tree-shaped routes keep them — and its line walk's own
+  accounting is counted under the same `unresolved_source_parents` category (Q-0005-12), so a record the
+  walk kept on the line through a relation the read did not answer is not presented as the source's own.
 - **The Pi → Claude Code route's branch handling is pinned offline, not by driving Claude Code against a
   branch-bearing transcript.** The case asserts the installed transcript's own `parentUuid` walk (the walk
   the loader follows, measured for the loader's link requirement) against the source file's, and the
@@ -550,8 +583,9 @@ acceptance.
 | `2773 bytes`, `4 message(s)`, `1 call(s)`, `1 result(s)` | the Pi → Claude Code transcript §3 converted — unchanged by this pass, because that source's records are one line and the tree rule writes the same parents the sequential chain did |
 | `29 loss categories named` | the native run's own count of `conversion.losses[]` entries for the Pi target (§2); the earlier fix pass added `unresolved_source_parents`, which the writer reports with its count on every run |
 | `27 loss categories named`, `4 message(s)`, `1 call(s)`, `1 result(s)` | the Pi → Claude Code conversion (§3); `26` before this pass, which gave the Claude writer the `unresolved_source_parents` category too |
-| `inactive_branch_records = 3`, `carried.CompactionBoundaries = 0` | the Pi → Codex conversion of the branch fixture (§4): the three records the source's relations place off its line, omitted; the Codex-target loss list gained that category in this pass |
-| `3067 → 32986 bytes` | the installed Pi session's growth across one real turn (§2). What the check asserts is that the file grew, not a byte count, so a later run measures different ends: the runs this record has quoted measured `3123 → 33055` / `3123 → 33042` (the first revision), `3107 → 33039` (the earlier fix pass) and this pass's `3067 → 32986` |
+| `inactive_branch_records = 3`, `carried.CompactionBoundaries = 0` | the Pi → Codex conversion of the branch fixture (§4): the three records the source's relations place off its line, omitted; the Codex-target loss list gained that category in that pass |
+| `unresolved_source_parents = 1` on the projection case and `= 2` on the walk's other two places | the Codex-target cases (`TestCodexRolloutKeepsAnActiveResultAcrossAnInterveningBranch`, `TestCodexRolloutCountsThePlacesItsWalkCouldNotAnswer`): the Codex-target loss list gained the category in the third review round's fix pass, with a detail naming the three relations it counts (Q-0005-12) |
+| `3067 → 32999 bytes` | the installed Pi session's growth across one real turn (§2). What the check asserts is that the file grew, not a byte count, so a later run measures different ends: the runs this record has quoted measured `3123 → 33055` / `3123 → 33042` (the first revision), `3107 → 33039` (the earlier fix pass) and `3067 → 32986`, then `3067 → 32999`, in the third review round's fix pass |
 | `23 checks, none failed` / `12 checks, none failed` | the two native runs' verdicts (§2, §3); both were re-run for this pass. §3's run has one check more than the `11` the first run reported, because the earlier fix pass records the non-Pi target's load state as a check of its own |
 | the branch fixture's loader answers | `messageCount 3` / `[user, assistant, assistant]` for the *source* file and for its conversion, against `messageCount 4` / `[compactionSummary, user, assistant, assistant]` for the conversion the pre-fix writer produced (§4) |
-| `246 selftest cases`, `269 Go test functions`, `5553 carried files`, `29 owned prefixes`, `3601 gofmt-clean files`, `115 owned file(s)` scanned | the gate run (§6) and this pass's case count; the selftest count went `242 → 246` and the narrowed tree's `func Test` count `263 → 269` with this pass's six Go cases, and the owned-file scan covers the one file this pass changed in `scripts/tests/` |
+| `248 selftest cases`, `270 Go test functions`, `5553 carried files`, `29 owned prefixes`, `3601 gofmt-clean files`, `121 owned file(s)` scanned | the gate run (§6) and the current case count: the selftest count went `246 → 248` with the third review round's two Python cases (`seed_pi_home`'s nested-credential cases) and the narrowed tree's `func Test` count `269 → 270` with its one new Go case. The owned-file count includes the ignored build/test artifacts the working tree holds (the check's `bin/` and the two `__pycache__` directories), which the scan stages with the owned files; a fresh checkout counts fewer, and the pre-fix tree's own gate run (a detached worktree of `711e256`) printed `114` |

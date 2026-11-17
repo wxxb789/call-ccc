@@ -1931,7 +1931,11 @@ supersede it with a newer one and say which it supersedes.
   with `newPiProviderFactory` and `newTauProviderFactory`) resolve descendants of a tool result to their
   visible ancestor, and for a read whose parent answers are exact (a Claude transcript's `parentUuid`
   names a record) the narrower immediate-predecessor reading is kept, so no relation is invented for a
-  read that did not project. The gate is a small name list in `internal/ccc/route_shared.go`
+  read that did not project. (The gate's first revision took the step for an exact read too, where the
+  result was the record immediately before the one naming the call; 0005's third review round measured that
+  as the same defect in a narrower shape — an exact read's answer names the record it means, so the result
+  is that record's *sibling* — and Q-0005-12 records the correction: for an exact read the step is not
+  taken at all.) The gate is a small name list in `internal/ccc/route_shared.go`
   (`projectedParentProviders`) because the inherited registry exposes no format-family predicate and the
   carried parser is not edited here.
 - **Reversal:** apply the reading to every reader (which invents a relation for an exact read: measured
@@ -1968,3 +1972,38 @@ supersede it with a newer one and say which it supersedes.
   keep the silent substitution (measured wrong: the target resumes the abandoned branch).
 - **Settled by:** nothing owner-only. A target format that records its own selected leaf (a `leafId`-like
   field) would make the refusal unnecessary where the format can name one.
+
+## Q-0005-12 — The projection step is taken only where the read projects, and the Codex line walk's own places are counted
+
+- **Status:** resolved (default taken; 0005's third review round named both halves as defects: the ungated
+  immediate tool-result step revived an exact read's sibling result, and the Codex route disclosed only
+  `inactive_branch_records` while its walk placed records through relations the read never answered)
+- **Question:** two halves of one rule. (a) `sourceTree.parentFor` chained a record through the tool result
+  immediately before it whenever that result named the same record, and `sourceLineParent` did the same for
+  the Codex walk — without asking whether the read may answer a projection at all. For an exact read (a
+  Claude transcript's `parentUuid`) that result is a *sibling*: in the shape `C, R(parent=C), A(parent=C)`
+  the source's relations place `R` off the line the conversation runs, and chaining `A` through `R` revives
+  `R`'s own turn — a user record can hold dialogue beside its result — as an ancestor of the active path,
+  while the report counted nothing. (b) The tree writers count the relations the read could not place
+  (`unresolved_source_parents`); the Codex route consumed only the boolean of `inactiveSourceRecords`, so a
+  record the walk kept on the line through a projected parent — or through the record before it when the
+  read answered no parent, or none it holds — travelled as "the source's own line" with no count.
+- **Default taken:** (a) the tool-result step is taken only where `projectedParentProvider` says the read
+  may project, on both the tree writers and the Codex walk; an exact read resolves every named parent by
+  its own answer, and a result standing beside the record it names is that record's sibling (kept in the
+  file for the tree targets, off the walk). `sourceToolResultBefore` lost its `projected` parameter: where
+  the read does not project the step is not taken at all. (b) `inactiveSourceRecords` answers the count
+  beside the flags — the places its walk chose that the read did not answer: the record chained through a
+  result standing between it and the call it named (a result immediately before it is the file's own
+  continuation, `call → result → what follows`, and is not counted, exactly as the tree writers do not
+  count it); a record the read gave an identity but no parent, that is not the conversation's first; and a
+  record naming a parent this read does not hold. The count is reported as `unresolved_source_parents`
+  (carried-with-caveat) with a detail that names the three relations, and every one of those records is
+  still written: the count names the place, not an omission.
+- **Reversal:** take the immediate step for every read (measured wrong: with the gate removed the adjacent
+  exact case's assertion fails — the sibling result and its dialogue come back as an ancestor of the
+  active path), or keep the Codex report to `inactive_branch_records` (measured under-disclosing: the
+  projection case is the tree writers' count of 1 on the same document, and without it the rollout
+  presents the line it built as the source's by right).
+- **Settled by:** nothing owner-only; the gate follows the reader predicate Q-0005-10 already names, and a
+  future upstream registry predicate would replace it there.

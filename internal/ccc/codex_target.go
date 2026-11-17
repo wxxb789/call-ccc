@@ -356,6 +356,7 @@ type codexRolloutBuilder struct {
 	lossWhitespaceResults  int
 	lossResultBlocks       int
 	lossInactiveBranch     int
+	lossUnresolvedParents  int
 
 	ledger
 
@@ -400,8 +401,15 @@ func (b *codexRolloutBuilder) sessionMeta(startedAt time.Time) {
 // travel here as recorded history without being revived as an active turn, so it is omitted and counted
 // (inactive_branch_records). The branch itself is still in the source session, where its own
 // conversation can be converted on demand.
+//
+// The walk's own answer about the places it chose travels with it: where the read left a record's place
+// open -- a record the read left parentless or gave a parent this read does not hold, or one chained
+// through a tool result standing between it and the call it named -- the record's place on this line is
+// this conversion's reading rather than the read's, and the report counts it (unresolved_source_parents)
+// instead of presenting the line as the source's own by right.
 func (b *codexRolloutBuilder) writeConversation(conv Conversation) {
-	inactive := inactiveSourceRecords(conv.Messages, conv.Source.Provider)
+	inactive, unresolved := inactiveSourceRecords(conv.Messages, conv.Source.Provider)
+	b.lossUnresolvedParents = unresolved
 	for index, message := range conv.Messages {
 		b.messageIndex = index
 		if inactive[index] {
@@ -965,6 +973,22 @@ func (b *codexRolloutBuilder) losses() []Loss {
 				"resumed turn reads, so the branch cannot travel here as recorded history without being " +
 				"revived as an active turn; it is omitted instead. The branch is still in the source " +
 				"session, and its own conversation can be converted on demand like any other history",
+		},
+		{
+			Category:    "unresolved_source_parents",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.lossUnresolvedParents,
+			Detail: "a relation the read could not place exactly, so a record's place on this line is " +
+				"this conversion's reading: the record named the message that made a call while a " +
+				"result of that call stands between them in the file (the inherited Pi reader resolves " +
+				"a result's descendants to their visible ancestor, so the read answers both relations " +
+				"the same way, and the file's own reading -- call → result → what follows -- is what " +
+				"keeps the result on this line); the record carried an identity but no parent, and is " +
+				"not the conversation's first; or the record named a parent this read does not hold. " +
+				"Each of those records is still written; what the count names is that the source's own " +
+				"place for it is not the one this line was built from. A record the read answered no " +
+				"identity for is never counted: the read's own order is all there is to follow, and " +
+				"following it invents nothing",
 		},
 		{
 			Category:    "pre_compaction_history",
