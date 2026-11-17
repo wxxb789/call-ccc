@@ -103,18 +103,19 @@ type piMessage struct {
 	Timestamp  int64    `json:"timestamp"`
 }
 
-// piUsage is Pi's usage object, as the target's own records carry it. Every number is a count of
-// tokens; the writer writes the source's own recorded counts where the source recorded them and zeros
-// otherwise, and never a number this build computed.
+// piUsage is Pi's usage object, as the target's own records carry it. Every number is a count of tokens;
+// this writer writes zeros for all of them, which is what Q-0005-01 decided: the counts Pi writes are its
+// own accounting of the tokens it spent, and the conversation carried here was not produced by a model
+// this session called, so neither the source's own recorded counts nor a number this build computed is
+// attributed to this session. usageFor states the same, and names what the zeros cost.
 type piUsage struct {
-	Input      int            `json:"input"`
-	Output     int            `json:"output"`
-	CacheRead  int            `json:"cacheRead"`
-	CacheWrite int            `json:"cacheWrite"`
-	Reasoning  int            `json:"reasoning"`
-	Total      int            `json:"totalTokens"`
-	Cost       *piCost        `json:"cost,omitempty"`
-	Extra      map[string]any `json:"-"`
+	Input      int     `json:"input"`
+	Output     int     `json:"output"`
+	CacheRead  int     `json:"cacheRead"`
+	CacheWrite int     `json:"cacheWrite"`
+	Reasoning  int     `json:"reasoning"`
+	Total      int     `json:"totalTokens"`
+	Cost       *piCost `json:"cost,omitempty"`
 }
 
 // piCost is the usage object's cost breakdown, in the shape the target's records carry. All zero for a
@@ -182,9 +183,6 @@ func (o *jsonObject) open() {
 }
 
 func (o *jsonObject) close() {
-	if o.count == 0 {
-		o.buffer.WriteByte('{')
-	}
 	o.buffer.WriteByte('}')
 }
 
@@ -400,11 +398,11 @@ func ConvertToPiSession(conv Conversation, opts PiTargetOptions) (PiSession, err
 		cwd:             conv.Source.Cwd,
 		cliVersion:      cliVersion,
 		opts:            opts,
-		clock:           newPiClock(startedAt),
+		clock:           newEntryClock(startedAt, piEntryTimestampLayout),
 		headerTimestamp: startedAt.UTC().Format(piEntryTimestampLayout),
 		provider:        strings.TrimSpace(conv.Source.Provider),
 		callNames:       map[string]string{},
-		pendingCalls:    map[string]struct{}{},
+		ledger:          ledger{pendingCalls: map[string]struct{}{}},
 		sourceFidelity:  conv.Fidelity,
 	}
 	builder.writeConversation(conv)
@@ -414,7 +412,7 @@ func ConvertToPiSession(conv Conversation, opts PiTargetOptions) (PiSession, err
 	return PiSession{
 		SessionID:     sessionID,
 		FileName:      piSessionFileName(sessionID, startedAt),
-		Directory:     piProjectDir(conv.Source.Cwd),
+		Directory:     PiProjectDir(conv.Source.Cwd),
 		Cwd:           conv.Source.Cwd,
 		StartedAt:     startedAt,
 		CLIVersion:    cliVersion,
@@ -425,27 +423,6 @@ func ConvertToPiSession(conv Conversation, opts PiTargetOptions) (PiSession, err
 		ModelProvider: builder.lastProvider,
 		Model:         builder.lastModel,
 	}, nil
-}
-
-// piClock hands out ISO 8601 entry timestamps that never go backwards: Pi's own entry timestamps are
-// the order its tree reads in, and a source whose messages are unordered would otherwise write a file
-// whose order contradicts its own times. The shape is the one Pi's own records carry
-// (`2026-11-10T02:07:01.784Z`): milliseconds, always three digits, always UTC.
-type piClock struct {
-	last time.Time
-}
-
-func newPiClock(start time.Time) *piClock {
-	return &piClock{last: start.UTC()}
-}
-
-func (c *piClock) next(at time.Time) string {
-	at = at.UTC()
-	if at.IsZero() || at.Before(c.last) {
-		at = c.last
-	}
-	c.last = at
-	return at.Format(piEntryTimestampLayout)
 }
 
 // piSessionFileName is the name Pi's own writer gives a session file: the session's start instant with
@@ -462,10 +439,6 @@ func piSessionFileName(sessionID string, at time.Time) string {
 // home: `/home/azureuser/.hermes/cache/scratch` is filed under
 // `--home-azureuser-.hermes-cache-scratch--`.
 func PiProjectDir(cwd string) string {
-	return piProjectDir(cwd)
-}
-
-func piProjectDir(cwd string) string {
 	trimmed := strings.TrimLeft(cwd, `/\`)
 	trimmed = strings.NewReplacer("/", "-", `\`, "-", ":", "-").Replace(trimmed)
 	return "--" + trimmed + "--"
@@ -473,24 +446,22 @@ func piProjectDir(cwd string) string {
 
 // piSessionBuilder accumulates the session's entries and the report while it walks the document.
 type piSessionBuilder struct {
-	buffer           bytes.Buffer
-	sessionID        string
-	cwd              string
-	cliVersion       string
-	clock            *piClock
-	opts             PiTargetOptions
-	provider         string
-	lastEntryID      *string
-	carried          Carried
-	items            []TargetItem
-	idErr            error
-	callNames        map[string]string
-	pendingCalls     map[string]struct{}
-	foreignToolNames map[string]struct{}
-	toolNameOrder    []string
-	lastProvider     string
-	lastModel        string
-	sourceFidelity   Fidelity
+	buffer      bytes.Buffer
+	sessionID   string
+	cwd         string
+	cliVersion  string
+	clock       *entryClock
+	opts        PiTargetOptions
+	provider    string
+	lastEntryID *string
+	carried     Carried
+	items       []TargetItem
+	idErr       error
+	callNames   map[string]string
+	ledger
+	lastProvider   string
+	lastModel      string
+	sourceFidelity Fidelity
 
 	writtenMessages        int
 	lossReasoning          int
@@ -712,7 +683,7 @@ func (b *piSessionBuilder) writeAssistantMessage(text string, message Message, c
 			Content:    blocks,
 			Provider:   provider,
 			Model:      model,
-			Usage:      b.usageFor(message),
+			Usage:      b.usageFor(),
 			StopReason: stop,
 			Timestamp:  piMessageMillis(message.Timestamp),
 		},
@@ -760,7 +731,7 @@ func (b *piSessionBuilder) modelFields(message Message) (string, string) {
 // including what it costs: the target's own estimate of the inherited context is built from these
 // numbers, so a long carried history reads to Pi as a cheaper context than it is until the first
 // resumed turn reports its own usage.
-func (b *piSessionBuilder) usageFor(message Message) *piUsage {
+func (b *piSessionBuilder) usageFor() *piUsage {
 	b.lossUnrecordedUsage++
 	return &piUsage{Cost: &piCost{}}
 }
@@ -815,7 +786,7 @@ func (b *piSessionBuilder) writeCarriedCalls(message Message) {
 		message: &piMessage{
 			Role:       piRoleAssistant,
 			Content:    blocks,
-			Usage:      b.usageFor(message),
+			Usage:      b.usageFor(),
 			StopReason: piStopToolUse,
 			Timestamp:  piMessageMillis(message.Timestamp),
 		},
@@ -866,20 +837,9 @@ type piProjectedCall struct {
 // reader expands one apply_patch into one call per file it names, every projection sharing the id and
 // the input) and not a second invocation.
 func (b *piSessionBuilder) distinctCalls(message Message) []piProjectedCall {
-	calls := make([]piProjectedCall, 0, len(message.ToolCalls))
-	seen := make(map[string]struct{}, len(message.ToolCalls))
-	for index, call := range message.ToolCalls {
-		id := strings.TrimSpace(call.ToolUseID)
-		if id != "" {
-			if _, ok := seen[id]; ok {
-				b.lossCoalesced++
-				continue
-			}
-			seen[id] = struct{}{}
-		}
-		calls = append(calls, piProjectedCall{index: index, call: call})
-	}
-	return calls
+	return distinctCalls(message, func(index int, call ToolCall) piProjectedCall {
+		return piProjectedCall{index: index, call: call}
+	}, &b.lossCoalesced)
 }
 
 // callBlock answers one call as the block the target records: Pi's toolCall block, with the recorded
@@ -980,29 +940,6 @@ func (b *piSessionBuilder) writeToolResult(result ToolResult, at time.Time) bool
 	b.carried.ToolResults++
 	b.items = append(b.items, TargetItem{Kind: ItemToolResult, CallID: callID, Text: text})
 	return true
-}
-
-// solePendingCall answers the one call an id-less result may belong to: exactly one carried call with
-// no result yet.
-func (b *piSessionBuilder) solePendingCall() (string, bool) {
-	if len(b.pendingCalls) != 1 {
-		return "", false
-	}
-	for callID := range b.pendingCalls {
-		return callID, true
-	}
-	return "", false
-}
-
-func (b *piSessionBuilder) noteToolName(name string) {
-	if b.foreignToolNames == nil {
-		b.foreignToolNames = map[string]struct{}{}
-	}
-	if _, ok := b.foreignToolNames[name]; ok {
-		return
-	}
-	b.foreignToolNames[name] = struct{}{}
-	b.toolNameOrder = append(b.toolNameOrder, name)
 }
 
 // piMessageMillis is one message's own timestamp: Pi writes Unix milliseconds inside `message`.

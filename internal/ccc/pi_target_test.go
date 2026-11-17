@@ -366,6 +366,7 @@ func TestPiSessionReportsEveryLossCategory(t *testing.T) {
 	}
 	wanted := []string{
 		"reasoning_text", "sidechain_messages", "system_records", "tool_role_messages",
+		"synthesized_tool_call_messages",
 		"unclassified_role_messages", "empty_user_messages", "empty_assistant_messages",
 		"non_dialogue_content", "whitespace_only_dialogue", "unpaired_tool_results",
 		"empty_tool_results", "whitespace_only_tool_results", "unrepresentable_result_blocks",
@@ -375,6 +376,10 @@ func TestPiSessionReportsEveryLossCategory(t *testing.T) {
 		"pre_compaction_history", "empty_compaction_summary", "malformed_source_lines",
 		"summary_transcript", "source_needs_retry",
 	}
+	listed := make(map[string]struct{}, len(wanted))
+	for _, category := range wanted {
+		listed[category] = struct{}{}
+	}
 	for _, category := range wanted {
 		loss := lossCount(t, session.Losses, category)
 		if !dispositions[loss.Disposition] {
@@ -383,6 +388,14 @@ func TestPiSessionReportsEveryLossCategory(t *testing.T) {
 		}
 		if strings.TrimSpace(loss.Detail) == "" {
 			t.Errorf("%s carries no detail, so a caller cannot read what the count means", category)
+		}
+	}
+	// The other direction: every category the report gives a disposition to is one this case lists, so a
+	// category added to the writer cannot pass silently by being absent from the list above.
+	for _, loss := range session.Losses {
+		if _, known := listed[loss.Category]; !known {
+			t.Errorf("the report carries category %q, which this case does not list: add it here so a "+
+				"category added to the writer cannot pass silently", loss.Category)
 		}
 	}
 }

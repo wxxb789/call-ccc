@@ -14,9 +14,9 @@ What it does, for the direction it is asked about:
 2. plants an unrelated session in the target home the run will write into;
 3. converts through the CLI (``ccc continue … --json``), reading the conversion, installation and the
    structural read-back out of the report rather than trusting them;
-4. runs Pi's **own loader** offline (``pi --mode rpc``: ``get_state``/``get_messages``) against the
-   installed session, with an unknown-id control arm, and compares what the harness answered about the
-   session with what the installed file's own bytes say;
+4. runs Pi's **own loader** offline (``pi --mode rpc``: ``get_state``/``get_messages``) against a
+   **throw-away copy** of the installed session, with an unknown-id control arm, and compares what the
+   harness answered about the session with what the installed file's own bytes say;
 5. with ``--resume-prompt``, runs one real turn through the printed invocation and prints the target's own
    answer under ``native_check_common.TURN_OUTPUT_MARKER``;
 6. re-digests the source tree, the planted session and every session the home already held, so "nothing
@@ -44,19 +44,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from native_check_common import (  # noqa: E402
     PROMPT_PLACEHOLDER,
+    REPORT_BLOCK_CHARS_MAX,
+    REPORT_BLOCK_LINES_MAX,
     RESULTS,
+    SHELL_SYNTAX_CHARACTERS,
     TURN_OUTPUT_MARKER,
+    bounded_block,
     record,
+    rewrite_source_cwd,
     run,
     sha256,
     shell_words,
     tree_digest,
+    unquoted_text,
 )
-
-#: The dead end this harness refuses to guess about: the Pi version whose session format and loader this
-#: script was measured against. A different version is not refused -- the checks say what they observed --
-#: but the run names the version it verified.
-MEASURED_PI_VERSION = "1.5.2"
 
 #: Where this repository keeps its committed native-shaped fixtures, and the provider directories under
 #: it. A Pi fixture is one session file named by its own header id.
@@ -64,7 +65,6 @@ FIXTURE_ROOT = Path("internal/ccc/testdata/fixtures")
 SOURCE_PROVIDER = "claude"
 TARGET_PROVIDER = "pi"
 SOURCE_SESSION = "9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10"
-SOURCE_RECORDED_CWD = "/home/user/code/example-api"
 
 #: The same session, read as a *source* by the opposite direction: the committed Pi fixture, converted
 #: into a previously supported target harness through the same pipeline every other source uses.
@@ -86,7 +86,6 @@ PI_HOME_ENV = "PI_CODING_AGENT_DIR"
 TARGET_INVOCATION = {
     "pi": {"home_env": PI_HOME_ENV, "session_flag": "--session"},
     "claude": {"home_env": "CLAUDE_CONFIG_DIR", "session_flag": "--resume"},
-    "codex": {"home_env": "CODEX_HOME", "session_flag": "resume"},
 }
 
 PI_SESSION_SUBDIR = "sessions"
@@ -97,9 +96,10 @@ UNRELATED_SESSION = "00000000-0000-4000-8000-0000000000ff"
 #: so the project directory Pi derives from it is a single readable name.
 WORKSPACE = "workspace"
 
-#: How many bytes of an answer or a diagnostic the report prints before it says it cut the rest.
-ANSWER_MAX = 2000
-DIAGNOSTIC_MAX = 1500
+#: The words a rendered invocation begins with and the operator between them: the directory change, and
+#: the `&&` a shell reads as its own operator. They mirror `internal/ccc/continue.go`'s `renderInvocation`.
+CD_WORD = "cd"
+OPERATOR_WORD = "&&"
 
 
 def pi_project_dir(cwd: str) -> str:
@@ -108,7 +108,7 @@ def pi_project_dir(cwd: str) -> str:
     ``PiProjectDir`` (internal/ccc/pi_target.go), which is itself the spelling the installed harness's own
     ``getDefaultSessionDirPath`` computes."""
     trimmed = cwd.replace("\\", "/").lstrip("/")
-    for character in ("/", "\\", ":"):
+    for character in ("/", ":"):
         trimmed = trimmed.replace(character, "-")
     return f"--{trimmed}--"
 
@@ -118,26 +118,6 @@ def pi_session_file_name(timestamp: str, session_id: str) -> str:
     dashes and the session id appended."""
     stamp = timestamp.replace(":", "-").replace(".", "-")
     return f"{stamp}_{session_id}.jsonl"
-
-
-def rewrite_source_cwd(source: Path, destination: Path, workspace: Path) -> str:
-    """Copy one fixture to `destination`, replacing every occurrence of the recorded working directory
-    with `workspace`, and answer the recorded directory it replaced (empty when the fixture names none).
-
-    The rewrite is mechanical -- one string in the file's own bytes -- so nothing about the conversation
-    is invented: the same records, with one path spelled as the directory this run owns. It is the same
-    instrument ``scripts/claude-native-check.py`` uses, for the same reason: the fixture's recorded
-    directory is a path no host has, and a session filed under it can never be loaded by the harness whose
-    lookup is project-scoped.
-    """
-    text = source.read_text(encoding="utf-8")
-    if SOURCE_RECORDED_CWD not in text:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(text, encoding="utf-8")
-        return ""
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(text.replace(SOURCE_RECORDED_CWD, str(workspace)), encoding="utf-8")
-    return SOURCE_RECORDED_CWD
 
 
 def seed_pi_home(home: Path, host_agent_dir: Path, providers: list[str]) -> tuple[list[str], list[str]]:
@@ -336,8 +316,8 @@ def bounded(text: str, limit: int) -> str:
 
 def print_answer(output: str) -> None:
     print(TURN_OUTPUT_MARKER)
-    for line in bounded(output, ANSWER_MAX).splitlines():
-        print(line)
+    for line in bounded_block(output, REPORT_BLOCK_LINES_MAX, REPORT_BLOCK_CHARS_MAX):
+        print("    " + line)
     print()
 
 
@@ -432,7 +412,12 @@ def main(argv: list[str] | None = None) -> int:
     if target_provider == TARGET_PROVIDER:
         print(f"pi:          {pi}" + (f" ({run([pi, '--version']).stdout.strip()[:40]})" if pi else ""))
     print(f"source:      {source.relative_to(repo)} (copied to {destination})")
-    print(f"workspace:   {workspace} -> project dir {pi_project_dir(str(workspace))}")
+    if target_provider == TARGET_PROVIDER:
+        print(f"workspace:   {workspace} -> project dir {pi_project_dir(str(workspace))}")
+    else:
+        # The installed path here is the target's own spelling, not Pi's, so naming Pi's project
+        # directory for this direction would name a directory that does not exist.
+        print(f"workspace:   {workspace}")
     print(f"target home: {home}")
     if target_provider == TARGET_PROVIDER:
         print(f"pi models:   seeded provider(s) {', '.join(seeded_providers) or '(none)'} from {host_pi_dir}"
@@ -627,9 +612,38 @@ def _check_pi_loader(pi: str, home: Path, workspace: Path, session_id: str, inst
            sha256(installed) == before)
 
 
+def spelled_as_invocation(command: str, home_env: str) -> bool:
+    """Whether the line's own spelling makes a shell read it as `<cd> <dir> && NAME=<home> <words>`.
+
+    `unquoted_text` keeps the characters a shell reads *without* quoting, so the line's structure is read
+    off it: the opening `cd` word, then `&&` as an operator word of its own, then the assignment's own
+    `<home_env>=` prefix, with no other unquoted character a shell would act on. The same three spellings
+    the sibling ``scripts/claude-native-check.py``'s `spelled_as_invocation` refuses are refused here: a
+    quoted assignment (`… && 'NAME=…' …` is a *program* by that name to a shell, so nothing sets the
+    variable and the harness opens the caller's own data directory); a character a shell acts on left
+    unquoted inside the value (`NAME=a;b` sets the variable to `a` and runs `b`); and an operator glued to
+    a word (`cd /a&&b …` is a directory named `/a&&b` to a shell, not a change followed by an assignment)
+    -- which the whitespace test below answers, because a `&&` a shell reads as its operator is a word of
+    its own and therefore has whitespace on both sides.
+    """
+    text = unquoted_text(command)
+    if text is None:
+        return False
+    head, operator, tail = text.partition(OPERATOR_WORD)
+    if operator == "" or OPERATOR_WORD in tail:
+        return False
+    if head.split()[:1] != [CD_WORD] or not head[-1:].isspace() or not tail[:1].isspace():
+        return False
+    if not tail.lstrip().startswith(f"{home_env}="):
+        return False
+    forbidden = set(SHELL_SYNTAX_CHARACTERS)
+    return not (set(head) | set(tail)) & forbidden
+
+
 def _check_invocation(target: dict, target_provider: str) -> None:
     """Check the printed resume commands by reading them the way a POSIX shell reads them: word by word,
-    with the data directory and the session named, and nothing a shell would split or act on left bare."""
+    with the data directory and the session named, and nothing a shell would split or act on left bare
+    (the spelling `spelled_as_invocation` reads, the same rule the sibling harness applies)."""
     spec = TARGET_INVOCATION[target_provider]
     for field, prompt_word in (("resume_command", False), ("exec_resume_command", True)):
         command = target.get(field, "")
@@ -638,9 +652,10 @@ def _check_invocation(target: dict, target_provider: str) -> None:
             record(f"the printed {field} reads as a POSIX shell line", False, bounded(command, 200))
             continue
         names_home = any(word.startswith(spec["home_env"] + "=") for word in words)
-        changes_directory = bool(words) and words[0] == "cd"
+        changes_directory = bool(words) and words[0] == CD_WORD
         names_session = spec["session_flag"] in words and target.get("session_id", "") in words
         ok = (names_session and names_home and changes_directory
+              and spelled_as_invocation(command, spec["home_env"])
               and (not prompt_word or PROMPT_PLACEHOLDER in words))
         record(f"the printed {field} reads as a POSIX shell line naming the session", ok,
                bounded(command, 200))

@@ -263,7 +263,7 @@ func ConvertToCodexRollout(conv Conversation, opts CodexTargetOptions) (CodexRol
 		sessionID:      sessionID,
 		cwd:            source.Cwd,
 		cliVersion:     cliVersion,
-		clock:          newCodexClock(startedAt),
+		clock:          newEntryClock(startedAt, time.RFC3339Nano),
 		callOwners:     map[string]struct{}{},
 		gitBranch:      source.GitBranch,
 		gitRemote:      source.GitRemote,
@@ -309,26 +309,6 @@ func firstRecordedTime(messages []Message) time.Time {
 	return first.UTC()
 }
 
-// codexClock hands out envelope timestamps that never go backwards: the target orders records by the
-// envelope's timestamp, and a source whose messages are unordered (a DAG, a replayed fork) would
-// otherwise write a file whose order contradicts its own times.
-type codexClock struct {
-	last time.Time
-}
-
-func newCodexClock(start time.Time) *codexClock {
-	return &codexClock{last: start.UTC()}
-}
-
-func (c *codexClock) next(at time.Time) string {
-	at = at.UTC()
-	if at.IsZero() || at.Before(c.last) {
-		at = c.last
-	}
-	c.last = at
-	return at.Format(time.RFC3339Nano)
-}
-
 // codexRolloutBuilder accumulates the rollout's lines and the report while it walks the document.
 type codexRolloutBuilder struct {
 	buffer     bytes.Buffer
@@ -336,7 +316,7 @@ type codexRolloutBuilder struct {
 	sessionID  string
 	cwd        string
 	cliVersion string
-	clock      *codexClock
+	clock      *entryClock
 	opts       CodexTargetOptions
 	gitBranch  string
 	gitRemote  string
@@ -375,16 +355,11 @@ type codexRolloutBuilder struct {
 	lossEmptyResults       int
 	lossWhitespaceResults  int
 	lossResultBlocks       int
-	foreignToolNames       map[string]struct{}
-	toolNameOrder          []string
 
-	// pendingCalls holds the calls this conversion carried that no result has answered yet. It is what
-	// an id-less result may be paired with, and only while exactly one call is outstanding: with two
-	// or more, the result could belong to any of them, and that ambiguity must not disappear just
-	// because a further call arrived.
-	pendingCalls map[string]struct{}
-	sawBoundary  bool
-	turnOpen     bool
+	ledger
+
+	sawBoundary bool
+	turnOpen    bool
 }
 
 func (b *codexRolloutBuilder) write(record codexEnvelope) {
@@ -708,19 +683,6 @@ func (b *codexRolloutBuilder) toolCall(index int, call ToolCall, at time.Time) {
 	b.items = append(b.items, TargetItem{Kind: ItemToolCall, CallID: callID, ToolName: name, InputJSON: input})
 }
 
-// solePendingCall answers the one call an id-less result may belong to: exactly one carried call with no
-// result yet. Two or more outstanding calls make the pairing a guess -- the result could belong to any
-// of them -- and no outstanding call leaves nothing to pair with.
-func (b *codexRolloutBuilder) solePendingCall() (string, bool) {
-	if len(b.pendingCalls) != 1 {
-		return "", false
-	}
-	for callID := range b.pendingCalls {
-		return callID, true
-	}
-	return "", false
-}
-
 func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time) {
 	callID := strings.TrimSpace(result.ToolUseID)
 	// resultIDInferred says the pairing below is the only id this result has: the source recorded none of
@@ -798,17 +760,6 @@ func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time) {
 	})
 	b.carried.ToolResults++
 	b.items = append(b.items, TargetItem{Kind: ItemToolResult, CallID: callID, Text: text})
-}
-
-func (b *codexRolloutBuilder) noteToolName(name string) {
-	if b.foreignToolNames == nil {
-		b.foreignToolNames = map[string]struct{}{}
-	}
-	if _, ok := b.foreignToolNames[name]; ok {
-		return
-	}
-	b.foreignToolNames[name] = struct{}{}
-	b.toolNameOrder = append(b.toolNameOrder, name)
 }
 
 // losses reports every category the writer knows about, in a fixed order, so a caller can read the

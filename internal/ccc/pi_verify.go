@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 )
@@ -26,29 +25,10 @@ var piVersionPattern = regexp.MustCompile(`[0-9]+\.[0-9]+\.[0-9]+`)
 // not an error: a conversion can still be written (and verified structurally), but the report says the
 // native half could not run. Measured: `pi --version` prints `1.5.2`.
 func ProbePiBinary(ctx context.Context, binary string) harnessProbe {
-	if strings.TrimSpace(binary) == "" {
-		binary = PiBinaryDefault
-	}
-	probe := harnessProbe{Binary: binary}
-	path, err := exec.LookPath(binary)
-	if err != nil {
-		probe.Detail = fmt.Sprintf("%s is not on PATH", binary)
-		return probe
-	}
-	probe.Found = true
-	probe.Binary = path
-	output, err := runBounded(ctx, path, 30*time.Second, "--version")
-	if err != nil {
-		probe.Detail = fmt.Sprintf("%s --version failed: %v", path, err)
-		return probe
-	}
-	if version := piVersionFrom(output); version != "" {
-		probe.Version = version
-		return probe
-	}
-	probe.Detail = fmt.Sprintf("%s --version answered %q, which names no version",
-		path, summariseText(strings.TrimSpace(output), 120))
-	return probe
+	return probeBinary(ctx, binary, PiBinaryDefault, piVersionFrom, func(path, output string) string {
+		return fmt.Sprintf("%s --version answered %q, which names no version",
+			path, summariseText(strings.TrimSpace(output), 120))
+	})
 }
 
 // piVersionFrom answers the version a `pi --version` line names: the first semantic version on it.
@@ -75,9 +55,6 @@ var piLoadEnvDenied = []string{
 
 // PiLoadOptions configures one native load verification.
 type PiLoadOptions struct {
-	// Home is the converted session's own data directory; the check installs a throw-away copy into a
-	// scratch directory of its own and never reads the installed file through the harness.
-	Home      string
 	Binary    string
 	SessionID string
 	Cwd       string
@@ -181,7 +158,7 @@ func VerifyPiLoad(ctx context.Context, opts PiLoadOptions) LoadVerification {
 	}
 	// The control arm: the same question about an identity that exists nowhere. Its answer is what turns
 	// "the harness started" into "the harness resolved this session".
-	unknown, err := uuidString()
+	unknown, err := newUUIDV4()
 	if err != nil {
 		verification.Detail = fmt.Sprintf("a control identity could not be generated: %v", err)
 		return verification
@@ -246,12 +223,6 @@ type piLoadState struct {
 // caller's patience.
 const piLoadTimeout = 90 * time.Second
 
-// piRPCRequest is one command in the harness's RPC protocol.
-type piRPCRequest struct {
-	ID   string `json:"id"`
-	Type string `json:"type"`
-}
-
 // piRPCResponse is one answer. A session event carries other fields and no `type` of "response".
 type piRPCResponse struct {
 	Type    string          `json:"type"`
@@ -292,7 +263,7 @@ func piAskLoader(
 		`{"id":"state","type":"get_state"}`,
 		`{"id":"messages","type":"get_messages"}`,
 	}, "\n") + "\n"
-	stdout, err := runPiRPC(ctx, binary, cwd, home, arguments, stdin, timeout, stderr)
+	stdout, err := runPiLoaderRPC(ctx, binary, cwd, home, arguments, stdin, timeout, stderr)
 	if err != nil {
 		return piLoadState{}, err
 	}
@@ -343,7 +314,7 @@ func piLoaderCwd(_ string, sessionCwd string) (string, error) {
 	return trimmed, nil
 }
 
-// piStateSummary is the harness's own view of the session, for the verification detail.
+// stateSummary is the harness's own view of the session, for the verification detail.
 func stateSummary(state piLoadState) string {
 	return fmt.Sprintf("sessionId %q, messageCount %d", state.SessionID, state.MessageCount)
 }
@@ -485,8 +456,8 @@ func runPiRPC(
 	command.Dir = cwd
 	command.Env = piEnvironment(home, piLoadEnvDenied)
 	command.Stdin = strings.NewReader(stdin)
-	answer := newBoundedBuffer(piRPCOutputMax)
-	diagnostics := newBoundedBuffer(piRPCDiagnosticsMax)
+	answer := newBoundedBuffer(harnessOutputMax)
+	diagnostics := newBoundedBuffer(harnessDiagnosticsMax)
 	command.Stdout = answer
 	if stderr != nil {
 		command.Stderr = io.MultiWriter(diagnostics, stderr)
@@ -503,42 +474,17 @@ func runPiRPC(
 	return answer.String(), nil
 }
 
-// piRPCOutputMax and piRPCDiagnosticsMax bound what one harness run may add to this process's memory.
-const (
-	piRPCOutputMax      = 1 << 20
-	piRPCDiagnosticsMax = 4096
-)
+// runPiLoaderRPC is the seam the load check drives the target harness's RPC mode through. It is named so
+// a test can answer as a harness whose protocol behaviour is not the host's business: the rule under
+// test is what the check makes of the harness's answer, not which build of the harness is installed
+// here, and the real subprocess path is exercised by scripts/pi-native-check.py against a real binary.
+var runPiLoaderRPC = runPiRPC
 
 // piEnvironment builds a child environment for one harness run: the caller's own environment with the
 // variable that selects the agent directory set to home, the named variables removed, and the session
 // directory variable removed too, so a leftover setting cannot point the harness at another tree.
-//
-// Every name is read in its own upper case, the way the denylist and os/exec itself read one: Windows'
-// environment is case-insensitive and os/exec keeps the last value among the names it is handed.
 func piEnvironment(home string, denied []string) []string {
-	blocked := make(map[string]struct{}, len(denied)+1)
-	for _, name := range denied {
-		blocked[strings.ToUpper(name)] = struct{}{}
-	}
-	blocked[piSessionDirEnv] = struct{}{}
-	environment := make([]string, 0, len(os.Environ())+1)
-	for _, entry := range os.Environ() {
-		name, _, found := strings.Cut(entry, "=")
-		if !found {
-			continue
-		}
-		folded := strings.ToUpper(name)
-		if _, deny := blocked[folded]; deny {
-			continue
-		}
-		if folded == piHomeEnv {
-			continue
-		}
-		environment = append(environment, entry)
-	}
-	environment = append(environment, piHomeEnv+"="+home)
-	sort.Strings(environment)
-	return environment
+	return childEnvironment(home, piHomeEnv, denied, piSessionDirEnv)
 }
 
 // PiResumeOptions configures one real resume turn.
@@ -600,11 +546,11 @@ func VerifyPiResume(ctx context.Context, opts PiResumeOptions) ResumeVerificatio
 	if timeout <= 0 {
 		timeout = piResumeTimeout
 	}
-	answer, diagnostics, runErr := runPiTurn(ctx, path, opts.Cwd, opts.Home, arguments, timeout, opts.Stderr)
+	answer, diagnostics, runErr := runPiResumeTurn(ctx, path, opts.Cwd, opts.Home, arguments, timeout, opts.Stderr)
 	after, afterErr := fileSize(opts.SessionPath)
 	verification.SessionBytesBefore = before
 	verification.SessionBytesAfter = after
-	growthDetail := claudeTurnGrowthDetail(before, after)
+	growthDetail := turnGrowthDetail(before, after)
 	if afterErr != nil {
 		growthDetail = fmt.Sprintf(" (the installed session could not be measured after the turn: %v)", afterErr)
 	}
@@ -647,7 +593,7 @@ func VerifyPiResume(ctx context.Context, opts PiResumeOptions) ResumeVerificatio
 	verification.State = VerificationStateVerified
 	verification.Detail = fmt.Sprintf(
 		"the harness answered from the installed session in one turn and wrote its own records into it%s",
-		claudeTurnGrowthDetail(before, after))
+		turnGrowthDetail(before, after))
 	return verification
 }
 
@@ -661,35 +607,14 @@ const piResumeTimeout = 5 * time.Minute
 func runPiTurn(
 	ctx context.Context, executable, cwd, home string, args []string, timeout time.Duration, stderr io.Writer,
 ) (string, string, error) {
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	command := exec.CommandContext(runCtx, executable, args...)
-	if dir := cwd; strings.TrimSpace(dir) != "" {
-		if info, err := os.Stat(dir); err == nil && info.IsDir() {
-			command.Dir = dir
-		}
-	}
-	command.Env = piEnvironment(home, nil)
-	answer := newBoundedBuffer(piTurnOutputMax)
-	diagnostics := newBoundedBuffer(piTurnDiagnosticsMax)
-	command.Stdout = answer
-	if stderr != nil {
-		command.Stderr = io.MultiWriter(diagnostics, stderr)
-	} else {
-		command.Stderr = diagnostics
-	}
-	err := command.Run()
-	if runCtx.Err() != nil && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-		return answer.String(), diagnostics.String(), fmt.Errorf("timed out after %s", timeout)
-	}
-	return answer.String(), diagnostics.String(), err
+	return runRouteTurn(ctx, executable, cwd, args, piEnvironment(home, nil), timeout, stderr)
 }
 
-// piTurnOutputMax and piTurnDiagnosticsMax bound what one harness run may add to this process's memory.
-const (
-	piTurnOutputMax      = 1 << 20
-	piTurnDiagnosticsMax = 4096
-)
+// runPiResumeTurn is the seam the resume check drives the target harness's turn through. It is named for
+// the same reason runPiLoaderRPC is: what the check makes of the harness's answer is the rule under
+// test, not which build of the harness a host happens to have installed, so a test answers the turn
+// itself rather than standing or falling on the host's harness.
+var runPiResumeTurn = runPiTurn
 
 // resolvePiExecutable is the seam the two checks find the target harness through, named for the same
 // reason the other routes' seams are: which build of the harness a host happens to have installed is
@@ -700,33 +625,16 @@ var resolvePiExecutable = resolveTargetExecutable
 // piExpectedMessageCount answers how many messages the harness's own loader builds from a session file
 // that holds these bytes, counted the way its `messageCount` counts them.
 //
-// It is computed from the file's own bytes rather than from the writer's document, and it is not simply
-// the number of `message` entries: measured on the tested version, `get_state`'s count is the loader's
-// model-visible message list. A session's context is built from its entries between the latest
-// compaction boundary and the end of the path (the compaction itself becoming the `compactionSummary`
-// entry), so entries the boundary replaced are not in the count, and each remaining message entry is.
-// The file this writer writes has all of its entries on one path, so the count is: one for the latest
-// compaction entry, plus every entry after it, plus nothing before it.
+// Measured on the tested version: `get_state`'s count is the loader's model-visible message list, which
+// is the walk piModelVisibleRoles makes, so this answers that walk's own length -- the count and the
+// roles cannot drift. It is computed from the file's own bytes rather than from the writer's document,
+// and it is not simply the number of `message` entries: a session's context is built from its entries
+// between the latest compaction boundary and the end of the path (the compaction itself becoming the
+// `compactionSummary` entry), so entries the boundary replaced are not in the count, and each remaining
+// message entry is. The file this writer writes has all of its entries on one path, so the count is: one
+// for the latest compaction entry, plus every entry after it, plus nothing before it.
 func piExpectedMessageCount(data []byte) int {
-	records := piConversationEntries(data)
-	boundary := -1
-	for index, entry := range records {
-		if entry.Type == piEntryCompaction {
-			boundary = index
-		}
-	}
-	from := 0
-	count := 0
-	if boundary >= 0 {
-		from = boundary + 1
-		count = 1
-	}
-	for _, entry := range records[from:] {
-		if entry.Type == piEntryMessage {
-			count++
-		}
-	}
-	return count
+	return len(piModelVisibleRoles(data))
 }
 
 // piConversationEntry is the part of one entry these reads ask about: its record type and, for a message
@@ -759,15 +667,6 @@ func piConversationEntries(data []byte) []piConversationEntry {
 		records = append(records, entry)
 	}
 	return records
-}
-
-// uuidString is one fresh identity for the control arm.
-func uuidString() (string, error) {
-	generated, err := newUUIDV4()
-	if err != nil {
-		return "", err
-	}
-	return generated, nil
 }
 
 // piHomeEnv is the environment variable that selects the Pi data directory a run reads: the harness has

@@ -186,7 +186,7 @@ func ConvertToClaudeTranscript(conv Conversation, opts ClaudeTargetOptions) (Cla
 		sessionID:      sessionID,
 		cwd:            cwd,
 		cliVersion:     cliVersion,
-		clock:          newCodexClock(startedAt),
+		clock:          newEntryClock(startedAt, time.RFC3339Nano),
 		callOwners:     map[string]struct{}{},
 		opts:           opts,
 		sourceFidelity: conv.Fidelity,
@@ -260,7 +260,7 @@ type claudeTranscriptBuilder struct {
 	sessionID  string
 	cwd        string
 	cliVersion string
-	clock      *codexClock
+	clock      *entryClock
 	opts       ClaudeTargetOptions
 
 	items      []TargetItem
@@ -303,13 +303,9 @@ type claudeTranscriptBuilder struct {
 	lossResultBlocks           int
 	lossModels                 int
 
-	foreignToolNames map[string]struct{}
-	toolNameOrder    []string
+	ledger
 
-	// pendingCalls holds the carried calls no result has answered yet, for the same reason the Codex
-	// writer keeps it: an id-less result may only be paired while exactly one call is outstanding.
-	pendingCalls map[string]struct{}
-	sawBoundary  bool
+	sawBoundary bool
 	// parentUUID is the uuid of the record written last, which the next record's parentUuid names. The
 	// loader walks that chain (measured: it warns "none carry parentUuid links; only N reached the
 	// resumed conversation" for a file whose records are not linked), so the writer always links.
@@ -616,20 +612,9 @@ type projectedCall struct {
 // counted. A call with no recorded id is never treated as a repeat: its id is generated from its own
 // place in the message, so two of them are two calls.
 func (b *claudeTranscriptBuilder) distinctCalls(message Message) []projectedCall {
-	calls := make([]projectedCall, 0, len(message.ToolCalls))
-	seen := make(map[string]struct{}, len(message.ToolCalls))
-	for index, call := range message.ToolCalls {
-		id := strings.TrimSpace(call.ToolUseID)
-		if id != "" {
-			if _, ok := seen[id]; ok {
-				b.lossCoalescedProjections++
-				continue
-			}
-			seen[id] = struct{}{}
-		}
-		calls = append(calls, projectedCall{index: index, call: call})
-	}
-	return calls
+	return distinctCalls(message, func(index int, call ToolCall) projectedCall {
+		return projectedCall{index: index, call: call}
+	}, &b.lossCoalescedProjections)
 }
 
 // toolCall writes one call as an assistant record holding a single tool_use block.
@@ -752,29 +737,6 @@ func (b *claudeTranscriptBuilder) toolResult(result ToolResult, at time.Time) (c
 	b.carried.ToolResults++
 	b.items = append(b.items, TargetItem{Kind: ItemToolResult, CallID: callID, Text: text})
 	return block, true
-}
-
-// solePendingCall answers the one call an id-less result may belong to: exactly one carried call with
-// no result yet.
-func (b *claudeTranscriptBuilder) solePendingCall() (string, bool) {
-	if len(b.pendingCalls) != 1 {
-		return "", false
-	}
-	for callID := range b.pendingCalls {
-		return callID, true
-	}
-	return "", false
-}
-
-func (b *claudeTranscriptBuilder) noteToolName(name string) {
-	if b.foreignToolNames == nil {
-		b.foreignToolNames = map[string]struct{}{}
-	}
-	if _, ok := b.foreignToolNames[name]; ok {
-		return
-	}
-	b.foreignToolNames[name] = struct{}{}
-	b.toolNameOrder = append(b.toolNameOrder, name)
 }
 
 func (b *claudeTranscriptBuilder) newUUID() string {

@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 )
@@ -24,28 +23,9 @@ var claudeVersionPattern = regexp.MustCompile(`[0-9]+\.[0-9]+\.[0-9]+`)
 // answer, not an error: a conversion can still be written (and verified structurally), but the report
 // says the native half could not run. Measured: `claude --version` prints `2.1.326 (Claude Code)`.
 func ProbeClaudeBinary(ctx context.Context, binary string) harnessProbe {
-	if strings.TrimSpace(binary) == "" {
-		binary = ClaudeBinaryDefault
-	}
-	probe := harnessProbe{Binary: binary}
-	path, err := exec.LookPath(binary)
-	if err != nil {
-		probe.Detail = fmt.Sprintf("%s is not on PATH", binary)
-		return probe
-	}
-	probe.Found = true
-	probe.Binary = path
-	output, err := runBounded(ctx, path, 30*time.Second, "--version")
-	if err != nil {
-		probe.Detail = fmt.Sprintf("%s --version failed: %v", path, err)
-		return probe
-	}
-	if version := claudeVersionFrom(output); version != "" {
-		probe.Version = version
-		return probe
-	}
-	probe.Detail = fmt.Sprintf("%s --version printed no version: %s", path, summariseText(output, 120))
-	return probe
+	return probeBinary(ctx, binary, ClaudeBinaryDefault, claudeVersionFrom, func(path, output string) string {
+		return fmt.Sprintf("%s --version printed no version: %s", path, summariseText(output, 120))
+	})
 }
 
 // claudeVersionFrom answers the version a `claude --version` line names. Measured on 2.1.326, whose
@@ -265,36 +245,9 @@ func runClaudeLoad(
 // claudeEnvironment builds a child environment for one harness run: the caller's own environment with
 // the variable that selects the target's data directory set to home, and with the named variables
 // removed. Nothing else is changed, so a host's PATH, locale and tool configuration still reach the
-// harness.
-//
-// Every name is read in its own upper case, the way the denylist and os/exec itself read one: Windows'
-// environment is case-insensitive and os/exec keeps the last value among the names it is handed, so a
-// leftover lower- or mixed-case spelling of the home variable would, after the sort below, sit after
-// the appended override and win there -- the check would then read the caller's own home instead of the
-// directory it installed into.
+// harness; childEnvironment spells how each name is read.
 func claudeEnvironment(home string, denied []string) []string {
-	blocked := make(map[string]struct{}, len(denied))
-	for _, name := range denied {
-		blocked[strings.ToUpper(name)] = struct{}{}
-	}
-	environment := make([]string, 0, len(os.Environ())+1)
-	for _, entry := range os.Environ() {
-		name, _, found := strings.Cut(entry, "=")
-		if !found {
-			continue
-		}
-		folded := strings.ToUpper(name)
-		if _, deny := blocked[folded]; deny {
-			continue
-		}
-		if folded == claudeHomeEnv {
-			continue
-		}
-		environment = append(environment, entry)
-	}
-	environment = append(environment, claudeHomeEnv+"="+home)
-	sort.Strings(environment)
-	return environment
+	return childEnvironment(home, claudeHomeEnv, denied)
 }
 
 // ClaudeResumeOptions configures one real resume turn.
@@ -358,7 +311,7 @@ func VerifyClaudeResume(ctx context.Context, opts ClaudeResumeOptions) ResumeVer
 	verification.SessionBytesAfter = after
 	// The growth every answer path reports: the two sizes when both were readable, and the measurement
 	// failure named as such rather than shown as a session that went to 0 bytes.
-	growthDetail := claudeTurnGrowthDetail(before, after)
+	growthDetail := turnGrowthDetail(before, after)
 	if afterErr != nil {
 		growthDetail = fmt.Sprintf(" (the installed session could not be measured after the turn: %v)", afterErr)
 	}
@@ -419,7 +372,7 @@ func VerifyClaudeResume(ctx context.Context, opts ClaudeResumeOptions) ResumeVer
 	verification.State = VerificationStateVerified
 	verification.Detail = fmt.Sprintf(
 		"the harness answered from the installed session in one turn and wrote its own records into it%s",
-		claudeTurnGrowthDetail(before, after))
+		turnGrowthDetail(before, after))
 	return verification
 }
 
@@ -427,7 +380,10 @@ func VerifyClaudeResume(ctx context.Context, opts ClaudeResumeOptions) ResumeVer
 // so it is given a generous deadline rather than the load check's.
 const claudeResumeTimeout = 5 * time.Minute
 
-func claudeTurnGrowthDetail(before, after int64) string {
+// turnGrowthDetail names how much a session file grew across one turn, for the detail sentence a resume
+// check reports: a pair of zero readings answers empty rather than naming a file that went from 0 to 0
+// bytes.
+func turnGrowthDetail(before, after int64) string {
 	if before == 0 && after == 0 {
 		return ""
 	}
@@ -441,40 +397,8 @@ func runClaudeTurn(
 	ctx context.Context, executable string, opts ClaudeResumeOptions, timeout time.Duration,
 	args []string, environment []string, stderr io.Writer,
 ) (string, string, error) {
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	command := exec.CommandContext(runCtx, executable, args...)
-	// The directory is the source's own recorded value, as the transcript records it: trimming decides
-	// only whether one was recorded, because a directory name may end in whitespace.
-	if dir := opts.Cwd; strings.TrimSpace(dir) != "" {
-		if info, err := os.Stat(dir); err == nil && info.IsDir() {
-			command.Dir = dir
-		}
-	}
-	command.Env = environment
-	answer := newBoundedBuffer(claudeTurnOutputMax)
-	diagnostics := newBoundedBuffer(claudeTurnDiagnosticsMax)
-	command.Stdout = answer
-	if stderr != nil {
-		command.Stderr = io.MultiWriter(diagnostics, stderr)
-	} else {
-		command.Stderr = diagnostics
-	}
-	err := command.Run()
-	if runCtx.Err() != nil && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-		return answer.String(), diagnostics.String(), fmt.Errorf("timed out after %s", timeout)
-	}
-	return answer.String(), diagnostics.String(), err
+	return runRouteTurn(ctx, executable, opts.Cwd, args, environment, timeout, stderr)
 }
-
-// claudeTurnOutputMax and claudeTurnDiagnosticsMax bound what one harness run may add to this process's
-// memory, the way the Codex route's own bounds do: the answer a report quotes is cut to boundedText's
-// limit anyway, and a harness flooding either stream is answered by its deadline and an excerpt rather
-// than by this process growing with every byte it writes.
-const (
-	claudeTurnOutputMax      = 1 << 20
-	claudeTurnDiagnosticsMax = 4096
-)
 
 // resolveTargetExecutable answers the path a command will run: exec.LookPath's answer, made absolute
 // where it is not already, because a run that changes its working directory would evaluate a relative

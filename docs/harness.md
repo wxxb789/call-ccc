@@ -334,8 +334,11 @@ says so.
   subprocess runner (`run`), the POSIX-shell reading of a rendered command (`shell_words`,
   `unquoted_text` and the character set a shell acts on), the JSONL record-shape test the checks report
   through (a line may be blank or one JSON **object**; anything else — unparseable, or a value that is not
-  an object — is that check's FAIL with the line's number), and the two strings the record's own rules
-  read (`TURN_OUTPUT_MARKER`, `PROMPT_PLACEHOLDER`).
+  an object — is that check's FAIL with the line's number), the two strings the record's own rules
+  read (`TURN_OUTPUT_MARKER`, `PROMPT_PLACEHOLDER`), the fixture-copy mechanism (`rewrite_source_cwd`:
+  the working directory rewritten through the session's own JSON `cwd` record field, never its raw
+  bytes, with a torn line carried through verbatim), and the printed-block bound (`bounded_block` with
+  `REPORT_BLOCK_LINES_MAX`/`REPORT_BLOCK_CHARS_MAX`).
   It is project-owned (`OWNED` and the manifest), imports nothing, and each check stays runnable on its
   own; what the shared module does **not** absorb is the checks' independent restatements of the
   contracts they check (the spelling rules their case files re-implement, the marker their case files

@@ -25,7 +25,8 @@ cmd/ccc/            the standalone CLI; no continuation-core types leak into it
 internal/ccc/       continuation core: conversation document, readers, archive access,
                     target writers and the route table (targets.go, codex_target.go,
                     codex_install.go, codex_verify.go, claude_target.go, claude_install.go,
-                    claude_verify.go, pi_target.go, pi_install.go, pi_verify.go, continue.go)
+                    claude_verify.go, pi_target.go, pi_install.go, pi_verify.go, continue.go),
+                    and the install/verify/probe machinery the three routes share (route_shared.go)
 internal/ccc/parity the canonical dump and the oracle a pristine checkout runs too
 internal/ccc/testdata/fixtures  committed native-shaped sessions, written by internal/ccc/fixturegen
 internal/ccc/testdata/growth    committed fragments a run appends to a *copy* of one fixture, so one

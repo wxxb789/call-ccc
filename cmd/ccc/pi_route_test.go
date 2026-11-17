@@ -81,6 +81,12 @@ func TestContinueToPiConvertsInstallsAndReportsTheRoute(t *testing.T) {
 	if !strings.Contains(document.TargetSession.ResumeCommand, "--session "+document.TargetSession.SessionID) {
 		t.Errorf("resume command = %q, want the session named by id", document.TargetSession.ResumeCommand)
 	}
+	// The helper's home holds a space, so the renderer has to quote it: left bare, the pasted line would
+	// run the harness with a data directory the shell split in two.
+	if !strings.Contains(document.TargetSession.ResumeCommand, "PI_CODING_AGENT_DIR='"+home+"'") {
+		t.Errorf("resume command = %q, want the data directory quoted, not left bare (the home holds a space)",
+			document.TargetSession.ResumeCommand)
+	}
 	// The source is untouched, and the target home holds exactly the session that was installed.
 	after, err := os.ReadFile(sourcePath)
 	if err != nil {

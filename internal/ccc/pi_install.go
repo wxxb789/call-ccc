@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,25 +29,7 @@ const piSessionFileMode os.FileMode = 0o600
 // directory was named at all, and the value is then resolved exactly as it was written, because a
 // directory name may begin or end with a space.
 func ResolvePiHome(explicit string) (string, bool, error) {
-	if strings.TrimSpace(explicit) != "" {
-		absolute, err := filepath.Abs(explicit)
-		if err != nil {
-			return "", true, fmt.Errorf("resolving %s: %w", explicit, err)
-		}
-		return absolute, true, nil
-	}
-	if fromEnv := os.Getenv(piHomeEnv); strings.TrimSpace(fromEnv) != "" {
-		absolute, err := filepath.Abs(fromEnv)
-		if err != nil {
-			return "", false, fmt.Errorf("resolving %s: %w", fromEnv, err)
-		}
-		return absolute, false, nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", false, fmt.Errorf("finding the user's home directory: %w", err)
-	}
-	return filepath.Join(home, ".pi", "agent"), false, nil
+	return resolveRouteHome(explicit, piHomeEnv, ".pi", "agent")
 }
 
 // InstallPiSession writes a converted session into a Pi data directory and returns the path it
@@ -62,55 +42,7 @@ func ResolvePiHome(explicit string) (string, bool, error) {
 // at the destination. The returned path and the error are independent answers: a non-empty path means
 // the session is published.
 func InstallPiSession(session PiSession, home string) (string, string, error) {
-	directory := filepath.Join(home, piSessionsSubdir, session.Directory)
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return "", "", fmt.Errorf("creating %s: %w", directory, err)
-	}
-	target := filepath.Join(directory, session.FileName)
-	if _, err := os.Lstat(target); err == nil {
-		return "", "", fmt.Errorf("%w: %s", ErrTargetExists, target)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", "", fmt.Errorf("checking %s: %w", target, err)
-	}
-
-	temp, err := os.CreateTemp(directory, "."+session.FileName+".tmp-")
-	if err != nil {
-		return "", "", fmt.Errorf("creating a temporary session file in %s: %w", directory, err)
-	}
-	tempName := temp.Name()
-	cleanup := func() {
-		temp.Close()
-		removeFile(tempName)
-	}
-	if err := temp.Chmod(piSessionFileMode); err != nil {
-		cleanup()
-		return "", "", fmt.Errorf("restricting %s: %w", tempName, err)
-	}
-	if _, err := temp.Write(session.Data); err != nil {
-		cleanup()
-		return "", "", fmt.Errorf("writing %s: %w", tempName, err)
-	}
-	if err := temp.Sync(); err != nil {
-		cleanup()
-		return "", "", fmt.Errorf("flushing %s: %w", tempName, err)
-	}
-	if err := temp.Close(); err != nil {
-		removeFile(tempName)
-		return "", "", fmt.Errorf("closing %s: %w", tempName, err)
-	}
-
-	if err := linkSession(tempName, target); err != nil {
-		removeFile(tempName)
-		if errors.Is(err, os.ErrExist) {
-			return "", "", fmt.Errorf("%w: %s", ErrTargetExists, target)
-		}
-		return "", "", fmt.Errorf("%w: %s: %v; install into a filesystem that supports hard links",
-			ErrNoExclusiveInstall, directory, err)
-	}
-	if err := removeFile(tempName); err != nil {
-		return target, "hard-link", fmt.Errorf("removing the temporary file %s: %w", tempName, err)
-	}
-	return target, "hard-link", nil
+	return installFile(home, piSessionsSubdir, session.Directory, session.FileName, session.Data, piSessionFileMode)
 }
 
 // VerifyPiSessionStructure reads the installed session back through the inherited AgentsView Pi reader
@@ -124,42 +56,12 @@ func InstallPiSession(session PiSession, home string) (string, string, error) {
 func VerifyPiSessionStructure(
 	ctx context.Context, sessionsDir string, session PiSession, cfg config.Config,
 ) (StructureVerification, error) {
-	verification := StructureVerification{
-		State:      VerificationStateNotVerified,
-		Method:     structureMethodPi,
-		TargetPath: filepath.Join(sessionsDir, session.Directory, session.FileName),
-	}
-	readerConfig := cfg
-	dirs := make(map[parser.AgentType][]string, len(cfg.AgentDirs)+1)
-	for agent, roots := range cfg.AgentDirs {
-		dirs[agent] = roots
-	}
-	dirs[parser.AgentPi] = []string{sessionsDir}
-	readerConfig.AgentDirs = dirs
-	readerConfig.DisabledAgents = nil
-
-	conversation, err := NewSourceReader(readerConfig).Read(ctx,
-		Ref{Provider: string(parser.AgentPi), ID: verification.TargetPath})
-	if err != nil {
-		verification.Detail = "the inherited Pi reader could not read the installed session back: " + err.Error()
-		return verification, nil
-	}
-	verification.ReadBack = readBackCounts(conversation)
-	installed, err := os.ReadFile(verification.TargetPath)
-	if err != nil {
-		verification.Detail = "the installed session could not be read back for comparison: " + err.Error()
-		return verification, nil
-	}
-	roundTrip := comparePiRoundTrip(session, conversation, installed)
-	verification.NotReadBackVerbatim = roundTrip.notReadBackVerbatim
-	if len(roundTrip.differences) > 0 {
-		verification.Detail = "the installed session does not hold the evidence in the target document: " +
-			strings.Join(roundTrip.differences, "; ")
-		return verification, nil
-	}
-	verification.State = VerificationStateVerified
-	verification.Detail = roundTrip.detail(structureReaderPi)
-	return verification, nil
+	return verifyStructure(ctx, sessionsDir, parser.AgentPi, structureMethodPi,
+		structureReaderPi, structureReaderPi,
+		filepath.Join(sessionsDir, session.Directory, session.FileName),
+		func(readBack Conversation, installed []byte) roundTripComparison {
+			return comparePiRoundTrip(session, readBack, installed)
+		}, cfg)
 }
 
 // comparePiRoundTrip names every way the file's read-back differs from the target document, through the
@@ -170,27 +72,7 @@ func VerifyPiSessionStructure(
 // (there is none in this format), so those are the reader's own normalisations and not differences in
 // what the file holds.
 func comparePiRoundTrip(session PiSession, readBack Conversation, installed []byte) roundTripComparison {
-	return compareRoundTrip(session.Items, readBack, piRoundTripReader(), piInstalledDialogue(installed))
-}
-
-// piRoundTripReader is the inherited Pi reader's own rules for the read-back walk: nothing is classified
-// away (the reader has no injected-context classification and keeps a boundary record as a message), a
-// toolResult record is read as a user-role message carrying the result and no dialogue, and every other
-// role the reader reads dialogue for stands for the assistant's turn.
-func piRoundTripReader() roundTripReader {
-	return roundTripReader{
-		classifiesAway: func(Message) bool { return false },
-		kindOf: func(message Message) (TargetItemKind, bool) {
-			switch parser.RoleType(message.Role) {
-			case parser.RoleUser:
-				return ItemUser, true
-			case parser.RoleTool:
-				return "", false
-			default:
-				return ItemAssistant, true
-			}
-		},
-	}
+	return compareRoundTrip(session.Items, readBack, plainRoundTripReader(), piInstalledDialogue(installed))
 }
 
 // piInstalledMessage is one installed message payload as the dialogue walk reads it: its role and its

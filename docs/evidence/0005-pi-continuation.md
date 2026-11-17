@@ -93,27 +93,27 @@ line; the excerpt above is the same document's head and tail with the entry ids 
 
 ## 2. The Pi target verified by Pi's own loader, natively
 
-`python3 scripts/pi-native-check.py --resume-prompt "Reply with exactly: PROBE-TURN-OK" --expect
-PROBE-TURN-OK --json`, exit code 0 — the run prints two verdicts beyond its own checks: the loader's
-answer, and the turn's own output:
+`CCC_PI_NATIVE_PROVIDER=tencent-litellm python3 scripts/pi-native-check.py --resume-prompt "Reply with
+exactly: PROBE-TURN-OK" --expect PROBE-TURN-OK --json`, exit code 0 — the run prints two verdicts beyond
+its own checks: the loader's answer, and the turn's own output:
 
 ```console
 PASS: ccc builds with the flags upstream ships
 PASS: ccc continue writes one JSON result document
 PASS: the conversion reports the conversation it carried and every loss category — carried 6 message(s), 1 call(s), 1 result(s); loss categories named: 28
 PASS: the structural read-back verified the installed session
-PASS: ccc continue exits 0 for a conversion whose verification ran — exit 0; stderr No session found matching '375f387d-8b54-4ae1-ab4a-ea06a5221260'
-PASS: the installed session exists at the reported path — sessions/--tmp-ccc-pi-native-check-6mn4_cgd-workspace--/2026-05-04T09-15-00Z_01a1e9f2-76ee-74c5-b84f-fa8ef6e9ba57.jsonl [hard-link]
-PASS: the installed file is a Pi session, installed where its working directory spells — sessions/--tmp-ccc-pi-native-check-6mn4_cgd-workspace--/2026-05-04T09-15-00Z_01a1e9f2-76ee-74c5-b84f-fa8ef6e9ba57.jsonl; entries {'compaction': 1, 'message': 10, 'role:assistant': 5, 'role:system': 1, 'role:toolResult': 1, 'role:user': 3, 'session': 1}
+PASS: ccc continue exits 0 for a conversion whose verification ran — exit 0; stderr No session found matching '643b98aa-2f8a-4972-8cb3-689f83eeefff'
+PASS: the installed session exists at the reported path — sessions/--tmp-ccc-pi-native-check-hsn7jygq-workspace--/2026-05-04T09-15-00Z_01a1ea14-f4cc-762d-a379-8bc7a7849385.jsonl [hard-link]
+PASS: the installed file is a Pi session, installed where its working directory spells — sessions/--tmp-ccc-pi-native-check-hsn7jygq-workspace--/2026-05-04T09-15-00Z_01a1ea14-f4cc-762d-a379-8bc7a7849385.jsonl; entries {'compaction': 1, 'message': 10, 'role:assistant': 5, 'role:system': 1, 'role:toolResult': 1, 'role:user': 3, 'session': 1, 'thinking_level_change': 1}
 PASS: the installed file carries the source's own first prompt — 'Summarize the retry policy in internal/retry/policy.go.'
 PASS: the installed file holds the source's tool call and its result — call block(s) ['Read'], toolResult record(s) 1
 PASS: the installed file's assistant records carry a usage object — measured: the target's loader indexes message.usage on every assistant message it reads
-PASS: the load check verified the installed session natively — the harness's own loader read the session and answered about it (sessionId "01a1e9f2-76ee-74c5-b84f-fa8ef6e9ba57", messageCount 3); the same question with an unknown session id answered "No session found matching". The check ran against a throw-away copy of the converted bytes (/tmp/ccc-pi-load-…/sessions/--tmp-ccc-pi-native-check-6mn4_cgd-workspace--/2026-05-04T09-15-00Z_01a1e9f2-76ee-74c5-b84f-fa8ef6e9ba57.jsonl) with PI_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, GOOGLE_API_KEY, GEMINI_API_KEY, XAI_API_KEY, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AZURE_OPENAI_API_KEY removed from the environment, so the loader read the session without a model turn, and the installed file is unchanged (9d9f4c0a2b1e)
-PASS: the harness's own loader answers about the installed session — sessionId '01a1e9f2-76ee-74c5-b84f-fa8ef6e9ba57', messageCount 6
+PASS: the load check verified the installed session natively — the harness's own loader read the session and answered about it (sessionId "01a1ea14-f4cc-762d-a379-8bc7a7849385", messageCount 3); the same question with an unknown session id answered "No session found matching". The check ran against a throw-away copy of the converted bytes (/tmp/ccc-pi-load-571734782/sessions/--tmp-ccc-pi-native-check-hsn7jygq-workspace--/2026-05-04T09-15-00Z_01a1ea14-f4cc-762 …[the rest of this output was dropped]
+PASS: the harness's own loader answers about the installed session — sessionId '01a1ea14-f4cc-762d-a379-8bc7a7849385', messageCount 6
 PASS: the loader's own message list is the file's model-visible history — loader ['compactionSummary', 'user', 'assistant', 'system', 'user', 'assistant'] vs file ['compactionSummary', 'user', 'assistant', 'system', 'user', 'assistant']
 PASS: the unknown-id control arm reports no such session — No session found matching '01a1c335-dead-beef-0000-000000000000'
 PASS: the load check ran against a copy and left the installed file alone
-PASS: the resume check verified one real turn through the printed invocation — the harness answered from the installed session in one turn and wrote its own records into it (the session file went from 3123 to 33055 bytes)
+PASS: the resume check verified one real turn through the printed invocation — the harness answered from the installed session in one turn and wrote its own records into it (the session file went from 3107 to 33039 bytes)
 ```
 
 the turn's own output (the target's answer, as the harness printed it):
@@ -121,8 +121,8 @@ the turn's own output (the target's answer, as the harness printed it):
 
 ```console
 PASS: the turn's answer contains 'PROBE-TURN-OK' — PROBE-TURN-OK
-PASS: the printed resume_command reads as a POSIX shell line naming the session — cd /tmp/ccc-pi-native-check-6mn4_cgd/workspace && PI_CODING_AGENT_DIR=/tmp/ccc-pi-native-check-6mn4_cgd/pi-home /home/azureuser/.local/share/mise/installs/pi/latest/pi/pi --session 01a1e9f2-76ee-74c5-b84f-fa8ef6e9ba57
-PASS: the printed exec_resume_command reads as a POSIX shell line naming the session — cd /tmp/ccc-pi-native-check-6mn4_cgd/workspace && PI_CODING_AGENT_DIR=/tmp/ccc-pi-native-check-6mn4_cgd/pi-home /home/azureuser/.local/share/mise/installs/pi/latest/pi/pi --session 01a1e9f2-76ee-74c5-b84f-fa8ef6e9ba57 -- '<prompt>'
+PASS: the printed resume_command reads as a POSIX shell line naming the session — cd /tmp/ccc-pi-native-check-hsn7jygq/workspace && PI_CODING_AGENT_DIR=/tmp/ccc-pi-native-check-hsn7jygq/pi-home /home/azureuser/.local/share/mise/installs/pi/latest/pi/pi --session 01a1ea14-f4cc-762d- …[the rest of this output was dropped]
+PASS: the printed exec_resume_command reads as a POSIX shell line naming the session — cd /tmp/ccc-pi-native-check-hsn7jygq/workspace && PI_CODING_AGENT_DIR=/tmp/ccc-pi-native-check-hsn7jygq/pi-home /home/azureuser/.local/share/mise/installs/pi/latest/pi/pi --session 01a1ea14-f4cc-762d- …[the rest of this output was dropped]
 PASS: the source fixture tree is unchanged — 1 file(s) digested before and after
 PASS: the planted unrelated session is unchanged
 PASS: every session the home already held is unchanged
@@ -131,16 +131,21 @@ RESULT: PASS — 23 check(s), none failed
 ```
 
 What the two arms answer, in Pi's own words rather than this record's: `get_state` for the installed
-session — `{"sessionId":"01a1e9f2-76ee-74c5-b84f-fa8ef6e9ba57","messageCount":3, …}` (the count is the
+session — `{"sessionId":"01a1ea14-f4cc-762d-a379-8bc7a7849385","messageCount":3, …}` (the count is the
 message-visible history *before* the resumed turn, which is the state at the moment the loader was asked
 in the offline arm) — and the unknown-id arm's `No session found matching
-'01a1c335-dead-beef-0000-000000000000'`. The second half ran one real turn through the invocation the
-report printed: the harness answered from the installed session and wrote its own records into it
-(`3123 → 33055` bytes), and the answer is the block above.
+'01a1c335-dead-beef-0000-000000000000'`. The load arm runs with `PI_API_KEY`, `ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`, `XAI_API_KEY`,
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AZURE_OPENAI_API_KEY` removed from the child
+environment (the list `piLoadEnvDenied` carries, pinned name for name by a test), so the loader read the
+session without a model turn. Three of the block's lines end where the script's own 400-character detail
+bound cut them (`…[the rest of this output was dropped]`); that is what the run printed. The second half
+ran one real turn through the invocation the report printed: the harness answered from the installed
+session and wrote its own records into it (`3107 → 33039` bytes), and the answer is the block above.
 
-Note what the *file* holds after the turn: the `10` message entries the check counted are the ones the
-turn appended (a system message, the prompt, the answer, plus the harness's own records). The conversion
-itself wrote `6` messages, which is what the conversion's own carried count says.
+Note what the *file* holds after the turn: the `10` message entries the check counted are the conversion's
+own `6` — which is what the conversion's carried count says — plus the records the turn appended, with the
+harness's own `thinking_level_change` record counted beside them.
 
 ## 3. `pi:` as a source: a Pi session continuing in Claude Code
 
@@ -202,9 +207,9 @@ PASS: the conversion reports the conversation it carried and every loss category
 PASS: the structural read-back verified the installed session
 FAIL: the target harness (claude) is installed — not on PATH; the CLI reported the load check as not-verified: claude is not on PATH, so the installed session's native load could not be verified (claude is not on PATH)
 PASS: ccc continue exits 0 for a conversion whose conversion and read-back ran — exit 0; stderr
-PASS: the installed session exists at the reported path — projects/-tmp-ccc-pi-native-check-0jys1444-workspace/9bec0132-1635-405d-8dde-7f300414b7fb.jsonl [hard-link]
-PASS: the printed resume_command reads as a POSIX shell line naming the session — cd /tmp/ccc-pi-native-check-0jys1444/workspace && CLAUDE_CONFIG_DIR=/tmp/ccc-pi-native-check-0jys1444/claude-home claude --resume 9bec0132-1635-405d-8dde-7f300414b7fb
-PASS: the printed exec_resume_command reads as a POSIX shell line naming the session — cd /tmp/ccc-pi-native-check-0jys1444/workspace && CLAUDE_CONFIG_DIR=/tmp/ccc-pi-native-check-0jys1444/claude-home claude -p --output-format json --resume 9bec0132-1635-405d-8dde-7f300414b7fb -- '<prompt>'
+PASS: the installed session exists at the reported path — projects/-tmp-ccc-pi-native-check-ra88jrqb-workspace/cb6e7d7a-612f-4345-a100-81a1f1e82298.jsonl [hard-link]
+PASS: the printed resume_command reads as a POSIX shell line naming the session — cd /tmp/ccc-pi-native-check-ra88jrqb/workspace && CLAUDE_CONFIG_DIR=/tmp/ccc-pi-native-check-ra88jrqb/claude-home claude --resume cb6e7d7a-612f-4345-a100-81a1f1e82298
+PASS: the printed exec_resume_command reads as a POSIX shell line naming the session — cd /tmp/ccc-pi-native-check-ra88jrqb/workspace && CLAUDE_CONFIG_DIR=/tmp/ccc-pi-native-check-ra88jrqb/claude-home claude -p --output-format json --resume cb6e7d7a-612f-4345-a100-81a1f1e82298 -- '<prom …[the rest of this output was dropped]
 PASS: the source fixture tree is unchanged — 1 file(s) digested before and after
 PASS: the planted unrelated session is unchanged
 PASS: every session the home already held is unchanged
@@ -247,12 +252,12 @@ the abandoned turn as a separate active conversation. `sidechain_messages` is th
 
 | Source evidence | Target side, and the run that recorded it |
 | --- | --- |
-| a Claude Code conversation with a tool call, its result and a compaction boundary | converted into a Pi session whose file the native run's own counts describe: `entries {'compaction': 1, 'message': 10, 'role:assistant': 5, 'role:system': 1, 'role:toolResult': 1, 'role:user': 3, 'session': 1}` — one header, one compaction record, and the messages (§2) |
+| a Claude Code conversation with a tool call, its result and a compaction boundary | converted into a Pi session whose file the native run's own counts describe: `entries {'compaction': 1, 'message': 10, 'role:assistant': 5, 'role:system': 1, 'role:toolResult': 1, 'role:user': 3, 'session': 1, 'thinking_level_change': 1}` — one header, one compaction record, the messages, and the harness's own `thinking_level_change` record beside them (§2) |
 | the tool call and its result | `PASS: the installed file holds the source's tool call and its result — call block(s) ['Read'], toolResult record(s) 1` (§2); the inherited Pi reader agrees on the round trip (`structure: verified` in §1 and §3) |
 | the source's own words | `PASS: the installed file carries the source's own first prompt — 'Summarize the retry policy in internal/retry/policy.go.'` (§2) |
 | a Pi conversation with a tool call and its result, as a **source** | converted into a Claude Code transcript with `1 tool call(s), 1 tool result(s)` carried (§3), read back `verified` by the inherited Claude Code reader |
 | the source's recorded provider and model | carried verbatim on each converted Pi assistant entry (`"provider":"claude","model":"claude-sonnet-4-5"` in §1's excerpt) and reported as the `message_model_attribution` caveat, while the session binds no model of its own (`model_provider_binding` in the format limits) |
-| the converted history as the **answer** of a real turn in the installed Pi session | the recorded turn's answer holds the words the check asked for — `PROBE-TURN-OK` (§2); the same run reports the turn's own growth beside it (3123 → 33055 bytes, §2, and §8 explains why a re-run's number differs) |
+| the converted history as the **answer** of a real turn in the installed Pi session | the recorded turn's answer holds the words the check asked for — `PROBE-TURN-OK` (§2); the same run reports the turn's own growth beside it (3107 → 33039 bytes, §2, and §8 explains why a re-run's number differs) |
 | the source file during and after every run | `source file: unchanged (sha256 …, taken before and after the conversion)` in each CLI run (§1, §3), and in the native run `PASS: the source fixture tree is unchanged — 1 file(s) digested before and after` with the planted unrelated session and every session the home already held unchanged beside it (§2) |
 | a session the target home already held | untouched in every run: `PASS: the planted unrelated session is unchanged` and `PASS: every session the home already held is unchanged` (§2), and `PASS: the conversion wrote no id the home already held` |
 
@@ -268,18 +273,19 @@ that block (`scripts/tests/test_evidence_claims.py`, which this record is regist
 ```console
 gate: <repo>
 gate: go=… targets=./cmd/ccc/... ./internal/ccc/...
-  PASS     gofmt    3592 file(s) gofmt-clean
+  PASS     gofmt    3601 file(s) gofmt-clean
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 207 tests in 5.629s (rc=0)
-  PASS     parity   … | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared … | owned: 29 project-owned prefix(es); files seen by git: 5664 …
-  PASS     secrets  no leaks found in 110 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+  PASS     selftest Ran 222 tests in 7.891s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 29 project-owned prefix(es); files seen by git: 5669 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 114 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
 
 No gate step was added, skipped, bounded or narrowed: the new tests live in `internal/ccc` and `cmd/ccc`,
-which `scripts/gate-targets.txt` already builds and runs, and the carry's `parity` step is unchanged
+which `scripts/gate-targets.txt` already builds and runs, the new Python case module lives in
+`scripts/tests/`, which the `selftest` step already discovers, and the carry's `parity` step is unchanged
 because the pin, the manifest's carried records and every carried byte are untouched (the manifest gained
 one `owned` line, which is this repository's own file list, not a carried path).
 
@@ -292,6 +298,10 @@ Test counts and the changes to existing cases:
 | the CLI: `--to pi` end to end with the JSON document, `pi:` as a source, `inspect pi:…` | `cmd/ccc/pi_route_test.go` (new, 3 cases) |
 | the fixture tree gained the Pi provider root and its two fixtures, and the parity oracle a Pi case | `internal/ccc/fixtures_test.go` (`fixtureConfig` gains the Pi root), `internal/ccc/fixturegen/main.go`, `internal/ccc/parity/dump.go`, `scripts/upstream-compare.py`, `internal/ccc/parity/testdata/oracle/pi.json` |
 | one existing CLI case was updated, not weakened: `TestContinueRefusesATargetThisBuildDoesNotWrite` asserted the refusal names every target this build writes, and the build now writes three | `cmd/ccc/claude_route_test.go` |
+| the verifier's pure walks, its two seams and their decisions: the version line, the environment denylist, the loader cwd, the RPC answers, the model-visible walk, the probe's missing-binary answer, the load check's verified and refused legs, the resume check's growth and refusals | `internal/ccc/pi_verify_test.go` (new, 10 cases) |
+| the installer's exclusive hard link, its 0600 request, the `ErrTargetExists` refusal and the no-hard-link refusal | `internal/ccc/pi_install_test.go` (new, 2 cases) |
+| the native harness's own rules, offline: the printed invocation read the way a POSIX shell reads it, the `--direction` selection, the `INCOMPLETE` verdict, the answer block's four-space shape, and the shared fixture-copy rewrite | `scripts/tests/test_pi_native_check.py` (new, 15 cases) |
+| the applied simplify findings, each with a case that fails without it: the Pi loss categories closed in both directions, the read-back pinned to the fixture's own `1`/`1`, the abandoned branch asserted as an assistant record and not a prompt, the pipeline compared with a direct writer call over the same read, one pair of harness bounds, and the two verifier seams | `internal/ccc/pi_target_test.go`, `internal/ccc/continue_pi_test.go`, `internal/ccc/codex_verify_test.go`, `internal/ccc/pi_verify.go` (cases added; none removed or weakened) |
 
 The upstream comparison (`python3 scripts/upstream-compare.py --record`, network + a pristine checkout at
 the pin) ran three cases and agreed on all three:
@@ -310,6 +320,15 @@ native check drives, the fixture rule), `docs/harness.md` (the new script's entr
 step), `README.md` (`--to pi`, `pi:` as a source, both resume lines), `docs/goals/README.md` (0005 →
 implemented on this branch; 0004 archived, see below), `docs/decisions/OPEN-QUESTIONS.md` (Q-0005-01 …
 Q-0005-06), and this record. `docs/upstream.md` and every carried file are untouched.
+
+The simplify pass that applied the accepted findings to this increment changed: `internal/ccc/route_shared.go`
+(new — the install/verify/probe/turn machinery the three routes now share, so `AGENTS.md`'s and
+`docs/conventions.md`'s layout lines name it), `docs/harness.md` (the shared native-check mechanisms,
+`rewrite_source_cwd` and `bounded_block`, named in the `native_check_common.py` entry),
+`docs/plans/0005-pi-continuation.md` (the native check's real flag spelling, `--direction pi-to-claude`),
+and `cmd/ccc/main.go` (the usage text no longer claims a Pi resume command names a provider or a model;
+it prints neither). §2's and §3's native blocks and §6's and §8's numbers are that pass's runs, and
+§1's and §3's CLI conversion counts were re-derived unchanged (same bytes, counts and digests).
 
 **Goal 0004 moved to the archive in this increment.** It was still sitting in `docs/goals/` with a
 "Implemented on `feat/0004-repeatable-evolving-session-handoffs`" status while `origin/main` already
@@ -335,6 +354,12 @@ retargeted at the archive path.
 - **The Pi route writes no session-level provider binding and prints no model flag** (Q-0005-04): a
   resumed turn runs under whatever the caller's Pi configuration selects. A caller who needs a specific
   model passes Pi's own `--provider`/`--model` flags, which this route deliberately does not guess.
+- **The Pi native check leaves its build output in the repository root.** `scripts/pi-native-check.py`
+  builds its binary to `<repo>/ccc-native-check-bin` (`BINARY`), a name no `.gitignore` rule covers, so a
+  gate run after a check run fails `parity`'s unexplained-file rule; the Codex and Claude checks build
+  under `bin/`, which is ignored. The gate block in §6 was taken with this run's own artifact removed,
+  which is not the state a check run leaves behind. Reported, not fixed here: no accepted finding covers
+  it.
 - **The parity oracle's Pi case covers the ordinary fixture only** (Q-0005-06). The branch/compaction
   fixture's reader projection is pinned by this tree's tests and by the conversation the conversion
   carries; it has no recorded upstream dump yet.
@@ -349,6 +374,6 @@ retargeted at the archive path.
 | `3091 bytes`, `6 message(s)`, `1 call(s)`, `1 result(s)`, `1 boundary(ies)` | the Pi document §1 converted (`pi-session-jsonl`), and the installed file's own size |
 | `28 loss categories named` | the native run's own count of `conversion.losses[]` entries for the Pi target (§2) |
 | `26 loss categories named`, `4 message(s)`, `1 call(s)`, `1 result(s)` | the Pi → Claude Code conversion (§3) |
-| `3123 → 33055 bytes` | the installed Pi session's growth across one real turn (§2). The growth is the harness's own records, so a later run of the same check measures a slightly different end (a re-run after this record's last edit measured `3123 → 33042`): what the check asserts is that the file grew, not a byte count |
-| `23 checks, none failed` / `11 checks, none failed` | the two native runs' verdicts (§2, §3); the Pi-target run was re-run after the record's last edit and reported the same verdict |
-| `5553 carried files`, `29 owned prefixes`, `207 selftest cases`, `3592 gofmt-clean files` | the gate run (§6) |
+| `3107 → 33039 bytes` | the installed Pi session's growth across one real turn (§2). What the check asserts is that the file grew, not a byte count, so a later run of the same check measures a different end: the run §2 quotes measured it as printed here, and the block it replaced had measured `3123 → 33055` (an earlier re-run of that one `3123 → 33042`) |
+| `23 checks, none failed` / `11 checks, none failed` | the two native runs' verdicts (§2, §3); both were re-run for the simplify pass this record names and printed the same counts |
+| `5553 carried files`, `29 owned prefixes`, `222 selftest cases`, `3601 gofmt-clean files` | the gate run (§6) |

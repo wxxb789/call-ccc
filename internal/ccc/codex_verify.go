@@ -40,28 +40,11 @@ var codexVersionPattern = regexp.MustCompile(`[0-9]+\.[0-9]+\.[0-9]+`)
 // answer, not an error: a conversion can still be written (and verified structurally), but the report
 // says the native half could not run.
 func ProbeCodexBinary(ctx context.Context, binary string) harnessProbe {
-	if strings.TrimSpace(binary) == "" {
-		binary = CodexBinaryDefault
-	}
-	probe := harnessProbe{Binary: binary}
-	path, err := exec.LookPath(binary)
-	if err != nil {
-		probe.Detail = fmt.Sprintf("%s is not on PATH", binary)
-		return probe
-	}
-	probe.Found = true
-	probe.Binary = path
-	output, err := runBounded(ctx, path, 30*time.Second, "--version")
-	if err != nil {
-		probe.Detail = fmt.Sprintf("%s --version failed: %v", path, err)
-		return probe
-	}
-	if version := codexVersionPattern.FindString(output); version != "" {
-		probe.Version = version
-		return probe
-	}
-	probe.Detail = fmt.Sprintf("%s --version printed no version: %s", path, summariseText(output, 120))
-	return probe
+	return probeBinary(ctx, binary, CodexBinaryDefault, func(output string) string {
+		return codexVersionPattern.FindString(output)
+	}, func(path, output string) string {
+		return fmt.Sprintf("%s --version printed no version: %s", path, summariseText(output, 120))
+	})
 }
 
 // runBounded runs one command with a deadline and returns its combined output, bounded to a size a
@@ -345,7 +328,7 @@ func VerifyCodexResume(ctx context.Context, opts CodexResumeOptions) ResumeVerif
 	}
 	verification.ExitCode = &exitCode
 	verification.Output, verification.OutputTruncated = boundedText(output, opts.MaxOutput)
-	// The answer buffer is bounded too (codexTurnOutputMax): a turn whose output filled it answered with
+	// The answer buffer is bounded too (harnessOutputMax): a turn whose output filled it answered with
 	// an excerpt, and the report says so rather than presenting what fits as the whole answer.
 	verification.OutputTruncated = verification.OutputTruncated || answerTruncated
 	verification.SessionBytesBefore = before
@@ -385,19 +368,6 @@ func resumeCommandLine(binary string, arguments []string, home string) string {
 	return renderResumeCommand(append([]string{binary}, arguments...), environment)
 }
 
-// codexTurnOutputMax bounds what one resume turn's stdout may add to this process's memory. The answer
-// the harness reports is quoted out of it, cut to boundedText's own limit (8192 bytes by default), so a
-// turn whose output fills this buffer has already been reported truncated; the bound is here so that a
-// harness flooding its stdout is answered by the turn's deadline and an excerpt instead of by growing
-// this process with every byte it writes.
-const codexTurnOutputMax = 1 << 20
-
-// codexTurnDiagnosticsMax bounds what one resume turn's stderr may add to this process's memory, the way
-// the app server's own diagnostics are bounded (it keeps its first 4096 bytes): a failure's detail quotes
-// the opening lines from here, and the live stream to the caller is untouched. A turn writing more than
-// this is a runaway log, and it does not become this process's memory.
-const codexTurnDiagnosticsMax = 4096
-
 // runCodexTurn runs one non-interactive turn and returns its answer and its diagnostics separately: the
 // answer is what the harness wrote to stdout, the diagnostics everything it wrote to stderr.
 //
@@ -430,8 +400,8 @@ func runCodexTurn(ctx context.Context, binary string, opts CodexResumeOptions, t
 	// characters of it anyway) and, if it never stops, by the timeout -- rather than by this process's
 	// memory growing with its output. The live stream to opts.Stderr is untouched: that is the caller's
 	// own writer.
-	answer := newBoundedBuffer(codexTurnOutputMax)
-	diagnostics := newBoundedBuffer(codexTurnDiagnosticsMax)
+	answer := newBoundedBuffer(harnessOutputMax)
+	diagnostics := newBoundedBuffer(harnessDiagnosticsMax)
 	command.Stdout = answer
 	if opts.Stderr != nil {
 		command.Stderr = io.MultiWriter(diagnostics, opts.Stderr)

@@ -53,9 +53,9 @@ usage:
   for Claude Code: cd <dir> && CLAUDE_CONFIG_DIR=<dir> claude --resume <session-id>; for Pi:
   cd <dir> && PI_CODING_AGENT_DIR=<dir> pi --session <session-id> — both of those harnesses find a
   session through the directory they are run from), naming the data directory the session was installed
-  into as well as the session itself. A Pi resume command also names the provider and model the source's
-  own last message recorded, so the session continues under the instruction it carries; a source that
-  recorded none leaves the choice to the caller's Pi configuration.
+  into as well as the session itself. A Pi resume command names no provider and no model: a Pi session
+  binds none for itself, and a provider label the source recorded is a source-side name the target home
+  need not define.
 
   A conversion is a snapshot of the source at one moment: it reads the source as it is and writes a new
   session, so converting the same source again after it has grown writes another new session -- never a

@@ -99,62 +99,7 @@ func ResolveCodexHome(explicit string) (string, bool, error) {
 // published nothing answers with an empty path, so the caller reads the two apart instead of inferring
 // publication from the error.
 func InstallCodexRollout(rollout CodexRollout, home string) (string, string, error) {
-	directory := filepath.Join(home, codexSessionsSubdir, filepath.FromSlash(rollout.Directory))
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return "", "", fmt.Errorf("creating %s: %w", directory, err)
-	}
-	target := filepath.Join(directory, rollout.FileName)
-	if _, err := os.Lstat(target); err == nil {
-		return "", "", fmt.Errorf("%w: %s", ErrTargetExists, target)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", "", fmt.Errorf("checking %s: %w", target, err)
-	}
-
-	temp, err := os.CreateTemp(directory, "."+rollout.FileName+".tmp-")
-	if err != nil {
-		return "", "", fmt.Errorf("creating a temporary session file in %s: %w", directory, err)
-	}
-	tempName := temp.Name()
-	cleanup := func() {
-		temp.Close()
-		removeFile(tempName)
-	}
-	if err := temp.Chmod(codexSessionFileMode); err != nil {
-		cleanup()
-		return "", "", fmt.Errorf("restricting %s: %w", tempName, err)
-	}
-	if _, err := temp.Write(rollout.Data); err != nil {
-		cleanup()
-		return "", "", fmt.Errorf("writing %s: %w", tempName, err)
-	}
-	if err := temp.Sync(); err != nil {
-		cleanup()
-		return "", "", fmt.Errorf("flushing %s: %w", tempName, err)
-	}
-	if err := temp.Close(); err != nil {
-		removeFile(tempName)
-		return "", "", fmt.Errorf("closing %s: %w", tempName, err)
-	}
-
-	if err := linkSession(tempName, target); err != nil {
-		removeFile(tempName)
-		if errors.Is(err, os.ErrExist) {
-			return "", "", fmt.Errorf("%w: %s", ErrTargetExists, target)
-		}
-		// A filesystem without hard links cannot take the exclusive link, and this installer has no
-		// other mechanism that takes a name without replacing what is there. The conversion is refused
-		// rather than published by a rename, which would be able to replace a session another agent had
-		// already continued.
-		return "", "", fmt.Errorf("%w: %s: %v; install into a filesystem that supports hard links",
-			ErrNoExclusiveInstall, directory, err)
-	}
-	if err := removeFile(tempName); err != nil {
-		// The session is installed -- the path returned below is the one it occupies -- and a temporary
-		// file left behind is not a failure of the conversion, but it is not silent either, so the
-		// caller gets both answers.
-		return target, "hard-link", fmt.Errorf("removing the temporary file %s: %w", tempName, err)
-	}
-	return target, "hard-link", nil
+	return installFile(home, codexSessionsSubdir, rollout.Directory, rollout.FileName, rollout.Data, codexSessionFileMode)
 }
 
 // StructureVerification reports whether the installed (or, for a dry run, a temporary copy) target
@@ -207,48 +152,12 @@ type ReadBackCounts struct {
 func VerifyCodexRolloutStructure(
 	ctx context.Context, sessionsDir string, rollout CodexRollout, cfg config.Config,
 ) (StructureVerification, error) {
-	verification := StructureVerification{
-		State:      "not-verified",
-		Method:     structureMethodCodex,
-		TargetPath: filepath.Join(sessionsDir, filepath.FromSlash(rollout.Directory), rollout.FileName),
-	}
-	readerConfig := cfg
-	dirs := make(map[parser.AgentType][]string, len(cfg.AgentDirs)+1)
-	for agent, roots := range cfg.AgentDirs {
-		dirs[agent] = roots
-	}
-	dirs[parser.AgentCodex] = []string{sessionsDir}
-	readerConfig.AgentDirs = dirs
-	readerConfig.DisabledAgents = nil
-
-	// The reader is asked for the exact file this check names (a path reference resolves to that source
-	// alone, internal/ccc's resolvePathReference), not for the session id: the id lookup would walk the
-	// whole sessions tree and could answer with another copy of the id.
-	conversation, err := NewSourceReader(readerConfig).Read(ctx,
-		Ref{Provider: string(parser.AgentCodex), ID: verification.TargetPath})
-	if err != nil {
-		verification.Detail = "the inherited Codex reader could not read the installed session back: " + err.Error()
-		return verification, nil
-	}
-	verification.ReadBack = readBackCounts(conversation)
-	// The comparison asks the file's own bytes about any written dialogue the read-back does not show:
-	// that is the one question the inherited reader's projection cannot answer for such a message, and
-	// it is asked of the bytes on disk rather than of the document the writer kept in memory.
-	installed, err := os.ReadFile(verification.TargetPath)
-	if err != nil {
-		verification.Detail = "the installed session could not be read back for comparison: " + err.Error()
-		return verification, nil
-	}
-	roundTrip := compareCodexRoundTrip(rollout, conversation, installed)
-	verification.NotReadBackVerbatim = roundTrip.notReadBackVerbatim
-	if len(roundTrip.differences) > 0 {
-		verification.Detail = "the installed session does not hold the evidence in the target document: " +
-			strings.Join(roundTrip.differences, "; ")
-		return verification, nil
-	}
-	verification.State = "verified"
-	verification.Detail = roundTrip.detail(structureReaderCodex)
-	return verification, nil
+	return verifyStructure(ctx, sessionsDir, parser.AgentCodex, structureMethodCodex,
+		structureReaderCodex, structureReaderCodex,
+		filepath.Join(sessionsDir, filepath.FromSlash(rollout.Directory), rollout.FileName),
+		func(readBack Conversation, installed []byte) roundTripComparison {
+			return compareCodexRoundTrip(rollout, readBack, installed)
+		}, cfg)
 }
 
 func readBackCounts(conversation Conversation) ReadBackCounts {
@@ -409,28 +318,7 @@ func readRoundTripEvidence(readBack Conversation, reader roundTripReader) roundT
 // injected-context classification, because a block that opens with an envelope is that context rather
 // than a turn (internal/parser's preprocessCodexUserTextBlocks).
 func compareCodexRoundTrip(rollout CodexRollout, readBack Conversation, installed []byte) roundTripComparison {
-	return compareRoundTrip(rollout.Items, readBack, codexRoundTripReader(), installedDialogueRecords(installed))
-}
-
-// codexRoundTripReader is the inherited Codex reader's own rules for the read-back walk: it marks no
-// record as injected context (the Codex reader has no such classification), a tool record is no message
-// of its own (the reader pairs the tool's output onto the call's message), and any other role the reader
-// reads dialogue for stands for the assistant's turn -- the reader's own answer, which this check reports
-// rather than second-guesses.
-func codexRoundTripReader() roundTripReader {
-	return roundTripReader{
-		classifiesAway: func(Message) bool { return false },
-		kindOf: func(message Message) (TargetItemKind, bool) {
-			switch parser.RoleType(message.Role) {
-			case parser.RoleUser:
-				return ItemUser, true
-			case parser.RoleTool:
-				return "", false
-			default:
-				return ItemAssistant, true
-			}
-		},
-	}
+	return compareRoundTrip(rollout.Items, readBack, plainRoundTripReader(), installedDialogueRecords(installed))
 }
 
 // dialogueKey identifies one piece of dialogue: which role recorded it and the text itself. The two are

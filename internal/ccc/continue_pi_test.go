@@ -86,13 +86,13 @@ func TestContinueIntoPiConvertsInstallsAndReadsBack(t *testing.T) {
 		t.Errorf("structure = %+v, want the installed file read back as what was written",
 			result.Verification.Structure)
 	}
-	if result.Verification.Structure.ReadBack.ToolCalls != result.Conversion.Carried.ToolCalls {
-		t.Errorf("read-back tool calls = %d, want the %d the conversion carried",
-			result.Verification.Structure.ReadBack.ToolCalls, result.Conversion.Carried.ToolCalls)
+	if result.Verification.Structure.ReadBack.ToolCalls != 1 {
+		t.Errorf("read-back tool calls = %d, want the fixture's own 1",
+			result.Verification.Structure.ReadBack.ToolCalls)
 	}
-	if result.Verification.Structure.ReadBack.ToolResults != result.Conversion.Carried.ToolResults {
-		t.Errorf("read-back tool results = %d, want the %d the conversion carried",
-			result.Verification.Structure.ReadBack.ToolResults, result.Conversion.Carried.ToolResults)
+	if result.Verification.Structure.ReadBack.ToolResults != 1 {
+		t.Errorf("read-back tool results = %d, want the fixture's own 1",
+			result.Verification.Structure.ReadBack.ToolResults)
 	}
 	if result.Installation.SourceCheckState != SourceCheckUnchanged {
 		t.Errorf("source check = %q, want the source unchanged", result.Installation.SourceCheckState)
@@ -252,9 +252,13 @@ func TestContinueIntoPiRefusesASourceWithoutAWorkingDirectory(t *testing.T) {
 
 // TestContinueFromPiThroughTheCommonModel pins the source direction: a Pi session continues in a
 // previously supported target harness through the same route table and the same reader every other
-// source uses, with no Pi-specific branch in the pipeline. The conversion's own report names the
-// inherited Pi reader as what read the source.
+// source uses, with no Pi-specific branch in the pipeline. The claim is made testable by the direct
+// writer call below: the pipeline's conversion is compared with a direct conversion of the same document
+// by the target's own writer, so a Pi-specific shortcut that bypassed the shared model -- an
+// `if provider == "pi"` branch -- is red. The conversion's own report names the inherited Pi reader as
+// what read the source.
 func TestContinueFromPiThroughTheCommonModel(t *testing.T) {
+	conversation := readFixtureConversation(t, piFixtureRef)
 	for _, target := range []string{TargetClaude, TargetCodex} {
 		t.Run(target, func(t *testing.T) {
 			home := t.TempDir()
@@ -294,8 +298,79 @@ func TestContinueFromPiThroughTheCommonModel(t *testing.T) {
 				t.Errorf("read-back calls = %d, want the %d carried",
 					result.Verification.Structure.ReadBack.ToolCalls, result.Conversion.Carried.ToolCalls)
 			}
+			directWriterAgreesWithThePipeline(t, target, conversation, result)
 		})
 	}
+}
+
+// directWriterAgreesWithThePipeline drives the target's own writer directly over the same document the
+// pipeline read, installs and reads back its own conversion, and requires the pipeline's result to agree
+// on what was carried and read back. Whatever route the pipeline took, the answer must be the shared
+// model's: a Pi-specific branch would produce a different carried report or a different read-back here.
+func directWriterAgreesWithThePipeline(
+	t *testing.T, target string, conversation Conversation, result ContinueResult,
+) {
+	t.Helper()
+	sessionID := result.TargetSession.SessionID
+	ctx := context.Background()
+	switch target {
+	case TargetClaude:
+		direct, err := ConvertToClaudeTranscript(conversation, ClaudeTargetOptions{SessionID: sessionID})
+		if err != nil {
+			t.Fatalf("converting the same document with the target's own writer: %v", err)
+		}
+		if got, want := carriedWithoutBytes(result.Conversion.Carried), carriedWithoutBytes(direct.Carried); got != want {
+			t.Errorf("the pipeline carried %+v, while the target's own writer over the same source carried %+v",
+				got, want)
+		}
+		directHome := t.TempDir()
+		if _, _, err := InstallClaudeTranscript(direct, directHome); err != nil {
+			t.Fatalf("installing the direct conversion: %v", err)
+		}
+		directVerify, err := VerifyClaudeTranscriptStructure(ctx,
+			filepath.Join(directHome, claudeProjectsSubdir), direct, fixtureConfig(t))
+		if err != nil {
+			t.Fatalf("reading the direct conversion back: %v", err)
+		}
+		if directVerify.ReadBack != result.Verification.Structure.ReadBack {
+			t.Errorf("the pipeline read back %+v, while the target's own writer over the same source read "+
+				"back %+v: a Pi-specific shortcut is not the shared model's answer",
+				result.Verification.Structure.ReadBack, directVerify.ReadBack)
+		}
+	case TargetCodex:
+		direct, err := ConvertToCodexRollout(conversation, CodexTargetOptions{SessionID: sessionID})
+		if err != nil {
+			t.Fatalf("converting the same document with the target's own writer: %v", err)
+		}
+		if got, want := carriedWithoutBytes(result.Conversion.Carried), carriedWithoutBytes(direct.Carried); got != want {
+			t.Errorf("the pipeline carried %+v, while the target's own writer over the same source carried %+v",
+				got, want)
+		}
+		directHome := t.TempDir()
+		if _, _, err := InstallCodexRollout(direct, directHome); err != nil {
+			t.Fatalf("installing the direct conversion: %v", err)
+		}
+		directVerify, err := VerifyCodexRolloutStructure(ctx,
+			filepath.Join(directHome, codexSessionsSubdir), direct, fixtureConfig(t))
+		if err != nil {
+			t.Fatalf("reading the direct conversion back: %v", err)
+		}
+		if directVerify.ReadBack != result.Verification.Structure.ReadBack {
+			t.Errorf("the pipeline read back %+v, while the target's own writer over the same source read "+
+				"back %+v: a Pi-specific shortcut is not the shared model's answer",
+				result.Verification.Structure.ReadBack, directVerify.ReadBack)
+		}
+	default:
+		t.Fatalf("no direct writer is pinned for target %q", target)
+	}
+}
+
+// carriedWithoutBytes is one carried report without its byte count, which is the one field two runs of
+// the same conversion need not share: the timestamps' fractional digits depend on the clock, so the
+// byte length can differ between two conversions of the same document.
+func carriedWithoutBytes(carried Carried) Carried {
+	carried.Bytes = 0
+	return carried
 }
 
 // TestContinueFromPiKeepsACompactedAndBranchedHistoryCoherent pins the goal's own clause for the shape
@@ -345,6 +420,167 @@ func TestContinueFromPiKeepsACompactedAndBranchedHistoryCoherent(t *testing.T) {
 		t.Errorf("read-back boundaries = %d, want the boundary the conversion wrote",
 			result.Verification.Structure.ReadBack.CompactionBoundaries)
 	}
+
+	// The abandoned branch is the other half of the goal's clause, and it is taken from the fixture's own
+	// bytes rather than restated: the assistant record whose parent is the pre-boundary assistant and
+	// which was recorded after the compaction, with its own text, and the fixture's two user prompts.
+	// The installed target transcript must hold the branch once, as an assistant record, and must hold
+	// the two prompts and nothing else -- so a conversion that drops the branch, re-roles it as a prompt,
+	// or invents a third prompt is red here.
+	fixtureBytes, err := os.ReadFile(fixturePath(t, filepath.Join("pi", piHistoryFixtureRef.ID+".jsonl")))
+	if err != nil {
+		t.Fatalf("reading the history fixture's bytes: %v", err)
+	}
+	type historyEntry struct {
+		Type     string  `json:"type"`
+		ID       string  `json:"id"`
+		ParentID *string `json:"parentId"`
+		Message  struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"message"`
+	}
+	var history []historyEntry
+	for _, line := range strings.Split(strings.TrimSpace(string(fixtureBytes)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		decoded := historyEntry{}
+		if err := json.Unmarshal([]byte(line), &decoded); err != nil {
+			t.Fatalf("decoding a fixture line: %v", err)
+		}
+		if decoded.Type == "session" {
+			continue
+		}
+		history = append(history, decoded)
+	}
+	compactionIndex := -1
+	for index, entry := range history {
+		if entry.Type == "compaction" {
+			compactionIndex = index
+		}
+	}
+	if compactionIndex < 0 {
+		t.Fatal("the fixture holds no compaction entry")
+	}
+	preBoundaryAssistant := ""
+	for index := compactionIndex - 1; index >= 0; index-- {
+		if history[index].Type == "message" && history[index].Message.Role == "assistant" {
+			preBoundaryAssistant = history[index].ID
+			break
+		}
+	}
+	branchText := ""
+	for index := compactionIndex + 1; index < len(history) && preBoundaryAssistant != ""; index++ {
+		entry := history[index]
+		if entry.Type != "message" || entry.Message.Role != "assistant" ||
+			entry.ParentID == nil || *entry.ParentID != preBoundaryAssistant {
+			continue
+		}
+		branchText = transcriptContentText(entry.Message.Content)
+		break
+	}
+	if strings.TrimSpace(branchText) == "" {
+		t.Fatalf("the fixture holds no abandoned-branch record under the pre-boundary assistant %q",
+			preBoundaryAssistant)
+	}
+	var prompts []string
+	for _, entry := range history {
+		if entry.Type == "message" && entry.Message.Role == "user" {
+			prompts = append(prompts, transcriptContentText(entry.Message.Content))
+		}
+	}
+	if len(prompts) != 2 {
+		t.Fatalf("the fixture holds %d user prompt(s), want the two active-path prompts", len(prompts))
+	}
+
+	installedBytes, err := os.ReadFile(result.TargetSession.Path)
+	if err != nil {
+		t.Fatalf("reading the installed target transcript: %v", err)
+	}
+	type targetRecord struct {
+		Type             string `json:"type"`
+		IsCompactSummary bool   `json:"isCompactSummary"`
+		Message          struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"message"`
+	}
+	branchRoles := map[string]int{}
+	promptsSeen := map[string]int{}
+	for _, line := range strings.Split(strings.TrimSpace(string(installedBytes)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		decoded := targetRecord{}
+		if err := json.Unmarshal([]byte(line), &decoded); err != nil {
+			t.Fatalf("decoding an installed record: %v", err)
+		}
+		text := transcriptContentText(decoded.Message.Content)
+		if text == branchText {
+			branchRoles[decoded.Type]++
+		}
+		// A prompt record is the target's own user record that is not the compaction summary and whose
+		// content is a plain string: the shape the writer gives a written prompt, as opposed to a
+		// tool_result block or the summary record.
+		if decoded.Type == "user" && !decoded.IsCompactSummary && isPlainTextContent(decoded.Message.Content) {
+			promptsSeen[text]++
+		}
+	}
+	if len(branchRoles) != 1 || branchRoles["assistant"] != 1 {
+		t.Errorf("the abandoned branch %q appears in %v, want it exactly once and in an assistant record"+
+			" (so a conversion that drops the branch or re-roles it as a prompt is red)",
+			branchText, branchRoles)
+	}
+	if branchRoles["user"] != 0 {
+		t.Errorf("the abandoned branch %q appears in a user record, so the left turn was re-roled as a "+
+			"prompt", branchText)
+	}
+	for _, prompt := range prompts {
+		if promptsSeen[prompt] != 1 {
+			t.Errorf("prompt %q appears %d time(s) among the installed prompt records, want once",
+				prompt, promptsSeen[prompt])
+		}
+	}
+	if len(promptsSeen) != len(prompts) {
+		t.Errorf("the installed transcript holds %d distinct prompt(s) %v, want the fixture's two %v "+
+			"(a conversion that invents a third prompt is red)", len(promptsSeen), promptsSeen, prompts)
+	}
+}
+
+// transcriptContentText reads a message record's content either as a plain string -- the shape a Pi user
+// record and a written Claude prompt or summary record carry -- or as an array of text blocks, the shape
+// an assistant record carries, for the walks these cases make over a file's own bytes.
+func transcriptContentText(content json.RawMessage) string {
+	var text string
+	if err := json.Unmarshal(content, &text); err == nil {
+		return text
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(content, &blocks); err != nil {
+		return ""
+	}
+	var builder strings.Builder
+	for _, block := range blocks {
+		if block.Type != "text" || block.Text == "" {
+			continue
+		}
+		if builder.Len() > 0 {
+			builder.WriteString("\n")
+		}
+		builder.WriteString(block.Text)
+	}
+	return builder.String()
+}
+
+// isPlainTextContent reports whether a record's content is a JSON string rather than a block array: the
+// shape the Claude writer gives a written prompt.
+func isPlainTextContent(content json.RawMessage) bool {
+	var text string
+	return json.Unmarshal(content, &text) == nil
 }
 
 // TestPiHistoryFixtureBranchIsNotOnTheActivePath reads the committed fixture's own tree and pins the
@@ -440,7 +676,6 @@ func TestPiLoadCheckRefusesWhenTheRecordedWorkingDirectoryIsNotHere(t *testing.T
 		t.Skipf("this host has %s, so the refusal cannot be exercised here", result.TargetSession.Cwd)
 	}
 	load := VerifyPiLoad(context.Background(), PiLoadOptions{
-		Home:      home,
 		SessionID: result.TargetSession.SessionID,
 		Cwd:       result.TargetSession.Cwd,
 		Directory: PiProjectDir(result.TargetSession.Cwd),

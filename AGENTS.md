@@ -79,7 +79,8 @@ with their exit codes and counts).
 ## How to work here
 
 - The continuation core and its per-harness target writers live in `internal/ccc` — the route table
-  `targets.go` and the writers/installers/verifiers `codex_target.go`, `codex_install.go`,
+  `targets.go`, the install/verify/probe machinery the three routes share (`route_shared.go`), and the
+  writers/installers/verifiers `codex_target.go`, `codex_install.go`,
   `codex_verify.go`, `claude_target.go`, `claude_install.go`, `claude_verify.go`, `pi_target.go`,
   `pi_install.go`, `pi_verify.go`; its committed
   native-shaped fixtures are `internal/ccc/testdata/fixtures/` and the growth fragments a run appends to
