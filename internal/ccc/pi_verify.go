@@ -283,6 +283,16 @@ type piRPCResponseData struct {
 	SessionID    string
 	MessageCount int
 	Messages     []piRPCResponseMessage
+	Model        piModelIdentity
+}
+
+// piModelIdentity is the provider label and model id a harness's own `get_state` answer names for the
+// session it resolved -- the harness's answer about itself, not this build's reading of its configuration
+// file. OMP answers it on every run, including one that resumes nothing (measured), and this is where the
+// OMP route's model binding and the endpoint label on its assistant records come from.
+type piModelIdentity struct {
+	Provider string
+	ID       string
 }
 
 // piRPCResponseMessage is the part of one message entry of a `get_messages` answer this check reads: its
@@ -629,6 +639,10 @@ func piReadResponseData(dec *jsontext.Decoder, data *piRPCResponseData) error {
 			if err := piReadMessageRoles(dec, &data.Messages); err != nil {
 				return err
 			}
+		case "model":
+			if err := piReadModelIdentity(dec, &data.Model); err != nil {
+				return err
+			}
 		default:
 			if err := piSkipValue(dec); err != nil {
 				return err
@@ -636,6 +650,47 @@ func piReadResponseData(dec *jsontext.Decoder, data *piRPCResponseData) error {
 		}
 	}
 	_, err = dec.ReadToken() // the data object's closing brace
+	return err
+}
+
+// piReadModelIdentity reads the `model` member of a `get_state` answer: the provider label and the model
+// id it names, with every other member of that object (an endpoint URL, a cost table, the
+// compatibility flags the harness resolved) consumed as it arrives. It is the answer's own identity, and
+// nothing else about the object is held.
+func piReadModelIdentity(dec *jsontext.Decoder, model *piModelIdentity) error {
+	token, err := dec.ReadToken()
+	if err != nil {
+		return err
+	}
+	switch token.Kind() {
+	case 'n':
+		// A harness that resolved no model answers null here, which is the absence of the answer.
+		return nil
+	case '{':
+	default:
+		return fmt.Errorf("the answer's model is a JSON %v, want an object", token.Kind())
+	}
+	for dec.PeekKind() != '}' {
+		name, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		switch name.String() {
+		case "provider":
+			if model.Provider, err = piStringMember(dec, "provider"); err != nil {
+				return err
+			}
+		case "id":
+			if model.ID, err = piStringMember(dec, "id"); err != nil {
+				return err
+			}
+		default:
+			if err := piSkipValue(dec); err != nil {
+				return err
+			}
+		}
+	}
+	_, err = dec.ReadToken() // the model object's closing brace
 	return err
 }
 
@@ -869,11 +924,25 @@ func runPiRPC(
 	ctx context.Context, binary, cwd, home, sessionDir string, arguments []string, stdin string,
 	timeout time.Duration, stderr io.Writer,
 ) ([]piRPCResponse, error) {
+	return runHarnessRPC(ctx, binary, cwd, arguments, stdin,
+		piEnvironment(home, sessionDir, piLoadEnvDenied), timeout, stderr)
+}
+
+// runHarnessRPC is the RPC invocation both family harnesses are driven through: the command, its
+// working directory, its own environment, the protocol answers it writes and the deadline that bounds
+// the run. Pi names a sessions tree as well as its data directory; OMP is given its data directory
+// alone, because naming a sessions tree there *relocates* the lookup it replaces (measured: a session
+// filed under its project directory inside the named tree is not found), so the two routes differ in
+// the environment they build and not in how the harness is run or read.
+func runHarnessRPC(
+	ctx context.Context, binary, cwd string, arguments []string, stdin string, environment []string,
+	timeout time.Duration, stderr io.Writer,
+) ([]piRPCResponse, error) {
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	command := exec.CommandContext(runCtx, binary, arguments...)
 	command.Dir = cwd
-	command.Env = piEnvironment(home, sessionDir, piLoadEnvDenied)
+	command.Env = environment
 	command.Stdin = strings.NewReader(stdin)
 	stdout, err := command.StdoutPipe()
 	if err != nil {
@@ -1111,13 +1180,17 @@ func piExpectedMessageCount(data []byte) int {
 }
 
 // piConversationEntry is the part of one entry these reads ask about: its record type, the tree link the
-// model-visible walk follows, and, for a message entry, the role its payload records.
+// model-visible walk follows, the model a `model_change` record binds the session to, and, for a message
+// entry, the role and the model/provider pair its payload records.
 type piConversationEntry struct {
 	Type     string  `json:"type"`
 	ID       string  `json:"id"`
 	ParentID *string `json:"parentId"`
+	Model    string  `json:"model"`
 	Message  struct {
-		Role string `json:"role"`
+		Role     string `json:"role"`
+		Model    string `json:"model"`
+		Provider string `json:"provider"`
 	} `json:"message"`
 }
 

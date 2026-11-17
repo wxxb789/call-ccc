@@ -142,6 +142,7 @@ func growthFiles() map[string]string {
 		"claude-complete-turn.jsonl":     canonicalJSONL(claudeGrowthTurn()),
 		"codex-complete-turn.jsonl":      canonicalJSONL(codexGrowthTurn()),
 		"pi-complete-turn.jsonl":         canonicalJSONL(piGrowthTurn()),
+		"omp-complete-turn.jsonl":        canonicalJSONL(ompGrowthTurn()),
 		"claude-unfinished-record.jsonl": claudeGrowthTail,
 		"codex-unfinished-record.jsonl":  codexGrowthTail,
 	}
@@ -432,6 +433,15 @@ func fixtureFiles() map[string]string {
 		filepath.Join("pi", piSessionID+".jsonl"):                                      canonicalJSONL(piSession()),
 		filepath.Join("pi", piHistorySessionID+".jsonl"):                               canonicalJSONL(piHistorySession()),
 		filepath.Join("pi", piBranchSwitchSessionID+".jsonl"):                          canonicalJSONL(piBranchSwitchSession()),
+		// An OMP session is filed one project directory below the sessions root, and the provider's own
+		// discovery requires that level: measured, a file sitting directly in the root -- which the Pi
+		// provider accepts -- is not discovered for OMP. The directory names here are the spelling OMP
+		// computes for a path outside both its home and the temporary directory (the `--…--` form), which
+		// is the one spelling that is the same on every host: the shortened home- and tmp-relative forms
+		// depend on the machine the generator runs on, and a committed fixture path may not.
+		filepath.Join("omp", "--home-user-code-example-api--", ompSessionID+".jsonl"):    canonicalJSONL(ompSession()),
+		filepath.Join("omp", "--home-user-code-history--", ompHistorySessionID+".jsonl"): canonicalJSONL(ompHistorySession()),
+		filepath.Join("omp", "--home-user-code-archive--", ompBranchSessionID+".jsonl"):  canonicalJSONL(ompBranchSession()),
 	}
 }
 
@@ -861,4 +871,347 @@ func writeAll(root string, files map[string]string) {
 	for _, path := range paths {
 		fmt.Println("wrote", path)
 	}
+}
+
+// OMP fixtures. Oh My Pi is a Pi-family harness: the entries are the same tree of `id`/`parentId` records
+// linked the same way, and the inherited reader parses both through one carried parser. What the fixtures
+// add is what OMP's own files carry that Pi's do not, each measured against the installed harness
+// (18.18.7) and recorded in docs/evidence/0006-omp-continuation.md:
+//
+//   - a fixed-width title slot line before the header (every session OMP itself writes opens with one,
+//     exactly 256 bytes including its line feed);
+//   - OMP's own setting records: a `model_change` whose `model` is one `<provider>/<id>` string, and the
+//     `custom` records a run writes (a date-reminder, a tool-execution notice, a session-exit notice),
+//     which the format's own documentation places outside the model context;
+//   - a `runtime` object on every entry the harness wrote.
+//
+// The strings are invented like every other fixture's, and each fixture's own fact appears in no other.
+const (
+	ompSessionID    = "01a1c338-9e4f-7c21-8f3d-2b6a05e1d7a4"
+	ompSessionCwd   = "/home/user/code/example-api"
+	ompSessionStamp = "2026-05-04T09:15:00.000Z"
+
+	// The second fixture is a conversation compacted at a boundary, with a branch the conversation left,
+	// exactly as the Pi history fixture is -- plus the `custom` record OMP writes onto the leaf path, which
+	// the reader does not carry and a conversion must account for rather than refuse.
+	ompHistorySessionID    = "01a1c339-1d7a-7b02-9c44-5e8f2a3b6d10"
+	ompHistorySessionCwd   = "/home/user/code/history"
+	ompHistorySessionStamp = "2026-05-05T11:00:00.000Z"
+
+	// The third is the shape a `/tree` branch switch leaves: the conversation continues on one branch, the
+	// user takes a second one, and the switch back appends the summary last, so the file's active path is
+	// the branch the conversation returned to.
+	ompBranchSessionID    = "01a1c33a-6b2e-7a91-8d17-4c0f93e5b28a"
+	ompBranchSessionCwd   = "/home/user/code/archive"
+	ompBranchSessionStamp = "2026-05-07T08:30:00.000Z"
+
+	// The growth fragment's own entries: one further turn chained onto the committed session's last entry.
+	ompGrowthUserID          = "f1e2d3c4"
+	ompGrowthAssistantID     = "0a9b8c7d"
+	ompGrowthStamp           = "2026-05-04T09:16:20.000Z"
+	ompGrowthAssistantStamp  = "2026-05-04T09:16:24.000Z"
+	ompGrowthMillis          = 1794938180000
+	ompGrowthAssistantMillis = 1794938184000
+	ompSessionLastEntryID    = "3f2e1d0c"
+
+	// The provider and model the fixture's records name, in OMP's one-string spelling for a session's own
+	// binding and as the pair a message carries.
+	ompFixtureProvider    = "example-proxy"
+	ompFixtureModel       = "example-model-2"
+	ompFixtureRuntime     = "18.18.7"
+	ompTitleSlotLineBytes = 256
+)
+
+// ompTitleSlot is the rewritable title slot OMP opens every session with: an empty title, the instant the
+// slot was written, and the rest of a fixed 256-byte line as padding, line feed included. Measured against
+// 300 first lines of a real OMP home (every one exactly 256 bytes) and against the harness's own
+// serialiser, whose budget constant the shipped bundle names SESSION_TITLE_SLOT_BYTES = 256.
+//
+// The line is written through canonicalJSONL like every other fixture line, which re-encodes its members in
+// one key order; the members and their values are the harness's own, so the line keeps its width and the
+// harness parses and rewrites it the same way.
+func ompTitleSlot(updatedAt string) string {
+	withoutPad := fmt.Sprintf(`{"type":"title","v":1,"title":"","updatedAt":%q,"pad":""}`, updatedAt)
+	return fmt.Sprintf(`{"type":"title","v":1,"title":"","updatedAt":%q,"pad":%q}`,
+		updatedAt, strings.Repeat(" ", ompTitleSlotLineBytes-1-len(withoutPad)))
+}
+
+// ompEntryMap is one OMP session entry: the base fields every entry carries -- including the `runtime`
+// object the harness records the version it ran in -- plus the entry kind's own.
+func ompEntryMap(id, parentID, timestamp string, rest map[string]any) map[string]any {
+	entry := map[string]any{
+		"type":      "message",
+		"id":        id,
+		"parentId":  parentID,
+		"timestamp": timestamp,
+		"runtime":   map[string]any{"version": ompFixtureRuntime},
+	}
+	for name, value := range rest {
+		entry[name] = value
+	}
+	return entry
+}
+
+// ompCustomRecord is one of the harness's own `custom` records: a typed notice with a payload, the shape
+// OMP writes for a date reminder, a tool-execution start and a session exit. It is not a message and the
+// harness's own documentation places the kind outside the model context.
+func ompCustomRecord(id, parentID, timestamp, customType string, data map[string]any) map[string]any {
+	return map[string]any{
+		"type":       "custom",
+		"customType": customType,
+		"data":       data,
+		"id":         id,
+		"parentId":   parentID,
+		"timestamp":  timestamp,
+		"runtime":    map[string]any{"version": ompFixtureRuntime},
+	}
+}
+
+// ompAssistantMessage is one assistant message payload in the harness's own shape: the API and endpoint it
+// ran under, the model that produced the words, a usage object with a cost breakdown, and the content
+// blocks.
+func ompAssistantMessage(content []map[string]any, timestamp int64, stopReason string) map[string]any {
+	return map[string]any{
+		"role":       "assistant",
+		"api":        "openai-completions",
+		"provider":   ompFixtureProvider,
+		"model":      ompFixtureModel,
+		"content":    content,
+		"stopReason": stopReason,
+		"timestamp":  timestamp,
+		"usage": map[string]any{
+			"input":       412,
+			"output":      38,
+			"cacheRead":   0,
+			"cacheWrite":  0,
+			"reasoning":   0,
+			"totalTokens": 450,
+			"cost": map[string]any{
+				"input": 0.0000412, "output": 0.0000038, "cacheRead": 0.0,
+				"cacheWrite": 0.0, "total": 0.000045, "totalFromProvider": false,
+			},
+		},
+	}
+}
+
+// ompToolCallBlock is one tool call as OMP records it inside an assistant message's content: the recorded
+// id, name and argument object, plus the streaming members the harness writes beside them.
+func ompToolCallBlock(id, name string, arguments map[string]any, streamIndex int) map[string]any {
+	return map[string]any{
+		"type":        "toolCall",
+		"id":          id,
+		"name":        name,
+		"arguments":   arguments,
+		"streamIndex": streamIndex,
+	}
+}
+
+// ompSession is the first OMP fixture: an ordinary session with two turns and a tool call answered by its
+// result, opened the way the harness opens one (the title slot, the header, its setting records and its
+// own date reminder) and closed with the session-exit notice a run writes.
+func ompSession() string {
+	return testjsonl.JoinJSONL(
+		ompTitleSlot(ompSessionStamp),
+		marshal(map[string]any{
+			"type": "session", "version": 3, "id": ompSessionID,
+			"timestamp": ompSessionStamp, "cwd": ompSessionCwd,
+		}),
+		marshal(map[string]any{
+			"type": "model_change", "id": "9e7a5bd5", "parentId": nil,
+			"timestamp": "2026-05-04T09:15:00.100Z", "runtime": map[string]any{"version": ompFixtureRuntime},
+			"model": ompFixtureProvider + "/" + ompFixtureModel, "resolvedModelIsFallback": false,
+		}),
+		marshal(map[string]any{
+			"type": "thinking_level_change", "id": "74b241b5", "parentId": "9e7a5bd5",
+			"timestamp": "2026-05-04T09:15:00.200Z", "runtime": map[string]any{"version": ompFixtureRuntime},
+			"thinkingLevel": "low", "configured": nil,
+		}),
+		marshal(ompCustomRecord("0a1b2c3d", "74b241b5", "2026-05-04T09:15:00.300Z", "date-cwd-reminder",
+			map[string]any{
+				"conversation": "user:1794938101000:user",
+				"turn":         "user:1794938101000:user",
+				"reminder":     "Today: 2026-05-04; current working directory: '/home/user/code/example-api'.",
+				"placement":    "prefix",
+			})),
+		marshal(ompEntryMap("52fd5d0f", "0a1b2c3d", "2026-05-04T09:15:01.000Z", map[string]any{
+			"message": map[string]any{
+				"role": "user", "content": "Where is the retry cap configured?", "timestamp": 1794938101000,
+			},
+		})),
+		marshal(ompEntryMap("b3c4d5e6", "52fd5d0f", "2026-05-04T09:15:04.000Z", map[string]any{
+			"message": ompAssistantMessage([]map[string]any{
+				{"type": "text", "text": "I will look for the retry configuration."},
+				ompToolCallBlock("call_01Example000000000000000000", "grep",
+					map[string]any{"pattern": "maxBackoffSeconds"}, 1),
+			}, 1794938104000, "toolUse"),
+		})),
+		marshal(ompEntryMap("c7d8e9fa", "b3c4d5e6", "2026-05-04T09:15:06.000Z", map[string]any{
+			"message": map[string]any{
+				"role":       "toolResult",
+				"toolCallId": "call_01Example000000000000000000",
+				"toolName":   "grep",
+				"content": []map[string]any{{
+					"type": "text", "text": "internal/retry/config.go:41: maxBackoffSeconds = 30",
+				}},
+				"isError":   false,
+				"timestamp": 1794938106000,
+			},
+		})),
+		marshal(ompEntryMap("2a3b4c5d", "c7d8e9fa", "2026-05-04T09:15:07.000Z", map[string]any{
+			"message": ompAssistantMessage([]map[string]any{
+				{"type": "text", "text": "It is set in internal/retry/config.go."},
+			}, 1794938107000, "stop"),
+		})),
+		marshal(ompEntryMap("3f2e1d0c", "2a3b4c5d", "2026-05-04T09:15:09.000Z", map[string]any{
+			"message": ompAssistantMessage([]map[string]any{
+				{"type": "text", "text": "The cap is 30 seconds of backoff between attempts."},
+			}, 1794938109000, "stop"),
+		})),
+		marshal(ompCustomRecord("7c6b5a49", "3f2e1d0c", "2026-05-04T09:15:10.000Z", "session_exit",
+			map[string]any{"reason": "dispose", "kind": "normal", "recordedAt": "2026-05-04T09:15:10.000Z"})),
+	)
+}
+
+// ompHistorySession is the second OMP fixture: a conversation compacted at a boundary with a branch the
+// conversation left, in the same shape as the Pi history fixture -- and with the two records OMP's own
+// files carry that Pi's do not. The session's model binding is OMP's one-string form, and the file's last
+// entry is a `custom` notice chained onto the leaf, which is the record a conversion must account for
+// rather than refuse (the reader does not carry the kind; the harness's own documentation places it
+// outside the model context).
+func ompHistorySession() string {
+	const (
+		summarizedID = "aa11bb22"
+		abandonedID  = "cc33dd44"
+		summaryID    = "ee55ff66"
+		keptID       = "0011aa22"
+		answerID     = "3344bb55"
+		exitID       = "7766ee55"
+	)
+	return testjsonl.JoinJSONL(
+		ompTitleSlot(ompHistorySessionStamp),
+		marshal(map[string]any{
+			"type": "session", "version": 3, "id": ompHistorySessionID,
+			"timestamp": ompHistorySessionStamp, "cwd": ompHistorySessionCwd,
+		}),
+		marshal(map[string]any{
+			"type": "model_change", "id": "7f8e9d0c", "parentId": nil,
+			"timestamp": "2026-05-05T11:00:00.100Z", "runtime": map[string]any{"version": ompFixtureRuntime},
+			"model": ompFixtureProvider + "/" + ompFixtureModel, "resolvedModelIsFallback": false,
+		}),
+		marshal(ompEntryMap(summarizedID, "7f8e9d0c", "2026-05-05T11:00:01.000Z", map[string]any{
+			"message": map[string]any{
+				"role": "user", "content": "How tall is the tower in the plaza?", "timestamp": 1795026001000,
+			},
+		})),
+		marshal(ompEntryMap(abandonedID, summarizedID, "2026-05-05T11:00:04.000Z", map[string]any{
+			"message": ompAssistantMessage([]map[string]any{
+				{"type": "text", "text": "The tower in the plaza is 42 metres tall."},
+			}, 1795026004000, "stop"),
+		})),
+		marshal(map[string]any{
+			"type": "compaction", "id": summaryID, "parentId": abandonedID,
+			"timestamp": "2026-05-05T11:01:00.000Z", "runtime": map[string]any{"version": ompFixtureRuntime},
+			"summary":          "The user is working through the plaza measurements and settled on the tower height.",
+			"firstKeptEntryId": summaryID, "systemMessage": nil, "tokensBefore": 2048,
+		}),
+		marshal(ompEntryMap(keptID, summaryID, "2026-05-05T11:02:00.000Z", map[string]any{
+			"message": map[string]any{"role": "user", "content": "And the retry cap?", "timestamp": 1795026120000},
+		})),
+		marshal(ompEntryMap(answerID, keptID, "2026-05-05T11:02:03.000Z", map[string]any{
+			"message": ompAssistantMessage([]map[string]any{
+				{"type": "text", "text": "Thirty seconds, in internal/retry/config.go."},
+			}, 1795026123000, "stop"),
+		})),
+		// The branch the conversation left, recorded after the summary and hanging off the entry the
+		// summary replaced: the walk from the file's last entry reaches the summary's own line and never
+		// this one.
+		marshal(ompEntryMap("5566cc77", abandonedID, "2026-05-05T11:03:00.000Z", map[string]any{
+			"message": ompAssistantMessage([]map[string]any{
+				{"type": "text", "text": "I should not have answered with only the height."},
+			}, 1795026180000, "stop"),
+		})),
+		// The harness's own notice, chained onto the turn the file's path ends at -- which is where a run
+		// writes it: it is the file's last entry and the one record on the leaf path the read does not
+		// carry, so a conversion has to account for it rather than refuse the session.
+		marshal(ompCustomRecord(exitID, "5566cc77", "2026-05-05T11:03:01.000Z", "session_exit",
+			map[string]any{"reason": "dispose", "kind": "normal", "recordedAt": "2026-05-05T11:03:01.000Z"})),
+	)
+}
+
+// ompBranchSession is the third OMP fixture: the file a `/tree` branch switch leaves behind. The
+// conversation continues on one branch, the user goes back and takes a second one, and the switch back
+// appends a generated summary last with the parentId of the entry the continued branch hangs off and the
+// fromId of the leaf that was left -- the shape the Pi branch fixture pins, with OMP's own records around
+// it.
+func ompBranchSession() string {
+	const (
+		modelID     = "8a1b2c3d"
+		promptID    = "9b2c3d4e"
+		answerID    = "ac3d4e5f"
+		continuedID = "bd4e5f60"
+		secondID    = "ce5f6071"
+		secondAnsID = "df607182"
+		summaryID   = "e0718293"
+	)
+	return testjsonl.JoinJSONL(
+		ompTitleSlot(ompBranchSessionStamp),
+		marshal(map[string]any{
+			"type": "session", "version": 3, "id": ompBranchSessionID,
+			"timestamp": ompBranchSessionStamp, "cwd": ompBranchSessionCwd,
+		}),
+		marshal(map[string]any{
+			"type": "model_change", "id": modelID, "parentId": nil,
+			"timestamp": "2026-05-07T08:30:00.100Z", "runtime": map[string]any{"version": ompFixtureRuntime},
+			"model": ompFixtureProvider + "/" + ompFixtureModel, "resolvedModelIsFallback": false,
+		}),
+		marshal(ompEntryMap(promptID, modelID, "2026-05-07T08:30:01.000Z", map[string]any{
+			"message": map[string]any{
+				"role": "user", "content": "How long does the archive writer wait for its lock?",
+				"timestamp": 1795499401000,
+			},
+		})),
+		marshal(ompEntryMap(answerID, promptID, "2026-05-07T08:30:04.000Z", map[string]any{
+			"message": ompAssistantMessage([]map[string]any{
+				{"type": "text", "text": "The archive writer waits up to thirty seconds for its lock."},
+			}, 1795499404000, "stop"),
+		})),
+		marshal(ompEntryMap(continuedID, answerID, "2026-05-07T08:30:06.000Z", map[string]any{
+			"message": ompAssistantMessage([]map[string]any{
+				{"type": "text", "text": "It is set in internal/archive/writer.go."},
+			}, 1795499406000, "stop"),
+		})),
+		marshal(ompEntryMap(secondID, answerID, "2026-05-07T08:31:10.000Z", map[string]any{
+			"message": map[string]any{
+				"role": "user", "content": "And does the reader take the same lock?",
+				"timestamp": 1795499470000,
+			},
+		})),
+		marshal(ompEntryMap(secondAnsID, secondID, "2026-05-07T08:31:13.000Z", map[string]any{
+			"message": ompAssistantMessage([]map[string]any{
+				{"type": "text", "text": "The reader takes the same lock, in internal/archive/reader.go."},
+			}, 1795499473000, "stop"),
+		})),
+		marshal(map[string]any{
+			"type": "branch_summary", "id": summaryID, "parentId": continuedID,
+			"timestamp": "2026-05-07T08:32:00.000Z", "runtime": map[string]any{"version": ompFixtureRuntime},
+			"fromId":  secondAnsID,
+			"summary": "The user asked whether the archive reader takes the same lock as the writer.",
+		}),
+	)
+}
+
+// ompGrowthTurn is one further OMP turn as the harness records it: the user entry and the assistant entry
+// that answered it, chained to the committed session's last entry. The chained id is what makes the
+// fragment a turn appended to that session rather than to any session.
+func ompGrowthTurn() string {
+	return testjsonl.JoinJSONL(
+		marshal(ompEntryMap(ompGrowthUserID, ompSessionLastEntryID, ompGrowthStamp, map[string]any{
+			"message": map[string]any{"role": "user", "content": growthQuestion, "timestamp": ompGrowthMillis},
+		})),
+		marshal(ompEntryMap(ompGrowthAssistantID, ompGrowthUserID, ompGrowthAssistantStamp, map[string]any{
+			"message": ompAssistantMessage([]map[string]any{
+				{"type": "text", "text": growthAnswer},
+			}, ompGrowthAssistantMillis, "stop"),
+		})),
+	)
 }

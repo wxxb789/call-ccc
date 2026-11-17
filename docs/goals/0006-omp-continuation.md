@@ -1,7 +1,7 @@
 # 0006 — Continue conversations into and out of Oh My Pi
 
 **Status:** Ready  
-**Prerequisite:** [0005 — Continue conversations into and out of Pi](0005-pi-continuation.md).
+**Prerequisite:** [0005 — Continue conversations into and out of Pi](archive/0005-pi-continuation.md).
 
 ## Intended advance
 

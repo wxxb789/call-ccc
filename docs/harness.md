@@ -365,6 +365,42 @@ says so.
   from `PATH` is exactly the case that flag exists for). The fabricated unrelated session it plants is
   removed again in a `finally`, so a home the caller named is left as it was found apart from the
   converted session (and its own configuration, which the run never touched).
+- `scripts/omp-native-check.py` — the target-side native verification for goal 0006, both directions, and
+  **deliberately not a gate step** for the same reason the others are not: it needs the OMP binary
+  installed and, for a real turn, a model its data directory resolves. It shares the Pi check's shape —
+  a **copy** of a committed fixture with only its recorded working directory rewritten mechanically to a
+  directory the run owns, a planted unrelated session, digests taken before and after, the conversion's
+  own report read rather than trusted, the harness's own loader asked against a **throw-away copy** of the
+  converted bytes (a load appends a `custom`/`session_exit` record to the session it opens, measured on
+  18.18.7), and an unknown-id control arm — and adds what is OMP's own: the project directory the session
+  is filed under is asked of `OMPProjectDir`'s rule and compared with the file's real location (measured:
+  the harness shortens a working directory under the temporary tree to `-tmp…` and one under the home to
+  `-…`, keeps Pi's `--…--` form only outside both, and *moves* a session it finds under Pi's spelling);
+  the file's first line must be the harness's own fixed-width (256-byte, line feed included) title slot;
+  every assistant record must carry a non-empty `model` **and** `provider` (measured: dropping either from
+  one record of an otherwise loadable session makes the next turn fail while it builds its request); and
+  the loader's own answers are compared with the roles the file's own `parentId` walk builds, the latest
+  compaction entry **on that path** rendered as `compactionSummary`. The loader arm runs in the run's own
+  seeded data directory with the credential-bearing variables (`ompLoadEnvDenied`) taken out of the
+  environment, which is what makes "the load made no model turn" a measurement on a host that holds a key.
+  The data directory a run makes for itself is seeded from the host's own OMP home (`PI_CODING_AGENT_DIR`,
+  else `~/.omp/agent`) as a **source of provider definitions only**: every provider whose `baseUrl` is
+  loopback is copied with its `api`, its models and its other non-credential fields, its `apiKey` **value**
+  replaced by a placeholder this run invents and its `headers` dropped, while a provider whose endpoint is
+  not loopback — or whose URL itself carries a credential — is left out whole and named in the report,
+  because OMP demands a literal key (measured: without one it refuses to start at all, and `$VAR`/`${VAR}`
+  in `apiKey` is **not** expanded, which is where OMP differs from Pi's `models.json` and why the collision
+  policy is "the key's value is this run's own placeholder" rather than Pi's `$ENV` reference). With no
+  surviving provider the home names no model role, the conversion writes no binding, and the run reports
+  that as a named check instead of crashing — OMP's own measured behaviour for a home with no model. A home
+  the caller names with `--target-home` is read, never written to: the run seeds nothing into it, plants
+  nothing in it, and reports the role that home's own `config.yml` names beside its every-session digests.
+  The `--direction omp-to-claude` half needs no OMP at all (its source is a committed OMP fixture read by
+  the inherited reader and its native half is Claude Code's loader, driven the way 0002's check drives it);
+  a host without the harness that direction needs ends as `RESULT: INCOMPLETE` (exit 2) naming it. The
+  script builds `ccc` into `bin/ccc-native-check-omp` (`.gitignore` covers `bin/`), takes the same
+  `--resume-prompt`/`--expect`/`--keep`/`--json` flags as its siblings, and prints the turn's own answer
+  under `TURN_OUTPUT_MARKER`.
 - `scripts/native_check_common.py` — the mechanism the native checks share, so none keeps its own
   copy of it: the file digests (`sha256`, `tree_digest`), the check recorder (`record`, `RESULTS`), the
   subprocess runner (`run`), the POSIX-shell reading of a rendered command (`shell_words`,

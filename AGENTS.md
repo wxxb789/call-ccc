@@ -41,11 +41,16 @@ with their exit codes and counts).
   `verification.resume` coming back `verified`, and every one of a conversion's omissions or narrowing
   is named in `conversion.losses[]`. The native half needs the target harness installed and, for a real
   turn, model access, so it is **not** a gate step: `scripts/codex-native-check.py`,
-  `scripts/claude-native-check.py` and `scripts/pi-native-check.py` re-derive it and report each check's
+  `scripts/claude-native-check.py`, `scripts/pi-native-check.py` and `scripts/omp-native-check.py`
+  re-derive it and report each check's
   own verdict (the gate keeps deciding the offline half — round-trip through the inherited reader,
   install rules, reported losses, CLI shape). A check whose target harness is absent exits 2 naming the
   harness it needs — the Pi check ends its run with `RESULT: INCOMPLETE` and the reason, the Codex and
-  Claude checks print the reason on stderr — so a partial run is never quoted as a pass. The Codex check also runs the repeat scenario goal 0004 added: it converts a *copy* of the
+  Claude checks print the reason on stderr — so a partial run is never quoted as a pass. The Pi and OMP
+  checks drive their harness's own RPC loader against a **throw-away copy** of the converted bytes
+  (measured on both: a load writes records of its own into the session it opens) and read the harness's
+  own `get_state`/`get_messages` answers beside an unknown-id control arm; the OMP check's scratch data
+  directory defines a credential-free provider (`auth: none`) so a load needs none. The Codex check also runs the repeat scenario goal 0004 added: it converts a *copy* of the
   fixture, loads it, appends the committed `internal/ccc/testdata/growth/` fragment to the copy,
   converts again, and shows Codex's own loader opening the second session with its own view holding the
   appended turn while the first session's bytes did not move (`--repeat-resume-prompt` adds one real
@@ -64,7 +69,14 @@ with their exit codes and counts).
   the read's session-level harness label in the endpoint's place was measured wrong) and the report names
   that as the attribution it cannot answer — and its printed resume command names no provider or model,
   because the source's provider label is a source-side name the target home need not define and a flagged
-  model can leave the target unable to open the session at all.
+  model can leave the target unable to open the session at all. An Oh My Pi session **requires** a model binding its loader can
+  resolve (`SessionModelRestoreError` otherwise), so `--to omp` records the target home's own configured
+  `<provider>/<model>`, asked of the harness — never the source's — and every converted assistant record
+  states a non-empty `model` (the source's) beside a non-empty `provider` (that same target-side answer),
+  because the harness's request builder reads both on every assistant record and fails to build the next
+  request when either is missing. The file opens with the harness's own fixed-width (256-byte) title-slot
+  line, written with an empty title, which is the shape its own writer starts from and the line it
+  rewrites in place when it titles a session.
 - **A conversion is a snapshot of the source at one boundary, and repeating it is the same operation.**
   The source is read again and written as *another* fresh target session; nothing ever merges later
   source history into an existing target session, and nothing rewrites the source. Every conversion's
@@ -90,19 +102,27 @@ with their exit codes and counts).
 ## How to work here
 
 - The continuation core and its per-harness target writers live in `internal/ccc` — the route table
-  `targets.go`, the install/verify/probe machinery the three routes share (`route_shared.go`), and the
+  `targets.go`, the install/verify/probe machinery the routes share (`route_shared.go`), and the
   writers/installers/verifiers `codex_target.go`, `codex_install.go`,
   `codex_verify.go`, `claude_target.go`, `claude_install.go`, `claude_verify.go`, `pi_target.go`,
-  `pi_install.go`, `pi_verify.go`; its committed
+  `pi_install.go`, `pi_verify.go`, `omp_target.go`, `omp_install.go`,
+  `omp_verify.go` (the last three are the Pi family's second format, whose shared writer is Pi's own
+  parameterized by `piFamilyShape`); its committed
   native-shaped fixtures are `internal/ccc/testdata/fixtures/` and the growth fragments a run appends to
   a *copy* of one (`internal/ccc/testdata/growth/`, written by the same `internal/ccc/fixturegen` and
   pinned against it) are what makes one source session grow; `cmd/ccc` adds
   argument handling and presentation only, and a target-side native harness
-  (`scripts/codex-native-check.py`, `scripts/claude-native-check.py`, `scripts/pi-native-check.py`) is
+  (`scripts/codex-native-check.py`, `scripts/claude-native-check.py`, `scripts/pi-native-check.py`,
+  `scripts/omp-native-check.py`) is
   registered in `docs/harness.md`, re-runnable, and deliberately not a gate step. A target whose own
   loader resolves a session id through the process's working directory — Claude Code, and Pi — is
   installed under the project spelling of the source read's recorded working directory, and a source that
-  recorded none is refused (`ErrNoTargetCwd`) rather than installed where no lookup finds it. The source's
+  recorded none is refused (`ErrNoTargetCwd`) rather than installed where no lookup finds it. Oh My Pi
+  files a session under the project directory **its own** spelling computes, which is not Pi's for a
+  working directory under the home or the temporary directory (it shortens those to `-…` and `-tmp…` and
+  keeps Pi's `--…--` form only for a path outside both), and it moves a session it finds under Pi's
+  spelling into its own directory itself — so the installer asks OMP's rule (`OMPProjectDir`), and a
+  conversion's reported path is where the file stays. The source's
   own relation is reproduced as the read answered it, with the one step the read itself projects: a record
   the Pi-family readers answer as hanging off the message that made a call is chained through the tool
   result standing between them, and counted (`unresolved_source_parents`) where the projection cannot

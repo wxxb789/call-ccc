@@ -8,8 +8,8 @@ Today the repository carries the **actual AgentsView source tree** at a pinned r
 ([`docs/upstream.md`](docs/upstream.md)) and ships three working capabilities on top of it: inspecting
 an existing agent session through AgentsView's own discovery, parsers and archive read path, and
 continuing a session between harnesses — a Claude Code session as a new, natively resumable **Codex**,
-**Claude Code** or **Pi** session, a Codex session as a Claude Code one, and a **Pi** session as a Claude
-Code or Codex one.
+**Claude Code**, **Pi** or **Oh My Pi** session, a Codex session as a Claude Code one, and a **Pi** or
+**Oh My Pi** session as a Claude Code, Codex or Pi one.
 
 ```bash
 go build -tags fts5 -o bin/ccc ./cmd/ccc   # CGO_ENABLED=1; -tags fts5 is what upstream ships
@@ -20,18 +20,26 @@ bin/ccc inspect codex:/path/to/rollout-2026-05-04T09-15-00-0c8e5f21-3d6a-4b7c-9f
 bin/ccc continue codex:0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812 --to claude
 bin/ccc continue pi:01a1c335-7098-71c2-a91b-b5295c0464f5 --to claude      # Pi → Claude Code
 bin/ccc continue claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to pi    # Claude Code → Pi
+bin/ccc continue pi:01a1c335-7098-71c2-a91b-b5295c0464f5 --to omp         # Pi → Oh My Pi
+bin/ccc continue omp:01a1c338-9e4f-7c21-8f3d-2b6a05e1d7a4 --to claude     # Oh My Pi → Claude Code
 # resume the Claude session this installed, from the directory its loader discovers it in:
 cd <session working directory> && CLAUDE_CONFIG_DIR=<installed home> claude --resume <new session id>
 # and the Pi one, from the directory that harness resolves a session id through:
 cd <session working directory> && PI_CODING_AGENT_DIR=<installed home> pi --session <new session id>
+# and the Oh My Pi one, whose printed line names both its data directory and the directory holding the file:
+cd <session working directory> && PI_CODING_AGENT_DIR=<installed home> \
+  PI_CODING_AGENT_SESSION_DIR=<installed home>/sessions/<project dir> omp --resume <new session id>
 ```
 
-The two harnesses that resolve a session through their working directory are named above, and each one's
-lookup is scoped to the directory the process runs in: measured on Claude Code 2.1.326, a session id
-answers `No conversation found with session ID: …` from any directory whose project spelling differs,
-and Pi resolves an id across its sessions root but *offers to fork* a session it finds only under another
-project rather than resuming it in place — which is why neither printed resume line is a resume without
-its `cd`.
+The harnesses whose resume line carries a working directory are named above, and each one's lookup is
+scoped that way: measured on Claude Code 2.1.326, a session id answers `No conversation found with
+session ID: …` from any directory whose project spelling differs; Pi resolves an id across its sessions
+root but *offers to fork* a session it finds only under another project rather than resuming it in
+place; and Oh My Pi resolves an id from any directory but refuses a session whose *recorded* working
+directory it cannot find, and files sessions under its own spelling of it (measured: a directory under
+the temporary tree becomes `-tmp…`, one under the home `-…`, and only a path outside both keeps Pi's
+`--…--` form) — which is why no printed resume line is a resume without its `cd`, and why the Oh My Pi
+one also names the directory that holds the file.
 
 `ccc inspect` locates a session with the provider's own reader, parses it, and reports its identity,
 agent, source, conversation shape (counts, tool calls, compaction boundaries, malformed lines) and —
@@ -42,12 +50,14 @@ the source transcript and any archive are read only.
 the requested target (a Codex rollout under the target's own `sessions/` tree with `--to codex`, a
 Claude Code transcript under `<config>/projects/<project-dir>/<session-id>.jsonl` with `--to claude`,
 a Pi session under `<agent dir>/sessions/--<working directory spelling>--/<timestamp>_<id>.jsonl` with
-`--to pi`),
+`--to pi`, an Oh My Pi session under `<agent dir>/sessions/<Oh My Pi's own spelling of the working
+directory>/<timestamp>_<id>.jsonl` with `--to omp` — the same family's second format, whose spelling is
+its own and whose first line is the harness's fixed-width title slot),
 installs it without replacing anything,
 and reports three separate states: what was converted (with every omission or narrowed meaning named
 by category), whether the session is installed, and whether **the target harness itself** loaded it
-(Codex's `codex app-server` `thread/resume`, Claude Code's own loader for `--to claude`, or Pi's own
-loader in its RPC mode for `--to pi`) or
+(Codex's `codex app-server` `thread/resume`, Claude Code's own loader for `--to claude`, or the Pi
+family's own loaders in their RPC modes for `--to pi` and `--to omp`) or
 continued from it (`--verify resume --resume-prompt TEXT`). It prints the target's own session id and
 the command that resumes it — the data directory it installed into (`CODEX_HOME=…`, or for the two
 harnesses whose lookup is project-scoped `CLAUDE_CONFIG_DIR=…` / `PI_CODING_AGENT_DIR=…` together with

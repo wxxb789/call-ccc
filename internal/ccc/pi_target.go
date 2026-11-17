@@ -94,6 +94,7 @@ type piMessage struct {
 	Role       string   `json:"role"`
 	Content    any      `json:"content"`
 	Model      string   `json:"model,omitempty"`
+	Provider   string   `json:"provider,omitempty"`
 	Usage      *piUsage `json:"usage,omitempty"`
 	StopReason string   `json:"stopReason,omitempty"`
 	ToolCallID string   `json:"toolCallId,omitempty"`
@@ -309,6 +310,7 @@ func (m piMessage) MarshalJSON() ([]byte, error) {
 			value any
 		}{
 			{name: "model", value: m.Model},
+			{name: "provider", value: m.Provider},
 			{name: "usage", value: m.Usage},
 			{name: "stopReason", value: m.StopReason},
 			{name: "toolCallId", value: m.ToolCallID},
@@ -359,6 +361,58 @@ type PiSession struct {
 	Model string
 }
 
+// piFamilyShape names what one target in the Pi family writes beside the conversation the family
+// shares. Its zero value is Pi's own shape, which is what the Pi route passes; OMP's own shape is
+// measured, not guessed, and each member below carries the measurement that decided it.
+type piFamilyShape struct {
+	// Name is the harness whose format this is, as the report's own sentences name it ("pi", "omp"). It
+	// selects the family's own loss wording; nothing about the records written depends on it.
+	Name string
+	// titleSlot writes the target's rewritable title-slot line before the session header. OMP writes one
+	// into every session it starts (a fixed-width, 256-byte line holding an empty title that the harness
+	// later rewrites in place); Pi's files have no such line. A file without one still loads and resumes
+	// (measured), so the line is the target's own shape rather than a requirement -- and the shape is
+	// what this route must not lose.
+	titleSlot bool
+	// assistantProvider is the endpoint label every assistant record states. OMP's request builder reads
+	// it on every assistant record of the session it resumes and fails to build the request when one is
+	// missing (`undefined is not an object (evaluating 'e.length')`, measured on 18.18.7 by dropping the
+	// member from one record of an otherwise loadable session), and the read answers no endpoint for a
+	// message -- so this is the *target home's* own configured provider, asked of the harness, which is
+	// the value the design's provider rule allows where the read answers the model alone. Empty means the
+	// family's own rule: Pi writes none, because Pi tolerates a record without one.
+	assistantProvider string
+	// assistantModelFallback is the model id written on an assistant record whose source message
+	// recorded none. OMP requires a non-empty model on every assistant record for the same measured
+	// reason; the harness's own configured model is the only model this route can state there, and the
+	// report counts every record it was needed for. Empty means the family's own rule (Pi omits the
+	// member and reports the record as one whose model the read did not answer).
+	assistantModelFallback string
+	// sessionBinding is the `<provider>/<id>` a session-level model record states, written before the
+	// conversation. OMP restores a session's model from that record when it resolves in the target home,
+	// and falls back to the pairs the session's own messages recorded when it does not -- which on a
+	// converted session are the source's, a model the target home need not define, so a session without
+	// the record is refused by a home that does not know the source's model (`SessionModelRestoreError:
+	// Could not restore model <provider>/<id>`, measured). It must stand on the walk the loader makes
+	// from the file's leaf: a binding record nothing chains to is not restored (measured) -- which is
+	// why the first record's entry hangs off it (sourceTree.preamble). Empty means the family's own
+	// rule: Pi's session binds no model to itself and writes no such record.
+	sessionBinding string
+	// sessionBindingDetail is what the report's own caveat says about the binding record, or about why
+	// none was written. It is filled by the route, which is where the harness's answer (or its absence)
+	// is known.
+	sessionBindingDetail string
+}
+
+// piFamilyConversion is one Pi-family target's own half of a conversion: the version a document that
+// recorded no probed one is written as, the directory its installer files a session under, and the
+// shape of the records its own format carries around the conversation.
+type piFamilyConversion struct {
+	PinVersion string
+	ProjectDir func(cwd string) string
+	Shape      piFamilyShape
+}
+
 // ConvertToPiSession turns a Conversation into a Pi session: a fresh identity, one entry per piece of
 // evidence the target can express, and the report of what it cannot. It writes no file; installation
 // is the caller's step (InstallPiSession).
@@ -368,6 +422,16 @@ type PiSession struct {
 // never be resumed while a report called it installed. A document that records none is refused here,
 // before anything is written.
 func ConvertToPiSession(conv Conversation, opts PiTargetOptions) (PiSession, error) {
+	return convertToPiFamilySession(conv, opts, piFamilyConversion{
+		PinVersion: PiFormatVersion,
+		ProjectDir: PiProjectDir,
+	})
+}
+
+// convertToPiFamilySession is the one conversion both family targets run: the writer walks the document
+// into the family's v3 tree, and the family's own half decides the records around it and the pin a
+// document with no probed version is written as.
+func convertToPiFamilySession(conv Conversation, opts PiTargetOptions, family piFamilyConversion) (PiSession, error) {
 	if strings.TrimSpace(conv.Source.Cwd) == "" {
 		return PiSession{}, ErrNoTargetCwd
 	}
@@ -381,7 +445,7 @@ func ConvertToPiSession(conv Conversation, opts PiTargetOptions) (PiSession, err
 	}
 	cliVersion := strings.TrimSpace(opts.CLIVersion)
 	if cliVersion == "" {
-		cliVersion = PiFormatVersion
+		cliVersion = family.PinVersion
 	}
 	startedAt := firstRecordedTime(conv.Messages)
 	if startedAt.IsZero() {
@@ -394,6 +458,7 @@ func ConvertToPiSession(conv Conversation, opts PiTargetOptions) (PiSession, err
 		sessionID:       sessionID,
 		cwd:             conv.Source.Cwd,
 		cliVersion:      cliVersion,
+		shape:           family.Shape,
 		opts:            opts,
 		clock:           newEntryClock(startedAt, piEntryTimestampLayout),
 		headerTimestamp: startedAt.UTC().Format(piEntryTimestampLayout),
@@ -402,6 +467,7 @@ func ConvertToPiSession(conv Conversation, opts PiTargetOptions) (PiSession, err
 		sourceFidelity:  conv.Fidelity,
 		tree:            newSourceTree(conv.Source.Provider),
 	}
+	builder.writePreamble()
 	builder.writeConversation(conv)
 	if builder.idErr != nil {
 		return PiSession{}, builder.idErr
@@ -412,7 +478,7 @@ func ConvertToPiSession(conv Conversation, opts PiTargetOptions) (PiSession, err
 	return PiSession{
 		SessionID:  sessionID,
 		FileName:   piSessionFileName(sessionID, startedAt),
-		Directory:  PiProjectDir(conv.Source.Cwd),
+		Directory:  family.ProjectDir(conv.Source.Cwd),
 		Cwd:        conv.Source.Cwd,
 		StartedAt:  startedAt,
 		CLIVersion: cliVersion,
@@ -454,6 +520,7 @@ type piSessionBuilder struct {
 	cwd        string
 	cliVersion string
 	clock      *entryClock
+	shape      piFamilyShape
 	opts       PiTargetOptions
 	carried    Carried
 	items      []TargetItem
@@ -490,6 +557,9 @@ type piSessionBuilder struct {
 	lossCoalesced          int
 	lossSubagentLinks      int
 	lossModels             int
+	lossModelFallbacks     int
+	lossTitleSlot          int
+	lossSessionBinding     int
 	lossCarriedCallEntries int
 	lossUnrecordedUsage    int
 	lossPreBoundary        int
@@ -501,11 +571,49 @@ type piSessionBuilder struct {
 	headerTimestamp string
 }
 
-// bytes answers the session's own bytes: the header, then every entry, each terminated by a line feed.
-// It also records the size it produced as the conversion's carried byte count, so the reported count is
-// the file's own size rather than a second length computed from the same buffer.
+// writePreamble writes the records a family's own format carries before the conversation, and records
+// where the source's first record hangs off them.
+//
+// OMP's session-level model binding is the one such record this build writes: it is an entry of the
+// file's own tree (its id and parentId are the format's), it is not a source record, and the walk the
+// harness's loader makes from the file's last entry has to reach it -- so the source's first record's
+// entry is chained to it (sourceTree.preamble) rather than left parentless, which is the shape OMP's own
+// writer produces too (its first turn's entry hangs off its setting records). A family whose format
+// carries no such record writes nothing here and leaves every entry exactly where it was.
+func (b *piSessionBuilder) writePreamble() {
+	binding := strings.TrimSpace(b.shape.sessionBinding)
+	if binding == "" {
+		return
+	}
+	entry := piEntry{
+		Type:      piEntryModelChange,
+		ID:        b.newEntryID(),
+		Timestamp: b.headerTimestamp,
+		payload:   piModelChange{Model: binding},
+	}
+	encoded, err := json.Marshal(entry)
+	if err != nil {
+		if b.idErr == nil {
+			b.idErr = fmt.Errorf("encoding the %s record: %w", piEntryModelChange, err)
+		}
+		return
+	}
+	b.buffer.Write(encoded)
+	b.buffer.WriteByte('\n')
+	b.lossSessionBinding++
+	b.tree.preamble(entry.ID)
+}
+
+// bytes answers the session's own bytes: the family's own title line where it writes one, the header,
+// the records the preamble wrote, and then every entry, each terminated by a line feed. It also records
+// the size it produced as the conversion's carried byte count, so the reported count is the file's own
+// size rather than a second length computed from the same buffer.
 func (b *piSessionBuilder) bytes() []byte {
 	var session bytes.Buffer
+	if b.shape.titleSlot {
+		session.Write(piTitleSlotLine(b.headerTimestamp))
+		b.lossTitleSlot++
+	}
 	header := piSessionHeader{
 		Type:      piEntrySession,
 		Version:   PiSessionVersion,
@@ -714,7 +822,8 @@ func (b *piSessionBuilder) writeAssistantMessage(text string, message Message, c
 		message: &piMessage{
 			Role:       piRoleAssistant,
 			Content:    blocks,
-			Model:      b.modelField(message),
+			Model:      b.entryModel(message),
+			Provider:   b.shape.assistantProvider,
 			Usage:      b.usageFor(),
 			StopReason: b.stopReasonFor(calls),
 			Timestamp:  piMessageMillis(message.Timestamp),
@@ -750,6 +859,49 @@ func (b *piSessionBuilder) modelField(message Message) string {
 	b.lastModel = model
 	b.lossModels++
 	return model
+}
+
+// entryModel answers the model one assistant entry states, and is where a family whose format requires
+// a non-empty model states the only one it can: the harness's own configured model id, for a record
+// whose source message recorded none (piFamilyShape.assistantModelFallback carries the measurement).
+// The count it charges is the report's own statement that the model on those records is the target
+// home's answer rather than the source's, so a caller reading the file cannot mistake it for evidence
+// about who wrote the words.
+func (b *piSessionBuilder) entryModel(message Message) string {
+	model := b.modelField(message)
+	if model != "" || b.shape.assistantModelFallback == "" {
+		return model
+	}
+	b.lossModelFallbacks++
+	return b.shape.assistantModelFallback
+}
+
+// piModelDetail words the message_model_attribution caveat for one family, because the two formats
+// answer the same question differently and each route's report has to say which one it is.
+func piModelDetail(family string) string {
+	if family == piFamilyOMP {
+		return "OMP's message record states which model and which provider produced the words, and its own " +
+			"request builder reads both on every assistant record of the session it resumes: a record " +
+			"without a provider (or without a model) makes the next turn fail while it builds its request " +
+			"(measured on 18.18.7, `undefined is not an object (evaluating 'e.length')`, by dropping the " +
+			"member from one record of an otherwise loadable session). The model travels verbatim -- it is " +
+			"what the source's own message recorded -- while the provider is the *target home's* own " +
+			"configured endpoint, asked of the harness: the inherited read answers no endpoint " +
+			"attribution for a message, and the source's own provider label is a name the target home " +
+			"need not define, so the field states the endpoint this session runs under rather than one " +
+			"that served the words. A record whose model the read did not answer carries the harness's own " +
+			"configured model id for the same measured reason. What the source's conversation is, and " +
+			"which model wrote each turn the read answered, is unchanged by it"
+	}
+	return "Pi's message record states which model and which provider produced the words. The " +
+		"model travels verbatim -- it is what the source's own message recorded, and the target's own " +
+		"totals then count the turn under the model that wrote it. The provider does not: the " +
+		"inherited read answers no endpoint attribution for a message (the Pi reader projects a " +
+		"message's model and not its provider), and the read's session-level provider names the " +
+		"*harness* that wrote the words -- `claude`, `codex`, `pi` -- which is not an endpoint the " +
+		"target's own configuration defines, so no provider is written rather than that label. A Pi " +
+		"session binds no provider to itself, so nothing is refused when the resumed session runs " +
+		"under another model"
 }
 
 // stopReasonFor answers the entry's stop reason: a turn that made calls stopped to make them, and one
@@ -829,6 +981,8 @@ func (b *piSessionBuilder) writeCarriedCalls(message Message) {
 		message: &piMessage{
 			Role:       piRoleAssistant,
 			Content:    blocks,
+			Model:      b.entryModel(Message{}),
+			Provider:   b.shape.assistantProvider,
 			Usage:      b.usageFor(),
 			StopReason: piStopToolUse,
 			Timestamp:  piMessageMillis(message.Timestamp),
@@ -1008,17 +1162,9 @@ func (b *piSessionBuilder) losses() []Loss {
 	}
 	modelDetail := "the source recorded no model on any message"
 	if b.lossModels > 0 {
-		modelDetail = "Pi's message record states which model and which provider produced the words. The " +
-			"model travels verbatim -- it is what the source's own message recorded, and the target's own " +
-			"totals then count the turn under the model that wrote it. The provider does not: the " +
-			"inherited read answers no endpoint attribution for a message (the Pi reader projects a " +
-			"message's model and not its provider), and the read's session-level provider names the " +
-			"*harness* that wrote the words -- `claude`, `codex`, `pi` -- which is not an endpoint the " +
-			"target's own configuration defines, so no provider is written rather than that label. A Pi " +
-			"session binds no provider to itself, so nothing is refused when the resumed session runs " +
-			"under another model"
+		modelDetail = piModelDetail(b.shape.Name)
 	}
-	return []Loss{
+	return append([]Loss{
 		{
 			Category:    "reasoning_text",
 			Disposition: DispositionCarriedWithCaveat,
@@ -1202,7 +1348,7 @@ func (b *piSessionBuilder) losses() []Loss {
 		{
 			Category:    "message_model_attribution",
 			Disposition: DispositionCarriedWithCaveat,
-			Count:       b.lossModels,
+			Count:       b.modelAttributionCount(),
 			Detail:      modelDetail,
 		},
 		{
@@ -1244,43 +1390,115 @@ func (b *piSessionBuilder) losses() []Loss {
 			Count:       flagCount(b.sourceFidelity.NeedsRetry),
 			Detail:      needsRetryLossDetail(b.sourceFidelity),
 		},
+	}, b.familyLosses()...)
+}
+
+// modelAttributionCount is what the message_model_attribution caveat counts: the assistant records whose
+// model the source's own message recorded (carried verbatim) plus, on a family whose format requires a
+// non-empty model on every assistant record, the records the read answered no model for, which carry
+// the harness's own configured one.
+func (b *piSessionBuilder) modelAttributionCount() int {
+	return b.lossModels + b.lossModelFallbacks
+}
+
+// familyLosses answers the loss categories one family's format has and the other's does not, in a fixed
+// order and with every count, so a caller of either route reads a complete list (zero counts included).
+// Pi's list is empty: every category its writer knows is in the shared list above, and a family that
+// added nothing must not grow a second block of zeroes.
+func (b *piSessionBuilder) familyLosses() []Loss {
+	if b.shape.Name != piFamilyOMP {
+		return nil
+	}
+	// The detail is the route's own sentence, because it is where the harness's answer -- or the reason
+	// there is none -- is known: a conversion that asked a harness and was answered says which model the
+	// session records and why; one that asked nothing (a dry run, a home with no model) says that too, and
+	// what the missing record costs. A family that writes no binding at all is not this case and never
+	// reaches here (familyLosses answers nothing for it).
+	bindingDetail := b.shape.sessionBindingDetail
+	if strings.TrimSpace(bindingDetail) == "" {
+		bindingDetail = "no session-level model record was written, so the harness resolves this session's " +
+			"model from the pairs its own records carry -- the source's, which the target home need not " +
+			"define -- and refuses the session on a home that does not know the source's model " +
+			"(`SessionModelRestoreError`, measured)"
+	}
+	return []Loss{
+		{
+			Category:    "target_model_binding",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.lossSessionBinding,
+			Detail:      bindingDetail,
+		},
+		{
+			Category:    "title_slot_written",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.lossTitleSlot,
+			Detail: "the target's own session format opens with a fixed-width title slot the harness " +
+				"rewrites in place when it titles a session. It is written with an empty title -- OMP's " +
+				"own initial state, and a title is the harness's own to generate -- and it is the one " +
+				"line of the file that is not an entry of the conversation's tree. Pi's files have no " +
+				"such line, which is why it is named here rather than assumed",
+		},
 	}
 }
 
 // piFormatLimits is what this pair of formats cannot express at all, as opposed to what one run
 // happened to leave out: a limit carries no count, because it holds for every conversion.
-func piFormatLimits() []FormatLimit {
-	return []FormatLimit{
+//
+// The family's shared half is the family's, and the sentences that name the harness whose file is
+// written take the shape's own name (shape.sentenceName): a Pi session's header, its missing turn
+// record, its lack of attachment bytes and its tool vocabulary are the same claims for an OMP session.
+// The provider binding is **Pi's own limit** and is named only for Pi: a Pi session binds no model
+// provider to itself, while an OMP session records one its loader restores and refuses -- that is the
+// `session_model_binding` limit OMP's own list states instead (ompFormatLimits), so carrying this one
+// into an OMP report would state the opposite of what its format does.
+func piFormatLimits(shape piFamilyShape) []FormatLimit {
+	limits := []FormatLimit{
 		{
 			Category: "session_metadata_record",
-			Detail: "a Pi session header carries the session's identity, its start time and its working " +
+			Detail: shape.sessionPhrase() + " header carries the session's identity, its " +
+				"start time and its working " +
 				"directory and nothing else, so a source's own session-level fields (a Codex " +
 				"session_meta's originator, cli version and source kind; a Claude transcript's version " +
 				"field) have no field to travel in. The conversation's own messages are unaffected",
 		},
-		{
+	}
+	if shape.Name != piFamilyOMP {
+		limits = append(limits, FormatLimit{
 			Category: "model_provider_binding",
 			Detail: "a Pi session binds no model provider to itself: a resumed turn uses whatever model " +
 				"and provider the caller's Pi configuration selects, whatever the records name. A " +
 				"converted session records no provider (the source read answers none -- see " +
 				"message_model_attribution) and therefore cannot be refused for recording the wrong one",
-		},
-		{
+		})
+	}
+	return append(limits,
+		FormatLimit{
 			Category: "turn_boundaries",
-			Detail: "Codex records a turn_context record at each turn boundary; a Pi session has no turn " +
+			Detail: "Codex records a turn_context record at each turn boundary; " + shape.sessionPhrase() +
+				" has no turn " +
 				"record, so a converted session records no turn boundaries in the target's vocabulary " +
 				"(the target groups its own turns when it resumes)",
 		},
-		{
+		FormatLimit{
 			Category: "attachments_and_images",
 			Detail: "the source read carries no attachment or image bytes, so this conversion has none " +
 				"to write and reports no count for them: a per-run \"0 omitted\" would be a claim the " +
 				"read cannot support",
 		},
-		{
+		FormatLimit{
 			Category: "tool_vocabulary",
 			Detail: "tool names travel verbatim as recorded evidence; the target's own tool set is " +
 				"unaffected by them, and a resumed turn reads them as history rather than replaying them",
 		},
+	)
+}
+
+// sessionPhrase is this harness's session as a format limit's sentence names it, article included:
+// "a Pi session" or "an Oh My Pi session". It is not Name, which is the report's own route word
+// ("pi"/"omp") and reads as a scheme rather than a harness in prose like "a ... session header".
+func (s piFamilyShape) sessionPhrase() string {
+	if s.Name == piFamilyOMP {
+		return "an Oh My Pi session"
 	}
+	return "a Pi session"
 }
