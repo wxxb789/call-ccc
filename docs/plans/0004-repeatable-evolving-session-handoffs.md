@@ -264,10 +264,13 @@ attribution comparison (the check verifies rather than trusts).
 - **A repeat scenario in `scripts/claude-native-check.py`**: the contract names the 0002 route, whose check
   is extended; the repeat property is pinned for both target routes by the Go tests, and the Claude route's
   check keeps its accepted shape. Recorded as a limit, not as an omission nobody noticed.
-- **A second (Codex-source) growth fragment**: the growth property is about the source *file* being re-read,
-  which the Claude-source case exercises for both targets; a Codex-source growth belongs to the increment
-  that extends 0003's route, and the tail case (where the two providers genuinely differ) *is* covered for
-  both.
+- **A repeated *Codex* source in the native check, and a second growth fragment for that property**: the
+  growth property is about the source *file* being re-read, which the Claude-source case exercises for both
+  targets, and a Codex-source repeat scenario belongs to the increment that extends 0003's route. The
+  committed `growth/codex-complete-turn.jsonl` is not that scenario: it is the Codex-shaped vehicle for
+  §2.3's row that applies to *both* readers — a complete record whose final line feed is missing is read —
+  which the review round required pinned end to end per source direction, so the fragment and the case's
+  Codex → Claude half exist for it (Q-0004-13).
 - **Automatic re-conversion, watchers, daemons, process coordination**: the goal's bounds.
 - **A target-side digest in the report**: a target session is expected to grow when its harness resumes it,
   so a digest recorded at install time would invite a false "unchanged" question; what a caller needs is

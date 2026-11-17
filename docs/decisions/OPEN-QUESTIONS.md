@@ -1618,7 +1618,9 @@ supersede it with a newer one and say which it supersedes.
   block and the counts.
 - **Regression:** `TestContinueCarriesACompleteRecordThatHasNoLineFeed` (the committed Claude growth
   fragment, appended twice — with and without its last byte: the same conversation both times, with only
-  the second boundary reporting an unterminated record), `TestUnterminatedSourceTailIsBoundaryedAndNeverPublished`
+  the second boundary reporting an unterminated record; §13's round made the case a table over both accepted
+  source directions and added the Codex growth fragment it needs, Q-0004-13),
+  `TestUnterminatedSourceTailIsBoundaryedAndNeverPublished`
   (which now also asserts the warning claims no omission), `TestBoundaryWarningsNameTheUnterminatedRecordAndAMovedFile`,
   and `TestSourceBoundaryOfFileStatesTheRecordOffsets`'s "a complete record without its line feed" row.
 
@@ -1654,3 +1656,58 @@ supersede it with a newer one and say which it supersedes.
   named, no warning, and neither `verified` nor "the conversion read these bytes" anywhere in the answer —
   measured red against the pre-fix code, which printed both), and the repeated-conversion case's
   `read_bytes == bytes`/`read_coverage: size-match` assertions, which are the end-to-end half.
+
+## Q-0004-12 — The copy's preservation is one comparison per window, and the growth baseline is one of them
+
+- **Status:** resolved (default taken)
+- **Question:** the native check's closing verdict, "the source session is unchanged", is measured against
+  the *copy* this run converts. The review round measured that the baseline it compared from was adopted
+  from whatever bytes the copy had when the fragment was appended: the first conversion's own comparison and
+  the append are separated by that session's native loader and its optional real turn, and a *same-length*
+  change made in between leaves the growth record's own claim true (its size delta still holds and its digest
+  still differs from the pre-conversion digest), so the changed bytes became the baseline every later
+  comparison — the closing verdict included — measured from. The record therefore said the source had
+  survived the whole repeated transfer without having checked the bytes its later comparisons stood on.
+- **Default taken:** the copy is compared with the bytes taken before the first conversion **immediately
+  before it grows** (`the source copy still holds the bytes the first conversion read`), recorded as its own
+  check rather than folded into the growth record, whose size claim is true either way. Every window a copy
+  must survive now has a case of its own, each driving one *same-length* swap and asserting its exact failure
+  set (`drive`'s `copy_mutation` table in `scripts/tests/test_codex_native_check.py`): a change while a
+  conversion runs fails that conversion's own comparison and (for the first) the growth baseline; a change
+  while the first session's loader runs fails the growth baseline alone; a change while the second conversion
+  runs fails the second copy comparison and the closing verdict; a change while the second loader runs fails
+  the closing verdict alone.
+- **Reversal:** the growth record could compare a *prefix* digest of the grown file with the pre-conversion
+  digest instead of taking a separate comparison before the append (one check covering the same interval);
+  or the harness could stop converting a copy and grow the committed fixture's own path, which the goal's
+  "the source is never opened for writing" rule forbids.
+- **Settled by:** nothing owner-only — which intervals a comparison covers, and that each has a case, is the
+  record's own business; the reversal is a cleanup, not a question.
+- **Regression:** the four `test_a_copy_mutated_…` cases, each executing its own mutation on every run; with
+  the shipped comparison removed, the first-load case reports an empty failure list — measured
+  (`Lists differ: [] != ['the source copy still holds the bytes the first conversion read']`).
+
+## Q-0004-13 — The no-line-feed rule is pinned per source direction, with a Codex growth fragment
+
+- **Status:** resolved (default taken)
+- **Question:** §11's F02 fix left this record claiming `TestContinueCarriesACompleteRecordThatHasNoLineFeed`
+  pinned the rule "in both directions" while the case converted a Claude source only: the Codex source's
+  incomplete-tail case is about malformed JSON, not about a *complete* record whose final line feed is
+  missing. The review round measured the claim false and asked for the missing direction or a narrowed claim.
+- **Default taken:** the direction was added rather than the claim narrowed, because the rule is about a
+  reader reading a complete unterminated record and the accepted routes have two source readers. A committed
+  `growth/codex-complete-turn.jsonl` — the same question and answer as the Claude fragment, in Codex's own
+  `response_item` shape, generated and pinned by `internal/ccc/fixturegen` like every other fixture — drives
+  the case's Codex → Claude half, and the case is now a table over the two accepted sources. Its own search
+  text is asserted to sit in the fragment's **last** record, the one its second half leaves unterminated, so
+  a case that searched a terminated record cannot stand in for it.
+- **Reversal:** narrowing the record's claim to the Claude direction was the smaller fix and remains
+  available; it would leave the Codex reader's whole-record-at-EOF behavior pinned only at the parser level
+  (`internal/parser`'s `codex_cursor_test.go`), not end to end through the boundary and the conversion.
+- **Settled by:** nothing owner-only.
+- **Regression:** both halves of the case. Measured red by cutting the no-feed half's last record mid-JSON
+  (which is what makes it incomplete): the Claude half reported `read as 9 message(s) and carried 6, against
+  10 and 7 with it` and the Codex half `read as 7 message(s) and carried 5, against 8 and 6 with it`, each
+  also failing the search for the last record's dialogue; and by reading the fragment's *first* text field
+  instead of its last, which failed the Codex half alone with `the case searches for "What budget do retries
+  share per session?", which is not in the fragment's last record …`.

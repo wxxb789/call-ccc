@@ -26,9 +26,12 @@ copy's own bytes (the check hashes the file itself rather than trusting that rep
 words are in the second installed document and not in the first, the first session's bytes are unchanged
 by the second conversion, and Codex's own loader opens the second session with its own view holding the
 turn the source gained — all of it after the first session was loaded (and, with `--resume-prompt`,
-resumed by its harness). `--repeat-resume-prompt` runs one further real turn in the *second* session, so
-the later snapshot's model-visible history is answered by the target itself; each prompt flag runs one
-turn, and the run's report line says how many ran.
+resumed by its harness). Immediately before it grows, the copy is compared with the bytes it had before the
+first conversion, because the loader and that turn run between the two: without that comparison a
+*same-length* change made during the first native stage keeps the growth record's size delta true and its
+digest different, and becomes the baseline every later comparison measures from. `--repeat-resume-prompt`
+runs one further real turn in the *second* session, so the later snapshot's model-visible history is
+answered by the target itself; each prompt flag runs one turn, and the run's report line says how many ran.
 
 It is **not** a gate step: it needs the Codex binary, and a turn needs model access. `scripts/gate.py`
 decides the offline half (round-trip through the inherited reader, install rules, reported losses, CLI
@@ -973,6 +976,21 @@ def main(argv: list[str] | None = None) -> int:
             record("the growth fragment records dialogue to look for", False,
                    f"{fragment.relative_to(repo)} holds no message text")
             return 2
+        # The baseline the growth is measured from, compared against the bytes taken *before* the first
+        # conversion and therefore answering for the conversion, the loader and -- when it ran -- the real
+        # turn: without this the growth record's size delta would accept a same-length change made during
+        # the first native stage (the size still matches and the digest still differs) and adopt the
+        # changed bytes as the baseline every comparison below uses, so the run's own "the source session
+        # is unchanged" verdict could not answer for that interval. A conversion's read is over by now
+        # either way, so the comparison is recorded and the run continues: what it catches is stated as
+        # its own failure rather than folding into the growth record, whose size claim is still true.
+        copy_at_growth = sha256(copy)
+        copy_grew_from_baseline = copy_at_growth == copy_before \
+            and copy.stat().st_size == copy_size_before
+        record("the source copy still holds the bytes the first conversion read",
+               copy_grew_from_baseline,
+               f"sha256 {copy_at_growth[:16]}…, {copy.stat().st_size} bytes, against the "
+               f"{copy_before[:16]}…, {copy_size_before} bytes taken before the first conversion")
         grown_size = append_fragment(copy, fragment)
         grown_digest = sha256(copy)
         record("the source copy grew by exactly the appended turn",
@@ -1079,7 +1097,11 @@ def main(argv: list[str] | None = None) -> int:
         # source copy is unchanged by the second conversion" answers for that stage) and is measured once
         # more here, after the second loader and the optional turn — otherwise a mutation of the copy
         # during the second native stage would leave every check green while this check's own name said
-        # the source had survived the whole repeated transfer.
+        # the source had survived the whole repeated transfer. The other end of that interval is the
+        # comparison taken where the copy grew ("the source copy still holds the bytes the first
+        # conversion read"): it is what makes the state this check compares with — grown_digest — the
+        # baseline the first conversion's own read produced rather than whatever the bytes had become
+        # while that conversion's session was loaded and, with --resume-prompt, resumed.
         fixture_after = tree_digest(fixture_root)
         moved = sorted([name for name, digest in fixture_before.items()
                         if fixture_after.get(name) != digest]

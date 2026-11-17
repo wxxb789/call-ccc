@@ -283,15 +283,15 @@ func TestUnterminatedSourceTailIsBoundaryedAndNeverPublished(t *testing.T) {
 				t.Errorf("carried evidence changed with only an unfinished record appended: %+v, was %+v",
 					captured.Conversion.Carried, complete.Conversion.Carried)
 			}
-			fragmentText := unfinishedRecordText(t, testCase.fragment)
+			tailText := fragmentText(t, testCase.fragment)
 			// The control on the search itself: the fragment's words are in the source file this
 			// conversion read, so a document that held them would be found holding them.
-			if !strings.Contains(string(mustRead(t, sourcePath)), fragmentText) {
-				t.Fatalf("the case's own search text %q is not in the source it searches for it in", fragmentText)
+			if !strings.Contains(string(mustRead(t, sourcePath)), tailText) {
+				t.Fatalf("the case's own search text %q is not in the source it searches for it in", tailText)
 			}
 			installed := mustRead(t, captured.Installation.Path)
-			if strings.Contains(string(installed), fragmentText) {
-				t.Errorf("the installed session holds %q, which the source had not finished writing", fragmentText)
+			if strings.Contains(string(installed), tailText) {
+				t.Errorf("the installed session holds %q, which the source had not finished writing", tailText)
 			}
 			if unrelated != "" && sha256Of(t, mustRead(t, unrelated)) != unrelatedBefore {
 				t.Errorf("the unrelated session in the Claude home changed while the unfinished tail was " +
@@ -307,86 +307,124 @@ func TestUnterminatedSourceTailIsBoundaryedAndNeverPublished(t *testing.T) {
 // unterminated line), so the conversion must carry its dialogue -- while the boundary may state the byte
 // fact (the file ends without a line feed) and must not claim the record was left out.
 //
-// The two conversions differ in one byte of the source: the committed growth fragment as committed, and the
-// same fragment with its last byte (its line feed) removed. Their conversations must be the same
-// conversation, and only the second boundary may say the file's last bytes are an unterminated record.
+// Both accepted source providers are driven, each converted into the other's harness: each provider's own
+// committed growth fragment holds a further turn in that provider's record shape, and the two conversions
+// of one direction differ in one byte of the source -- the fragment as committed, and the same fragment
+// with its last byte (its line feed) removed. Their conversations must be the same conversation, and only
+// the second boundary may say the file's last bytes are an unterminated record.
 func TestContinueCarriesACompleteRecordThatHasNoLineFeed(t *testing.T) {
-	fixture := fixturePath(t, filepath.Join("claude", "-home-user-code-example-api",
-		claudeFixtureRef.ID+".jsonl"))
-	destination := filepath.Join("-home-user-code-example-api", claudeFixtureRef.ID+".jsonl")
-	fragment := growthFragment(t, "claude-complete-turn.jsonl")
-	if !strings.HasSuffix(string(fragment), "\n") {
-		t.Fatalf("the committed fragment %s does not end at a line feed: this case needs one to remove",
-			"claude-complete-turn.jsonl")
-	}
-	// The dialogue the fragment adds, read the way the case below reads an unterminated one: the fragment's
-	// own text field, never by parsing it as a record.
-	addedText := unfinishedRecordText(t, "claude-complete-turn.jsonl")
+	for _, testCase := range []struct {
+		name        string
+		agent       parser.AgentType
+		ref         Ref
+		fixture     string
+		destination string
+		fragment    string
+		target      string
+	}{
+		{
+			name: "a Claude source into Codex", agent: parser.AgentClaude, ref: claudeFixtureRef,
+			fixture:     filepath.Join("claude", "-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"),
+			destination: filepath.Join("-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"),
+			fragment:    "claude-complete-turn.jsonl", target: TargetCodex,
+		},
+		{
+			name: "a Codex source into Claude", agent: parser.AgentCodex, ref: codexFixtureRef,
+			fixture: filepath.Join("codex", "2026", "05", "04",
+				"rollout-2026-05-04T09-15-00-"+codexFixtureRef.ID+".jsonl"),
+			destination: filepath.Join("2026", "05", "04",
+				"rollout-2026-05-04T09-15-00-"+codexFixtureRef.ID+".jsonl"),
+			fragment: "codex-complete-turn.jsonl", target: TargetClaude,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			fixture := fixturePath(t, testCase.fixture)
+			fragment := growthFragment(t, testCase.fragment)
+			if !strings.HasSuffix(string(fragment), "\n") {
+				t.Fatalf("the committed fragment %s does not end at a line feed: this case needs one to "+
+					"remove", testCase.fragment)
+			}
+			// The dialogue the fragment's *last* record holds -- the record this case's second half leaves
+			// unterminated -- read the way the case above reads an unfinished one: the fragment's own text
+			// field, never by parsing it as a record.
+			addedText := fragmentText(t, testCase.fragment)
+			// The search is about the last record and nothing else: the text has to sit after the
+			// second-to-last line feed, because the fragment's earlier records are terminated and the file
+			// carries them whether or not the no-line-feed rule holds. A case that searched the fragment's
+			// *first* record -- or a helper that read the first text field -- would stay green while the
+			// record this case is about was dropped.
+			lastRecord := string(fragment)[strings.LastIndex(strings.TrimSuffix(string(fragment), "\n"), "\n")+1:]
+			if !strings.Contains(lastRecord, addedText) {
+				t.Fatalf("the case searches for %q, which is not in the fragment's last record %q: the "+
+					"no-line-feed rule is about that record alone", addedText, lastRecord)
+			}
 
-	convert := func(grow func(path string) int64) (ContinueResult, string) {
-		t.Helper()
-		cfg := fixtureConfig(t)
-		cfg, sourcePath := sourceFixtureCopy(t, cfg, parser.AgentClaude, fixture, destination)
-		complete := mustSize(t, sourcePath)
-		if grown := grow(sourcePath); grown <= complete {
-			t.Fatalf("the grown source is %d bytes, want more than the %d-byte fixture", grown, complete)
-		}
-		return continueRefInto(t, cfg, t.TempDir(), TargetCodex, claudeFixtureRef), sourcePath
-	}
+			convert := func(grow func(path string) int64) (ContinueResult, string) {
+				t.Helper()
+				cfg := fixtureConfig(t)
+				cfg, sourcePath := sourceFixtureCopy(t, cfg, testCase.agent, fixture, testCase.destination)
+				complete := mustSize(t, sourcePath)
+				if grown := grow(sourcePath); grown <= complete {
+					t.Fatalf("the grown source is %d bytes, want more than the %d-byte fixture", grown, complete)
+				}
+				return continueRefInto(t, cfg, t.TempDir(), testCase.target, testCase.ref), sourcePath
+			}
 
-	withFeed, feedPath := convert(func(path string) int64 {
-		return appendGrowth(t, path, "claude-complete-turn.jsonl")
-	})
-	noFeed, noFeedPath := convert(func(path string) int64 {
-		return appendGrowthBytes(t, path, fragment[:len(fragment)-1])
-	})
+			withFeed, feedPath := convert(func(path string) int64 {
+				return appendGrowth(t, path, testCase.fragment)
+			})
+			noFeed, noFeedPath := convert(func(path string) int64 {
+				return appendGrowthBytes(t, path, fragment[:len(fragment)-1])
+			})
 
-	// The fragment holds more than one record, each terminated by its own line feed: removing the last byte
-	// leaves only the fragment's last record unterminated, and the file's terminated records end after the
-	// one before it.
-	withoutLastFeed := fragment[:len(fragment)-1]
-	lastFeed := strings.LastIndex(string(withoutLastFeed), "\n")
-	if lastFeed < 0 {
-		t.Fatalf("the committed fragment %s holds no line feed but its last: this case needs one to keep",
-			"claude-complete-turn.jsonl")
-	}
-	wantTail := int64(len(withoutLastFeed) - lastFeed - 1)
+			// The fragment holds more than one record, each terminated by its own line feed: removing the
+			// last byte leaves only the fragment's last record unterminated, and the file's terminated
+			// records end after the one before it.
+			withoutLastFeed := fragment[:len(fragment)-1]
+			lastFeed := strings.LastIndex(string(withoutLastFeed), "\n")
+			if lastFeed < 0 {
+				t.Fatalf("the committed fragment %s holds no line feed but its last: this case needs one to "+
+					"keep", testCase.fragment)
+			}
+			wantTail := int64(len(withoutLastFeed) - lastFeed - 1)
 
-	feedBoundary := boundaryOf(t, withFeed)
-	noFeedBoundary := boundaryOf(t, noFeed)
-	sizeWithFeed := mustSize(t, feedPath)
-	sizeWithoutFeed := mustSize(t, noFeedPath)
-	if feedBoundary.UnterminatedTailBytes != 0 || feedBoundary.Bytes != sizeWithFeed {
-		t.Errorf("the fragment-as-committed boundary = %+v, want a %d-byte file with nothing unterminated",
-			feedBoundary, sizeWithFeed)
-	}
-	if noFeedBoundary.Bytes != sizeWithoutFeed ||
-		noFeedBoundary.TerminatedRecordsEndBytes != sizeWithoutFeed-wantTail ||
-		noFeedBoundary.UnterminatedTailBytes != wantTail {
-		t.Errorf("the fragment-without-its-line-feed boundary = %+v, want the terminated records to end at "+
-			"byte %d with its last %d byte(s) unterminated",
-			noFeedBoundary, sizeWithoutFeed-wantTail, wantTail)
-	}
-	// What the record is and what the conversion did with it: read in both cases, and written into both
-	// target documents. A boundary that called the unterminated record unpublished while the conversion
-	// carried it would be the defect this case exists for.
-	if noFeed.Source == nil || withFeed.Source == nil {
-		t.Fatalf("a conversion reported no source report: %+v / %+v", noFeed.Source, withFeed.Source)
-	}
-	if noFeed.Source.Counts.Messages != withFeed.Source.Counts.Messages ||
-		noFeed.Conversion.Carried.Messages != withFeed.Conversion.Carried.Messages {
-		t.Errorf("the record without its line feed read as %d message(s) and carried %d, against %d and %d "+
-			"with it: both readers read a complete unterminated record",
-			noFeed.Source.Counts.Messages, noFeed.Conversion.Carried.Messages,
-			withFeed.Source.Counts.Messages, withFeed.Conversion.Carried.Messages)
-	}
-	if !strings.Contains(string(mustRead(t, noFeed.Installation.Path)), addedText) {
-		t.Errorf("the installed session does not hold %q, the dialogue of the record the file had not "+
-			"terminated; the read carries it", addedText)
-	}
-	if warning := strings.Join(noFeed.Warnings, " "); strings.Contains(warning, "not part of this conversion") {
-		t.Errorf("warnings = %v, want no claim that the carried record was left out of the conversion",
-			noFeed.Warnings)
+			feedBoundary := boundaryOf(t, withFeed)
+			noFeedBoundary := boundaryOf(t, noFeed)
+			sizeWithFeed := mustSize(t, feedPath)
+			sizeWithoutFeed := mustSize(t, noFeedPath)
+			if feedBoundary.UnterminatedTailBytes != 0 || feedBoundary.Bytes != sizeWithFeed {
+				t.Errorf("the fragment-as-committed boundary = %+v, want a %d-byte file with nothing "+
+					"unterminated", feedBoundary, sizeWithFeed)
+			}
+			if noFeedBoundary.Bytes != sizeWithoutFeed ||
+				noFeedBoundary.TerminatedRecordsEndBytes != sizeWithoutFeed-wantTail ||
+				noFeedBoundary.UnterminatedTailBytes != wantTail {
+				t.Errorf("the fragment-without-its-line-feed boundary = %+v, want the terminated records to "+
+					"end at byte %d with its last %d byte(s) unterminated",
+					noFeedBoundary, sizeWithoutFeed-wantTail, wantTail)
+			}
+			// What the record is and what the conversion did with it: read in both cases, and written into
+			// both target documents. A boundary that called the unterminated record unpublished while the
+			// conversion carried it would be the defect this case exists for.
+			if noFeed.Source == nil || withFeed.Source == nil {
+				t.Fatalf("a conversion reported no source report: %+v / %+v", noFeed.Source, withFeed.Source)
+			}
+			if noFeed.Source.Counts.Messages != withFeed.Source.Counts.Messages ||
+				noFeed.Conversion.Carried.Messages != withFeed.Conversion.Carried.Messages {
+				t.Errorf("the record without its line feed read as %d message(s) and carried %d, against %d "+
+					"and %d with it: both readers read a complete unterminated record",
+					noFeed.Source.Counts.Messages, noFeed.Conversion.Carried.Messages,
+					withFeed.Source.Counts.Messages, withFeed.Conversion.Carried.Messages)
+			}
+			if !strings.Contains(string(mustRead(t, noFeed.Installation.Path)), addedText) {
+				t.Errorf("the installed session does not hold %q, the dialogue of the record the file had "+
+					"not terminated; the read carries it", addedText)
+			}
+			if warning := strings.Join(noFeed.Warnings, " "); strings.Contains(warning, "not part of this conversion") {
+				t.Errorf("warnings = %v, want no claim that the carried record was left out of the conversion",
+					noFeed.Warnings)
+			}
+		})
 	}
 }
 
@@ -1088,15 +1126,16 @@ func sha256Of(t *testing.T, data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// unfinishedRecordText answers the dialogue the one committed unfinished-record fragment holds, which is
-// what a case searches a written document for: the fragment is a byte prefix, so it is read as the text
-// field's own value up to the next quote (an unterminated record loses its closing quote with the rest
-// of the record), never by parsing it as a record.
-func unfinishedRecordText(t *testing.T, name string) string {
+// fragmentText answers the dialogue a growth fragment's *last* record holds -- the record a case that
+// removes the fragment's final line feed leaves unterminated -- which is what a case searches a written
+// document for: a fragment is a byte prefix of a record, so the field is read as its own value up to the
+// next quote (an unterminated record loses its closing quote with the rest of the record), never by parsing
+// the fragment as a record.
+func fragmentText(t *testing.T, name string) string {
 	t.Helper()
 	data := string(growthFragment(t, name))
 	const marker = `"text":"`
-	start := strings.Index(data, marker)
+	start := strings.LastIndex(data, marker)
 	if start < 0 {
 		t.Fatalf("the fragment %s holds no text field: %s", name, data)
 	}

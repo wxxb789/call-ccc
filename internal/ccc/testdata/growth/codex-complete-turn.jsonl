@@ -1,0 +1,2 @@
+{"payload":{"content":[{"text":"What budget do retries share per session?","type":"input_text"}],"role":"user"},"timestamp":"2026-05-04T09:16:20.000Z","type":"response_item"}
+{"payload":{"content":[{"text":"The retry budget is 120 seconds per session, held in internal/retry/budget.go.","type":"output_text"}],"role":"assistant"},"timestamp":"2026-05-04T09:16:24.000Z","type":"response_item"}

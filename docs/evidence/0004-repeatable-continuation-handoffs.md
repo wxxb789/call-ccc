@@ -288,7 +288,7 @@ and it asserts that no warning claims the record was left out of the conversion 
 | `TestSourceRecordsAreLinesAsksTheProvidersOwnDeclarations` | the *declaration* half of the gate on the record offsets: `claude` and `codex` are declared line-recorded (`parser.SourceCapabilities.IncrementalAppend`), an unknown name and an empty one are not, and a reader-less call claims nothing. Three providers whose source is a whole-file JSON document or a compressed container (QwenPaw, CodeBuddy, DeepSeek Harness — each declaring only `ContentCapabilities.MalformedLineCount`) are not (§10: the review round found the gate accepting that count and superseding `Q-0004-01` with `Q-0004-07`) |
 | `TestConversionOfAWholeFileJSONSourceClaimsNoRecordBoundary` | end to end (added in the review round, §10): a complete QwenPaw session — one whole-file JSON document, no trailing line feed — converts with `record_offsets: not-claimed` (the provider declares no such source), no record offset, no unterminated record and no unterminated-record warning, and the boundary digest is the file's own |
 | `TestContinueFromACompressedCodexSourceClaimsNoRecordOffsets` | end to end (§11's F03): a runtime-compressed copy of the committed Codex rollout — Codex's own `.jsonl.zst` representation, the one its reader decodes — converts with the same conversation the plain rollout of the same bytes produces, while the boundary reports the compressed file's own size and digest, `record_offsets: not-claimed` with the container as the reason, no record offset, no unterminated record, and `read_coverage: size-match` |
-| `TestContinueCarriesACompleteRecordThatHasNoLineFeed` | end to end (§11's F02), in both directions: the committed growth fragment appended as committed and with its last byte (its line feed) removed produce the same conversation and the same carried counts — the reader reads a complete unterminated record — while only the second boundary reports an unterminated record, and its installed document holds the record's dialogue |
+| `TestContinueCarriesACompleteRecordThatHasNoLineFeed` | end to end (§11's F02), now in both directions (§13): each direction is one accepted source converted into the other harness — the Claude fragment into Codex, the Codex fragment into Claude — and each appends its provider's own committed growth fragment as committed and with its last byte (its line feed) removed. Both halves produce the same conversation and the same carried counts — the reader reads a complete unterminated record — while only the second boundary reports an unterminated record and its installed document holds the record's dialogue; the search text is checked to sit in the fragment's **last** record, the one the case leaves unterminated, so a case that searched a terminated record could not stand in for it |
 | `TestConversionFromAnArchiveReportsNoBoundaryToTake` | end to end: a conversion that fell back to the archive reports `not-taken`, no bytes, `source_check_state: not-verified` with the archive reason, and no unfinished-record warning |
 | `TestContinueJSONCarriesTheSourceBoundary` | the CLI's `--json` document: `state`, `path` (the file the conversion read), `bytes` (the file's own size), `sha256` (an independently computed digest), `read_bytes`/`read_coverage: size-match` (the file is the size the read's own snapshot recorded — a size match, not a byte-identity check), `record_offsets: claimed` with no reason, `terminated_records_end_bytes`, and a non-empty `detail` |
 | `TestContinueHumanOutputStatesTheSourceBoundary` | the human block, on a real conversion and on the five shapes (complete, unterminated record, compressed container, moved file, not-taken, undeclared source), including that a boundary that claims no offsets prints no `records end at` line, that the unterminated case claims no omission, and that a report with no boundary prints no `boundary:` line at all |
@@ -297,10 +297,10 @@ and it asserts that no warning claims the record was left out of the conversion 
 All of them pass (`--count=1`, exit code 0):
 
 ```console
---- PASS: TestContinueRepeatedOnAGrowingSourceIsAttributedToItsOwnSnapshot (0.09s)
---- PASS: TestUnterminatedSourceTailIsBoundaryedAndNeverPublished (0.04s)
---- PASS: TestContinueCarriesACompleteRecordThatHasNoLineFeed (0.02s)
---- PASS: TestContinueFromACompressedCodexSourceClaimsNoRecordOffsets (0.01s)
+--- PASS: TestContinueRepeatedOnAGrowingSourceIsAttributedToItsOwnSnapshot (0.19s)
+--- PASS: TestUnterminatedSourceTailIsBoundaryedAndNeverPublished (0.03s)
+--- PASS: TestContinueCarriesACompleteRecordThatHasNoLineFeed (0.03s)
+--- PASS: TestContinueFromACompressedCodexSourceClaimsNoRecordOffsets (0.02s)
 --- PASS: TestSourceBoundaryOfFileStatesTheRecordOffsets (0.00s)
 --- PASS: TestTextStreamCarriesSplitRunes (0.00s)
 --- PASS: TestTakeSourceBoundaryAnswersTheReadsThatHaveNoFileToMeasure (0.00s)
@@ -309,32 +309,32 @@ All of them pass (`--count=1`, exit code 0):
 --- PASS: TestBoundaryWarningsNameTheUnterminatedRecordAndAMovedFile (0.00s)
 --- PASS: TestSourceRecordsAreLinesAsksTheProvidersOwnDeclarations (0.00s)
 --- PASS: TestConversionOfAWholeFileJSONSourceClaimsNoRecordBoundary (0.01s)
---- PASS: TestConversionFromAnArchiveReportsNoBoundaryToTake (0.16s)
---- PASS: TestFixturesMatchTheirGenerator (0.09s)
+--- PASS: TestConversionFromAnArchiveReportsNoBoundaryToTake (0.15s)
+--- PASS: TestFixturesMatchTheirGenerator (0.10s)
 PASS
-ok  	go.kenn.io/agentsview/internal/ccc	0.475s
---- PASS: TestContinueJSONCarriesTheSourceBoundary (0.17s)
---- PASS: TestContinueHumanOutputStatesTheSourceBoundary (0.02s)
+ok  	go.kenn.io/agentsview/internal/ccc	0.561s
+--- PASS: TestContinueJSONCarriesTheSourceBoundary (0.18s)
+--- PASS: TestContinueHumanOutputStatesTheSourceBoundary (0.01s)
 --- PASS: TestContinueHelpIsARequestNotAFailure (0.01s)
 PASS
-ok  	go.kenn.io/agentsview/cmd/ccc	0.220s
+ok  	go.kenn.io/agentsview/cmd/ccc	0.235s
 ```
 
-*(This round's own run of the cases above, with `-run` naming them, exit code 0 — §12 re-took it because the
-coverage states' names changed and the size-match case joined the table. Timing varies per run; the names,
-the counts and the verdicts do not.)*
+*(§13's re-take: this round's own run of the cases above, with `-run` naming them, exit code 0, its
+per-subtest lines elided exactly as the round before elided its own. Timing varies per run; the names, the
+counts and the verdicts do not.)*
 
 ## 5. What the boundary and the repeat carry, source side and target side
 
 | Source evidence | Target side, and the run that recorded it |
 | --- | --- |
 | the source file's own bytes at the boundary (`2051` bytes, `sha256 2bd510821d4abf83…`) | `source.boundary` in the conversion's JSON and the `boundary:` line in its human block; the same digest in `installation.detail` (§1) |
-| the appended turn (the committed growth fragment) | present twice in the second Codex rollout and absent from the first — §2's B5 counts two matches of the appended question in the later document and the same two for the words that replied to it, against none of either in the earlier one; in-process, the same holds for the Claude Code target (`TestContinueRepeatedOnAGrowingSourceIsAttributedToItsOwnSnapshot`) |
+| the appended turn (a committed growth fragment) | present twice in the second Codex rollout and absent from the first — §2's B5 counts two matches of the appended question in the later document and the same two for the words that replied to it, against none of either in the earlier one; in-process, the same holds for the Claude Code target (`TestContinueRepeatedOnAGrowingSourceIsAttributedToItsOwnSnapshot`). The turn exists once per accepted source provider: `growth/claude-complete-turn.jsonl` in every run here, and `growth/codex-complete-turn.jsonl` as the same question and reply in Codex's own record shape (§13), which is what lets the no-line-feed rule be pinned from a Codex source as well |
 | the appended fact, as the **answer** of a real turn in the *later* target | the recorded turn's answer holds it: the second answer block quotes `120 seconds per session, held in` (§6) |
 | the converted history before the growth, as the **answer** of a real turn in the *earlier* target | the recorded turn's answer names `maxBackoffSeconds` as the fact the converted history supplied, in the first answer block (§6) |
 | an unterminated trailing record (`165` bytes with no line feed) | `boundary.unterminated_tail_bytes`, the `records:` line and the run's warning; no message of the conversation and no record of either target document holds its text (§3) — and where the record *is* a complete one, the conversion carries it while the boundary still states the byte fact (§11's F02) |
 | an earlier conversion of the same source | unchanged by the second conversion (`sha256 3971fbc722c190ee` before and after, §2 B4, taken of the same file B1 installed) — and unchanged in the native run after the first session had itself been resumed by Codex (§6) |
-| the source file during and after every run | `source file: unchanged (sha256 …, taken before and after the conversion)` in each CLI run (§1–§3); in the native check, the copy and the committed fixture tree are digested around each conversion and compared once more at the end of the run, after the second loader and the optional turn (§6, §10) |
+| the source file during and after every run | `source file: unchanged (sha256 …, taken before and after the conversion)` in each CLI run (§1–§3); in the native check, the copy and the committed fixture tree are digested around each conversion, the copy is compared with the bytes it had before the first conversion **immediately before it grows** — so the baseline every later comparison measures from is the bytes that conversion read, across its loader and its optional turn (§13) — and the copy, the fixture tree and the growth fragment are compared once more at the end of the run, after the second loader and the optional turn (§6, §10, §13) |
 
 The two "**answer**" rows are the ones this record cannot re-derive by re-running the *offline* half: they
 are the target model's own words, recorded verbatim below and in
@@ -349,7 +349,7 @@ run).
 Codex binary and, for a turn, model access), run on this host three times: once with no prompt (the offline
 half), and twice with both prompts. All three exit 0.
 
-**The offline run** (`python3 scripts/codex-native-check.py`): `25 check(s) passed, 0 failed, 2 skipped`.
+**The offline run** (`python3 scripts/codex-native-check.py`): `26 check(s) passed, 0 failed, 2 skipped`.
 Its header and the checks that make the clause material:
 
 ```console
@@ -358,37 +358,38 @@ copy:        source/-home-user-code-example-api/9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d
 growth:      internal/ccc/testdata/growth/claude-complete-turn.jsonl (489 bytes)
 PASS: the conversion reports the boundary of the source copy it read — boundary={"state": "taken", … "bytes": 2051, "sha256": "2bd510821d4abf83235752eff81e0e9824d0c41b3d2d4b84956d1130992467b6", "read_bytes": 2051, "read_coverage": "size-match", … "record_offsets": "claimed", "terminated_records_end_bytes": 2051}; 9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10.jsonl is 2051 bytes, sha256 2bd510821d4abf83…
 PASS: the source copy is unchanged by the conversion — sha256 2bd510821d4abf83…, 2051 bytes, taken before and after
-PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1e98c-72c1-7750-ba2c-232b40c71afe [legacy] cwd=/home/user/code/example-api
+PASS: the target harness's own loader opens the installed session — thread/resume -> 01a1e9a1-b50f-7032-bed6-a5e2d91b2523 [legacy] cwd=/home/user/code/example-api
+PASS: the source copy still holds the bytes the first conversion read — sha256 2bd510821d4abf83…, 2051 bytes, against the 2bd510821d4abf83…, 2051 bytes taken before the first conversion
 PASS: the source copy grew by exactly the appended turn — 2051 -> 2540 bytes (+489 from internal/ccc/testdata/growth/claude-complete-turn.jsonl), sha256 e2921e995915855d…
 PASS: the second conversion reports the boundary of the grown source copy — boundary={"state": "taken", … "bytes": 2540, "sha256": "e2921e995915855d41b1b945e847ed751a8e92d9d053ae19e5c05ac19c81a02f", "read_bytes": 2540, "read_coverage": "size-match", … "record_offsets": "claimed", "terminated_records_end_bytes": 2540}; …; the first conversion's boundary was {"state": "taken", …}
-PASS: the second conversion's identity is new, not the source's and not the first session's — 01a1e98c-74d6-701b-9b36-138f43851f93 at sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1e98c-74d6-701b-9b36-138f43851f93.jsonl
+PASS: the second conversion's identity is new, not the source's and not the first session's — 01a1e9a1-b808-7055-be63-ffa200f2807b at sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1e9a1-b808-7055-be63-ffa200f2807b.jsonl
 PASS: the second conversion carries the history the source gained — carried user messages 2 -> 3, assistant messages 3 -> 4; the appended turn's own words are in the second document and not in the first
-PASS: the first conversion's session is unchanged by the second — sha256 77a2cced4cd51705… before and after the second conversion
+PASS: the first conversion's session is unchanged by the second — sha256 c633cfc95c369048… before and after the second conversion
 PASS: the source copy is unchanged by the second conversion — sha256 e2921e995915855d…, 2540 bytes, taken before and after the second conversion
-PASS: the target harness's own loader opens the second installed session — thread/resume -> 01a1e98c-74d6-701b-9b36-138f43851f93 [legacy] cwd=/home/user/code/example-api
+PASS: the target harness's own loader opens the second installed session — thread/resume -> 01a1e9a1-b808-7055-be63-ffa200f2807b [legacy] cwd=/home/user/code/example-api
 PASS: the target's own view of the second session lists the appended turn — 7 item(s) in the reply's own turn list; the appended turn's own words are in its own view
 PASS: the first session's own view does not hold the appended turn — the first session's own view holds 5 item(s), none of them the turn the source gained after it was converted
-conversions: 2 session(s) installed (01a1e98c-72c1-7750-ba2c-232b40c71afe then 01a1e98c-74d6-701b-9b36-138f43851f93); real turn(s) run: 0
+conversions: 2 session(s) installed (01a1e9a1-b50f-7032-bed6-a5e2d91b2523 then 01a1e9a1-b808-7055-be63-ffa200f2807b); real turn(s) run: 0
 PASS: the source session is unchanged — sha256 2bd510821d4abf83… (fixture tree identical, internal/ccc/testdata/growth/claude-complete-turn.jsonl identical; the converted copy identical too: sha256 e2921e995915855d…, 2540 bytes)
 PASS: the unrelated session in the target home is unchanged — sha256 59ff49ca30baf622…
 PASS: no pre-existing session in the target home changed — 0 pre-existing session file(s)
-25 check(s) passed, 0 failed, 2 skipped
+26 check(s) passed, 0 failed, 2 skipped
 ```
 
-*(The block above is re-taken from this round's own re-run of the offline half on the fixed tree (§12): the
-same `25 check(s) passed, 0 failed, 2 skipped`, the same checks, the same committed fixture and fragment
-digests, and the boundary lines as the fixed tree prints them — `read_coverage: "size-match"` in place of
-the pre-fix `"verified"` — with this run's own session ids. Each boundary JSON is quoted with `…` where its
-own `detail`, `path` and `read_coverage_detail` fields (and, on the second line, the per-file restatement
-that follows) are elided; every other character is what the run printed. §10 records why the final
-comparison grew; §11 records what changed then, and §12 what changed now.)*
+*(The block above is re-taken from this round's own re-run of the offline half on the tree §13 fixed: the
+same checks §12's block quoted plus the comparison taken where the copy grows, `26 check(s) passed, 0
+failed, 2 skipped`, the same committed fixture and fragment digests, and this run's own session ids. Each
+boundary JSON is quoted with `…` where its own `detail`, `path` and `read_coverage_detail` fields (and, on
+the second line, the per-file restatement that follows) are elided; every other character is what the run
+printed. §10 records why the final comparison grew; §11 and §12 record what changed then, and §13 what
+changed now.)*
 
-Codex's own `thread/read` view of the *second* session, printed by the run (its own view of the later
-snapshot, with the turn the source gained as its last turn):
+Codex's own `thread/read` view of the *second* session, printed by the offline run re-taken above (its own
+view of the later snapshot, with the turn the source gained as its last turn):
 
 ```console
 the target harness's own view of the second installed session:
-    thread 01a1e98c-74d6-701b-9b36-138f43851f93 [legacy] provider=openai
+    thread 01a1e9a1-b808-7055-be63-ffa200f2807b [legacy] provider=openai
       turn rollout-2
         userMessage: Summarize the retry policy in internal/retry/policy.go.
         agentMessage: I will read the retry policy first.
@@ -404,7 +405,11 @@ the target harness's own view of the second installed session:
 **The run with both real turns** (`python3 scripts/codex-native-check.py --model-provider tencent-litellm
 --model deepseek-v4.1-flash-fast --resume-prompt "Which file configures the backoff cap, and what is the
 cap set to?" --repeat-resume-prompt "What budget do retries share per session, and which file holds it?"`):
-`27 check(s) passed, 0 failed, 0 skipped`, exit 0, two turns billed (the run's own line says so). The turn
+`27 check(s) passed, 0 failed, 0 skipped`, exit 0, two turns billed (the run's own line says so). §13 did
+not re-run the turned halves: each is two billed turns, and the comparison §13 added runs *before* either
+of them, so a turned run of this tree would print `28 check(s) passed, 0 failed, 0 skipped` — arithmetic
+from the offline count §13 measured plus this block's own two extra passes, stated as arithmetic rather
+than quoted as a run. The turn
 in the **first** session ran *before* the growth and the second conversion, so that session is one its own
 harness had already resumed when the second conversion happened:
 
@@ -438,7 +443,9 @@ What that pair shows, in the goal's own terms: **the later result includes the e
 in the target's model-visible history, which is why the second session's turn answers with it) — and the
 **earlier target stayed unchanged** even though its own harness had resumed it (`9ee7ce8b54cb82b5…` before
 and after the second conversion). **The source remained unchanged**: the copy is digested around each
-conversion, the committed fixture tree and the growth fragment are compared at the end
+conversion — and compared with the bytes it had before the first conversion immediately before it grows, so
+the baseline the run's own closing verdict measures from is the bytes that conversion read (§13) — the
+committed fixture tree and the growth fragment are compared at the end
 (`fixture tree identical, internal/ccc/testdata/growth/claude-complete-turn.jsonl identical`), and the
 planted unrelated session plus every session the home already held are compared last, after both loaders
 and both turns (`an ordering the harness's own cases pin offline`).
@@ -480,13 +487,17 @@ the one that matters for the repeat clause — named the appended fact too.
 
 Its offline cases (`scripts/tests/test_codex_native_check.py`, run by the `selftest` step) drive the
 shipped `main` with the app server, the subprocess runner and the tool lookup replaced by stubs, and they
-pin the four rules this half stands on:
+pin the rules this half stands on:
 
 | Case | What it pins |
 | --- | --- |
-| `test_an_intact_run_passes_the_comparisons` | every new comparison is present and `PASS` (13 names in `REPEAT_CHECKS`), the only `SKIP`s are the turns nobody asked for, and the attribution comparisons name what they compared (`the first conversion's boundary was`, `before and after the second conversion`) |
+| `test_an_intact_run_passes_the_comparisons` | every comparison is present and `PASS` (14 names in `REPEAT_CHECKS`), the only `SKIP`s are the turns nobody asked for, and the comparisons that measure a file name the bytes they compared (`the first conversion's boundary was`, `before and after the second conversion`, `taken before the first conversion`) |
 | `test_a_mutation_during_the_resume_stage_is_caught_by_the_last_comparison` | the three protected-artifact comparisons run last and fail exactly then; the repeat half still passes, because the conversions read the copy rather than the mutated fixture |
 | `test_a_first_session_mutated_by_the_second_conversion_is_caught` | the comparison about the earlier session runs **after** the second conversion: a second conversion that touched it fails exactly that comparison |
+| `test_a_copy_mutated_during_the_first_conversion_is_caught_by_two_comparisons` | a conversion that wrote to its own source fails exactly the two comparisons whose interval covers that moment (its own stage's, and the growth baseline the changed bytes become) |
+| `test_a_copy_mutated_during_the_first_load_is_caught_where_the_copy_grows` | the comparison taken where the copy grows, and only it (§13): a *same-length* change made between the first conversion's comparison and the growth leaves the growth record's own size delta and digest-differs clause green, so a run without that comparison adopted the changed bytes as every later comparison's baseline |
+| `test_a_copy_mutated_during_the_second_conversion_is_caught_by_two_comparisons` | a second conversion that wrote to its own source fails exactly the two comparisons that hold the digest taken before it, while the attribution comparison stays green (the report describes the file as it stands) |
+| `test_a_copy_mutated_during_the_second_load_is_caught_by_the_final_comparison` | the final `the source session is unchanged` covers the copy after the second conversion and after the second loader (§10) |
 | `test_a_second_boundary_that_is_not_the_grown_copy_fails` | the boundary is checked against the file (a wrong `sha256`, a wrong `bytes` and a `not-taken` state each fail that comparison, and the *first* conversion's boundary comparison stays green) |
 | `test_a_second_document_without_the_appended_turn_fails_the_search` | the search for the appended turn is live in both directions: leaving it out of the second document and out of the target's own view fails exactly the two comparisons that look for it |
 
@@ -532,7 +543,9 @@ pin the four rules this half stands on:
     `readback_verdict`, `load_and_view`, `run_turn`, `turn_identity`) with every recorded check name,
     state and detail unchanged — re-measured on the final tree: `25 check(s) passed, 0 failed, 2 skipped`
     offline and `27 check(s) passed, 0 failed, 0 skipped` with both prompt flags (two real turns), the
-    same numbers §6 records.
+    same numbers §6 recorded at the time — while §13's tree, which added one comparison to that half,
+    prints `26 check(s) passed, 0 failed, 2 skipped` offline (§13's own run; the turned numbers were not
+    re-measured there).
   - `docs/upstream.md` and the carried tree are untouched: no carried file changed, and the gate's `parity`
     step is what proves it.
 
@@ -561,7 +574,10 @@ step's file count, which is the count of *tracked* `*.go` files — the run abov
 increment's new `internal/ccc/continue_growth_test.go` was untracked, so it printed the pre-increment
 tree's `3591`, where the committed tree prints `3592` (`git ls-files '*.go' | grep -v '^vendor/' | wc -l`).
 Every other field of the re-run, including `parity`'s `files seen by git: 5650`, was byte-identical to the
-block above.
+block above. (§13's re-run of the same tree prints the same steps and the same verdict with three counts
+moved, each by a cause it names: `selftest Ran 202 tests`, `parity … files seen by git: 5651` and
+`secrets … in 102 file(s)` — three cases joined `scripts/tests/test_codex_native_check.py` and
+`internal/ccc/testdata/growth/codex-complete-turn.jsonl` is one more file this repository owns.)
 
 Exit code `0`, and the verdict line is `GATE: PASS` with no `(partial: …)` suffix: every step ran, including
 the two required ones (`parity`, `selftest`). Nothing in this increment changed the gate, its steps or its
@@ -636,7 +652,7 @@ recorded above:
   harness reports the loader's answer and the session's growth; what the facts show is read by this record
   from the recorded blocks.
 - **Two real turns are two billed turns.** Each prompt flag runs one, the run's line says how many ran, and
-  the offline default (`25 check(s) passed, 0 failed, 2 skipped`) runs none.
+  the offline default (`26 check(s) passed, 0 failed, 2 skipped`, §13) runs none.
 - **What a provider's parser drops silently is disclosed, not repaired.** The boundary states the file's
   unterminated record — the bytes beyond its last line feed — and the record itself is not published where
   the reader could not read it, and nothing here tries to reconstruct it; the remedy the goal states is
@@ -1100,3 +1116,196 @@ pin.
 were not. `docs/goals/` holds no goal file whose implementation is merged-and-waiting: 0004 is this
 increment's own, still on its branch and awaiting operator acceptance, so nothing moves to
 `docs/goals/archive/` and `docs/goals/README.md`'s status table is unchanged.
+
+## 13. The fourth review round: findings, fixes, and the numbers re-measured
+
+An independent review read the frozen range `18d50b2..c38189e` — the head this increment's records had
+reached — and reported two findings, both `P3`, both about a claim the run or the record behind it could not
+support: the native check's closing "the source session is unchanged" verdict measured from a baseline
+nobody had re-checked across the first native stage, and this record's claim that the no-line-feed rule was
+pinned "in both directions" while the case converted a Claude source only. Both are fixed; nothing outside
+them changed. Both were measured red against the pre-fix tree before the fix, and the round closes the two
+classes they belong to — the copy's preservation claims and the no-line-feed rule's coverage, each of which
+had survived an earlier round — with one machine-checked pin per rule rather than an argument (the table
+under "the close-out" below). The re-measured numbers are at the end of this section.
+
+### U01 (P3) — the source copy's baseline was not re-checked across the first native stage
+
+The check compared the copy with `copy_before` before the first native loader and the optional turn, and
+then appended the growth fragment and adopted the grown file's digest as the baseline every later comparison
+named — without comparing the copy against `copy_before` again. The review measured what that leaves: a
+*same-length* change during the first native stage satisfies the growth record's own claim (the size delta
+is exactly the fragment's bytes, and the digest differs from the pre-conversion digest as expected) and then
+*becomes* the baseline, so the final `the source session is unchanged` spoke for an interval whose baseline
+it had never checked.
+
+**Fix (Q-0004-12):** the copy is compared with the bytes taken before the first conversion **immediately
+before it grows**, as its own check — `the source copy still holds the bytes the first conversion read`,
+whose detail names both digests and both sizes — and the growth record keeps its own size claim, which is
+true either way. Every window a copy must survive now has a case of its own, each driving one same-length
+swap and asserting the exact failure set it produces (`drive`'s `copy_mutation` table in
+`scripts/tests/test_codex_native_check.py`). Measured red against the pre-fix script (the comparison
+removed, everything else as shipped) and green after:
+
+```console
+### the comparison removed from the shipped check, the new case
+AssertionError: Lists differ: [] != ['the source copy still holds the bytes the first conversion read']
+…
+Ran 1 test in 0.007s
+
+FAILED (failures=1)
+### the fixed check, the shipped script's own cases
+Ran 31 tests in 0.095s
+
+OK
+```
+
+The empty list is the defect itself: with the comparison gone, the mutating run recorded no failure at all —
+the growth record passed, and every comparison after it measured from the changed bytes.
+
+### U02 (P3) — "in both directions" was not the direction the case exercised
+
+This record attributed two-direction end-to-end coverage to
+`TestContinueCarriesACompleteRecordThatHasNoLineFeed` (§4's table row, and the case's own comment), while the
+case's helper always converted the *Claude* fixture into Codex; the Codex-source case elsewhere in §3 is
+about a tail of malformed JSON, not a complete record missing its final line feed. The cited case therefore
+provided no Codex → Claude evidence for the rule it was credited with.
+
+**Fix (Q-0004-13):** the claim's direction was added rather than the claim narrowed. The case is a table over
+both accepted source providers now, and a committed `growth/codex-complete-turn.jsonl` — the same question
+and the same reply as the Claude fragment, in Codex's own `response_item` shape, generated and pinned by
+`internal/ccc/fixturegen` like every other fixture — drives the Codex → Claude half. The case also asserts
+that its own search text sits in the fragment's **last** record, the record its second half leaves
+unterminated: the fragment's earlier records are terminated, so a search that fell back to one of them would
+stay green while the record the rule is about was dropped. Measured red by making the no-feed half's last
+record *incomplete* — the one thing that separates "unterminated but complete" from "unfinished", and the
+half both directions share — and by reading the fragment's first text field instead of its last:
+
+```console
+### the no-feed half's last record cut mid-JSON
+--- FAIL: TestContinueCarriesACompleteRecordThatHasNoLineFeed (0.14s)
+    --- FAIL: TestContinueCarriesACompleteRecordThatHasNoLineFeed/a_Claude_source_into_Codex (0.13s)
+        continue_growth_test.go:404: the record without its line feed read as 9 message(s) and carried 6, against 10 and 7 with it: both readers read a complete unterminated record
+        continue_growth_test.go:410: the installed session does not hold "The retry budget is 120 seconds per session, held in internal/retry/budget.go.", the dialogue of the record the file had not terminated; the read carries it
+    --- FAIL: TestContinueCarriesACompleteRecordThatHasNoLineFeed/a_Codex_source_into_Claude (0.01s)
+        continue_growth_test.go:404: the record without its line feed read as 7 message(s) and carried 5, against 8 and 6 with it: both readers read a complete unterminated record
+        continue_growth_test.go:410: the installed session does not hold "The retry budget is 120 seconds per session, held in internal/retry/budget.go.", the dialogue of the record the file had not terminated; the read carries it
+```
+
+```console
+### the fragment's first text field read instead of its last
+--- FAIL: TestContinueCarriesACompleteRecordThatHasNoLineFeed (0.11s)
+    --- FAIL: TestContinueCarriesACompleteRecordThatHasNoLineFeed/a_Codex_source_into_Claude (0.00s)
+        continue_growth_test.go:358: the case searches for "What budget do retries share per session?", which is not in the fragment's last record "{…}": the no-line-feed rule is about that record alone
+```
+
+*(Each block is the run's own `--- FAIL:` lines; the Claude half of the first block and the Codex half of
+the second are quoted in full, the run's per-half boundary line, the file path the case prints and — in the
+second block — the fragment's last record (quoted as `{…}`) are elided, and no other character is altered.
+The second block's failure is the Codex half alone, which is what makes the last-record read a per-direction
+pin rather than a shared one.)*
+
+### The close-out: every rule of the touched surface, with its pin
+
+Round 3's instruction was to stop answering a surviving class with an argument. The two classes this round
+touches are the source copy's preservation claims (opted in by U01) and the no-line-feed rule's coverage
+(U02); every rule of either now names the case that fails when it is broken, and each was *executed* — the
+mutation run, the failure observed, the line restored:
+
+| Rule | Its pin | The mutation this round executed |
+| --- | --- | --- |
+| the copy is not written by the first conversion | `test_a_copy_mutated_during_the_first_conversion_is_caught_by_two_comparisons` | the case's own same-length swap, in every run of it: exactly that comparison and the growth baseline fail |
+| the copy is not written by the first native stage, and the growth is measured from the pre-conversion bytes | `test_a_copy_mutated_during_the_first_load_is_caught_where_the_copy_grows` | the case's own swap (exactly that comparison fails, and the growth record passes); signed again by deleting the shipped comparison, which left the mutating run's failure list empty (U01's block) |
+| the copy is not written by the second conversion | `test_a_copy_mutated_during_the_second_conversion_is_caught_by_two_comparisons` | the case's own swap: the second copy comparison and the closing verdict fail, the attribution comparison stays green |
+| the copy is not written by the second native stage | `test_a_copy_mutated_during_the_second_load_is_caught_by_the_final_comparison` | the case's own swap (now same-length, so it exercises the digest clause rather than the size clause): the closing verdict and only it fails |
+| the committed growth fragments are what `fixturegen` writes | `TestFixturesMatchTheirGenerator` | one byte swapped in the committed `codex-complete-turn.jsonl`: `growth fragments: codex-complete-turn.jsonl differs from what fixturegen writes; re-run go run ./internal/ccc/fixturegen` |
+| a complete record whose line feed is missing is read and carried, per source direction | both halves of `TestContinueCarriesACompleteRecordThatHasNoLineFeed` | the last record cut mid-JSON (both halves fail, each with its own counts), and the first text field read instead of the last (the Codex half alone) |
+
+The comparison the closing verdict is measured *from* is the first rows' subject too: `the source session is
+unchanged` covers the copy after the second native stage, and the growth baseline it is measured against is
+now a checked comparison rather than whatever bytes were there. What this round did **not** re-prove is the
+three protected-artifact comparisons' ordering (§10's R03 case) and the two search comparisons (§12's
+cases): both were pinned by the rounds that fixed them, and this round did not touch their code.
+
+### The numbers this round re-measured
+
+`python3 scripts/gate.py`, exit code `0`, the verdict line `GATE: PASS` with no `(partial: …)` suffix — every
+step ran, including the two required ones:
+
+```console
+$ python3 scripts/gate.py
+gate: <repo>
+gate: go=~/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3592 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 202 tests in 5.544s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 28 project-owned prefix(es); files seen by git: 5651 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
+  PASS     secrets  no leaks found in 102 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The header lines are this record's placeholders, as its own scheme states (the run printed the account's
+home); every other character is what the run printed, with the `parity` line cut exactly where the gate's own
+`tail()` cut it. Three counts moved from §12's run of the same steps, each by a cause this round names:
+`selftest` from `Ran 199 tests` to `Ran 202` (three cases joined
+`scripts/tests/test_codex_native_check.py`), `parity`'s `files seen by git` from `5650` to `5651` and
+`secrets`' from `101 file(s)` to `102` (the committed `internal/ccc/testdata/growth/codex-complete-turn.jsonl`
+is one more file this repository owns). `gofmt`'s 3592 is unchanged — this round added no `*.go` file — and
+`selftest`'s wall clock varies per run.
+
+`./cmd/ccc/... ./internal/ccc/...` held 225 `func Test…` functions before this round and 225 after it
+(`git grep -h '^func Test' HEAD -- cmd/ccc internal/ccc | wc -l` against the same count in the working tree):
+this round extended a case rather than adding one, and the three cases that did join are Python ones.
+
+`python3 scripts/codex-native-check.py` (the offline half, exit code `0`, no turn billed) reports
+`26 check(s) passed, 0 failed, 2 skipped` — one more than §12's 25, the comparison U01 added — and its
+opening lines and the check that comparison records are quoted in §6 above (§6's block is this run's own).
+The turned runs were not re-run: two billed turns each, and the comparison this round added runs *before*
+either of them, which is why §6 states the turned count it would print as arithmetic rather than quoting a
+run.
+
+The evidence re-runs this round's blocks are taken from, all offline, no turn billed, exit code `0` each:
+`/tmp/evidence-0004/r4/gate.txt` (§13's gate transcript), `/tmp/evidence-0004/r4/native.txt` (§6's offline
+block and view block), `/tmp/evidence-0004/r4/gen/{fixtures,growth}` (the generator run whose two trees are
+byte-identical to the committed ones apart from the new fragment), and the mutation runs quoted above, each
+executed on this tree and restored.
+
+### What this round changed in the files that carry the rules
+
+- `scripts/codex-native-check.py`: the growth baseline is compared with the pre-conversion bytes immediately
+  before the copy grows, as its own recorded check, and the module docstring and the closing comparison's
+  comment state the interval that comparison covers. The harness stays **not** a gate step; no gate step,
+  no required step and no narrowing changed.
+- `scripts/tests/test_codex_native_check.py`: the four copy-window cases (one of them U01's) drive one
+  window each through a single `copy_mutation` seam, with the failure set each window must produce stated in
+  `drive`'s table; the second-load case's mutation became the same-length swap the other three use.
+- `internal/ccc/fixturegen/main.go` and `internal/ccc/testdata/growth/codex-complete-turn.jsonl`: the Codex
+  growth fragment, generated by the same command and pinned by the same case as every other fixture (the
+  generator's own run wrote both trees, and the committed fixtures are byte-identical to its output).
+- `internal/ccc/continue_growth_test.go`: `TestContinueCarriesACompleteRecordThatHasNoLineFeed` is a table
+  over both accepted source providers, asserts its search text is in the fragment's last record, and the
+  fragment-text helper reads that last text field (its name no longer says "unfinished": the fragments it is
+  asked about are complete turns in the case's two directions and a byte prefix of one in the tail case).
+- `docs/harness.md`: the native check's paragraph states the growth-boundary comparison.
+- `docs/plans/0004-repeatable-evolving-session-handoffs.md`: the exclusion list's second growth fragment is
+  no longer excluded-and-absent — the bullet now says what the committed Codex fragment is *for* (the
+  no-line-feed rule's per-direction pin) while a repeated Codex *source* and a repeat scenario for the 0003
+  route stay out of scope.
+- `docs/decisions/OPEN-QUESTIONS.md`: Q-0004-12 and Q-0004-13 appended (the per-window copy comparisons, and
+  the per-direction pin with its fragment), and Q-0004-10's regression line now names both directions.
+- §1–§6 above: §4's row and case list, §5's growth-fragment and source-file rows, §6's offline block, view
+  block and case table, §7's native-count sentence and §7.1's note re-taken or re-worded from this round's
+  own runs; §9's offline count follows §13. §10–§12 keep the wording of the rounds that wrote them, and the
+  counts they quote are those rounds' own.
+- `docs/upstream.md` and the carried tree: untouched — the gate's `parity` step (above) is what proves it.
+
+**`AGENTS.md` and bookkeeping:** this round changed no repository layout, no gate step, no command, no read
+order and no rule an agent must follow. `AGENTS.md` already describes `internal/ccc/testdata/growth/` as the
+tree of fragments `fixturegen` writes and pins, and the new fragment is one more file in it; the native
+check's added comparison changes what that non-gate harness verifies, not a rule the increment binds agents
+to, and the two rules this round pinned were already stated — as claims the records then over- or
+under-supported. `AGENTS.md` is therefore unchanged. `docs/goals/` holds no goal file whose implementation
+is merged-and-waiting: 0004 is this increment's own, still on its branch and awaiting operator acceptance, so
+nothing moves to `docs/goals/archive/` and `docs/goals/README.md`'s status table is unchanged.

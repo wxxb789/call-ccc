@@ -551,6 +551,7 @@ GROWTH_ANSWER = "The retry budget is 120 seconds per session."
 REPEAT_CHECKS = (
     "the conversion reports the boundary of the source copy it read",
     "the source copy is unchanged by the conversion",
+    "the source copy still holds the bytes the first conversion read",
     "the source copy grew by exactly the appended turn",
     "the second conversion reports the boundary of the grown source copy",
     "the second conversion's identity is new, not the source's and not the first session's",
@@ -590,12 +591,15 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
     capture that is never taken, or a comparison that never runs, fails these cases instead of agreeing
     with itself.
 
-    The copy the conversions read is the fourth subject, folded into the first check ("the source session
-    is unchanged") because that name is what a reader takes as the scenario's source having survived the
-    whole repeated transfer: a case changes the copy while the **second** session's own loader runs --
-    after the second conversion and its own comparison -- and exactly that check must fail, while the
-    intact run's detail has to name the copy's bytes it compared, so the clause cannot be green by not
-    being there.
+    The copy the conversions read is the fourth subject, and every window it has to survive has a case of
+    its own (`drive`'s `copy_mutation` table): a same-length change made while a conversion runs, while a
+    session's own loader runs, or -- for the second load -- after the second conversion's comparison, must
+    fail exactly the comparisons whose interval covers that moment, and each comparison that claims an
+    interval is named by the case whose window it is. The change is a byte swap rather than an append, so a
+    comparison that weighed only sizes and a growth record whose claim is a size delta both still hold over
+    it: what catches such a change is a digest compared against the right earlier bytes. The second load's
+    case is also what keeps the final "the source session is unchanged" check non-vacuous, and the intact
+    run's detail has to name the copy's bytes it compared, so the clause cannot be green by not being there.
     """
 
     def drive(self, mutate_during_resume: bool = False,
@@ -603,7 +607,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
               mutate_first_session_by_second: bool = False,
               second_boundary: str | None = None,
               include_growth_in_second: bool = True,
-              mutate_copy_during_second_load: bool = False
+              copy_mutation: str | None = None
               ) -> tuple[int, dict[str, tuple[str, str]]]:
         """One run of the shipped ``main`` against stubs; answers its exit code and its recorded checks.
 
@@ -627,11 +631,34 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         the comparisons that require them -- and only they -- must fail. A search that looked for nothing,
         or one that searched the wrong file, would stay green here.
 
-        ``mutate_copy_during_second_load`` changes the copy the conversions read while the second
-        session's own loader runs -- after the second conversion and its own comparison. The final
-        comparison is the only one left that can answer for the copy, so exactly "the source session is
-        unchanged" must fail; the check's own name is what a reader takes as the scenario's source having
-        survived the whole repeated transfer.
+        ``copy_mutation`` names the one window in which this case makes its *same-length* change to the
+        copy the conversions read, and nothing else: ``"first conversion"``, ``"first load"``, ``"second
+        conversion"`` or ``"second load"``. The change is a byte swap, so every comparison that weighs only
+        sizes still holds, and each window is answered by the comparisons that can see it -- the table the
+        four cases below drive:
+
+        =================== ==========================================================
+        window              the checks that must fail, and only they
+        =================== ==========================================================
+        first conversion    "the source copy is unchanged by the conversion" (the
+                            conversion's own stage) and "the source copy still holds
+                            the bytes the first conversion read" (the growth's
+                            baseline, which that stage also precedes)
+        first load          "the source copy still holds the bytes the first conversion
+                            read" alone: the conversion's own comparison is already
+                            over, and the changed bytes are the baseline every later
+                            comparison would measure from
+        second conversion   "the source copy is unchanged by the second conversion" and
+                            "the source session is unchanged": both compare the copy
+                            with the digest taken before that conversion
+        second load         "the source session is unchanged" alone, the comparison that
+                            runs last
+        =================== ==========================================================
+
+        A window whose mutation fails *nothing* is a comparison that does not cover the interval its name
+        claims: that is what the first-load case measured (the growth record's size delta and its
+        digest-differs clause both hold over a same-length change, so a run without the baseline
+        comparison answered PASS while the changed bytes became every later comparison's baseline).
         """
         # The scratch root is resolved before anything is derived from it, because the shipped ``main``
         # resolves what it is handed (``--repo`` always, and ``--codex-home`` when the caller names one,
@@ -743,10 +770,27 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             }
 
         conversions = {"made": 0}
-        #: The copy the *second* conversion read, as the harness named it in the command's own
-        #: environment: the app-server stub below changes that file, and the harness's scratch directory
-        #: is its own (this case cannot guess its name).
-        second_copy: dict[str, Path] = {}
+
+        def same_length_swap(path: Path) -> None:
+            """This case's own change to a copy: one field's value swapped for another of the same length.
+
+            Same-length is the point: a comparison that weighed only sizes, and a growth record whose claim
+            is a size delta, both still hold over this change, so only a digest compared against the right
+            earlier bytes can catch it. The guard keeps a fixture change from turning a case's premise
+            into nothing.
+            """
+            before = path.read_text()
+            changed = before.replace('"user"', '"turn"')
+            if changed == before or len(changed) != len(before):
+                raise AssertionError(
+                    "this case's own mutation has to be a same-length swap, and the copy it changes is "
+                    f"{before!r} -> {changed!r}")
+            path.write_text(changed)
+
+        #: The copy each conversion read, as the harness named it in the command's own environment: the
+        #: mutations below change one of them, and the harness's scratch directory is its own (this case
+        #: cannot guess its name).
+        converted_copy: dict[str, Path] = {}
 
         def fake_run(cmd, cwd=None, env=None, timeout=600):
             command = [str(part) for part in cmd]
@@ -756,9 +800,14 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 if command[1] == "continue":
                     conversions["made"] += 1
                     which = "first" if conversions["made"] == 1 else "second"
+                    converted_copy[which] = source_copy(env)
+                    if copy_mutation == f"{which} conversion":
+                        # The window the conversion's own comparison is about: the change is made before
+                        # the stub builds its document, so the document and the boundary it reports are the
+                        # mutated file's own -- what fails is the comparison against the earlier bytes, not
+                        # a report that disagrees with the file it describes.
+                        same_length_swap(converted_copy[which])
                     document = document_for(which, env)
-                    if which == "second":
-                        second_copy["path"] = source_copy(env)
                     path = Path(document["target_session"]["path"])
                     path.parent.mkdir(parents=True, exist_ok=True)
                     body = json.dumps({"type": "session_meta"}) + "\n"
@@ -804,13 +853,14 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 if method != "thread/resume":
                     raise AssertionError(f"the case's stub was asked for {method}")
                 session = str(params.get("threadId"))
-                path = second_installed if session == second_thread_id else installed
-                if session == second_thread_id and mutate_copy_during_second_load:
+                second = session == second_thread_id
+                path = second_installed if second else installed
+                if copy_mutation == ("second load" if second else "first load"):
                     # The copy the conversions read, changed while the target harness's own loader runs:
-                    # the second conversion and its own copy comparison are already over, so only the
-                    # final comparison can catch it.
-                    copy = second_copy["path"]
-                    copy.write_text(copy.read_text() + json.dumps({"type": "turn"}) + "\n")
+                    # for the second session that is after the second conversion and its own comparison, so
+                    # only the comparison that runs last can catch it; for the first it is before the
+                    # growth, so the changed bytes would become every later comparison's baseline.
+                    same_length_swap(converted_copy["second" if second else "first"])
                 return {"thread": {"id": session, "path": str(path), "historyMode": "legacy",
                                    "cwd": "/tmp"}}
 
@@ -898,6 +948,12 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                       results["the second conversion reports the boundary of the grown source copy"][1])
         self.assertIn("before and after the second conversion",
                       results["the first conversion's session is unchanged by the second"][1])
+        # The comparison taken where the copy grows names the pre-conversion bytes it compared, so a run
+        # that dropped the comparison, or one that compared the file with itself, is visible here.
+        self.assertIn("taken before the first conversion",
+                      results["the source copy still holds the bytes the first conversion read"][1],
+                      "the comparison taken where the copy grows did not name the bytes taken before the "
+                      "first conversion")
         self.assertEqual(code, 0, f"exit {code} for an intact run: {results}")
 
     def test_a_malformed_codex_installed_line_is_a_named_failure(self) -> None:
@@ -941,13 +997,84 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         must name the copy's own wanted bytes: a run whose final comparison hashed only the committed
         fixture tree and the growth fragment answers PASS here, which is the defect this pins.
         """
-        code, results = self.drive(mutate_copy_during_second_load=True)
+        code, results = self.drive(copy_mutation="second load")
         failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
         self.assertEqual(failed, ["the source session is unchanged"],
                          f"the copy mutation's failures are not exactly the final comparison: {results}")
         detail = results["the source session is unchanged"][1]
         self.assertIn("the converted source copy changed after the second conversion", detail, detail)
         self.assertIn("want sha256", detail, detail)
+        self.assertEqual(code, 1, f"exit {code} for a run with a failed comparison: {results}")
+
+    def test_a_copy_mutated_during_the_first_conversion_is_caught_by_two_comparisons(self) -> None:
+        """A conversion that wrote to its own source is caught by the comparison about its own stage.
+
+        The stub changes the copy while the *first* conversion runs, before it builds the document it
+        reports: the bytes the conversion's own report describes are the file as it stands, so the failure
+        is the comparison against the earlier bytes rather than a report that disagrees with its file. Both
+        comparisons whose interval covers that moment must fail -- "the source copy is unchanged by the
+        conversion", whose name is the promise the conversion must not write its source, and "the source
+        copy still holds the bytes the first conversion read", because the changed bytes are what the
+        growth below measures from -- and nothing else, so the run still holds its other checks.
+        """
+        code, results = self.drive(copy_mutation="first conversion")
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed,
+                         sorted(["the source copy is unchanged by the conversion",
+                                 "the source copy still holds the bytes the first conversion read"]),
+                         f"a copy changed while the first conversion ran was not caught by exactly the two "
+                         f"comparisons whose interval covers it: {results}")
+        self.assertIn(" taken before and after",
+                      results["the source copy is unchanged by the conversion"][1])
+        self.assertIn(" taken before the first conversion",
+                      results["the source copy still holds the bytes the first conversion read"][1])
+        self.assertEqual(code, 1, f"exit {code} for a run with failed comparisons: {results}")
+
+    def test_a_copy_mutated_during_the_second_conversion_is_caught_by_two_comparisons(self) -> None:
+        """A second conversion that wrote to its own source is caught by the two comparisons about it.
+
+        The stub changes the copy while the *second* conversion runs, before it builds its document. Both
+        comparisons that hold the digest taken before that conversion must fail -- "the source copy is
+        unchanged by the second conversion" and the final "the source session is unchanged" -- and nothing
+        else: the attribution comparison still passes, because the document the conversion reported is the
+        mutated file's own bytes, which is what tells this case apart from a lying boundary report.
+        """
+        code, results = self.drive(copy_mutation="second conversion")
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed,
+                         sorted(["the source copy is unchanged by the second conversion",
+                                 "the source session is unchanged"]),
+                         f"a copy changed while the second conversion ran was not caught by exactly the two "
+                         f"comparisons whose interval covers it: {results}")
+        self.assertEqual(results["the second conversion reports the boundary of the grown source copy"][0],
+                         "PASS", f"the attribution comparison failed over a consistent report: {results}")
+        self.assertIn("the converted source copy changed after the second conversion",
+                      results["the source session is unchanged"][1])
+        self.assertEqual(code, 1, f"exit {code} for a run with failed comparisons: {results}")
+
+    def test_a_copy_mutated_during_the_first_load_is_caught_where_the_copy_grows(self) -> None:
+        """The bytes the copy grows from are the bytes the first conversion read, re-checked.
+
+        The stub makes a *same-length* change to the copy while the *first* session's own loader runs --
+        after the first conversion's own comparison and before the growth fragment is appended -- so the
+        growth record's size delta still holds and its digest still differs, and the changed bytes would
+        become the baseline every later comparison measures from. Exactly the comparison taken where the
+        copy grows must fail: a run without it answers PASS here while its final "the source session is
+        unchanged" verdict speaks for an interval whose baseline it never checked.
+        """
+        code, results = self.drive(copy_mutation="first load")
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed, ["the source copy still holds the bytes the first conversion read"],
+                         f"the first native stage's copy mutation was not caught by exactly the comparison "
+                         f"taken where the copy grows: {results}")
+        detail = results["the source copy still holds the bytes the first conversion read"][1]
+        self.assertIn(" taken before the first conversion", detail, detail)
+        # The other half of the same defect: the growth record's own size delta did hold (that is what
+        # makes this case about the baseline rather than about a length change), so it must not be what
+        # fails here -- if it did, this case would pass for a run that only compared sizes.
+        self.assertEqual(results["the source copy grew by exactly the appended turn"][0], "PASS",
+                         f"the growth record failed over a same-length mutation, so this case is no longer "
+                         f"about the baseline it pins: {results}")
         self.assertEqual(code, 1, f"exit {code} for a run with a failed comparison: {results}")
 
     def test_a_second_boundary_that_is_not_the_grown_copy_fails(self) -> None:

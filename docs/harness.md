@@ -203,12 +203,14 @@ says so.
   environment. The conversion reads a **copy** of the fixture under the run's own scratch directory,
   never the committed bytes: the copy is what grows, by the committed
   `internal/ccc/testdata/growth/claude-complete-turn.jsonl` fragment, and the copy — not the fixture —
-  is digested around each conversion and once more at the end of the run, after the second loader and the
-  repeat turn: the final comparison that answers "the source session is unchanged" covers the copy as well
-  as the committed fixture tree and the growth fragment, so a mutation of the copy during the second
-  native stage is caught by the comparison that runs last. The script plants an unrelated session in that
-  home, runs `ccc continue … --json`, checks the resume invocation the conversion reported (its argument
-  vector names the binary, `resume` and the session; its environment selects the data directory the
+  is digested around each conversion, compared with the bytes it had before the first conversion immediately
+  before it grows (so the baseline every later comparison measures from is the bytes that conversion read,
+  across its loader and its optional turn), and digested once more at the end of the run, after the second
+  loader and the repeat turn: the final comparison that answers "the source session is unchanged" covers the
+  copy as well as the committed fixture tree and the growth fragment, so a mutation of the copy during the
+  second native stage is caught by the comparison that runs last. The script plants an unrelated session in
+  that home, runs `ccc continue … --json`, checks the resume invocation the conversion reported (its
+  argument vector names the binary, `resume` and the session; its environment selects the data directory the
   session was installed into, which is the only way Codex is told where to look), re-reads the installed
   file with its own `ccc inspect` invocation and compares what the inherited reader made of it with what the
   conversion says it carried (a second process, so the conversion's own round-trip verdict cannot stand

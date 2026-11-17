@@ -64,22 +64,26 @@ const (
 	truncatedLine = `{"type":"assistant","timestamp":"2026-05-04T09:18:00.000Z","message":{"content":[{"type":"text","text":"Reading the ret`
 )
 
-// Growth-fragment identity: one further turn a harness wrote into a session that is already a fixture, and
-// a record a harness had not finished writing when the file was copied.
+// Growth-fragment identity: one further turn a harness wrote into a session that is already a fixture, in
+// each provider's own record shape, and a record a harness had not finished writing when the file was
+// copied.
 //
 // A growth fragment is *appended* to a copy of a committed fixture, which is how a test or the native check
 // makes one source session gain history without the committed bytes moving: the goal this serves is about
-// converting the same growing source twice. The fragment's strings are invented like every other fixture
-// string, and its one fact (the retry budget) appears in no other fixture, so a target that continued from
-// the grown snapshot can only have read it there.
+// converting the same growing source twice. The complete turn exists once per accepted source provider
+// because the no-line-feed rule is pinned end to end in both directions: the fragment's own record shape is
+// what that provider's reader has to read whole when the file ends without a line feed. The fragment's
+// strings are invented like every other fixture string, and its one fact (the retry budget) appears in no
+// other fixture, so a target that continued from the grown snapshot can only have read it there.
 const (
 	claudeGrowthUserUUID      = "bbbbbbbb-0000-4000-8000-000000000011"
 	claudeGrowthAssistantUUID = "bbbbbbbb-0000-4000-8000-000000000012"
 
 	// The appended turn's own fact, quoted by the evidence record's native run when a real turn answers
-	// from the grown snapshot.
-	claudeGrowthQuestion = "What budget do retries share per session?"
-	claudeGrowthAnswer   = "The retry budget is 120 seconds per session, held in internal/retry/budget.go."
+	// from the grown snapshot. Both providers' fragments carry it: the same question and the same answer,
+	// recorded in each provider's own shape.
+	growthQuestion = "What budget do retries share per session?"
+	growthAnswer   = "The retry budget is 120 seconds per session, held in internal/retry/budget.go."
 
 	codexGrowthTail = `{"payload":{"content":[{"text":"Which file holds the retry budget?","type":"input_text"}],"role":"user"},"timestamp":"2026-05-04T09:16:20.000Z","type":"response_item`
 
@@ -97,6 +101,7 @@ const (
 func growthFiles() map[string]string {
 	return map[string]string{
 		"claude-complete-turn.jsonl":     canonicalJSONL(claudeGrowthTurn()),
+		"codex-complete-turn.jsonl":      canonicalJSONL(codexGrowthTurn()),
 		"claude-unfinished-record.jsonl": claudeGrowthTail,
 		"codex-unfinished-record.jsonl":  codexGrowthTail,
 	}
@@ -109,18 +114,29 @@ func claudeGrowthTurn() string {
 	builder := testjsonl.NewSessionBuilder().
 		AddClaudeUserWithUUID(
 			"2026-05-04T09:20:00.000Z",
-			claudeGrowthQuestion,
+			growthQuestion,
 			claudeGrowthUserUUID,
 			"",
 			claudeCwd(),
 		).
 		AddClaudeAssistantWithUUID(
 			"2026-05-04T09:20:04.000Z",
-			claudeGrowthAnswer,
+			growthAnswer,
 			claudeGrowthAssistantUUID,
 			claudeGrowthUserUUID,
 		)
 	return builder.String()
+}
+
+// codexGrowthTurn is one further Codex turn as a rollout records it: the user's response_item and the
+// assistant's answer to it, in the shape the committed rollout fixture carries -- the inherited builder's
+// own `response_item` records, one per message. A case removes this fragment's final line feed, so its last
+// record arrives complete and unterminated, which is the shape the Codex reader has to read whole.
+func codexGrowthTurn() string {
+	return testjsonl.JoinJSONL(
+		testjsonl.CodexMsgJSON("user", growthQuestion, "2026-05-04T09:16:20.000Z"),
+		testjsonl.CodexMsgJSON("assistant", growthAnswer, "2026-05-04T09:16:24.000Z"),
+	)
 }
 
 // fixtureFiles maps a path relative to the fixtures root onto its content.
