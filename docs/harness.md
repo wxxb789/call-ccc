@@ -346,7 +346,10 @@ says so.
   host's provider definitions with every credential-bearing field dropped — a provider's `apiKey` and
   `headers`, a `models` entry's `headers` and a `modelOverrides` entry's `headers`, every level Pi's own
   schema allows one — and the chosen provider's key left as an `$ENV` reference, so nothing is read from
-  or written to a credential store; a home the caller names with `--target-home` is **read, never written
+  or written to a credential store; a **selected provider whose endpoint URL itself carries a credential
+  (userinfo, a query) is left out whole** rather than copied with its address rewritten, the same policy
+  the Codex check applies to a provider's `base_url`, and the run's report names it and records the
+  named skip; a home the caller names with `--target-home` is **read, never written
   to** — the seed would replace a configuration the caller keeps there, and the comparisons this run
   makes cover session files
   only — and the provider check then reports what that home already defines. A host whose harness is
@@ -370,8 +373,11 @@ says so.
   an object — is that check's FAIL with the line's number), the two strings the record's own rules
   read (`TURN_OUTPUT_MARKER`, `PROMPT_PLACEHOLDER`), the fixture-copy mechanism (`rewrite_source_cwd`:
   the working directory rewritten through the session's own JSON `cwd` record field, never its raw
-  bytes, with a torn line carried through verbatim), and the printed-block bound (`bounded_block` with
-  `REPORT_BLOCK_LINES_MAX`/`REPORT_BLOCK_CHARS_MAX`).
+  bytes, with a torn line carried through verbatim), the printed-block bound (`bounded_block` with
+  `REPORT_BLOCK_LINES_MAX`/`REPORT_BLOCK_CHARS_MAX`), and the endpoint policy both seeding checks apply
+  (`credential_free_url`: a URL whose userinfo, query or fragment would write a credential into a
+  configuration the check copies, so the Codex check leaves that provider's table behind whole and the Pi
+  check leaves the provider out of its seeded document).
   It is project-owned (`OWNED` and the manifest), imports nothing, and each check stays runnable on its
   own; what the shared module does **not** absorb is the checks' independent restatements of the
   contracts they check (the spelling rules their case files re-implement, the marker their case files

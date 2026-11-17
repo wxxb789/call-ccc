@@ -554,6 +554,16 @@ func (b *claudeTranscriptBuilder) userRecord(text string, at time.Time) {
 func (b *claudeTranscriptBuilder) writeToolEvidence(message Message) {
 	calls := b.distinctCalls(message)
 	pending := make([]claudeContentBlock, 0, len(message.ToolResults)+len(calls))
+	// carrier is the source record a record hanging off these outcomes would read as its parent
+	// (toolResultCarrierRecord); the outcomes travel as one user record below, so one answer is taken.
+	// The message's own identity is the answer where the message carries a call at all -- the read folded
+	// the outcome onto the call's own message, so a record the source's file placed under that outcome
+	// answers the message -- and the message's read-answered parent otherwise: a result record of its own
+	// carries no call, and the reader answers a result's descendants with its visible ancestor, the parent
+	// the result record was given. Registering the folded shape under the record the call's message hangs
+	// off instead was measured wrong: it chained a sibling of the call through the abandoned call's
+	// result, reviving the call branch as the target's active history.
+	carrier := toolResultCarrierRecord(message)
 	for _, entry := range calls {
 		// A call is written on a record of its own -- the shape the harness writes for one block of one
 		// message -- carrying the id its message's dialogue record shares, so both readers put them back
@@ -594,7 +604,7 @@ func (b *claudeTranscriptBuilder) writeToolEvidence(message Message) {
 	// A record's results travel together on one user record, the shape the harness writes for the
 	// results of one assistant message.
 	if len(pending) > 0 {
-		b.tree.markToolResult()
+		b.tree.markToolResult(carrier)
 		b.write(claudeRecord{
 			IsSidechain: false,
 			Type:        claudeTypeUser,

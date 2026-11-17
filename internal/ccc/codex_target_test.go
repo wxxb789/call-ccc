@@ -713,9 +713,10 @@ func TestCodexRolloutKeepsAnActiveResultAcrossAnInterveningBranch(t *testing.T) 
 
 	// The same adjacent shape under a read that *does* project: the reader answers the record as hanging
 	// off the call although the result is the record before it, and the file's own continuation
-	// (call → result → what follows) is the reading the walk takes. The result stands immediately before
-	// the record, so the place is the file's own and no relation is counted as unanswerable -- counting
-	// it here would name a projection the read did not have to have undone.
+	// (call → result → what follows) is the reading the walk takes, so the result stays on the line. The
+	// place is counted: a record the source placed directly under the call and one it placed under the
+	// call's result are the same answer in the read, so which of the two the file held is not answerable
+	// and the line's reading of it is this conversion's, not the read's.
 	projectedAdjacent := testConversation(
 		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "start", Dialogue: "start",
 			SourceUUID: "u1"},
@@ -742,10 +743,57 @@ func TestCodexRolloutKeepsAnActiveResultAcrossAnInterveningBranch(t *testing.T) 
 		t.Errorf("inactive_branch_records = %+v, want none: the result stands on the line the walk took",
 			loss)
 	}
+	if loss := lossCount(t, rollout.Losses, "unresolved_source_parents"); loss.Count != 1 {
+		t.Errorf("unresolved_source_parents = %+v, want the one place the read's projection left "+
+			"unanswerable: the record names the call while a result of that call stands directly before "+
+			"it, and the file's own order is the reading this conversion took", loss)
+	}
+}
+
+// TestCodexRolloutOmitsAFoldedOutcomeOnAnAbandonedBranch pins the line walk's answer for the shape an
+// archive read gives a call's outcome: the inherited projection attaches a result-only row to the
+// call's own message and drops the row, so the read holds the outcome *on* the message that made the
+// call. A later record naming that message's own parent could not have hung off the outcome, so it
+// stays on the line while the call and its outcome -- a branch the conversation left -- come off it.
+// The step the walk used to take matched the carrier by the record *it* hangs off, so it read this
+// record as the continuation of the result and put the abandoned call back on the line with no relation
+// counted.
+func TestCodexRolloutOmitsAFoldedOutcomeOnAnAbandonedBranch(t *testing.T) {
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "start", Dialogue: "start",
+			SourceUUID: "u1"},
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "[grep: maxBackoff]",
+			DialogueProjected: true, SourceUUID: "c2", SourceParentUUID: "u1",
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_1", Name: "grep",
+				InputJSON: `{"pattern":"maxBackoff"}`}},
+			ToolResults: []ToolResult{{ToolUseID: "toolu_1",
+				ContentRaw: `"internal/retry/config.go:41"`, ContentSize: 28, ContentDecoded: true}}},
+		Message{Ordinal: 2, Role: string(parser.RoleAssistant), Content: "after the branch",
+			Dialogue: "after the branch", SourceUUID: "d3", SourceParentUUID: "u1"},
+	)
+	conversation.Source.Provider = string(parser.AgentPi)
+	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if loss := lossCount(t, rollout.Losses, "inactive_branch_records"); loss.Count != 1 {
+		t.Errorf("inactive_branch_records = %+v, want the one record whose call branch the source's own "+
+			"relations leave off the line", loss)
+	}
 	if loss := lossCount(t, rollout.Losses, "unresolved_source_parents"); loss.Count != 0 {
-		t.Errorf("unresolved_source_parents = %+v, want 0: the result is the record immediately before "+
-			"the one naming the call, which is the file's own continuation rather than a place the read "+
-			"left open", loss)
+		t.Errorf("unresolved_source_parents = %+v, want 0: the record names the call's parent, and no "+
+			"result of that parent stands anywhere for the read to have projected through", loss)
+	}
+	for _, abandoned := range []string{"[grep: maxBackoff]", "internal/retry/config.go:41"} {
+		if strings.Contains(string(rollout.Data), abandoned) {
+			t.Errorf("the rollout holds %q from the abandoned call branch, which the source's own "+
+				"relations place off the line:\n%s", abandoned, rollout.Data)
+		}
+	}
+	for _, text := range []string{"start", "after the branch"} {
+		if !strings.Contains(string(rollout.Data), text) {
+			t.Errorf("the conversation's own turn %q is not in the rollout:\n%s", text, rollout.Data)
+		}
 	}
 }
 

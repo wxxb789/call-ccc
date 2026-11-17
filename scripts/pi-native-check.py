@@ -25,11 +25,13 @@ What it does, for the direction it is asked about:
 The Pi home it uses is a scratch directory seeded with the **provider definitions** the host's own
 ``models.json`` holds, with every credential-bearing field dropped (a provider's ``apiKey``/``headers``,
 a ``models`` entry's ``headers`` and a ``modelOverrides`` entry's ``headers``) and the chosen provider's
-key taken from the environment through a ``$NAME`` reference; nothing in a credential store is read,
-copied or written. A home the caller names with ``--target-home`` is used exactly as it is
-found: this harness writes nothing into one, so a configuration (and the credential references in it) the
-caller put there is not replaced by the seed above. A host with no provider configured for the chosen
-model is reported as a named skip with that reason, not as a pass.
+key taken from the environment through a ``$NAME`` reference; a selected provider whose endpoint URL
+itself carries a credential (URL userinfo, a query) is not copied at all, because its address cannot be
+scrubbed without sending the harness somewhere the host did not name, and the report names it. Nothing
+in a credential store is read, copied or written. A home the caller names with ``--target-home`` is used
+exactly as it is found: this harness writes nothing into one, so a configuration (and the credential
+references in it) the caller put there is not replaced by the seed above. A host with no provider
+configured for the chosen model is reported as a named skip with that reason, not as a pass.
 """
 
 from __future__ import annotations
@@ -53,6 +55,7 @@ from native_check_common import (  # noqa: E402
     SHELL_SYNTAX_CHARACTERS,
     TURN_OUTPUT_MARKER,
     bounded_block,
+    credential_free_url,
     record,
     rewrite_source_cwd,
     run,
@@ -176,6 +179,13 @@ def host_pi_providers(host_agent_dir: Path) -> dict:
 #: schema adds later cannot leave a literal secret in a document this harness copies.
 CREDENTIAL_FIELDS = ("apiKey", "headers")
 
+#: The fields a Pi provider definition resolves as an endpoint: the provider's own ``baseUrl`` and the
+#: ``baseUrl`` a ``models`` entry may carry. A definition holding one of these that is not credential-free
+#: is refused whole (``carries_credential_endpoint``) rather than copied with its endpoint removed, the
+#: same policy the Codex checker applies to ``base_url``: half a provider definition would send the
+#: harness to Pi's own default address instead of the one the host named.
+ENDPOINT_FIELDS = ("baseUrl",)
+
 
 def scrub_credentials(value):
     """One provider definition with every credential-bearing field dropped, at any depth.
@@ -193,7 +203,32 @@ def scrub_credentials(value):
     return value
 
 
-def seed_pi_home(home: Path, host_agent_dir: Path, providers: list[str]) -> tuple[list[str], list[str]]:
+def carries_credential_endpoint(value) -> bool:
+    """Whether one provider definition names an endpoint URL that carries a credential, at any depth.
+
+    A credential can be written into a URL the same way it is written into a header -- as userinfo
+    (``https://user:token@host/v1``) or as a query (``?token=…``) -- and the field scrubbed here is not
+    one this walk drops: it is the address the harness itself would call, so silently rewriting it to a
+    credential-free spelling would send the run somewhere the host did not name. The provider is instead
+    left out of the scratch ``models.json`` whole, and the run's report names it. The policy is the Codex
+    checker's own (``credential_free_url``, shared through ``native_check_common``).
+    """
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in ENDPOINT_FIELDS and isinstance(item, str) and not credential_free_url(item):
+                return True
+            if carries_credential_endpoint(item):
+                return True
+    elif isinstance(value, list):
+        for item in value:
+            if carries_credential_endpoint(item):
+                return True
+    return False
+
+
+def seed_pi_home(
+    home: Path, host_agent_dir: Path, providers: list[str],
+) -> tuple[list[str], list[str], list[str]]:
     """Seed a scratch Pi agent directory with the host's provider definitions, minus every credential.
 
     Pi's ``models.json`` is read as a whole document and its schema is all-or-nothing, so a provider the
@@ -201,15 +236,21 @@ def seed_pi_home(home: Path, host_agent_dir: Path, providers: list[str]) -> tupl
     ``apiKey`` is dropped must still resolve a credential from the environment, which is why the key is
     written back as an ``$ENV`` reference. Every definition is scrubbed at every level (``scrub_credentials``
     -- the provider's own fields, its ``models`` entries and its ``modelOverrides`` entries), so a literal
-    header a model-level definition carries is dropped like the provider's own. Answers the provider names
-    seeded and the ones left out.
+    header a model-level definition carries is dropped like the provider's own. A selected provider whose
+    endpoint URL carries a credential is not copied at all (``carries_credential_endpoint``), because its
+    address cannot be scrubbed without changing where the harness would call. Answers the provider names
+    seeded, the ones left out as not needed, and the ones left out for their endpoint's credential.
     """
     host_models = host_pi_providers(host_agent_dir)
     seeded: dict[str, object] = {}
     left_out: list[str] = []
+    refused_endpoints: list[str] = []
     for name, provider in host_models.items():
         if name not in providers:
             left_out.append(name)
+            continue
+        if carries_credential_endpoint(provider):
+            refused_endpoints.append(name)
             continue
         kept = scrub_credentials(provider)
         reference = provider.get("apiKey")
@@ -221,10 +262,10 @@ def seed_pi_home(home: Path, host_agent_dir: Path, providers: list[str]) -> tupl
             kept["apiKey"] = "$" + name.upper().replace("-", "_") + "_API_KEY"
         seeded[name] = kept
     if not seeded:
-        return [], left_out
+        return [], left_out, refused_endpoints
     home.mkdir(parents=True, exist_ok=True)
     (home / "models.json").write_text(json.dumps({"providers": seeded}, indent=1), encoding="utf-8")
-    return sorted(seeded), sorted(left_out)
+    return sorted(seeded), sorted(left_out), sorted(refused_endpoints)
 
 
 def first_user_text(session: Path) -> str:
@@ -559,12 +600,13 @@ def main(argv: list[str] | None = None) -> int:
     home.mkdir(parents=True, exist_ok=True)
     seeded_providers: list[str] = []
     left_out: list[str] = []
+    refused_endpoints: list[str] = []
     configured_providers: list[str] = []
     if target_provider == TARGET_PROVIDER and not named_home:
         wanted = [reference for reference in [os.environ.get("CCC_PI_NATIVE_PROVIDER")] if reference]
         if not wanted:
             wanted = sorted(host_pi_providers(host_pi_dir))
-        seeded_providers, left_out = seed_pi_home(home, host_pi_dir, wanted)
+        seeded_providers, left_out, refused_endpoints = seed_pi_home(home, host_pi_dir, wanted)
         if not wanted:
             # The module docstring's promise: a host with no provider configured for the chosen model is
             # a named skip with that reason, not a crash and not a pass. The conversion can still run --
@@ -573,6 +615,17 @@ def main(argv: list[str] | None = None) -> int:
             record("a Pi provider is configured for the chosen model", False,
                    f"no provider configured: {host_pi_dir / 'models.json'} names no provider and "
                    f"$CCC_PI_NATIVE_PROVIDER is unset, so no provider definition was seeded for this run",
+                   skipped=True)
+        elif not seeded_providers:
+            # The same promise for the refusal below: a provider this run will not copy is a state with
+            # a reason, and the reason is recorded rather than left for a turn to fail over.
+            refused = ", ".join(refused_endpoints)
+            record("a Pi provider is configured for the chosen model", False,
+                   f"no provider definition was seeded for this run: {host_pi_dir / 'models.json'} "
+                   f"defines none of the selected provider(s)"
+                   + (f", and the one(s) it does define that were selected ({refused}) name an endpoint "
+                      f"URL carrying a credential, which this run does not copy"
+                      if refused else ""),
                    skipped=True)
     elif target_provider == TARGET_PROVIDER:
         # A home the caller named is the caller's data directory and this harness writes nothing into it:
@@ -632,6 +685,8 @@ def main(argv: list[str] | None = None) -> int:
     if target_provider == TARGET_PROVIDER and not named_home:
         print(f"pi models:   seeded provider(s) {', '.join(seeded_providers) or '(none)'} from {host_pi_dir}"
               + (f"; left out (not needed here): {', '.join(left_out)}" if left_out else "")
+              + (f"; left out (their endpoint URL carries a credential): {', '.join(refused_endpoints)}"
+                 if refused_endpoints else "")
               + "; every credential field dropped, keys resolved from the environment")
     elif target_provider == TARGET_PROVIDER:
         print(f"pi models:   the caller's home names {len(configured_providers)} provider(s); nothing was "

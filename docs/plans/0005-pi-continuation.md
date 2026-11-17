@@ -151,12 +151,17 @@ taken only where the read may project: it exists to undo a projection, and an ex
 transcript's `parentUuid`) names the record it means, so a result standing beside a record the read chains
 to the same message is that record's *sibling* — chaining through it would chain the record to a place the
 source placed it elsewhere and revive the sibling's own words as an ancestor (Q-0005-12). Where it is
-taken across an intervening record it is counted: the reader answers a record under a tool result as
-hanging off the message that made the call, so whether the record hung off the call or off a result of it
-is not answerable, and the entry is chained through the nearest result standing between them
-(`unresolved_source_parents`); the result immediately before the record is the other reading — the file's
-own continuation — and is taken without counting it. A relation the read cannot resolve at all follows the
-entry before it and is counted (`unresolved_source_parents`) instead of being presented as the source's.
+taken it is counted, whether or not the result stands immediately before the record: the reader answers a
+record under a tool result as hanging off the message that made the call, so whether the record hung off
+the call or off a result of it is not answerable from the read, and the entry is chained through the
+nearest result of that call written before it (`unresolved_source_parents`) — the reading the source's own
+file order (call → result → what follows) supports. The step keys on the record a record *hanging off* the
+outcome would answer as its parent (`toolResultCarrierRecord`): the message's own identity where the read
+folded the outcome onto the call's own message — the archive projection's shape, and a message carrying a
+call at all — and the result record's read-answered parent otherwise, so a sibling of the call naming that
+parent is not chained through the abandoned call's result (Q-0005-13). A relation the read cannot resolve
+at all follows the entry before it and is counted (`unresolved_source_parents`) instead of being presented
+as the source's.
 The file ends with a line feed, and no entry is written after a
 message that was omitted, so the chain never points at something the file does not hold. **The selected
 leaf is part of this rule**: the target's own loader walks from the last entry written and the source's from

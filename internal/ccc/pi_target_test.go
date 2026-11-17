@@ -407,9 +407,14 @@ func TestPiSessionWritesTheSourcesOwnRelations(t *testing.T) {
 	if got := parentTextOf("parent outside the read"); got != "after the omitted record" {
 		t.Errorf("the record naming a parent outside the read hangs off %q, want the entry before it", got)
 	}
-	if loss := lossCount(t, session.Losses, "unresolved_source_parents"); loss.Count != 1 {
-		t.Errorf("unresolved_source_parents = %d, want the one record whose named parent is not in the read",
-			loss.Count)
+	// The two counted relations: the record whose named parent is not in the read, and the record that
+	// names the call the result of that call stands between (the read answers a record the source
+	// placed under the call and one it placed under the result with the same parent, so the place the
+	// conversion took -- through the result, the file's own order -- is its reading and the report says
+	// so; a count that ignored the adjacent result would call the second relation the read's own).
+	if loss := lossCount(t, session.Losses, "unresolved_source_parents"); loss.Count != 2 {
+		t.Errorf("unresolved_source_parents = %d, want the record whose named parent is not in the read "+
+			"and the record naming the call its result stands directly before", loss.Count)
 	}
 	// The walk the target's loader makes from the file's last entry: the abandoned turn is not on it, and
 	// the call/result pair is.
@@ -1114,11 +1119,13 @@ func TestPiSessionChainsThroughAToolResultAcrossAnInterveningBranch(t *testing.T
 	}
 
 	// The reading a projected source keeps for the same shape: the reader answers the record as hanging
-	// off the call even though the result is the record before it, and the file's own continuation
-	// (call → result → what follows) is the writers' tool-result step -- taken here (the result stands
-	// immediately before the record, so the place is the file's own and not counted), which keeps the
-	// result on the walk. The fixture is the ordinary Pi shape: the result is a record of its own, with
-	// no dialogue beside it.
+	// off the call although the result is the record before it, and the file's own continuation
+	// (call → result → what follows) is the writers' tool-result step -- which keeps the result on the
+	// walk. The step is counted, because the two source files are one answer in the read: a record the
+	// source placed directly under the call and one it placed under the call's result both read as
+	// naming the call, so adjacency does not settle which of the two the file held and the place the
+	// conversion takes (through the result) is its reading rather than the read's. The fixture is the
+	// ordinary Pi shape: the result is a record of its own, with no dialogue beside it.
 	losses = readAdjacent(adjacent("pi", false))
 	if got := parentTextOf("after the result"); got != "internal/retry/config.go:41" {
 		t.Errorf("the adjacent record hangs off %q, want the result's own entry: a projected read's "+
@@ -1129,9 +1136,117 @@ func TestPiSessionChainsThroughAToolResultAcrossAnInterveningBranch(t *testing.T
 			t.Errorf("%q is not on the walk the loader makes from the file's last entry", text)
 		}
 	}
-	if loss := lossCount(t, losses, "unresolved_source_parents"); loss.Count != 0 {
-		t.Errorf("unresolved_source_parents = %+v, want 0: the result stands immediately before the "+
-			"record, which is the reading the source's own file order holds", loss)
+	if loss := lossCount(t, losses, "unresolved_source_parents"); loss.Count != 1 {
+		t.Errorf("unresolved_source_parents = %+v, want the one place the read's projection left "+
+			"unanswerable: a projected record standing immediately after a result of the call it names "+
+			"may have hung off either, and the report must not present the conversion's reading as the "+
+			"read's own answer", loss)
+	}
+}
+
+// TestPiSessionKeepsAFoldedOutcomeOffAnAbandonedBranch pins the relation a call's *folded* outcome
+// has. An archive read is not the native one: the inherited projection attaches a result-only row to
+// the call's own message and drops the row, so the read that reaches a conversion can hold the outcome
+// on the message that made the call (as that message's tool results, or as the summary the call
+// carries). A record that follows such a message and names the message's own parent could not have
+// hung off the outcome -- the outcome answers a call of that message, so a record the source's file
+// placed under it reads as naming the message itself -- and registering the outcome under the parent
+// instead chained the record through the abandoned call's result, reviving the call branch as the
+// target's active history. Both spellings of the folded shape are exercised, because the two writers'
+// loops that can carry an outcome are different branches of the same rule.
+func TestPiSessionKeepsAFoldedOutcomeOffAnAbandonedBranch(t *testing.T) {
+	at := func(second int) time.Time { return time.Date(2026, 5, 5, 10, 0, second, 0, time.UTC) }
+	folded := func(outcomeAsResults bool) Conversation {
+		call := ToolCall{ToolUseID: "toolu_1", Name: "grep", InputJSON: `{"pattern":"maxBackoff"}`}
+		if !outcomeAsResults {
+			call.ResultContent = `"internal/retry/config.go:41"`
+			call.ResultContentSize = 28
+		}
+		callMessage := Message{Ordinal: 1, Role: string(parser.RoleAssistant),
+			Content: "[grep: maxBackoff]", DialogueProjected: true, SourceUUID: "c2",
+			SourceParentUUID: "u1", Timestamp: at(1), ToolCalls: []ToolCall{call}}
+		if outcomeAsResults {
+			callMessage.ToolResults = []ToolResult{{ToolUseID: "toolu_1",
+				ContentRaw: `"internal/retry/config.go:41"`, ContentSize: 28, ContentDecoded: true}}
+		}
+		return Conversation{
+			Source: SourceIdentity{Provider: "pi", SessionID: "source-session", Cwd: "/work/project"},
+			Messages: []Message{
+				{Ordinal: 0, Role: string(parser.RoleUser), Content: "start", Dialogue: "start",
+					SourceUUID: "u1", Timestamp: at(0)},
+				callMessage,
+				// The call's branch is abandoned: the record after it names the call's own parent, so the
+				// source's own line runs start -> after, with the call and its outcome off it.
+				{Ordinal: 2, Role: string(parser.RoleAssistant), Content: "after", Dialogue: "after",
+					SourceUUID: "d3", SourceParentUUID: "u1", Timestamp: at(2)},
+			},
+			Fidelity: Fidelity{ReadFrom: "archive"},
+		}
+	}
+	for _, spelling := range []struct {
+		name            string
+		outcomeAsResult bool
+	}{
+		{"the outcome as the call's message's own results", true},
+		{"the outcome as the call's summary", false},
+	} {
+		t.Run(spelling.name, func(t *testing.T) {
+			session, err := ConvertToPiSession(folded(spelling.outcomeAsResult), PiTargetOptions{})
+			if err != nil {
+				t.Fatalf("converting: %v", err)
+			}
+			lines := decodePiSession(t, session.Data)
+			texts := piEntryTexts(t, lines)
+			ids := map[string]string{}
+			for id, text := range texts {
+				if text != "" {
+					ids[text] = id
+				}
+			}
+			parentTextOf := func(text string) string {
+				t.Helper()
+				id, ok := ids[text]
+				if !ok {
+					t.Fatalf("no entry carries the text %q:\n%s", text, session.Data)
+				}
+				for _, line := range lines[1:] {
+					if line.ID != id {
+						continue
+					}
+					if line.ParentID == nil {
+						return ""
+					}
+					return texts[*line.ParentID]
+				}
+				t.Fatalf("no entry carries the id %q", id)
+				return ""
+			}
+			if got := parentTextOf("after"); got != "start" {
+				t.Errorf("the record the conversation continues with hangs off %q, want the record it "+
+					"named: the call's outcome answers a call of the call's message, so a record naming "+
+					"that message's parent cannot have hung off the outcome, and chaining it through the "+
+					"outcome revives the abandoned call branch as an ancestor", got)
+			}
+			if !strings.Contains(string(session.Data), "internal/retry/config.go:41") {
+				t.Error("the abandoned call's outcome is not in the file at all: it is recorded history " +
+					"and must travel, off the walk rather than dropped")
+			}
+			onPath := piWalkIDs(t, lines)
+			if onPath[ids["internal/retry/config.go:41"]] || onPath[ids["[grep: maxBackoff]"]] {
+				t.Error("the abandoned call or its outcome is on the walk the loader makes from the " +
+					"file's last entry: the branch was flattened into the active conversation")
+			}
+			for _, text := range []string{"start", "after"} {
+				if !onPath[ids[text]] {
+					t.Errorf("the conversation's own turn %q is not on the walk the loader makes", text)
+				}
+			}
+			if loss := lossCount(t, session.Losses, "unresolved_source_parents"); loss.Count != 0 {
+				t.Errorf("unresolved_source_parents = %+v, want 0: the record names the call's parent, "+
+					"and no result of that parent stands anywhere for the read to have projected through",
+					loss)
+			}
+		})
 	}
 }
 

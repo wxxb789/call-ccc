@@ -850,7 +850,7 @@ func (b *piSessionBuilder) writeCarriedCalls(message Message) {
 // What is left here is the results.
 func (b *piSessionBuilder) writeToolEvidence(message Message, calls []piProjectedCall) {
 	for _, result := range message.ToolResults {
-		b.writeToolResult(result, message.Timestamp)
+		b.writeToolResult(result, message.Timestamp, toolResultCarrierRecord(message))
 	}
 	for _, entry := range calls {
 		call := entry.call
@@ -865,7 +865,7 @@ func (b *piSessionBuilder) writeToolEvidence(message Message, calls []piProjecte
 			ContentRaw:     call.ResultContent,
 			ContentSize:    call.ResultContentSize,
 			ContentDecoded: true,
-		}, message.Timestamp)
+		}, message.Timestamp, toolResultCarrierRecord(message))
 	}
 }
 
@@ -924,7 +924,10 @@ func (b *piSessionBuilder) callBlock(index int, call ToolCall) piContentBlock {
 }
 
 // writeToolResult writes one result as a toolResult entry, and answers whether it was written.
-func (b *piSessionBuilder) writeToolResult(result ToolResult, at time.Time) bool {
+// carrierRecord is the source record a record hanging off this outcome would read as its parent
+// (toolResultCarrierRecord): it is given to the tree so a later record naming that source record can be
+// chained through this entry rather than off the walk the target's loader makes.
+func (b *piSessionBuilder) writeToolResult(result ToolResult, at time.Time, carrierRecord string) bool {
 	callID := strings.TrimSpace(result.ToolUseID)
 	resultIDInferred := false
 	if callID == "" {
@@ -976,7 +979,7 @@ func (b *piSessionBuilder) writeToolResult(result ToolResult, at time.Time) bool
 			b.lossStatuses++
 		}
 	}
-	b.tree.markToolResult()
+	b.tree.markToolResult(carrierRecord)
 	b.write(piEntry{
 		Type:      piEntryMessage,
 		Timestamp: b.clock.next(at),

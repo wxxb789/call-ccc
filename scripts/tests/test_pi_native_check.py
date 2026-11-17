@@ -517,10 +517,11 @@ class SeedPiHomeDropsEveryCredentialLevel(unittest.TestCase):
             "unneeded": {"apiKey": "an-unneeded-secret"},
         }}), encoding="utf-8")
 
-        seeded, left_out = NATIVE_CHECK.seed_pi_home(home, host, ["probe"])
+        seeded, left_out, refused = NATIVE_CHECK.seed_pi_home(home, host, ["probe"])
 
         self.assertEqual(seeded, ["probe"], seeded)
         self.assertEqual(left_out, ["unneeded"], left_out)
+        self.assertEqual(refused, [], refused)
         document = json.loads((home / "models.json").read_text(encoding="utf-8"))
         probe = document["providers"]["probe"]
         self.assertEqual(probe["apiKey"], "$PROBE_API_KEY", probe)
@@ -558,6 +559,63 @@ class SeedPiHomeDropsEveryCredentialLevel(unittest.TestCase):
         self.assertEqual(probe["models"], [{"id": "probe-model"}], document)
         for reference in ("A_HOST_HEADER_REFERENCE", "HOST_NAMED_HEADER"):
             self.assertNotIn(reference, json.dumps(document), reference)
+
+
+class SeedPiHomeRefusesACredentialBearingEndpoint(unittest.TestCase):
+    """A provider whose endpoint URL carries a credential is not copied, at any depth.
+
+    The scrubber drops a definition's credential *fields*; an endpoint is not one -- it is the address the
+    harness itself would call -- so rewriting it would send the run somewhere the host did not name, and
+    copying it as it stands would write a second copy of a secret into the scratch ``models.json`` (and
+    into the directory ``--keep`` prints and leaves on disk). The provider is left out whole, the same
+    policy the Codex checker applies to a provider's ``base_url``, and the run's own report names it.
+    """
+
+    SHAPES = {
+        "userinfo": "https://user:sk-endpoint-secret@example.invalid/v1",
+        "query": "https://example.invalid/v1?token=sk-endpoint-secret",
+        "fragment": "https://example.invalid/v1#token=sk-endpoint-secret",
+    }
+
+    def seed(self, provider: dict) -> tuple[list[str], list[str], list[str], Path]:
+        host = Path(tempfile.mkdtemp(prefix="ccc-pi-endpoint-host-")).resolve()
+        self.addCleanup(shutil.rmtree, host, ignore_errors=True)
+        home = Path(tempfile.mkdtemp(prefix="ccc-pi-endpoint-home-")).resolve()
+        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        (host / "models.json").write_text(json.dumps({"providers": {"probe": provider}}),
+                                          encoding="utf-8")
+        seeded, left_out, refused = NATIVE_CHECK.seed_pi_home(home, host, ["probe"])
+        return seeded, left_out, refused, home
+
+    def test_every_url_shape_and_level_is_refused_whole(self) -> None:
+        # Every branch of `credential_free_url` (userinfo, query, fragment) at both levels a definition
+        # can name an endpoint at, because either half alone would stay green with the other removed.
+        for shape, url in self.SHAPES.items():
+            for level in ("the provider's own baseUrl", "a models entry's baseUrl"):
+                with self.subTest(credential_in=shape, at=level):
+                    provider = {"baseUrl": "https://example.invalid", "apiKey": "$PROBE_API_KEY",
+                                "models": [{"id": "probe-model"}]}
+                    if level == "the provider's own baseUrl":
+                        provider["baseUrl"] = url
+                    else:
+                        provider["models"] = [{"id": "probe-model", "baseUrl": url}]
+                    seeded, left_out, refused, home = self.seed(provider)
+                    self.assertEqual(seeded, [], f"a provider holding a credential was copied: {seeded}")
+                    self.assertEqual(left_out, [], left_out)
+                    self.assertEqual(refused, ["probe"], refused)
+                    self.assertFalse((home / "models.json").exists(),
+                                     "the refused provider still reached a seeded models.json")
+                    self.assertNotIn("sk-endpoint-secret", json.dumps(seeded), seeded)
+
+    def test_a_credential_free_endpoint_is_copied(self) -> None:
+        """The other side of the rule, so the cases above cannot pass by refusing every provider: an
+        endpoint with no userinfo, query or fragment is copied as it stands."""
+        seeded, left_out, refused, home = self.seed({"baseUrl": "https://example.invalid/v1",
+                                                     "apiKey": "$PROBE_API_KEY"})
+        self.assertEqual(seeded, ["probe"], seeded)
+        self.assertEqual((left_out, refused), ([], []), (left_out, refused))
+        provider = json.loads((home / "models.json").read_text(encoding="utf-8"))["providers"]["probe"]
+        self.assertEqual(provider["baseUrl"], "https://example.invalid/v1", provider)
 
 
 class ModelVisibleHistoryWalk(unittest.TestCase):
@@ -993,6 +1051,24 @@ class TheRunsOwnHomeIsSeededAndACallersIsNot(NativeCheckDriver):
         for secret in ("a-host-secret", "a-model-secret", "an-override-secret"):
             self.assertNotIn(secret, json.dumps(seeded), seeded)
         self.assertIn("seeded provider(s) probe", printed, printed)
+
+    def test_a_provider_whose_endpoint_carries_a_credential_is_not_seeded(self) -> None:
+        """A refused provider is a named skip, not a silent one: the run seeds nothing, writes nothing,
+        and says which provider it left out and why, so a turn that cannot reach a model has a reason in
+        the report rather than a failure the caller has to decode -- and the credential is not quoted."""
+        _, results, printed, captured = self.drive(
+            "claude-to-pi", write_installed=False, give_home=False, pi_provider="probe",
+            host_models={"probe": {"apiKey": "$PROBE_API_KEY",
+                                   "baseUrl": "https://probe-user:an-endpoint-secret@example.invalid/v1"}})
+        self.assertFalse(captured.get("home_models"),
+                         "a provider whose endpoint carries a credential was seeded into the scratch home")
+        self.assertNotIn("an-endpoint-secret", printed, printed)
+        self.assertIn("left out (their endpoint URL carries a credential): probe", printed, printed)
+        state = results.get("a Pi provider is configured for the chosen model")
+        self.assertIsNotNone(state, f"no provider check was recorded: {results}")
+        self.assertEqual(state[0], "SKIP", results)
+        self.assertIn("carrying a credential", state[1], state[1])
+        self.assertIn("probe", state[1], state[1])
 
     def test_a_callers_home_is_never_written_to(self) -> None:
         _, results, printed, captured = self.drive("claude-to-pi", write_installed=False,

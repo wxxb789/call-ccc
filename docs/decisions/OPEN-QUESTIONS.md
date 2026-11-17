@@ -2007,3 +2007,78 @@ supersede it with a newer one and say which it supersedes.
   presents the line it built as the source's by right).
 - **Settled by:** nothing owner-only; the gate follows the reader predicate Q-0005-10 already names, and a
   future upstream registry predicate would replace it there.
+
+## Q-0005-13 — A written tool result is registered under the record a record hanging off it would answer, and the projection step's place is counted wherever it is taken (Q-0005-12's "(b)" clause superseded)
+
+- **Status:** resolved (default taken; 0005's fourth review round named both halves as defects: the
+  registration key was the *carrier's* own read-answered parent, so a call's outcome the archive folds onto
+  the call's message was registered under the record the call's message hangs off and a sibling of the call
+  naming that record was chained through the abandoned call's result — reviving the call branch on the tree
+  writers and on the Codex walk alike — and both writers read a result *immediately* before the record as
+  settling the projection, which the read cannot do)
+- **Question:** two halves of one place. (a) Which source record is a written tool result registered under,
+  so that a later record naming that record is chained through the result rather than off the walk the
+  target's loader makes? The registration used the walking record's read-answered parent, which is the
+  call's message only for a result the read holds as a record of its own: an archive read folds a
+  result-only row onto the call's own message and drops the row (`ingest.PairAndFilterContext` feeding
+  `archive.messageFromArchive`), so the walking record *is* the call's message and its read-answered parent
+  is the message above the call — a record naming that one is no candidate for the outcome at all, and
+  registering it there chained such a record through the abandoned call's result. (b) Is the projection
+  step counted when the result stands immediately before the record that names the call, or is adjacency
+  evidence that the record hung off the result (the file's own continuation, `call → result → what
+  follows`)? The two source files — `C, R(parent=C), A(parent=C)` and `C, R(parent=C), A(parent=R)` — are
+  the same answer in the read (the Pi-family readers resolve a result's descendants to the visible
+  ancestor), so adjacency cannot settle which one the file held: the review's measurement showed the same
+  read reactivating an inactive result while reporting zero uncertainty.
+- **Default taken:** (a) the registration key is the record a record *hanging off the outcome* would read
+  as its parent (toolResultCarrierRecord): the message's own identity where that message carries a call at
+  all (the folded shape the archive produces — a result record of its own carries no call, because the
+  reader pairs its result with a call of another record) and the result record's read-answered parent
+  otherwise. One function answers it for all three routes — the Pi writer per written result, the Claude
+  writer once per outcome-holding record, and the Codex walk's `sourceToolResultBefore` — so the routes
+  cannot drift; the registration itself stays gated on the read that may project (Q-0005-12 (a)). (b) the
+  step is counted wherever it is taken: the reading taken is the file's own order, and the count names the
+  place as this conversion's rather than the read's. The consequence is disclosed rather than hidden: an
+  ordinary *linear* Pi conversation reports one counted place per record that follows a tool result (the
+  committed Pi fixture's own `pi:… → --to claude` conversion now reports `unresolved_source_parents ×1`
+  where the earlier revision reported nothing, with the converted bytes unchanged), and the folded-outcome
+  cases (a record naming the parent of a call whose outcome is folded onto the call's message) report zero
+  counted places, because no result of that parent stands anywhere for the read to have projected through.
+- **Reversal:** (a) register under the walking record's read-answered parent (measured wrong in this
+  round: the folded shape chains a sibling of the call through the abandoned call's result — the
+  regression fails on the Pi tree writer, the Claude tree writer, the Codex line walk and the pipeline's
+  archive read, in both spellings of the folded outcome), or always under the message's own identity
+  (measured wrong: the standalone result record's descendants then answer the result's own id, which no
+  record in the read names, and an intervening-branch record is chained to the call instead of through the
+  result — the source-shape cases fail); (b) keep adjacency uncounted (measured wrong: the two source trees
+  above convert identically and report zero uncertainty, so the conversion presents its own reading as the
+  read's answer).
+- **Settled by:** nothing owner-only; a reader that answers a record's own parent beside the projected one
+  (Q-0005-10's own settlement) would make both halves answerable rather than counted.
+
+## Q-0005-14 — Which provider definitions the Pi native check seeds into its scratch home (Q-0002-21's policy, on Pi's own schema)
+
+- **Status:** resolved (default taken; 0005's third and fourth review rounds named the seed's credential
+  surface: a nested `models`/`modelOverrides` `headers` field was copied while only the provider's own
+  levels were scrubbed, and a selected provider's `baseUrl` could carry URL userinfo or a credential in
+  its query, which the field scrubber preserved)
+- **Question:** the Pi check seeds the scratch home it makes for itself with the host's provider
+  definitions so a real turn can reach a model. Pi resolves a literal secret wherever its schema allows one
+  (a provider's `apiKey` and `headers`, a `models` entry's `headers`, a `modelOverrides` entry's
+  `headers`), and a credential can also be written into the endpoint URL itself — as userinfo
+  (`https://user:token@host`) or as a query (`?token=…`). What may cross into the seeded `models.json`?
+- **Default taken:** every credential-bearing *field* is dropped at every level (`scrub_credentials`), the
+  chosen provider's key is re-spelled as an `$ENV` reference the host's environment resolves, and a
+  selected provider whose endpoint URL is not credential-free (`credential_free_url`: no userinfo, query or
+  fragment) is **not copied at all** — the provider is left out whole rather than copied with its address
+  rewritten, because that address is the endpoint the harness would call and half a definition would send
+  it to Pi's own default; the run's `pi models:` line names it, and a run that seeded nothing because of it
+  records the named `SKIP` (`a Pi provider is configured for the chosen model`) rather than failing later
+  in a turn. A provider the run does not need is left out by name. The policy and the URL helper are shared
+  with the Codex check through `scripts/native_check_common.py` (Q-0002-21 is the Codex-side entry), so the
+  two definitions' rules cannot drift.
+- **Reversal:** strip only the credential *fields* and copy the endpoint as spelled (measured wrong: a
+  second copy of the credential lands in a home `--keep` prints and leaves on disk), or strip the
+  credential out of the endpoint (measured wrong: the address is rewritten, sending the harness somewhere
+  the host did not name).
+- **Settled by:** nothing owner-only.

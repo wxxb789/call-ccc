@@ -22,6 +22,7 @@ import os
 import shlex
 import subprocess
 from pathlib import Path
+from urllib.parse import urlsplit
 
 #: The placeholder the printed exec form carries where a turn's prompt goes. It mirrors the Go constant
 #: ``resumePromptPlaceholder`` (``internal/ccc/continue.go``), which renders both routes' exec forms.
@@ -55,6 +56,23 @@ SHELL_SYNTAX_CHARACTERS = ";&|<>()$`~*?[]{}\n#!"
 
 #: One check's outcome, as the script reports it.
 RESULTS: list[tuple[str, str, str]] = []
+
+
+def credential_free_url(url: str) -> bool:
+    """Whether a base URL is one a seeding check copies: an endpoint with no userinfo, query or fragment.
+
+    A username or a password in a URL is a credential written into the configuration, and a query can
+    hold one too (`?api_key=…` is what a provider's `query_params` setting would otherwise carry). A URL
+    the standard library cannot read at all is not one this check can vouch for. The Codex checker's
+    provider definitions and the Pi checker's are seeded by different code and answer hosts with
+    different schemas, but the policy is one rule and lives here: a fix or a stricter reading of a URL
+    is not a fix to one route and a silent drift for the others.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    return not (parts.username or parts.password or parts.query or parts.fragment)
 
 
 def sha256(path: Path) -> str:

@@ -139,17 +139,38 @@ func projectedParentProvider(provider string) bool {
 	return projectedParentProviders[strings.ToLower(strings.TrimSpace(provider))]
 }
 
+// toolResultCarrierRecord answers the source record a record hanging off this message's outcome would
+// read as its parent, where the read may answer a projection, so that a later record naming that source
+// record is the place the outcome's entry stands for.
+//
+// The answer is decided by whether the message itself carries a call at all: an outcome the read folded
+// onto the call's own message -- the archive's projection attaches a result-only row to the message that
+// made the call and drops the row -- sits on a message that carries calls, and a record the source's file
+// placed under that outcome reads that message's own identity as its parent; a result record of its own
+// carries no call (the reader pairs its result with a call of another record), and the reader answers a
+// result's descendants with the result's visible ancestor, which is the parent the result record was
+// given. The answer registers the outcome's entry only for a read that may project (sourceTree.wrote); an
+// exact read's answers name the record they mean.
+func toolResultCarrierRecord(message Message) string {
+	if len(message.ToolCalls) > 0 {
+		return strings.TrimSpace(message.SourceUUID)
+	}
+	return strings.TrimSpace(message.SourceParentUUID)
+}
+
 // sourceRecordOrigin is what one written entry stands for in the source's own record stream: the
 // record's identity, the record *it* hangs off as the read answered it, the entry this conversion
-// chained the record's first entry to, and whether the entry was written as a tool result. The entry the
-// next record hangs off is decided from it, where the read may answer a projection: a record that
-// follows a tool result in the source's file hangs off that result while the read answers it with the
-// message that made the call, and an exact read answers where the record hangs off itself.
+// chained the record's first entry to, and -- for an entry written as a tool result -- the source record
+// a record hanging off that result would read as its parent (toolResultCarrierRecord), empty for every
+// other entry. The entry the next record hangs off is decided from it, where the read may answer a
+// projection: a record that follows a tool result in the source's file hangs off that result while the
+// read answers it with the message that made the call, and an exact read answers where the record hangs
+// off itself.
 type sourceRecordOrigin struct {
-	sourceID     string
-	sourceParent string
-	parentID     *string
-	toolResult   bool
+	sourceID          string
+	sourceParent      string
+	parentID          *string
+	toolResultCarrier string
 }
 
 // sourceTree maps the source's own record relations onto the entries a conversion writes.
@@ -169,13 +190,16 @@ type sourceTree struct {
 	sourceRecordParents map[string]string
 	// writtenEntryID maps a source record's identity to the final entry written for it.
 	writtenEntryID map[string]string
-	// toolResultEntry maps a call's source identity to the entry of the most recent tool result written
-	// for it, and is consulted only when projectedParents holds. The inherited Pi reader answers a record
-	// under a tool result as hanging off the message that made the call, so a later record naming that
-	// message may in the source's own file have hung off a result of it standing between them; that
-	// result is where such a record is chained, and the relation is counted
-	// (unresolved_source_parents) because which of the two the record named is not answerable from the
-	// read.
+	// toolResultEntry maps the source record a record hanging off a written tool result would read as
+	// its parent (toolResultCarrierRecord) to the entry of the most recent such result, and is filled
+	// only when projectedParents holds. The read answers a record under a tool result as hanging off the
+	// message that made the call, so a later record naming that source record may in the source's own
+	// file have hung off the result; the result's own entry is where such a record is chained, and the
+	// relation is counted (unresolved_source_parents) because which of the two the record named is not
+	// answerable from the read. Keying this by the carrier -- and not by the parent of the record the
+	// result entry was written while walking -- is what keeps a call's outcome from being registered
+	// under the record the call's message hangs off: that reading chained a sibling of the call through
+	// the abandoned call's result, reviving the call branch as the target's active history.
 	toolResultEntry map[string]string
 	// projectedParents says the read may answer a projection: projectedParentProvider of the source's own
 	// provider. A read whose answers are exact keeps the narrower reading below, which invents nothing.
@@ -222,11 +246,15 @@ func (t *sourceTree) startRecord(id, parent string) {
 // next record's first entry.
 func (t *sourceTree) endRecord() { t.pending = sourceRecordOrigin{} }
 
-// markToolResult says the entry about to be written is a tool result. Where the read may answer a
-// projection, the record after it then hangs off the result rather than off the message that made the
-// call, because that is the order the source's own file holds (call → result → what follows) and the
-// other reading would put the result off the walk the target's loader makes.
-func (t *sourceTree) markToolResult() { t.pending.toolResult = true }
+// markToolResult says the entry about to be written is a tool result, carrying the source record a
+// record hanging off that result would read as its parent (toolResultCarrierRecord). Where the read may
+// answer a projection, a later record naming that source record then hangs off the result rather than
+// off the message that made the call, because that is the order the source's own file holds
+// (call → result → what follows) and the other reading would put the result off the walk the target's
+// loader makes.
+func (t *sourceTree) markToolResult(carrierRecord string) {
+	t.pending.toolResultCarrier = strings.TrimSpace(carrierRecord)
+}
 
 // entryParent answers the parent the entry about to be written carries: the entry the source's relation
 // resolved for the record's first entry, else the entry written last, because a record written as
@@ -246,12 +274,12 @@ func (t *sourceTree) wrote(id string) {
 	if t.pending.sourceID != "" {
 		t.writtenEntryID[t.pending.sourceID] = id
 	}
-	if t.projectedParents && t.pending.toolResult && t.pending.sourceParent != "" {
-		t.toolResultEntry[t.pending.sourceParent] = id
+	if t.projectedParents && t.pending.toolResultCarrier != "" {
+		t.toolResultEntry[t.pending.toolResultCarrier] = id
 	}
 	t.lastOrigin = t.pending
 	t.pending.parentID = nil
-	t.pending.toolResult = false
+	t.pending.toolResultCarrier = ""
 }
 
 // parentFor answers the entry a source record's first written entry is chained to: the entry this
@@ -265,15 +293,25 @@ func (t *sourceTree) wrote(id string) {
 //   - the named record was written: its final entry is the parent;
 //   - the named record was left out of the target (an omitted record, or one with no entry of its own):
 //     the nearest ancestor that *was* written, walked through the document's own relations;
-//   - the record that follows a tool result, where the read may answer a projection: the tool result
-//     itself, because the source's own file runs call → result → what follows while the read answers
-//     the next record as hanging off the call.
+//   - the named record is the place a written tool result stands for (toolResultEntry): the tool
+//     result's own entry, because the source's own file runs call → result → what follows while the
+//     read answers the next record as hanging off the call.
 //
-// The third answer is the projection undone, so it is taken only where the read may project
-// (projectedParents); an exact read's answer names the record it means (a Claude transcript's
-// parentUuid), and chaining a record through a result that merely stands beside the record it named
-// would chain it to a sibling the source placed elsewhere -- reviving that sibling as an ancestor. An
-// exact read resolves every named parent above and below by the read's own answer.
+// The third answer is the projection undone. Only a read that may project can reach it: the tool-result
+// place is registered only for such a read (wrote, projectedParents), so an exact read's answers name
+// the records they mean (a Claude transcript's parentUuid) and are resolved above and below by the
+// read's own answer alone. Chaining a record through a result that merely stands beside the record it
+// named would chain it to a sibling the source placed elsewhere -- reviving that sibling as an ancestor.
+//
+// It is also always counted (unresolved), whether or not the result stands immediately before the
+// record: the read answers a record the source placed under the call and one it placed under the call's
+// result with the same parent, so file adjacency cannot settle which of the two it names, and the entry
+// is chained through the result -- the reading the source's file order supports -- with the count naming
+// the relation as one the read did not establish. A call's outcome the read folded onto the call's own
+// message is what the carrier of a written result is answered from, so a sibling of the call names the
+// call's message's *parent*, not the message, and is chained to that parent's own entry instead of
+// through the call's result: only a record naming the call's own message can be a record the file might
+// have placed under the outcome.
 //
 // A record that names no parent at all is read as the read's own order: this conversion cannot tell a
 // record the source placed at the head of a line from one whose identity or parent the provider did not
@@ -282,21 +320,12 @@ func (t *sourceTree) wrote(id string) {
 // document cannot resolve -- a record outside the read -- follows the entry before it and is counted
 // (unresolved): that is a relation this conversion invented, and the report says so rather than
 // presenting the entry as one the source recorded hanging where it does.
-//
-// The record that names a call the read answered for a descendant of a tool result is the other counted
-// answer: the read projects such a record onto the call's own message, so whether it hung off the call or
-// off a result of it is not answerable, and the entry is chained through the result standing between them
-// -- the reading the source's file order supports -- with the count naming the relation as one the read
-// did not establish.
 func (t *sourceTree) parentFor(parent string) *string {
 	parent = strings.TrimSpace(parent)
 	if parent == "" {
 		return t.lastEntryID
 	}
-	if t.projectedParents && t.lastOrigin.toolResult && t.lastOrigin.sourceParent == parent {
-		return t.lastEntryID
-	}
-	if id, ok := t.toolResultEntry[parent]; ok && t.projectedParents {
+	if id, ok := t.toolResultEntry[parent]; ok {
 		t.unresolved++
 		return &id
 	}
@@ -385,15 +414,16 @@ func inactiveSourceRecords(messages []Message, provider string) ([]bool, int) {
 }
 
 // sourceLineParent answers the record a walk from index hangs off, by the writers' own rule, and whether
-// that place is a relation the read did not establish: the record the source named -- or the tool result
-// standing between this record and the call it named, where the read may answer a projection -- and the
-// record before it where the read answered no relation or named one it does not hold.
+// that place is a relation the read did not establish: the record the source named -- or the record a
+// written tool result stands for, where the read may answer a projection -- and the record before it
+// where the read answered no relation or named one it does not hold.
 //
 // The tool-result step is the writers' own projection rule, taken only where the read may project, and
-// it is counted only when the result stands between the record and the call it named: there the read's
-// answer cannot settle whether the record hung off the call or off a result of it. The result
-// immediately before the record is the other reading -- the file's own continuation, call → result →
-// what follows -- which the source's file order supports and the writers take without counting it.
+// it is always counted: the read answers a record the source placed under the call and one it placed
+// under the call's result with the same parent, so whether the record hung off the call or off a result
+// of it is not answerable -- adjacency does not settle it, because the two source files are the same
+// answer in the read. The step is the reading the source's file order supports (call → result → what
+// follows), and the count names the relation as this conversion's rather than the read's.
 //
 // The other two places are counted too, exactly as the tree writers count them: a record the read gave
 // an identity but no parent is not the conversation's first, so following the record before it is this
@@ -408,7 +438,7 @@ func sourceLineParent(messages []Message, byIdentity map[string]int, index int, 
 	}
 	if projected {
 		if at, ok := sourceToolResultBefore(messages, index, parent); ok {
-			return at, at < previous
+			return at, true
 		}
 	}
 	if at, ok := byIdentity[parent]; ok && at < index {
@@ -418,17 +448,19 @@ func sourceLineParent(messages []Message, byIdentity map[string]int, index int, 
 }
 
 // sourceToolResultBefore answers the record a tool-result step stands for: the nearest record before
-// index that is a tool result answering the record parent names. It is the writers' own projection rule,
-// so it is consulted only where the read may answer projections: the inherited Pi reader resolves a
-// result's descendants to their visible ancestor, so a record the read answers as a child of a call may
-// in the file have hung off a result of it, and the file runs call → result → what follows. An exact
-// read's answer names the record it means (a Claude transcript's parentUuid), so no step is taken there:
-// a result standing beside a record the read chains to the same message is a *sibling* of it, and
-// chaining through the sibling would place the record under a branch the source did not record.
+// index whose tool result a record hanging off it would read as naming parent --
+// toolResultCarrierRecord, so a call's outcome the read folded onto the call's own message is matched
+// by that message's identity and a result record of its own by the parent it was given. It is the
+// writers' own projection rule, so it is consulted only where the read may answer projections: the
+// inherited Pi reader resolves a result's descendants to their visible ancestor, so a record the read
+// answers as a child of a call may in the file have hung off a result of it, and the file runs
+// call → result → what follows. An exact read's answer names the record it means (a Claude transcript's
+// parentUuid), so no step is taken there: a result standing beside a record the read chains to the same
+// message is a *sibling* of it, and chaining through the sibling would place the record under a branch
+// the source did not record.
 func sourceToolResultBefore(messages []Message, index int, parent string) (int, bool) {
 	for at := index - 1; at >= 0; at-- {
-		if len(messages[at].ToolResults) > 0 &&
-			strings.TrimSpace(messages[at].SourceParentUUID) == parent {
+		if len(messages[at].ToolResults) > 0 && toolResultCarrierRecord(messages[at]) == parent {
 			return at, true
 		}
 	}
@@ -444,12 +476,13 @@ func unresolvedSourceParentsDetail() string {
 		"hold (a record with no identity of its own, or a parent outside the read); recorded no parent " +
 		"for a record that is not the conversation's first; or named the message that made a call where " +
 		"a result of that call stands between the two records in the file -- the read answers such a " +
-		"record as hanging off the call (a result's descendants resolve to their visible ancestor), " +
-		"while the source's own file runs call → result → what follows, so which of the two the record " +
-		"hung off is not answerable and the entry is chained through the result. These entries follow " +
-		"the entry before them, or the call's own tool result, which is a relation this conversion " +
-		"invented. The entries and their order are unaffected; what the count names is that the " +
-		"source's own place in the tree is not the one written"
+		"record as hanging off the call (a result's descendants resolve to their visible ancestor), so " +
+		"a record the source placed directly under the call and one it placed under the call's result " +
+		"read as the same answer and which of the two it named is not answerable: the entry is chained " +
+		"through the result, the reading the source's own file order holds (call → result → what " +
+		"follows). These entries follow the entry before them, or the call's own tool result, which is " +
+		"a relation this conversion invented. The entries and their order are unaffected; what the " +
+		"count names is that the source's own place in the tree is not the one written"
 }
 
 // ErrUnrepresentableLeaf reports a source whose selected leaf the target cannot be given: the target's own

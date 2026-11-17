@@ -84,9 +84,12 @@ gate runs as a required step.
   follows a tool result is chained through it only where the read itself projects (the Pi-family readers
   resolve a result's descendants to their visible ancestor); an exact answer names the record it means, so
   a result standing beside a record the read chains to the same message is that record's sibling and not
-  its place. The provider a record states is the provider the read actually answered — the
-  target's own configured endpoint where the harness was asked, and none where the read answers the model
-  alone — never the source's, and never invented.
+  its place. Where the step is taken it is counted even when the result stands immediately before the
+  record: the read answers a record the source placed under the call and one it placed under the call's
+  result the same way, so adjacency cannot settle which of the two the file held, and the count names the
+  reading as this conversion's rather than the read's. The provider a record states is the provider the
+  read actually answered — the target's own configured endpoint where the harness was asked, and none
+  where the read answers the model alone — never the source's, and never invented.
 - **A native-verification harness is a re-derivable script, not a gate step**, exactly like
   `scripts/upstream-compare.py`: it needs the target harness installed (and model access for a real
   turn), so the gate keeps deciding the offline half. A check that cannot run says so. The default

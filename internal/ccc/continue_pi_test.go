@@ -693,6 +693,95 @@ func TestContinueFromTheArchiveKeepsAPiSessionsBranch(t *testing.T) {
 	}
 }
 
+// TestContinueFromTheArchiveKeepsAFoldedOutcomeOffAnAbandonedBranch pins the archive half of the
+// call-outcome relation on the one shape the native fixture read does not have: a source session whose
+// abandoned branch holds a tool call *and* its result. The archive's projection attaches the result-only
+// row to the call's own message and drops the row, so the read that reaches the conversion holds the
+// outcome on the message that made the call; registering that outcome under the record the call's
+// message hangs off chained the sibling turn through the abandoned call's result and revived the call
+// branch as the target's active history. The source file is written here rather than carried as a
+// fixture: what this case adds is the combination, and the conversion is measured against the source
+// bytes' own walk.
+func TestContinueFromTheArchiveKeepsAFoldedOutcomeOffAnAbandonedBranch(t *testing.T) {
+	ctx := context.Background()
+	cfg := fixtureConfig(t)
+	const sessionID = "01a1d100-2222-7333-8444-555566667777"
+	source := []byte(strings.Join([]string{
+		`{"cwd":"/home/user/code-history","id":"` + sessionID + `","timestamp":"2026-05-05T12:00:00.000Z","type":"session","version":3}`,
+		`{"id":"u1","message":{"content":"start the build check","role":"user","timestamp":1795028401000},"parentId":null,"timestamp":"2026-05-05T12:00:01.000Z","type":"message"}`,
+		`{"id":"a1","message":{"content":[{"type":"text","text":"running the check"},{"type":"toolCall","id":"call_1","name":"grep","arguments":{"pattern":"maxBackoff"}}],"role":"assistant","timestamp":1795028402000},"parentId":"u1","timestamp":"2026-05-05T12:00:02.000Z","type":"message"}`,
+		`{"id":"r1","message":{"content":[{"type":"text","text":"internal/retry/config.go:41"}],"role":"toolResult","timestamp":1795028403000,"toolCallId":"call_1"},"parentId":"a1","timestamp":"2026-05-05T12:00:03.000Z","type":"message"}`,
+		// The sibling: a turn recorded after the result that names the call's own parent, so the source's
+		// own line runs start -> sibling with the call and its outcome off it.
+		`{"id":"b1","message":{"content":[{"type":"text","text":"the cap is 30 seconds"}],"role":"assistant","timestamp":1795028404000},"parentId":"u1","timestamp":"2026-05-05T12:00:04.000Z","type":"message"}`,
+	}, "\n") + "\n")
+	sourceWalk := transcriptWalkTexts(t, source)
+	if len(sourceWalk) != 2 || sourceWalk[0] != "start the build check" ||
+		sourceWalk[1] != "the cap is 30 seconds" {
+		t.Fatalf("the source file's own walk = %q, want the sibling turn's line and not the abandoned one",
+			sourceWalk)
+	}
+
+	// A throw-away provider root: the copy is the file the archive ingests, and it is removed before the
+	// continuation, so the archive is the only read left.
+	root := t.TempDir()
+	copyPath := filepath.Join(root, "pi", "-home-user-code-history", sessionID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(copyPath), 0o755); err != nil {
+		t.Fatalf("preparing the provider root: %v", err)
+	}
+	if err := os.WriteFile(copyPath, source, 0o600); err != nil {
+		t.Fatalf("writing the source file: %v", err)
+	}
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentPi: {filepath.Join(root, "pi")}}
+
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(cfg, archivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	if err := ingestor.IngestPaths(ctx, copyPath); err != nil {
+		t.Fatalf("ingesting the source file: %v", err)
+	}
+	if err := os.Remove(copyPath); err != nil {
+		t.Fatalf("removing the source copy: %v", err)
+	}
+
+	home := t.TempDir()
+	result, err := Continue(ctx, ContinueOptions{
+		Ref:          Ref{Provider: "pi", ID: sessionID},
+		Target:       TargetPi,
+		Config:       cfg,
+		TargetHome:   home,
+		TargetBinary: missingTargetBinary,
+		ArchivePath:  archivePath,
+	})
+	if err != nil {
+		t.Fatalf("continuing the archived session: %v", err)
+	}
+	if result.Conversion.ReadFrom != "archive" {
+		t.Fatalf("read from %q, want the archive fallback for a source file that is gone",
+			result.Conversion.ReadFrom)
+	}
+	installed, err := os.ReadFile(result.TargetSession.Path)
+	if err != nil {
+		t.Fatalf("reading the installed session: %v", err)
+	}
+	if got := transcriptWalkTexts(t, installed); !slices.Equal(got, sourceWalk) {
+		t.Errorf("the archive-backed conversion's model-visible history = %q, while the source file's "+
+			"own walk is %q: the read's folded outcome was chained in as the sibling's ancestor", got,
+			sourceWalk)
+	}
+	if !strings.Contains(string(installed), "internal/retry/config.go:41") {
+		t.Error("the abandoned call's outcome is not in the converted file at all: it is recorded " +
+			"history and must travel, off the walk rather than dropped")
+	}
+	if loss := lossCount(t, result.Conversion.Losses, "unresolved_source_parents"); loss.Count != 0 {
+		t.Errorf("unresolved_source_parents = %d, want 0: the archive read answers the sibling's parent "+
+			"exactly, and no result of that parent stands anywhere for it to have projected through",
+			loss.Count)
+	}
+}
+
 // TestContinueFromPiIntoCodexOmitsAnAbandonedBranch pins the same clause for the route whose target
 // cannot hold a branch at all: the target's log is one sequence of records with no parent relation to
 // hang a record off, and a response item written into it becomes part of the conversation a resumed turn

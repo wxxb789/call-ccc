@@ -870,3 +870,98 @@ func TestClaudeTranscriptRefusesASelectedLeafOffTheLine(t *testing.T) {
 		t.Fatalf("converting a representable leaf: %v", err)
 	}
 }
+
+// TestClaudeTranscriptKeepsAFoldedOutcomeOffAnAbandonedBranch pins the shared rule on this writer's own
+// call site: an outcome the read folded onto the call's own message (an archive read's shape, in either
+// of the two spellings the writer carries outcomes from) is registered under that message, so a record
+// that names the message's *parent* hangs off the parent's record rather than through the abandoned
+// call's result. Registering it under the parent instead chained the sibling through the result record,
+// putting the abandoned call branch on the walk the loader makes. The outcome still travels: it is
+// recorded history, off the walk rather than dropped.
+func TestClaudeTranscriptKeepsAFoldedOutcomeOffAnAbandonedBranch(t *testing.T) {
+	at := func(second int) time.Time { return time.Date(2026, 5, 5, 10, 0, second, 0, time.UTC) }
+	folded := func(outcomeAsResults bool) Conversation {
+		call := ToolCall{ToolUseID: "toolu_1", Name: "grep", InputJSON: `{"pattern":"maxBackoff"}`}
+		if !outcomeAsResults {
+			call.ResultContent = `"internal/retry/config.go:41"`
+			call.ResultContentSize = 28
+		}
+		callMessage := Message{Ordinal: 1, Role: "assistant", Content: "running the check",
+			Dialogue: "running the check", DialogueProjected: true, SourceUUID: "c2",
+			SourceParentUUID: "u1", Timestamp: at(1), ToolCalls: []ToolCall{call}}
+		if outcomeAsResults {
+			callMessage.ToolResults = []ToolResult{{ToolUseID: "toolu_1",
+				ContentRaw: `"internal/retry/config.go:41"`, ContentSize: 28, ContentDecoded: true}}
+		}
+		conversation := testConversation(
+			Message{Ordinal: 0, Role: "user", Content: "start", Dialogue: "start",
+				DialogueProjected: true, SourceUUID: "u1", Timestamp: at(0)},
+			callMessage,
+			// The call's branch is abandoned: the record after it names the call's own parent.
+			Message{Ordinal: 2, Role: "assistant", Content: "after the branch",
+				Dialogue: "after the branch", DialogueProjected: true, SourceUUID: "d3",
+				SourceParentUUID: "u1", Timestamp: at(2)},
+		)
+		// The folded shape is what an *archive* read of a Pi session produces, so the read is the one that
+		// may answer a projection: with an exact read the rule under test is not applied at all (nothing is
+		// registered for a later record to chain through), and the case would pass without exercising it.
+		conversation.Source.Provider = "pi"
+		return conversation
+	}
+	for _, spelling := range []struct {
+		name            string
+		outcomeAsResult bool
+	}{
+		{"the outcome as the call's message's own results", true},
+		{"the outcome as the call's summary", false},
+	} {
+		t.Run(spelling.name, func(t *testing.T) {
+			transcript, err := ConvertToClaudeTranscript(folded(spelling.outcomeAsResult),
+				ClaudeTargetOptions{})
+			if err != nil {
+				t.Fatalf("converting: %v", err)
+			}
+			records := decodeTranscript(t, transcript)
+			uuidOf := func(text string) string {
+				t.Helper()
+				for _, record := range records {
+					for _, block := range recordBlocks(record) {
+						if block["type"] == "text" && block["text"] == text {
+							id, _ := record["uuid"].(string)
+							return id
+						}
+					}
+				}
+				t.Fatalf("no record carries the text %q:\n%s", text, transcript.Data)
+				return ""
+			}
+			parentOf := func(text string) any {
+				t.Helper()
+				id := uuidOf(text)
+				for _, record := range records {
+					if record["uuid"] == id {
+						return record["parentUuid"]
+					}
+				}
+				t.Fatalf("no record carries the uuid %q", id)
+				return nil
+			}
+			if got := parentOf("after the branch"); got != uuidOf("start") {
+				t.Errorf("the record the conversation continues with hangs off %v, want the record it "+
+					"named (%q): the call's outcome answers a call of the call's message, so a record "+
+					"naming that message's parent cannot have hung off the outcome, and chaining it "+
+					"through the outcome revives the abandoned call branch as an ancestor", got,
+					uuidOf("start"))
+			}
+			if !strings.Contains(string(transcript.Data), "internal/retry/config.go:41") {
+				t.Error("the abandoned call's outcome is not in the transcript at all: it is recorded " +
+					"history and must travel, off the walk rather than dropped")
+			}
+			if loss := lossCount(t, transcript.Losses, "unresolved_source_parents"); loss.Count != 0 {
+				t.Errorf("unresolved_source_parents = %+v, want 0: the record names the call's parent, "+
+					"and no result of that parent stands anywhere for the read to have projected through",
+					loss)
+			}
+		})
+	}
+}
