@@ -26,11 +26,29 @@ with their exit codes and counts).
 - **Precision over apparent completeness.** An explicitly partial translation beats a
   plausible-looking one. Never fabricate tool results, reasoning, roles, resume identities or a
   success result; a valid file is not evidence that anything can resume it.
+- **A target writer's claim is shown through the target harness's own loader.** Call `ccc continue`
+  converts, installs and reports **converted / installed / natively resumable** as three separate
+  states; "resumable" is only ever `verification.load` or `verification.resume` coming back
+  `verified`, and every one of a conversion's omissions or narrowing is named in
+  `conversion.losses[]`. The native half needs the target harness installed and, for a real turn,
+  model access, so it is **not** a gate step: `scripts/codex-native-check.py` re-derives it and
+  reports each check's own verdict (the gate keeps deciding the offline half — round-trip through the
+  inherited reader, install rules, reported losses, CLI shape).
+- **A conversion writes a fresh native identity and replaces nothing.** The install is exclusive, the
+  source is never opened for writing, no credential or login store is copied, and a target data
+  directory nobody named is an error rather than a directory invented here. Tests and demos use
+  isolated data directories. A written session records the target harness's own configured model
+  provider — asked of the harness itself — and no model, never the source's: recording nothing is
+  refused by a home that has migrated to paginated threads, and recording the source's provider would
+  be false.
 - Out of scope by design: Git/worktree management, process or environment migration, credentials,
   fleet orchestration, and any second session index for the existing archive.
 
 ## How to work here
 
+- The continuation core and its per-harness target writers live in `internal/ccc`; `cmd/ccc` adds
+  argument handling and presentation only, and a target-side native harness (`scripts/*-native-check.py`)
+  is registered in `docs/harness.md`, re-runnable, and deliberately not a gate step.
 - Gate: `python3 scripts/gate.py`, which must print `GATE: PASS`; it runs `parity` and `selftest` as
   required steps, and its Go steps are narrowed to `./cmd/ccc/... ./internal/ccc/...` with the measured
   reasons in [`docs/harness.md`](docs/harness.md#why-the-go-steps-target-a-subset) — that narrowing is
@@ -52,7 +70,9 @@ with their exit codes and counts).
 - Stage order for an increment: implement → verify (gate) → simplify (report only) → apply (accepted
   findings only) → review (report only) → fix → gate → PR. Report stages must not edit the tree.
 - One goal ≈ one branch ≈ one pull request, squash-merged onto a linear `main`. Do not commit, push
-  or open a PR unless the dispatched stage explicitly asks for it; the operator owns the merge.
+  or open a PR unless the dispatched stage explicitly asks for it; the operator owns the merge. A goal
+  whose implementation is merged moves to [`docs/goals/archive/`](docs/goals/archive/) with its index
+  row updated in the same increment, and the links other files make to it move with it.
 - Owner-only decisions never block an unattended increment: take the most reversible default,
   disclose it in the report, and append an entry to
   [`docs/decisions/OPEN-QUESTIONS.md`](docs/decisions/OPEN-QUESTIONS.md).

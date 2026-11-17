@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -24,7 +25,10 @@ import (
 // identifier the provider itself reports.
 var (
 	claudeFixtureRef = Ref{Provider: "claude", ID: "9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10"}
-	codexFixtureRef  = Ref{Provider: "codex", ID: "0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812"}
+	// claudeToolingFixtureRef is the second Claude transcript: the tool-heavy shapes a conversion has to
+	// report (a reasoning trace, a subagent turn, an errored tool result).
+	claudeToolingFixtureRef = Ref{Provider: "claude", ID: "b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef"}
+	codexFixtureRef         = Ref{Provider: "codex", ID: "0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812"}
 )
 
 // fixtureRoot is the directory the committed sanitized fixtures live in; each provider subdirectory
@@ -208,6 +212,149 @@ func TestFixtureParseReportsIdentityAndConversation(t *testing.T) {
 	}
 	if report.StartedAt.IsZero() || report.EndedAt.IsZero() || !report.StartedAt.Before(report.EndedAt) {
 		t.Errorf("time range = %s .. %s", report.StartedAt, report.EndedAt)
+	}
+}
+
+// TestToolingFixtureCarriesTheShapesTheWriterMustNotMisread pins the two native records a conversion has
+// to read correctly, through the real parse of the committed bytes rather than a hand-built document.
+//
+// The first is a reasoning-only turn: the provider records its thinking block and no dialogue, so the
+// message's Content is the rendered trace and its dialogue projection is empty. A conversion that fell
+// back to Content would write the reasoning as the agent's own words while the report said the trace was
+// omitted. The second is a tool result whose recorded text is itself a JSON string -- a tool that printed
+// a JSON-encoded value -- which a second decode would change.
+//
+// The same pass asserts what the file holds for every recorded pair: each result written under the call
+// id its source recorded, with the tool's own output text -- the file read's contents, the failed shell
+// call's error text, and the JSON string -- so the evidence a resumed turn continues from is pinned as
+// pairs rather than as a count.
+func TestToolingFixtureCarriesTheShapesTheWriterMustNotMisread(t *testing.T) {
+	cfg := fixtureConfig(t)
+	conversation, err := NewSourceReader(cfg).Read(context.Background(), claudeToolingFixtureRef)
+	if err != nil {
+		t.Fatalf("reading the tooling fixture: %v", err)
+	}
+	const reasoning = "Naming it from the constant rather than from memory."
+	sawReasoningOnly := false
+	for _, message := range conversation.Messages {
+		if message.Thinking == reasoning {
+			sawReasoningOnly = true
+			if !message.DialogueProjected || message.Dialogue != "" {
+				t.Errorf("the reasoning-only record's projection = %q (projected %v), want the provider's own "+
+					"empty dialogue", message.Dialogue, message.DialogueProjected)
+			}
+			if !strings.Contains(message.Content, reasoning) {
+				t.Errorf("the reasoning-only record's content %q does not render the trace, so the fixture "+
+					"does not model the shape this rule is about", message.Content)
+			}
+		}
+	}
+	if !sawReasoningOnly {
+		t.Fatalf("the tooling fixture holds no reasoning-only record, so nothing pins what a writer must "+
+			"do with one (the fixture carries %d message(s))", len(conversation.Messages))
+	}
+
+	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if strings.Contains(string(rollout.Data), reasoning) {
+		t.Error("the conversion wrote the reasoning trace as the agent's dialogue")
+	}
+	if loss := lossCount(t, rollout.Losses, "reasoning_text"); loss.Count != 2 {
+		t.Errorf("reasoning_text = %+v, want both persisted traces counted", loss)
+	}
+	// Every recorded result, under the id its source recorded, holding the tool's own text. Asserted as
+	// the whole map rather than for the decoded one alone: this is the evidence the resumed turn reads,
+	// and a pairing that wrote the right count of records under the wrong ids would satisfy a count.
+	outputs := map[string]string{}
+	for _, line := range decodeRollout(t, rollout.Data) {
+		if payloadField(t, line, "type") == codexItemFunctionOutput {
+			outputs[payloadField(t, line, "call_id")] = payloadField(t, line, "output")
+		}
+	}
+	for callID, want := range map[string]string{
+		"toolu_01Tooling00000000000000001": "package retry\n\nconst MaxAttempts = 4\n",
+		"toolu_01Tooling00000000000000002": "Error: no such file or directory",
+		"toolu_01Tooling00000000000000003": `"maxBackoffSeconds"`,
+	} {
+		if got := outputs[callID]; got != want {
+			t.Errorf("the output written for %s = %q, want the tool's recorded text %q", callID, got, want)
+		}
+	}
+	if len(outputs) != 3 {
+		t.Errorf("the rollout holds %d function_call_output record(s), want one per recorded pair", len(outputs))
+	}
+}
+
+// TestToolingFixtureCarriesASystemRemindersToolResult pins the mixed native record a conversion has to
+// split rather than suppress: one Claude user line the provider wrote as a system reminder *and* a tool
+// result answering an earlier call, which the inherited parser keeps as one message with IsSystem set and
+// its ToolResults populated (internal/parser's
+// TestParseClaudeSession_SystemReminderPromotionPreservesToolResults). The reminder's own text is not the
+// conversation and must not travel; the result is the recorded output of a call this conversion carried
+// and must travel exactly once -- dropping it would leave the call unanswered while the report counted
+// only the record's text as omitted.
+func TestToolingFixtureCarriesASystemRemindersToolResult(t *testing.T) {
+	cfg := fixtureConfig(t)
+	conversation, err := NewSourceReader(cfg).Read(context.Background(), claudeToolingFixtureRef)
+	if err != nil {
+		t.Fatalf("reading the tooling fixture: %v", err)
+	}
+	const callID = "toolu_01Tooling00000000000000003"
+	const reminder = "the workspace state was restored"
+	sawMixed := false
+	for _, message := range conversation.Messages {
+		if !message.IsSystem {
+			continue
+		}
+		for _, result := range message.ToolResults {
+			if result.ToolUseID != callID {
+				continue
+			}
+			sawMixed = true
+			if !strings.Contains(message.Content, reminder) {
+				t.Errorf("the fixture's mixed record content %q does not hold the reminder text, so the "+
+					"fixture does not model the shape this rule is about", message.Content)
+			}
+		}
+	}
+	if !sawMixed {
+		t.Fatalf("the tooling fixture holds no system-injected record carrying the tool result %s, so "+
+			"nothing pins what a writer must do with one (the fixture carries %d message(s))",
+			callID, len(conversation.Messages))
+	}
+
+	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if got := strings.Count(string(rollout.Data), reminder); got != 0 {
+		t.Errorf("the rollout holds %q %d time(s), the text of a record the provider flagged as "+
+			"system-injected, which is not something the conversation's user said", reminder, got)
+	}
+	outputs := 0
+	holding := 0
+	for _, line := range decodeRollout(t, rollout.Data) {
+		if payloadField(t, line, "type") != codexItemFunctionOutput {
+			continue
+		}
+		if payloadField(t, line, "call_id") != callID {
+			continue
+		}
+		outputs++
+		if got := payloadField(t, line, "output"); got != `"maxBackoffSeconds"` {
+			t.Errorf("the paired output = %q, want the text the tool printed, quotation marks included", got)
+		} else {
+			holding++
+		}
+	}
+	if outputs != 1 || holding != 1 {
+		t.Errorf("function_call_output records for %s = %d (holding the recorded text: %d), want exactly one",
+			callID, outputs, holding)
+	}
+	if loss := lossCount(t, rollout.Losses, "system_records"); loss.Count != 1 {
+		t.Errorf("system_records = %+v, want the mixed record's own text counted once", loss)
 	}
 }
 
@@ -497,8 +644,39 @@ func TestRelativePathReferenceIgnoresARootThatDoesNotHoldIt(t *testing.T) {
 	}
 }
 
+// The path shapes a committed fixture must not hold, and the invented roots it may be written with.
+//
+// The needles the rule used to carry are this machine's own (its home directory, this repository's
+// absolute path), so a path leaked from *another* host passes them: the string simply is not there to
+// find. A shape is host-independent -- an absolute path is an absolute path whatever machine wrote it --
+// so the scan reads every fixture as text and rejects an absolute path anywhere but the fixtures'
+// invented roots, plus any Windows drive or UNC spelling. The invented roots name no machine and no
+// user: `/home/user/` is the placeholder every host path in these transcripts is rewritten to, and the
+// synthetic Codex rollout records `/tmp` as its working directory. A root is compared component-wise
+// (the path is the root itself, or continues past it at a separator), so a sibling directory that
+// merely shares the root's first characters (`/tmp-elsewhere/...`, `/home/user-evil/...`) is not
+// accepted as though it were below the root.
+var (
+	inventedFixtureRoots = []string{"/home/user", "/tmp"}
+
+	fixtureAbsolutePathShape = regexp.MustCompile(`(?:^|[\s"':=,(\[])(/[A-Za-z0-9._~-][^\s"']*)`)
+	fixtureWindowsPathShape  = regexp.MustCompile(`(?:^|[\s"':=,(\[])([A-Za-z]:[\\/]|\\\\[^\s"'\\]+\\)`)
+)
+
+// inventedFixturePath reports whether an absolute path is one of the fixtures' invented spellings.
+func inventedFixturePath(path string) bool {
+	for _, root := range inventedFixtureRoots {
+		if path == root || strings.HasPrefix(path, root+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 // TestFixturesCarryNoHostPathsOrSecrets pins the sanitization rule for committed fixtures: they are
-// invented content, so the tree's own root, a home directory, and credential shapes stay out of them.
+// invented content, so the tree's own root, a home directory, and credential shapes stay out of them --
+// and, because the rule has to hold for a leak from a host this check is not running on, so does every
+// absolute path outside the invented roots and every Windows path shape.
 func TestFixturesCarryNoHostPathsOrSecrets(t *testing.T) {
 	root := fixtureRoot(t)
 	home, _ := os.UserHomeDir()
@@ -520,6 +698,15 @@ func TestFixturesCarryNoHostPathsOrSecrets(t *testing.T) {
 			if strings.Contains(string(data), needle) {
 				t.Errorf("%s contains %q", path, needle)
 			}
+		}
+		for _, match := range fixtureAbsolutePathShape.FindAllStringSubmatch(string(data), -1) {
+			if !inventedFixturePath(match[1]) {
+				t.Errorf("%s holds the absolute path %q, which is not one of the invented fixture roots %v",
+					path, match[1], inventedFixtureRoots)
+			}
+		}
+		for _, match := range fixtureWindowsPathShape.FindAllStringSubmatch(string(data), -1) {
+			t.Errorf("%s holds the Windows path shape %q", path, match[1])
 		}
 	}
 	if checked == 0 {
@@ -658,17 +845,33 @@ type fixedSourceProvider struct {
 	outcome parser.ParseOutcome
 	config  parser.ProviderConfig
 	request parser.ParseRequest
+	// fingerprintErr and parseErr make the stand-in fail the way an unreadable source does: the
+	// provider resolved the source and then could not read it. Either is answered in place of the
+	// constant fingerprint and the fixed outcome, so a case can pin what a caller does with a source
+	// read that failed at the I/O level.
+	fingerprintErr error
+	parseErr       error
+	// findErr makes the stand-in fail before the source is resolved at all: the provider could not
+	// answer which source the reference names. It is the other entry point a source read fails at, and
+	// a caller's rule for a failed read has to cover it as well.
+	findErr error
 }
 
 func (p *fixedSourceProvider) FindSource(
 	context.Context, parser.FindSourceRequest,
 ) (parser.SourceRef, bool, error) {
+	if p.findErr != nil {
+		return parser.SourceRef{}, false, p.findErr
+	}
 	return p.source, true, nil
 }
 
 func (p *fixedSourceProvider) Fingerprint(
 	context.Context, parser.SourceRef,
 ) (parser.SourceFingerprint, error) {
+	if p.fingerprintErr != nil {
+		return parser.SourceFingerprint{}, p.fingerprintErr
+	}
 	return parser.SourceFingerprint{Key: "fixed"}, nil
 }
 
@@ -676,6 +879,9 @@ func (p *fixedSourceProvider) Parse(
 	_ context.Context, req parser.ParseRequest,
 ) (parser.ParseOutcome, error) {
 	p.request = req
+	if p.parseErr != nil {
+		return parser.ParseOutcome{}, p.parseErr
+	}
 	return p.outcome, nil
 }
 

@@ -74,8 +74,16 @@ def run(cmd: list[str], env: dict[str, str] | None = None, timeout: int = 1800):
         # a command line the platform refuses (Windows caps one at 32 767 characters), a binary it
         # cannot execute -- is the same kind of answer, so a step reports it instead of the gate
         # ending in a traceback with no verdict at all.
-        return subprocess.CompletedProcess(cmd, 127 if isinstance(exc, FileNotFoundError) else 126,
-                                           "", f"{exc}\n")
+        #
+        # The command is named here rather than left to the platform's message, because that message
+        # does not always hold it: Windows' ``FileNotFoundError`` comes from ``CreateProcess`` and
+        # carries a WinError with no filename ("[WinError 2] The system cannot find the file
+        # specified"), so a step that could not start would otherwise say neither which tool was
+        # missing nor what it tried to run. ``cmd[0]`` and not the whole argv: the gofmt step hands
+        # this hundreds of paths, and the step's own line already names the rest.
+        return subprocess.CompletedProcess(
+            cmd, 127 if isinstance(exc, FileNotFoundError) else 126, "", f"{cmd[0]}: {exc}\n"
+        )
 
 
 def tail(text: str, limit: int = 2500) -> str:

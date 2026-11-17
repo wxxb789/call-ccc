@@ -28,6 +28,7 @@ owned	docs/harness.md
 owned	docs/plans/
 owned	docs/upstream.md
 owned	internal/ccc/
+owned	scripts/codex-native-check.py
 owned	scripts/gate-goflags.txt
 owned	scripts/gate-required.txt
 owned	scripts/gate-targets.txt

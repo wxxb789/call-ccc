@@ -44,10 +44,6 @@ REPO_ROOT = GATE.parents[1]
 #: instead of nesting a run of their own; nothing else in the suite reads it.
 SELFCHECK = "CALLCCC_SUITE_SELFCHECK"
 
-#: The one case allowed to skip under an isolated ``PATH``: it exercises the
-#: git branch, and no stub bin can hold a git that is not in the tree.
-GIT_CASE = "test_only_tracked_go_files_outside_vendor_reach_gofmt"
-
 #: A tool lookup answered the way a Windows host answers it, for the one
 #: question the gate asks the host about itself: ``go_env()`` asks whether a C
 #: compiler is reachable, because CGO depends on one being installed
@@ -701,7 +697,12 @@ class GateProbeCase(GateTree, unittest.TestCase):
         self.assertIsNone(on_posix)
 
     def test_missing_binary_is_a_step_result_not_a_crash(self) -> None:
-        """``run()`` answers rc=127 when the binary is not on PATH at all."""
+        """``run()`` answers rc=127 when the binary is not on PATH at all, and names it.
+
+        The launch is the host's own, so this is the platform's error shape for a missing executable
+        -- and the platform's message does not hold the program on every platform (see the case below
+        for the Windows one), which is why the step result names it and this asserts it here.
+        """
         gate = load_shipped_gate()
         gate.ROOT = self.root
         missing = "ccc-no-such-binary-3f9a2b"
@@ -709,6 +710,29 @@ class GateProbeCase(GateTree, unittest.TestCase):
         self.assertEqual(proc.returncode, 127, proc.stderr)
         self.assertEqual(proc.stdout, "")
         self.assertIn(missing, proc.stderr)
+
+    def test_a_windows_shaped_missing_binary_is_a_named_step_result(self) -> None:
+        """The Windows error carries no filename, so ``run()`` has to name the command itself.
+
+        A Windows host raises this error through ``CreateProcess``: ``PyErr_SetFromWindowsErr`` gives
+        ``FileNotFoundError`` a ``winerror`` and no filename, so ``str(exc)`` is "[WinError 2] The
+        system cannot find the file specified" -- no program in it -- while the POSIX error names the
+        file it could not find. A step result that only echoed the platform's message therefore lost
+        the tool's name on Windows alone, which is the failure this case pins: the raising is the
+        Windows shape, so the case runs it on any host instead of asserting from memory what Windows
+        does, and it launches nothing, so no stub has to exist for it.
+        """
+        gate = load_shipped_gate()
+        gate.ROOT = self.root
+        missing = "ccc-no-such-binary-3f9a2b"
+        with mock.patch.object(gate.subprocess, "run",
+                               side_effect=FileNotFoundError(
+                                   2, "The system cannot find the file specified")):
+            proc = gate.run([missing])
+        self.assertEqual(proc.returncode, 127, proc.stderr)
+        self.assertEqual(proc.stdout, "")
+        self.assertIn(missing, proc.stderr)
+        self.assertIn("The system cannot find the file specified", proc.stderr)
 
     def test_secrets_step_scans_this_repositorys_own_files(self) -> None:
         """The carried tree is the parity step's to verify; the leak scan reads what is ours.
@@ -795,42 +819,40 @@ class GateProbeCase(GateTree, unittest.TestCase):
     def test_only_tracked_go_files_outside_vendor_reach_gofmt(self) -> None:
         """The git branch: tracked ``*.go``, minus a top-level ``vendor/``.
 
-        Both non-``main.go`` files have to stay out of ``found`` for a different
-        reason: ``untracked.go`` because ``git ls-files`` never lists it, and
-        ``vendor/vendored.go`` because the vendor filter drops it *after* git
-        listed it -- so the vendor file is staged, and deleting that filter
-        changes the assertions.
+        The case depends on no installed tool: the runner answers ``git ls-files`` with the shape git's
+        own output has (one POSIX-form relative path per line, ``docs/harness.md``), and the stub bin
+        answers ``gofmt``, so the rule under test -- the gate's file selection -- is exercised with no
+        host toolchain. The vendor file has to be dropped *after* the listing for ``found`` to be the
+        one tracked file: ``untracked.go`` is not in the listing, ``vendor/vendored.go`` is and the
+        vendor filter drops it, so deleting that filter changes the assertions. The first recorded
+        command is asserted as well, so a case that quietly took the walk branch instead of the git
+        branch fails here rather than reading as green.
         """
-        git = shutil.which("git")
-        if git is None:
-            self.skipTest("git is not on PATH: this case exercises the git branch")
         self.write("main.go", "package main\n")
         self.write("untracked.go", "package main\n")
         self.write("vendor/vendored.go", "package main\n")
-        for args in (["init", "-q"], ["add", "main.go", "vendor/vendored.go"]):
-            done = subprocess.run([git, *args], cwd=self.root, capture_output=True, text=True)
-            self.assertEqual(done.returncode, 0, f"git {args[0]}: {done.stdout}{done.stderr}")
-
         gate = load_shipped_gate()
         gate.ROOT = self.root
         recorded: list[list[str]] = []
         real_run = gate.run
 
         def recording(cmd, env=None, timeout=1800):
+            if cmd[:2] == ["git", "ls-files"]:
+                recorded.append(list(cmd))
+                return tool_result(cmd, 0, "main.go\nvendor/vendored.go\n", "")
             if cmd[0] == "gofmt":
                 recorded.append(list(cmd))
                 return tool_result(cmd)
             return real_run(cmd, env, timeout)
 
-        path = os.pathsep.join([str(self.stub_bin), str(Path(git).parent)])
-        with mock.patch.dict(os.environ, {"PATH": path}), \
+        with mock.patch.dict(os.environ, {"PATH": str(self.stub_bin)}), \
                 mock.patch.object(gate, "run", side_effect=recording):
             found = gate.tracked_go_files()
             status, detail = gate.step_gofmt(found)
 
+        self.assertEqual(recorded, [["git", "ls-files", "*.go"], ["gofmt", "-l", "main.go"]])
         self.assertEqual(found, ["main.go"])
         self.assertEqual(status, gate.PASS, detail)
-        self.assertEqual(recorded, [["gofmt", "-l", "main.go"]])
 
     def test_tree_without_git_walks_go_files_minus_a_top_level_vendor(self) -> None:
         """The no-git branch drops the same things the git branch drops.
@@ -952,6 +974,13 @@ class HostCase(GateTree, unittest.TestCase):
         ``...`` is its status -- ``ok``, ``FAIL``, or ``skipped '<reason>'``.
         A case that the child never printed is absent from the mapping, which is
         what makes a dropped case fail the count below rather than pass.
+
+        A line with nothing after its ``...`` is not a case line: the verbose
+        runner leaves the case's own line dangling before the indented line of a
+        subtest failure, and the case's status is on those indented lines. Reading
+        the dangling line as a status raised ``IndexError`` in the parent for
+        exactly the child that had a subtest failure to report, so the name never
+        reached the message -- see the case that pins it below.
         """
         statuses: dict[str, str] = {}
         for line in text.splitlines():
@@ -963,7 +992,10 @@ class HostCase(GateTree, unittest.TestCase):
             qualifier, close, _ = rest.partition(")")
             if not close or "." not in qualifier:
                 continue
-            statuses[name.strip()] = rest.rsplit(" ... ", 1)[1].split()[0]
+            status = rest.rsplit(" ... ", 1)[1].split()
+            if not status:
+                continue
+            statuses[name.strip()] = status[0]
         return statuses
 
     def nested_summary(self, proc: subprocess.CompletedProcess) -> str:
@@ -1009,16 +1041,15 @@ class HostCase(GateTree, unittest.TestCase):
     ) -> None:
         """The nested run's non-``ok`` cases must be exactly the expected skips.
 
-        A skipped case proves nothing, so the two kinds of legitimate skip are
-        named and everything else is a failure of this assertion. The git case
-        cannot run without a host tool -- it exercises ``git ls-files`` against
-        the real binary, by design, and no stub bin holds a git that is not
-        there -- and the child's own copies of this class skip because the guard
-        told them to. That the guard *did* fire is asserted too: if it stopped
-        being set, a child that nested a third run would be the symptom, and
-        this is the case that would notice first.
+        A skipped case proves nothing, so the only legitimate skips are named and everything else is a
+        failure of this assertion: the child's own copies of this class skip because the guard told
+        them to, and no case may skip for any other reason -- a case that needs a host tool the child's
+        ``PATH`` does not hold is the defect these cases exist to catch, and every stub a case needs has
+        to live in the bin inside its own throw-away tree. That the guard *did* fire is asserted too: if
+        it stopped being set, a child that nested a third run would be the symptom, and this is the case
+        that would notice first.
         """
-        expected = sorted({GIT_CASE, *self.GUARDED})
+        expected = sorted(self.GUARDED)
         self.assertEqual(
             sorted(name for name, status in statuses.items() if status != "ok"),
             expected,
@@ -1072,6 +1103,57 @@ class HostCase(GateTree, unittest.TestCase):
         ):
             self.assertEqual(statuses.get(case), "ok", f"{case}: {message}")
         self.assert_only_expected_skips(statuses, message)
+
+    def broken_subtest_child(self) -> subprocess.CompletedProcess:
+        """A child run whose one case fails inside a ``subTest``, executed here.
+
+        The shape is produced by running it, not asserted from memory: the verbose
+        runner prints the case's own line, then -- for a failure that came from a
+        subtest -- an indented line per subtest, so the case's line is left dangling
+        with no status. The runner is started the way ``nested_run`` starts the real
+        one (the interpreter running this case, a tree of this case's own, no host
+        tool needed), and the suite it discovers is written here rather than
+        committed: no case of this suite may fail on purpose to produce the shape.
+        """
+        suite = self.root / "subtest-suite"
+        suite.mkdir()
+        (suite / "test_subtests.py").write_text(
+            "import unittest\n"
+            "\n"
+            "class Case(unittest.TestCase):\n"
+            "    def test_only_reports_come_from_subtests(self):\n"
+            "        for home in ('one', 'two'):\n"
+            "            with self.subTest(home=home):\n"
+            "                self.assertTrue(False, f'{home} broke')\n",
+            encoding="utf-8",
+        )
+        return subprocess.run(
+            [sys.executable, "-m", "unittest", "discover", "-v", "-s", str(suite),
+             "-p", "test_*.py"],
+            capture_output=True, text=True, cwd=str(self.root), timeout=300,
+        )
+
+    def test_a_child_broken_inside_a_subtest_is_reported_by_name(self) -> None:
+        """A child broken inside a subtest fails this suite *naming* the case.
+
+        What a nested run is for is saying which case broke on the host this run
+        cannot watch. The reader used to answer with an ``IndexError`` in the parent
+        instead, for exactly the shape a Windows child had at the head this repair
+        started from: the dangling line the verbose runner leaves when a case's only
+        reports come from subtests. The case is named in the mapping *and* in the
+        message that fails the parent, so the next such child fails the suite with a
+        name to look at rather than an error block with nothing in it.
+        """
+        proc = self.broken_subtest_child()
+        text = proc.stdout + proc.stderr
+        case = "test_only_reports_come_from_subtests"
+        self.assertEqual(proc.returncode, 1, text)
+        statuses = self.nested_statuses(text)
+        self.assertEqual(statuses.get(case), "FAIL", text)
+        self.assertIn(f"broken: {case}", self.nested_summary(proc))
+        with self.assertRaises(AssertionError) as caught:
+            self.assert_nested_green(proc)
+        self.assertIn(f"broken: {case}", str(caught.exception))
 
     def test_the_stub_bin_answers_the_windows_compiler_probe(self) -> None:
         """``go_env()`` under the Windows answer, in both directions, as shipped.

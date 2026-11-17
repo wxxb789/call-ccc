@@ -18,14 +18,17 @@ import (
 // it from a provider failure so an inspection can say "not found" instead of "broken".
 var ErrNotFound = errors.New("session not found")
 
-// ErrProviderFailed reports that a provider resolved a source but could not produce a session from it:
-// the parse outcome carries operational source errors and no result. It is not absence -- the session
-// may well exist; the provider failed to read it -- so a caller reports the provider's own diagnostics
-// instead of "not found". The inherited Cursor provider reports a retryable store-enrichment failure
-// this way (internal/parser's cursor_provider.go carries the operational error in
-// ParseOutcome.SourceErrors with a nil Go error for retry classification, so only the outcome says it
-// happened). An inspection can still fall back to an archive that holds the session, but it must not
-// report the failure as if nothing were there.
+// ErrProviderFailed reports that a provider resolved a source but could not produce a session from it.
+// Two shapes reach it: a parse outcome that carries operational source errors and no result, and a
+// fingerprint or a parse that failed at the I/O level -- a file that moved under a provider that had
+// already classified it, a permission failure, a store the provider could not open -- which Read wraps
+// with this sentinel rather than letting a bare error escape, because the two are the same answer to a
+// caller. It is not absence -- the session may well exist; the provider failed to read it -- so a caller
+// reports the provider's own diagnostics instead of "not found". The inherited Cursor provider reports a
+// retryable store-enrichment failure the first way (internal/parser's cursor_provider.go carries the
+// operational error in ParseOutcome.SourceErrors with a nil Go error for retry classification, so only
+// the outcome says it happened). An inspection can still fall back to an archive that holds the session,
+// but it must not report the failure as if nothing were there.
 var ErrProviderFailed = errors.New("provider could not read the source")
 
 // ErrPartialSource reports a source a provider read only in part: the parse produced at least one
@@ -325,7 +328,26 @@ func resolveWith(
 		return parser.SourceRef{}, false, fmt.Errorf("%w: %s (host %s)", ErrNoLocalSource, ref.ID, host)
 	}
 	request := parser.ProviderFindRequestWithRawSessionID(def, parser.FindSourceRequest{RawSessionID: id})
-	return provider.FindSource(ctx, request)
+	source, found, err := provider.FindSource(ctx, request)
+	if err != nil {
+		return parser.SourceRef{}, false, resolutionFailure(ref.Provider, err)
+	}
+	return source, found, nil
+}
+
+// resolutionFailure classifies a provider's own resolution failure: the reference was offered to the
+// provider, and the provider could not answer which source it names. It travels as ErrProviderFailed --
+// the sentinel readForConversion's fallback gate accepts, whose documented meaning is "a provider was
+// asked for the reference and could not produce a source from it" -- because the source side did not
+// answer and an archive may still hold the session: the same shape as a fingerprint or a parse that
+// could not read the bytes, which used to be returned bare and stopped a conversion short of an
+// archive that holds the session (continue.go's readForConversion, internal/ccc/reader.go's Read).
+//
+// This reader's own answers are not wrapped: an ambiguity is a report the caller resolves the reference
+// with, never a failure to hand to another side, and ErrNoLocalSource already says the source side has
+// no local file for the reference.
+func resolutionFailure(provider string, err error) error {
+	return fmt.Errorf("%w: resolving %s: %w", ErrProviderFailed, provider, err)
 }
 
 // referencePaths returns the filesystem spellings a path reference may be stored under.
@@ -380,7 +402,7 @@ func resolvePathReference(
 	for _, path := range paths {
 		source, found, err := provider.FindSource(ctx, parser.FindSourceRequest{StoredFilePath: path})
 		if err != nil {
-			return parser.SourceRef{}, false, err
+			return parser.SourceRef{}, false, resolutionFailure(ref.Provider, err)
 		}
 		if !found {
 			candidates, err := provider.SourcesForChangedPath(ctx, parser.ChangedPathRequest{
@@ -388,7 +410,7 @@ func resolvePathReference(
 				EventKind: "write",
 			})
 			if err != nil {
-				return parser.SourceRef{}, false, err
+				return parser.SourceRef{}, false, resolutionFailure(ref.Provider, err)
 			}
 			candidates = readableSources(path, candidates)
 			switch len(candidates) {
@@ -479,7 +501,11 @@ func (r *SourceReader) Read(ctx context.Context, ref Ref) (Conversation, error) 
 	}
 	fingerprint, err := provider.Fingerprint(ctx, source)
 	if err != nil {
-		return Conversation{}, fmt.Errorf("fingerprinting %s: %w", source.DisplayPath, err)
+		// The source was resolved and could not be read: a provider failure, not absence, so the
+		// sentinel travels with the reader's own message. A bare error here stopped a conversion short
+		// of an archive that holds the session (continue.go's readForConversion).
+		return Conversation{}, fmt.Errorf("%w: fingerprinting %s: %w",
+			ErrProviderFailed, source.DisplayPath, err)
 	}
 	outcome, err := provider.Parse(ctx, parser.ParseRequest{
 		Source:      source,
@@ -487,7 +513,7 @@ func (r *SourceReader) Read(ctx context.Context, ref Ref) (Conversation, error) 
 		Machine:     r.machineForSource(def.Type, source),
 	})
 	if err != nil {
-		return Conversation{}, fmt.Errorf("parsing %s: %w", source.DisplayPath, err)
+		return Conversation{}, fmt.Errorf("%w: parsing %s: %w", ErrProviderFailed, source.DisplayPath, err)
 	}
 	result, ok := pickResult(outcome, ref)
 	if !ok {
@@ -761,6 +787,7 @@ func messageFromParsed(parsed parser.ParsedMessage) Message {
 	}
 	if parsed.DialogueText != nil {
 		message.Dialogue = *parsed.DialogueText
+		message.DialogueProjected = true
 	}
 	for _, call := range parsed.ToolCalls {
 		message.ToolCalls = append(message.ToolCalls, ToolCall{
@@ -775,14 +802,16 @@ func messageFromParsed(parsed parser.ParsedMessage) Message {
 		// A provider that records a call's outcome as events on the call rather than as a message of
 		// its own -- Codex's function_call_output, a subagent's terminal status -- keeps that outcome
 		// there, and an archive read of the same session shows the same rows. Carrying them is what
-		// keeps a source read from being the narrower of the two.
+		// keeps a source read from being the narrower of the two. Their content is text the provider
+		// already decided (the parse decodes it where it presents it), not a JSON field to decode.
 		for _, event := range call.ResultEvents {
 			message.ToolResults = append(message.ToolResults, ToolResult{
-				ToolUseID:   event.ToolUseID,
-				Status:      event.Status,
-				Source:      event.Source,
-				ContentRaw:  event.Content,
-				ContentSize: len(event.Content),
+				ToolUseID:      event.ToolUseID,
+				Status:         event.Status,
+				Source:         event.Source,
+				ContentRaw:     event.Content,
+				ContentSize:    len(event.Content),
+				ContentDecoded: true,
 			})
 		}
 	}

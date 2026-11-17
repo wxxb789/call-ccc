@@ -31,6 +31,15 @@ const (
 	claudeProject   = "-home-user-code-example-api"
 	claudeVersion   = "1.0.30"
 
+	// The second Claude fixture carries the shapes a conversion has to report: a persisted reasoning
+	// trace, a subagent's turn recorded in the same transcript, a provider system record, a tool result
+	// the source marked as an error, and a tool result the provider wrote on the same record as a system
+	// reminder. It carries no compaction boundary, so the ordinary turns a resumed target reads from it
+	// are the whole conversation.
+	claudeToolingSessionID = "b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef"
+	claudeToolingProject   = "-home-user-code-tooling"
+	claudeToolingCwd       = "/home/user/code/tooling"
+
 	codexSessionID = "0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812"
 	codexRollout   = "rollout-2026-05-04T09-15-00-" + codexSessionID
 	codexCwd       = "/home/user/code/example-api"
@@ -44,8 +53,9 @@ const (
 // fixtureFiles maps a path relative to the fixtures root onto its content.
 func fixtureFiles() map[string]string {
 	return map[string]string{
-		filepath.Join("claude", claudeProject, claudeSessionID+".jsonl"):  canonicalJSONL(claudeSession()),
-		filepath.Join("codex", "2026", "05", "04", codexRollout+".jsonl"): canonicalJSONL(codexSession()),
+		filepath.Join("claude", claudeProject, claudeSessionID+".jsonl"):               canonicalJSONL(claudeSession()),
+		filepath.Join("claude", claudeToolingProject, claudeToolingSessionID+".jsonl"): canonicalJSONL(claudeToolingSession()),
+		filepath.Join("codex", "2026", "05", "04", codexRollout+".jsonl"):              canonicalJSONL(codexSession()),
 	}
 }
 
@@ -97,7 +107,7 @@ func claudeSession() string {
 			"aaaaaaaa-0000-4000-8000-000000000001",
 			"",
 		).
-		AddRaw(claudeToolUse(toolCall, "2026-05-04T09:15:06.000Z")).
+		AddRaw(claudeToolUse(toolCall, "2026-05-04T09:15:06.000Z", "")).
 		AddRaw(testjsonl.ClaudeToolResultUserJSON(
 			"toolu_01Example0000000000000000",
 			"package retry\n\nconst MaxAttempts = 4\n",
@@ -133,6 +143,204 @@ func claudeSession() string {
 		).
 		AddRaw(truncatedLine)
 	return builder.String()
+}
+
+// claudeToolingSession is a Claude Code transcript for the tool-heavy shapes a conversion reports: a
+// persisted reasoning trace beside its dialogue, one recorded alone, two tool calls whose results arrive
+// as their own user lines (one of them recorded as an error), a third whose recorded result is itself a
+// JSON string literal and arrives on a record the provider wrote as a system reminder, a subagent turn
+// marked isSidechain, and a provider system record.
+func claudeToolingSession() string {
+	readCall := []map[string]any{{
+		"type": "tool_use",
+		"id":   "toolu_01Tooling00000000000000001",
+		"name": "Read",
+		"input": map[string]any{
+			"file_path": path.Join(claudeToolingCwd, "internal/retry/policy.go"),
+		},
+	}}
+	bashCall := []map[string]any{{
+		"type": "tool_use",
+		"id":   "toolu_01Tooling00000000000000002",
+		"name": "Bash",
+		"input": map[string]any{
+			"command":     "grep -rn maxBackoffSeconds internal/retry",
+			"description": "find where the backoff cap is configured",
+		},
+	}}
+	jsonCall := []map[string]any{{
+		"type": "tool_use",
+		"id":   "toolu_01Tooling00000000000000003",
+		"name": "Bash",
+		"input": map[string]any{
+			"command":     "python3 -c 'import json; print(json.dumps(\"maxBackoffSeconds\"))'",
+			"description": "confirm the constant's name as JSON",
+		},
+	}}
+	builder := testjsonl.NewSessionBuilder().
+		AddRaw(claudeToolingUser(
+			"Check the retry policy and tell me the attempt limit.", "2026-05-05T10:00:00.000Z")).
+		AddRaw(claudeThinkingAssistant(
+			"2026-05-05T10:00:03.000Z",
+			"Reading the policy before answering.",
+			"I will read the policy file first.",
+			"bbbbbbbb-0000-4000-8000-000000000001",
+		)).
+		AddRaw(claudeToolUse(readCall, "2026-05-05T10:00:05.000Z", "bbbbbbbb-0000-4000-8000-000000000002")).
+		AddRaw(testjsonl.ClaudeToolResultUserJSON(
+			"toolu_01Tooling00000000000000001",
+			"package retry\n\nconst MaxAttempts = 4\n",
+			"2026-05-05T10:00:05.500Z",
+		)).
+		AddRaw(testjsonl.ClaudeAssistantJSON(
+			[]map[string]any{{"type": "text", "text": "The attempt limit is four."}},
+			"2026-05-05T10:00:07.000Z",
+		)).
+		AddRaw(claudeToolUse(bashCall, "2026-05-05T10:00:08.000Z", "bbbbbbbb-0000-4000-8000-000000000003")).
+		AddRaw(claudeErrorToolResult(
+			"toolu_01Tooling00000000000000002",
+			"Error: no such file or directory",
+			"2026-05-05T10:00:08.500Z",
+		)).
+		AddRaw(claudeSidechain(
+			"2026-05-05T10:00:09.000Z",
+			"The backoff cap is a constant in internal/retry/config.go.",
+		)).
+		AddRaw(claudeReasoningOnlyAssistant(
+			"2026-05-05T10:00:09.500Z",
+			"Naming it from the constant rather than from memory.",
+			"bbbbbbbb-0000-4000-8000-000000000005",
+		)).
+		AddRaw(claudeSystemRecord("2026-05-05T10:00:10.000Z")).
+		AddRaw(claudeToolingUser(
+			"Then name the file that holds the cap.", "2026-05-05T10:00:12.000Z")).
+		AddRaw(claudeToolUse(jsonCall, "2026-05-05T10:00:12.500Z", "bbbbbbbb-0000-4000-8000-000000000006")).
+		// The tool printed a JSON-encoded value, so the text the result records is itself a JSON string:
+		// a conversion that decoded the already-decoded output would strip these quotation marks. This
+		// result also arrives on a record the provider wrote as a system reminder -- the provider's own
+		// mixed shape -- so a conversion that suppressed that record wholesale would drop this output.
+		AddRaw(claudeSystemReminderToolResult(
+			"toolu_01Tooling00000000000000003",
+			`"maxBackoffSeconds"`,
+			"2026-05-05T10:00:12.750Z",
+			"bbbbbbbb-0000-4000-8000-000000000007",
+			"bbbbbbbb-0000-4000-8000-000000000006",
+		)).
+		AddRaw(testjsonl.ClaudeAssistantJSON(
+			[]map[string]any{{"type": "text", "text": "internal/retry/config.go, as maxBackoffSeconds."}},
+			"2026-05-05T10:00:13.000Z",
+		))
+	return builder.String()
+}
+
+// claudeToolingUser is a Claude user line carrying the session's own identity and working directory.
+func claudeToolingUser(text, timestamp string) string {
+	return marshal(map[string]any{
+		"type":      "user",
+		"timestamp": timestamp,
+		"version":   claudeVersion,
+		"sessionId": claudeToolingSessionID,
+		"cwd":       claudeToolingCwd,
+		"message":   map[string]any{"content": text},
+	})
+}
+
+// claudeThinkingAssistant is an assistant line whose content holds a persisted reasoning block beside
+// its text, the shape a provider writes when it records thinking.
+func claudeThinkingAssistant(timestamp, thinking, text, uuid string) string {
+	return marshal(map[string]any{
+		"type":      "assistant",
+		"timestamp": timestamp,
+		"uuid":      uuid,
+		"message": map[string]any{
+			"model": "claude-sonnet-4-5",
+			"content": []map[string]any{
+				{"type": "thinking", "thinking": thinking, "signature": "sig-tooling"},
+				{"type": "text", "text": text},
+			},
+		},
+	})
+}
+
+// claudeReasoningOnlyAssistant is an assistant line whose content holds a persisted reasoning block and
+// nothing else: the shape a provider writes for a turn that produced no dialogue and no tool call. Its
+// Content renders the trace, so a conversion that fell back to that rendering would carry the reasoning
+// as the agent's own words while reporting the trace as omitted.
+func claudeReasoningOnlyAssistant(timestamp, thinking, uuid string) string {
+	return marshal(map[string]any{
+		"type":      "assistant",
+		"timestamp": timestamp,
+		"uuid":      uuid,
+		"message": map[string]any{
+			"model": "claude-sonnet-4-5",
+			"content": []map[string]any{
+				{"type": "thinking", "thinking": thinking, "signature": "sig-reasoning-only"},
+			},
+		},
+	})
+}
+
+// claudeErrorToolResult is a tool result the provider marked as an error, which is how a failed tool
+// call reaches the transcript.
+func claudeErrorToolResult(toolUseID, resultContent, timestamp string) string {
+	return marshal(map[string]any{
+		"type":      "user",
+		"timestamp": timestamp,
+		"message": map[string]any{
+			"content": []map[string]any{{
+				"type":        "tool_result",
+				"tool_use_id": toolUseID,
+				"content":     resultContent,
+				"is_error":    true,
+			}},
+		},
+	})
+}
+
+// claudeSystemReminderToolResult is a Claude user line the provider wrote as one record holding a system
+// reminder and a tool result: the reminder is the record's whole text block, which is what classifies the
+// line as system-injected, and the tool_result block answers a call an earlier line recorded. The
+// inherited parser keeps both on the one message -- IsSystem set with its ToolResults populated
+// (internal/parser's TestParseClaudeSession_SystemReminderPromotionPreservesToolResults) -- so a
+// conversion that suppressed the record wholesale would drop a recorded tool output.
+func claudeSystemReminderToolResult(toolUseID, resultContent, timestamp, uuid, parentUUID string) string {
+	return marshal(map[string]any{
+		"type":       "user",
+		"timestamp":  timestamp,
+		"uuid":       uuid,
+		"parentUuid": parentUUID,
+		"message": map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": "<system-reminder>the workspace state was restored</system-reminder>"},
+				{"type": "tool_result", "tool_use_id": toolUseID, "content": resultContent, "is_error": false},
+			},
+		},
+	})
+}
+
+// claudeSidechain is a subagent's turn as the provider records it in the same transcript.
+func claudeSidechain(timestamp, text string) string {
+	return marshal(map[string]any{
+		"type":        "assistant",
+		"timestamp":   timestamp,
+		"isSidechain": true,
+		"uuid":        "bbbbbbbb-0000-4000-8000-000000000004",
+		"message": map[string]any{
+			"model":   "claude-sonnet-4-5",
+			"content": []map[string]any{{"type": "text", "text": text}},
+		},
+	})
+}
+
+// claudeSystemRecord is a provider system record: a line the provider wrote as the session's own
+// bookkeeping rather than as a turn of the conversation.
+func claudeSystemRecord(timestamp string) string {
+	return marshal(map[string]any{
+		"type":      "system",
+		"subtype":   "hook_result",
+		"timestamp": timestamp,
+		"content":   "Hook completed.",
+	})
 }
 
 // codexSession is a Codex rollout: session metadata, a turn with a function call and its output, a
@@ -171,10 +379,11 @@ func codexCompacted() string {
 	})
 }
 
-// claudeToolUse is a Claude assistant line whose content is a tool_use block. The inherited builder
-// covers text and usage turns; a tool_use turn is written here with the same native shape.
-func claudeToolUse(content any, timestamp string) string {
-	return marshal(map[string]any{
+// claudeToolUse is a Claude assistant line whose content is a tool_use block, with its own uuid when
+// the transcript records one. The inherited builder covers text and usage turns; a tool_use turn is
+// written here with the same native shape.
+func claudeToolUse(content any, timestamp, uuid string) string {
+	line := map[string]any{
 		"type":      "assistant",
 		"timestamp": timestamp,
 		"version":   claudeVersion,
@@ -182,7 +391,11 @@ func claudeToolUse(content any, timestamp string) string {
 			"content": content,
 			"model":   "claude-sonnet-4-5",
 		},
-	})
+	}
+	if uuid != "" {
+		line["uuid"] = uuid
+	}
+	return marshal(line)
 }
 
 // claudeVersionedUser is a Claude user line carrying the source version, which older and newer

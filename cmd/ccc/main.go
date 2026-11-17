@@ -23,11 +23,13 @@ import (
 
 	"go.kenn.io/agentsview/internal/ccc"
 	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/stringutil"
 )
 
-const usage = `ccc — inspect an agent session through AgentsView's own reader
+const usage = `ccc — continue one agent session in another, through AgentsView's own reader
 
 usage:
+  ccc continue <provider>:<session-id-or-path> --to codex [options]
   ccc inspect <provider>:<session-id-or-path> [--json] [--data-dir DIR]
   ccc help
 
@@ -39,18 +41,44 @@ usage:
   session synced from another machine, which has no source file here, so only an archive can answer
   it.
 
+  continue reads that session through the inherited AgentsView reader, writes it as a NEW native
+  session of the target harness, installs it where that harness keeps its sessions, and reports the
+  target's own session id and resume command. It never changes the source session and never replaces
+  an existing target session. The common invocation is:
+      ccc continue claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to codex
+  and the result says which command resumes it (CODEX_HOME=<dir> codex resume <session-id>), naming
+  the data directory the session was installed into as well as the session itself.
+
   inspect reports the session's identity, agent, source and conversation shape. It reads the
   source session through the provider's own reader and, when an archive is present, says what the
   archive holds for the same session. It never writes: the source session and any archive are read
   only.
 
-options:
-  --json         write the inspection as one JSON object on stdout (diagnostics stay on stderr)
-  --data-dir DIR read the archive in DIR (%s/sessions.db) instead of the configured data directory
+continuation options:
+  --to NAME          target harness to write (codex)
+  --json             write the result as one JSON object on stdout (diagnostics stay on stderr)
+  --dry-run          convert and verify without writing anything into the target's data directory
+  --target-home DIR  that harness's data directory (default: $CODEX_HOME, else ~/.codex)
+  --target-binary P  that harness's executable (default: codex on PATH); the printed resume commands
+                     name it the way it is given here
+  --data-dir DIR     read the AgentsView archive in DIR (%s/sessions.db) when the source file itself
+                     cannot answer the reference
+  --verify LEVEL     none, load (default) or resume: load asks the target harness's own loader to
+                     open the installed session offline; resume runs one real turn in it and needs
+                     --resume-prompt
+  --resume-prompt T  the turn --verify resume runs; call/ccc never writes a prompt of its own into a
+                     session
+
+inspection options:
+  --json             write the inspection as one JSON object on stdout (diagnostics stay on stderr)
+  --data-dir DIR     read the archive in DIR (%s/sessions.db) instead of the configured data directory
 
 exit codes:
-  0  the session was found and reported, or the usage was asked for (-h, --help, help)
-  1  nothing was found, the reference was ambiguous, or the read failed
+  0  the session was found and reported, the conversion was written and the verification that was
+     asked for either passed or could not run: the target harness is not installed, or a dry run
+     installed nothing for it to load
+  1  nothing was found, the reference was ambiguous, the conversion or installation failed, or a
+     requested verification ran and failed
   2  the command line could not be understood
 `
 
@@ -71,49 +99,31 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintf(stderr, usage, defaultDataDirLabel())
+		fmt.Fprintf(stderr, usage, defaultDataDirLabel(), defaultDataDirLabel())
 		return exitUsage
 	}
 	switch args[0] {
 	case "help", "-h", "--help":
-		fmt.Fprintf(stdout, usage, defaultDataDirLabel())
+		fmt.Fprintf(stdout, usage, defaultDataDirLabel(), defaultDataDirLabel())
 		return exitOK
 	case "inspect":
 		return runInspect(args[1:], stdout, stderr)
+	case "continue":
+		return runContinue(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "ccc: unknown command %q\n\n", args[0])
-		fmt.Fprintf(stderr, usage, defaultDataDirLabel())
+		fmt.Fprintf(stderr, usage, defaultDataDirLabel(), defaultDataDirLabel())
 		return exitUsage
 	}
 }
 
 func runInspect(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("inspect", flag.ContinueOnError)
-	// The flag package writes both its errors and a requested help text to one stream. They are not
-	// the same thing to a caller -- a usage request is not a command line that could not be understood
-	// -- so its output is buffered here and routed once the parse has answered.
-	var flagOutput bytes.Buffer
-	flags.SetOutput(&flagOutput)
 	asJSON := flags.Bool("json", false, "write the inspection as JSON")
 	dataDir := flags.String("data-dir", "", "data directory whose sessions.db is consulted")
-	flags.Usage = func() {
-		fmt.Fprint(flags.Output(), inspectUsage)
-	}
-	flagArgs, operands, err := splitFlags(args)
-	if err != nil {
-		fmt.Fprintf(stderr, "ccc: %v\n", err)
-		return exitUsage
-	}
-	if err := flags.Parse(flagArgs); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprint(stdout, flagOutput.String())
-			return exitOK
-		}
-		fmt.Fprint(stderr, flagOutput.String())
-		return exitUsage
-	}
-	if rest := flags.Args(); len(rest) > 0 {
-		operands = append(operands, rest...)
+	operands, code, handled := parseCommandLine(flags, inspectUsage, args, stdout, stderr)
+	if handled {
+		return code
 	}
 	if len(operands) != 1 {
 		fmt.Fprint(stderr, inspectUsage)
@@ -125,14 +135,10 @@ func runInspect(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
-	cfg, err := config.LoadReadOnly()
+	cfg, err := readConfiguration(*dataDir)
 	if err != nil {
-		fmt.Fprintf(stderr, "ccc: reading the AgentsView configuration: %v\n", err)
+		fmt.Fprintf(stderr, "ccc: %v\n", err)
 		return exitFailure
-	}
-	if *dataDir != "" {
-		cfg.DataDir = *dataDir
-		cfg.DBPath = filepath.Join(*dataDir, "sessions.db")
 	}
 
 	reader := ccc.NewSourceReader(cfg)
@@ -166,13 +172,10 @@ func runInspect(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *asJSON {
-		encoder := json.NewEncoder(stdout)
-		encoder.SetIndent("", "  ")
-		if err := encoder.Encode(inspectDocument{
+		if !writeJSONDocument(stdout, stderr, inspectDocument{
 			UpstreamRevision: upstreamRevision,
 			Inspection:       inspection,
-		}); err != nil {
-			fmt.Fprintf(stderr, "ccc: writing the inspection: %v\n", err)
+		}, "inspection") {
 			return exitFailure
 		}
 		return exitOK
@@ -187,6 +190,70 @@ func runInspect(args []string, stdout, stderr io.Writer) int {
 type inspectDocument struct {
 	UpstreamRevision string `json:"upstream_revision"`
 	ccc.Inspection
+}
+
+// parseCommandLine fills a command's flag set from args and answers its operands.
+//
+// The flag package writes both its errors and a requested help text to one stream. They are not the
+// same thing to a caller -- a usage request is not a command line that could not be understood -- so
+// its output is buffered here and routed once the parse has answered. handled is false when the command
+// line was answered while parsing (the help text printed to stdout for a request, or the flag error to
+// stderr) and the caller returns exitCode; otherwise the operands are splitFlags' answer, and the flag
+// set holds what was parsed.
+func parseCommandLine(
+	flags *flag.FlagSet, usage string, args []string, stdout, stderr io.Writer,
+) (operands []string, exitCode int, handled bool) {
+	var flagOutput bytes.Buffer
+	flags.SetOutput(&flagOutput)
+	flags.Usage = func() {
+		fmt.Fprint(flags.Output(), usage)
+	}
+	flagArgs, operands, err := splitFlags(args)
+	if err != nil {
+		fmt.Fprintf(stderr, "ccc: %v\n", err)
+		return nil, exitUsage, true
+	}
+	if err := flags.Parse(flagArgs); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fmt.Fprint(stdout, flagOutput.String())
+			return nil, exitOK, true
+		}
+		fmt.Fprint(stderr, flagOutput.String())
+		return nil, exitUsage, true
+	}
+	return operands, exitOK, false
+}
+
+// readConfiguration answers the inherited configuration, with the command's --data-dir override
+// applied: an override points both the data directory and the archive path at it.
+func readConfiguration(dataDir string) (config.Config, error) {
+	cfg, err := config.LoadReadOnly()
+	if err != nil {
+		return config.Config{}, fmt.Errorf("reading the AgentsView configuration: %w", err)
+	}
+	if dataDir != "" {
+		cfg.DataDir = dataDir
+		cfg.DBPath = filepath.Join(dataDir, "sessions.db")
+	}
+	return cfg, nil
+}
+
+// writeJSONDocument writes one command's result: one indented JSON object on stdout, with a write
+// failure reported on stderr, because the result that failed to write is not a result.
+func writeJSONDocument(stdout, stderr io.Writer, document any, what string) bool {
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(document); err != nil {
+		fmt.Fprintf(stderr, "ccc: writing the %s: %v\n", what, err)
+		return false
+	}
+	return true
+}
+
+// writeCarried is the footer both commands' human output ends with: the AgentsView revision this binary
+// carries unmodified.
+func writeCarried(out io.Writer) {
+	fmt.Fprintf(out, "  carried:      AgentsView %s, unmodified (scripts/upstream-parity.py)\n", upstreamRevision)
 }
 
 // splitFlags separates options from operands wherever they appear.
@@ -209,19 +276,29 @@ func splitFlags(args []string) (optionArgs, operands []string, err error) {
 				optionArgs = append(optionArgs, arg)
 				continue
 			}
-			switch name {
-			case "data-dir":
+			if takesValue(name) {
 				if index+1 >= len(args) {
-					return nil, nil, fmt.Errorf("--%s needs a directory", name)
+					return nil, nil, fmt.Errorf("--%s needs a value", name)
 				}
 				optionArgs = append(optionArgs, arg, args[index+1])
 				index++
-			default:
-				optionArgs = append(optionArgs, arg)
+				continue
 			}
+			optionArgs = append(optionArgs, arg)
 		}
 	}
 	return optionArgs, operands, nil
+}
+
+// takesValue answers which options consume the following argument. The list is explicit so that a
+// misspelled option is refused by the flag set instead of swallowing the reference.
+func takesValue(name string) bool {
+	switch name {
+	case "data-dir", "to", "target-home", "target-binary", "verify", "resume-prompt":
+		return true
+	default:
+		return false
+	}
 }
 
 // parseRef splits a `<provider>:<id-or-path>` reference. The provider is required: guessing one from
@@ -300,7 +377,259 @@ func writeHuman(out io.Writer, inspection ccc.Inspection) {
 	for _, warning := range inspection.Warnings {
 		fmt.Fprintf(out, "  warning:      %s\n", oneLine(warning))
 	}
-	fmt.Fprintf(out, "  carried:      AgentsView %s, unmodified (scripts/upstream-parity.py)\n", upstreamRevision)
+	writeCarried(out)
+}
+
+// continueUsage is the one-line usage `ccc continue` prints for `-h`, for a usage error and for a
+// missing operand.
+const continueUsage = "usage: ccc continue <provider>:<session-id-or-path> --to codex [--json] [--dry-run]\n" +
+	"                         [--target-home DIR] [--target-binary PATH] [--data-dir DIR]\n" +
+	"                         [--verify none|load|resume] [--resume-prompt TEXT]\n"
+
+func runContinue(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("continue", flag.ContinueOnError)
+	asJSON := flags.Bool("json", false, "write the result as JSON")
+	dryRun := flags.Bool("dry-run", false, "convert without installing")
+	target := flags.String("to", "", "target harness to write")
+	targetHome := flags.String("target-home", "", "the target harness's data directory")
+	targetBinary := flags.String("target-binary", "", "the target harness's executable")
+	dataDir := flags.String("data-dir", "", "data directory whose sessions.db is consulted")
+	verify := flags.String("verify", ccc.VerifyLoad, "verification level: none, load or resume")
+	resumePrompt := flags.String("resume-prompt", "", "the turn a resume verification runs")
+	operands, code, handled := parseCommandLine(flags, continueUsage, args, stdout, stderr)
+	if handled {
+		return code
+	}
+	if len(operands) != 1 {
+		fmt.Fprint(stderr, continueUsage)
+		return exitUsage
+	}
+	if strings.TrimSpace(*target) == "" {
+		fmt.Fprint(stderr, continueUsage)
+		fmt.Fprintf(stderr, "ccc: --to names the target harness (codex)\n")
+		return exitUsage
+	}
+	if !strings.EqualFold(strings.TrimSpace(*target), ccc.TargetCodex) {
+		fmt.Fprintf(stderr, "ccc: this build writes %s, not %q\n", ccc.TargetCodex, *target)
+		return exitUsage
+	}
+	// The core owns the wording of a refused verification request, so a caller driving the CLI and one
+	// embedding the core get the same sentence for the same mistake; the level itself is passed on as
+	// it was written (the core normalizes it when it resolves the level).
+	if err := ccc.CheckVerifyOptions(*verify, *resumePrompt); err != nil {
+		fmt.Fprintf(stderr, "ccc: %v\n", err)
+		return exitUsage
+	}
+	ref, err := parseRef(operands[0])
+	if err != nil {
+		fmt.Fprintf(stderr, "ccc: %v\n", err)
+		return exitUsage
+	}
+
+	cfg, err := readConfiguration(*dataDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "ccc: %v\n", err)
+		return exitFailure
+	}
+
+	result, err := continueRun(context.Background(), ccc.ContinueOptions{
+		Ref:          ref,
+		Target:       *target,
+		Config:       cfg,
+		Reader:       ccc.NewSourceReader(cfg),
+		ArchivePath:  cfg.DBPath,
+		TargetHome:   *targetHome,
+		TargetBinary: *targetBinary,
+		DryRun:       *dryRun,
+		Verify:       *verify,
+		ResumePrompt: *resumePrompt,
+		Stderr:       stderr,
+	})
+	if err != nil {
+		// A run that failed after the conversion is not a run without an answer: the report it came back
+		// with carries what completed — once the session is published, the identity it can be resumed by
+		// — so it is written before the failure is named, and the run still fails. A failure before that
+		// point has no report, and the error is the whole answer.
+		if result.Conversion.State == ccc.ConversionStateConverted {
+			if !writeContinueReport(stdout, stderr, result, *asJSON) {
+				return exitFailure
+			}
+			writeWarnings(stderr, result.Warnings)
+		}
+		fmt.Fprintf(stderr, "ccc: %v\n", err)
+		return exitFailure
+	}
+
+	if !writeContinueReport(stdout, stderr, result, *asJSON) {
+		return exitFailure
+	}
+
+	if code := continuationExit(result); code != exitOK {
+		writeWarnings(stderr, result.Warnings)
+		return code
+	}
+	return exitOK
+}
+
+// continueRun is ccc.Continue, named so the CLI's own rule for a failure that still carries a report can
+// be exercised on its own: the seam is the test's, the rule is the CLI's (a failure that comes back
+// beside a report still writes the report, and still fails the run), and the default is the real
+// conversion.
+var continueRun = ccc.Continue
+
+// writeContinueReport writes one conversion report in the shape the caller asked for, and answers whether
+// it was written.
+func writeContinueReport(stdout, stderr io.Writer, result ccc.ContinueResult, asJSON bool) bool {
+	if !asJSON {
+		writeContinuation(stdout, result)
+		return true
+	}
+	return writeJSONDocument(stdout, stderr, continueDocument{
+		UpstreamRevision: upstreamRevision,
+		ContinueResult:   result,
+	}, "result")
+}
+
+// writeWarnings names a report's warnings on stderr: a caller reading only the exit code, or only the
+// human block's head, must not have to infer them.
+func writeWarnings(stderr io.Writer, warnings []string) {
+	for _, warning := range warnings {
+		fmt.Fprintf(stderr, "ccc: %s\n", oneLine(warning))
+	}
+}
+
+// continuationExit decides the run's exit code from the three states. A verification that could not run
+// because the target harness is not installed — or because a dry run installed nothing — is reported,
+// not failed: the conversation really was converted. A verification the caller asked for that ran and
+// did not pass is a failure, because the caller asked precisely that question.
+func continuationExit(result ccc.ContinueResult) int {
+	if result.Conversion.State != ccc.ConversionStateConverted ||
+		result.Verification.Structure.State != ccc.VerificationStateVerified {
+		return exitFailure
+	}
+	if result.Conversion.DryRun {
+		// A dry run installs nothing, so the levels that could not run are reported not verified with
+		// the dry-run reason; the conversion and its structural check are what this run asked for.
+		return exitOK
+	}
+	if result.Installation.State != ccc.InstallationStateInstalled {
+		return exitFailure
+	}
+	if !result.TargetSession.BinaryFound {
+		return exitOK
+	}
+	if result.Verification.Load.State == ccc.VerificationStateNotVerified {
+		return exitFailure
+	}
+	if result.Verification.Resume.State == ccc.VerificationStateNotVerified {
+		return exitFailure
+	}
+	return exitOK
+}
+
+// continueDocument is the JSON document `ccc continue --json` writes.
+type continueDocument struct {
+	UpstreamRevision string `json:"upstream_revision"`
+	ccc.ContinueResult
+}
+
+func writeContinuation(out io.Writer, result ccc.ContinueResult) {
+	fmt.Fprintf(out, "%s:%s → %s\n", result.Ref.Provider, result.Ref.ID, result.Target)
+	if source := result.Source; source != nil {
+		fmt.Fprintf(out, "  source:       %s\n", valueOr(source.Identity.SourcePath, source.Identity.DisplayPath))
+		fmt.Fprintf(out, "  read from:    %s\n", result.Conversion.ReadFrom)
+		fmt.Fprintf(out, "  conversation: %s\n", describeCounts(source.Counts))
+		// A read that skipped source content says so here as well as in its own loss category: the
+		// conversion, the installation and a verified native load can all be true while the source
+		// held records this conversation does not, and a block that never names that lets "converted"
+		// read as "everything travelled".
+		if source.Fidelity.MalformedLines > 0 || source.Fidelity.Truncated {
+			fmt.Fprintf(out, "  fidelity:     %d malformed line(s)%s\n",
+				source.Fidelity.MalformedLines, truncatedSuffix(source.Fidelity.Truncated))
+		}
+	}
+	carried := result.Conversion.Carried
+	fmt.Fprintf(out, "  converted:    %s, %d bytes: %d message(s), %d tool call(s), %d tool result(s), %d boundary(ies), %d turn(s)\n",
+		result.Conversion.Format, carried.Bytes, carried.Messages, carried.ToolCalls, carried.ToolResults,
+		carried.CompactionBoundaries, carried.Turns)
+	for _, loss := range result.Conversion.Losses {
+		if loss.Count == 0 {
+			continue
+		}
+		fmt.Fprintf(out, "  %-13s %s ×%d\n", loss.Disposition+":", loss.Category, loss.Count)
+	}
+	// Whether this report claims a session the target harness holds, asked once: the identity lines
+	// below are the resume information of an installed session, and a run that published nothing — a
+	// dry run, or a run that stopped before publication — still generated an identity. Printing that
+	// identity the way an installed one is printed would offer a session no harness can open.
+	published := result.Installation.State == ccc.InstallationStateInstalled
+	proposed := ""
+	if !published {
+		proposed = " (proposed; nothing was installed)"
+	}
+	switch {
+	case result.Conversion.DryRun:
+		fmt.Fprintf(out, "  installation: dry run, nothing written to %s\n", result.TargetSession.Home)
+	case published:
+		fmt.Fprintf(out, "  installed:    %s [%s]\n", result.Installation.Path, result.Installation.Mechanism)
+	default:
+		// The report's own state, spelled the way the JSON spells it: a run that stopped before
+		// publishing answers "is it installed?" with not-installed, not with an empty path that reads
+		// like an installation whose location was lost.
+		fmt.Fprintf(out, "  installed:    %s (nothing was published under %s)\n",
+			ccc.InstallationStateNotInstalled, result.TargetSession.Home)
+	}
+	fmt.Fprintf(out, "  source file:  %s\n", sourceCheckLine(result.Installation))
+	fmt.Fprintf(out, "  target id:    %s%s\n", result.TargetSession.SessionID, proposed)
+	if result.TargetSession.Cwd != "" {
+		fmt.Fprintf(out, "  working dir:  %s\n", result.TargetSession.Cwd)
+	}
+	fmt.Fprintf(out, "  resume:       %s%s\n", result.TargetSession.ResumeCommand, proposed)
+	fmt.Fprintf(out, "  non-interactive resume: %s%s\n", result.TargetSession.ExecResumeCommand, proposed)
+	fmt.Fprintf(out, "  cli_version:  %s (%s)\n", result.TargetSession.CLIVersion, result.TargetSession.CLIVersionSource)
+	fmt.Fprintf(out, "  structure:    %s (%s)\n", result.Verification.Structure.State, result.Verification.Structure.Method)
+	fmt.Fprintf(out, "  native load:  %s (%s)\n", result.Verification.Load.State, result.Verification.Load.Method)
+	if detail := result.Verification.Load.Detail; detail != "" {
+		fmt.Fprintf(out, "                %s\n", oneLine(detail))
+	}
+	fmt.Fprintf(out, "  native resume: %s (%s)\n", result.Verification.Resume.State, result.Verification.Resume.Method)
+	if detail := result.Verification.Resume.Detail; detail != "" {
+		fmt.Fprintf(out, "                %s\n", oneLine(detail))
+	}
+	if answer := result.Verification.Resume.Output; answer != "" {
+		// The turn's own words, bounded: it is the observable proof that the target continued from the
+		// converted history rather than merely loading it.
+		fmt.Fprintf(out, "  answer:       %s\n", oneLine(stringutil.SafeTruncate(answer, 400)))
+	}
+	for _, warning := range result.Warnings {
+		fmt.Fprintf(out, "  warning:      %s\n", oneLine(warning))
+	}
+	writeCarried(out)
+}
+
+// sourceCheckLine is the human spelling of the installation's source check: the goal asks the run to
+// show that the transcript the conversation came from is its same file afterwards, so the state and the
+// detail that says how it was reached are printed rather than left to the JSON.
+func sourceCheckLine(installation ccc.InstallationReport) string {
+	state := sourceCheckWord(installation.SourceCheckState)
+	if detail := oneLine(installation.Detail); detail != "" {
+		return state + " (" + detail + ")"
+	}
+	return state
+}
+
+// sourceCheckWord spells the source check's state for the human block: the two states that are answers
+// to the question, and "not verified" for everything else — a comparison that did not run, and a report
+// this build did not write — because a check without an answer is not an answer.
+func sourceCheckWord(state string) string {
+	switch state {
+	case ccc.SourceCheckUnchanged:
+		return "unchanged"
+	case ccc.SourceCheckChanged:
+		return "changed while it was converted"
+	default:
+		return "not verified"
+	}
 }
 
 func describeCounts(counts ccc.Counts) string {
@@ -323,9 +652,14 @@ func describeCounts(counts ccc.Counts) string {
 	return strings.Join(parts, ", ")
 }
 
+// truncatedSuffix names the incomplete tail an inherited read reports: the source file's last record was
+// still being written when the file was read, so the read stopped at the last complete one (and that
+// partial record is one of the malformed lines beside it). "The writer" is deliberately not used: in this
+// tree that word means the target writer, which never truncates the source, and the line would read as a
+// claim about the conversion instead of about the file.
 func truncatedSuffix(truncated bool) string {
 	if truncated {
-		return ", truncated by the writer"
+		return ", and the last record was still being written at read time"
 	}
 	return ""
 }

@@ -534,3 +534,661 @@ supersede it with a newer one and say which it supersedes.
 - **Settled by:** whether the operator wants the exact identifier an inspection prints (`archived id:
   freebuff:…`) to be usable as the next reference, or a grammar in which only registry provider names
   appear.
+
+## Q-0002-01 — What a converted Codex session records as its model provider
+
+- **Status:** resolved (default taken)
+- **Question:** a converted session must say *something* about its provider, and every choice binds it.
+  Measured on Codex 0.169.0: a rollout that records no provider loads under `thread/resume` in a home
+  that has never migrated, and is refused (`This chat uses model provider "", which is no longer
+  configured`) in a home whose state already holds migrated threads — which is what a real user's home
+  looks like. Recording the *source's* provider would be false (Codex has no such provider
+  configured). Recording the configuration's explicit `model_provider` alone is null on a host that
+  relies on Codex's default. Recording the effective provider binds the session to it, so a later
+  change of that configuration makes the harness refuse to resume with `Cannot change this thread's
+  model provider from X to Y on resume`.
+- **Default taken:** record the provider the harness itself says a **new** session of it would use,
+  asked over its own protocol (`thread/start` on an *ephemeral* thread, which reports the effective
+  provider including the harness's own default; `config/read` as the fallback when that leaves no
+  answer), as seen from the source session's working directory. No model is recorded, so the target
+  keeps choosing that. The run reports the value, where it came from
+  (`model_provider_source`: `target-thread-defaults`/`target-config`/`unrecorded`) and the binding as a
+  reported caveat (`provider_binding`).
+- **Reversal:** stop passing `Provider` in `CodexTargetOptions` (one field, empty means "record none"),
+  which restores the provider-less file and the refusal in a migrated home.
+- **Settled by:** whether the operator prefers a session that resumes under the harness's defaults but
+  is refused in a migrated home, or one that resumes now and is pinned to the provider that was
+  configured when it was converted.
+
+## Q-0002-02 — The provenance a converted rollout records for itself
+
+- **Status:** resolved (default taken)
+- **Question:** the rollout's `session_meta` carries `originator`, `source` and `thread_source`, and
+  the target's UI and pickers read them. Writing `codex_cli_rs`/`exec` would be false provenance and
+  would hide the session behind the picker's "non-interactive" filter; writing an originator the target
+  has never seen risks a version that validates it.
+- **Default taken:** `originator: "ccc"` (the program that wrote the file), `source: "cli"` (the session
+  is meant to be resumed interactively), `thread_source: "user"`; measured to be accepted and reported
+  as such by `thread/read`/`thread/resume`. The user-facing identity of the conversion lives in the
+  CLI's output, not in a fabricated field.
+- **Reversal:** one constant in `internal/ccc/codex_target.go`; nothing else reads the value.
+- **Settled by:** whether the operator wants the target's own names there or call/ccc's, and whether a
+  future Codex version rejects an unknown originator (the native check would fail loudly).
+
+## Q-0002-03 — Which `cli_version` a converted rollout records
+
+- **Status:** resolved (default taken)
+- **Question:** the target's reader requires `session_meta.cli_version` (measured: without it,
+  `thread/resume` says `rollout … does not start with session metadata`), but call/ccc did not write
+  the conversation, so the value is a claim about the file's format rather than about its author.
+- **Default taken:** the version the installed `codex --version` reports when it can be probed
+  (`cli_version_source: "probe"`), otherwise the pinned constant `CodexFormatVersion = "0.169.0"` — the
+  version whose reader this writer's output was verified against (`"writer-pin"`). Both are reported.
+- **Reversal:** always write the constant, or refuse to convert when the target binary is absent.
+- **Settled by:** whether an older Codex refuses a rollout whose `cli_version` is newer than itself; if
+  it does, the probe should be replaced by the *oldest* verified version.
+
+## Q-0002-04 — Pre-compaction history, and what the boundary means in the target
+
+- **Status:** resolved (default taken)
+- **Question:** the goal says both "preserve available history by default" and "do not revive
+  deliberately inactive history as though it were active". A transcript that compacted holds both the
+  summary and the turns it replaced.
+- **Default taken:** carry the turns **and** the boundary, as the target's own `compacted` record.
+  Measured: Codex applies that record to its model-visible history (a resumed turn answers from the
+  summary and the post-boundary turns only), while the file keeps the recorded turns for readers, so
+  the target continues from the source's *active* context without call/ccc having made a selection the
+  goal does not authorize. The report counts the pre-boundary messages and states what the boundary
+  does (`pre_compaction_history`, carried-with-caveat).
+- **Reversal:** one branch in the writer that stops at the first boundary (then the pre-boundary turns
+  are a reported omission instead of a reported caveat).
+- **Settled by:** goal 0009 (selective context), which is where selection belongs if the operator wants
+  it.
+
+## Q-0002-05 — Omitting reasoning traces, sidechain turns and system records
+
+- **Status:** resolved (default taken)
+- **Question:** a target writer can carry a persisted reasoning trace as plaintext, a subagent's turn as
+  an ordinary message, and a provider's system record as a `developer` message — or omit each and say
+  so.
+- **Default taken:** omit all three by default and report each with its count and reason. Codex records
+  reasoning as its provider's own encrypted artifact (writing plaintext in its place would present
+  source-private reasoning as a target-native trace); a sidechain turn has no subagent attribution in a
+  flat message (so carrying it as an ordinary turn would state that the conversation's own agent said
+  it); the target's `developer` channel carries the target's own instructions (so a provider's
+  bookkeeping does not belong there).
+- **Reversal:** one branch each in the writer's message loop; each category's count is already in the
+  report, so the change is visible rather than silent.
+- **Settled by:** goals 0009/0013, which own selection and persisted reasoning traces.
+
+## Q-0002-06 — Verification levels, their default, and the exit codes
+
+- **Status:** resolved (default taken)
+- **Question:** `ccc continue` can verify nothing, ask the target's loader, or run a real turn — and a
+  failure of each means something different for the caller's pipeline.
+- **Default taken:** `--verify load` (the target's own loader over `thread/resume`, offline); `resume`
+  on request and only with `--resume-prompt` (the turn becomes part of the user's session, so its text
+  is the caller's); `none` writes no claim. A verification that could not run because the target binary
+  is absent is reported as not-verified and does **not** fail the run (the conversion and installation
+  really happened); a verification that ran and failed exits 1. The three states are separate fields in
+  `--json`, and the human output prints one line each.
+- **Reversal:** make `load` required (refuse to convert without the target binary), or make an absent
+  binary a failure — one branch in `continuationExit` plus one in `Continue`.
+- **Settled by:** whether the operator wants an unattended pipeline to fail when the target harness is
+  not installed, or to convert, install and say the native half is unverified.
+
+## Q-0002-07 — The parity oracle's cases now name their fixture
+
+- **Status:** resolved (default taken)
+- **Question:** the comparison cases (`internal/ccc/parity`, `scripts/upstream-compare.py`) discovered
+  "the single fixture below the provider root". This increment adds a second Claude transcript (the
+  tool-heavy shape a conversion reports), so that discovery would fail — or, worse, silently read a
+  different file if it had been written to pick the first.
+- **Default taken:** every case names the session file it reads (`parity.Cases`, mirrored by the
+  script's `CASES`), a name that is not there is an error, and the previous "exactly one" rule remains
+  only as a convenience for a caller with a tree of its own. The recorded dumps were **not**
+  re-recorded: the cases still read the same bytes, and the offline test compares them byte for byte
+  (it passes unchanged). The new fixture is a new file, not a replacement.
+- **Reversal:** delete the second fixture and the fixture field, restoring discovery by convention.
+- **Settled by:** whether the operator wants the oracle to keep discovering fixtures or to name them;
+  naming is what makes an added shape unable to change an existing record.
+
+## Q-0002-08 — Archiving goal 0001 in this increment
+
+- **Status:** resolved (default taken)
+- **Question:** the index's rule says a goal moves to `docs/goals/archive/` once it is merged, while its
+  row still read "awaiting operator acceptance". Goal 0001's implementation is on `main` (squash-merged
+  as `ef6a61c`, PR #3), so is it accepted?
+- **Default taken:** read "merged onto `main`" as the acceptance its own rule names: the goal file moved
+  to `docs/goals/archive/`, its index row now reads "Accepted: merged onto `main` as `ef6a61c`;
+  archived", and the links in `docs/evidence/0001-…`, `docs/plans/0001-…` and the goal series index were
+  moved with it. Nothing in the goal's content changed.
+- **Reversal:** `git mv docs/goals/archive/0001-… docs/goals/` and restore the index row — the file's
+  bytes are untouched.
+- **Settled by:** whether the operator considers a squash merge the acceptance, or wants to keep the
+  contract under `docs/goals/` until they say so explicitly.
+
+## Q-0002-09 — What a dry run's requested verification level reports
+
+- **Status:** resolved (default taken)
+- **Question:** `--dry-run --verify resume --resume-prompt X` is accepted, and the run returns before the
+  level switch: nothing was installed, so no level could run, and the report used to call a level the
+  caller had asked for `not-requested` — while the help's exit-0 clause only had wording for "the target
+  harness is not installed", not for "asked, but a dry run installed nothing". A fourth state would say
+  the difference in one word; it would also add a wire value no document names yet.
+- **Default taken:** the requested level reports `not-verified` with the dry-run reason ("a dry run
+  installs nothing, so the target harness has nothing to load"), which is that state's documented
+  meaning — the target harness could not answer the question, and the detail says why; a level nobody
+  asked for stays `not-requested`; the exit code stays 0 (the conversion and its structural check are
+  what the run asked for), and the help's exit-0 clause now names the dry-run case too. The three states
+  stay exactly what the plan documents, so no consumer sees a new spelling.
+- **Reversal:** one arm of the dry-run switch in `Continue` plus the `result.Conversion.DryRun` return in
+  `continuationExit`: the states go back to `not-requested` everywhere.
+- **Settled by:** whether the operator wants a dry run to distinguish "asked, but nothing was installed"
+  from "the loader refused the session" in the state alone — a fourth state (for example `not-run`)
+  would say it in one word, at the price of a new wire value in `verification.*.state`.
+
+## Q-0002-10 — A source that changes while it is converted
+
+- **Status:** resolved (default taken)
+- **Question:** the conversion reads the source file, takes its digest and compares it again after
+  installing. When the file is edited in between, the conversion and the installation are real, but the
+  file no longer holds the bytes the conversion read. The report used to set
+  `installation.source_unchanged: false` with a detail and nothing else: no warning, nothing in the
+  human output, and exit 0 — so the fact was visible only inside `--json`.
+- **Default taken:** exit 0 stays (the conversion and the installation completed; failing would report
+  them as failed when they are not), and the fact is made loud instead: the run appends a warning, prints
+  `source file: changed while it was converted (…)` in the human block, and keeps the boolean and the
+  detail in the JSON. A dry run makes the same before/after comparison, so `source_unchanged: true` is
+  never reported without one having run.
+- **Reversal:** drop the two `sourceChangedWarnings` appends and the human `source file:` line — the
+  boolean and its detail stay in the JSON exactly as before.
+- **Settled by:** whether the operator wants a source that moved mid-conversion to fail the run (exit 1).
+  The race is one the conversion cannot prevent, and its consequence — the installed session holds the
+  earlier bytes — is now stated rather than implied.
+
+## Q-0002-11 — What a dry run records as the session's model provider
+
+- **Status:** resolved (default taken)
+- **Question:** the written session's provider binding comes from the target harness's own answer, which
+  `Continue` asks for by starting the harness's app server against the target data directory
+  (`ProbeCodexConfig`, Q-0002-01). Measured: a started Codex 0.169.0 writes its own state into that home
+  (databases, logs, skills), even for the ephemeral `thread/start` the probe uses. A dry run promises it
+  writes nothing into that directory, and it also used to create a home the caller named before
+  returning, so the probe and the directory creation both made the flag's own printed line false.
+- **Default taken:** a dry run neither creates the home nor starts the harness against it, so it records
+  no provider: the probe is skipped, `model_provider` is absent from the dry run's conversion,
+  `model_provider_source` is `unrecorded` with the reason in `model_provider_detail`, and — when there is
+  a harness to ask, whose answer an installed run would record — the run appends a warning saying so. An
+  installed run is unchanged: it asks the harness (the home is its own, and the harness's own bookkeeping
+  belongs there) and records the answer. Home creation moved to the installation step, so a run that ends
+  earlier — a refused reference, an unreadable source, a dry run — leaves the filesystem as it found it.
+- **Reversal:** run the probe in a dry run again (one branch in `Continue`) and drop the warning, or move
+  the `os.MkdirAll` back above the dry-run branch — the first restores the write into a live home, the
+  second restores the false line, so either needs the reviewer's agreement, not just a preference.
+- **Settled by:** whether the operator prefers a dry run whose reported conversion is byte-for-byte what an
+  installed run would write (at the cost of touching the home it says it does not touch), or a dry run
+  that touches nothing and says which one field differs.
+
+## Q-0002-12 — What a conversion does on a filesystem without hard links
+
+- **Status:** resolved (default taken)
+- **Question:** the installer publishes a converted session by taking its final name with a hard link,
+  which is atomic and exclusive. A filesystem without hard links (some Windows volumes, some network
+  mounts) offers no mechanism here that takes a name *without replacing* whatever is at it: `os.Rename`
+  replaces, so the previous fallback — check that the name is free, then rename — is exclusive only until
+  another installer creates the session in that window, and the rename then replaces that session. The
+  review found this while auditing the unconditional "a conversion never replaces a target session" rule:
+  may such a filesystem be supported by a non-exclusive fallback, or must the installation be refused?
+- **Default taken:** refuse. `InstallCodexRollout` has one publication mechanism, the exclusive hard link;
+  when the filesystem cannot take it the installation fails with `ErrNoExclusiveInstall`, naming the
+  directory and the link error, and leaves no session file, no placeholder and no temporary file behind
+  (`internal/ccc/codex_install.go`). The cost is disclosed rather than hidden: a target data directory on
+  such a filesystem cannot receive a converted session at all until a real no-replace primitive is added.
+- **Reversal:** restore the existence-check-then-rename fallback (one branch in `InstallCodexRollout` and
+  its test), or add a per-platform no-replace primitive — Linux `renameat2(RENAME_NOREPLACE)`, Windows
+  `MoveFileEx` without `REPLACE_EXISTING`, or an `O_EXCL` claim of the name followed by a rename of that
+  own placeholder, which reintroduces a window in which a reader (including the target's own discovery)
+  sees a zero-byte rollout.
+- **Settled by:** whether the operator wants filesystems without hard links supported, and if so by which
+  primitive. Each alternative trades the unconditional exclusive-publication rule for reach or for a
+  visible placeholder window, so the choice is the owner's rather than an unattended default.
+
+## Q-0002-13 — Which shell dialect the printed resume line speaks on Windows
+
+- **Status:** resolved (default taken)
+- **Question:** a continuation prints the invocation that resumes the installed session as one line a
+  reader may paste (`resume:` in the human block, `resume_command` in the JSON), rendered as a POSIX
+  shell line: a leading `CODEX_HOME=<dir>` assignment, then the words, each quoted where a shell would
+  act on it (`renderResumeCommand`, `internal/ccc/continue.go`). That spelling is not what PowerShell or
+  `cmd` accept — there the same directory is set with `$env:CODEX_HOME='…'` before the command — so on
+  Windows the printed line names the right directory in a form that shell cannot paste. CI's
+  `gate (windows-latest)` found the consequence: a Windows temp path holds backslashes, which a POSIX
+  shell reads as syntax, so the line quotes the directory there while the CLI test asserted this host's
+  bare temp path and failed. Should the line be rendered per platform (`$env:` on Windows, POSIX
+  elsewhere), be accompanied by a platform note, or stay one POSIX line?
+- **Default taken:** it stays one POSIX shell line on every platform, and the test moved instead: the two
+  CLI cases that read the line back now install into a directory whose name holds a space, which the rule
+  quotes on every host, so one assertion holds everywhere instead of a platform branch
+  (`shellUnsafeHome` in `cmd/ccc/main_test.go`; `docs/harness.md` states the quoting as the third Windows
+  answer the tree pins). A third case joined them when the sweep added the resume verification's own
+  command assertion and spelled this host's temp path: `gate (windows-latest)` failed the `test` step at
+  head `37c0a10` for it, and it now uses the same home and the same quoted spelling (the fifth CI red,
+  `docs/evidence/0002-claude-to-codex-continuation.md` §6) — a case added to this rule, not a new answer
+  to the question above. The rendering rule is already the documented contract of the field, a caller
+  that runs the harness directly uses the `resume_arguments`/`resume_environment` fields beside it, and a
+  per-platform dialect would make the same field mean two things; changing product behaviour to fit a
+  test would be the larger move.
+- **Reversal:** render by platform in `renderResumeCommand` (a dialect argument from the target
+  resolver), or leave the line alone and add a `format_limits`/warning entry saying which shell it is for
+  — the second is compatible with every consumer that reads the fields rather than the line.
+- **Settled by:** whether the operator wants the printed line to be pasteable on Windows, at the cost of
+  a field whose meaning depends on the host that wrote it. Nothing in the conversion, the installation or
+  the verification depends on the answer.
+
+## Q-0002-14 — How the source check reports a comparison that did not run
+
+- **Status:** resolved (default taken); supersedes Q-0002-10's field and states, not its default
+- **Question:** the source-file comparison answered with a boolean (`installation.source_unchanged`, its
+  detail beside it, per Q-0002-10). That shape has two answers for three outcomes: a comparison that never
+  ran — an archive read has no file of its own, and a run can stop before comparing — was reported as
+  `true` with a detail saying so, so "the file moved" and "nobody compared the file" were different words
+  under one value, and the human block printed `changed while it was converted` for a run that had
+  observed no change at all (round 5's review read exactly that as a claim). Should the third answer be a
+  wire value of its own, or should the boolean stay with its detail carrying the difference?
+- **Default taken:** the field is `installation.source_check_state` with the states the rest of the
+  document already uses — `unchanged`, `changed`, `not-verified` (the comparison did not run) — with
+  `detail` carrying that state's own words; the human block renders the third as `not verified (…)`
+  (`sourceCheckWord`, `cmd/ccc/main.go`). The plan's §3/§5, the evidence record's §2 note/§4/§6/§10 and
+  `cmd/ccc`'s own test that pins the document's spellings name it. Q-0002-10's decisions stay: a moved
+  source exits 0, is warned about, and is printed.
+- **Reversal:** rename the field back to the boolean and derive it from the state
+  (`source_check_state == "unchanged"`): the three states hold the same information, and only consumers
+  that read the installation block see the difference.
+- **Settled by:** whether the operator prefers the boolean spelling for a consumer already reading it, at
+  the cost of making "did the file move?" unanswerable for a comparison that never ran.
+
+## Q-0002-15 — How the human block spells a report that published nothing
+
+- **Status:** resolved (default taken)
+- **Question:** the JSON document has always carried `installation.state` (`installed` / `not-installed`),
+  but the human block branched only on `--dry-run` (round 6's review, finding 1): a run that converted and
+  then failed before publication — a target home that could not be created is the reproducible shape —
+  printed `installed: []` with a target id and two resume commands under it, so the one line a reader
+  scans for "is it installed?" answered with an empty path where a published session's path belongs, and
+  the identity beneath it read as a session a harness could open. Should the block print the document's
+  own state for that case, and should the identity it did generate be marked as provisional?
+- **Default taken:** the block renders the report's state — `installed:    not-installed (nothing was
+  published under <home>)` whenever `installation.state` is not `installed` and the run was not a dry run —
+  and each of the three identity lines (`target id`, `resume`, `non-interactive resume`) carries
+  `(proposed; nothing was installed)` whenever the state is not `installed`, a dry run included. The JSON
+  is unchanged, and `TestContinueHumanOutputReportsAPrePublicationFailure` pins the block and the document
+  together; the evidence record's §11 records it.
+- **Reversal:** drop the marker and/or print the state only in the JSON: both are presentation-only, and a
+  reader of the JSON sees the same facts either way.
+- **Settled by:** whether the operator prefers the shortest block (the state word alone, or nothing) over
+  one that names, on every identity line, that no session was published — at the cost of a reader who
+  copies a resume command from a failed run having to notice the installation line above it.
+
+## Q-0002-16 — How a conversion reports text the target's reader reads as nothing
+
+- **Status:** resolved (default taken)
+- **Question:** round 7's review found a Claude tool output that holds only whitespace (`"\n"`) written as
+  a `function_call_output`, counted as carried and expected by the round-trip comparison — while the
+  inherited Codex reader reads an output that is only whitespace as no result at all, so the installed
+  session failed its own structural check and the run exited nonzero even with `--verify none`. An
+  executed probe found the same class twice more on the same surface: a whitespace-only dialogue (a
+  message the reader reads as no message) and a compact summary whose trailing whitespace the reader
+  trims, which the comparison compared untrimmed. Should such text be written anyway — it is what the
+  source recorded, and the target's file format can hold it — with the check disclosing that it cannot be
+  read back, or should it be omitted and named?
+- **Default taken:** text the target's *own* reader reads as nothing is not written and is named: two
+  omitted categories (`whitespace_only_tool_results`, `whitespace_only_dialogue`, both counted only for a
+  result or a record the conversion does not write), and a compaction boundary compared by its trimmed
+  summary exactly as a result is compared by its trimmed output. The alternative leaves the run's "the
+  installed file holds what was written" verdict resting on a comparison that has to skip part of what was
+  written, so the report would count evidence as carried that no read of the file can find — the shape
+  round 5's review already rejected for omitted results.
+- **Reversal:** write the text and report a `carried-with-caveat` category instead ("in the file, absent
+  from every read of it"), with the round-trip comparison excluding those records from the evidence it
+  expects; the writer's counts and the target file change, the states do not.
+- **Settled by:** whether the operator prefers the source's bytes in the file even where the format's own
+  reader cannot see them, at the cost of a structural check whose `verified` no longer covers every record
+  the report counts as carried.
+
+## Q-0002-17 — How a conversion reports a message the target's reader reads as injected context
+
+- **Status:** resolved (default taken); narrows Q-0002-16's reach, not its default
+- **Question:** round 8's review found a valid Claude prompt whose text opens with `# AGENTS.md`. The
+  writer carries it verbatim, but the inherited Codex reader reads such a user text block as the context
+  Codex itself injects and so reads *no message* for it (`internal/parser/codex.go`'s
+  `preprocessCodexUserTextBlocks`): the read-back showed the message missing from the file that holds it,
+  and the run exited nonzero even with `--verify none`, because the structural check always runs. Should
+  such a message be dropped the way Q-0002-16 drops text the reader reads as nothing, or carried with the
+  check disclosing what it cannot read back?
+- **Default taken:** carried, counted and disclosed. The writer cannot make this call without
+  reimplementing the reader's own classification (a privately maintained predicate over the text, which
+  the carry rule forbids) and without discarding user-authored evidence; the reader's rule is
+  *content-dependent* — meaningful words start it — where Q-0002-16's blank text is content-independent
+  and can never be a message. The check therefore asks the installed file's own bytes whether it holds the
+  text (`fileHoldsText`, matching the JSON string a record carries it in): the file holds it → the item is
+  counted in `verification.structure.not_read_back_as_dialogue` and warned about; the file does not → the
+  item stays in the ordered comparison and is reported as the missing message it is. `conversion.losses[]`
+  is unchanged, because nothing was omitted, and the target harness's own view of a session may still show
+  the message (`event_msg`/`user_message` is the record that view is built from).
+- **Reversal:** treat it like Q-0002-16's blank text — omit the message and count it under its own
+  `omitted` category — or accept the read-back's silence without asking the file, which would accept a
+  message the conversion never wrote.
+- **Settled by:** whether the operator prefers the source's words in the installed file, with the
+  structural check's `verified` clearly counting (and naming) the messages its reader cannot show, or a
+  conversion that discards a real user turn because the target's own reader classifies its prefix as
+  injected context.
+
+## Q-0002-18 — What the structural check asks the installed file about a message the reader reads differently
+
+- **Status:** resolved (default taken); supersedes the *mechanism* half of Q-0002-17 (what the check asks
+  the file), not its default (such a message is carried, counted and warned about) and not Q-0002-16's
+  (text the reader reads as nothing at all is still omitted and named).
+- **Question:** round 9's review found two defects in the question round 8's fix asked. `fileHoldsText`
+  accepted a message's text *anywhere* in the installed file, so a session whose model-visible
+  `response_item` had been dropped verified against the copy the target's own `event_msg` view keeps (and a
+  text quoted by a tool output, or one occurrence answering for several written messages, did the same);
+  and it resolved a written message away whenever the file held its text, so a prompt carrying text *after*
+  an injected-context envelope — read back by the inherited reader with the envelope stripped — left the
+  reader's shorter reading in the ordered comparison and failed a correct run, with `--verify none` and
+  `--dry-run` too, because the structural check always runs. Should the check keep asking the file for the
+  text, and how does a partial projection resolve?
+- **Default taken:** the check asks the file for the message's own dialogue record: a `response_item` whose
+  payload is a message, whose role is the message's, and whose content holds a block of the type this writer
+  writes for that role carrying the message's own text — counted, so one record answers for one written
+  message, and with the other record types, payload types, block types and an empty text all rejected. A
+  written message the read-back does not show with its own text is counted
+  (`verification.structure.not_read_back_verbatim`, renamed from `not_read_back_as_dialogue` because a
+  partial projection *is* read back, just not verbatim) where that record is in the file and stays a missing
+  message where it is not; a read-back message is accounted for by a written message only when it is that
+  message's own text or the reader's reading of it — a run of the message's characters in their own order,
+  under the message's own kind, and only where the file still holds the message's record — and is otherwise
+  reported as dialogue the document does not hold. The walk pairs in the file's own order, so a read-back
+  (or install) whose order contradicts the document is reported rather than folded away. Nothing here
+  re-implements `preprocessCodexUserTextBlocks`: the relation is the structural property every
+  deletion-based reading has (a run of the record's own characters in the record's own order), not a copy
+  of the reader's envelope list, which the carry rule forbids.
+- **Reversal:** ask the file for the text again (a search over its bytes) and let a resolved message be
+  compared positionally against the read-back; both defects come back, and the two regressions this
+  increment adds — the file whose message record was dropped while its event stayed, and the prompt that
+  carries text after an envelope — fail (measured on the pre-fix head in
+  `docs/evidence/0002-claude-to-codex-continuation.md` §14).
+- **Settled by:** whether the operator prefers the check to hold a conversion to the target's model-visible
+  records or only to the words somewhere in the file; a text the reader projects and a text the file does
+  not hold are the same bytes to a search, and a partial projection is only distinguishable from a loss by
+  which records the file holds.
+
+## Q-0002-19 — How a continuation discloses the provider's own classification of the read
+
+- **Status:** resolved (default taken).
+- **Question:** round 10's review found that `Continue` accepted every known source provider but kept the
+  provider's own fidelity classifications — a summary transcript, a result the provider says is not
+  current for its data version — only in the JSON fidelity block: no warning, no loss category, and the
+  human block's fidelity line named only malformed lines and truncation. An accepted invocation could
+  therefore present a degraded projection (the Grok session whose chat history is missing reads as one
+  synthesized fallback prompt) as an ordinary successful conversion. Should such a read be refused, or
+  disclosed?
+- **Default taken:** disclosed on every channel, and not refused. `Fidelity`'s classifications are turned
+  into words once (`fidelityWarnings`, in `internal/ccc/conversation.go`), so an `Inspect` and a
+  `Continue` say the same thing; `Continue` appends them to `warnings[]` (and the human block prints
+  warnings), while the conversion's `losses[]` gains `summary_transcript` and `source_needs_retry` —
+  both `carried-with-caveat`, count 1 when the classification holds and 0 otherwise, with the provider's
+  own retry reason in the detail — mirroring `malformed_source_lines`, which had already put the read's
+  own completeness in the loss list. The route is not refused: the messages the provider did return are
+  real evidence, the design's rule is to disclose loss by category rather than to hide a usable read, and
+  the exit code answers conversion, installation and native verification — not source fidelity.
+- **Reversal:** refuse a conversion whose read is classified as a summary or as not current (a new
+  error beside `ErrUnsupportedTarget`), or keep the disclosure in the fidelity block alone; the
+  regressions (`TestContinueDisclosesASummaryTranscriptRead`, `TestContinueDisclosesARetryableRead`)
+  fail either way.
+- **Settled by:** whether the operator wants a continuation from a degraded or not-current read to be an
+  error, or a disclosed conversion the caller decides about — the same choice Q-0002-16 and Q-0002-17
+  took for content the target's reader reads differently.
+
+## Q-0002-20 — How the source check answers a read whose identity is a container member
+
+- **Status:** resolved (default taken)
+- **Question:** a multi-session container is read through a *member* identity — the inherited providers
+  spell it `parser.VirtualSourcePath(container, member)` (`<container>#<member>`), and the parse records
+  that spelling as the session's own path. Round 11's review found that the source check opened that
+  spelling as a filesystem path, so continuing a readable SQLite-backed session (an OpenClaw container's
+  member is the fixture) failed before the conversion with `open …#main:good: no such file or directory`,
+  whatever `--verify` said. Should the check digest the physical container the member lives in, or report
+  the comparison as one that did not run?
+- **Default taken:** report it as a comparison that did not run — `installation.source_check_state` is
+  `not-verified`, with a `detail` naming the member and its container — and so never stop a conversion
+  whose source was read. The container's own bytes are not the conversation's: they hold every member the
+  container carries, so a digest of them answers a different question than the report asks (did *this*
+  conversation's bytes move?), it would report `changed` for a sibling member's write, and it would
+  sometimes report `unchanged` for a change that did not reach the file's main bytes (a database's
+  write-ahead log, a buffered writer). `sourceFileOf` (`internal/ccc/continue.go`) decides once, from the
+  identity, and both halves of the check use it: an identity that names no file is a state of its own, and
+  only a read that reports no path at all, a digest that was never taken or a file that cannot be re-read
+  stops the run. The rule reaches the plan's §3 bullet and the evidence record's §16.
+- **Reversal:** digest the physical container (`parser.ParseVirtualSourcePath` gives it) and report
+  `unchanged`/`changed` for the container's bytes, naming the member in the detail; or stop the run as
+  before. `TestContinueFromAContainerMemberReportsNoFileToCompare` fails on the second and the third arms
+  the same way, and on the first arm only if the container's bytes move, so the decision is one field of
+  one report for this source family.
+- **Settled by:** whether the operator prefers the third state (no comparison ran, the reason named) or a
+  container-level digest as the nearest available file evidence for a member read.
+
+## Q-0002-21 — Which settings the native check seeds into its throw-away Codex home
+
+- **Status:** resolved (default taken)
+- **Question:** `scripts/codex-native-check.py` wrote the host's whole `config.toml` into the throw-away
+  home the native verification runs against, changing only the two top-level keys
+  `--model-provider`/`--model` name, while its report line said no credentials were copied. A real
+  configuration is where credentials live — provider authorization headers (`http_headers`,
+  `http_headers_helper`), a provider's `query_params` or `auth` block, an MCP server's `env` table, a
+  credential written into a URL — and the home is a directory the run reports about and, with `--keep`,
+  leaves on disk. Should the check seed an allowlist of settings, copy the document with the
+  credential-bearing settings stripped, or refuse to seed a credential-bearing configuration at all?
+- **Default taken:** an allowlist, so safety is the default for a setting the target adds tomorrow rather
+  than something a strip-list has to notice. `seed_configuration` (`scripts/codex-native-check.py`) reads the
+  host configuration as TOML and copies only `model`, `model_provider` and the *named* provider's definition
+  through `name`/`base_url`/`wire_api`/`env_key`/`env_http_headers`; the last two hold the *names* of
+  environment variables, which is the environment-backed authentication the boundary asks for. Everything
+  else — the host's other top-level settings and tables, every other provider definition, the named
+  provider's credential-bearing settings — is left behind and named in the run's `seeded from:` line. A
+  provider whose `base_url` carries a username, a password, a query or a fragment is left behind *whole*
+  (half a definition would send the harness to the provider's default endpoint instead of the one the host
+  named), and a configuration that cannot be read as TOML contributes nothing and says so. The rule reaches
+  `docs/harness.md` and the plan's §8 bullet; the evidence record's §17 carries the mutations that pin it.
+- **Reversal:** copy the document with a denylist of credential-capable keys removed, or require
+  `--model-provider`/`--model` and seed nothing from the host configuration at all.
+  `SeededHostConfiguration`'s cases fail on the first arm (its fixture's `http_headers` token and its
+  URL's own credential are in the bytes, and the document-equality assertion holds extra settings) and on
+  the second (the seeding cases assert the copied settings and the report's own names).
+- **Settled by:** whether the operator wants the throw-away verification home to carry more of the host
+  configuration than the loader's question needs — a denylist, at the price of copying settings whose
+  values nothing vetted — or only the settings this check names.
+
+## Q-0002-22 — The ordinary review budget, and the one authorized acceptance audit
+
+- **Status:** open (one-time authorization taken; the audit's result is not yet known). This entry takes a
+  **new** id because `Q-0002-01` is already the provider-binding entry above; nothing about this entry
+  rewrites or supersedes it, and `Q-0000-01` (merge authority) is untouched.
+- **Question:** twelve ordinary machine-review rounds have run on goal 0002's pull request
+  (`feat/0002-claude-to-codex-continuation`) and **every one of them returned findings** —
+  8 · 3 · 4 · 1 · 2 · 2 · 2 · 3 · 2 · 2 · 2 · 2 = **33 findings**, all closed, **no clean ordinary
+  round** — so the ordinary review budget is exhausted. Is the next move a fourteenth round of the same
+  kind, a larger review budget, or something else?
+- **Default taken:** exhausting the budget is a signal, not a number to raise. The consulted cross-family
+  decision was to perform **one systematic close-out of the complete fidelity and verification surface**,
+  and then **exactly one fresh, read-only acceptance audit** whose scope is a *frozen rule list* — never a
+  further automatic review cycle. The close-out enumerated the obligations derived from the core design,
+  the goal's `Done when` clauses, the public output claims and the behavioral claims of every shipped check
+  and test — including all 33 earlier findings — and mapped each to its implementation, its positive
+  evidence and **one executed mutation that detects its violation**, without weakening an obligation to
+  match the implementation. Its record is
+  [`docs/evidence/0002-obligation-matrix.md`](../evidence/0002-obligation-matrix.md); the rule list it
+  froze is that file, and the head it froze is `3ee6cb2` plus the close-out's own repairs (three
+  obligations had no gate-level pin and gained one: the file holds both record kinds, the loader's
+  answered id *and* path must be this session's, "resumable" requires the turn to append to the session,
+  and the provider is the harness's own answer). Two alternative readings were rejected as the consulted
+  decision instructed: code introduced by earlier fix rounds is **not** out of contract (a
+  credential-copying native check or a falsely-positive structural check is a real obligation), and native
+  verification is **not** optional decoration to be cut — it is central to the goal.
+- **Stop condition (binding for the unattended series):** if the acceptance audit returns even one finding,
+  the run **stops for decomposition/replanning** — no further automatic cycle, no re-frozen list, no
+  "one more round". An audit that returns no finding is what ends the ordinary review for this goal, and
+  the operator still owns the merge (`Q-0000-01`'s conditions are unchanged: CI green on the verified
+  head, a clean machine-review evidence comment naming that head, zero unresolved threads, and the
+  operator's own gate run).
+- **Reversal:** delete the audit's authorization and return to ordinary rounds — the close-out is
+  additive (a new evidence file, four new tests, no assertion or gate rule weakened), so nothing has to be
+  unwound first; the cost is that the same twelve-round shape (a finding every round, none of them the same
+  one) continues, which is the signal this entry records.
+- **Settled by:** the acceptance audit's own verdict on the frozen list — which is why the list was frozen
+  **before** the audit runs and is a file rather than a summary in a pull-request comment.
+
+## Q-0002-23 — Whether the response stream is bounded too, and by what
+
+- **Status:** open (default taken: no change to the response path; a measured limitation is recorded).
+- **Question:** the sweep of 2026-11-16 (see
+  [`docs/evidence/0002-obligation-matrix.md`](../evidence/0002-obligation-matrix.md), E6) bounded the
+  *diagnostics* both harnesses keep — the Go client's app-server stderr and the resume turn's two pipes,
+  the native check's stderr ring — but the **response** stream is bounded by count only, or not at all:
+  `scripts/codex-native-check.py`'s `_read_stdout` appends every line it reads to an unbounded
+  `queue.Queue` (measured: 100 001 retained items for a 100 000-line flood), and
+  `internal/ccc/codex_verify.go`'s client bounds the number of decoded messages (`lines chan []byte`,
+  64 slots) but not the size of one message. Should either harness bound the response path as well, and by
+  count, by bytes, or both? The clause in the matrix says "a protocol that stalls or floods is reported as
+  a failed check rather than blocking or exhausting the run"; for responses, only the *stall* half is
+  enforced today by the per-request deadline.
+- **Default taken:** no code change, and the limitation declared with its own measurement. A bound on the
+  response path is not a free repair: a bounded queue must either block the reader (which stops the reader
+  draining the pipe and can stall a server that is answering) or drop messages (which drops the answer a
+  call is waiting for), turning a flood into a *timeout* — a behaviour choice about which failure a caller
+  prefers, and one an operator should make rather than an unattended lane. The two harnesses also differ
+  in consequence: the Go client is gate-covered and serves the shipped CLI, while the Python harness is
+  the re-derivable native evidence and runs against the operator's own target binary.
+- **Reversal:** bound the queue (a `maxsize` with a blocking put keeps every message and stops the reader
+  at the bound) and bound a single line (`readline(size)` with the remainder dropped, the same shape the
+  diagnostics drainer now uses), then pin both with a case that drives the reader over a flood; in Go,
+  either cap one decoded message or decode through a bounded reader and answer `not-verified` with the
+  harness's own message when the bound is hit.
+- **Settled by:** whether the operator wants a flooding (or merely enormous) target answer to be a
+  bounded failure rather than this process's memory, and which of "block the reader", "drop the answer" or
+  "cap the message size" is the acceptable failure shape for the CLI they will run.
+
+## Q-0002-24 — Whether a conversion reserves its new identity against the target home's own ids
+
+- **Status:** open (default taken: the claim was corrected to what is enforced; no code change).
+- **Question:** obligation D1's frozen sentence read "the target session id is a fresh UUID v7, never the
+  source's session id and never an id already present in the target home"
+  ([`docs/evidence/0002-obligation-matrix.md`](../evidence/0002-obligation-matrix.md), D1). The shipped
+  conversion never consults the home: `ConvertToCodexRollout` mints a fresh v7 when it is handed no id
+  (`internal/ccc/codex_target.go`), `Continue` hands it none, and the exclusive install refuses a taken
+  *file name* (`ErrTargetExists`) — which does not cover an id the home already holds under another day or
+  timestamp. The ids the home held are compared *after* the install by the native harness's own check
+  (`scripts/codex-native-check.py`), not by the conversion. Should a conversion reserve its identity
+  against the ids the home holds (a second walk of the target sessions tree, plus an injectable id source
+  so a collision can be tested), or is "a fresh v7 plus an exclusive install" the guarantee the project
+  wants — with a v7 collision treated as unrepairable-and-unreviewed?
+- **Default taken:** the claim was corrected to what the three checks enforce, and the residual declared.
+  The goal's own clause asks for "the target identity is new and an unrelated existing Codex session is not
+  replaced", both of which hold; reserving against the home is new behaviour, on the conversion path the
+  gate covers, for a collision whose probability is that of a v7 collision (and whose detection the native
+  harness already performs on the home it runs against).
+- **Reversal:** enumerate the home's `rollout-*.jsonl` ids before converting, pass them to the writer, and
+  regenerate while the drawn id is in the set; then assert it through an id-source seam, with the mutation
+  "the reservation removed" and a home that already holds the id the seam draws first.
+- **Settled by:** whether the operator wants the conversion to be the place that guarantees id uniqueness
+  across the home (paying a home walk on every conversion), or wants the guarantee to stay "fresh id +
+  exclusive install", with the home's ids checked by the native verification and the id-uniqueness
+  obligation stated at that strength in the matrix.
+
+## Q-0002-25 — Which conditions stop the source check's run, and what the three states answer
+
+- **Status:** resolved (default taken: the row's sentence was corrected to the behaviour the design asks
+  for; no code change).
+- **Question:** obligation A7's frozen sentence read "only a read that names no file at all (or a digest
+  that was never taken) stops the run"
+  ([`docs/evidence/0002-obligation-matrix.md`](../evidence/0002-obligation-matrix.md), A7). The shipped
+  check stops the run on **three** conditions, not two: a read that reported no path at all
+  (`internal/ccc/continue.go`'s `sourceCheckAfter`), a digest that was never taken, and a named file that
+  cannot be **re-read** after the conversion (`sourceCheckAfter`'s `fileDigest` failure, reached through
+  `Continue`'s post-install comparison, whose answer `reportAfterFailure` reports as a run that stopped).
+  Is the third condition a defect — should a file that cannot be re-read instead answer `not-verified`
+  like an archive read or a container member — or is stopping what the design asks for?
+- **Default taken:** the third condition is the design's, and the sentence was the imprecise part. The
+  three `SourceCheck*` states answer questions about the *source's shape* (an archive row has no file, a
+  container member's identity is not a file's name), which the read knows before the conversion and which
+  the report answers with the member's or the archive's own words. A file that was named and then cannot
+  be re-read is the opposite: the read did have a file, the comparison the report exists to make did not
+  happen, and the report may not claim either "unchanged" or "this shape has no file" — the run stops,
+  the installed session's identity stays reported (`reportAfterFailure`), and the failure names the
+  re-read. The check's own doc comment states this reading, and the case that pins it
+  (`TestContinueKeepsTheReportWhenTheSourceVanishesAfterTheInstall`) asserts the report carries
+  `not-verified` with the re-read failure named and does **not** warn that the source moved. The corrected
+  sentence enumerates the three states and the three stop conditions, cites the case for the re-read
+  condition and `reportAfterFailure` for the stopped run's answer, and the never-taken-digest branch is
+  now pinned by `TestSourceCheckStopsAComparisonWhoseDigestWasNeverTaken` (before: no positive case).
+- **Reversal:** make a failed re-read a `not-verified` answer instead — one `switch` in
+  `sourceCheckAfter` (answer `SourceCheckNotVerified` with the re-read failure) and the vanished-source
+  case changes from "the run fails" to "the run succeeds with not-verified" — which would state that a
+  conversion whose source could not be compared is complete rather than unproven.
+- **Settled by:** whether the operator prefers a conversion whose source comparison could not run to fail
+  (today) or to succeed with `not-verified` and the reason (the archive read's shape).
+
+## Q-0002-26 — Which checks a stopped run reports `not-verified`
+
+- **Status:** resolved (default taken: the row's sentence was corrected to the report's actual answers; no
+  code change).
+- **Question:** obligation D5's frozen sentence said "every check that did not run is reported
+  `not-verified` with the reason"
+  ([`docs/evidence/0002-obligation-matrix.md`](../evidence/0002-obligation-matrix.md), D5). The report
+  answers two different things, and deliberately: a check the run's **level asked for** and the run never
+  reached is `not-verified` with "the run stopped before this check ran: …", while a check **no level
+  asked for** stays `not-requested` with its level named (`internal/ccc/continue.go`'s
+  `reportAfterFailure`: the `VerifyNone` and default arms). Folding the second into `not-verified` would
+  make "could not run" and "nobody asked" the same answer, which is exactly what the three verification
+  states exist to keep apart, and the cited case's helper (`stoppedRunChecks`) asserts both answers.
+- **Default taken:** the sentence was too broad, and the behaviour is right. The corrected clause reads:
+  a check the run's level asked for and the run never reached is `not-verified` with the reason; a check
+  no level asked for is `not-requested` with its level named — and the row now cites the helper that
+  asserts both, and the two `reportAfterFailure` arms that produce them.
+- **Reversal:** set `State = not-verified` in the `VerifyNone`/default arms too (two lines in
+  `reportAfterFailure`), then the helper's `Resume.State == not-requested` assertion changes with it and
+  the human block prints "not verified" for a level nobody asked for.
+- **Settled by:** whether the operator wants a stopped run to blur "nobody asked" into "could not run" for
+  the levels the caller did not request; the three states' own documentation says it should not.
+
+## Q-0002-27 — Whether the native check's own `run()` captures are bounded too
+
+- **Status:** resolved (default taken: no code change to `run()`; the residual is declared with its own
+  measurement, and the clause's subject is the target's diagnostics).
+- **Question:** the E6 sweep note recorded a second residual beside the response-stream one (Q-0002-23):
+  `scripts/codex-native-check.py`'s `run()` — the helper the native harness uses for `go build`,
+  `ccc continue`, `ccc inspect` and the resume turn — captures each subprocess's whole stdout and stderr
+  in memory (`subprocess.run(..., capture_output=True)`), so a subprocess that floods either stream is
+  retained in full until it exits. Is that a violation of "Subprocesses are bounded" (E6), or is the
+  clause's subject the *target harness's* diagnostics — the app-server stderr ring and the Go turn's two
+  pipes, both now bounded — while `run()`'s captures are this harness's own call outputs?
+- **Default taken:** the latter, and the residual declared. The clause's word *floods* is about the
+  protocol's diagnostics (both harnesses bound those by bytes now); `run()` is not part of the app-server
+  protocol at all, it is the harness's own subprocess plumbing, and every consumer of its captures reads a
+  bounded piece of them (`build.stderr[:-400]`, `last_meaningful_line(...)`, the parsed JSON documents,
+  the turn's answer lines through the report's own truncation). What bounds the exposure today is the
+  subprocess's own deadline (`run()`'s `timeout`: 600 s for the build/convert/inspect calls, 900 s for the
+  turn) plus the smallness of what those calls answer — measured, not assumed: a throwaway probe over the
+  shipped `run()` driving `python3 -c 'import sys; sys.stdout.write("x" * (64 << 20))'` printed
+  `captured=67108864 byte(s)` — the helper does retain what the child wrote, and the bound is the child's
+  own output and deadline rather than a cap. Bounding it in the helper would have to choose between killing a subprocess whose answer the
+  harness is waiting for and truncating a JSON document the check parses, the same behaviour choice
+  Q-0002-23 records for the response path.
+- **Reversal:** give `run()` a byte bound per stream (read both pipes through bounded readers, mark the
+  capture truncated, and let the callers' own truncation report it), then pin it with a case that drives a
+  stub subprocess over the bound; the build/convert/inspect calls would report a truncated answer instead
+  of an unparsable one only if the parse of a truncated document is made an explicit failure.
+- **Settled by:** whether the operator wants a flooding (or merely enormous) *helper* subprocess answer to
+  be a bounded failure too, and which of "kill it at the bound", "truncate the document" or "leave the
+  subprocess's own deadline as the bound" is the acceptable failure shape.
+

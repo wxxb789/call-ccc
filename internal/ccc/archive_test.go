@@ -745,6 +745,54 @@ func TestDeletedSourcePathFallsBackToTheArchive(t *testing.T) {
 	}
 }
 
+// TestUnreadableSourceFallsBackToTheArchive pins the sibling of the deletion rule above: a source the
+// reader *resolved* and then could not read -- a fingerprint that failed at the I/O level -- is a
+// warning on the way to the archive, not the end of the inspection. The reader answers such a failure as
+// a provider that could not read the source (ErrProviderFailed), the classification this inspection
+// already reports as a warning; before that it escaped as a bare error and the archived session the
+// reference names was never reported at all.
+func TestUnreadableSourceFallsBackToTheArchive(t *testing.T) {
+	ctx := context.Background()
+	cfg := fixtureConfig(t)
+	sourcePath := fixturePath(t, filepath.Join("claude", "-home-user-code-example-api",
+		claudeFixtureRef.ID+".jsonl"))
+	cfg = archiveFixtureCopy(t, cfg, sourcePath,
+		filepath.Join("-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"))
+
+	reader, provider := readerOverFixedProvider(t, cfg, parser.AgentClaude)
+	provider.source = parser.SourceRef{
+		Provider:       parser.AgentClaude,
+		Key:            sourcePath,
+		DisplayPath:    sourcePath,
+		FingerprintKey: sourcePath,
+	}
+	provider.fingerprintErr = errors.New("input/output error")
+
+	inspection, err := Inspect(ctx, InspectOptions{
+		Ref:         claudeFixtureRef,
+		Config:      cfg,
+		Reader:      reader,
+		ArchivePath: cfg.DBPath,
+	})
+	if err != nil {
+		t.Fatalf("inspecting a source that could not be read: %v", err)
+	}
+	if inspection.Source != nil {
+		t.Errorf("the inspection reported a source it could not read: %+v", inspection.Source.Identity)
+	}
+	if inspection.Archive == nil {
+		t.Fatalf("the archived session was not reported: %v", inspection.Warnings)
+	}
+	if inspection.Archive.Status.SessionID != claudeFixtureRef.ID {
+		t.Errorf("the inspection reports %q, want %q",
+			inspection.Archive.Status.SessionID, claudeFixtureRef.ID)
+	}
+	warnings := strings.Join(inspection.Warnings, "\n")
+	if !strings.Contains(warnings, "input/output error") {
+		t.Errorf("the inspection does not carry the source's own failure: %v", inspection.Warnings)
+	}
+}
+
 // reconcileVanishedSource asks the inherited sync engine to process a source path that no longer
 // exists, the way a watcher's changed-path pass does. AgentsView's answer is the archive state this
 // package reads: the stored row is marked source-missing and its conversation is kept.
@@ -1809,14 +1857,29 @@ func TestCompareMessagesNamesEveryDifference(t *testing.T) {
 	})
 }
 
-// claudeBashTranscript writes one small Claude session -- a user turn and a `Bash` call whose result the
-// transcript records verbatim -- under a throw-away provider root, and returns that root's configuration
-// with the file's path. Bash is not one of the inherited default configuration's blocked result
-// categories, so an archive of the file keeps the body: two same-length outputs are what a case needs to
-// hold an archive's recorded outcome against a later transcript of the same session. The `is_error` flag
-// is the provider's own marker for a failed call, which the parser maps to the result's `errored` status
-// (internal/parser/content.go), so a case can hold two transcripts apart by that field alone.
-func claudeBashTranscript(t *testing.T, output string, isError bool) (config.Config, string) {
+// claudeTranscriptShape selects the native shapes one generated transcript carries. The user turn and
+// the `Bash` call with its recorded result are always there; a case may add the shapes its rule needs.
+// Bash is not one of the inherited default configuration's blocked result categories, so an archive of
+// the file keeps the body: two same-length outputs are what a case needs to hold an archive's recorded
+// outcome against a later transcript of the same session.
+type claudeTranscriptShape struct {
+	// resultOutput is the tool result's recorded content, verbatim, and resultIsError marks it the
+	// provider's own failed call (`is_error`).
+	resultOutput  string
+	resultIsError bool
+	// blankDialogue puts a whitespace-only text block on the tool-result record. A blank record without
+	// tool evidence is dropped by the inherited parser's own guard, so this is the shape in which a
+	// whitespace-only dialogue really arrives: beside evidence the record keeps.
+	blankDialogue bool
+	// compactSummary appends a compaction summary record. The parser joins that record's text blocks
+	// verbatim (`extractCompactSummary`), so a summary that ends in whitespace reaches the document as
+	// the provider wrote it.
+	compactSummary string
+}
+
+// writeClaudeTranscript writes one small Claude session in the selected shapes under a throw-away
+// provider root, and returns that root's configuration with the file's path.
+func writeClaudeTranscript(t *testing.T, shape claudeTranscriptShape) (config.Config, string) {
 	t.Helper()
 	const toolUseID = "toolu_01Folded0000000000000001"
 	root := t.TempDir()
@@ -1825,11 +1888,13 @@ func claudeBashTranscript(t *testing.T, output string, isError bool) (config.Con
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("preparing the provider root: %v", err)
 	}
-	result := `{"content":` + jsonString(t, output) + `,"tool_use_id":"` + toolUseID +
-		`","type":"tool_result"}`
-	if isError {
-		result = `{"content":` + jsonString(t, output) + `,"is_error":true,"tool_use_id":"` +
-			toolUseID + `","type":"tool_result"}`
+	result := `{"content":` + jsonString(t, shape.resultOutput)
+	if shape.resultIsError {
+		result += `,"is_error":true`
+	}
+	result += `,"tool_use_id":"` + toolUseID + `","type":"tool_result"}`
+	if shape.blankDialogue {
+		result = `{"text":"\n","type":"text"},` + result
 	}
 	lines := []string{
 		`{"cwd":"/home/user/code/example-api","message":{"content":"Check the retry policy."},` +
@@ -1840,12 +1905,27 @@ func claudeBashTranscript(t *testing.T, output string, isError bool) (config.Con
 			`"timestamp":"2026-05-04T09:15:04.000Z","type":"assistant","version":"1.0.30"}`,
 		`{"message":{"content":[` + result + `]},"timestamp":"2026-05-04T09:15:06.000Z","type":"user"}`,
 	}
+	if shape.compactSummary != "" {
+		lines = append(lines, `{"isCompactSummary":true,"message":{"content":[{"text":`+
+			jsonString(t, shape.compactSummary)+`,"type":"text"}]},`+
+			`"timestamp":"2026-05-04T09:15:08.000Z","type":"assistant"}`)
+	}
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
 		t.Fatalf("writing the transcript: %v", err)
 	}
 	cfg := fixtureConfig(t)
 	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentClaude: {filepath.Join(root, "claude")}}
 	return cfg, path
+}
+
+// claudeBashTranscript writes one small Claude session -- a user turn and a `Bash` call whose result the
+// transcript records verbatim -- under a throw-away provider root, and returns that root's configuration
+// with the file's path. The `is_error` flag is the provider's own marker for a failed call, which the
+// parser maps to the result's `errored` status (internal/parser/content.go), so a case can hold two
+// transcripts apart by that field alone.
+func claudeBashTranscript(t *testing.T, output string, isError bool) (config.Config, string) {
+	t.Helper()
+	return writeClaudeTranscript(t, claudeTranscriptShape{resultOutput: output, resultIsError: isError})
 }
 
 // TestInspectReportsADifferentFoldedResultBody pins the comparison end to end for a folded tool result:

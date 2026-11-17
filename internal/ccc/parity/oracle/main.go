@@ -23,6 +23,7 @@ func main() {
 	fixtures := flag.String("fixtures", "", "directory holding one subdirectory per provider")
 	workDir := flag.String("work-dir", "", "isolated directory the archive is written into")
 	provider := flag.String("provider", "", "fixture to compare")
+	fixture := flag.String("fixture", "", "the session file to read, relative to the provider's root")
 	out := flag.String("out", "-", "file to write the dump to, or - for stdout")
 	flag.Parse()
 
@@ -44,6 +45,7 @@ func main() {
 		Fixtures: *fixtures,
 		WorkDir:  dir,
 		Provider: *provider,
+		Fixture:  *fixture,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "oracle:", err)

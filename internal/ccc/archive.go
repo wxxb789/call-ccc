@@ -584,6 +584,7 @@ func messageFromArchive(archived db.Message) Message {
 	}
 	if archived.DialogueText != nil {
 		message.Dialogue = *archived.DialogueText
+		message.DialogueProjected = true
 	}
 	for _, call := range archived.ToolCalls {
 		message.ToolCalls = append(message.ToolCalls, ToolCall{
@@ -599,24 +600,31 @@ func messageFromArchive(archived db.Message) Message {
 		})
 		// A tool result the source recorded as its own message is stored as events on the call
 		// instead; carrying them keeps the result visible in an archive read rather than silently
-		// gone.
+		// gone. The archive stores result text, not the provider's encoded content field (the write
+		// path decodes it into the column), so these are text a writer must use as it stands.
 		for _, event := range call.ResultEvents {
 			message.ToolResults = append(message.ToolResults, ToolResult{
-				ToolUseID:   event.ToolUseID,
-				Status:      event.Status,
-				Source:      event.Source,
-				ContentRaw:  event.Content,
-				ContentSize: event.ContentLength,
+				ToolUseID:      event.ToolUseID,
+				Status:         event.Status,
+				Source:         event.Source,
+				ContentRaw:     event.Content,
+				ContentSize:    event.ContentLength,
+				ContentDecoded: true,
 			})
 		}
 	}
 	for _, result := range archived.ToolResults {
+		// A result row of the archive holds stored text, not the provider's encoded content field: the
+		// raw payload exists only while a parse is being written, and the write path decodes it into the
+		// column. (Today the archive read path does not fill this field at all -- a call's outcomes
+		// arrive as its events, carried just above -- so this loop is for the shapes that do.)
 		message.ToolResults = append(message.ToolResults, ToolResult{
-			ToolUseID:   result.ToolUseID,
-			Status:      result.Status,
-			Source:      result.Source,
-			ContentRaw:  result.ContentRaw,
-			ContentSize: result.ContentLength,
+			ToolUseID:      result.ToolUseID,
+			Status:         result.Status,
+			Source:         result.Source,
+			ContentRaw:     result.ContentRaw,
+			ContentSize:    result.ContentLength,
+			ContentDecoded: true,
 		})
 	}
 	return message

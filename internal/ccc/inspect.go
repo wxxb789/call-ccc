@@ -129,32 +129,7 @@ func Inspect(ctx context.Context, opts InspectOptions) (Inspection, error) {
 		report := reportFrom(conversation)
 		inspection.Source = &report
 		sourceMessages = conversation.Messages
-		if report.Fidelity.NeedsRetry {
-			// The provider returned a conversation *and* said the result is not current: a Codex fork
-			// whose parent page cannot be read keeps the copied parent messages until that parent
-			// resolves, so the messages are reported while their session boundary is named as
-			// unresolved. An inspection that printed the conversation alone would present those copied
-			// parent turns as this session's own recorded history.
-			reason := ""
-			if report.Fidelity.RetryReason != "" {
-				reason = " (" + report.Fidelity.RetryReason + ")"
-			}
-			inspection.Warnings = append(inspection.Warnings, fmt.Sprintf(
-				"the provider classified this read as needing a retry%s; it returned the messages it "+
-					"could read, which may not be the session's complete recorded history",
-				reason))
-		}
-		if report.Fidelity.TranscriptFidelity == parser.TranscriptFidelitySummary {
-			inspection.Warnings = append(inspection.Warnings,
-				"the provider classified this read as a summary transcript: it is a degraded fallback "+
-					"for a source it could not read in full, not the session's recorded transcript")
-		}
-		if report.Fidelity.UnresolvedToolOutputs > 0 {
-			inspection.Warnings = append(inspection.Warnings, fmt.Sprintf(
-				"%d tool result(s) name persisted output this machine could not read; their content is "+
-					"the placeholder that says where it was saved, not the output",
-				report.Fidelity.UnresolvedToolOutputs))
-		}
+		inspection.Warnings = append(inspection.Warnings, fidelityWarnings(report.Fidelity)...)
 	case errors.Is(err, ErrNotFound):
 		inspection.Warnings = append(inspection.Warnings, fmt.Sprintf(
 			"no readable source session for %s:%s", opts.Ref.Provider, opts.Ref.ID))

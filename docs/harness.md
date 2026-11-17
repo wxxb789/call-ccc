@@ -49,7 +49,11 @@ platform probe answering the way Windows answers without a C compiler (`sys.plat
 suite's own Windows-shaped tool lookup) — and assert that every case still ran and none flipped. The
 child's copies of those two cases skip, keyed on `CALLCCC_SUITE_SELFCHECK`, so a nested run does not
 nest a third. A case that reaches for a tool this host happens to have, or that reads the platform it
-runs on, therefore fails in the selftest step instead of only in the one CI job nobody can watch; the
+runs on, therefore fails in the selftest step instead of only in the one CI job nobody can watch; a
+child that breaks is named by the case that read it — the verbose runner leaves a case's own line
+dangling, with no status after its `...`, when the case's only reports come from subtests, and that
+line is not a case line: reading it as one raised `IndexError` in the parent and the broken child's
+name never reached the gate's log (a case here runs that shape and pins that the case is named); the
 Windows answer is a simulation executed on the running host, never an assertion from memory about a
 machine nobody in the loop has.
 
@@ -78,12 +82,25 @@ It verifies, in this order:
    where the checkout really stores links that way, which git's own `core.symlinks=false` (or a
    platform that cannot create symlinks) states; a broken `core.symlinks` query on a tree git is
    answering for fails the step naming the probe, and the run reports how many file-form links it
-   accepted. `git status` is the one answer a path can be configured to suppress: an `assume-unchanged`
+   accepted. The shape answer itself is read through a named seam (`symlink_target`), so a case can put
+   the file form at a link record and say what target the link holds on a host whose checkouts cannot
+   create one; "is anything at this path?" and "what bytes does it hold?" stay with the filesystem,
+   because git stores a link as its target text and the file form's bytes are that same content. A link
+   whose target the *platform* re-spells is compared in that spelling: Git for
+   Windows cannot create a symlink whose target holds `/` (its `mingw_create_symlink` rewrites each
+   separator to `\`), so the link a checkout there creates for the pin's `../../x` reads back as
+   `..\..\x` — the same destination, hashing to no blob the manifest holds. Only the separators are
+   folded, only for a link, and only on the platform whose symlink layer does it, so a POSIX checkout
+   and a target that changed by anything else are still failures; the run names how many links it
+   matched that way. `git status` is the one answer a path can be configured to suppress: an `assume-unchanged`
    or `skip-worktree` index flag keeps an edited file out of git's report while the pinned blob stays in
    the index, so a check that read "git reports nothing modified" as "the file is the pin's copy" would
    pass for modified carried source. The record's *mode* is additionally compared with git's index
    (what a fresh clone receives), and a `git status` answer saying the file differs from the index is
-   still a failure — a `git status` that cannot answer fails the step instead of dropping the rule;
+   still a failure — except for a link whose target was matched in this platform's spelling: git there
+   spells that link the same way and reports a checkout the pin itself creates, so its answer about that
+   one link adds nothing to the shape and index rules around it — and a `git status` that cannot answer
+   fails the step instead of dropping the rule;
 4. no carried path matches the tree's ignore rules, which would make `git add` skip it in a fresh
    clone;
 5. nothing git would add sits inside the tree unexplained: a tracked or untracked-but-not-ignored
@@ -136,11 +153,13 @@ pin), so real drift in that tree is reported as `FAIL` with its offenders rather
 step, because it needs network and a second checkout: it fetches the pinned revision into a scratch
 directory, copies `internal/ccc` into it so both sides run the *same* oracle program over the *same*
 fixture bytes, runs parse → sync → archive read on both sides in their own throw-away archives, and
-diffs the two canonical dumps. A checkout it did not fetch itself (`--upstream`) must be *clean* at
-the pin, exactly as the importer requires: the dumps are attributed to that revision, and `--record`
-rewrites the committed oracle with them. `internal/ccc/parity/testdata/oracle/*.json` holds the dumps
-a pristine checkout produced; the ordinary test suite re-checks this tree against them offline. The
-increment's evidence record holds a run of it with its hashes.
+diffs the two canonical dumps. Each case **names the fixture it reads** (`internal/ccc/parity`'s
+`Cases`, mirrored by the script's `CASES`), so a provider that grows a second transcript shape cannot
+silently change what a recorded dump describes. A checkout it did not fetch itself (`--upstream`) must
+be *clean* at the pin, exactly as the importer requires: the dumps are attributed to that revision, and
+`--record` rewrites the committed oracle with them. `internal/ccc/parity/testdata/oracle/*.json` holds
+the dumps a pristine checkout produced; the ordinary test suite re-checks this tree against them
+offline. The increment's evidence record holds a run of it with its hashes.
 
 ## `secrets`: what it scans, and what it does not
 
@@ -166,10 +185,68 @@ says so.
   and `selftest`. The Go steps are deliberately *not* listed: on Windows without a C compiler they are
   a disclosed platform boundary (below), not a failure.
 - `scripts/upstream-parity.py` — the source-side parity check (above).
-- `scripts/tests/` — the gate's, the parity checker's and the importer's regression tests, run by the
+- `scripts/tests/` — regression tests for the gate, the parity checker, the importer, the native check
+  and the continuation evidence's own claims (`test_evidence_claims.py`: a §5 comparison cell that
+  credits a recorded run's answer may only quote words that run's recorded output holds), run by the
   `selftest` step.
 - `CALLCCC_GATE_ROOT` — run the gate against another tree. Most cases in `scripts/tests/` pin a rule
   against a throw-away tree instead of trusting the reader.
+- `scripts/codex-native-check.py` — the target-side native verification for the Claude Code → Codex
+  route, and **deliberately not a gate step** for the same reason `scripts/upstream-compare.py` is
+  not: it needs the Codex binary installed and, for a real turn, model access. It builds `ccc`,
+  converts a committed fixture into an isolated Codex data directory whose `config.toml` is **seeded
+  from the host's own configuration, setting by setting, never copied as a document**: the model
+  settings that answer the loader's question and the named provider's definition, and never a setting
+  whose value can hold a credential (a provider's authorization headers, an MCP server's environment
+  table, a credential written into a URL). Its report line names what was copied and what was left
+  behind, and a provider whose credential is written into the host configuration must take it from the
+  environment. The script plants an unrelated session in that home, runs
+  `ccc continue … --json`, checks the resume invocation the conversion reported (its argument vector
+  names the binary, `resume` and the session; its environment selects the data directory the session
+  was installed into, which is the only way Codex is told where to look), re-reads the installed file
+  with its own `ccc inspect` invocation and compares what the inherited reader made of it with what the
+  conversion says it carried (a second process, so the conversion's own round-trip verdict cannot stand
+  in for that read), asks Codex's own app server to load the session (`thread/resume`), prints Codex's
+  own view of it (`thread/read`), runs — with `--resume-prompt` — one real turn from the reported
+  invocation and prints the target's answer, and only then hashes the source, the planted session and
+  every session the home already held against their bytes before the conversion (the planted session is
+  removed once every comparison has run), so a mutation during the loader or the turn is answered by the
+  comparison that runs last rather than by an earlier verdict — an ordering the native check's own cases
+  pin offline.
+  The two rendered command lines (`resume_command`, `exec_resume_command`) are checked by **reading
+  them the way a POSIX shell reads them**: word by word — a home the renderer quotes, any path holding
+  a space or a Windows backslash, is accepted, while an unquoted home a shell would split into two words
+  is not — and on the spelling that decides whether the shell reads the line's opening word as the
+  assignment at all: a quoted `'CODEX_HOME=…'` reads back as the very same words while a shell takes it
+  as the *program* to run, and a character a shell acts on left unquoted (`;`, `$`, a backquote, `~`) is
+  refused for the same reason. That half is pinned offline, without the Codex binary, by
+  `scripts/tests/test_codex_native_check.py` in the `selftest` step (the renderer's own spelling is
+  pinned by `cmd/ccc`'s tests); the substring form it replaced accepted exactly the line the quoting
+  exists to prevent and rejected correct renderings on Windows. Its fixtures spell every home so both
+  `pathlib` flavours give it back unchanged, and each case drives both of them — the constraint the
+  last bullet under Platform boundary below states — so a fixture that holds on one platform alone
+  fails the suite on any host. The cases that drive this script's `main` derive their whole scratch
+  tree from one **resolved** root, because `main` resolves the repository and the home it is handed and
+  compares against that spelling: a case spelled through its own temporary root disagrees with the run
+  it drives wherever `resolve()` re-spells that root — macOS's `/var/folders/…`, which reads back as
+  `/private/var/folders/…`, the shape that failed `macos-latest` at head `4cd0567` with the first
+  stubbed command (`--repo`, `--target-home`) filed under a spelling the case's own stub did not
+  recognise. They resolve the root before deriving anything from it — the same rule the homes above
+  follow, taking the platform's own answer instead of assuming this host's — and they spell the two
+  reported command lines the way the renderer does, every word quoted where a shell would act on it;
+  the shape they got wrong there, and the `windows-latest` failure at head `1a476e0` it caused, is the
+  third Windows answer under Platform boundary below.
+  Every app-server request is bounded by the script's own deadline (`APP_SERVER_TIMEOUT`), stdout is
+  read by a thread and stderr drained by another, so a server that stops answering or fills its
+  diagnostics pipe is reported as a failed check rather than hanging the run. The lines that drainer
+  retains are a bounded tail — the last `APP_SERVER_DIAGNOSTICS_MAX` (200) of them, each cut to
+  `APP_SERVER_DIAGNOSTICS_LINE_MAX` (2000) characters, so at most
+  `200 × (2000 + len(" …[the rest of this line was dropped]"))` characters stay in memory — and it reads
+  in bounded pieces: a line that does not end inside that bound is kept as its head while its remainder
+  is read and dropped, so neither many lines, nor one enormous line, nor a stream the server never ends
+  can grow this harness's memory with it, while the pipe stays empty so the server cannot block on it.
+  Every check prints its own verdict and the script exits non-zero when one fails, so a run that could
+  not do the native half says so instead of reporting a pass.
 
 ## Why the Go steps target a subset
 
@@ -203,7 +280,85 @@ which platform is running it.
 Windows has no POSIX mode bits, so `parity` declines to check a carried file's — or a stored-byte
 deviation's — working-tree owner-executable bit there and says so in its output instead of failing every
 executable file; the *stored* mode still comes from git's own index, which records it on every
-platform.
+platform. For the same reason the Go test that pins an installed session's permissions asks for the
+mode the installer *requests* (`codexSessionFileMode`) on Windows, and compares the installed file's
+own bits with that request where the platform reports them: a widened mode must fail on the platform
+where the answer is visible, so the two halves are asserted by one platform-aware branch.
+
+Four more Windows answers the tree pins rather than tolerates, all because the platform's own answer is
+not the one the rule is about:
+
+- a missing binary raises `FileNotFoundError` **without a filename** on Windows — `CreateProcess`'s
+  error carries a WinError only, where the POSIX error names the file it could not find — so the gate's
+  step result names the command itself (`rc=127`, and the command in the detail) and the suite pins the
+  Windows shape by raising exactly that error on any host, instead of reading the platform's message;
+- a link's target is re-spelled: Git for Windows cannot create a symlink whose target holds `/`
+  (`mingw_create_symlink` rewrites each separator to `\`), so the link a checkout there creates for a
+  carried `120000` record reads back in that spelling and hashes to no blob the manifest holds. See the
+  `parity` section above: the separators alone are folded, only for a link, only on the platform whose
+  symlink layer does it, and the run names how many links needed it. The Windows-shaped tree is
+  simulated on any host through the check's own seams (`platform_name`, and `symlink_target` for the
+  shape of the link itself): the cases run both shapes a host can hold a link in — the file form, with
+  `symlink_target` answering the target the link holds, and the host's own real symlink where it can
+  create one — so a host whose checkouts cannot create a symlink pins the fold and the exemption
+  instead of falling back to asserting the file form's own failure.
+- a Windows path holds backslashes, which a POSIX shell reads as syntax, so the resume line a
+  continuation prints quotes the data directory it names there (`CODEX_HOME='C:\…\codex home' codex
+  resume …`) where a POSIX path of the same shape stands bare. The rule is "quote where a shell would
+  act on the word", not "print the path as this host spells it", so the CLI cases that read that
+  line back install into a directory whose name holds a space — a word the rule quotes on every
+  platform — instead of asserting this host's own temp path, which is shell-safe here and shell-unsafe
+  there. The Windows-shaped input is exercised on any host by pointing `TMPDIR` at a directory whose
+  name holds a backslash: the two cases that first did this then fail against a host-shaped assertion
+  (executed) and pass against the rule. The third case to read the line back — the resume verification's
+  own command assertion the sweep added — is exercised with a temp root whose name holds a **space**, for
+  the same reason and with the same result: `gate (windows-latest)` failed the `test` step at head
+  `37c0a10` because that assertion spelled this host's temp path, and it now installs into the same
+  shell-unsafe home. A backslash-shaped root cannot stand in for that case on this host (measured: the
+  stub harness finds the installed session with `filepath.Glob` over the home, and a backslash in the
+  pattern is an escape there, so the case fails with `the stub harness found no installed session` for a
+  reason that is not this rule); the quoted-temp-root runs are in `docs/evidence/`. The rule is per word,
+  and it binds the offline half's *fixture* too: the two
+  `ProtectedArtifactsAfterNativeVerification` cases fabricate the document a conversion reports and
+  spelled those two command lines by joining their argument words bare — which is the renderer's own
+  line only while every word is shell-safe. The stubbed binary is a full path, so on Windows it holds
+  backslashes, the harness's own reading of the line ate them, and the check answered FAIL for a line
+  the fixture had mis-rendered: `gate (windows-latest)` failed the `selftest` step at head `1a476e0`
+  (`FAILED (failures=4)`, its child naming the same two cases the `macos-latest` leg had named at
+  `4cd0567` for its own defect, which that leg's repair fixed). The cases now quote every word the way
+  `renderResumeCommand`/`shellQuote` does, and the shape is reproducible with the same trick:
+  `mkdir -p '/tmp/ccc-win\temp' && TMPDIR='/tmp/ccc-win\temp' python3 -m unittest discover -s
+  scripts/tests` (executed; head `1a476e0`'s own file prints `FAILED (failures=4)` there — the two cases
+  plus the two self-check cases that read the red child, over the same two child names CI printed — and
+  the repaired one `OK`, 153 cases).
+- a path is spelled by the platform that reads it: `pathlib` answers `\tmp\x` for `Path('/tmp/x')` on
+  Windows where POSIX answers `/tmp/x`, so a rule whose two sides are "the word a shell reads a rendered
+  line back as" and "the home *this host* spells" cannot be pinned by a fixture spelled for one of them.
+  The native check's offline half (`scripts/tests/test_codex_native_check.py`) therefore spells every
+  home so both flavours give it back unchanged — a Windows-shaped path, or a single-segment name — and
+  drives both, this host's `Path` and `PureWindowsPath` (what `Path` *is* on Windows), on every host.
+  Fixtures spelled `/tmp/…` passed the `ubuntu-latest` and `macos-latest` legs and failed
+  `windows-latest` at head `524a20f`: the literal rendering and the comparison disagreed there alone,
+  and the three failing subtests reported it as `a correct rendering was rejected`.
+  The same boundary applies to a *path the run itself re-spells*: `scripts/codex-native-check.py`'s
+  `main` resolves what it is handed (`--repo` always, `--codex-home` when the caller names one) and
+  compares the reported home against the resolved one, so a case that drives `main` and spells its own
+  throw-away tree through `tempfile.mkdtemp()` disagrees with the run it drives wherever `resolve()`
+  re-spells that root — macOS's temp root is `/var/folders/…`, which `resolve()` reads back as
+  `/private/var/folders/…`. Unresolved, the two `ProtectedArtifactsAfterNativeVerification` cases failed
+  the `macos-latest` leg at head `4cd0567` — `FAILED (failures=4)`, the four being the two cases plus
+  the two self-check cases that read the red child — because the stub recognised only the binary path
+  and the home it had spelled itself, while the run filed the first stubbed command under the resolved
+  spelling: measured on this host below, where both cases fail there, before their own comparisons run.
+  (That day's `windows-latest` failure named the same two cases for the other fixture defect, the
+  unquoted words above; resolving the root left it red at head `1a476e0` until that one was repaired
+  too.) They now resolve the scratch root once, before deriving anything from it, which is this rule
+  applied to the run rather than to a fixture — and the shape is reproducible on any host that can make
+  a symlink, by pointing `TMPDIR` at one: `mkdir -p /tmp/ccc-aliased/private-var/tmp &&
+  ln -s private-var /tmp/ccc-aliased/var && TMPDIR=/tmp/ccc-aliased/var/tmp python3 -m unittest
+  discover -s scripts/tests` (executed; the unresolved spelling is `FAILED (failures=4)` there — the two
+  cases plus the two self-check cases that read the red child, CI's own number — and the repaired one
+  `OK`, 153 cases).
 
 ## CI
 

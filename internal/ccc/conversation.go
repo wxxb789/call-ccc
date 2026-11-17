@@ -17,6 +17,7 @@
 package ccc
 
 import (
+	"fmt"
 	"time"
 
 	"go.kenn.io/agentsview/internal/parser"
@@ -64,9 +65,13 @@ type ToolCall struct {
 	FilePath          string `json:"file_path,omitempty"`
 	SkillName         string `json:"skill_name,omitempty"`
 	SubagentSessionID string `json:"subagent_session_id,omitempty"`
-	// ResultContent is the outcome the archive stores on the call itself. The archive folds a
-	// tool-result-only message into its call, so this field is how an archive read carries that
-	// evidence; a source read carries it as a Message with ToolResults instead.
+	// ResultContent is the summary the archive stores on the call itself. The inherited write path
+	// derives it from the call's ResultEvents (internal/db stores it only when it is not the sole
+	// content-bearing event's text, and a read restores it from that event when the column was cleared),
+	// so beside those events it is a view of them rather than a separately recorded outcome -- which is
+	// why a writer carries it only for a call with no recorded result of its own. It is then the only
+	// evidence the read holds of the outcome (an archive row whose events were not written); a source
+	// read carries a call's outcome as a Message with ToolResults instead.
 	ResultContent     string `json:"result_content,omitempty"`
 	ResultContentSize int    `json:"result_content_size,omitempty"`
 }
@@ -81,6 +86,12 @@ type ToolResult struct {
 	Source      string `json:"source,omitempty"`
 	ContentRaw  string `json:"content_raw,omitempty"`
 	ContentSize int    `json:"content_size,omitempty"`
+	// ContentDecoded says which representation ContentRaw holds. False (the zero value) means the
+	// provider's own content field as it recorded it -- JSON, a string or an array of blocks -- which a
+	// writer decodes once through the inherited reader. True means text a read has already decoded (a
+	// result event's content, an archive row), which must never be decoded again: a tool whose own
+	// output is literally a JSON string would otherwise lose its quotation marks.
+	ContentDecoded bool `json:"content_decoded,omitempty"`
 	// PersistedOutputUnresolved carries the provider's own parse-time answer that this result's content
 	// is the *placeholder* naming a side file the parser could not read, not the output itself
 	// (parser.ParsedToolResult.PersistedOutputUnresolved). ContentRaw then holds the placeholder text,
@@ -95,15 +106,22 @@ type ToolResult struct {
 // persisted reasoning and side text where the source format records them; they are carried as
 // evidence, never as authority to replay anything.
 type Message struct {
-	Ordinal     int          `json:"ordinal"`
-	Role        string       `json:"role"`
-	Content     string       `json:"content,omitempty"`
-	Dialogue    string       `json:"dialogue,omitempty"`
-	Thinking    string       `json:"thinking,omitempty"`
-	Timestamp   time.Time    `json:"timestamp,omitempty"`
-	Model       string       `json:"model,omitempty"`
-	ToolCalls   []ToolCall   `json:"tool_calls,omitempty"`
-	ToolResults []ToolResult `json:"tool_results,omitempty"`
+	Ordinal int    `json:"ordinal"`
+	Role    string `json:"role"`
+	Content string `json:"content,omitempty"`
+	// Dialogue is what the provider said, without the renderings of the blocks that are not dialogue.
+	Dialogue string `json:"dialogue,omitempty"`
+	// DialogueProjected says whether the source answered that question for this message at all. A
+	// provider that classifies its own dialogue answered it, an empty projection included: its Content
+	// then renders blocks that are not dialogue (a persisted reasoning trace, a tool call), and a
+	// writer that fell back to that rendering would state words the source never recorded as spoken.
+	// False means the source classified nothing here and Content is the message's text.
+	DialogueProjected bool         `json:"dialogue_projected,omitempty"`
+	Thinking          string       `json:"thinking,omitempty"`
+	Timestamp         time.Time    `json:"timestamp,omitempty"`
+	Model             string       `json:"model,omitempty"`
+	ToolCalls         []ToolCall   `json:"tool_calls,omitempty"`
+	ToolResults       []ToolResult `json:"tool_results,omitempty"`
 	// IsSystem marks a record the provider itself flagged as system-injected (a compaction summary,
 	// a notice). It is independent of Role: a compaction summary is recorded as an assistant record.
 	IsSystem          bool `json:"is_system,omitempty"`
@@ -155,6 +173,44 @@ type Conversation struct {
 	Source   SourceIdentity `json:"source"`
 	Messages []Message      `json:"messages"`
 	Fidelity Fidelity       `json:"fidelity"`
+}
+
+// fidelityWarnings names what the provider itself said about the completeness of one read, in the words
+// every report of a read owes its caller. An inspection and a continuation both present the conversation
+// as what the source recorded, and three of the provider's own classifications say the read is not that:
+// a summary fallback standing in for a transcript the provider could not read, a result the provider
+// says is not current for its data version, and tool outputs whose persisted content this machine could
+// not read. The warnings are the report's own channel beside the fidelity block, which carries the same
+// classifications as fields.
+func fidelityWarnings(fidelity Fidelity) []string {
+	var warnings []string
+	if fidelity.NeedsRetry {
+		// The provider returned a conversation *and* said the result is not current: a Codex fork whose
+		// parent page cannot be read keeps the copied parent messages until that parent resolves, so the
+		// messages are reported while their session boundary is named as unresolved. A report that
+		// printed the conversation alone would present those copied parent turns as this session's own
+		// recorded history.
+		reason := ""
+		if fidelity.RetryReason != "" {
+			reason = " (" + fidelity.RetryReason + ")"
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"the provider classified this read as needing a retry%s; it returned the messages it "+
+				"could read, which may not be the session's complete recorded history",
+			reason))
+	}
+	if fidelity.TranscriptFidelity == parser.TranscriptFidelitySummary {
+		warnings = append(warnings,
+			"the provider classified this read as a summary transcript: it is a degraded fallback "+
+				"for a source it could not read in full, not the session's recorded transcript")
+	}
+	if fidelity.UnresolvedToolOutputs > 0 {
+		warnings = append(warnings, fmt.Sprintf(
+			"%d tool result(s) name persisted output this machine could not read; their content is "+
+				"the placeholder that says where it was saved, not the output",
+			fidelity.UnresolvedToolOutputs))
+	}
+	return warnings
 }
 
 // Counts summarises a conversation without re-reading its messages.

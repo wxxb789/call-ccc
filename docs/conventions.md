@@ -22,7 +22,8 @@ wins; when they disagree about structure or method, this file wins unless the in
 
 ```
 cmd/ccc/            the standalone CLI; no continuation-core types leak into it
-internal/ccc/       continuation core: conversation document, readers, archive access
+internal/ccc/       continuation core: conversation document, readers, archive access,
+                    target writers (codex_target.go, codex_install.go, codex_verify.go, continue.go)
 internal/ccc/parity the canonical dump and the oracle a pristine checkout runs too
 docs/core-design/   the long-lived product and engineering boundaries
 docs/goals/         numbered outcome contracts (archive/ once accepted)
@@ -30,7 +31,8 @@ docs/plans/         one plan per increment, written before its implementation
 docs/evidence/      one evidence record per increment: real commands, exit codes, counts
 docs/upstream.md    the carried AgentsView pin, its declared deviations and the update procedure
 docs/decisions/     append-only record of decisions taken and defaults chosen
-scripts/            harness entry points (gate, knobs, carry importer, parity and comparison)
+scripts/            harness entry points (gate, knobs, carry importer, parity, comparison,
+                    codex-native-check: the target-side native verification, deliberately not a gate step)
 ```
 
 Inherited AgentsView packages keep their upstream paths and stay where upstream put them. The carry is
@@ -60,8 +62,19 @@ gate runs as a required step.
 - **Evidence over assertion.** Every `Done when` clause is paired with an artifact the operator can
   re-derive: a command with its real exit code, a file with its own bytes, a native loader's own
   output. A parser's acceptance of a file is not proof that a target harness can resume it.
+- **A target writer claims only what the target harness answered.** A conversion reports
+  **converted**, **installed** and **natively resumable** as separate states; the last one comes from
+  the harness's own loader (and, at the level that runs one, from a real turn), never from the file
+  parsing. The target's records are written the way the target writes them (the model-visible item
+  *and* the harness's own view of the turn), and the provider the session records is the target's own
+  answer about its configuration — never the source's, and never invented.
+- **A native-verification harness is a re-derivable script, not a gate step**, exactly like
+  `scripts/upstream-compare.py`: it needs the target harness installed (and model access for a real
+  turn), so the gate keeps deciding the offline half. A check that cannot run says so.
 - **Disclose loss by category.** Converted, installed and natively resumable are three different
-  states; a report that conflates them is wrong even when the file is valid.
+  states; a report that conflates them is wrong even when the file is valid. Every category of
+  omitted or narrowed evidence is named with its count on every run, and the format's own
+  unrepresentable limits are stated as limits rather than as this run's counts.
 - **Non-destructive by default.** Never modify the source transcript, never overwrite an existing
   target session, never copy credentials or login stores, and never log conversation bodies, tool
   arguments or secrets by default. Write into isolated data directories for tests and demos.

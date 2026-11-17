@@ -44,6 +44,29 @@ var ExcludedFields = []string{
 	"database file name and data directory (per-side temporary directories)",
 }
 
+// Case is one comparison case: the provider whose root holds the fixture, and the fixture file the
+// case reads, relative to that provider's root. A provider may hold more than one fixture (a second
+// transcript shape), and a case that read whichever file it found first would silently change what the
+// committed dump describes.
+type Case struct {
+	Provider string
+	Fixture  string
+}
+
+// Cases names the cases both trees run, and the exact fixture each one reads. The committed dumps under
+// testdata/oracle were recorded from these files; a new fixture is a new case, never a replacement for
+// an existing one.
+var Cases = []Case{
+	{
+		Provider: "claude",
+		Fixture:  "-home-user-code-example-api/9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10.jsonl",
+	},
+	{
+		Provider: "codex",
+		Fixture:  "2026/05/04/rollout-2026-05-04T09-15-00-0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812.jsonl",
+	},
+}
+
 // Options describes one comparison run.
 type Options struct {
 	// Fixtures is a directory holding one subdirectory per provider, each of which is that
@@ -53,6 +76,10 @@ type Options struct {
 	WorkDir string
 	// Provider is the fixture to run; the case is the provider's name.
 	Provider string
+	// Fixture is the session file the case reads, relative to the provider's root. Empty means "the
+	// provider root holds exactly one fixture", which is only a convenience for a caller with a tree
+	// of its own; every case in Cases names its file.
+	Fixture string
 }
 
 // SessionDump is what one read of a session looks like in the dump.
@@ -135,7 +162,7 @@ func Run(ctx context.Context, opts Options) (Dump, error) {
 	if err != nil {
 		return Dump{}, err
 	}
-	fixture, err := findFixture(root)
+	fixture, err := fixtureFor(root, opts.Fixture)
 	if err != nil {
 		return Dump{}, err
 	}
@@ -194,6 +221,27 @@ func Marshal(dump Dump) ([]byte, error) {
 	}
 	encoded = append(encoded, '\n')
 	return encoded, nil
+}
+
+// fixtureFor answers the session file a case reads.
+//
+// A case that names its file gets that file, and a name that is not there is an error: a comparison
+// whose fixture moved must fail, not read a different one. A case that names nothing gets the provider
+// root's single fixture, which is a convenience for a caller with a tree of its own; several fixtures
+// and no name is an error rather than a silent pick, so a comparison always names the bytes it read.
+func fixtureFor(root, named string) (string, error) {
+	if strings.TrimSpace(named) != "" {
+		path := filepath.Join(root, filepath.FromSlash(named))
+		info, err := os.Stat(path)
+		if err != nil {
+			return "", fmt.Errorf("the case names the fixture %s, which is not there: %w", named, err)
+		}
+		if info.IsDir() {
+			return "", fmt.Errorf("the case names the fixture %s, which is a directory", named)
+		}
+		return path, nil
+	}
+	return findFixture(root)
 }
 
 // findFixture returns the single JSONL fixture below a provider root. More than one is an error
