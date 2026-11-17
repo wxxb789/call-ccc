@@ -51,11 +51,9 @@ from __future__ import annotations
 
 import argparse
 import collections
-import hashlib
 import json
 import os
 import queue
-import shlex
 import shutil
 import subprocess
 import sys
@@ -66,6 +64,25 @@ import tomllib
 from pathlib import Path
 from typing import Callable, Iterable, NamedTuple
 from urllib.parse import urlsplit
+
+# The shared module lives beside this script, and the tests load both of them by file location (neither
+# file name is an identifier). Python does not put a script's own directory on `sys.path` when it is
+# loaded that way, so the directory is added here the way `scripts/gate.py` adds its own.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from native_check_common import (  # noqa: E402  (path set up above)
+    PROMPT_PLACEHOLDER,
+    RESULTS,
+    SHELL_SYNTAX_CHARACTERS,
+    TURN_OUTPUT_MARKER,
+    jsonl_parse_error,
+    record,
+    run,
+    sha256,
+    shell_words,
+    tree_digest,
+    unquoted_text,
+)
 
 #: The provider directory, and the two committed Claude fixtures this harness can convert. The first
 #: carries dialogue, a tool call with its result and a compaction boundary; the second (TOOLING_SESSION)
@@ -121,31 +138,6 @@ SEEDED_PROVIDER_SETTINGS = ("name", "base_url", "wire_api", "env_key", "env_http
 #: How many setting names the seeded-configuration report lists before it counts the rest: the report is
 #: a diagnostic line, and a host configuration can hold more settings than a line can usefully name.
 REPORTED_NAME_LIMIT = 8
-
-#: One check's outcome, as the script reports it.
-RESULTS: list[tuple[str, str, str]] = []
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    digest.update(path.read_bytes())
-    return digest.hexdigest()
-
-
-def tree_digest(root: Path) -> dict[str, str]:
-    """Every file below root, keyed by its path relative to root."""
-    digests: dict[str, str] = {}
-    for path in sorted(root.rglob("*")):
-        if path.is_file():
-            digests[path.relative_to(root).as_posix()] = sha256(path)
-    return digests
-
-
-def record(name: str, ok: bool, detail: str = "", skipped: bool = False) -> None:
-    state = "SKIP" if skipped else ("PASS" if ok else "FAIL")
-    RESULTS.append((name, state, detail))
-    print(f"{state}: {name}" + (f" — {detail}" if detail else ""))
-
 
 #: The target harness's own startup chatter, which every invocation prints on this platform. It is not
 #: a verdict, so it is kept out of the one-line summaries this harness reports.
@@ -326,72 +318,6 @@ def seed_configuration(host_text: str, overrides: dict[str, str]) -> SeededConfi
     return SeededConfiguration(text, copied, not_copied, problem)
 
 
-def shell_words(command: str) -> list[str] | None:
-    """The words a POSIX shell reads `command` as, or None when it cannot be read as a command line.
-
-    The reported invocation is rendered for a POSIX shell (`internal/ccc/continue.go`'s
-    `renderResumeCommand`/`shellQuote` quote a word exactly where a shell would act on it), so the
-    documented reading of it is a shell's own: split on whitespace outside quotes, then remove the
-    quoting. A check that looked for the literal substring `CODEX_HOME=<home>` would do the opposite of
-    that rule: it rejects every home the renderer correctly quotes -- any home with a space, any Windows
-    path with a backslash -- and accepts an unquoted home whose space a shell reads as two words, which
-    is the defect quoting exists to prevent.
-
-    This answers what the *words* are and nothing else: the quoting is removed here, so what a shell
-    reads as syntax is `unquoted_text`'s half of the rule, and `reported_invocation` needs both.
-    """
-    try:
-        return shlex.split(command)
-    except ValueError:
-        # An unbalanced quote: a shell would not read this as the reported invocation at all.
-        return None
-
-
-#: The characters a POSIX shell acts on somewhere in an unquoted word: `;`, `&`, `|` and a newline end a
-#: command, `<`, `>`, `(`, `)` redirect or group it, `$`, a backquote and `~` (at a word's start) expand
-#: or substitute, `*`, `?`, `[`, `]`, `{`, `}` change the word's meaning, and `#` and `!` are read
-#: specially at a word's start. `shellQuote` quotes every one of them, so a rendering that leaves one
-#: bare is not a spelling this renderer permits -- and a word a shell acts on is a different command than
-#: the word it looks like.
-SHELL_SYNTAX_CHARACTERS = ";&|<>()$`~*?[]{}\n#!"
-
-
-def unquoted_text(command: str) -> str | None:
-    """What a POSIX shell reads as syntax in `command`: the line with its quoting and escapes removed.
-
-    Quoting is what makes a character inert, so the word reading above -- which throws the quoting away
-    -- cannot tell an assignment from a program that is named like one, or a value from a value a `;`
-    turns into two commands. This is that half, read before the quoting is discarded. Inside `'…'`
-    nothing is syntax at all, inside `"…"` a shell still acts on `$` and a backquote (both kept here,
-    which is what refuses that spelling) and `\\` consumes the character after it, outside quotes `\\`
-    consumes the character after it, and everything else that is quoted is dropped. `None` means a shell
-    would not stop reading the line as one command: a quote or an escape is never closed.
-    """
-    kept: list[str] = []
-    quote = ""
-    escaped = False
-    for char in command:
-        if escaped:
-            escaped = False
-        elif quote == "'":
-            if char == "'":
-                quote = ""
-        elif char == "\\":
-            escaped = True
-        elif quote:
-            if char == quote:
-                quote = ""
-            elif char in "$`":
-                kept.append(char)
-        elif char in "'\"":
-            quote = char
-        else:
-            kept.append(char)
-    if quote or escaped:
-        return None
-    return "".join(kept)
-
-
 def reads_as_assignment(command: str, name: str) -> bool:
     """Whether a POSIX shell reads `command` as the `name=…` assignment plus inert word text.
 
@@ -418,15 +344,6 @@ def reported_invocation(command: str, home: Path, arguments: list[str]) -> bool:
     """
     return (shell_words(command) == [f"CODEX_HOME={home}", *arguments]
             and reads_as_assignment(command, "CODEX_HOME"))
-
-
-def run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = None,
-        timeout: int = 600) -> subprocess.CompletedProcess:
-    merged = os.environ.copy()
-    merged.setdefault("CGO_ENABLED", "1")
-    if env:
-        merged.update(env)
-    return subprocess.run(cmd, cwd=cwd, env=merged, capture_output=True, text=True, timeout=timeout)
 
 
 def new_diagnostics() -> collections.deque[str]:
@@ -758,9 +675,11 @@ def main(argv: list[str] | None = None) -> int:
         record("the target identity is new and is not the source's",
                thread_id != args.session and thread_id not in existing_ids,
                f"{thread_id}, not one of the {len(existing_ids)} id(s) already in the home")
+        parsed = jsonl_parse_error(installed.read_text())
         record("the installed file is one JSON object per line",
-               all(json.loads(line) for line in installed.read_text().splitlines() if line.strip()),
-               f"{installed.stat().st_size} bytes (the target's own read of it is the load check)")
+               not parsed,
+               parsed or f"{installed.stat().st_size} bytes (the target's own read of it is the load "
+                         f"check)")
         # The installed file is read back by this script's own invocation of the inherited reader, not by
         # the conversion's own structure block: `ccc inspect` is a second process reading the same
         # isolated Codex root, and the counts it reports are compared with what the conversion says it
@@ -828,7 +747,7 @@ def main(argv: list[str] | None = None) -> int:
         resume_command = str(target.get("resume_command") or "")
         exec_resume_command = str(target.get("exec_resume_command") or "")
         want_resume = [codex, "resume", thread_id]
-        want_exec_resume = [codex, "exec", "resume", thread_id, "<prompt>"]
+        want_exec_resume = [codex, "exec", "resume", thread_id, PROMPT_PLACEHOLDER]
         record("the reported resume command selects the installation home",
                resume_arguments == want_resume and exec_resume_arguments == want_exec_resume
                and resume_environment == {"CODEX_HOME": str(home)}
@@ -857,7 +776,7 @@ def main(argv: list[str] | None = None) -> int:
                    turn.returncode == 0 and session_after > session_before,
                    f"exit {turn.returncode}, session {session_before} -> {session_after} bytes")
             print()
-            print("the turn's own output (the target's answer, as the harness printed it):")
+            print(TURN_OUTPUT_MARKER)
             for line in (turn.stdout or turn.stderr).splitlines():
                 print("   ", line)
         else:

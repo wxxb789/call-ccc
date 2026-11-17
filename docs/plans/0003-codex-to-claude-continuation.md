@@ -81,14 +81,16 @@ Consequences taken as this increment's defaults:
 
 ### 2.2 The exact records written
 
-One JSONL file, one object per line, in this order, all timestamps RFC3339 in UTC with milliseconds:
+One JSONL file, one object per line, in this order, each timestamp the source's own instant written as
+RFC3339 in UTC by the shared `codexClock` (`time.RFC3339Nano`, so a `.000` fraction is dropped: a
+measured line carries `"timestamp":"2026-05-04T09:15:02Z"`):
 
 | Source evidence | Claude Code record |
 | --- | --- |
 | each user message with dialogue | `{"type":"user","uuid":<v4>,"parentUuid":<previous record's uuid or null>,"sessionId":<new v4>,"cwd":<source cwd>,"version":<probed or pinned>,"isSidechain":false,"timestamp":<source time or session start>,"message":{"role":"user","content":<text>}}` |
-| each assistant message with dialogue | `{"type":"assistant",…,"message":{"id":"msg_<fresh>","type":"message","role":"assistant","content":[{"type":"text","text":…}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}` |
-| tool calls on a message | the same assistant record's `content` gains `{"type":"tool_use","id":<recorded tool-use id or a generated one>,"name":<source tool name>,"input":<recorded input JSON, verbatim>}` |
-| tool results | one `user` record whose `content` is `[{"type":"tool_result","tool_use_id":…,"content":<decoded output text>[,"is_error":true]}]` |
+| each assistant message with dialogue | `{"type":"assistant",…,"message":{"id":"msg_<fresh>","type":"message","role":"assistant","content":[{"type":"text","text":…}]}}` — no `stop_reason`, `stop_sequence` or `usage`: the writer records nothing it would have to invent, because the harness's own loader does not need them |
+| tool calls on a message | one assistant record **per call**, holding a single `{"type":"tool_use","id":<recorded tool-use id or a generated one>,"name":<source tool name>,"input":<recorded input JSON, compacted by the writer's own encoder>}` block, sharing the message's `message.id` — the shape the harness writes for one block of one message; both readers put the records back into one message |
+| tool results | one `user` record whose `content` is `[{"type":"tool_result","tool_use_id":…,"content":<decoded output text>[,"is_error":true]}]`, the results of one assistant message travelling together |
 | compaction boundary | `{"type":"system","subtype":"compact_boundary",…}` followed by `{"type":"user","isCompactSummary":true,…,"message":{"role":"user","content":<summary text>}}` |
 
 Text is a plain JSON string for a message with exactly one text block and an array for anything else;
@@ -190,7 +192,7 @@ invocations, which name both the home and the working directory.
 | a single non-interactive command selects a Codex session and produces a Claude Code-native resume identity and command, demonstrated on a representative session | `ccc continue codex:<fixture> --to claude --target-home <isolated> --json` output in the evidence record, the same run without `--json`, and `ccc help` / `ccc continue -h`; `cmd/ccc/main_test.go` and `internal/ccc/continue_test.go` |
 | Claude Code's native loader recognizes the installed session and accepts a continuing turn; loader-level evidence | `scripts/claude-native-check.py` on this host: the `load` check's own report (the loader's answer naming the installed session, with the unknown-id control arm) and a real turn run through the reported invocation (`--resume-prompt`), whose answer quotes a converted fact and whose session file grew, both in the evidence record |
 | structured messages and tool events translate through the shared representation, ordering preserved, material loss explicit; an input/output semantic comparison including at least one nontrivial tool interaction | the source↔target table in the evidence record, the round-trip test (`claude_target_test.go`, `claude_install_test.go`), the `losses[]` block of the run's JSON, and the loader's own reconstructed request printed by the native check |
-| 0002's behavior still passes its accepted verification; the new route does not duplicate AgentsView's parsing | the unchanged `internal/ccc` 0002 tests within the gate's `test` step, the unchanged fixture/oracle tests, and `parity` (no carried file changes) |
+| 0002's behavior still passes its accepted verification; the new route does not duplicate AgentsView's parsing | 0002's behavior re-verified by its tests within the gate's `test` step (two lines that named the newly supported target were updated — the CLI's `--to codex` spelling and the refusal case's target — and no assertion was weakened; see the evidence record's §6.2), the unchanged fixture/oracle tests, and `parity` (no carried file changes) |
 | JSON and error behavior consumable without a skill or interactive prompt; neither original history nor unrelated target sessions modified | the CLI's JSON documents, the native check's before/after hashes of the source fixture, a planted unrelated session and every other session in the home, and the exclusive-install test |
 
 The native harness is **not** a gate step (it needs Claude Code installed and, for a real turn, model
@@ -204,16 +206,20 @@ access), registered in `docs/harness.md` next to `scripts/upstream-compare.py` a
   gains the 0003 evidence record as a second file it checks (its rule — an inline-code quotation in a
   §5 comparison cell that credits a recorded run's answer must occur verbatim in that run's recorded
   output — is what keeps the record honest), and the `selftest` step runs it.
-- `AGENTS.md`: the layout (the Claude target writer and `scripts/claude-native-check.py`), the target
-  rule that a resumability claim is only ever the target harness's own answer, the source-cwd rule for a
-  target whose loader discovers sessions through the working directory.
+- `AGENTS.md`: the layout (the Claude target writer and `scripts/claude-native-check.py`) and the target
+  rule that a resumability claim is only ever the target harness's own answer.
 - `docs/harness.md`: the new script's entry and why it is not a step.
-- `docs/conventions.md`: whatever the increment changes about the rules of the work (the target
-  discovery/working-directory rule, the second target in the layout line).
+- `docs/conventions.md`: whatever the increment changes about the rules of the work — the source-cwd rule
+  for a target whose loader discovers sessions through the working directory, and the second target in
+  the layout line. (Written into `docs/conventions.md` rather than `AGENTS.md`: it is a rule of the work,
+  not of the increment's layout, and the evidence record's §6.2 names where each hunk landed.)
 - `README.md`: the quickstart's `--to claude` invocation and its resume command.
 - `docs/goals/README.md`: 0003 → "Implemented on `feat/0003-codex-to-claude-continuation`; awaiting
-  operator acceptance". No goal moves to `docs/goals/archive/` in this increment: 0001 is already
-  archived and 0002 is still awaiting operator acceptance (its merge onto `main` is what archives it).
+  operator acceptance". No goal moved in the implementation round: 0001 was already
+  archived and 0002 was still awaiting operator acceptance (its merge onto `main` is what archives it).
+  *After the fact:* a later bookkeeping round did move 0002 to `docs/goals/archive/` once `main` carried
+  its merge (`8e1c502`), retargeting every link that named it; the move and its re-verified counts are
+  recorded in the evidence record's §6.2.
 - `docs/decisions/OPEN-QUESTIONS.md`: entries for the defaults this run had to take alone (the record
   shape, the cwd requirement, the compaction pair, sidechain omission, the offline `load` oracle and
   its control arm, the omitted model attribution, the resume-command working directory).

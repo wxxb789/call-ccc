@@ -563,8 +563,13 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
     with itself.
     """
 
-    def drive(self, mutate_during_resume: bool) -> tuple[int, dict[str, tuple[str, str]]]:
-        """One run of the shipped ``main`` against stubs; answers its exit code and its recorded checks."""
+    def drive(self, mutate_during_resume: bool,
+              malformed_installed: bool = False) -> tuple[int, dict[str, tuple[str, str]]]:
+        """One run of the shipped ``main`` against stubs; answers its exit code and its recorded checks.
+
+        ``malformed_installed`` makes the stub's installed file carry a line that is not JSON, so the JSONL
+        check's own failure path is exercised.
+        """
         # The scratch root is resolved before anything is derived from it, because the shipped ``main``
         # resolves what it is handed (``--repo`` always, and ``--codex-home`` when the caller names one,
         # which this case does): a host whose temporary root is reached through a symlink, or whose
@@ -642,7 +647,8 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             if command[0] == str(repo / NATIVE_CHECK.BINARY):
                 if command[1] == "continue":
                     installed.parent.mkdir(parents=True, exist_ok=True)
-                    installed.write_text(json.dumps({"type": "session_meta"}) + "\n")
+                    installed.write_text(json.dumps({"type": "session_meta"}) + "\n"
+                                         + ("{not json}\n" if malformed_installed else ""))
                     return subprocess.CompletedProcess(cmd, 0, json.dumps(document), "")
                 if command[1] == "inspect":
                     counts = {"user_messages": 1, "tool_calls": 1, "tool_results": 1,
@@ -727,6 +733,20 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                       "the run's pre-existing-session comparison did not name the session the home "
                       "already held: a capture that never happened agrees with itself")
         self.assertEqual(code, 0, f"exit {code} for an intact run: {results}")
+
+    def test_a_malformed_codex_installed_line_is_a_named_failure(self) -> None:
+        """An unparseable installed line is a FAIL the run reports, not a traceback out of ``main``.
+
+        The JSONL check is a named check, and a raise would print no ``FAIL`` line and no summary -- the
+        very reporting contract the harness promises never to break. The run must therefore return 1 with
+        that check recorded as a FAIL whose detail names the line and the parse error.
+        """
+        code, results = self.drive(mutate_during_resume=False, malformed_installed=True)
+        state, detail = results.get("the installed file is one JSON object per line", ("missing", ""))
+        self.assertEqual(state, "FAIL",
+                         f"the malformed installed line did not fail the JSONL check: {results}")
+        self.assertIn("line 2 is not JSON", detail, detail)
+        self.assertEqual(code, 1, f"exit {code} for a run whose JSONL check failed: {results}")
 
 
 if __name__ == "__main__":

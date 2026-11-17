@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestResolveClaudeHome pins where a conversion installs: the caller's own directory, else
@@ -155,8 +156,59 @@ func TestVerifyClaudeTranscriptStructureRoundTripsAConversion(t *testing.T) {
 	if !strings.Contains(verification.ReadBack.SessionID, transcript.SessionID) {
 		t.Errorf("read-back session id = %q, want the installed session's", verification.ReadBack.SessionID)
 	}
-	if verification.Detail != "" && !strings.Contains(verification.Detail, "projection") {
-		t.Errorf("a verified check with a detail should say what the reader projected away: %q", verification.Detail)
+	// Nothing in this conversion is projected away: every written message is one the read-back shows with
+	// its own text, so a check that reports a count or a detail here would be reporting something that did
+	// not happen -- and an empty detail is the state the disclosure rule leaves for that.
+	if verification.NotReadBackVerbatim != 0 || verification.Detail != "" {
+		t.Errorf("the round trip projects nothing away, so the check has nothing to disclose, but it "+
+			"reports not_read_back_verbatim = %d and detail %q",
+			verification.NotReadBackVerbatim, verification.Detail)
+	}
+}
+
+// TestVerifyClaudeTranscriptStructureNamesTheClaudeReaderWhenItProjectsAway pins the disclosure a
+// verified round trip carries when the reader projects a written prompt away: the file holds the prompt's
+// own record, the reader reads no message for it (a record it classifies as an injected command
+// envelope), and the detail names the reader that read this file -- the Claude reader -- never the Codex
+// route's, whose reader never saw it.
+func TestVerifyClaudeTranscriptStructureNamesTheClaudeReaderWhenItProjectsAway(t *testing.T) {
+	command := "<command-name>/usage</command-name>"
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: command, Dialogue: command, DialogueProjected: true,
+			Timestamp: time.Unix(1000, 0)},
+		Message{Ordinal: 1, Role: "assistant", Content: "The usage report.", Dialogue: "The usage report.",
+			DialogueProjected: true, Timestamp: time.Unix(1001, 0)},
+		Message{Ordinal: 2, Role: "user", Content: "Where is the retry cap configured?",
+			Dialogue: "Where is the retry cap configured?", DialogueProjected: true,
+			Timestamp: time.Unix(1002, 0)},
+	)
+	transcript, err := ConvertToClaudeTranscript(conversation, ClaudeTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting the document: %v", err)
+	}
+	home := t.TempDir()
+	if _, _, err := InstallClaudeTranscript(transcript, home); err != nil {
+		t.Fatalf("installing: %v", err)
+	}
+	verification, err := VerifyClaudeTranscriptStructure(context.Background(),
+		filepath.Join(home, claudeProjectsSubdir), transcript, fixtureConfig(t))
+	if err != nil {
+		t.Fatalf("verifying: %v", err)
+	}
+	if verification.State != VerificationStateVerified {
+		t.Fatalf("structure = %+v, want the file to hold every written message", verification)
+	}
+	if verification.NotReadBackVerbatim != 1 {
+		t.Fatalf("not_read_back_verbatim = %d, want the one written prompt the reader reads as injected "+
+			"context (detail: %q)", verification.NotReadBackVerbatim, verification.Detail)
+	}
+	if !strings.Contains(verification.Detail, structureReaderClaude) {
+		t.Errorf("detail = %q, want it to name the %s reader that read this file",
+			verification.Detail, structureReaderClaude)
+	}
+	if strings.Contains(verification.Detail, structureReaderCodex) {
+		t.Errorf("detail = %q, want it not to name the %s reader, which did not read this file",
+			verification.Detail, structureReaderCodex)
 	}
 }
 

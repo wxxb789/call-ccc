@@ -153,7 +153,7 @@ func TestCodexRoundTripCountsWhatTheReaderProjectsAway(t *testing.T) {
 			if roundTrip.notReadBackVerbatim != 1 {
 				t.Errorf("notReadBackVerbatim = %d, want 1", roundTrip.notReadBackVerbatim)
 			}
-			if detail := roundTrip.detail(); !strings.Contains(detail, "1 written message(s)") ||
+			if detail := roundTrip.detail(structureReaderCodex); !strings.Contains(detail, "1 written message(s)") ||
 				strings.Contains(detail, testCase.prompt) {
 				t.Errorf("the verification detail = %q, want the count named and no content", detail)
 			}
@@ -187,7 +187,7 @@ func TestCodexRoundTripCountsWhatTheReaderProjectsAway(t *testing.T) {
 		}
 		// A comparison with a difference reports no count: the count says "in the file, not shown", and
 		// nothing about this file says the message is in it.
-		if detail := roundTrip.detail(); detail != "" {
+		if detail := roundTrip.detail(structureReaderCodex); detail != "" {
 			t.Errorf("a comparison with a difference reports a verification detail: %q", detail)
 		}
 	})

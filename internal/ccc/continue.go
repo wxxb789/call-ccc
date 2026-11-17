@@ -73,7 +73,8 @@ type ContinueOptions struct {
 	// Ref identifies the source session, exactly as Inspect does.
 	Ref Ref
 
-	// Target names the harness the conversation continues in ("codex").
+	// Target names the harness the conversation continues in: TargetCodex or TargetClaude, in the words
+	// Targets names them. Any other name is refused.
 	Target string
 
 	// Config supplies the provider roots and enabled agents, as in InspectOptions.
@@ -84,10 +85,12 @@ type ContinueOptions struct {
 	// own file. Empty means "source only".
 	ArchivePath string
 
-	// TargetHome is the target harness's data directory. Empty means "resolve it from the environment"
-	// ($CODEX_HOME, else ~/.codex).
+	// TargetHome is the target harness's data directory. Empty means "resolve it from the environment,
+	// the way the target's own route resolves it": $CODEX_HOME, else ~/.codex for Codex;
+	// $CLAUDE_CONFIG_DIR, else ~/.claude for Claude Code.
 	TargetHome string
-	// TargetBinary is the target harness's executable. Empty means CodexBinaryDefault on PATH.
+	// TargetBinary is the target harness's executable. Empty means the target's own default on PATH
+	// (CodexBinaryDefault for Codex, ClaudeBinaryDefault for Claude Code).
 	TargetBinary string
 
 	// DryRun converts and reports without installing anything.
@@ -98,9 +101,10 @@ type ContinueOptions struct {
 	// turn becomes part of the session.
 	ResumePrompt string
 
-	// Timeout bounds one verification command: one app-server request for the provider probe and the
-	// load check, or one resume turn. Zero means the per-level default (60 seconds per app-server
-	// request, 5 minutes for a resume turn).
+	// Timeout bounds one verification command against the target harness: for Codex, one app-server
+	// request for the provider probe and the load check, or one resume turn; for Claude Code, one loader
+	// arm of the load check, or one resume turn. Zero means the per-level default (60 seconds per
+	// app-server request, 90 seconds per Claude Code loader arm, 5 minutes for a resume turn).
 	Timeout time.Duration
 	// Now is the conversion instant; zero means time.Now.
 	Now time.Time
@@ -294,13 +298,12 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 	// What only the target's own harness can answer (Codex: the model provider its loader checks). It is
 	// asked here, after the read, because the answer can depend on the session's own working directory.
 	facts := route.Facts(ctx, targetFactsInput{
-		Home:        home,
-		HomeMissing: homeMissing,
-		DryRun:      opts.DryRun,
-		Probe:       probe,
-		SourceCwd:   conversation.Source.Cwd,
-		Timeout:     opts.Timeout,
-		Stderr:      opts.Stderr,
+		Home:      home,
+		DryRun:    opts.DryRun,
+		Probe:     probe,
+		SourceCwd: conversation.Source.Cwd,
+		Timeout:   opts.Timeout,
+		Stderr:    opts.Stderr,
 	})
 	if strings.TrimSpace(facts.CLIVersion) == "" {
 		facts.CLIVersion = route.PinVersion
@@ -470,17 +473,16 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 	result.Warnings = append(result.Warnings, sourceChangedWarnings(sourceState)...)
 
 	verificationInput := targetVerificationInput{
-		Home:          home,
-		Binary:        probe.Binary,
-		BinaryVersion: probe.Version,
-		SessionID:     session.ID,
-		Cwd:           session.Cwd,
-		Path:          path,
-		Directory:     session.Directory,
-		FileName:      session.FileName,
-		Data:          session.Data,
-		Timeout:       opts.Timeout,
-		Stderr:        opts.Stderr,
+		Home:      home,
+		Binary:    probe.Binary,
+		SessionID: session.ID,
+		Cwd:       session.Cwd,
+		Path:      path,
+		Directory: session.Directory,
+		FileName:  session.FileName,
+		Data:      session.Data,
+		Timeout:   opts.Timeout,
+		Stderr:    opts.Stderr,
 	}
 	structure, err := route.ReadBack(ctx, route.StructureRoot(home), session, cfg)
 	if err != nil {
@@ -561,11 +563,18 @@ const (
 	loadMethodClaude = "the target harness's own loader (claude --bare --resume, with no model " +
 		"credentials in its environment, plus an unknown-id control)"
 
-	resumeMethod = "one turn in the installed session through the target harness's non-interactive resume"
+	resumeMethodCodex = "one turn in the installed session through the target harness's non-interactive resume"
 	// The Claude resume check runs the reported invocation as it is printed, which is also the exec form
 	// the report carries.
 	resumeMethodClaude = "one turn in the installed session through the target harness's non-interactive " +
 		"resume (claude -p --resume)"
+
+	// structureReaderCodex and structureReaderClaude name the inherited reader each route's structural
+	// check reads a file back through: the verification's own detail and the report's warning for a
+	// written message the reader does not read its own text for both name that reader, so the name lives
+	// once per route and no target's check can name another target's reader.
+	structureReaderCodex  = "Codex"
+	structureReaderClaude = "Claude Code"
 )
 
 // hasAnswer reports whether a check carries an answer of its own: it verified, or it came back

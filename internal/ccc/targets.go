@@ -24,7 +24,8 @@ func Targets() []string {
 }
 
 // harnessProbe is what a target harness's own binary answered about itself: where it is, whether it is
-// installed at all, and the version it reported.
+// installed at all, the version it reported and, when it could not answer, why. One type answers for
+// every target, because every target's probe asks the harness the same question.
 type harnessProbe struct {
 	Binary  string
 	Found   bool
@@ -54,10 +55,9 @@ type convertedTarget struct {
 // targetFactsInput is what a target's own harness is asked with. It is answered after the source read,
 // because what a target's loader checks can depend on the session's own working directory.
 type targetFactsInput struct {
-	Home        string
-	HomeMissing bool
-	DryRun      bool
-	Probe       harnessProbe
+	Home   string
+	DryRun bool
+	Probe  harnessProbe
 	// SourceCwd is the working directory the source session recorded.
 	SourceCwd string
 	Timeout   time.Duration
@@ -65,7 +65,9 @@ type targetFactsInput struct {
 }
 
 // targetFacts is what only the target harness could answer, in the report's own vocabulary: the version
-// its records are written as, and (for a target whose loader checks one) the provider binding.
+// its records are written as, and (for a target whose loader checks one) the provider binding. A route's
+// Fields answers the same value for the session it wrote, with the document's own format version in it,
+// so what the report states about a session is never re-typed out of the facts that produced it.
 type targetFacts struct {
 	CLIVersion       string
 	CLIVersionSource string
@@ -101,30 +103,17 @@ type targetInvocation struct {
 
 // targetVerificationInput is everything a native verification of one target session is given.
 type targetVerificationInput struct {
-	Home          string
-	Binary        string
-	BinaryVersion string
-	SessionID     string
-	Cwd           string
-	Path          string
-	Directory     string
-	FileName      string
-	Data          []byte
-	Prompt        string
-	Timeout       time.Duration
-	Stderr        io.Writer
-}
-
-// targetSessionFields is what a target reports about the session it wrote, beyond what every target
-// reports: the format version its records carry and which answer that came from, and the provider
-// binding (empty for a target whose format has none).
-type targetSessionFields struct {
-	CLIVersion       string
-	CLIVersionSource string
-	ModelProvider    string
-	ProviderSource   string
-	ProviderDetail   string
-	Model            string
+	Home      string
+	Binary    string
+	SessionID string
+	Cwd       string
+	Path      string
+	Directory string
+	FileName  string
+	Data      []byte
+	Prompt    string
+	Timeout   time.Duration
+	Stderr    io.Writer
 }
 
 // targetRoute is one target harness's half of a continuation: what its data directory is called, what its
@@ -160,7 +149,7 @@ type targetRoute struct {
 	Load          func(ctx context.Context, in targetVerificationInput) LoadVerification
 	Resume        func(ctx context.Context, in targetVerificationInput) ResumeVerification
 	Invocation    func(session convertedTarget, in targetInvocationInput) targetInvocation
-	Fields        func(session convertedTarget, facts targetFacts) targetSessionFields
+	Fields        func(session convertedTarget, facts targetFacts) targetFacts
 
 	// What each check reads, named once per target, so a check that did not run still reports the
 	// mechanism it would have used.
@@ -198,7 +187,7 @@ func codexRoute() targetRoute {
 		PinVersion:    CodexFormatVersion,
 		FormatLimits:  codexFormatLimits(),
 		ResolveHome:   ResolveCodexHome,
-		Probe:         probeCodexHarness,
+		Probe:         ProbeCodexBinary,
 		Facts:         codexFacts,
 		DryRunWarnings: func(facts targetFacts, probe harnessProbe) []string {
 			if !probe.Found {
@@ -265,22 +254,17 @@ func codexRoute() targetRoute {
 				Environment:   map[string]string{codexHomeEnv: in.Home},
 			}
 		},
-		Fields: func(session convertedTarget, facts targetFacts) targetSessionFields {
-			fields := targetSessionFields{
-				CLIVersion:       session.Raw.(CodexRollout).CLIVersion,
-				CLIVersionSource: facts.CLIVersionSource,
-				ModelProvider:    facts.ModelProvider,
-				ProviderSource:   facts.ProviderSource,
-				ProviderDetail:   facts.ProviderDetail,
-				Model:            facts.Model,
-			}
-			return fields
+		Fields: func(session convertedTarget, facts targetFacts) targetFacts {
+			// The document's own format version is the version its records are written as; the rest of
+			// the facts are the harness's own answers, reported as they came.
+			facts.CLIVersion = session.Raw.(CodexRollout).CLIVersion
+			return facts
 		},
 		StructureMethod:       structureMethodCodex,
 		StructureMethodDryRun: structureMethodCodexDryRun,
 		LoadMethod:            loadMethodCodex,
-		ResumeMethod:          resumeMethod,
-		StructureReader:       "Codex",
+		ResumeMethod:          resumeMethodCodex,
+		StructureReader:       structureReaderCodex,
 	}
 }
 
@@ -312,12 +296,6 @@ func codexFacts(ctx context.Context, in targetFactsInput) targetFacts {
 	return facts
 }
 
-// probeCodexHarness answers whether the Codex binary is installed and which version it reports.
-func probeCodexHarness(ctx context.Context, binary string) harnessProbe {
-	probe := ProbeCodexBinary(ctx, binary)
-	return harnessProbe{Binary: probe.Binary, Found: probe.Found, Version: probe.Version, Detail: probe.Detail}
-}
-
 // claudeRoute is the route increment 0003 adds: a Claude Code transcript, filed under the target's
 // projects directory for the session's working directory, verified through Claude Code's own loader (no
 // model turn) and one real turn through the reported invocation.
@@ -330,7 +308,7 @@ func claudeRoute() targetRoute {
 		PinVersion:    ClaudeFormatVersion,
 		FormatLimits:  claudeFormatLimits(),
 		ResolveHome:   ResolveClaudeHome,
-		Probe:         probeClaudeHarness,
+		Probe:         ProbeClaudeBinary,
 		Facts:         claudeFacts,
 		// The Claude transcript records no provider, so there is nothing a dry run left unfilled: a
 		// resumed turn uses whatever configuration the caller runs it with.
@@ -399,17 +377,17 @@ func claudeRoute() targetRoute {
 				WorkingDir: session.Cwd,
 			}
 		},
-		Fields: func(session convertedTarget, facts targetFacts) targetSessionFields {
-			return targetSessionFields{
-				CLIVersion:       session.Raw.(ClaudeTranscript).CLIVersion,
-				CLIVersionSource: facts.CLIVersionSource,
-			}
+		Fields: func(session convertedTarget, facts targetFacts) targetFacts {
+			// The Claude transcript records no provider, so claudeFacts answered none: the report states
+			// the document's own format version beside those empty fields.
+			facts.CLIVersion = session.Raw.(ClaudeTranscript).CLIVersion
+			return facts
 		},
 		StructureMethod:       structureMethodClaude,
 		StructureMethodDryRun: structureMethodClaudeDryRun,
 		LoadMethod:            loadMethodClaude,
 		ResumeMethod:          resumeMethodClaude,
-		StructureReader:       "Claude Code",
+		StructureReader:       structureReaderClaude,
 	}
 }
 
@@ -423,10 +401,4 @@ func claudeFacts(_ context.Context, in targetFactsInput) targetFacts {
 		facts.CLIVersionSource = "probe"
 	}
 	return facts
-}
-
-// probeClaudeHarness answers whether the Claude Code binary is installed and which version it reports.
-func probeClaudeHarness(ctx context.Context, binary string) harnessProbe {
-	probe := ProbeClaudeBinary(ctx, binary)
-	return harnessProbe{Binary: probe.Binary, Found: probe.Found, Version: probe.Version, Detail: probe.Detail}
 }

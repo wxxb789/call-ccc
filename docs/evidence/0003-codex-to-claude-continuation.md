@@ -132,8 +132,29 @@ with --bare and with ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL
 ANTHROPIC_DEFAULT_HAIKU_MODEL, ANTHROPIC_DEFAULT_OPUS_MODEL, ANTHROPIC_DEFAULT_SONNET_MODEL,
 ANTHROPIC_SMALL_FAST_MODEL, CLAUDE_CODE_OAUTH_TOKEN, CLAUDE_CODE_USE_BEDROCK, CLAUDE_CODE_USE_VERTEX
 removed from the environment, so the loader read the session without a model turn, and the installed file
-is unchanged (605998b9b8f3…)
+is unchanged (the digest the check took of the installed file, named below)
 ```
+
+The digest in that sentence is the **installed** file's, never the source's: `claude_verify.go` prints
+`shortDigest` of `installedDigest(opts.Installed)`, taken before and after the loader ran, and
+`opts.Installed` is the installed path. Re-measured in the apply round on this host — the same harness,
+the committed fixture relocated into a scratch directory (its recorded cwd rewritten to
+`/tmp/recheck/ws`), its own scratch root and `--target-home`:
+
+```console
+$ CODEX_SESSIONS_DIR=/tmp/recheck/codex /tmp/recheck/ccc continue codex:0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812 \
+    --to claude --target-home /tmp/recheck/home2 --target-binary …/claude --json     # exit 0
+… "verification": {"load": {"state": "verified", … "detail": "… the installed file is unchanged (c856d661817f)"}}
+$ sha256sum /tmp/recheck/codex/2026/05/04/rollout-…-0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812.jsonl
+48db4ecb5ae4ab2c8644176d529a90253a89c5528f064004eef62d6085c955ec   # the source copy
+$ sha256sum /tmp/recheck/home2/projects/-tmp-recheck-ws/5c074093-f85f-4526-afa1-5ed379d44adb.jsonl
+c856d661817f101ce62f18ba9c4442d287881daa8e9f8f5bfae1293be0a624a2   # the installed transcript
+```
+
+Two different files, two different digests: the value inside the load detail belongs to the installed
+file. An earlier revision of this block quoted §1's source digest there — a value no single run can
+print, since the same run's source check reports the *source* file's digest (§1) and the load check the
+installed file's.
 
 **(c) One real turn, from the reported invocation.** With the host's model access and
 `--verify resume --resume-prompt "Summarise in one sentence what this conversation records about retry
@@ -243,12 +264,37 @@ The script is re-runnable: a second run of the same command (its own scratch, it
 reported `14 check(s) passed, 0 failed, 0 skipped` and exit 0, its turn answering `the attempt limit is
 four attempts, set in internal/retry/policy.go`.
 
-`scripts/tests/test_claude_native_check.py` pins the harness offline (16 cases, no `claude`, no `go`):
+Re-measured in the apply round, the same script against the same harness but **without a resume prompt**
+— that level needs model access, which the round did not use, and the script never supplies credentials
+of its own:
+
+```console
+$ python3 scripts/claude-native-check.py --claude /home/azureuser/.local/share/ccc-native/claude-cli/node_modules/.bin/claude
+… (this record's selection of the run's own lines; the paths are abridged the way the blocks above
+abridge them)
+PASS: the installed session is readable and writable only by its owner — mode 0600
+PASS: the installed file is one JSON object per line — 3674 bytes (the target's own read of it is the load check)
+PASS: the target harness's own loader resolves the installed session — verified — …
+SKIP: a real turn continues from the installed session — not attempted: pass --resume-prompt to run one
+PASS: the source session is unchanged — sha256 100d252ea32055b2… (the scratch source root is identical)
+PASS: no pre-existing session in the target home changed — 0 pre-existing session file(s)
+13 check(s) passed, 0 failed, 1 skipped
+```
+
+exit code **0**. Every check that needs no model access ran, including the owner-only mode check, the
+JSONL check and the loader/control pair; the one skipped check is the real turn, named as not
+attempted. The round's own edits to the script (the shared-mechanism module, the three defect fixes and
+the renames) are therefore exercised end to end against the installed harness; the run recorded above
+stays the round that had model access.
+
+`scripts/tests/test_claude_native_check.py` pins the harness offline (18 cases, no `claude`, no `go`):
 the shell reading of both reported command lines (the renderer's own rendering accepted; a quoted
-assignment, an unquoted shell metacharacter, a glued `&&`, a quoted operator, a split working directory
-and a line naming another session/home refused), the project-directory spelling, and the comparison
-ordering — driven through the shipped `main` with its subprocess seams, where a mutating run must fail
-exactly the three protected comparisons and exit 1.
+assignment, an unquoted shell metacharacter — a bare `&` included — a glued `&&`, a quoted operator, a
+split working directory and a line naming another session/home refused), the project-directory spelling,
+the comparison ordering — driven through the shipped `main` with its subprocess seams, where a mutating
+run must fail exactly the three protected comparisons and exit 1 — and, since the apply round, the
+platform branch of the owner-only mode check (a host that reports no POSIX mode bits answers SKIP, never
+FAIL) and the named failure of a malformed installed line (both checks' case files carry that one).
 
 ### 6.2 The gate
 
@@ -260,20 +306,23 @@ gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./c
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 185 tests in 4.951s (rc=0)
-  PASS     parity   … carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared … | owned: 27 project-owned prefix(es); files seen by git: 5642 | …
-  PASS     secrets  no leaks found in 93 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+  PASS     selftest Ran 188 tests in 4.964s (rc=0)
+  PASS     parity   … carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared … | owned: 28 project-owned prefix(es); files seen by git: 5643 | …
+  PASS     secrets  no leaks found in 94 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
 
 exit code **0**. The `test` step's three packages are `cmd/ccc`, `internal/ccc` and
-`internal/ccc/parity`; `selftest` runs `scripts/tests` (185 cases: 0001's and 0002's own, this
+`internal/ccc/parity`; `selftest` runs `scripts/tests` (188 cases: 0001's and 0002's own, this
 increment's four new Go-side case files are inside the `test` step, the new native-check cases and the
 evidence-claims rule) and re-runs itself in a child whose `PATH` holds no tools and once with the
-platform probe answering Windows-without-a-compiler. 0002's tests run unchanged inside that step: the
-increment's pipeline refactor (the route table) changed no pinned string, state, or command.
-
-This block is the fix round's own run, re-measured on the repaired tree. In the implement round the
+platform probe answering Windows-without-a-compiler. 0002's behaviour runs unchanged inside that step:
+the help case's pinned `--to` spelling was widened to name both targets (and gained both routes' example
+lines), and the refusal case now names a target this build does not write (`--to gemini`), with an
+empty-target case added beside it — neither assertion was weakened, and the route table's refactor
+changed no other pinned string, state or command.
+This block is the apply round's own run, on the tree that carries the accepted simplify findings; the
+counts those findings moved are named below. In the implement round the
 `test` step was green only where Claude Code was installed: `claude_verify_test.go` stubbed the turn the
 two checks drive, but not the executable they resolve it through, so three of its cases reported `claude
 is not on PATH` anywhere else — a green that could not reproduce on a host, or a CI runner, without the
@@ -293,7 +342,30 @@ rewritten for its new directory, and every link that named the goal's old path i
 name it as their contract). The archived file's own `**Status:**` line is left as reviewed, per the
 round's finding — `docs/decisions/OPEN-QUESTIONS.md` Q-0003-09 records that choice against 0001's
 archived spelling. `python3 scripts/gate.py` was re-run on the moved tree: exit **0**, `GATE: PASS`,
-every count in the block above unchanged.
+every count of that tree unchanged from the run before the move.
+
+The apply round (the accepted simplify findings — this record's own last editing round) re-ran this gate
+and the native check's offline half on the tree it edited. The counts that moved, and why: `selftest`
+**185 → 188** (three new offline cases — the owner-only mode check's platform branch, and one
+malformed-line failure case per native check), `parity`'s `owned` **27 → 28** and `files seen by git`
+**5642 → 5643** (the two native checks' shared-mechanism module, `scripts/native_check_common.py`,
+registered in `scripts/upstream-import.py`'s `OWNED` and the manifest's `owned` record), and `secrets`
+**93 → 94** file(s) for the same new file. `gofmt`'s 3591 and the three `test` packages do not move. No
+case in either suite was deleted, skipped or weakened: one Claude-side case was **added** (a converted
+prompt the inherited reader projects away must make the verification detail name the **Claude Code**
+reader, not the Codex one — the defect it pins is described below), and four had their assertions
+strengthened (the load check's denied-environment contract is now asserted against the harness's
+documented names written out as literals; the committed fixture's round trip must report an *empty*
+detail; every loss category is read through the presence-guarded `lossCount`), and one test-side
+declaration was merged without changing an assertion (the two routes' CLI cases now decode one shared
+document type instead of two hand-copied ones). The round also corrects two record
+statements: §3(b)'s quoted digest is the **installed** file's, re-measured above, and §1's digest is the
+relocated source copy *that* run read, not the committed fixture's own (`sha256 d9957a8d…`), because the
+source check digests the file it read. The copy is reproducible from the tree: parsing each line of the
+committed fixture, rewriting the **first** record's `payload.cwd` to `/tmp/smoke2/ws` and re-encoding each
+line with `json.dumps`' default separators is byte for byte the file whose `sha256` is
+`605998b9b8f367c2fe09ae208b2e8c012bfec08b115a9c3cb2acac0f7d1452b8` — a JSON-level relocation, which is
+why a global `sed` of the recorded path answers a different digest.
 
 Two failures the increment's own new rules caught before this green run, and their fixes, stated
 because a gate that only ever passed would not show that the rules bite: the new native-check case file
@@ -304,10 +376,27 @@ record twice — a §5 cell credited the run's answer while quoting file-side sp
 only what it can show), and the record claimed an answer it had not yet recorded (§6.1's block was
 added).
 
+The apply round also fixed three defects the simplify stage had demonstrated, and the first is why the
+added case above exists: (1) the structure verification's detail named "the inherited **Codex** reader"
+on *every* route, because the sentence was hard-coded in the comparison type both routes now share, so a
+Claude conversion whose read-back was not verbatim reported a reader that never read the file — while the
+report's *warning* for the same condition already named "the inherited **Claude Code** reader". `detail()`
+now takes the reader's name from the route's own constant (`structureReaderCodex`/`structureReaderClaude`),
+and the added case fails against the old shape on both of its assertions. (2) `scripts/claude-native-check.py`
+refused every shell metacharacter in the printed invocation's spelling *except a bare `&`*, so
+`CLAUDE_CONFIG_DIR=a&b …` — two commands to a POSIX shell, which is exactly what the check exists to
+catch — was accepted; the exemption is gone and a rejection case stands beside the `;` case. (3) A
+malformed line in an installed file raised out of both native-check scripts instead of failing a named
+check, contradicting the harnesses' own contract of one verdict line per check; a shared JSONL helper now
+reports the failing line and its parse error, and each script's case file pins the named failure with
+exit 1.
+
 `parity` passes with **no carried file changed**: `docs/upstream.md` and `scripts/upstream-manifest.txt`
-record the same pin, and the only ownership change is the new script
-(`scripts/upstream-import.py`'s `OWNED` and the manifest's `owned` line), which the step reports as part
-of the project-owned set.
+record the same pin, and the only ownership changes are the two new scripts
+(`scripts/claude-native-check.py`, whose `owned` line this increment added, and its shared-mechanism
+module `scripts/native_check_common.py`, whose line the apply round added: `scripts/upstream-import.py`'s
+`OWNED` tuple and the manifest's `owned` records), which the step reports as part of the project-owned
+set.
 
 ## 7. Limits and residual risks
 
@@ -338,7 +427,10 @@ of the project-owned set.
   than parsed by the build.
 - **Windows has no POSIX mode bits**, so the install-permission assertion checks the mode the installer
   *requests* there and the installed file's own bits where the platform reports them — the same
-  platform-aware branch 0002's installer test uses.
+  platform-aware branch 0002's installer test uses. The native check's owner-only check takes the same
+  shape: on a host that reports no POSIX mode bits it is reported as a **skip** with that reason, never
+  as a failure, so a green run on such a host cannot come from an assertion that could not be made.
 - **What this increment did not do:** no per-clause mutation sweep (0002's matrix accumulated one during
   its acceptance rounds; the review stage that follows this increment owns it), and no re-measurement of
-  0002's Codex route beyond running its tests unchanged.
+  0002's Codex route beyond re-running its tests (§6.2 names the two lines that named the newly
+  supported target and were updated; no assertion was weakened).

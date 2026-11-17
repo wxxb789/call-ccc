@@ -262,6 +262,16 @@ says so.
   never copied into an isolated home; the run hashes the source fixture, a planted unrelated session and
   every session the home already held before and after, so a mutation during the loader or the turn is
   answered by the comparison that runs last.
+- `scripts/native_check_common.py` — the mechanism the two native checks share, so neither keeps its own
+  copy of it: the file digests (`sha256`, `tree_digest`), the check recorder (`record`, `RESULTS`), the
+  subprocess runner (`run`), the POSIX-shell reading of a rendered command (`shell_words`,
+  `unquoted_text` and the character set a shell acts on), the JSONL readability test both checks report
+  through, and the two strings the record's own rules read (`TURN_OUTPUT_MARKER`, `PROMPT_PLACEHOLDER`).
+  It is project-owned (`OWNED` and the manifest), imports nothing, and each check stays runnable on its
+  own; what the shared module does **not** absorb is the checks' independent restatements of the
+  contracts they check (the spelling rules their case files re-implement, the marker their case files
+  declare for themselves, the project-directory rule their own test carries), because a reading that
+  imported those from the thing it checks would answer nothing.
 
 ## Why the Go steps target a subset
 

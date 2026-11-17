@@ -103,6 +103,7 @@ OWNED = (
     "scripts/gate-required.txt",
     "scripts/gate-targets.txt",
     "scripts/gate.py",
+    "scripts/native_check_common.py",
     "scripts/tests/",
     "scripts/claude-native-check.py",
     "scripts/codex-native-check.py",

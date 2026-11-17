@@ -31,64 +31,7 @@ func TestContinueToClaudeConvertsInstallsAndReportsTheRoute(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("exit %d, want %d (stderr %q)", code, exitOK, stderr)
 	}
-	var document struct {
-		Target     string                                  `json:"target"`
-		Source     struct{ Counts struct{ Messages int } } `json:"source"`
-		Conversion struct {
-			State   string `json:"state"`
-			Format  string `json:"format"`
-			Carried struct {
-				Messages             int `json:"messages"`
-				ToolCalls            int `json:"tool_calls"`
-				ToolResults          int `json:"tool_results"`
-				CompactionBoundaries int `json:"compaction_boundaries"`
-			} `json:"carried"`
-			Losses []struct {
-				Category    string `json:"category"`
-				Disposition string `json:"disposition"`
-				Count       int    `json:"count"`
-			} `json:"losses"`
-		} `json:"conversion"`
-		TargetSession struct {
-			Provider          string                      `json:"provider"`
-			Format            string                      `json:"format"`
-			Home              string                      `json:"home"`
-			BinaryFound       bool                        `json:"binary_found"`
-			SessionID         string                      `json:"session_id"`
-			Path              string                      `json:"path"`
-			Cwd               string                      `json:"cwd"`
-			CLIVersion        string                      `json:"cli_version"`
-			CLIVersionSource  string                      `json:"cli_version_source"`
-			FormatLimits      []struct{ Category string } `json:"format_limits"`
-			ResumeArguments   []string                    `json:"resume_arguments"`
-			ResumeEnvironment map[string]string           `json:"resume_environment"`
-			ResumeCommand     string                      `json:"resume_command"`
-			ExecResumeCommand string                      `json:"exec_resume_command"`
-		} `json:"target_session"`
-		Installation struct {
-			State     string `json:"state"`
-			Path      string `json:"path"`
-			Mechanism string `json:"mechanism"`
-		} `json:"installation"`
-		Verification struct {
-			Structure struct {
-				State    string `json:"state"`
-				ReadBack struct {
-					ToolCalls            int `json:"tool_calls"`
-					ToolResults          int `json:"tool_results"`
-					CompactionBoundaries int `json:"compaction_boundaries"`
-				} `json:"read_back"`
-			} `json:"structure"`
-			Load struct {
-				State  string `json:"state"`
-				Method string `json:"method"`
-				Detail string `json:"detail"`
-			} `json:"load"`
-			Resume struct {
-				State string `json:"state"`
-			} `json:"resume"`
-		} `json:"verification"`
-	}
+	var document reportedContinueDocument
 	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
 		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
 	}

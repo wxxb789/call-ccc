@@ -269,13 +269,8 @@ func TestContinueKeepsTheSourceAndItsDirectoryIntactForBothFixtures(t *testing.T
 		t.Fatalf("structure = %+v", result.Verification.Structure)
 	}
 	after := hashTree(t, fixtureRoot(t))
-	if len(before) != len(after) {
-		t.Fatalf("the fixture tree gained or lost files: %d before, %d after", len(before), len(after))
-	}
-	for path, digest := range before {
-		if after[path] != digest {
-			t.Errorf("%s changed during the conversion", path)
-		}
+	if !sameTree(before, after) {
+		t.Errorf("the fixture tree changed during the conversion: %v -> %v", before, after)
 	}
 	// The shapes this transcript carries are reported rather than silently carried or dropped.
 	if loss := lossCount(t, result.Conversion.Losses, "reasoning_text"); loss.Count != 2 {

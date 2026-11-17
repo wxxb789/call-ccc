@@ -177,13 +177,14 @@ class ResumeInvocationCheck(unittest.TestCase):
     def test_rejects_claude_syntax_the_value_leaves_unquoted(self) -> None:
         """A value the renderer quotes, spelled bare: the words read back right and the line is another
         command line -- `;` ends the assignment (`CLAUDE_CONFIG_DIR=a`) and starts a program named `b`,
-        `$HOME` is substituted before the variable is set, and a second `&&` ends the invocation and runs
-        whatever follows. The rule is about spellings: a character a shell acts on has to be quoted,
-        which `shellQuote` does for every one. (Each value is a single segment, so both path flavours
-        spell it as the line does.)
+        a bare `&` does the same (`a&b` sets the variable to `a` and runs `b`), `$HOME` is substituted
+        before the variable is set, and a second `&&` ends the invocation and runs whatever follows. The
+        rule is about spellings: a character a shell acts on has to be quoted, which `shellQuote` does for
+        every one. (Each value is a single segment, so both path flavours spell it as the line does.)
         """
         for line, home in (
             (f"cd codex-home && CLAUDE_CONFIG_DIR=a;b {CLAUDE} --resume {SESSION}", "a;b"),
+            (f"cd codex-home && CLAUDE_CONFIG_DIR=a&b {CLAUDE} --resume {SESSION}", "a&b"),
             (f"cd codex-home && CLAUDE_CONFIG_DIR=$HOME {CLAUDE} --resume {SESSION}", "$HOME"),
             (f"cd codex-home && CLAUDE_CONFIG_DIR=`id` {CLAUDE} --resume {SESSION}", "`id`"),
             (f"cd codex-home && CLAUDE_CONFIG_DIR=~ {CLAUDE} --resume {SESSION}", "~"),
@@ -321,8 +322,9 @@ class ProjectDirectorySpelling(unittest.TestCase):
                 self.assertEqual(NATIVE_CHECK.claude_project_dir(cwd), expected)
 
     def test_a_directory_the_loader_can_be_started_from_keeps_case(self) -> None:
-        self.assertEqual(NATIVE_CHECK.claude_project_dir("/tmp/ExampleApi"),
-                         NATIVE_CHECK.claude_project_dir("/tmp/ExampleApi"))
+        # The literal pins the documented spelling (every character outside [A-Za-z0-9] becomes `-`,
+        # case preserved), so this case answers the rule rather than comparing a call with itself.
+        self.assertEqual(NATIVE_CHECK.claude_project_dir("/tmp/ExampleApi"), "-tmp-ExampleApi")
         self.assertNotEqual(NATIVE_CHECK.claude_project_dir("/tmp/ExampleApi"),
                             NATIVE_CHECK.claude_project_dir("/tmp/exampleapi"))
 
@@ -363,9 +365,17 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
     compared (a count of one) and the mutating run has to name the file it caught changing.
     """
 
-    def drive(self, mutate_during_resume: bool) -> tuple[int, dict[str, tuple[str, str]], str]:
+    def drive(self, mutate_during_resume: bool, posix_mode_bits: bool | None = None,
+              malformed_installed: bool = False) -> tuple[int, dict[str, tuple[str, str]], str]:
         """One run of the shipped ``main`` against stubs; answers its exit code, its recorded checks and
-        its printed output."""
+        its printed output.
+
+        ``posix_mode_bits`` is what the platform seam answers; ``None`` (the default) means *this* host's
+        own answer, so a case that does not name it holds on a host that reports POSIX mode bits and on
+        one that does not (``False`` drives the Windows answer explicitly), and ``malformed_installed``
+        makes the stub's installed file carry a line that is not JSON, so the JSONL check's own failure
+        path is exercised.
+        """
         # The scratch root is resolved before anything is derived from it, because the shipped ``main``
         # resolves what it is handed (``--repo`` and ``--claude-home``) and resolves its own scratch root
         # as well: a host whose temporary root is reached through a symlink, or whose ``resolve()``
@@ -402,9 +412,6 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
 
         state: dict[str, Path] = {}
 
-        def rendered(cwd_path: Path, target_home: Path, arguments: list[str]) -> str:
-            return rendering(cwd_path, target_home, arguments)
-
         def fake_run(cmd, cwd=None, env=None, timeout=600):
             command = [str(part) for part in cmd]
             if command[0] == go:
@@ -422,7 +429,9 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                     installed = target_home / NATIVE_CHECK.CLAUDE_PROJECTS_SUBDIR / project_dir / (
                         f"{thread_id}.jsonl")
                     installed.parent.mkdir(parents=True, exist_ok=True)
-                    installed.write_text(json.dumps({"type": "user", "sessionId": thread_id}) + "\n")
+                    installed.write_text(
+                        json.dumps({"type": "user", "sessionId": thread_id}) + "\n"
+                        + ("{not json}\n" if malformed_installed else ""))
                     os.chmod(installed, 0o600)
                     state["installed"] = installed
                     state["cwd"] = cwd_path
@@ -450,8 +459,9 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                             "resume_arguments": resume_arguments,
                             "exec_resume_arguments": exec_resume_arguments,
                             "resume_environment": {"CLAUDE_CONFIG_DIR": str(target_home)},
-                            "resume_command": rendered(cwd_path, target_home, resume_arguments),
-                            "exec_resume_command": rendered(cwd_path, target_home, exec_resume_arguments),
+                            "resume_command": rendering(cwd_path, target_home, resume_arguments),
+                            "exec_resume_command": rendering(cwd_path, target_home,
+                                                              exec_resume_arguments),
                         },
                         "verification": {
                             "structure": {"state": "verified",
@@ -495,8 +505,12 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
 
         before = len(NATIVE_CHECK.RESULTS)
         printed = io.StringIO()
+        host_posix_mode_bits = NATIVE_CHECK.reports_posix_mode_bits() if posix_mode_bits is None \
+            else posix_mode_bits
         with mock.patch.object(NATIVE_CHECK, "run", fake_run), \
                 mock.patch.object(NATIVE_CHECK, "run_shell", fake_shell), \
+                mock.patch.object(NATIVE_CHECK, "reports_posix_mode_bits",
+                                  lambda: host_posix_mode_bits), \
                 mock.patch("shutil.which", fake_which), \
                 contextlib.redirect_stdout(printed):
             code = NATIVE_CHECK.main(["--repo", str(repo), "--claude", "claude",
@@ -539,7 +553,47 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         self.assertIn("1 pre-existing session file(s)", results[PROTECTED_CHECKS[2]][1],
                       "the run's pre-existing-session comparison did not name the session the home "
                       "already held: a capture that never happened agrees with itself")
+        # The owner-only check's state is the platform's own answer, taken from the seam the script
+        # reads: the very comparison on a host that reports POSIX mode bits, a named SKIP on one that
+        # does not. Asserting PASS unconditionally would fail this case on Windows for the platform's
+        # answer rather than for the harness's behaviour.
+        self.assertEqual(results["the installed session is readable and writable only by its owner"][0],
+                         "PASS" if NATIVE_CHECK.reports_posix_mode_bits() else "SKIP", results)
         self.assertEqual(code, 0, f"exit {code} for an intact run: {results}")
+
+    def test_a_host_without_posix_mode_bits_skips_the_owner_only_check(self) -> None:
+        """The owner-only check is a named SKIP where the platform reports no POSIX mode bits.
+
+        Windows answers every ``stat`` with the all-bits mode regardless of the installer's `0600`
+        request, so the *request* is the checkable half there and this harness, which reads the installed
+        file's mode back, cannot answer the rule. The check must not FAIL -- a FAIL would make the intact
+        run exit 1 on that leg, contradicting the harness's own exit-code contract -- so it is recorded as
+        a SKIP that names the platform reason, and the intact run still exits 0.
+        """
+        code, results, printed = self.drive(mutate_during_resume=False, posix_mode_bits=False)
+        state, detail = results.get("the installed session is readable and writable only by its owner",
+                                    ("missing", ""))
+        self.assertEqual(state, "SKIP",
+                         f"a host without POSIX mode bits did not skip the owner-only check: {results}")
+        self.assertIn("no POSIX mode bits", detail, detail)
+        self.assertIn("SKIP: the installed session is readable and writable only by its owner", printed)
+        self.assertEqual(code, 0,
+                         f"exit {code} for an intact run on a host without POSIX mode bits: {results}")
+
+    def test_a_malformed_claude_installed_line_is_a_named_failure(self) -> None:
+        """An unparseable installed line is a FAIL the run reports, not a traceback out of ``main``.
+
+        The JSONL check is a named check, and a raise would print no ``FAIL`` line and no summary -- the
+        very reporting contract the harness promises never to break. The run must therefore return 1 with
+        that check recorded as a FAIL whose detail names the line and the parse error.
+        """
+        code, results, printed = self.drive(mutate_during_resume=False, malformed_installed=True)
+        state, detail = results.get("the installed file is one JSON object per line", ("missing", ""))
+        self.assertEqual(state, "FAIL",
+                         f"the malformed installed line did not fail the JSONL check: {results}")
+        self.assertIn("line 2 is not JSON", detail, detail)
+        self.assertEqual(code, 1, f"exit {code} for a run whose JSONL check failed: {results}")
+        self.assertIn("FAIL: the installed file is one JSON object per line", printed)
 
 
 if __name__ == "__main__":

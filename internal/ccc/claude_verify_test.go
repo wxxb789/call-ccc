@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -41,15 +42,34 @@ func TestProbeClaudeBinaryReportsAMissingBinary(t *testing.T) {
 }
 
 // TestClaudeLoadEnvironmentRemovesEveryModelPath pins what the offline load check hands its harness: the
-// data directory it must read, and none of the variables that could reach a model.
+// data directory it must read, and none of the variables that could reach a model. The documented set is
+// written out here as literals: a case that looped over the check's own list could not fail for a name
+// the list is missing, and that is the failure this contract has to catch.
 func TestClaudeLoadEnvironmentRemovesEveryModelPath(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-secret")
 	t.Setenv("ANTHROPIC_BASE_URL", "https://example.invalid")
 	t.Setenv("CLAUDE_CONFIG_DIR", "/somewhere/else")
 	t.Setenv("UNRELATED_SETTING", "kept")
+	documented := []string{
+		"ANTHROPIC_API_KEY",
+		"ANTHROPIC_AUTH_TOKEN",
+		"ANTHROPIC_BASE_URL",
+		"ANTHROPIC_MODEL",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL",
+		"ANTHROPIC_DEFAULT_OPUS_MODEL",
+		"ANTHROPIC_DEFAULT_SONNET_MODEL",
+		"ANTHROPIC_SMALL_FAST_MODEL",
+		"CLAUDE_CODE_OAUTH_TOKEN",
+		"CLAUDE_CODE_USE_BEDROCK",
+		"CLAUDE_CODE_USE_VERTEX",
+	}
+	if !slices.Equal(claudeLoadEnvDenied, documented) {
+		t.Errorf("claudeLoadEnvDenied = %v, want the harness's documented model paths %v",
+			claudeLoadEnvDenied, documented)
+	}
 	environment := claudeEnvironment("/scratch/home", claudeLoadEnvDenied)
 	joined := strings.Join(environment, "\n")
-	for _, denied := range claudeLoadEnvDenied {
+	for _, denied := range documented {
 		if strings.Contains(joined, denied+"=") {
 			t.Errorf("the environment still carries %s", denied)
 		}
@@ -108,7 +128,7 @@ func (h *fakeHarness) run(
 		executable: executable, arguments: args, environment: environment, home: home, cwd: opts.Cwd,
 	})
 	sessionID := ""
-	if index := indexOf(args, "--resume"); index >= 0 && index+1 < len(args) {
+	if index := slices.Index(args, "--resume"); index >= 0 && index+1 < len(args) {
 		sessionID = args[index+1]
 	}
 	if sessionID != h.answerSessionID {
@@ -141,15 +161,6 @@ func harnessDocument(sessionID string, isError bool, result string) string {
 		"is_error": isError, "result": result, "terminal_reason": "api_error", "num_turns": 1,
 	})
 	return string(encoded) + "\n"
-}
-
-func indexOf(values []string, want string) int {
-	for index, value := range values {
-		if value == want {
-			return index
-		}
-	}
-	return -1
 }
 
 // withFakeHarness installs one fake harness for the duration of a test: the turn seam both checks drive a
@@ -212,7 +223,7 @@ func TestVerifyClaudeLoadResolvesTheInstalledSessionAndItsControl(t *testing.T) 
 		t.Fatalf("the check made %d call(s), want the probe and its control", len(harness.calls))
 	}
 	for index, call := range harness.calls {
-		if indexOf(call.arguments, "--bare") < 0 {
+		if slices.Index(call.arguments, "--bare") < 0 {
 			t.Errorf("arm %d did not run with --bare, so it cannot be offline: %v", index, call.arguments)
 		}
 		if call.home == home {
@@ -231,10 +242,10 @@ func TestVerifyClaudeLoadResolvesTheInstalledSessionAndItsControl(t *testing.T) 
 			}
 		}
 	}
-	if harness.calls[0].arguments[indexOf(harness.calls[0].arguments, "--resume")+1] != transcript.SessionID {
+	if harness.calls[0].arguments[slices.Index(harness.calls[0].arguments, "--resume")+1] != transcript.SessionID {
 		t.Error("the first arm did not ask the loader for the installed session")
 	}
-	if harness.calls[1].arguments[indexOf(harness.calls[1].arguments, "--resume")+1] == transcript.SessionID {
+	if harness.calls[1].arguments[slices.Index(harness.calls[1].arguments, "--resume")+1] == transcript.SessionID {
 		t.Error("the control arm asked for the installed session, so it is not a control")
 	}
 	if !strings.Contains(verification.Detail, "No conversation found") {
@@ -264,8 +275,9 @@ func TestVerifyClaudeLoadRefusesAnAnswerAboutAnotherSession(t *testing.T) {
 		t.Errorf("detail = %q, want it to name the control arm", verification.Detail)
 	}
 
-	studio := &fakeHarness{answerSessionID: "99999999-9999-4999-8999-999999999999"}
-	withFakeHarness(t, studio)
+	// A loader answering about a session nobody installed: its answer is not evidence about this one.
+	answeringAnotherSession := &fakeHarness{answerSessionID: "99999999-9999-4999-8999-999999999999"}
+	withFakeHarness(t, answeringAnotherSession)
 	verification = VerifyClaudeLoad(context.Background(), ClaudeLoadOptions{
 		Home: home, Binary: "claude", SessionID: transcript.SessionID, Cwd: transcript.Cwd,
 		Directory: transcript.Directory, FileName: transcript.FileName, Data: transcript.Data,
@@ -301,7 +313,7 @@ func TestVerifyClaudeResumeReportsTheTurnAndTheGrowth(t *testing.T) {
 	if !strings.Contains(verification.Command, "cd "+transcript.Cwd) {
 		t.Errorf("command = %q, want the session's working directory in it", verification.Command)
 	}
-	if len(harness.calls) != 1 || indexOf(harness.calls[0].arguments, "--bare") >= 0 {
+	if len(harness.calls) != 1 || slices.Index(harness.calls[0].arguments, "--bare") >= 0 {
 		t.Errorf("the resume turn ran %+v, want the caller's own environment and no --bare", harness.calls)
 	}
 	if harness.calls[0].executable != harness.resolvedExecutable {

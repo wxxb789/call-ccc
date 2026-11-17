@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -496,7 +495,8 @@ func (b *claudeTranscriptBuilder) messageID() string {
 	return id
 }
 
-// userRecord writes one user record holding a prompt's dialogue.
+// userRecord writes one user record holding a prompt's dialogue. It is only ever called with text: a
+// record whose dialogue is empty is counted by writeMessage rather than written.
 func (b *claudeTranscriptBuilder) userRecord(text string, at time.Time) {
 	b.write(claudeRecord{
 		ParentUUID:  b.parentUUID,
@@ -510,11 +510,9 @@ func (b *claudeTranscriptBuilder) userRecord(text string, at time.Time) {
 		UserType:    claudeUserTypeExternal,
 		Message:     &claudeMessage{Role: claudeTypeUser, Content: b.textContent(text)},
 	})
-	if text != "" {
-		b.carried.Messages++
-		b.carried.UserMessages++
-		b.items = append(b.items, TargetItem{Kind: ItemUser, Text: text})
-	}
+	b.carried.Messages++
+	b.carried.UserMessages++
+	b.items = append(b.items, TargetItem{Kind: ItemUser, Text: text})
 }
 
 // writeToolEvidence writes the calls and results a record carries: each call as a tool_use block on an
@@ -739,20 +737,8 @@ func compactJSON(raw string) string {
 // losses reports every category the writer knows about, in a fixed order, so a caller can read the
 // report without knowing which categories this run happened to produce.
 func (b *claudeTranscriptBuilder) losses() []Loss {
-	names := append([]string(nil), b.toolNameOrder...)
-	sort.Strings(names)
-	shown := names
-	if len(shown) > b.opts.MaxToolNames {
-		shown = shown[:b.opts.MaxToolNames]
-	}
-	toolDetail := "no tool call was carried"
-	if len(names) > 0 {
-		toolDetail = fmt.Sprintf(
-			"tool calls keep the source's own tool names and recorded input objects (%s%s); the target's "+
-				"own tool set may not include them, and a resumed turn answers from them as history "+
-				"rather than replaying them",
-			strings.Join(shown, ", "), moreNames(len(names)-len(shown)))
-	}
+	names := b.toolNameOrder
+	toolDetail := toolVocabularyDetail(names, b.opts.MaxToolNames, "input objects")
 	preBoundaryDetail := "no compaction boundary was carried"
 	if b.sawBoundary {
 		preBoundaryDetail = "the turns before a compaction boundary stay in the file and are counted " +
@@ -760,33 +746,9 @@ func (b *claudeTranscriptBuilder) losses() []Loss {
 			"turn could not answer from the pre-boundary turns), so those turns are recorded history " +
 			"the target does not continue from"
 	}
-	unreadableLinesDetail := "every source line this read produced a message for was readable"
-	if b.sourceFidelity.MalformedLines > 0 {
-		unreadableLinesDetail = "the provider's reader skipped these source line(s) as unreadable " +
-			"(invalid JSON, or a line the reader would not read), so no message in this conversation " +
-			"stands for them and no record here can carry what it could not read"
-		if b.sourceFidelity.Truncated {
-			unreadableLinesDetail += "; the source file's last line was still being written when it was " +
-				"read (the fidelity block's truncated flag), and it is one of them"
-		}
-	}
-	summaryTranscriptDetail := "the provider's own classification says this read is the session's " +
-		"recorded transcript"
-	if b.sourceFidelity.TranscriptFidelity == parser.TranscriptFidelitySummary {
-		summaryTranscriptDetail = "the provider classified this read as a summary transcript: the " +
-			"conversation carried here is a degraded fallback standing in for a transcript the provider " +
-			"could not read in full, not the session's recorded transcript"
-	}
-	needsRetryDetail := "the provider's own classification says this read is current for its data version"
-	if b.sourceFidelity.NeedsRetry {
-		reason := ""
-		if b.sourceFidelity.RetryReason != "" {
-			reason = " (" + b.sourceFidelity.RetryReason + ")"
-		}
-		needsRetryDetail = "the provider classified this read as needing a retry" + reason + ": it " +
-			"returned the messages it could read, which may not be the session's complete recorded " +
-			"history"
-	}
+	unreadableLinesDetail := malformedLinesLossDetail(b.sourceFidelity)
+	summaryTranscriptDetail := summaryTranscriptLossDetail(b.sourceFidelity)
+	needsRetryDetail := needsRetryLossDetail(b.sourceFidelity)
 	statusDetail := "no carried result recorded a status the target has no field for"
 	if b.lossStatuses > 0 {
 		statusDetail = "the target's tool_result block has a boolean error field; a result whose " +

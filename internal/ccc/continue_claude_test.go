@@ -73,7 +73,7 @@ func TestContinueIntoClaudeConvertsInstallsAndReadsBack(t *testing.T) {
 		{"pre_compaction_history", 2},
 		{"tool_name_vocabulary", 1},
 	} {
-		if got := lossCounts(result.Conversion.Losses)[testCase.category]; got != testCase.want {
+		if got := lossCount(t, result.Conversion.Losses, testCase.category).Count; got != testCase.want {
 			t.Errorf("%s = %d, want %d", testCase.category, got, testCase.want)
 		}
 	}

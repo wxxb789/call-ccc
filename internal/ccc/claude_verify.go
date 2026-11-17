@@ -20,22 +20,14 @@ const ClaudeBinaryDefault = "claude"
 
 var claudeVersionPattern = regexp.MustCompile(`[0-9]+\.[0-9]+\.[0-9]+`)
 
-// ClaudeProbe is what the target harness answered when asked for its version.
-type ClaudeProbe struct {
-	Binary  string `json:"binary"`
-	Found   bool   `json:"found"`
-	Version string `json:"version,omitempty"`
-	Detail  string `json:"detail,omitempty"`
-}
-
 // ProbeClaudeBinary finds the target executable and asks it for its version. A missing binary is an
 // answer, not an error: a conversion can still be written (and verified structurally), but the report
 // says the native half could not run. Measured: `claude --version` prints `2.1.326 (Claude Code)`.
-func ProbeClaudeBinary(ctx context.Context, binary string) ClaudeProbe {
+func ProbeClaudeBinary(ctx context.Context, binary string) harnessProbe {
 	if strings.TrimSpace(binary) == "" {
 		binary = ClaudeBinaryDefault
 	}
-	probe := ClaudeProbe{Binary: binary}
+	probe := harnessProbe{Binary: binary}
 	path, err := exec.LookPath(binary)
 	if err != nil {
 		probe.Detail = fmt.Sprintf("%s is not on PATH", binary)
@@ -114,13 +106,11 @@ type ClaudeLoadOptions struct {
 // Code 2.1.326: with no model credentials reachable, the loader still resolves the session, reports it,
 // and answers with a result document naming that session and the model call it could not make.
 type claudeLoadAnswer struct {
-	Type           string `json:"type"`
 	Subtype        string `json:"subtype"`
 	SessionID      string `json:"session_id"`
 	IsError        bool   `json:"is_error"`
 	Result         string `json:"result"`
 	TerminalReason string `json:"terminal_reason"`
-	NumTurns       int    `json:"num_turns"`
 }
 
 // VerifyClaudeLoad asks the target harness's own loader to open the installed session and report the

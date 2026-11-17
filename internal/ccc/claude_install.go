@@ -153,81 +153,40 @@ func VerifyClaudeTranscriptStructure(
 		return verification, nil
 	}
 	verification.State = VerificationStateVerified
-	verification.Detail = roundTrip.detail()
+	verification.Detail = roundTrip.detail(structureReaderClaude)
 	return verification, nil
 }
 
-// compareClaudeRoundTrip names every way the file's read-back differs from the target document.
+// compareClaudeRoundTrip names every way the file's read-back differs from the target document, through
+// the shared walk with the Claude reader's own rules.
 //
-// It compares evidence rather than record shape, for the same reason the Codex comparison does: the
-// target's reader puts records that share a message id back into one message, trims a tool result's
+// The Claude reader puts records that share a message id back into one message, trims a tool result's
 // content through its own text channel, and classifies a boundary record as a system row, so those are
-// the reader's normalisations and not differences in what the file holds. What it cannot normalise --
-// a message, call, result or boundary the file does not hold, or holds altered -- is what it reports.
-// Dialogue is walked against the installed file's own records in their own order (compareDialogue),
-// because the reader projects some user records away (a pure command envelope, a record it classifies as
-// system-injected), and that silence is not evidence about the file.
-func compareClaudeRoundTrip(transcript ClaudeTranscript, readBack Conversation, installed []byte) codexRoundTrip {
-	var roundTrip codexRoundTrip
-	intendedDialogue := []string{}
-	intendedCalls := []string{}
-	intendedResults := []string{}
-	intendedBoundaries := []string{}
-	for _, item := range transcript.Items {
-		switch item.Kind {
-		case ItemUser, ItemAssistant:
-			intendedDialogue = append(intendedDialogue, dialogueKey(string(item.Kind), item.Text))
-		case ItemToolCall:
-			intendedCalls = append(intendedCalls, roundTripCallKey(item.CallID, item.ToolName, item.InputJSON))
-		case ItemToolResult:
-			intendedResults = append(intendedResults, roundTripResultKey(item.CallID, item.Text))
-		case ItemCompactionBoundary:
-			intendedBoundaries = append(intendedBoundaries, roundTripBoundaryKey(item.Text))
-		}
-	}
+// the reader's own normalisations and not differences in what the file holds. It also projects some user
+// records away -- a pure command envelope, a record it classifies as system-injected -- and that silence
+// is not evidence about the file, which is why the dialogue walk asks the file's own records.
+func compareClaudeRoundTrip(transcript ClaudeTranscript, readBack Conversation, installed []byte) roundTripComparison {
+	return compareRoundTrip(transcript.Items, readBack, claudeRoundTripReader(),
+		newDialogueRecords(claudeInstalledDialogue(installed)))
+}
 
-	readDialogue := []string{}
-	readCalls := []string{}
-	readResults := []string{}
-	readBoundaries := []string{}
-	for _, message := range readBack.Messages {
-		if message.IsCompactBoundary {
-			readBoundaries = append(readBoundaries, roundTripBoundaryKey(message.Content))
-			continue
-		}
-		if message.IsSystem {
-			// A record the reader classified as system-injected: the writer writes no dialogue record for
-			// one, so it accounts for no written message here.
-			continue
-		}
-		if text := dialogueText(message); strings.TrimSpace(text) != "" {
-			kind := ItemAssistant
-			if parser.RoleType(message.Role) == parser.RoleUser {
-				kind = ItemUser
-			} else if parser.RoleType(message.Role) != parser.RoleAssistant {
-				continue
+// claudeRoundTripReader is the inherited Claude reader's own rules for the read-back walk: a record it
+// classifies as injected context carries no message, and a role that is neither the user's nor the
+// assistant's has no Claude message to stand for.
+func claudeRoundTripReader() roundTripReader {
+	return roundTripReader{
+		classifiesAway: func(message Message) bool { return message.IsSystem },
+		kindOf: func(message Message) (TargetItemKind, bool) {
+			switch parser.RoleType(message.Role) {
+			case parser.RoleUser:
+				return ItemUser, true
+			case parser.RoleAssistant:
+				return ItemAssistant, true
+			default:
+				return "", false
 			}
-			readDialogue = append(readDialogue, dialogueKey(string(kind), text))
-		}
-		for _, call := range message.ToolCalls {
-			readCalls = append(readCalls, roundTripCallKey(call.ToolUseID, call.Name, call.InputJSON))
-		}
-		for _, result := range message.ToolResults {
-			text, _ := resultText(result)
-			readResults = append(readResults, roundTripResultKey(result.ToolUseID, text))
-		}
+		},
 	}
-
-	dialogue := compareDialogue(intendedDialogue, readDialogue, newDialogueRecords(claudeInstalledDialogue(installed)))
-	roundTrip.differences = append(roundTrip.differences, dialogue.differences...)
-	roundTrip.notReadBackVerbatim = dialogue.notReadBackVerbatim
-	roundTrip.differences = append(roundTrip.differences,
-		compareSequences(categoryToolCall, compareAsMultiset, intendedCalls, readCalls)...)
-	roundTrip.differences = append(roundTrip.differences,
-		compareSequences(categoryToolResult, compareAsMultiset, intendedResults, readResults)...)
-	roundTrip.differences = append(roundTrip.differences,
-		compareSequences(categoryCompactionBoundary, compareInOrder, intendedBoundaries, readBoundaries)...)
-	return roundTrip
 }
 
 // claudeInstalledRecord is the part of one installed line the dialogue walk reads: the record's own type,

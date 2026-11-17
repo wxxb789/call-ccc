@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""The continuation evidence's comparison credits a run word for word, or not at all.
+"""Every continuation record's comparison credits a run word for word, or not at all.
 
-``docs/evidence/0002-claude-to-codex-continuation.md`` §5 maps each piece of source evidence to the
-target side -- the harness's own ``thread/read`` view, the file the conversion installed, and the resumed
-turn's own answer -- and the answer half is the one claim in that record a reader cannot re-derive by
-re-running something: the resumed turn's words differ per run, which is why §3 records the run it quotes.
-Round 18's audit found two cells crediting the recorded run's answer with words its recorded output does
-not hold: a ``Read`` call's returned contents reported as the answer's "first return", and the source's
-tool name ``Bash`` where the answer said ``exec_command``. Both had been carried over from an earlier
-run's answer into the cell of a later one, and neither the gate nor any case could see it.
+A continuation evidence record's §5 maps each piece of source evidence to the target side -- the
+harness's own ``thread/read`` view, the file the conversion installed, and the resumed turn's own answer
+-- and the answer half is the one claim in such a record a reader cannot re-derive by re-running
+something: the resumed turn's words differ per run, which is why §3 records the run it quotes. Round 18's
+audit, on ``docs/evidence/0002-claude-to-codex-continuation.md``, found two cells crediting the recorded
+run's answer with words its recorded output does not hold: a ``Read`` call's returned contents reported
+as the answer's "first return", and the source's tool name ``Bash`` where the answer said ``exec_command``.
+Both had been carried over from an earlier run's answer into the cell of a later one, and neither the gate
+nor any case could see it.
 
 This case pins the rule that keeps that from recurring: an inline-code quotation in a §5 table cell that
 credits the run's answer must occur verbatim in a recorded answer block -- the lines the harness prints

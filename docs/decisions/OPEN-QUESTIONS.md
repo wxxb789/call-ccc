@@ -1216,11 +1216,13 @@ supersede it with a newer one and say which it supersedes.
 - **Question:** the inherited Claude reader merges *consecutive assistant records that share a
   `message.id`* as streaming chunks of one response, and a message can carry several content blocks.
   Write one record per message, or one record per block, and where does the id come from?
-- **Default taken:** one record per source message, carrying that message's content-block array, with a
-  fresh unique `message.id` per assistant record shared by that message's block records only — sharing
-  an id across two messages would merge them (measured), while a single multi-block record was measured
-  to reconstruct to exactly the request the harness's own block-per-record shape produces. The new UUID
-  v4 is both the file stem and every record's `sessionId`, because the inherited reader reads a record
+- **Default taken:** one record per content block of a source message — the message's dialogue as its own
+  record (a plain string for a single text block, an array otherwise), each tool call as its own
+  assistant record, and a message's tool results together on one user record — with one fresh unique
+  `message.id` per source assistant message, shared by that message's records only; sharing an id across
+  two messages would merge them (measured), while a single multi-block record was measured to
+  reconstruct to exactly the request the harness's own block-per-record shape produces. The new UUID v4
+  is both the file stem and every record's `sessionId`, because the inherited reader reads a record
   whose `sessionId` differs from the stem as a *child* session.
 - **Reversal:** derive ids from the source's own message identity where it has one, which needs a
   per-source mapping and a source identity the read does not always carry.
@@ -1320,9 +1322,9 @@ supersede it with a newer one and say which it supersedes.
 ## Q-0003-09 — The archived goal file's own `Status` line
 
 - **Status:** resolved (default taken)
-- **Question:** 0002's merge onto `main` (`8e1c502`) makes it accepted, so the fix round moved its goal
-  file to `docs/goals/archive/` and the index row now reads `Accepted: merged onto `main` as `8e1c502`;
-  archived`; the file's own `**Status:**` line still reads `Implemented on
+- **Question:** 0002's merge onto `main` (`8e1c502`) makes it accepted, so the bookkeeping fix round
+  moved its goal file to `docs/goals/archive/` and the index row now reads `Accepted: merged onto `main`
+  as `8e1c502`; archived`; the file's own `**Status:**` line still reads `Implemented on
   `feat/0002-claude-to-codex-continuation`; awaiting operator acceptance`. 0001's archived file was
   re-spelled to `Accepted: merged onto `main` as `ef6a61c`; archived` in the commit that archived it,
   while this round's finding told the round not to touch the goal text beyond its location and the
@@ -1333,3 +1335,19 @@ supersede it with a newer one and say which it supersedes.
   line re-spelled to `Accepted: merged onto `main` as `8e1c502`; archived`, matching 0001's archive.
 - **Settled by:** whether the owner wants an archived goal's own status line re-spelled to the accepted
   state (0001's practice) or frozen as the text the operator accepted.
+
+## Q-0003-10 — The active goal file's own `Status` line
+
+- **Status:** resolved (default taken)
+- **Question:** `docs/goals/0003-codex-to-claude-continuation.md` still opens with `**Status:** Ready`
+  while the index row at `docs/goals/README.md` reads `Implemented on
+  `feat/0003-codex-to-claude-continuation`; awaiting operator acceptance`. The apply round's own finding
+  named this and left it alone: the goal file is the owner's artifact, the index declares itself the
+  status authority, and 0003 has not been accepted yet. Q-0003-09 records the same question for the
+  *archived* 0002 file.
+- **Default taken:** the goal file's line stays as it is; the README row carries the state, and the
+  question is recorded here rather than answered by an edit to a file the owner is still reviewing.
+- **Reversal:** one line in `docs/goals/0003-codex-to-claude-continuation.md`: `**Status:** Ready` →
+  `Implemented on `feat/0003-codex-to-claude-continuation`; awaiting operator acceptance`.
+- **Settled by:** whether the owner wants an active goal's own status line to track the index row while
+  the increment awaits acceptance, or to stay the text the increment was dispatched against.

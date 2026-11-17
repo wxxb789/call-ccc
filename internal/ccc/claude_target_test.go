@@ -26,17 +26,6 @@ func decodeTranscript(t *testing.T, transcript ClaudeTranscript) []map[string]an
 	return records
 }
 
-// recordsOfType answers the transcript's records of one type, in file order.
-func recordsOfType(records []map[string]any, kind string) []map[string]any {
-	var found []map[string]any
-	for _, record := range records {
-		if record["type"] == kind {
-			found = append(found, record)
-		}
-	}
-	return found
-}
-
 // messageBlocks answers one record's content as a list of content blocks, whatever spelling the writer
 // chose for it: a plain string (one text block, as the harness writes a single text block) or an array.
 func messageBlocks(t *testing.T, record map[string]any) []map[string]any {
@@ -259,20 +248,11 @@ func assistantMessageIDWithText(t *testing.T, records []map[string]any, want str
 	return ""
 }
 
-// handWrittenConversation builds a document with the shapes one conversion has to name, so each rule is
-// asserted against a source that really holds it.
-func handWrittenConversation(messages ...Message) Conversation {
-	return Conversation{
-		Source:   SourceIdentity{Provider: "claude", SessionID: "source-1", Cwd: "/home/user/project"},
-		Messages: messages,
-	}
-}
-
 // TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers pins the two halves of the disclosure rule: the
 // report lists every category it knows about (so a consumer never infers what was left out), and the
 // records the file holds are exactly the ones the counts say were carried.
 func TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers(t *testing.T) {
-	conversation := handWrittenConversation(
+	conversation := testConversation(
 		Message{Ordinal: 0, Role: "user", Content: "Where is the retry cap configured?",
 			Dialogue: "Where is the retry cap configured?", DialogueProjected: true, Timestamp: time.Unix(1000, 0)},
 		Message{Ordinal: 1, Role: "assistant", Content: "At the top of config.go. [Read: /x]",
@@ -306,7 +286,8 @@ func TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("converting the document: %v", err)
 	}
-	counts := lossCounts(transcript.Losses)
+	// Every category is reported on every run, so each one is read through lossCount: a category the
+	// report dropped is a failure here, not a zero that reads like a real count.
 	for _, category := range []string{
 		"reasoning_text", "sidechain_messages", "system_records", "tool_role_messages",
 		"unclassified_role_messages", "empty_user_messages", "non_dialogue_content",
@@ -316,9 +297,7 @@ func TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers(t *testing.T) {
 		"message_model_attribution", "pre_compaction_history", "malformed_source_lines",
 		"summary_transcript", "source_needs_retry",
 	} {
-		if _, ok := counts[category]; !ok {
-			t.Errorf("the report does not list the category %q", category)
-		}
+		lossCount(t, transcript.Losses, category)
 	}
 	for _, testCase := range []struct {
 		category string
@@ -337,12 +316,12 @@ func TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers(t *testing.T) {
 		{"empty_user_messages", 0},
 		{"summary_transcript", 0},
 	} {
-		if got := counts[testCase.category]; got != testCase.want {
-			t.Errorf("the report counts %s = %d, want %d (%v)",
-				testCase.category, got, testCase.want, lossDetail(transcript.Losses, testCase.category))
+		if got := lossCount(t, transcript.Losses, testCase.category).Count; got != testCase.want {
+			t.Errorf("the report counts %s = %d, want %d (%+v)",
+				testCase.category, got, testCase.want, lossCount(t, transcript.Losses, testCase.category))
 		}
 	}
-	if got := counts["tool_result_statuses"]; got != 0 {
+	if got := lossCount(t, transcript.Losses, "tool_result_statuses").Count; got != 0 {
 		// The one status this document records says the call failed, which the target's block can say.
 		t.Errorf("a failed status was counted as unrepresentable: %d", got)
 	}
@@ -400,7 +379,7 @@ func TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers(t *testing.T) {
 // target cannot install: the loader finds a session through the directory it is run from, so a session
 // with no recorded working directory could never be resumed while a report called it installed.
 func TestConvertToClaudeTranscriptRefusesASourceWithoutAWorkingDirectory(t *testing.T) {
-	conversation := handWrittenConversation(
+	conversation := testConversation(
 		Message{Ordinal: 0, Role: "user", Content: "hello", Dialogue: "hello", DialogueProjected: true})
 	conversation.Source.Cwd = ""
 	if _, err := ConvertToClaudeTranscript(conversation, ClaudeTargetOptions{}); err != ErrNoTargetCwd {
@@ -411,7 +390,7 @@ func TestConvertToClaudeTranscriptRefusesASourceWithoutAWorkingDirectory(t *test
 // TestClaudeWriterPairsAnIdlessResultOnlyWithSoleOutstandingCall pins the pairing rule: an id-less result
 // may be paired while exactly one carried call is unanswered, and never when the choice would be a guess.
 func TestClaudeWriterPairsAnIdlessResultOnlyWithSoleOutstandingCall(t *testing.T) {
-	paired := handWrittenConversation(
+	paired := testConversation(
 		Message{Ordinal: 0, Role: "assistant", Content: "calling", DialogueProjected: false,
 			ToolCalls: []ToolCall{{Name: "shell", InputJSON: `{"command":"ls"}`}}},
 		Message{Ordinal: 1, Role: "user", ToolResults: []ToolResult{{ContentRaw: "output", ContentDecoded: true}}},
@@ -420,18 +399,17 @@ func TestClaudeWriterPairsAnIdlessResultOnlyWithSoleOutstandingCall(t *testing.T
 	if err != nil {
 		t.Fatalf("converting: %v", err)
 	}
-	counts := lossCounts(transcript.Losses)
-	if counts["generated_call_ids"] != 2 {
-		t.Errorf("generated_call_ids = %d, want 2 (the call's id and the result's pairing)", counts["generated_call_ids"])
+	if got := lossCount(t, transcript.Losses, "generated_call_ids").Count; got != 2 {
+		t.Errorf("generated_call_ids = %d, want 2 (the call's id and the result's pairing)", got)
 	}
-	if counts["unpaired_tool_results"] != 0 {
-		t.Errorf("unpaired_tool_results = %d, want 0: one call was outstanding", counts["unpaired_tool_results"])
+	if got := lossCount(t, transcript.Losses, "unpaired_tool_results").Count; got != 0 {
+		t.Errorf("unpaired_tool_results = %d, want 0: one call was outstanding", got)
 	}
 	if transcript.Carried.ToolResults != 1 {
 		t.Errorf("carried %d result(s), want 1", transcript.Carried.ToolResults)
 	}
 
-	ambiguous := handWrittenConversation(
+	ambiguous := testConversation(
 		Message{Ordinal: 0, Role: "assistant", Content: "calling twice",
 			ToolCalls: []ToolCall{{Name: "shell", InputJSON: `{}`}, {Name: "shell", InputJSON: `{}`}}},
 		Message{Ordinal: 1, Role: "user", ToolResults: []ToolResult{{ContentRaw: "output", ContentDecoded: true}}},
@@ -440,28 +418,9 @@ func TestClaudeWriterPairsAnIdlessResultOnlyWithSoleOutstandingCall(t *testing.T
 	if err != nil {
 		t.Fatalf("converting: %v", err)
 	}
-	if got := lossCounts(transcript.Losses)["unpaired_tool_results"]; got != 1 {
+	if got := lossCount(t, transcript.Losses, "unpaired_tool_results").Count; got != 1 {
 		t.Errorf("unpaired_tool_results = %d, want 1: two calls were outstanding and the pairing would be a guess", got)
 	}
-}
-
-// lossCounts indexes a report's categories by name.
-func lossCounts(losses []Loss) map[string]int {
-	counts := make(map[string]int, len(losses))
-	for _, loss := range losses {
-		counts[loss.Category] = loss.Count
-	}
-	return counts
-}
-
-// lossDetail answers one category's detail, for a failure message that says why the count is what it is.
-func lossDetail(losses []Loss, category string) string {
-	for _, loss := range losses {
-		if loss.Category == category {
-			return loss.Detail
-		}
-	}
-	return "the category is absent"
 }
 
 // readFixtureConversation reads one committed fixture through the inherited reader, which is the document

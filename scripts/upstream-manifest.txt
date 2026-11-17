@@ -34,6 +34,7 @@ owned	scripts/gate-goflags.txt
 owned	scripts/gate-required.txt
 owned	scripts/gate-targets.txt
 owned	scripts/gate.py
+owned	scripts/native_check_common.py
 owned	scripts/tests/
 owned	scripts/upstream-compare.py
 owned	scripts/upstream-import.py
