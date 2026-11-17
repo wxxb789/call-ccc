@@ -711,6 +711,11 @@ func (b *codexRolloutBuilder) solePendingCall() (string, bool) {
 
 func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time) {
 	callID := strings.TrimSpace(result.ToolUseID)
+	// resultIDInferred says the pairing below is the only id this result has: the source recorded none of
+	// its own. The counter it feeds is incremented past the omission guards, together with the written
+	// result, because an inferred pairing on a result this conversion does not write is not evidence the
+	// file holds.
+	resultIDInferred := false
 	if callID == "" {
 		pending, ok := b.solePendingCall()
 		if !ok {
@@ -720,7 +725,7 @@ func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time) {
 			return
 		}
 		callID = pending
-		b.lossGeneratedIDs++
+		resultIDInferred = true
 	} else if _, ok := b.callOwners[callID]; !ok {
 		// The result names a call this conversion did not write (the call preceded the source's
 		// boundary, or the provider recorded a result whose call is not in the read). A
@@ -752,10 +757,15 @@ func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time) {
 		}
 		return
 	}
-	// The two carried-with-caveat categories are counted here, past every omission guard: a result this
+	// The carried-with-caveat categories are counted here, past every omission guard: a result this
 	// conversion does not write carries no output, and counting it as carried (with the caveat that its
-	// text travelled without its recorded outcome, or as an unresolved placeholder) would claim evidence
-	// the file does not hold.
+	// text travelled without its recorded outcome, as an unresolved placeholder, or under a pairing the
+	// source never recorded) would claim evidence the file does not hold.
+	if resultIDInferred {
+		// The result recorded no id of its own, so the id it is written under is the pairing with the one
+		// call that was outstanding: only a written result carries that caveat.
+		b.lossGeneratedIDs++
+	}
 	if result.PersistedOutputUnresolved {
 		// The source's own parse-time answer that the content is the placeholder naming a side file it
 		// could not read, not the tool's output. The text travels as recorded and the report says what it

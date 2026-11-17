@@ -1342,3 +1342,105 @@ func TestCodexRolloutRetiresACallWhenItsResultIsOmitted(t *testing.T) {
 		t.Errorf("the rollout holds %d function_call_output record(s), want exactly one under toolu_b", outputs)
 	}
 }
+
+// TestCodexRolloutCountsAnInferredResultPairingOnlyWhenItIsWritten pins the result half of the
+// generated_call_ids rule: a result the source recorded without an id of its own is written under the
+// pairing this conversion inferred from the one call still outstanding, and that pairing is the only id
+// the record has -- so it is counted only for a result that reached the file. A result whose output is
+// empty, holds only whitespace, or holds only blocks the target's output field has no room for is not
+// written at all: its omission is named by its own category, and the pairing inferred for it is not
+// evidence the file holds. Counted as carried, the report would claim an id the file never holds, which
+// is the same defect the output text is already spared. The same pairing on a representable result is
+// counted, which is what makes the zero a statement about the omission rather than about the counter
+// being ignored.
+func TestCodexRolloutCountsAnInferredResultPairingOnlyWhenItIsWritten(t *testing.T) {
+	omitted := []struct {
+		name   string
+		result ToolResult
+		loss   string
+		blocks int
+	}{
+		{name: "no text at all", loss: "empty_tool_results",
+			result: ToolResult{Status: "errored", PersistedOutputUnresolved: true}},
+		{name: "whitespace only", loss: "whitespace_only_tool_results",
+			result: ToolResult{ContentRaw: "  \n  "}},
+		{name: "an image block only", loss: "empty_tool_results", blocks: 1,
+			result: ToolResult{ContentRaw: `[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGk="}}]`}},
+	}
+	for _, omittedCase := range omitted {
+		// One outstanding call, carrying the id the source recorded for it: the id-less result below is
+		// the one whose pairing with that call has to be inferred.
+		conversation := testConversation(
+			Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask"},
+			Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "[Read: /x]",
+				ToolCalls: []ToolCall{{ToolUseID: "toolu_1", Name: "Read", InputJSON: `{"file_path":"/x"}`}}},
+			Message{Ordinal: 2, Role: string(parser.RoleUser), ToolResults: []ToolResult{omittedCase.result}},
+		)
+		rollout, err := ConvertToCodexRollout(conversation, testOptions())
+		if err != nil {
+			t.Fatalf("converting (%s): %v", omittedCase.name, err)
+		}
+		if rollout.Carried.ToolResults != 0 {
+			t.Errorf("(%s) carried = %+v, want no result written", omittedCase.name, rollout.Carried)
+		}
+		if loss := lossCount(t, rollout.Losses, omittedCase.loss); loss.Count != 1 {
+			t.Errorf("(%s) %s = %+v, want the omitted result counted under its own category",
+				omittedCase.name, omittedCase.loss, loss)
+		}
+		if loss := lossCount(t, rollout.Losses, "unrepresentable_result_blocks"); loss.Count != omittedCase.blocks {
+			t.Errorf("(%s) unrepresentable_result_blocks = %+v, want %d: blocks are counted as blocks "+
+				"whatever happens to the result carrying them", omittedCase.name, loss, omittedCase.blocks)
+		}
+		for _, category := range []string{"generated_call_ids", "unresolved_tool_outputs",
+			"tool_result_outcomes"} {
+			loss := lossCount(t, rollout.Losses, category)
+			if loss.Count != 0 || loss.Disposition != DispositionCarriedWithCaveat {
+				t.Errorf("(%s) %s = %+v, want 0 and %q: the id-less result was not written, so neither "+
+					"the pairing inferred for it nor its own flags carried anything",
+					omittedCase.name, category, loss, DispositionCarriedWithCaveat)
+			}
+		}
+		for _, item := range rollout.Items {
+			if item.Kind == ItemToolResult {
+				t.Errorf("(%s) the item list holds a %s for call %q although the report says the result "+
+					"was not written", omittedCase.name, item.Kind, item.CallID)
+			}
+		}
+	}
+
+	// The same shape with output the target's field can hold: the inferred pairing is the id the record
+	// is written under, and the category counts it once -- the call's own id was recorded, so nothing
+	// else in this conversion is counted here.
+	written := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask"},
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "[Read: /x]",
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_1", Name: "Read", InputJSON: `{"file_path":"/x"}`}}},
+		Message{Ordinal: 2, Role: string(parser.RoleUser),
+			ToolResults: []ToolResult{{ContentRaw: "content of /x"}}},
+	)
+	rollout, err := ConvertToCodexRollout(written, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if rollout.Carried.ToolResults != 1 {
+		t.Fatalf("carried = %+v, want the id-less result written under the outstanding call", rollout.Carried)
+	}
+	if loss := lossCount(t, rollout.Losses, "generated_call_ids"); loss.Count != 1 {
+		t.Errorf("generated_call_ids = %+v, want the written result's inferred pairing counted once", loss)
+	}
+	outputs := 0
+	for _, line := range decodeRollout(t, rollout.Data) {
+		if payloadField(t, line, "type") != codexItemFunctionOutput {
+			continue
+		}
+		outputs++
+		output, callID := payloadField(t, line, "output"), payloadField(t, line, "call_id")
+		if callID != "toolu_1" || output != "content of /x" {
+			t.Errorf("the written output is %q for call %q, want the id-less result's text under toolu_1",
+				output, callID)
+		}
+	}
+	if outputs != 1 {
+		t.Errorf("the rollout holds %d function_call_output record(s), want exactly one", outputs)
+	}
+}

@@ -137,7 +137,7 @@ uncommitted edits).
 
 | Finding | Row | Correction | Mutation that now detects it |
 | --- | --- | --- | --- |
-| an omitted result (empty, whitespace only, or only blocks the output field cannot carry) returned before retiring its call, so a later id-less result could be attributed to an answered call, or refused as ambiguous while every call it could belong to was answered | B3 | `codex_target.go:732-734`: the call is retired as soon as the result is recognised as one of this conversion's, before the representability guard; the omission counting is unchanged | three executed mutations on the three new sequences (`codex_target_test.go:1206-1340`): the reported bug restored (rc=1 — and the pre-existing pairing case was green under it, so the sequences were genuinely unpinned), the counters neutered (rc=1), the over-retiring wrong fix (rc=1) |
+| an omitted result (empty, whitespace only, or only blocks the output field cannot carry) returned before retiring its call, so a later id-less result could be attributed to an answered call, or refused as ambiguous while every call it could belong to was answered | B3 | `codex_target.go:737-739`: the call is retired as soon as the result is recognised as one of this conversion's, before the representability guard; the omission counting is unchanged | three executed mutations on the three new sequences (`codex_target_test.go:1206-1340`): the reported bug restored (rc=1 — and the pre-existing pairing case was green under it, so the sequences were genuinely unpinned), the counters neutered (rc=1), the over-retiring wrong fix (rc=1) |
 | the `--json` content needles were searched in the **serialized** document, where a quoted tool argument or a multiline output is escaped (`\"`, `\n`, `\u003c`) and never matches its raw needle | F2 | the document is decoded and its **string values** are searched (`assertNoSourceContent`/`jsonStrings`, `cmd/ccc/main_test.go:2063`/`:2081`); the needle list is unchanged, and the case now runs over both committed Claude fixtures — the ordinary one and the reasoning-bearing tooling fixture — with `sourceContentNeedles` answering the reasoning traces so the case can require one | three executed leaks, each failing the case at rc=1: a tool argument, a multiline output, and a reasoning trace (the tooling fixture only); for the first two, a captured `--json` document holds the raw needle `0` times while the decoded-value search finds it |
 | the allowed-root test accepted any string that **began with** a root, and `/tmp` is a root without a separator, so a foreign absolute path under a sibling directory (`/tmp-elsewhere/…`, `/home/user-evil/…`) evaded the sanitizer | F3 | the roots are compared component-wise (`fixtures_test.go:644`, `:651-658`): the path equals the root or continues past it at a separator, so a sibling is never "below" a root | `/tmp-elsewhere/code/tooling` and `/home/user-evil/code/tooling` appended to a fixture each fail the scan at rc=1 (`fixtures_test.go:688`), while the pre-fix rule passes `/tmp-elsewhere/…` (`ok`, rc=0 — the evasion the audit reported) and the naive prefix fix passes both (`ok`, rc=0) |
 
@@ -171,7 +171,66 @@ E1, E2, E4 and F2/F3; their numbers now read this tree.
   this lane touches also ran whole (`go test -tags fts5 -count=1 ./cmd/ccc/... ./internal/ccc/...` → `ok`),
   and each named test ran alone and passed before its mutation was applied.
 
+## Audit repair (2026-11-17, round 16) — the fourth acceptance finding
+
+A fourth acceptance audit read **this file** at head `38031a4` (clean) and returned exactly one P2 finding.
+It lands in the code the round-15 lane left in place — `toolResult`'s omission guard and the counter above it
+— and the repair is a correction: no needle set, scanning rule, evidence row, disclosed limit or gate step
+was enlarged or weakened, and the behaviour round 15 decided (a recorded result retires its call before the
+representability guard) is untouched. No clause's wording was wrong, so no `OPEN-QUESTIONS.md` entry
+accompanies this repair; the row that carries the finding — B7 — now records the finding, the correction and
+the mutation that detects it. The run is on the same branch
+(`feat/0002-claude-to-codex-continuation`, `38031a4` plus these uncommitted edits).
+
+| Finding | Row | Correction | Mutation that now detects it |
+| --- | --- | --- | --- |
+| an id-less result, paired with the one outstanding call, incremented the result-side `generated_call_ids` counter **before** `toolResult`'s representability guard, so a result whose output was empty, whitespace only, or only blocks the output field cannot carry was reported as a **carried** id although no `function_call_output` and no substituted id was written | B7 | `codex_target.go:713-718` records the inferred pairing in a flag and `:764-768` increments the counter past every omission guard, with the written result; the retirement stays at `:737-739`, and the guard, the block count and the omission categories are unchanged | the defect restored (the file's `HEAD` bytes, sha256 `2c3a92ba…`, byte-identical to `HEAD`) fails the new `TestCodexRolloutCountsAnInferredResultPairingOnlyWhenItIsWritten` at exit `1` (all three shapes, `codex_target_test.go:1398`), while the four pre-existing cases that own this surface stay green (`ok`, exit `0`) — executed, not inferred |
+
+Every mutation was applied as a temporary edit, run with the named test, observed (the exit status and the
+failure text in the row), and restored from a byte-identical copy whose sha256 was compared after the
+restore; no mutation survived. **Files this lane changed:** `internal/ccc/codex_target.go` (`7d838056…`),
+`internal/ccc/codex_target_test.go` (`85d51b0b…`), and this record. Nothing else in the tree differs from
+the audited head: `cmd/ccc`, `internal/ccc/continue.go`, the installer and the committed fixtures are the
+bytes they already were.
+
+**Anchors this lane's insertion moved, recomputed to this tree.** The code edit adds 10 lines to
+`internal/ccc/codex_target.go` — five before the id-less-result branch, five at the representability guard —
+and the new case is appended at the end of `codex_target_test.go`, below every anchor this file cites, so no
+test anchor moved. Every `codex_target.go` anchor at or below the insertion point was recomputed by the
+file's own delta and verified by content identity at the new line (the `HEAD` line and the new line are
+byte-identical at all **31 shifted anchors**, 36 citation sites in this file). The five-line shift moves
+`:719-720` to `:724-725`, `:724` to `:729`, `:732-734` to `:737-739` and `:737` to `:742`; the ten-line
+total moves `:794-1032` to `:804-1042`, `:820-838` to `:830-848`, `:860-866` to `:870-876`, `:867-874` to
+`:877-884`, `:884-891` to `:894-901`, `:893-899` to `:903-909`, `:893` to `:903`, `:907-914` to `:917-924`,
+`:926-932` to `:936-942`, `:933-949` to `:943-959`, `:957-973` to `:967-983`, `:983-989` to `:993-999`,
+`:1010-1029` to `:1020-1039`, `:1020-1029` to `:1030-1039`, `:1013` to `:1023`, `:1019` to `:1029`,
+`:1025` to `:1035`, `:1032-1039` to `:1042-1049`, `:1068-1087` to `:1078-1097`, `:1069` to `:1079`,
+`:1072` to `:1082`, `:1088-1110` to `:1098-1120`, `:1089` to `:1099`, `:1111-1139` to `:1121-1149`,
+`:1132` to `:1142` and `:1151-1159` to `:1161-1169`; `:712-780` becomes `:712-789`, exactly `toolResult`
+(its start is above the insertions, its end below them, and the two occurrences now name the function's own
+extent). The rows whose anchors moved are A4, A5, A6, B1–B3, B6–B9, D1 and E4,
+plus the round-15 section's own table and repair bullet (its `:732-734` now reads `:737-739`). The numbers
+inside older *mutation* records that this lane did not re-execute are these recomputed numbers of this tree,
+not fresh measurements.
+
+- Gate on the repaired tree, run by this lane: `python3 scripts/gate.py` → `GATE: PASS` (exit `0`) —
+  `gofmt 3582 file(s) gofmt-clean`; `build`/`vet` rc=0; `test 3 package(s) ok`;
+  `selftest Ran 164 tests in 5.366s (rc=0)` (a second run printed `Ran 164 tests in 5.169s (rc=0)`; the
+  count and the exit status are the stable part); `parity … carried:
+  5553 file(s) identical to the pinned
+  revision (compared through git's own object store) … deviations: 27 upstream path(s) declared (1 of them
+  carried with the bytes this tree stores) + 1 generated input(s), all present as declared`; `secrets no
+  leaks found in 76 file(s) this repository owns (the carried upstream tree is covered by the parity step,
+  not by this scan)`. The Go packages this lane touches also ran whole
+  (`GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 ./cmd/ccc/... ./internal/ccc/...` → `ok` for
+  `cmd/ccc`, `internal/ccc` and `internal/ccc/parity`), and the new case ran alone and passed before its
+  mutation was applied. The affected packages carry **172** `func Test` declarations at this tree against
+  171 at the audited head — the difference is the one case this repair adds
+  (`internal/ccc/codex_target_test.go`: 20 against 19) — and the gate's Python `selftest` count is unchanged
+  at 164, because the repair adds no harness rule.
+
 ## Surface A — source selection and fidelity
+
 
 ### A1 — A reference resolves only to the source it names; an ambiguity is reported with candidates
 
@@ -305,8 +364,8 @@ E1, E2, E4 and F2/F3; their numbers now read this tree.
   provider classified as a summary fallback or as needing a retry is reported in the losses *and* in the
   run's warnings — a consumer that read only "converted" must not believe it holds the session's recorded
   transcript.
-- **Discharged:** `internal/ccc/codex_target.go:820-838` (the read-completeness reason, the truncated
-  suffix, the two classification reasons), `:1010-1029` (the three entries), `internal/ccc/continue.go:279`
+- **Discharged:** `internal/ccc/codex_target.go:830-848` (the read-completeness reason, the truncated
+  suffix, the two classification reasons), `:1020-1039` (the three entries), `internal/ccc/continue.go:279`
   (`fidelityWarnings` into the run's warnings), `:562-583` (their wording).
 - **Positive evidence:** gate `test` step; `TestCodexRolloutReportsTheSourceLinesItsReadCouldNotProduce`,
   `TestCodexRolloutReportsEveryCategoryItKnows`, `TestContinueDisclosesASummaryTranscriptRead`,
@@ -315,16 +374,16 @@ E1, E2, E4 and F2/F3; their numbers now read this tree.
   count, and the truncated tail named in the read's own words); `TestContinueDisclosesARetryableRead` /
   `TestContinueDisclosesASummaryTranscriptRead` (classification in the warnings *and* the losses).
 - **Executed mutations (two, one per half):**
-  1. `codex_target.go:1013` `Count: b.sourceFidelity.MalformedLines,` → `Count: 0,`. **Observed:** exit
+  1. `codex_target.go:1023` `Count: b.sourceFidelity.MalformedLines,` → `Count: 0,`. **Observed:** exit
      `1`; `FAIL`; `codex_target_test.go:1066: malformed_source_lines = {… Count:0 …}, want the read's own
      count as an omission`. Restored `f43564af…`.
-  2. `codex_target.go:1025` `Count: flagCount(b.sourceFidelity.NeedsRetry),` → `Count: 0,`. **Observed:**
+  2. `codex_target.go:1035` `Count: flagCount(b.sourceFidelity.NeedsRetry),` → `Count: 0,`. **Observed:**
      exit `1`; `FAIL`; `continue_test.go:2443: source_needs_retry = {… Count:0 …}, want the read's state
      counted once, carried with a caveat`. Restored `f43564af…`.
 - **Sweep execution (2026-11-16): the third half had a test but no mutation.** The clause's "a read the
   provider classified as a summary fallback … is reported in the losses" was pinned only by
   `TestContinueDisclosesASummaryTranscriptRead` passing; the sweep executed the mutation the row was
-  missing: `codex_target.go:1019`
+  missing: `codex_target.go:1029`
   `Count: flagCount(b.sourceFidelity.TranscriptFidelity == parser.TranscriptFidelitySummary),` → `Count: 0,`.
   Command: `GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 -run
   TestContinueDisclosesASummaryTranscriptRead ./internal/ccc/`. **Observed:** exit `1`; `FAIL`;
@@ -337,7 +396,7 @@ E1, E2, E4 and F2/F3; their numbers now read this tree.
   conversation's own turn — including a subagent record that also carries the source's compaction marker,
   whose summary must not be applied as the main conversation's `compacted` boundary.
 - **Discharged:** `internal/ccc/codex_target.go:421-434` (the sidechain guard *before* the boundary rule),
-  `:867-874` (`sidechain_messages`).
+  `:877-884` (`sidechain_messages`).
 - **Positive evidence:** `TestCodexRolloutDoesNotApplyASidechainCompactionBoundary`,
   `TestCodexRolloutReportsEveryCategoryItKnows` pass.
 - **Pinned by:** `TestCodexRolloutDoesNotApplyASidechainCompactionBoundary` (round 3, finding 1's rule: the
@@ -353,7 +412,7 @@ E1, E2, E4 and F2/F3; their numbers now read this tree.
   and the turns before it remain in the written file while being counted as carried-with-caveat
   (`pre_compaction_history`), because the target applies the boundary to its model-visible history.
 - **Discharged:** `internal/ccc/codex_target.go:435-450` (the boundary record, the pre-boundary count),
-  `:1032-1039` (`pre_compaction_history` and its reason).
+  `:1042-1049` (`pre_compaction_history` and its reason).
 - **Positive evidence:** `TestCodexRolloutCarriesACompactionBoundaryAndKeepsTheHistoryBeforeIt` passes; the
   native run's target view showed the post-boundary turns and the resumed turn continued from the summary.
 - **Pinned by:** `TestCodexRolloutCarriesACompactionBoundaryAndKeepsTheHistoryBeforeIt`.
@@ -406,8 +465,8 @@ E1, E2, E4 and F2/F3; their numbers now read this tree.
 - **Clause:** a record whose role is not the user's or the assistant's is never written as either; a
   tool-role record's text is carried only as the `function_call_output` paired with its call, and a record
   with nothing but its role is counted under its own category.
-- **Discharged:** `internal/ccc/codex_target.go:466-487` (the role gate), `:884-891` (`tool_role_messages`),
-  `:893-899` (`unclassified_role_messages`), `:907-914` (`non_dialogue_content`).
+- **Discharged:** `internal/ccc/codex_target.go:466-487` (the role gate), `:894-901` (`tool_role_messages`),
+  `:903-909` (`unclassified_role_messages`), `:917-924` (`non_dialogue_content`).
 - **Positive evidence:** gate `test` step; `TestCodexRolloutCarriesAToolRoleMessageOnlyThroughItsResult`,
   `TestCodexRolloutReportsEveryCategoryItKnows` pass.
 - **Pinned by:** `TestCodexRolloutCarriesAToolRoleMessageOnlyThroughItsResult` (the output is carried once,
@@ -422,14 +481,14 @@ E1, E2, E4 and F2/F3; their numbers now read this tree.
 - **Clause:** `Thinking` is omitted and counted (`reasoning_text`); a record the provider projected as
   having no dialogue but whose `Content` renders its reasoning is never written as the agent's words, and
   the writer never falls back to the rendering when the source's own projection says the message has none.
-- **Discharged:** `internal/ccc/codex_target.go:451-465` (the reasoning-only guard), `:1068-1087`
-  (`dialogueText`, the explicit-empty-projection rule), `:860-866` (`reasoning_text`).
+- **Discharged:** `internal/ccc/codex_target.go:451-465` (the reasoning-only guard), `:1078-1097`
+  (`dialogueText`, the explicit-empty-projection rule), `:870-876` (`reasoning_text`).
 - **Positive evidence:** `TestCodexRolloutKeepsAReasoningOnlyRecordOutOfTheDialogue`,
   `TestToolingFixtureCarriesTheShapesTheWriterMustNotMisread` pass; in the native run the trace's words
   appear nowhere in the installed file.
 - **Pinned by:** `TestCodexRolloutKeepsAReasoningOnlyRecordOutOfTheDialogue` (the trace is counted and is
   not in the file as dialogue).
-- **Executed mutation:** `codex_target.go:1069` `if strings.TrimSpace(message.Dialogue) != "" ||
+- **Executed mutation:** `codex_target.go:1079` `if strings.TrimSpace(message.Dialogue) != "" ||
   message.DialogueProjected {` → `if strings.TrimSpace(message.Dialogue) != "" {` (an explicitly empty
   projection falls back to `Content`). **Observed:** exit `1`; `FAIL`;
   `codex_target_test.go:850: the rollout holds the reasoning trace the report says is omitted, as the
@@ -441,8 +500,8 @@ E1, E2, E4 and F2/F3; their numbers now read this tree.
   names; an id-less result pairs only with exactly one outstanding call (two or more make the pairing a
   guess, none leaves nothing to pair with); a result naming a call this conversion did not write is
   omitted and counted.
-- **Discharged:** `internal/ccc/codex_target.go:702-711` (`solePendingCall`), `:712-780` (`toolResult`,
-  both omission guards), `:926-932` (`unpaired_tool_results`), `:983-989` (`generated_call_ids`).
+- **Discharged:** `internal/ccc/codex_target.go:702-711` (`solePendingCall`), `:712-789` (`toolResult`,
+  both omission guards), `:936-942` (`unpaired_tool_results`), `:993-999` (`generated_call_ids`).
 - **Positive evidence:** `TestCodexRolloutPairsAnIdLessResultWithItsCall` (one, two and three outstanding
   calls) passes.
 - **Pinned by:** `TestCodexRolloutPairsAnIdLessResultWithItsCall`.
@@ -462,14 +521,14 @@ E1, E2, E4 and F2/F3; their numbers now read this tree.
     `function_call_output` record exists for the unwritten call (`:763`), and its words are not in the
     file.
 - **Executed mutations (this lane, one per new sub-case):**
-  1. `codex_target.go:724` `} else if _, ok := b.callOwners[callID]; !ok {` → `… !ok && false {` (the
+  1. `codex_target.go:729` `} else if _, ok := b.callOwners[callID]; !ok {` → `… !ok && false {` (the
      guard deleted behind an intact branch). Command: `GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5
      -count=1 -run TestCodexRolloutPairsAnIdLessResultWithItsCall ./internal/ccc/`. **Observed:** exit
      `1`; `FAIL`; `codex_target_test.go:752: carried = {… ToolResults:1 …}, want the call written and the
      foreign result omitted`; `:755: unpaired_tool_results = {… Count:0 …}`; `:759: the rollout holds a
      result whose call this conversion did not write`; `:763: the rollout holds a function_call_output for
      a call that was not written`. Restored `f43564af…`.
-  2. `codex_target.go:719-720` `b.lossUnpairedResults++` / `return` → the counter without the `return`
+  2. `codex_target.go:724-725` `b.lossUnpairedResults++` / `return` → the counter without the `return`
      (the id-less omission falls through and pairs with nothing). Command: the test above. **Observed:**
      exit `1`; `FAIL`; `codex_target_test.go:639` and `:663` (the two/three-outstanding cases) plus the new
      sub-case's `:719: carried = {… ToolResults:1 …}, want no result: there was no outstanding call to
@@ -487,7 +546,7 @@ E1, E2, E4 and F2/F3; their numbers now read this tree.
   a recorded result did not retire its call — a later id-less result could then be attributed to a call
   that already had an answer, or refused as ambiguous while every call it could belong to was answered.
   The correction: the call is retired as soon as the result is recognised as one of this conversion's,
-  before the representability guard (`codex_target.go:732-734`), and the counting is unchanged — the guard
+  before the representability guard (`codex_target.go:737-739`), and the counting is unchanged — the guard
   below still counts `empty_tool_results`, `whitespace_only_tool_results` and
   `unrepresentable_result_blocks`, and returns without writing.
 - **Pins (this lane):** `TestCodexRolloutRetiresACallWhenItsResultIsOmitted`
@@ -501,7 +560,7 @@ E1, E2, E4 and F2/F3; their numbers now read this tree.
   ambiguous.
 - **Executed mutations (this lane, this tree — one per half, plus the wrong fix the component rule
   forbids):**
-  1. the reported bug restored: the retirement removed from `codex_target.go:732-734` and
+  1. the reported bug restored: the retirement removed from `codex_target.go:737-739` and
      `delete(b.pendingCalls, callID)` put back below the guard, before the `function_call_output` write.
      Command: `GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 -run
      TestCodexRolloutRetiresACallWhenItsResultIsOmitted ./internal/ccc/`. **Observed:** exit `1`; `FAIL`;
@@ -559,12 +618,12 @@ E1, E2, E4 and F2/F3; their numbers now read this tree.
 - **Clause:** text the read already decoded (a result event, an archive row) is written as it stands; an
   encoded content field goes through the reader's decode once — a second decode strips the quotation marks
   a tool really printed.
-- **Discharged:** `internal/ccc/codex_target.go:1088-1110` (`resultText`), `:1111-1139`
+- **Discharged:** `internal/ccc/codex_target.go:1098-1120` (`resultText`), `:1121-1149`
   (`unrepresentedResultBlocks`).
 - **Positive evidence:** `TestCodexRolloutDecodesEncodedContentExactlyOnce` passes; the native run's
   resumed turn quoted the third tool's `"maxBackoffSeconds"` with its quotation marks.
 - **Pinned by:** `TestCodexRolloutDecodesEncodedContentExactlyOnce`.
-- **Executed mutation:** `codex_target.go:1089` `if result.ContentDecoded {` → `if false {`.
+- **Executed mutation:** `codex_target.go:1099` `if result.ContentDecoded {` → `if false {`.
   **Observed:** exit `1`; `FAIL`; `codex_target_test.go:929: already-decoded content written as "alpha",
   want it unchanged: a second decode strips the quotation marks the tool really printed`.
   Restored `f43564af…`.
@@ -572,30 +631,74 @@ E1, E2, E4 and F2/F3; their numbers now read this tree.
 ### B7 — Unsupported content is named by category, count and kind; nothing omitted is reported as carried
 
 - **Clause:** every loss category the writer knows is reported on every run including its zero counts, the
-  counts are truthful (text the file does not hold is not called carried), the target's
-  `function_call_output` cannot carry a content block that only holds an image payload (counted as blocks),
-  and text the inherited reader reads as *nothing at all* (whitespace-only output, whitespace-only
+  counts are truthful (text the file does not hold is not called carried, and neither is an id nothing
+  holds: the pairing inferred for an id-less result is counted only where the pairing was written), the
+  target's `function_call_output` cannot carry a content block that only holds an image payload (counted as
+  blocks), and text the inherited reader reads as *nothing at all* (whitespace-only output, whitespace-only
   dialogue) is never written and is named under its own category.
-- **Discharged:** `internal/ccc/codex_target.go:794-1032` (the fixed category table), `:712-780` (the
-  whitespace and empty guards before the caveat counters), `:1111-1139` (block counting), `:500-513` and
-  `:933-949` (whitespace categories).
+- **Discharged:** `internal/ccc/codex_target.go:804-1042` (the fixed category table), `:712-789`
+  (`toolResult`: the whitespace and empty guards before the caveat counters, and the inferred pairing
+  counted with the written result at `:764-768`), `:1121-1149` (block counting), `:500-513` and `:943-959`
+  (whitespace categories).
 - **Positive evidence:** `TestCodexRolloutReportsEveryCategoryItKnows` (all 22 categories present and
   truthful), `TestCodexRolloutDoesNotReportOmittedResultsAsCarried`,
+  `TestCodexRolloutCountsAnInferredResultPairingOnlyWhenItIsWritten` (new in the round-16 repair),
   `TestCodexRolloutReportsToolResultBlocksTheTargetCannotCarry`,
   `TestContinueOmitsOutputTheInheritedReaderCannotReadBack`, `TestContinueOmitsDialogueTheInheritedReader
   ReadsAsNothing` all pass.
-- **Pinned by:** those four tests, each naming the rule in its own name.
+- **Pinned by:** the six tests named above, each naming the rule in its own name (the row's earlier wording
+  said "those four tests" over a list of five — a count that matched neither the list nor this tree).
 - **Executed mutations (three):**
-  1. `codex_target.go:893` `Category: "unclassified_role_messages",` →
+  1. `codex_target.go:903` `Category: "unclassified_role_messages",` →
      `Category: "unclassified_roles_renamed",`. **Observed:** exit `1`; `FAIL`;
      `codex_target_test.go:422: the report does not name the "unclassified_role_messages" category`.
-  2. `codex_target.go:1132` `if holds && !carried {` → `if holds && carried {`. **Observed:** exit `1`;
+  2. `codex_target.go:1142` `if holds && !carried {` → `if holds && carried {`. **Observed:** exit `1`;
      `FAIL`; `codex_target_test.go:979: unrepresentable_result_blocks = {… Count:0 …}, want the two image
      blocks counted`.
-  3. `codex_target.go:737` `if strings.TrimSpace(text) == "" {` → `if text == "" {`. **Observed:** exit
+  3. `codex_target.go:742` `if strings.TrimSpace(text) == "" {` → `if text == "" {`. **Observed:** exit
      `1`; `FAIL`; `continue_test.go:1694: carried = {… ToolResults:1 …}, want no tool result: the recorded
      output holds only whitespace`.
   Restored `f43564af…` after each.
+- **Repair (2026-11-17, round 16 — the fourth audit's B7 finding: an omitted id-less result was counted
+  under `generated_call_ids`).** The finding: with one outstanding call whose id was recorded, an id-less
+  result incremented the result-side generated-ID counter **before** `toolResult`'s representability guard.
+  When that result's output was empty, whitespace only, or only blocks the target's output field has no room
+  for, the guard returned without writing a `function_call_output` (and without substituting any id), and
+  the report still emitted `generated_call_ids` as carried-with-caveat ×1 — the id of evidence the file does
+  not hold. The correction: `toolResult` records the inferred pairing in a flag (`codex_target.go:713-718`)
+  and increments the counter past every omission guard, together with the written result (`:764-768`); the
+  call retirement the round-15 repair placed before the guard is untouched (`:737-739`), and the guard, the
+  block count and the omission categories are unchanged.
+- **Pins (this lane):** `TestCodexRolloutCountsAnInferredResultPairingOnlyWhenItIsWritten`
+  (`internal/ccc/codex_target_test.go:1346-1446`) covers the finding's three shapes — an id-less result
+  whose output is no text at all, whitespace only, or an image block only, each paired with the one
+  outstanding call — and asserts per shape that its own omission category counts it, that
+  `unrepresentable_result_blocks` still counts the blocks (blocks are counted as blocks whatever happens to
+  the result carrying them), that the item list holds no result, and that the three carried-with-caveat
+  counters a result can raise (`generated_call_ids`, `unresolved_tool_outputs`, `tool_result_outcomes`) all
+  stay `0`. The contrast case is the same conversation with representable output: the inferred pairing is
+  written under the call's recorded id and `generated_call_ids` is `1` — the call's own id was recorded, so
+  nothing else in that conversion is counted there.
+- **Executed mutation (this lane, this tree), and its restore:**
+  1. the reported bug restored: `internal/ccc/codex_target.go` replaced by its `HEAD` bytes — the pre-repair
+     shape, with `b.lossGeneratedIDs++` back above the guard and no deferred increment (sha256
+     `2c3a92ba…`, byte-identical to `HEAD`, which is the digest this file carried at the audited head).
+     Command: `GOFLAGS=-mod=mod CGO_ENABLED=1 go test -tags fts5 -count=1 -run
+     TestCodexRolloutCountsAnInferredResultPairingOnlyWhenItIsWritten ./internal/ccc/`. **Observed:** exit
+     `1`; `FAIL`; `codex_target_test.go:1398` — once per omitted shape — `generated_call_ids = {… Count:1 …},
+     want 0 and "carried-with-caveat": the id-less result was not written, so neither the pairing inferred
+     for it nor its own flags carried anything`.
+     **The four pre-existing cases that own this surface were green under it** (executed, not inferred):
+     the row's own two pins (`TestCodexRolloutDoesNotReportOmittedResultsAsCarried`,
+     `TestCodexRolloutReportsEveryCategoryItKnows`), the pairing case
+     (`TestCodexRolloutPairsAnIdLessResultWithItsCall`) and the round-15 retirement case
+     (`TestCodexRolloutRetiresACallWhenItsResultIsOmitted`) — the same command with
+     `-run 'TestCodexRolloutDoesNotReportOmittedResultsAsCarried|TestCodexRolloutPairsAnIdLessResultWithItsCall|TestCodexRolloutRetiresACallWhenItsResultIsOmitted|TestCodexRolloutReportsEveryCategoryItKnows'`
+     → `ok`, exit `0`. The combination was unpinned, which is why the audit could only find it by
+     inspection.
+  2. restore: the repaired bytes were written back from a saved copy and compared — sha256 `7d838056…`,
+     byte-identical — and the new case alone then passed (`exit 0`; `ok go.kenn.io/agentsview/internal/ccc
+     0.025s`). The package suite and the gate below ran on these bytes.
 
 ### B8 — A system-injected record contributes no text, but its tool evidence travels once, paired
 
@@ -603,7 +706,7 @@ E1, E2, E4 and F2/F3; their numbers now read this tree.
   result recorded on that same record is real evidence of a call this conversion carried, so it is written
   once, paired with its call — dropping it would leave the call unanswered while the report named only the
   record's text.
-- **Discharged:** `internal/ccc/codex_target.go:452-461` (the `IsSystem` branch) and `:957-973`
+- **Discharged:** `internal/ccc/codex_target.go:452-461` (the `IsSystem` branch) and `:967-983`
   (`system_records`' own wording).
 - **Positive evidence:** `TestCodexRolloutWritesASystemRecordsToolEvidenceWithoutItsText`,
   `TestToolingFixtureCarriesASystemRemindersToolResult` pass; the tooling fixture's third result (recorded
@@ -619,10 +722,10 @@ E1, E2, E4 and F2/F3; their numbers now read this tree.
 - **Clause:** a message that carries tool calls contributes only its dialogue projection as text: the
   reader's `Content` renders the calls (`[Read: <path>]`), and writing both would duplicate the call in the
   target's history.
-- **Discharged:** `internal/ccc/codex_target.go:1068-1087` (`dialogueText`, the tool-call rule).
+- **Discharged:** `internal/ccc/codex_target.go:1078-1097` (`dialogueText`, the tool-call rule).
 - **Positive evidence:** `TestCodexRolloutKeepsTheDialogueProjection` passes.
 - **Pinned by:** `TestCodexRolloutKeepsTheDialogueProjection`.
-- **Executed mutation:** `codex_target.go:1072` `if len(message.ToolCalls) > 0 {` → `if false {`.
+- **Executed mutation:** `codex_target.go:1082` `if len(message.ToolCalls) > 0 {` → `if false {`.
   **Observed:** exit `1`; `FAIL`; `codex_target_test.go:205: dialogue items = ["Ask" "And now the answer."
   "[Bash: list files]"], want the two recorded texts and no rendering of the calls`. Restored `f43564af…`.
 
@@ -758,7 +861,7 @@ obligation's number and place in the list are unchanged.)*
   *after* the install by the native harness's own identity check, and whether the conversion itself should
   reserve against them is `Q-0002-24`.
 - **Discharged:** `internal/ccc/codex_target.go:230-250` (`ConvertToCodexRollout`'s identity),
-  `:1151-1159` (the file name and dated directory), `internal/ccc/continue.go` (the rounded report).
+  `:1161-1169` (the file name and dated directory), `internal/ccc/continue.go` (the rounded report).
 - **Positive evidence:** `TestCodexRolloutGeneratesAFreshIdentity`,
   `TestContinueConvertsInstallsAndReadsBackTheFixture` pass; the native run reported
   `the target identity is new and is not the source's — 01a1e365-…, not one of the 1 id(s) already in
@@ -1127,7 +1230,7 @@ obligation's number and place in the list are unchanged.)*
   (`target-thread-defaults` / `target-config` / `unrecorded`), and a dry run records none with that reason.
 - **Discharged:** `internal/ccc/codex_verify.go:100-165` (`ProbeCodexConfig`), `internal/ccc/continue.go
   :296-318` (the probe call and `providerSource`), `internal/ccc/codex_target.go:390-412`
-  (`sessionMeta`'s `ModelProvider`), `:1020-1029` (`provider_binding`).
+  (`sessionMeta`'s `ModelProvider`), `:1030-1039` (`provider_binding`).
 - **Positive evidence:** the native run — `provider=tencent-litellm` from a session whose recorded provider
   came from the harness's own answer (`model_provider "tencent-litellm" (source "target-thread-defaults")`
   in the round-2 record) — and the offline `TestCodexRolloutRecordsTheProviderBindingItIsGiven` for the
