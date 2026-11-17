@@ -223,10 +223,12 @@ says so.
   the copy grows by the committed fragment, the same session is converted a second time into the same
   home, and the script then checks what the goal asks a caller to be able to see — the second
   conversion's reported boundary is the grown copy's own bytes (measured by the script, not taken from
-  the report), the appended turn's words are in the second installed document and not in the first,
-  the first session's bytes are unchanged by the second conversion, and Codex's own loader opens the
-  second session with its own `thread/read` view holding the turn the source gained, while the first
-  session's own view does not.** `--repeat-resume-prompt` adds one real turn in that second session (one
+  the report), including the read's own coverage answer (`read_bytes`/`read_coverage`: the snapshot the
+  conversion opened is the file the script measured), the appended turn's words are in the second
+  installed document and not in the first, the first session's bytes are unchanged by the second
+  conversion, and Codex's own loader opens the second session with its own `thread/read` view holding
+  the turn the source gained, while the first session's own view does not.** `--repeat-resume-prompt`
+  adds one real turn in that second session (one
   turn per prompt flag, and the report line says how many ran), which is what answers the later
   snapshot's model-visible history with the target's own words; the script's own cases pin the ordering
   (the comparison about the first session runs after the second conversion, so a second conversion that

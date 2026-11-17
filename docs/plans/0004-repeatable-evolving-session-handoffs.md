@@ -58,9 +58,11 @@ each one attributed, and one rule the clause below it demands. This increment ad
 | `state` | `taken` or `not-taken` | `taken` when the conversion read the session from its own file at a path that names one file; `not-taken` with the reason for an archive read, a container-member identity, or a read that named no path |
 | `detail` | the state's own words | e.g. *"the conversation's own source file, read after the session and before anything was written"*, or the reason it was not taken |
 | `path`, `bytes`, `sha256` | the source file, its size and the digest of exactly those bytes | one streamed pass, the same pass that already computed the pre-conversion digest |
-| `records_are_lines` | whether the record offsets beside it are claimed | the **provider's own declaration** (`parser.SourceCapabilities.IncrementalAppend` = `CapabilitySupported`: the source grows by appended lines), never this build's guess about a format. A provider that declares only `parser.ContentCapabilities.MalformedLineCount` — a count of malformed *entries* inside one whole-file document — gets no record boundary (Q-0004-07) |
-| `records_end_bytes` | the offset at which the source's last complete line-recorded event ends | the offset just after the file's last line feed, read in that same pass |
-| `unpublished_tail_bytes` | the bytes after it: a record the file had not finished writing | `bytes − records_end_bytes` |
+| `read_bytes`, `read_coverage`, `read_coverage_detail` | the size the read itself recorded for this file when it opened it, and what the file's bytes at this boundary have to do with it | the provider's own `ParsedSession.File.Size` compared with the boundary pass's size: `verified` when they are the same (the conversion read these bytes), `unverified` when they are not (the file moved while it was being read, so the coverage is not established). Filled only where the provider's own declarations make that size this file's own (the declaration `record_offsets` rests on: Claude's transcript, Codex's rollout) — a layout's composite size is never compared with one file's (Q-0004-08, superseding Q-0004-05) |
+| `record_offsets` | whether the record offsets beside it are claimed | `claimed` when the **provider's own declaration** (`parser.SourceCapabilities.IncrementalAppend` = `CapabilitySupported`: the source grows by appended lines) *and* the file's own bytes can be such a transcript. A provider that declares only `parser.ContentCapabilities.MalformedLineCount` — a count of malformed *entries* inside one whole-file document — gets `not-claimed` (Q-0004-07); so does a file whose own bytes are not text lines, because a compressed container of the records is not the records, nor is a byte sequence no text line can be read from (Q-0004-09) |
+| `record_offsets_detail` | why they are not claimed | the provider declares no such source, or the file's own bytes are not a transcript of text lines (a compressed or otherwise binary container of the records, or a sequence that does not decode as text) |
+| `terminated_records_end_bytes` | where the file's line-feed-terminated records end | the offset just after the file's last line feed, read in that same pass; equal to `bytes` when the file ends at a line feed |
+| `unterminated_tail_bytes` | the file's unterminated record: the bytes after it, which no line feed follows | `bytes − terminated_records_end_bytes`. The source may still be writing that record. Whether the *read* carried it is the read's own answer — an unterminated record that is a complete record is read, one the reader cannot read is dropped — so the block states the byte fact and the read's fidelity and the conversion's counts beside it state the rest (Q-0004-10, superseding Q-0004-03's wording) |
 
 The block is attached to the conversion report only. `ccc inspect` does not take one: an inspection is the
 cheap discovery command, and a boundary pass is another full read of a source that can be hundreds of
@@ -69,11 +71,19 @@ The field is documented as the conversion's, so its absence in an inspection is 
 
 ### 2.2 What the boundary is not
 
-- **It is not a claim that the parser consumed exactly those bytes.** The pass runs after the read and
-  before anything is written; a file that grows between the two makes the boundary newer than the parse,
-  and no comparison of the two is attempted (the parse's own `File.Size` is a composite for providers whose
-  sources are a layout, so comparing it would produce a "the file grew" statement that is sometimes false —
-  the defect this repository forbids). The `detail` states the ordering in words instead.
+- **It is not a claim about a file it did not compare.** The pass runs after the read and before anything
+  is written, and it answers whether the file it measured is the file the read's own snapshot recorded
+  (`read_coverage`): when it is not, the report says so and says the conversion's coverage of these bytes is
+  not established, in the block's words and in the run's warnings. The comparison is asked only where the
+  provider's own declarations make the recorded size this file's own — a provider whose source is a layout
+  records a composite size, and comparing that with one file's would produce a "the file moved" statement
+  that is sometimes false, which is the defect this repository forbids (Q-0004-08).
+- **It is not a publication claim about the read.** Whether an unterminated record is part of the read is
+  the reader's own answer: an unterminated record that *is* a complete record is read by both inherited
+  readers, and one the reader cannot read is dropped (and counted where the provider counts such lines). The
+  block therefore states the file's record structure — where its terminated records end and how many bytes
+  of an unterminated record follow — and never calls that record unpublished, because that was false for the
+  first case (Q-0004-10).
 - **It is not a loss category.** An unterminated tail is not a recorded event: the goal's bounds say
   "Only complete recorded source events are eligible for a snapshot", and upstream's Codex reader treats a
   live session's tail the same way. The boundary states it, and the report's warning channel names it in
@@ -84,18 +94,20 @@ The field is documented as the conversion's, so its absence in an inspection is 
   its source (for a layout, a composite); the boundary's digest is this build's sha256 of the file's bytes,
   which is what `installation.source_check_state` already compares before and after a conversion.
 
-### 2.3 The incomplete tail, case by case
+### 2.3 The unterminated tail, case by case
 
-| Source file's tail | Read's own fidelity | Boundary | Published? |
+| Source file's tail | Read's own fidelity | Boundary | The read's own answer |
 | --- | --- | --- | --- |
-| last byte is a line feed, every line parseable | `malformed_lines = 0` | `records_end_bytes = bytes`, `unpublished_tail_bytes = 0` | everything |
-| last line is invalid but line-feed terminated (the committed Claude fixture) | `malformed_lines ≥ 1` | `records_end_bytes = bytes`, `unpublished_tail_bytes = 0` | the malformed line never becomes a message |
-| trailing bytes hold no line feed (a record still being written) | Claude: `malformed_lines` +1 and `truncated = true`; Codex: **nothing** | `unpublished_tail_bytes > 0`, and a warning names it | nothing of the tail |
-| the file holds no line feed at all | as above | `records_end_bytes = 0`, `unpublished_tail_bytes = bytes` | nothing (no complete line record) |
+| last byte is a line feed, every line parseable | `malformed_lines = 0` | `terminated_records_end_bytes = bytes`, `unterminated_tail_bytes = 0` | every record was read |
+| last line is invalid but line-feed terminated (the committed Claude fixture) | `malformed_lines ≥ 1` | `terminated_records_end_bytes = bytes`, `unterminated_tail_bytes = 0` | the malformed line never becomes a message |
+| trailing bytes hold no line feed and are not a record (a half-written record) | Claude: `malformed_lines` +1 and `truncated = true`; Codex: **nothing** (it counts an unterminated tail only for a stable-snapshot caller) | `unterminated_tail_bytes > 0`, and a warning names the bytes and the remedy | dropped: nothing of the tail becomes a message, and the conversion's counts say so |
+| trailing bytes hold no line feed and *are* a complete record | Claude: nothing (the line is valid, the file is not truncated); Codex: nothing | `unterminated_tail_bytes > 0`, and the same warning | **read**: the record's own dialogue is in the conversation and in the target document |
+| the file holds no line feed at all | as above | `terminated_records_end_bytes = 0`, `unterminated_tail_bytes = bytes` | a record the reader can read is read; the whole file is one unterminated record |
+| the file grew while it was being read | — | `read_coverage: unverified` with both sizes, and a warning naming the remedy | the report does not attribute the conversation to bytes the read is not shown to have covered |
 | the boundary pass cannot read the file | — | the run stops, the way a source check that cannot run already does | nothing written before the failure |
 
-A source whose tail is unfinished is **not** a failure: it is a live session, the conversion is real, and
-the report's own words say how to get the rest ("convert again after the source is written").
+A source whose tail is unterminated is **not** a failure: it is a live session, the conversion is real, and
+the report's own words say how to read a finished record ("convert again once the source has been written").
 
 ## 3. Public shape
 
@@ -109,9 +121,13 @@ type SourceBoundary struct {
 	Path   string `json:"path,omitempty"`
 	Bytes  int64  `json:"bytes,omitempty"`
 	SHA256 string `json:"sha256,omitempty"`
-	RecordsAreLines      bool  `json:"records_are_lines"`
-	RecordsEndBytes      int64 `json:"records_end_bytes,omitempty"`
-	UnpublishedTailBytes int64 `json:"unpublished_tail_bytes,omitempty"`
+	ReadBytes            int64  `json:"read_bytes,omitempty"`
+	ReadCoverage         string `json:"read_coverage,omitempty"`        // verified | unverified
+	ReadCoverageDetail   string `json:"read_coverage_detail,omitempty"`
+	RecordOffsets        string `json:"record_offsets"`                 // claimed | not-claimed
+	RecordOffsetsDetail  string `json:"record_offsets_detail,omitempty"`
+	TerminatedRecordsEndBytes int64 `json:"terminated_records_end_bytes,omitempty"`
+	UnterminatedTailBytes     int64 `json:"unterminated_tail_bytes,omitempty"`
 }
 ```
 
@@ -126,16 +142,18 @@ No new command and no new flag. The human block gains up to two lines, and the s
 `--json`:
 
 ```text
-  boundary:     2884 byte(s) read, the source's records end at byte 2884: nothing in the file is unpublished
-  boundary:     3035 byte(s) read, the source's records end at byte 2884 — the file holds more than this snapshot covers
-  unpublished:  151 byte(s) after that hold no record terminator: the record the source was writing is not part of this conversion
+  boundary:     2884 byte(s) read; the read's own snapshot of this file is exactly these bytes
+  records:      the source's records end at a line feed at byte 2884: the file ends at a record boundary
+  boundary:     3035 byte(s) read; the file moved while it was read: the read's own snapshot of it recorded 2884 byte(s), so which of these bytes the conversion covered is not established
+  records:      the source's records end at a line feed at byte 2884: the last 151 byte(s) are a record the source had not terminated
   boundary:     not taken (the conversion read an archive row, so no source file was open at all)
-  boundary:     3626 byte(s) read; this source is not a transcript of appended line records, so no record boundary is claimed
+  boundary:     3626 byte(s) read; the read's own snapshot of this file is exactly these bytes
+  records:      no line-record offsets claimed: the file's own bytes are not a transcript of text lines (a compressed or otherwise binary container of the records, or a sequence that does not decode as text), so no byte offset into them is a record boundary
 ```
 
-*(The wording is re-taken from the tree that ships it — `cmd/ccc/main.go`'s `writeBoundary`/`boundaryTailSuffix`;
-the four numbers here are the shapes' own illustrations, and each run prints the file's own. §1 of the
-evidence record quotes the lines as a real run printed them.)*
+*(The wording is re-taken from the tree that ships it — `cmd/ccc/main.go`'s `writeBoundary`/`coverageSuffix`/
+`recordsLine`; the numbers here are the shapes' own illustrations, and each run prints the file's own. §1
+and §11 of the evidence record quote the lines as real runs printed them.)*
 
 `ccc help` gains one paragraph: a conversion is a snapshot, converting again reads the source again and
 writes another new session, and each result names the source boundary it covers.
@@ -190,7 +208,7 @@ attribution comparison (the check verifies rather than trusts).
 | `Done when` clause | Artifact |
 | --- | --- |
 | two conversions of a growing source are distinguishable and correctly attributed; the later includes the appended history; the earlier target stays unchanged | the by-hand run in evidence §2 (two `ccc continue` runs on a grown copy: both boundaries, both ids, both digests, the appended turn's text in B's file and not A's, A's digest after B); the Go test for both targets; the native check's own report (§5) |
-| an actively appended or partially written source publishes no malformed tail event as complete history; a controlled incomplete-tail case with its boundary or a clear failure | evidence §3 for a Claude and a Codex source (the fragment's text absent from every message and from the installed file; `boundary.unpublished_tail_bytes` = the fragment's size; the warning; and the Codex case where the read itself counts nothing); the Go test; the pass's own unit cases (empty file, no line feed at all, a terminated invalid line) |
+| an actively appended or partially written source publishes no malformed tail event as complete history; a controlled incomplete-tail case with its boundary or a clear failure | evidence §3 for a Claude and a Codex source (the fragment's text absent from every message and from the installed file; `boundary.unterminated_tail_bytes` = the fragment's size minus the records before it; the warning; and the Codex case where the read itself counts nothing); the Go cases, including the one below the next clause's (a complete record appended *without* its line feed is carried by the same pipeline while the boundary reports the unterminated bytes and claims nothing about them); the pass's own unit cases (empty file, no line feed at all, a terminated invalid line, a binary container, a rune the read buffer splits) |
 | the result exposes enough source and target identity/boundary information to choose which continuation to resume, without an always-on index | the `--json` documents of §2/§3 with `source.boundary`, `source.counts`, `target_session.session_id`/`path`/`resume_command`; the human block of §1/§2; the CLI test that pins both lines; `ccc help`'s paragraph |
 | the accepted 0002 route stays natively resumable and the source stays unchanged through the repeated scenario | `scripts/codex-native-check.py`'s run on this host: both `thread/resume` answers, both `thread/read` views, the two real turns' own output, the source copy's and A's digests before and after |
 | the rules reach the files that carry them | the diff's hunks in `AGENTS.md`, `docs/conventions.md`, `docs/harness.md`, `README.md`, `cmd/ccc`'s usage text; `docs/goals/README.md`'s rows (0003 archived in this increment, 0004 marked implemented) |
@@ -206,8 +224,8 @@ attribution comparison (the check verifies rather than trusts).
   and written as another fresh session; the boundary every result names; never a merge into an existing
   target session), and the layout/harness lines name the growth fragments and the check's repeat scenario.
 - `docs/conventions.md`: the rule of the work — a conversion is a snapshot of the source *at its boundary*,
-  the boundary is reported, an unfinished tail is disclosed and never repaired, and repeated conversions
-  are separate sessions.
+  the boundary is reported, an unterminated trailing record is disclosed and never repaired, and repeated
+  conversions are separate sessions.
 - `docs/harness.md`: the codex check's entry gains the repeat scenario and the second prompt flag; the
   offline-case requirements it already states apply to the new cases.
 - `README.md`: one paragraph — converting again after a session grows.
@@ -216,8 +234,11 @@ attribution comparison (the check verifies rather than trusts).
   file for 0003 moves to `docs/goals/archive/` unchanged, and every link that named it is retargeted.
 - `docs/decisions/OPEN-QUESTIONS.md`: entries for the defaults taken alone — the record-boundary gate
   (provider declaration vs. this build's inference), the boundary's absence from `ccc inspect`, the
-  unfinished tail as a boundary statement rather than a loss category, and the native repeat scenario's
-  scope (the 0002 route's check, with `--repeat-resume-prompt` as a second, separately asked-for turn).
+  unterminated tail as a boundary statement rather than a loss category, and the native repeat scenario's
+  scope (the 0002 route's check, with `--repeat-resume-prompt` as a second, separately asked-for turn) —
+  plus, from the review round, the read's own snapshot compared with the file it measured, the file's own
+  bytes as the gate's second half, and the unterminated tail as a byte fact rather than a publication claim
+  (Q-0004-08…10, each naming the entry it supersedes).
 - `docs/upstream.md` and the carried tree are untouched: no carried file changes, and the parity step must
   still pass.
 

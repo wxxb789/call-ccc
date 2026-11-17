@@ -51,15 +51,20 @@ with their exit codes and counts).
 - **A conversion is a snapshot of the source at one boundary, and repeating it is the same operation.**
   The source is read again and written as *another* fresh target session; nothing ever merges later
   source history into an existing target session, and nothing rewrites the source. Every conversion's
-  result states the boundary it covers — the source file's sha256 and size, and, for a source whose
-  records are appended lines, the offset its last complete record ends at — so two continuations of one
-  growing session can be told apart and each is attributed to the bytes it read. For a source whose
-  records are appended lines, a file whose writer had not finished a record is disclosed
-  (`boundary.unpublished_tail_bytes`, the run's warnings, the human `unpublished:` line) and that record
-  is never published as history; another conversion once the file is written is what carries it. The
-  boundary is taken from the file's own bytes, never inferred from a provider's silence, and the record
-  offsets are claimed only where the provider's own declarations say its source is a transcript of line
-  records.
+  result states the boundary it covers — the source file's sha256 and size, whether those are the bytes the
+  read itself opened (`read_coverage`), and, for a source whose records are appended lines, where its
+  line-feed-terminated records end and how many bytes of an unterminated record follow — so two
+  continuations of one growing session can be told apart and each is attributed to the bytes it read; a
+  read whose own recorded snapshot is not the file the boundary measured says so instead of attributing its
+  conversation to bytes it is not shown to have read. A file whose last bytes hold no line feed holds a
+  record the source had not terminated, which it may still be writing: that is disclosed
+  (`boundary.unterminated_tail_bytes`, the run's warnings, the human `records:` line) and never called
+  published or left out, because whether a read carried an unterminated record is the read's own answer —
+  what is forbidden is presenting bytes the read did not read as history, and another conversion once the
+  file is written reads a finished record. The boundary is taken from the file's own bytes, never inferred
+  from a provider's silence, and the record offsets are claimed only where the provider's own declarations
+  say its source is a transcript of appended lines *and* the file's own bytes can be one — a compressed
+  container of records is reported by its digest and size with no offset claimed for it.
 - Out of scope by design: Git/worktree management, process or environment migration, credentials,
   fleet orchestration, and any second session index for the existing archive.
 

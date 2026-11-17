@@ -55,11 +55,14 @@ usage:
   A conversion is a snapshot of the source at one moment: it reads the source as it is and writes a new
   session, so converting the same source again after it has grown writes another new session -- never a
   merge into one that an agent may already have continued, and never a rewrite of the source. The result
-  names the boundary each snapshot covers (the source file's sha256 and size, and, for a transcript whose
-  records are lines, the offset its last complete record ends at), so two continuations of one growing
-  session can be told apart and the newer one chosen. For a source whose records are appended lines, a
-  file still holding a record its writer had not finished says so under 'unpublished:' instead of
-  publishing that record, and converting again once the file is written carries it.
+  names the boundary each snapshot covers (the source file's sha256 and size, whether those are the bytes
+  the read itself opened, and, for a source whose records are the lines a harness appends, where its last
+  line-feed-terminated record ends), so two continuations of one growing session can be told apart and the
+  newer one chosen. A file that ends without a line feed holds a record the source may still be writing:
+  the block says so under 'unterminated:' and leaves what the read made of it to the read's own fidelity,
+  so nothing the read did not read is presented as history. A source whose own bytes are a compressed
+  container of the records -- Codex reads its compressed rollouts -- is reported by its bytes and digest
+  with no record offset claimed for them, because no offset into such a file is a record boundary.
 
   inspect reports the session's identity, agent, source and conversation shape. It reads the
   source session through the provider's own reader and, when an archive is present, says what the
@@ -665,8 +668,8 @@ func sourceCheckWord(state string) string {
 
 // writeBoundary prints where the conversion's snapshot of the source stops. It is the human half of
 // `source.boundary`: a caller comparing two conversions of one growing session has to be able to see, by
-// eye, which source bytes each of them read and whether either left a record the file was still writing
-// unpublished. The digest itself is not repeated here -- on a run that reached the comparison, the
+// eye, which source bytes each of them read and covers, and whether either ended on a record the file was
+// still writing. The digest itself is not repeated here -- on a run that reached the comparison, the
 // `source file:` line below prints the same sha256 in full, taken in the same pass -- so these lines
 // carry what only the boundary states.
 func writeBoundary(out io.Writer, boundary *ccc.SourceBoundary) {
@@ -677,27 +680,44 @@ func writeBoundary(out io.Writer, boundary *ccc.SourceBoundary) {
 		fmt.Fprintf(out, "  boundary:     not taken (%s)\n", oneLine(boundary.Detail))
 		return
 	}
-	if !boundary.RecordsAreLines {
-		fmt.Fprintf(out, "  boundary:     %d byte(s) read; this source is not a transcript of appended line "+
-			"records, so no record boundary is claimed\n", boundary.Bytes)
+	fmt.Fprintf(out, "  boundary:     %d byte(s) read%s\n", boundary.Bytes, coverageSuffix(boundary))
+	if boundary.RecordOffsets != ccc.SourceBoundaryRecordsClaimed {
+		fmt.Fprintf(out, "  records:      no line-record offsets claimed: %s\n",
+			oneLine(boundary.RecordOffsetsDetail))
 		return
 	}
-	fmt.Fprintf(out, "  boundary:     %d byte(s) read, the source's records end at byte %d%s\n",
-		boundary.Bytes, boundary.RecordsEndBytes, boundaryTailSuffix(boundary.UnpublishedTailBytes))
-	if boundary.UnpublishedTailBytes > 0 {
-		fmt.Fprintf(out, "  unpublished:  %d byte(s) after that hold no record terminator: the record the "+
-			"source was writing is not part of this conversion\n", boundary.UnpublishedTailBytes)
+	fmt.Fprintf(out, "  records:      %s\n", recordsLine(boundary))
+}
+
+// coverageSuffix spells what the read's own snapshot of the file has to do with the bytes the boundary
+// reports. The ordinary case is stated in words rather than left implicit, because the whole point of the
+// boundary is that a conversion is attributed to the bytes it read; the case that must never read as the
+// ordinary one is a file that moved while it was being read, whose bytes this build cannot attribute the
+// conversation to at all. Empty where the read recorded no size to compare (a representation this build may
+// not read as one file's, or none at all).
+func coverageSuffix(boundary *ccc.SourceBoundary) string {
+	switch boundary.ReadCoverage {
+	case ccc.SourceBoundaryCoverageVerified:
+		return "; the read's own snapshot of this file is exactly these bytes"
+	case ccc.SourceBoundaryCoverageUnverified:
+		return fmt.Sprintf("; the file moved while it was read: the read's own snapshot of it recorded %d "+
+			"byte(s), so which of these bytes the conversion covered is not established", boundary.ReadBytes)
+	default:
+		return ""
 	}
 }
 
-// boundaryTailSuffix spells what an unpublished tail means for a reader who only skims the line: a file
-// whose records end at its last byte holds nothing this snapshot passed over, while a shorter
-// records_end is answered by the `unpublished:` line under it.
-func boundaryTailSuffix(unpublished int64) string {
-	if unpublished > 0 {
-		return " — the file holds more than this snapshot covers"
+// recordsLine spells the file's own record structure: where its line-feed-terminated records end, and what
+// the bytes after that are. Nothing here says whether the read carried the unterminated record -- that is the
+// read's own answer, and the fidelity line above and the run's warnings are where it is stated -- so this
+// line reports the bytes the file had and stops there.
+func recordsLine(boundary *ccc.SourceBoundary) string {
+	if boundary.UnterminatedTailBytes <= 0 {
+		return fmt.Sprintf("the source's records end at a line feed at byte %d: the file ends at a record "+
+			"boundary", boundary.TerminatedRecordsEndBytes)
 	}
-	return ": nothing in the file is unpublished"
+	return fmt.Sprintf("the source's records end at a line feed at byte %d: the last %d byte(s) are a record "+
+		"the source had not terminated", boundary.TerminatedRecordsEndBytes, boundary.UnterminatedTailBytes)
 }
 
 func describeCounts(counts ccc.Counts) string {

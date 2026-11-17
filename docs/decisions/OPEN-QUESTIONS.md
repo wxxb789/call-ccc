@@ -1523,3 +1523,101 @@ supersede it with a newer one and say which it supersedes.
 - **Settled by:** the same question Q-0004-01 asked (does a line-recorded provider that declares only a
   malformed-entry count get the offsets?), now answered by measurement rather than by preference; a reversal
   needs either that provider to declare `IncrementalAppend` or the owner to accept the renamed claims.
+
+## Q-0004-08 — The boundary reports the read's own snapshot, and only where it may read that as one file's
+
+- **Status:** resolved (default taken)
+- **Question:** Q-0004-05 declined to compare the boundary's size with the size the parser recorded
+  (`source.identity.file_size`), because for a provider whose source is a layout that number is a
+  composite and the comparison would sometimes report a file that moved when it did not. The review round
+  measured what that left open: the conversation is read first and the boundary is taken afterwards, and
+  for Codex the inherited parse is *bounded by the size it saw when it opened the file*
+  (`internal/parser/codex_rollout_open.go`'s `plainCodexRolloutSnapshot`), so a complete turn appended
+  during the parse is excluded from the conversation while the boundary — and the subsequent
+  `installation.source_check_state` — describe the newer bytes and report the file `unchanged`. The result
+  attributed an older conversation to newer bytes with nothing in the report to notice it by.
+- **Default taken:** the boundary answers the question it can support, from the read's own record: the
+  pass compares the file's size with the size the read recorded for it, and reports `read_bytes` (or
+  nothing, when the read recorded none) with `read_coverage: verified` when they are the same — the
+  conversion read these bytes — or `read_coverage: unverified` with both sizes in `read_coverage_detail`
+  and in the run's warnings when they are not. The comparison is asked only where the provider's own
+  declarations make the recorded size this file's own (`sourceRecordsAreLines`: the two providers whose
+  source is a transcript of appended lines are the two whose parse records the transcript's own size —
+  Claude's `info.Size()`, Codex's `snapshot.Source.Size()`, compressed or not), which is exactly the set
+  Q-0004-05's objection was about excluding. The offsets are still reported when the coverage is
+  unverified: they are byte facts about the file this block names, and the coverage answer beside them is
+  what says the conversion is not shown to have covered them.
+- **Reversal:** compare a provider whose source is a layout with the file anyway (the objection Q-0004-05
+  raised), or take a second full read before the parse and compare that digest (one more pass over a source
+  that can be hundreds of megabytes, and the same answer for the readers in this tree).
+- **Settled by:** whether the owner wants a layout provider's composite size compared with one file's
+  (Q-0004-05's objection restated for the narrowed gate), and whether the read-coverage answer belongs on
+  the boundary block or in its own report section.
+- **Regression:** `TestTakeSourceBoundaryReportsAFileThatMovedWhileItWasRead` (the state a mid-read growth
+  leaves, at the pass's own seam — a genuine end-to-end race cannot be made deterministic, since the parse
+  runs inside `Continue`), `TestBoundaryWarningsNameTheUnterminatedRecordAndAMovedFile` (both channels),
+  and the repeated-conversion case's `read_bytes == bytes`/`read_coverage: verified` assertions, which are
+  the end-to-end half.
+
+## Q-0004-09 — The record-offset gate has a second half: the file's own bytes
+
+- **Status:** resolved (default taken)
+- **Question:** Q-0004-07 narrowed the gate to the provider's declaration
+  (`parser.SourceCapabilities.IncrementalAppend`), which is a statement about a *format*. The review round
+  measured that a provider-wide declaration is not a statement about one representation of it: Codex both
+  declares that capability and reads its own zstd-compressed rollouts (`.jsonl.zst`), which the inherited
+  implementation decodes before parsing and refuses any byte offset into
+  (`internal/parser/codex_rollout_open.go`, `codex_provider.go`'s `ParseIncremental`). The boundary scanned
+  the compressed file for line feeds, so such a source could report an arbitrary "record boundary", an
+  "unfinished record" and unpublished bytes while the decoded history had been carried in full.
+- **Default taken:** the offsets are claimed only when *both* halves hold — the provider's declaration, and
+  the file's own bytes being able to be that transcript. The second half is measured in the same pass
+  (valid UTF-8, chunk by chunk, with the bytes of a rune a chunk boundary splits carried to the chunk that
+  completes it): a transcript of lines is text, and a compressed or otherwise binary container of one is
+  not — a zstd frame's own header is not valid UTF-8, so every zstd container is caught, whatever suffix it
+  carries. The withheld claim is stated (`record_offsets: not-claimed` with `record_offsets_detail` and a
+  human `records:` line naming which half failed), the file's size and digest are still reported, and
+  `read_bytes`/`read_coverage` still answer the attribution question for it.
+- **Reversal:** gate on the path's own name (the suffix the reader dispatches on) or on a magic number,
+  both of which duplicate a format fact in `internal/ccc`; or ask the provider per source, which the
+  inherited interface does not offer cheaply (its only per-source answer, `ParseIncremental`, needs a
+  checkpoint for providers like Claude and would narrow their own case wrongly).
+- **Settled by:** whether the owner wants the container's *decoded* records described too (the boundary
+  has no seam for the decoded bytes: the file's own digest is what a caller compares two conversions by),
+  and whether "not text" is the right floor for the second half or a provider-declared per-source
+  capability should be added upstream.
+- **Regression:** `TestContinueFromACompressedCodexSourceClaimsNoRecordOffsets` (end to end: a
+  runtime-compressed copy of the committed Codex fixture, whose decoded history must match the plain
+  rollout's conversation while the boundary claims no offsets and warns of nothing),
+  `TestSourceBoundaryOfFileStatesTheRecordOffsets`'s container row, and `TestTextStreamCarriesSplitRunes`.
+
+## Q-0004-10 — An unterminated record is a byte fact, not a publication claim
+
+- **Status:** resolved (default taken)
+- **Question:** Q-0004-03 put the unfinished tail in the boundary rather than in the loss list, phrased as
+  `unpublished_tail_bytes` with a warning saying those bytes "are not part of this conversion". The review
+  round measured that claim false: both inherited full readers accept a *valid* record at EOF without its
+  line feed (Codex's own tests pin it — `codex_cursor_test.go`'s "newline-less valid EOF is parsed but not
+  seeded" — and Claude's loop processes any line it can parse), so the pipeline carries such a record while
+  the boundary and the human `unpublished:` line asserted its omission. The old phrasing also named the
+  offset after the last line feed "where the records end", which is untrue for the same file.
+- **Default taken:** what the boundary states is the file's own record structure — the offset its
+  line-feed-terminated records end at (`terminated_records_end_bytes`) and the bytes after it
+  (`unterminated_tail_bytes`), which no line feed follows and which the source may still be writing — and
+  it claims nothing about whether the read carried it. That answer stays where it is answered: the read's
+  own fidelity block (Claude flags such a tail truncated; Codex counts nothing for a live tail) and the
+  conversion's own counts against a conversion of the same copy without the tail. The warning names both
+  offsets, says the source may still be writing the record, and keeps the goal's remedy ("converting again
+  once the source has been written reads the file again"), with no claim of omission.
+- **Reversal:** judge the tail's completeness in `internal/ccc` (a JSON validity test would make this build
+  read a format, and would be wrong for a provider whose records are not JSON), or keep the omission claim
+  and require it true by construction (providers would have to report the tail's own disposition, which the
+  inherited interface has no seam for).
+- **Settled by:** whether the owner wants the boundary to state a publication verdict where the provider
+  supplies one (Claude's `truncated` flag is such a case) rather than leaving every verdict to the fidelity
+  block and the counts.
+- **Regression:** `TestContinueCarriesACompleteRecordThatHasNoLineFeed` (the committed Claude growth
+  fragment, appended twice — with and without its last byte: the same conversation both times, with only
+  the second boundary reporting an unterminated record), `TestUnterminatedSourceTailIsBoundaryedAndNeverPublished`
+  (which now also asserts the warning claims no omission), `TestBoundaryWarningsNameTheUnterminatedRecordAndAMovedFile`,
+  and `TestSourceBoundaryOfFileStatesTheRecordOffsets`'s "a complete record without its line feed" row.

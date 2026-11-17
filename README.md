@@ -48,15 +48,18 @@ given here when it found none, while the Codex commands keep the spelling given 
 because only the Claude Code invocation changes into the session's working directory.
 
 A conversion is a snapshot of the source at one moment, and it says where that moment is: the result
-names the boundary it covers — the source file's `sha256` and size, and, for a transcript whose records
-are lines, the offset its last complete record ends at — so two continuations of one session that kept
-growing can be told apart and the newer one chosen. Converting the same source again after it has grown
-is the ordinary way to carry the rest: it reads the source as it now is and writes **another** new
-session beside the earlier one — never a merge into a session an agent may already have continued, and
-never a rewrite of the source. For a source whose records are appended lines, a file whose writer had not
-finished a record is reported (`boundary.unpublished_tail_bytes`, a warning, and an `unpublished:` line in
-the human block) rather than published as history, and converting again once the file is written carries
-it.
+names the boundary it covers — the source file's `sha256` and size, whether those are the bytes the read
+itself opened, and, for a transcript whose records are lines, where its line-feed-terminated records end —
+so two continuations of one session that kept growing can be told apart and the newer one chosen.
+Converting the same source again after it has grown is the ordinary way to carry the rest: it reads the
+source as it now is and writes **another** new session beside the earlier one — never a merge into a
+session an agent may already have continued, and never a rewrite of the source. A read whose own snapshot
+of the file is not the file it measured says so (`source.boundary.read_coverage: unverified`) rather than
+attributing the conversation to bytes it is not shown to have read. A file whose last bytes hold no line
+feed is reported as what it is — a record the source had not terminated, which it may still be writing
+(`boundary.unterminated_tail_bytes`, a warning, and a `records:` line in the human block) — and whether
+the read carried it is left to the read's own answer rather than claimed either way; converting again once
+the file is written reads it again.
 
 The continuation engine itself lives in [`internal/ccc`](internal/ccc) and is callable without the
 CLI: `SourceReader` reads a native session into a typed, transient Conversation document,

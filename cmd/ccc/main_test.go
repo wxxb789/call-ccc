@@ -759,14 +759,18 @@ type reportedContinueDocument struct {
 			Messages int `json:"messages"`
 		} `json:"counts"`
 		Boundary struct {
-			State                string `json:"state"`
-			Detail               string `json:"detail"`
-			Path                 string `json:"path"`
-			Bytes                int64  `json:"bytes"`
-			SHA256               string `json:"sha256"`
-			RecordsAreLines      bool   `json:"records_are_lines"`
-			RecordsEndBytes      int64  `json:"records_end_bytes"`
-			UnpublishedTailBytes int64  `json:"unpublished_tail_bytes"`
+			State                     string `json:"state"`
+			Detail                    string `json:"detail"`
+			Path                      string `json:"path"`
+			Bytes                     int64  `json:"bytes"`
+			SHA256                    string `json:"sha256"`
+			ReadBytes                 int64  `json:"read_bytes"`
+			ReadCoverage              string `json:"read_coverage"`
+			ReadCoverageDetail        string `json:"read_coverage_detail"`
+			RecordOffsets             string `json:"record_offsets"`
+			RecordOffsetsDetail       string `json:"record_offsets_detail"`
+			TerminatedRecordsEndBytes int64  `json:"terminated_records_end_bytes"`
+			UnterminatedTailBytes     int64  `json:"unterminated_tail_bytes"`
 		} `json:"boundary"`
 	} `json:"source"`
 	Conversion struct {
@@ -1489,13 +1493,22 @@ func TestContinueJSONCarriesTheSourceBoundary(t *testing.T) {
 	if boundary.SHA256 != hex.EncodeToString(sum[:]) {
 		t.Errorf("boundary.sha256 = %q, want the file's own digest", boundary.SHA256)
 	}
-	if !boundary.RecordsAreLines {
-		t.Error("boundary.records_are_lines = false for a provider whose source is appended line records")
+	if boundary.RecordOffsets != ccc.SourceBoundaryRecordsClaimed {
+		t.Errorf("boundary.record_offsets = %q, want %q for a provider whose source is appended line records",
+			boundary.RecordOffsets, ccc.SourceBoundaryRecordsClaimed)
+	}
+	if boundary.RecordOffsetsDetail != "" {
+		t.Errorf("boundary.record_offsets_detail = %q, want no reason for a claim that was made",
+			boundary.RecordOffsetsDetail)
+	}
+	if boundary.ReadBytes != info.Size() || boundary.ReadCoverage != ccc.SourceBoundaryCoverageVerified {
+		t.Errorf("boundary = %+v, want the read's own snapshot of the file (%d byte(s)) reported as the "+
+			"bytes the conversion covered", boundary, info.Size())
 	}
 	// The committed fixture ends at a line boundary — its last line is invalid JSON, but it is a complete
-	// line — so its records end at its last byte and nothing of it is unpublished.
-	if boundary.RecordsEndBytes != boundary.Bytes || boundary.UnpublishedTailBytes != 0 {
-		t.Errorf("boundary = %+v, want the records to end at byte %d with nothing unpublished",
+	// line — so its terminated records end at its last byte and it has no unterminated record.
+	if boundary.TerminatedRecordsEndBytes != boundary.Bytes || boundary.UnterminatedTailBytes != 0 {
+		t.Errorf("boundary = %+v, want the terminated records to end at byte %d with nothing unterminated",
 			boundary, boundary.Bytes)
 	}
 	if boundary.Detail == "" {
@@ -1504,8 +1517,9 @@ func TestContinueJSONCarriesTheSourceBoundary(t *testing.T) {
 }
 
 // TestContinueHumanOutputStatesTheSourceBoundary pins the human half, on a real conversion and on the
-// shapes a running session can have: a file whose records end at its last byte, one whose writer had not
-// finished a record, one read from an archive, and one whose records are not lines at all.
+// shapes a running session can have: a file whose terminated records end at its last byte, one whose last
+// bytes are a record the file had not terminated, one whose bytes are not the records at all (a compressed
+// container), one a read moved away from, and one read from an archive.
 func TestContinueHumanOutputStatesTheSourceBoundary(t *testing.T) {
 	continueEnvironment(t)
 	sessionID, _ := claudeFixture(t)
@@ -1513,12 +1527,17 @@ func TestContinueHumanOutputStatesTheSourceBoundary(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("exit %d, stderr: %s", code, stderr)
 	}
-	if want := "boundary:     2051 byte(s) read, the source's records end at byte 2051: nothing in the " +
-		"file is unpublished\n"; !strings.Contains(stdout, want) {
-		t.Errorf("the human output is missing %q:\n%s", want, stdout)
+	for _, want := range []string{
+		"boundary:     2051 byte(s) read; the read's own snapshot of this file is exactly these bytes\n",
+		"records:      the source's records end at a line feed at byte 2051: the file ends at a record " +
+			"boundary\n",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("the human output is missing %q:\n%s", want, stdout)
+		}
 	}
-	if strings.Contains(stdout, "unpublished:") {
-		t.Errorf("a source with nothing unpublished printed an unpublished line:\n%s", stdout)
+	if strings.Contains(stdout, "unterminated:") {
+		t.Errorf("a source with nothing unterminated printed an unterminated line:\n%s", stdout)
 	}
 
 	for _, testCase := range []struct {
@@ -1528,17 +1547,55 @@ func TestContinueHumanOutputStatesTheSourceBoundary(t *testing.T) {
 		absent    []string
 	}{
 		{
-			name: "a record the writer had not finished",
+			name: "a record the file had not terminated",
 			boundary: &ccc.SourceBoundary{
 				State: ccc.SourceBoundaryTaken, Path: "/src/session.jsonl", Bytes: 1835,
-				SHA256: "010a14dd", RecordsAreLines: true, RecordsEndBytes: 1792,
-				UnpublishedTailBytes: 43,
+				SHA256: "010a14dd", ReadBytes: 1835,
+				ReadCoverage:              ccc.SourceBoundaryCoverageVerified,
+				RecordOffsets:             ccc.SourceBoundaryRecordsClaimed,
+				TerminatedRecordsEndBytes: 1792, UnterminatedTailBytes: 43,
 			},
 			wantLines: []string{
-				"boundary:     1835 byte(s) read, the source's records end at byte 1792 — the file holds " +
-					"more than this snapshot covers\n",
-				"unpublished:  43 byte(s) after that hold no record terminator: the record the source was " +
-					"writing is not part of this conversion\n",
+				"boundary:     1835 byte(s) read; the read's own snapshot of this file is exactly these bytes\n",
+				"records:      the source's records end at a line feed at byte 1792: the last 43 byte(s) are " +
+					"a record the source had not terminated\n",
+			},
+			// The human block does not claim the record was left out of the conversion: whether it was
+			// read is the read's own answer (the fidelity line above and the run's warnings say it).
+			absent: []string{"not part of this conversion", "unpublished"},
+		},
+		{
+			name: "a compressed container of the records",
+			boundary: &ccc.SourceBoundary{
+				State: ccc.SourceBoundaryTaken, Path: "/src/rollout.jsonl.zst", Bytes: 3626,
+				SHA256: "415bbc31", ReadBytes: 3626,
+				ReadCoverage:  ccc.SourceBoundaryCoverageVerified,
+				RecordOffsets: ccc.SourceBoundaryRecordsNotClaimed,
+				RecordOffsetsDetail: "the file's own bytes are not a transcript of text lines (a compressed " +
+					"or otherwise binary container of the records, or a sequence that does not decode as " +
+					"text), so no byte offset into them is a record boundary",
+			},
+			wantLines: []string{
+				"boundary:     3626 byte(s) read; the read's own snapshot of this file is exactly these bytes\n",
+				"records:      no line-record offsets claimed: the file's own bytes are not a transcript of " +
+					"text lines (a compressed or otherwise binary container of the records, or a sequence " +
+					"that does not decode as text), so no byte offset into them is a record boundary\n",
+			},
+			absent: []string{"records end at byte", "unterminated:"},
+		},
+		{
+			name: "a file that moved while it was read",
+			boundary: &ccc.SourceBoundary{
+				State: ccc.SourceBoundaryTaken, Path: "/src/session.jsonl", Bytes: 1835,
+				SHA256: "010a14dd", ReadBytes: 1792,
+				ReadCoverage:              ccc.SourceBoundaryCoverageUnverified,
+				RecordOffsets:             ccc.SourceBoundaryRecordsClaimed,
+				TerminatedRecordsEndBytes: 1835,
+			},
+			wantLines: []string{
+				"boundary:     1835 byte(s) read; the file moved while it was read: the read's own snapshot " +
+					"of it recorded 1792 byte(s), so which of these bytes the conversion covered is not " +
+					"established\n",
 			},
 		},
 		{
@@ -1557,11 +1614,14 @@ func TestContinueHumanOutputStatesTheSourceBoundary(t *testing.T) {
 			name: "records that are not appended lines",
 			boundary: &ccc.SourceBoundary{
 				State: ccc.SourceBoundaryTaken, Path: "/src/state.json", Bytes: 3626,
-				SHA256: "415bbc31", RecordsAreLines: false,
+				SHA256: "415bbc31", RecordOffsets: ccc.SourceBoundaryRecordsNotClaimed,
+				RecordOffsetsDetail: "the provider's own declarations do not make this source a transcript " +
+					"of appended line records",
 			},
 			wantLines: []string{
-				"boundary:     3626 byte(s) read; this source is not a transcript of appended line records, " +
-					"so no record boundary is claimed\n",
+				"boundary:     3626 byte(s) read\n",
+				"records:      no line-record offsets claimed: the provider's own declarations do not make " +
+					"this source a transcript of appended line records\n",
 			},
 			absent: []string{"records end at byte"},
 		},
@@ -2002,14 +2062,15 @@ func TestContinueHelpIsARequestNotAFailure(t *testing.T) {
 		}
 	}
 	// The repeat rule is stated where a caller learns the command: a conversion is a snapshot, converting
-	// the same source again after it grew writes another session rather than merging into one, and an
-	// unfinished record in the source file is named rather than published.
+	// the same source again after it grew writes another session rather than merging into one, and a record
+	// the source file had not terminated is named rather than published.
 	snapshot := strings.Join(strings.Fields(stdout), " ")
 	for _, want := range []string{
 		"A conversion is a snapshot of the source at one moment",
 		"writes another new session -- never a merge into one that an agent may already have continued",
 		"names the boundary each snapshot covers",
-		"says so under 'unpublished:' instead of publishing that record",
+		"says so under 'unterminated:'",
+		"no record offset claimed for them",
 	} {
 		if !strings.Contains(snapshot, want) {
 			t.Errorf("help does not state the repeat rule (%q)", want)

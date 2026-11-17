@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/klauspost/compress/zstd"
+
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/parser"
 )
@@ -58,9 +60,18 @@ func TestContinueRepeatedOnAGrowingSourceIsAttributedToItsOwnSnapshot(t *testing
 					first.Conversion, first.Installation)
 			}
 			firstBoundary := boundaryOf(t, first)
-			if firstBoundary.Bytes != beforeSize || firstBoundary.RecordsEndBytes != beforeSize ||
-				firstBoundary.UnpublishedTailBytes != 0 {
-				t.Errorf("the first boundary = %+v, want the whole %d-byte file with nothing unpublished",
+			if firstBoundary.Bytes != beforeSize ||
+				firstBoundary.RecordOffsets != SourceBoundaryRecordsClaimed ||
+				firstBoundary.TerminatedRecordsEndBytes != beforeSize ||
+				firstBoundary.UnterminatedTailBytes != 0 {
+				t.Errorf("the first boundary = %+v, want the whole %d-byte file with nothing unterminated",
+					firstBoundary, beforeSize)
+			}
+			// The conversion is attributed to the bytes it read, and the boundary says so from the read's
+			// own record of the file it opened rather than assuming it.
+			if firstBoundary.ReadBytes != beforeSize ||
+				firstBoundary.ReadCoverage != SourceBoundaryCoverageVerified {
+				t.Errorf("the first boundary = %+v, want its read's own snapshot to be the file's %d bytes",
 					firstBoundary, beforeSize)
 			}
 			if firstBoundary.SHA256 != beforeGrowth {
@@ -71,8 +82,8 @@ func TestContinueRepeatedOnAGrowingSourceIsAttributedToItsOwnSnapshot(t *testing
 				t.Errorf("the first boundary names %q and the read %q, want %q",
 					firstBoundary.Path, first.Source.Identity.SourcePath, sourcePath)
 			}
-			if warning := strings.Join(first.Warnings, " "); strings.Contains(warning, "unfinished record") {
-				t.Errorf("a source with no unpublished tail warned about one: %v", first.Warnings)
+			if warning := strings.Join(first.Warnings, " "); strings.Contains(warning, "hold no line feed") {
+				t.Errorf("a source with no unterminated record warned about one: %v", first.Warnings)
 			}
 			firstInstalled := mustRead(t, first.Installation.Path)
 
@@ -120,9 +131,11 @@ func TestContinueRepeatedOnAGrowingSourceIsAttributedToItsOwnSnapshot(t *testing
 				t.Errorf("the second boundary = %+v, want the grown file (%d bytes, %s)",
 					secondBoundary, grown, afterGrowth)
 			}
-			if secondBoundary.UnpublishedTailBytes != 0 ||
-				secondBoundary.RecordsEndBytes != secondBoundary.Bytes {
-				t.Errorf("the second boundary = %+v, want the whole grown file published", secondBoundary)
+			if secondBoundary.UnterminatedTailBytes != 0 ||
+				secondBoundary.TerminatedRecordsEndBytes != secondBoundary.Bytes ||
+				secondBoundary.ReadCoverage != SourceBoundaryCoverageVerified ||
+				secondBoundary.ReadBytes != grown {
+				t.Errorf("the second boundary = %+v, want the whole grown file, read as it stands", secondBoundary)
 			}
 			if secondBoundary.SHA256 == firstBoundary.SHA256 {
 				t.Errorf("both conversions report the same boundary digest %s", secondBoundary.SHA256)
@@ -153,17 +166,22 @@ func TestContinueRepeatedOnAGrowingSourceIsAttributedToItsOwnSnapshot(t *testing
 	}
 }
 
-// TestUnpublishedSourceTailIsBoundaryedAndNeverPublished is the goal's incomplete-tail clause: a source
+// TestUnterminatedSourceTailIsBoundaryedAndNeverPublished is the goal's incomplete-tail clause: a source
 // captured while its writer was still appending publishes no part of the unfinished record, the read's own
 // message counts do not move, and the boundary and the warning channel say what the file holds beyond the
-// snapshot.
+// read.
 //
 // Both accepted source providers are driven, because they answer the same situation differently: the Claude
 // reader counts an unterminated trailing record as malformed and flags the session truncated, while the
 // Codex reader deliberately counts nothing for a live session's tail (internal/parser's codex.go). The
 // boundary is computed from the file's own bytes, so it states the same fact for both -- which is the point
 // of taking it from bytes rather than from a provider's classification.
-func TestUnpublishedSourceTailIsBoundaryedAndNeverPublished(t *testing.T) {
+//
+// What the boundary states is the byte fact and no more: the file's bytes end without a line feed, so the
+// record there had not been terminated. It does not call the record unpublished, because whether a read
+// carried an unterminated record is the reader's own answer (the case below the next one appends a record
+// without its line feed that both readers carry), and the warning must not say otherwise either.
+func TestUnterminatedSourceTailIsBoundaryedAndNeverPublished(t *testing.T) {
 	for _, testCase := range []struct {
 		name     string
 		agent    parser.AgentType
@@ -204,8 +222,8 @@ func TestUnpublishedSourceTailIsBoundaryedAndNeverPublished(t *testing.T) {
 
 			complete := continueRefInto(t, cfg, home, testCase.target, testCase.ref)
 			completeBoundary := boundaryOf(t, complete)
-			if completeBoundary.UnpublishedTailBytes != 0 {
-				t.Fatalf("the committed fixture's boundary = %+v, want nothing unpublished in it",
+			if completeBoundary.UnterminatedTailBytes != 0 {
+				t.Fatalf("the committed fixture's boundary = %+v, want nothing unterminated in it",
 					completeBoundary)
 			}
 			completeSize := completeBoundary.Bytes
@@ -221,17 +239,32 @@ func TestUnpublishedSourceTailIsBoundaryedAndNeverPublished(t *testing.T) {
 				t.Errorf("the boundary's size = %d, want the file's %d bytes",
 					boundary.Bytes, completeSize+int64(len(fragment)))
 			}
-			if boundary.RecordsEndBytes != completeSize || boundary.UnpublishedTailBytes != int64(len(fragment)) {
-				t.Errorf("the boundary = %+v, want its records to end at byte %d with the %d-byte unfinished "+
-					"record unpublished", boundary, completeSize, len(fragment))
+			if boundary.RecordOffsets != SourceBoundaryRecordsClaimed ||
+				boundary.TerminatedRecordsEndBytes != completeSize ||
+				boundary.UnterminatedTailBytes != int64(len(fragment)) {
+				t.Errorf("the boundary = %+v, want its terminated records to end at byte %d with the "+
+					"%d-byte unterminated record after them", boundary, completeSize, len(fragment))
+			}
+			if boundary.ReadCoverage != SourceBoundaryCoverageVerified || boundary.ReadBytes != boundary.Bytes {
+				t.Errorf("the boundary = %+v, want the read's own snapshot to be the file it measured",
+					boundary)
 			}
 			if boundary.SHA256 != sha256Of(t, mustRead(t, sourcePath)) {
 				t.Errorf("the boundary digests %s, want the file's own bytes", boundary.SHA256)
 			}
-			if warning := strings.Join(captured.Warnings, " "); !strings.Contains(warning, "unfinished record") ||
-				!strings.Contains(warning, "converting again") {
-				t.Errorf("warnings = %v, want one naming the unfinished record and the way to carry it",
-					captured.Warnings)
+			// The warning channel names the bytes and the remedy, and it does not claim the record was left
+			// out of the conversion: whether the read carried an unterminated record is the read's own
+			// answer, and this file's reader (either accepted one) carries a record it can read whole.
+			warning := strings.Join(captured.Warnings, " ")
+			if !strings.Contains(warning, "hold no line feed") || !strings.Contains(warning, "converting again") {
+				t.Errorf("warnings = %v, want one naming the unterminated record and the way to read it "+
+					"finished", captured.Warnings)
+			}
+			for _, forbidden := range []string{"not part of this conversion", "unpublished", "are not part"} {
+				if strings.Contains(warning, forbidden) {
+					t.Errorf("warnings = %v, want no claim that the record was left out of the conversion "+
+						"(%q)", captured.Warnings, forbidden)
+				}
 			}
 			if captured.Installation.SourceCheckState != SourceCheckUnchanged {
 				t.Errorf("source check = %q (%s), want the source reported unchanged: reading a session must "+
@@ -267,25 +300,223 @@ func TestUnpublishedSourceTailIsBoundaryedAndNeverPublished(t *testing.T) {
 	}
 }
 
+// TestContinueCarriesACompleteRecordThatHasNoLineFeed is the contradiction the review measured, pinned in
+// both directions: a complete record without its final line feed is a record both inherited readers read
+// (internal/parser's codex_cursor_test.go pins that for Codex; the Claude reader processes a valid
+// unterminated line), so the conversion must carry its dialogue -- while the boundary may state the byte
+// fact (the file ends without a line feed) and must not claim the record was left out.
+//
+// The two conversions differ in one byte of the source: the committed growth fragment as committed, and the
+// same fragment with its last byte (its line feed) removed. Their conversations must be the same
+// conversation, and only the second boundary may say the file's last bytes are an unterminated record.
+func TestContinueCarriesACompleteRecordThatHasNoLineFeed(t *testing.T) {
+	fixture := fixturePath(t, filepath.Join("claude", "-home-user-code-example-api",
+		claudeFixtureRef.ID+".jsonl"))
+	destination := filepath.Join("-home-user-code-example-api", claudeFixtureRef.ID+".jsonl")
+	fragment := growthFragment(t, "claude-complete-turn.jsonl")
+	if !strings.HasSuffix(string(fragment), "\n") {
+		t.Fatalf("the committed fragment %s does not end at a line feed: this case needs one to remove",
+			"claude-complete-turn.jsonl")
+	}
+	// The dialogue the fragment adds, read the way the case below reads an unterminated one: the fragment's
+	// own text field, never by parsing it as a record.
+	addedText := unfinishedRecordText(t, "claude-complete-turn.jsonl")
+
+	convert := func(grow func(path string) int64) (ContinueResult, string) {
+		t.Helper()
+		cfg := fixtureConfig(t)
+		cfg, sourcePath := sourceFixtureCopy(t, cfg, parser.AgentClaude, fixture, destination)
+		complete := mustSize(t, sourcePath)
+		if grown := grow(sourcePath); grown <= complete {
+			t.Fatalf("the grown source is %d bytes, want more than the %d-byte fixture", grown, complete)
+		}
+		return continueRefInto(t, cfg, t.TempDir(), TargetCodex, claudeFixtureRef), sourcePath
+	}
+
+	withFeed, feedPath := convert(func(path string) int64 {
+		return appendGrowth(t, path, "claude-complete-turn.jsonl")
+	})
+	noFeed, noFeedPath := convert(func(path string) int64 {
+		return appendGrowthBytes(t, path, fragment[:len(fragment)-1])
+	})
+
+	// The fragment holds more than one record, each terminated by its own line feed: removing the last byte
+	// leaves only the fragment's last record unterminated, and the file's terminated records end after the
+	// one before it.
+	withoutLastFeed := fragment[:len(fragment)-1]
+	lastFeed := strings.LastIndex(string(withoutLastFeed), "\n")
+	if lastFeed < 0 {
+		t.Fatalf("the committed fragment %s holds no line feed but its last: this case needs one to keep",
+			"claude-complete-turn.jsonl")
+	}
+	wantTail := int64(len(withoutLastFeed) - lastFeed - 1)
+
+	feedBoundary := boundaryOf(t, withFeed)
+	noFeedBoundary := boundaryOf(t, noFeed)
+	sizeWithFeed := mustSize(t, feedPath)
+	sizeWithoutFeed := mustSize(t, noFeedPath)
+	if feedBoundary.UnterminatedTailBytes != 0 || feedBoundary.Bytes != sizeWithFeed {
+		t.Errorf("the fragment-as-committed boundary = %+v, want a %d-byte file with nothing unterminated",
+			feedBoundary, sizeWithFeed)
+	}
+	if noFeedBoundary.Bytes != sizeWithoutFeed ||
+		noFeedBoundary.TerminatedRecordsEndBytes != sizeWithoutFeed-wantTail ||
+		noFeedBoundary.UnterminatedTailBytes != wantTail {
+		t.Errorf("the fragment-without-its-line-feed boundary = %+v, want the terminated records to end at "+
+			"byte %d with its last %d byte(s) unterminated",
+			noFeedBoundary, sizeWithoutFeed-wantTail, wantTail)
+	}
+	// What the record is and what the conversion did with it: read in both cases, and written into both
+	// target documents. A boundary that called the unterminated record unpublished while the conversion
+	// carried it would be the defect this case exists for.
+	if noFeed.Source == nil || withFeed.Source == nil {
+		t.Fatalf("a conversion reported no source report: %+v / %+v", noFeed.Source, withFeed.Source)
+	}
+	if noFeed.Source.Counts.Messages != withFeed.Source.Counts.Messages ||
+		noFeed.Conversion.Carried.Messages != withFeed.Conversion.Carried.Messages {
+		t.Errorf("the record without its line feed read as %d message(s) and carried %d, against %d and %d "+
+			"with it: both readers read a complete unterminated record",
+			noFeed.Source.Counts.Messages, noFeed.Conversion.Carried.Messages,
+			withFeed.Source.Counts.Messages, withFeed.Conversion.Carried.Messages)
+	}
+	if !strings.Contains(string(mustRead(t, noFeed.Installation.Path)), addedText) {
+		t.Errorf("the installed session does not hold %q, the dialogue of the record the file had not "+
+			"terminated; the read carries it", addedText)
+	}
+	if warning := strings.Join(noFeed.Warnings, " "); strings.Contains(warning, "not part of this conversion") {
+		t.Errorf("warnings = %v, want no claim that the carried record was left out of the conversion",
+			noFeed.Warnings)
+	}
+}
+
+// TestContinueFromACompressedCodexSourceClaimsNoRecordOffsets pins the record-offset gate's second half end
+// to end: Codex reads its own compressed rollouts (internal/parser decompresses them and refuses any offset
+// into the compressed bytes), so a conversion of one carries the decoded history while the boundary states
+// the file's bytes and digest and claims no record offset for them. An offset found by scanning such a file
+// for line feeds would be an arbitrary byte, and the bytes after it no record at all.
+func TestContinueFromACompressedCodexSourceClaimsNoRecordOffsets(t *testing.T) {
+	fixture := fixturePath(t, filepath.Join("codex", "2026", "05", "04",
+		"rollout-2026-05-04T09-15-00-"+codexFixtureRef.ID+".jsonl"))
+	rollout := "rollout-2026-05-04T09-15-00-" + codexFixtureRef.ID + ".jsonl"
+	destination := filepath.Join("2026", "05", "04", rollout)
+
+	plainCfg := fixtureConfig(t)
+	plainCfg, _ = sourceFixtureCopy(t, plainCfg, parser.AgentCodex, fixture, destination)
+	plainResult := continueRefInto(t, plainCfg, t.TempDir(), TargetClaude, codexFixtureRef)
+
+	cfg := fixtureConfig(t)
+	cfg, compressedPath := compressedCodexFixtureCopy(t, cfg, fixture,
+		filepath.Join("2026", "05", "04", strings.TrimSuffix(rollout, ".jsonl")+".jsonl.zst"))
+	before := mustRead(t, compressedPath)
+	result := continueRefInto(t, cfg, t.TempDir(), TargetClaude, codexFixtureRef)
+
+	if result.Conversion.ReadFrom != "source" {
+		t.Fatalf("read_from = %q, want the compressed rollout read from its own file", result.Conversion.ReadFrom)
+	}
+	if result.Source == nil || plainResult.Source == nil {
+		t.Fatalf("a conversion reported no source report: %+v / %+v", result.Source, plainResult.Source)
+	}
+	// The decoded history was carried: the same conversation the plain rollout of the same bytes produces.
+	if result.Source.Counts.Messages != plainResult.Source.Counts.Messages ||
+		result.Conversion.Carried.Messages != plainResult.Conversion.Carried.Messages {
+		t.Errorf("the compressed rollout read %d message(s) and carried %d, the plain one %d and %d: the "+
+			"reader decodes the compressed file, so the two must agree",
+			result.Source.Counts.Messages, result.Conversion.Carried.Messages,
+			plainResult.Source.Counts.Messages, plainResult.Conversion.Carried.Messages)
+	}
+
+	boundary := boundaryOf(t, result)
+	if boundary.Bytes != int64(len(before)) || boundary.SHA256 != sha256Of(t, before) {
+		t.Errorf("boundary = %+v, want the compressed file's own %d bytes and digest", boundary, len(before))
+	}
+	if boundary.RecordOffsets != SourceBoundaryRecordsNotClaimed ||
+		boundary.RecordOffsetsDetail != recordOffsetsNotText {
+		t.Errorf("boundary = %+v, want the record offsets withheld because the file's own bytes are a "+
+			"container of the records (%s)", boundary, recordOffsetsNotText)
+	}
+	if boundary.TerminatedRecordsEndBytes != 0 || boundary.UnterminatedTailBytes != 0 {
+		t.Errorf("boundary = %+v, want no record offset and no unterminated record claimed for a compressed "+
+			"container", boundary)
+	}
+	// The file's own bytes are still what they are, and the read's own snapshot of them is the file: the two
+	// answers the offsets are withheld *for* are the two a caller compares two conversions by.
+	if boundary.ReadCoverage != SourceBoundaryCoverageVerified || boundary.ReadBytes != int64(len(before)) {
+		t.Errorf("boundary = %+v, want the read's own snapshot to be the file it measured", boundary)
+	}
+	if warning := strings.Join(result.Warnings, " "); strings.Contains(warning, "hold no line feed") ||
+		strings.Contains(warning, "unfinished record") {
+		t.Errorf("a compressed source warned about an unterminated record: %v", result.Warnings)
+	}
+	if result.Installation.SourceCheckState != SourceCheckUnchanged {
+		t.Errorf("source check = %q (%s), want the source reported unchanged",
+			result.Installation.SourceCheckState, result.Installation.Detail)
+	}
+	if after := mustRead(t, compressedPath); string(after) != string(before) {
+		t.Errorf("the compressed source file changed while it was converted (%d bytes, was %d)",
+			len(after), len(before))
+	}
+}
+
 // TestSourceBoundaryOfFileStatesTheRecordOffsets pins the pass itself, byte by byte: a file whose last line
-// is not terminated has its records ending at the last line feed, a file with no line feed at all has no
-// complete record in it, and an empty file has neither.
+// is not terminated has its terminated records ending at the last line feed, a file with no line feed at all
+// has no terminated record in it, and an empty file has neither. It also pins the two ways the offsets are
+// withheld -- a provider that declares no such source, and a file whose own bytes cannot be that source
+// (a compressed container of the records) -- because an offset found by scanning such a file for line feeds
+// is not a record boundary and the bytes after it are not an unterminated record.
 func TestSourceBoundaryOfFileStatesTheRecordOffsets(t *testing.T) {
+	// A transcript whose multi-byte rune the pass's own 32 KiB read buffer cuts in half: the rune's lead
+	// byte is the buffer's last byte, so only a validator that carries it to the next chunk reads this
+	// file as the text it is.
+	splitRune := "{\"x\":\"" + strings.Repeat("x", 32<<10-7) + "é\"}\n"
 	for _, testCase := range []struct {
 		name            string
 		content         string
 		recordsAreLines bool
+		wantClaim       string
+		wantDetail      string
 		wantSize        int64
 		wantRecordsEnd  int64
 		wantTail        int64
 	}{
-		{"two complete lines", "{\"a\":1}\n{\"b\":2}\n", true, 16, 16, 0},
-		{"an unfinished last line", "{\"a\":1}\n{\"b\":", true, 13, 8, 5},
-		{"no line feed at all", "{\"a\":1}", true, 7, 0, 7},
-		{"an empty file", "", true, 0, 0, 0},
-		// A source whose records are not the lines a harness appends: the file's own bytes are still
-		// measured, and no record boundary is claimed for them.
-		{"a source that is not line-recorded", "{\"a\":1}\n{\"b\":", false, 13, 0, 0},
+		{
+			name: "two complete lines", content: "{\"a\":1}\n{\"b\":2}\n", recordsAreLines: true,
+			wantClaim: SourceBoundaryRecordsClaimed, wantSize: 16, wantRecordsEnd: 16, wantTail: 0,
+		},
+		{
+			name: "an unterminated last line", content: "{\"a\":1}\n{\"b\":", recordsAreLines: true,
+			wantClaim: SourceBoundaryRecordsClaimed, wantSize: 13, wantRecordsEnd: 8, wantTail: 5,
+		},
+		{
+			name: "a complete record without its line feed", content: "{\"a\":1}\n{\"b\":2}", recordsAreLines: true,
+			wantClaim: SourceBoundaryRecordsClaimed, wantSize: 15, wantRecordsEnd: 8, wantTail: 7,
+		},
+		{
+			name: "no line feed at all", content: "{\"a\":1}", recordsAreLines: true,
+			wantClaim: SourceBoundaryRecordsClaimed, wantSize: 7, wantRecordsEnd: 0, wantTail: 7,
+		},
+		{
+			name: "an empty file", content: "", recordsAreLines: true,
+			wantClaim: SourceBoundaryRecordsClaimed,
+		},
+		{
+			name: "a rune the read buffer splits", content: splitRune, recordsAreLines: true,
+			wantClaim: SourceBoundaryRecordsClaimed,
+			wantSize:  int64(len(splitRune)), wantRecordsEnd: int64(len(splitRune)),
+		},
+		{
+			// A provider that declares no appended-line source: the file's own bytes are still measured,
+			// and no record boundary is claimed for them.
+			name: "a source that is not declared line-recorded", content: "{\"a\":1}\n{\"b\":",
+			wantClaim: SourceBoundaryRecordsNotClaimed, wantDetail: recordOffsetsNotDeclared, wantSize: 13,
+		},
+		{
+			// The representation half of the gate: a zstd frame's own header is not text, so this file
+			// cannot be a transcript of lines whatever its provider declares (a Codex .jsonl.zst rollout).
+			name:            "a compressed container of the records",
+			content:         string([]byte{0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x0A, 0x24, 0x00}) + "{\"a\":1}\n",
+			recordsAreLines: true,
+			wantClaim:       SourceBoundaryRecordsNotClaimed, wantDetail: recordOffsetsNotText, wantSize: 16,
+		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "session.jsonl")
@@ -305,15 +536,24 @@ func TestSourceBoundaryOfFileStatesTheRecordOffsets(t *testing.T) {
 			if boundary.SHA256 != sha256Of(t, mustRead(t, path)) {
 				t.Errorf("sha256 = %s, want the file's own digest", boundary.SHA256)
 			}
-			if boundary.RecordsAreLines != testCase.recordsAreLines {
-				t.Errorf("records_are_lines = %v, want %v", boundary.RecordsAreLines, testCase.recordsAreLines)
+			if boundary.RecordOffsets != testCase.wantClaim {
+				t.Errorf("record_offsets = %q, want %q", boundary.RecordOffsets, testCase.wantClaim)
 			}
-			if boundary.RecordsEndBytes != testCase.wantRecordsEnd {
-				t.Errorf("records_end = %d, want %d", boundary.RecordsEndBytes, testCase.wantRecordsEnd)
+			if boundary.RecordOffsetsDetail != testCase.wantDetail {
+				t.Errorf("record_offsets_detail = %q, want %q", boundary.RecordOffsetsDetail, testCase.wantDetail)
 			}
-			if boundary.UnpublishedTailBytes != testCase.wantTail {
-				t.Errorf("unpublished tail = %d, want %d",
-					boundary.UnpublishedTailBytes, testCase.wantTail)
+			if boundary.TerminatedRecordsEndBytes != testCase.wantRecordsEnd {
+				t.Errorf("terminated_records_end = %d, want %d",
+					boundary.TerminatedRecordsEndBytes, testCase.wantRecordsEnd)
+			}
+			if boundary.UnterminatedTailBytes != testCase.wantTail {
+				t.Errorf("unterminated tail = %d, want %d",
+					boundary.UnterminatedTailBytes, testCase.wantTail)
+			}
+			// The pass answers nothing about the read: those two answers are filled from the read's own
+			// record of the file it opened (takeSourceBoundary), never by a file scan.
+			if boundary.ReadBytes != 0 || boundary.ReadCoverage != "" || boundary.ReadCoverageDetail != "" {
+				t.Errorf("boundary = %+v, want no read-coverage claim from the file's bytes alone", boundary)
 			}
 		})
 	}
@@ -325,6 +565,42 @@ func TestSourceBoundaryOfFileStatesTheRecordOffsets(t *testing.T) {
 		t.Error("a boundary was reported for a file that is not there")
 	} else if !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("err = %v, want the file error itself (the file is not there)", err)
+	}
+}
+
+// TestTextStreamCarriesSplitRunes pins the validator the record-offset gate's second half rests on: bytes
+// are text until a sequence that no rune can complete them to, a rune a chunk boundary cuts in half is
+// decided by the chunk that completes it rather than by the one that begins it, and a file that ends inside
+// a rune is not text at all.
+func TestTextStreamCarriesSplitRunes(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		chunks []string
+		want   bool
+	}{
+		{"ascii", []string{"{\"a\":1}\n", "{\"b\":2}\n"}, true},
+		{"a rune split across chunks", []string{"{\"a\":\"é", "\"}"}, true},
+		{"a four-byte rune split across chunks", []string{"a\U0001F600", "b"}, true},
+		{"a rune completed one byte at a time", []string{"a", "\xF0\x9F", "\x98", "\x80"}, true},
+		{"an encoded rune error", []string{"\uFFFD"}, true},
+		{"a stray continuation byte", []string{"{\"a\":1}", "\x80"}, false},
+		{"a zstd frame header", []string{"\x28\xB5\x2F\xFD"}, false},
+		{"a rune no chunk completes", []string{"\xE2\x82", "x"}, false},
+		{"a four-byte rune cut to three bytes", []string{"\xF0\x9F\x98", "x"}, false},
+		{"a file that ends inside a rune", []string{"a", "\xF0\x9F\x98"}, false},
+		{"a file that ends inside a two-byte rune", []string{"é"[0:1]}, false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			stream := textStream{valid: true}
+			for _, chunk := range testCase.chunks {
+				stream.write([]byte(chunk))
+			}
+			// The pass says so too, once the file has no more bytes (sourceBoundaryOfFile).
+			stream.done()
+			if stream.valid != testCase.want {
+				t.Errorf("text = %v, want %v", stream.valid, testCase.want)
+			}
+		})
 	}
 }
 
@@ -366,9 +642,75 @@ func TestTakeSourceBoundaryAnswersTheReadsThatHaveNoFileToMeasure(t *testing.T) 
 	}
 }
 
-// TestBoundaryWarningsNameAnUnfinishedRecord pins the warning half: a tail nobody measured is not warned
-// about, and a measured one is named with both offsets and the remedy the goal states.
-func TestBoundaryWarningsNameAnUnfinishedRecord(t *testing.T) {
+// TestTakeSourceBoundaryReportsAFileThatMovedWhileItWasRead pins the state a mid-read growth leaves behind,
+// at the seam where it is visible: the read's own record of the file it opened is smaller than the file by
+// the time the boundary pass measures it, so the boundary states the file's bytes and says the conversion's
+// coverage of them is not established -- instead of attributing the conversation to bytes it may never have
+// read while the source comparison reports the file unchanged.
+//
+// A conversion cannot reach this state end to end without racing its own read (the parse runs inside
+// Continue, and a case that appended to the file while it ran would be a flake rather than a case), so the
+// state is produced here exactly as the race leaves it, and the end-to-end half is the repeated-conversion
+// case's assertion that a read which did keep up reports `read_coverage: verified` with `read_bytes` equal
+// to the file's size.
+func TestTakeSourceBoundaryReportsAFileThatMovedWhileItWasRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	// What the read recorded for the file when it opened it, and the file the boundary pass then measures:
+	// the second half of the file was appended while the read was reading it.
+	const readBytes = 8
+	whole := "{\"a\":1}\n{\"b\":2}\n"
+	if err := os.WriteFile(path, []byte(whole), 0o600); err != nil {
+		t.Fatalf("writing the source: %v", err)
+	}
+	conversation := Conversation{Source: SourceIdentity{
+		Provider:   "claude",
+		SourcePath: path,
+		FileSize:   readBytes,
+	}}
+
+	boundary, err := takeSourceBoundary(NewSourceReader(fixtureConfig(t)), conversation, "source")
+	if err != nil {
+		t.Fatalf("taking the boundary: %v", err)
+	}
+	if boundary.Bytes != int64(len(whole)) || boundary.SHA256 != sha256Of(t, mustRead(t, path)) {
+		t.Errorf("boundary = %+v, want the file's own %d bytes and digest", boundary, len(whole))
+	}
+	if boundary.ReadBytes != readBytes || boundary.ReadCoverage != SourceBoundaryCoverageUnverified {
+		t.Errorf("boundary = %+v, want the read's own snapshot (%d byte(s)) reported as one this file is not",
+			boundary, readBytes)
+	}
+	for _, want := range []string{"8 byte(s)", "the file holds 16", "not established"} {
+		if !strings.Contains(boundary.ReadCoverageDetail, want) {
+			t.Errorf("read_coverage_detail = %q, want it to name %q", boundary.ReadCoverageDetail, want)
+		}
+	}
+	// The offsets stay what they are -- byte facts about the file this block reports -- and the coverage
+	// state is what says the conversion is not shown to have covered them.
+	if boundary.RecordOffsets != SourceBoundaryRecordsClaimed ||
+		boundary.TerminatedRecordsEndBytes != int64(len(whole)) || boundary.UnterminatedTailBytes != 0 {
+		t.Errorf("boundary = %+v, want the file's own record structure stated beside the coverage answer",
+			boundary)
+	}
+	warnings := boundaryWarnings(&boundary)
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want one naming the file that moved while it was read", warnings)
+	}
+	for _, want := range []string{"8 byte(s) read", "16 byte(s) now", "not established", "converting again"} {
+		if !strings.Contains(warnings[0], want) {
+			t.Errorf("the warning %q does not name %q", warnings[0], want)
+		}
+	}
+	// The pass reads the source and writes nothing to it.
+	if got := string(mustRead(t, path)); got != whole {
+		t.Errorf("the source file is now %q, want the bytes it had (%q)", got, whole)
+	}
+}
+
+// TestBoundaryWarningsNameTheUnterminatedRecordAndAMovedFile pins the warning half: a tail nobody measured
+// and a file nobody compared are not warned about, a measured tail is named with both offsets and the
+// remedy the goal states, and a file that moved while it was read is named in the same channel -- the one a
+// caller reading only the warnings must not have to infer from a field.
+func TestBoundaryWarningsNameTheUnterminatedRecordAndAMovedFile(t *testing.T) {
 	if warnings := boundaryWarnings(nil); len(warnings) != 0 {
 		t.Errorf("a report with no boundary warned: %v", warnings)
 	}
@@ -376,20 +718,56 @@ func TestBoundaryWarningsNameAnUnfinishedRecord(t *testing.T) {
 	if warnings := boundaryWarnings(notTaken); len(warnings) != 0 {
 		t.Errorf("a boundary that was not taken warned: %v", warnings)
 	}
-	complete := &SourceBoundary{State: SourceBoundaryTaken, Bytes: 1792, RecordsEndBytes: 1792}
-	if warnings := boundaryWarnings(complete); len(warnings) != 0 {
-		t.Errorf("a file with nothing unpublished warned: %v", warnings)
+	complete := &SourceBoundary{
+		State: SourceBoundaryTaken, Bytes: 1792, TerminatedRecordsEndBytes: 1792,
+		ReadBytes: 1792, ReadCoverage: SourceBoundaryCoverageVerified,
 	}
+	if warnings := boundaryWarnings(complete); len(warnings) != 0 {
+		t.Errorf("a file with nothing unterminated and no move warned: %v", warnings)
+	}
+
 	warnings := boundaryWarnings(&SourceBoundary{
-		State: SourceBoundaryTaken, Bytes: 1835, RecordsEndBytes: 1792, UnpublishedTailBytes: 43,
+		State: SourceBoundaryTaken, Bytes: 1835, TerminatedRecordsEndBytes: 1792,
+		UnterminatedTailBytes: 43,
 	})
 	if len(warnings) != 1 {
 		t.Fatalf("warnings = %v, want one", warnings)
 	}
-	for _, want := range []string{"unfinished record", "1835", "1792", "43 byte(s)", "converting again"} {
+	for _, want := range []string{"hold no line feed", "1835", "1792", "43 byte(s)", "converting again"} {
 		if !strings.Contains(warnings[0], want) {
 			t.Errorf("the warning %q does not name %q", warnings[0], want)
 		}
+	}
+	for _, forbidden := range []string{"not part of this conversion", "unpublished"} {
+		if strings.Contains(warnings[0], forbidden) {
+			t.Errorf("the warning %q claims the record was left out of the conversion (%q)",
+				warnings[0], forbidden)
+		}
+	}
+
+	// The read's own snapshot disagrees with the file it measured: the run stopped covering bytes it can
+	// still name, and the channel a caller skims must say so.
+	moved := boundaryWarnings(&SourceBoundary{
+		State: SourceBoundaryTaken, Bytes: 1835, ReadBytes: 1792,
+		ReadCoverage: SourceBoundaryCoverageUnverified, TerminatedRecordsEndBytes: 1835,
+	})
+	if len(moved) != 1 {
+		t.Fatalf("warnings = %v, want one for the file that moved while it was read", moved)
+	}
+	for _, want := range []string{"1792 byte(s) read", "1835 byte(s) now", "not established", "converting again"} {
+		if !strings.Contains(moved[0], want) {
+			t.Errorf("the warning %q does not name %q", moved[0], want)
+		}
+	}
+
+	// Both answers at once: the file moved and its new bytes end in an unterminated record.
+	both := boundaryWarnings(&SourceBoundary{
+		State: SourceBoundaryTaken, Bytes: 1835, ReadBytes: 1792,
+		ReadCoverage:              SourceBoundaryCoverageUnverified,
+		TerminatedRecordsEndBytes: 1792, UnterminatedTailBytes: 43,
+	})
+	if len(both) != 2 {
+		t.Errorf("warnings = %v, want one for each answer", both)
 	}
 }
 
@@ -471,18 +849,19 @@ func TestConversionOfAWholeFileJSONSourceClaimsNoRecordBoundary(t *testing.T) {
 		t.Errorf("read %d message(s), want the document's own 2", result.Source.Counts.Messages)
 	}
 	boundary := boundaryOf(t, result)
-	if boundary.RecordsAreLines {
+	if boundary.RecordOffsets != SourceBoundaryRecordsNotClaimed ||
+		boundary.RecordOffsetsDetail != recordOffsetsNotDeclared {
 		t.Errorf("boundary = %+v, want no record boundary claimed: the source is one JSON document, not a "+
 			"transcript of appended line records", boundary)
 	}
 	if boundary.Bytes != int64(len(document)) || boundary.SHA256 != sha256Of(t, mustRead(t, sourcePath)) {
 		t.Errorf("boundary = %+v, want the file's own %d bytes and digest", boundary, len(document))
 	}
-	if boundary.RecordsEndBytes != 0 || boundary.UnpublishedTailBytes != 0 {
-		t.Errorf("boundary = %+v, want no record offset and no unpublished tail claimed", boundary)
+	if boundary.TerminatedRecordsEndBytes != 0 || boundary.UnterminatedTailBytes != 0 {
+		t.Errorf("boundary = %+v, want no record offset and no unterminated record claimed", boundary)
 	}
-	if warning := strings.Join(result.Warnings, " "); strings.Contains(warning, "unfinished record") {
-		t.Errorf("the conversion warned about an unfinished record in a complete file: %v", result.Warnings)
+	if warning := strings.Join(result.Warnings, " "); strings.Contains(warning, "hold no line feed") {
+		t.Errorf("the conversion warned about an unterminated record in a complete file: %v", result.Warnings)
 	}
 	if result.Installation.SourceCheckState != SourceCheckUnchanged {
 		t.Errorf("source check = %q (%s), want the source reported unchanged",
@@ -575,6 +954,56 @@ func mustRead(t *testing.T, path string) []byte {
 		t.Fatalf("reading %s: %v", path, err)
 	}
 	return data
+}
+
+// mustSize answers one file's size. It reads the file rather than trusting a run's own report of it.
+func mustSize(t *testing.T, path string) int64 {
+	t.Helper()
+	return int64(len(mustRead(t, path)))
+}
+
+// appendGrowthBytes appends exact bytes to a session file, for the case whose growth is a committed fragment
+// with something removed from it (the fragment's own last byte, when a case needs a record the file has not
+// terminated). It answers the grown file's size.
+func appendGrowthBytes(t *testing.T, path string, data []byte) int64 {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("opening %s to grow it: %v", path, err)
+	}
+	defer file.Close()
+	if _, err := file.Write(data); err != nil {
+		t.Fatalf("appending %d byte(s) to %s: %v", len(data), path, err)
+	}
+	return mustSize(t, path)
+}
+
+// compressedCodexFixtureCopy writes one Codex rollout's bytes compressed, under a provider root of its own
+// -- the representation Codex leaves behind for a rollout it has not appended to in a week, and the one its
+// own reader decodes (internal/parser's codex_rollout_open.go) -- and answers the configuration together
+// with the compressed file's path. The committed fixture never moves.
+func compressedCodexFixtureCopy(
+	t *testing.T, cfg config.Config, fixture, destination string,
+) (config.Config, string) {
+	t.Helper()
+	encoder, err := zstd.NewWriter(nil)
+	if err != nil {
+		t.Fatalf("building the zstd encoder: %v", err)
+	}
+	compressed := encoder.EncodeAll(mustRead(t, fixture), nil)
+	if err := encoder.Close(); err != nil {
+		t.Fatalf("closing the zstd encoder: %v", err)
+	}
+	root := t.TempDir()
+	copyPath := filepath.Join(root, destination)
+	if err := os.MkdirAll(filepath.Dir(copyPath), 0o700); err != nil {
+		t.Fatalf("creating the compressed rollout's directory: %v", err)
+	}
+	if err := os.WriteFile(copyPath, compressed, 0o600); err != nil {
+		t.Fatalf("writing the compressed rollout: %v", err)
+	}
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentCodex: {root}}
+	return cfg, copyPath
 }
 
 // sha256Of is an independent digest of bytes already read -- crypto/sha256 here rather than through the
