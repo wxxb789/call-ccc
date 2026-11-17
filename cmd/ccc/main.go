@@ -54,8 +54,9 @@ usage:
   and the result says which command resumes it (for Codex: CODEX_HOME=<dir> codex resume <session-id>;
   for Claude Code: cd <dir> && CLAUDE_CONFIG_DIR=<dir> claude --resume <session-id>; for Pi:
   cd <dir> && PI_CODING_AGENT_DIR=<dir> pi --session <session-id>; for Oh My Pi:
-  cd <dir> && PI_CODING_AGENT_DIR=<dir> omp --resume <session-id> — both of those harnesses find a
-  session through the directory they are run from), naming the data directory the session was installed
+  cd <dir> && PI_CODING_AGENT_DIR=<dir> omp --resume <session-id> — Claude Code and Pi find a session
+  through the directory they are run from, while Oh My Pi resolves an id from any directory and refuses
+  one whose recorded directory it cannot find), naming the data directory the session was installed
   into as well as the session itself. A Pi resume command names no provider and no model: a Pi session
   binds none for itself, and a provider label the source recorded is a source-side name the target home
   need not define. An Oh My Pi command names neither either, for the same reason -- but the session it

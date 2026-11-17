@@ -68,8 +68,11 @@ NATIVE_CHECK = load_native_check()
 
 
 def session_file(directory: Path, name: str, text: str) -> Path:
+    # Bytes rather than text: a text-mode write translates "\n" into the platform's own line separator
+    # (CRLF on Windows), and the cases below measure the file's own bytes -- the fixed-width title slot's
+    # length included -- so a translated line feed would break the reading they are about.
     path = directory / name
-    path.write_text(text, encoding="utf-8")
+    path.write_bytes(text.encode("utf-8"))
     return path
 
 
@@ -221,6 +224,35 @@ providers:
             self.assertEqual(role, f"{LOOPBACK}/model-one")
             written = (home / "models.yml").read_text(encoding="utf-8")
             self.assertNotIn("litellm.example.com", written)
+
+    def test_a_model_level_endpoint_with_a_credential_is_refused_whole(self):
+        # The provider's own baseUrl is loopback; the credential rides on a model entry's -- the other
+        # level OMP's own writer writes one at. The provider must be left out whole: `_seed_block`
+        # rewrites key values and drops headers, not URLs, so a filter that read only the provider's own
+        # line would copy this URL, credential and all, into the run's own home.
+        with tempfile.TemporaryDirectory() as scratch:
+            host = Path(scratch) / "host"
+            home = Path(scratch) / "home"
+            host.mkdir()
+            home.mkdir()
+            (host / "models.yml").write_text(f"""\
+providers:
+  model-level-endpoint:
+    baseUrl: http://127.0.0.1:4141/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    models:
+    - id: model-level-model
+      baseUrl: https://user:{USERINFO_SECRET}@api.example.com/v1
+""", encoding="utf-8")
+            seeded, left_out, role = self.seed(home, host)
+            self.assertEqual(seeded, [], f"seeded: {seeded}")
+            self.assertTrue(any(reason.startswith("model-level-endpoint") for reason in left_out), left_out)
+            self.assertEqual(role, "")
+            self.assertFalse((home / "models.yml").exists(),
+                             "a refused provider's definition was written anyway")
+            self.assertFalse((home / "config.yml").read_text(encoding="utf-8").find("default") >= 0,
+                             "a model role was written for a refused provider")
 
     def test_an_ipv6_loopback_endpoint_is_usable_for_the_callers_own_model(self):
         with tempfile.TemporaryDirectory() as scratch:
@@ -410,8 +442,11 @@ class ReportedInvocationCases(unittest.TestCase):
     def test_a_quoted_assignment_is_not_read_as_the_invocation(self):
         home = self.HOME
         tree = NATIVE_CHECK.omp_session_tree(home, self.PROJECT_DIR)
-        quoted = (f"cd '{self.WORKSPACE}' && '{NATIVE_CHECK.OMP_HOME_ENV}={home}' omp --resume "
-                  f"{self.SESSION}")
+        # Both assignments are quoted: with only the home one quoted the line also names no sessions
+        # tree, and the case could not tell the spelling rule from the missing word. This line carries
+        # every word of the right invocation, so the spelling is the only thing that refuses it.
+        quoted = (f"cd '{self.WORKSPACE}' && '{NATIVE_CHECK.OMP_HOME_ENV}={home}' "
+                  f"'{NATIVE_CHECK.OMP_SESSION_DIR_ENV}={tree}' omp --resume {self.SESSION}")
         self.assertFalse(NATIVE_CHECK.reported_invocation(
             quoted, self.WORKSPACE, home, NATIVE_CHECK.OMP_HOME_ENV, ["omp", "--resume", self.SESSION],
             session_dir_env=NATIVE_CHECK.OMP_SESSION_DIR_ENV, session_dir=tree))

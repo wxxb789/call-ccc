@@ -38,8 +38,11 @@ root but *offers to fork* a session it finds only under another project rather t
 place; and Oh My Pi resolves an id from any directory but refuses a session whose *recorded* working
 directory it cannot find, and files sessions under its own spelling of it (measured: a directory under
 the temporary tree becomes `-tmp…`, one under the home `-…`, and only a path outside both keeps Pi's
-`--…--` form) — which is why no printed resume line is a resume without its `cd`, and why the Oh My Pi
-one also names the directory that holds the file.
+`--…--` form). The `cd` a printed line carries is therefore about the session rather than only about the
+lookup: where the harness resolves an id from the directory it is run in, the `cd` is what makes the
+pasted line find this session, and for all three of them the continued conversation runs in that
+directory — while the Oh My Pi line additionally names the directory that holds the file, because naming
+the `sessions` root above it answers that no such session is installed.
 
 `ccc inspect` locates a session with the provider's own reader, parses it, and reports its identity,
 agent, source, conversation shape (counts, tool calls, compaction boundaries, malformed lines) and —

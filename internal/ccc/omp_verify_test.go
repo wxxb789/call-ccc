@@ -181,8 +181,9 @@ func TestOMPYAMLScalarQuotesExoticValues(t *testing.T) {
 }
 
 // fakeOMPRPC stands in for the harness's RPC mode. Its run signature is the OMP runner's own -- a data
-// directory and no sessions tree -- and it answers the protocol text a real run writes, so the check's
-// reader is exercised rather than stubbed around.
+// directory and the sessions tree the invocation names, out of which the fake reads the copied session
+// -- and it answers the protocol text a real run writes, so the check's reader is exercised rather than
+// stubbed around.
 type fakeOMPRPC struct {
 	installed         string
 	roles             []string
@@ -688,6 +689,18 @@ func TestVerifyOMPResumeRequiresAnAnswerAndGrowth(t *testing.T) {
 		}
 		if call.cwd != cwd {
 			t.Errorf("the turn ran in %q, want the session's own working directory %q", call.cwd, cwd)
+		}
+		// The printed environment too, both halves: the data directory and the directory inside it that
+		// holds the session's file, whose loss a run against a caller's leftover setting would hide.
+		if call.home != filepath.Dir(installed) {
+			t.Errorf("the turn ran with data directory %q, want the printed %q",
+				call.home, filepath.Dir(installed))
+		}
+		wantSessionDir := filepath.Join(call.home, ompSessionsSubdir, filepath.Base(filepath.Dir(installed)))
+		if call.sessionDir != wantSessionDir {
+			t.Errorf("the turn ran in sessions tree %q, want the printed %q: naming the `sessions` root "+
+				"above the project directory answers that no such session is installed",
+				call.sessionDir, wantSessionDir)
 		}
 		if !strings.Contains(verification.Command, "--resume") {
 			t.Errorf("command = %q, want the printed invocation", verification.Command)

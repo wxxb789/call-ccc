@@ -146,11 +146,11 @@ func TestResolveOMPHome(t *testing.T) {
 	if err != nil || fromCaller {
 		t.Errorf("default = (%q, %v, %v), want a directory this run did not create", byDefault, fromCaller, err)
 	}
-	if !strings.HasSuffix(byDefault, filepath.Join(".omp", "agent")) {
-		t.Errorf("default = %q, want it under the user's home as .omp/agent", byDefault)
-	}
-	if byDefault == defaultHome && err != nil {
-		t.Errorf("default home %q should not be an error", defaultHome)
+	// Exactly `<home>/.omp/agent` for the home this case set (both HOME and USERPROFILE, so the platform's
+	// own answer is the same on POSIX and Windows) rather than merely a path that ends that way: a build
+	// that resolved another home would pass a suffix check alone.
+	if byDefault != defaultHome {
+		t.Errorf("default = %q, want exactly %q", byDefault, defaultHome)
 	}
 }
 

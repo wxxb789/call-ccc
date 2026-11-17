@@ -2,6 +2,7 @@ package ccc
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -159,6 +160,62 @@ func TestOMPSessionRecordShape(t *testing.T) {
 	if assistants == 0 {
 		t.Fatal("the converted session holds no assistant record")
 	}
+}
+
+// TestOMPSessionStatesTheHomesModelOnARecordTheSourceLeftModelLess pins the OMP-only half of the required
+// per-record pair: the harness's request builder reads a non-empty `model` off every assistant record, and
+// the inherited read answers no model for a message that recorded none -- so the record carries the
+// harness's own configured model id beside the target home's provider, and the caveat's count states both
+// what travelled and what the target answered, so the id cannot be read as evidence of who wrote the words.
+func TestOMPSessionStatesTheHomesModelOnARecordTheSourceLeftModelLess(t *testing.T) {
+	conversation := piFixtureConversation()
+	// The first assistant message's own model goes missing: the read answers none for it, and the OMP
+	// writer is the family's one format that still has to state something.
+	conversation.Messages[1].Model = ""
+	session, err := ConvertToOMPSession(conversation, ompFixtureTargetOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	fallbacks, travelled := 0, 0
+	for index, entry := range ompEntries(t, session.Data) {
+		if entry.Type != piEntryMessage || entry.Role != piRoleAssistant {
+			continue
+		}
+		if entry.Provider != "home-proxy" {
+			t.Errorf("line %d's assistant record states provider %q, want the target home's own configured "+
+				"endpoint", index, entry.Provider)
+		}
+		switch entry.Model {
+		case "home-model":
+			fallbacks++
+		case "claude-sonnet-4-5":
+			travelled++
+		case "":
+			t.Errorf("line %d's assistant record states no model: measured, the harness fails to build the "+
+				"next request when one assistant record has none", index)
+		default:
+			t.Errorf("line %d's assistant record states model %q, want the model the source recorded or, "+
+				"for the record it recorded none for, the harness's own configured id", index, entry.Model)
+		}
+	}
+	if fallbacks != 1 || travelled != 1 {
+		t.Errorf("assistant models = %d answered by the target home, %d carried from the source; want one "+
+			"of each (the fixture's first assistant message records no model, its second records one)",
+			fallbacks, travelled)
+	}
+	for _, loss := range session.Losses {
+		if loss.Category != "message_model_attribution" {
+			continue
+		}
+		// The count is the records whose model travelled plus the records the target home answered for:
+		// dropping the fallback would leave the record model-less (caught above) and this count one short.
+		if loss.Count != 2 {
+			t.Errorf("message_model_attribution count = %d, want 2: the one source model that travelled and "+
+				"the one the target home answered with", loss.Count)
+		}
+		return
+	}
+	t.Error("the report carries no message_model_attribution entry")
 }
 
 // TestOMPSessionWithoutTheHomesAnswerRecordsNoBinding pins the dry-run shape and the report that goes with
@@ -330,11 +387,23 @@ func TestOMPSessionRefusesASourceWithoutAWorkingDirectory(t *testing.T) {
 // inside the home directory spells `-` + its home-relative path, and anything else uses the absolute
 // `--…--` spelling -- which is the only case where Pi's rule and OMP's agree.
 //
-// The base directories are passed in rather than read from this host: the rule has three branches and a
-// test that could only reach one of them on the machine it runs on would pin one third of it.
+// The base directories and every case's working directory are the host's own resolved spellings
+// (`filepath.Abs`): the rule resolves the working directory before comparing it, and on a platform whose
+// rooted paths carry a volume (Windows) a base left as `/tmp` has no relative spelling to the resolved
+// path at all -- the temporary and home branches would be unreachable there and every row would pin the
+// absolute branch. The base directories are still passed in rather than read from this host, because the
+// rule has three branches and a test that could only reach one of them on the machine it runs on would
+// pin one third of it.
 func TestOMPProjectDirMatchesOMPsOwnSpelling(t *testing.T) {
-	const home = "/home/example"
-	const tmp = "/tmp"
+	home := absHostPath(t, "/home/example")
+	tmp := absHostPath(t, "/tmp")
+	// The absolute branch spells the whole resolved path, so on a platform with a volume its name carries
+	// that too (a Windows drive): its expectation is built from the host-shaped path with this test's own
+	// spelling of the rule, and the drive-colon half -- which no POSIX path exercises -- is pinned
+	// literally below.
+	outside := absHostPath(t, "/srv/work/project")
+	runsOn := strings.NewReplacer("/", "-", `\`, "-", ":", "-")
+	outsideWant := "--" + runsOn.Replace(strings.TrimLeft(outside, `/\`)) + "--"
 	for _, testCase := range []struct {
 		name string
 		cwd  string
@@ -346,13 +415,19 @@ func TestOMPProjectDirMatchesOMPsOwnSpelling(t *testing.T) {
 		{"the home directory itself", "/home/example", "-"},
 		{"a directory under both, where the temporary one wins",
 			"/tmp/home-example/work", "-tmp-home-example-work"},
-		{"a directory outside both", "/srv/work/project", "--srv-work-project--"},
+		{"a directory outside both", outside, outsideWant},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			if got := ompProjectDirFor(testCase.cwd, home, tmp); got != testCase.want {
 				t.Errorf("ompProjectDirFor(%q) = %q, want %q", testCase.cwd, got, testCase.want)
 			}
 		})
+	}
+	// The drive colon's own row: the absolute branch replaces it like a separator, and a POSIX path never
+	// carries one for the table above to exercise.
+	if got := ompSeparatorSpelling(`C:\work\api`); got != "C--work-api" {
+		t.Errorf(`ompSeparatorSpelling(C:\work\api) = %q, want "C--work-api": every separator and the drive `+
+			"colon is spelled `-`", got)
 	}
 
 	// The rule is not Pi's, and the difference is what this route must not lose: for a working directory
@@ -362,10 +437,21 @@ func TestOMPProjectDirMatchesOMPsOwnSpelling(t *testing.T) {
 		t.Errorf("the OMP spelling equals Pi's (%q): measured, OMP computes its own shortened form for a "+
 			"working directory under the home or temporary directory", got)
 	}
-	if got := ompProjectDirFor("/srv/work/project", home, tmp); got != PiProjectDir("/srv/work/project") {
+	if got := ompProjectDirFor(outside, home, tmp); got != PiProjectDir(outside) {
 		t.Errorf("the outside-both spelling = %q, want Pi's own %q: that is the one branch the harnesses "+
-			"share", got, PiProjectDir("/srv/work/project"))
+			"share", got, PiProjectDir(outside))
 	}
+}
+
+// absHostPath resolves one spelled path the way the rule under test resolves a working directory, so a
+// case's base directories and its expected names agree about the host's own spelling of an absolute path.
+func absHostPath(t *testing.T, path string) string {
+	t.Helper()
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatalf("resolving %q: %v", path, err)
+	}
+	return absolute
 }
 
 // TestOMPTitleSlotLineIsAFixedWidthLine pins the line's width on its own, because it is the property the

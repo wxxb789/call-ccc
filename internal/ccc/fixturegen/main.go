@@ -896,7 +896,11 @@ func writeAll(root string, files map[string]string) {
 //     which the format's own documentation places outside the model context;
 //   - a `runtime` object on every entry the harness wrote.
 //
-// The strings are invented like every other fixture's, and each fixture's own fact appears in no other.
+// The strings are invented like every other fixture's, and the three conversations are the Pi fixtures'
+// own: the family's two members record the same invented sessions through their two record shapes --
+// which is what makes a family comparison meaningful -- so their words are named once in the shared
+// block above, and the ordinary fixture's retry-cap fact therefore appears in more than one of them.
+// What this block adds is OMP's own records around those conversations.
 const (
 	ompSessionID    = "01a1c338-9e4f-7c21-8f3d-2b6a05e1d7a4"
 	ompSessionCwd   = "/home/user/code/example-api"
@@ -916,14 +920,17 @@ const (
 	ompBranchSessionCwd   = "/home/user/code/archive"
 	ompBranchSessionStamp = "2026-05-07T08:30:00.000Z"
 
-	// The growth fragment's own entries: one further turn chained onto the committed session's last entry.
+	// The growth fragment's own entries: one further turn chained onto the committed session's last
+	// *message* entry -- the file's last entry is the harness's own `custom`/`session_exit` notice, which
+	// stands after this one and stays off the grown file's own walk, as recorded history rather than a
+	// turn the fragment continues.
 	ompGrowthUserID          = "f1e2d3c4"
 	ompGrowthAssistantID     = "0a9b8c7d"
 	ompGrowthStamp           = "2026-05-04T09:16:20.000Z"
 	ompGrowthAssistantStamp  = "2026-05-04T09:16:24.000Z"
 	ompGrowthMillis          = 1794938180000
 	ompGrowthAssistantMillis = 1794938184000
-	ompSessionLastEntryID    = "3f2e1d0c"
+	ompSessionLastMessageID  = "3f2e1d0c"
 
 	// The provider and model the fixture's records name, in OMP's one-string spelling for a session's own
 	// binding and as the pair a message carries.
@@ -1216,7 +1223,7 @@ func ompBranchSession() string {
 // fragment a turn appended to that session rather than to any session.
 func ompGrowthTurn() string {
 	return testjsonl.JoinJSONL(
-		marshal(ompEntryMap(ompGrowthUserID, ompSessionLastEntryID, ompGrowthStamp, map[string]any{
+		marshal(ompEntryMap(ompGrowthUserID, ompSessionLastMessageID, ompGrowthStamp, map[string]any{
 			"message": map[string]any{"role": "user", "content": growthQuestion, "timestamp": ompGrowthMillis},
 		})),
 		marshal(ompEntryMap(ompGrowthAssistantID, ompGrowthUserID, ompGrowthAssistantStamp, map[string]any{

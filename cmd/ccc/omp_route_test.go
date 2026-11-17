@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"go.kenn.io/agentsview/internal/ccc"
 )
 
 // ompFixtureRef is the committed Oh My Pi session, as the reference the CLI takes: the provider is the
@@ -28,6 +30,11 @@ func ompShellUnsafeHome(t *testing.T) string {
 func TestContinueToOMPConvertsInstallsAndReportsTheRoute(t *testing.T) {
 	isolatedEnvironment(t)
 	home := ompShellUnsafeHome(t)
+	// The directory OMP files the fixture's recorded working directory under, asked of OMP's own rule:
+	// the spelling's own literal cases (including the `--…--` outside-both form) are the route table's
+	// (`internal/ccc/omp_target_test.go`), while a literal here would be host-shaped -- on a platform whose
+	// rooted paths carry a volume, the absolute form spells that into the name too.
+	sessionsDir := filepath.Join(home, "sessions", ccc.OMPProjectDir("/home/user/code/example-api"))
 	sourcePath := filepath.Join(fixtureRoot(t), "claude", "-home-user-code-example-api",
 		"9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10.jsonl")
 	sourceBefore, err := os.ReadFile(sourcePath)
@@ -53,14 +60,12 @@ func TestContinueToOMPConvertsInstallsAndReportsTheRoute(t *testing.T) {
 	if document.Installation.State != "installed" {
 		t.Fatalf("installation = %+v, want the session installed", document.Installation)
 	}
-	// The project directory is OMP's own spelling, which for a working directory outside this host's home
-	// and temporary directory is the absolute `--…--` form -- the same one Pi computes. What matters is
-	// that the installer asks OMP's own rule rather than Pi's unconditionally: the route's own case
-	// covers the branches, and this one pins the file the CLI reported is really there.
-	if filepath.Dir(document.TargetSession.Path) != filepath.Join(home, "sessions",
-		"--home-user-code-example-api--") {
-		t.Errorf("installed under %s, want the project directory the working directory spells to",
-			filepath.Dir(document.TargetSession.Path))
+	// The installer asks OMP's own rule rather than Pi's unconditionally; the route table's case covers the
+	// branches, and this one pins the file the CLI reported is really there, under the directory that rule
+	// gives for the fixture's working directory.
+	if filepath.Dir(document.TargetSession.Path) != sessionsDir {
+		t.Errorf("installed under %s, want OMP's own spelling of the working directory (%s)",
+			filepath.Dir(document.TargetSession.Path), sessionsDir)
 	}
 	if _, err := os.Stat(document.TargetSession.Path); err != nil {
 		t.Errorf("the reported path %s is not there: %v", document.TargetSession.Path, err)
@@ -102,8 +107,7 @@ func TestContinueToOMPConvertsInstallsAndReportsTheRoute(t *testing.T) {
 	if document.TargetSession.ResumeEnvironment["PI_CODING_AGENT_DIR"] != home {
 		t.Errorf("resume environment = %v, want the data directory named", document.TargetSession.ResumeEnvironment)
 	}
-	if document.TargetSession.ResumeEnvironment["PI_CODING_AGENT_SESSION_DIR"] !=
-		filepath.Join(home, "sessions", "--home-user-code-example-api--") {
+	if document.TargetSession.ResumeEnvironment["PI_CODING_AGENT_SESSION_DIR"] != sessionsDir {
 		t.Errorf("resume environment = %v, want the directory holding the session's file named: naming the "+
 			"sessions root above it answers that no such session is installed",
 			document.TargetSession.ResumeEnvironment)
@@ -122,7 +126,7 @@ func TestContinueToOMPConvertsInstallsAndReportsTheRoute(t *testing.T) {
 	if after, err := os.ReadFile(sourcePath); err != nil || string(after) != string(sourceBefore) {
 		t.Errorf("the source fixture moved: %v", err)
 	}
-	if entries, err := os.ReadDir(filepath.Join(home, "sessions", "--home-user-code-example-api--")); err != nil {
+	if entries, err := os.ReadDir(sessionsDir); err != nil {
 		t.Fatalf("reading the target home: %v", err)
 	} else if len(entries) != 1 {
 		t.Errorf("the target home holds %d session(s), want exactly the one that was installed", len(entries))

@@ -101,8 +101,13 @@ func TestOMPFixtureCarriesTheHabitssOwnRecords(t *testing.T) {
 			t.Errorf("the read holds a system record (%+v), and this fixture records none", message)
 		}
 	}
-	if !conversation.Messages[1].DialogueProjected && conversation.Messages[1].Dialogue == "" {
-		t.Errorf("the read holds no dialogue for the fixture's first answer: %+v", conversation.Messages[1])
+	// The fixture's own words, projected out of its first answer's content blocks: the assertion is about
+	// the text a read can lose rather than about a shape, and the fixture's dialogue is asserted nowhere
+	// else. A read that answered an empty dialogue, or carried none, fails here.
+	if message := conversation.Messages[1]; !message.DialogueProjected ||
+		message.Dialogue != "I will look for the retry configuration." {
+		t.Errorf("the read holds %q (projected %v) as the fixture's first answer, want its own words (%+v)",
+			message.Dialogue, message.DialogueProjected, message)
 	}
 }
 

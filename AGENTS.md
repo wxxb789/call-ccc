@@ -73,9 +73,12 @@ with their exit codes and counts).
   model can leave the target unable to open the session at all. An Oh My Pi session **requires** a model binding its loader can
   resolve (`SessionModelRestoreError` otherwise), so `--to omp` records the target home's own configured
   `<provider>/<model>`, asked of the harness — never the source's — and every converted assistant record
-  states a non-empty `model` (the source's) beside a non-empty `provider` (that same target-side answer),
-  because the harness's request builder reads both on every assistant record and fails to build the next
-  request when either is missing. The file opens with the harness's own fixed-width (256-byte) title-slot
+  states a non-empty `model` beside a non-empty `provider`, because the harness's request builder reads
+  both on every assistant record and fails to build the next request when either is missing: the model is
+  the source's own where the read answered one and the target home's configured id where it did not, the
+  provider is the harness's own answer, and a run that asked the harness nothing (a dry run, a missing
+  binary) writes no provider — and no model for a record the read answered none for — with the report
+  naming every such absence. The file opens with the harness's own fixed-width (256-byte) title-slot
   line, written with an empty title, which is the shape its own writer starts from and the line it
   rewrites in place when it titles a session.
 - **A conversion is a snapshot of the source at one boundary, and repeating it is the same operation.**

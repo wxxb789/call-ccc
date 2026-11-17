@@ -13,7 +13,8 @@ What it does, for the direction it is asked about:
    its own records carry to a directory inside that tree, so the session it converts belongs to a path
    this run owns and the target's own lookup can find what it installs;
 2. makes the OMP data directory the conversion installs into: the run's own scratch one (seeded from the
-   host's own OMP home, see below) or the caller's ``--target-home``, which is read and never written to;
+   host's own OMP home, see below) or the caller's ``--target-home``, which this run seeds nothing into
+   (the conversion installs the session there, and a requested turn grows it);
 3. plants an unrelated session in the scratch home it made, and digests every session the home holds;
 4. converts through the CLI (``ccc continue … --json``) and reads the conversion, the installation and the
    structural read-back out of the report rather than trusting them, then checks the installed file's own
@@ -24,9 +25,12 @@ What it does, for the direction it is asked about:
    throw-away data directory that carries this run's own seeded configuration (or, when the caller named
    the home, the smallest credential-free home the file's own records name), with an unknown-id control
    arm, and compares what the harness answered with what the installed file's own bytes say;
-6. with ``--resume-prompt``, runs one real turn through the **printed** invocation's own words with the
-   report's ``resume_environment``, in the data directory the conversion installed into, and prints the
-   harness's own answer under ``native_check_common.TURN_OUTPUT_MARKER``;
+6. with ``--resume-prompt``, runs one real turn in the installed session and prints the harness's own
+   answer under ``native_check_common.TURN_OUTPUT_MARKER``: for the OMP target this run drives the
+   **printed** invocation's own words with the report's ``resume_environment`` itself, while for the
+   Claude Code target the conversion CLI's own resume check (``--verify resume``) runs the turn the
+   printed exec form spells and this run reads its state and the answer out of the report -- a requested
+   turn that does not verify fails the run either way;
 7. re-digests the source tree, the planted session and every session the home held, so "nothing else
    moved" is a measurement rather than a claim.
 
@@ -35,15 +39,18 @@ The OMP data directory this run makes for itself is seeded from the host's own O
 provider whose ``baseUrl`` is loopback (``localhost``, ``127.0.0.1``, ``::1``) is copied with its ``api``,
 its model entries and its other non-credential fields, with the value of its ``apiKey`` replaced by a
 placeholder this run invents and any ``headers`` it carries dropped; a provider whose endpoint is not
-loopback is left out whole, because OMP demands a literal key and this run writes no credential into a
-file (measured: without a key it refuses to start at all, and ``$VAR``/``${VAR}`` in ``apiKey`` is **not**
-expanded). ``modelRoles.default`` is ``--model`` when the host's own home defines its provider (or
+loopback, or any of whose endpoint-bearing lines carries a credential -- its own ``baseUrl``, or one a
+model entry writes, which is a level OMP's own writer uses (``_first_field``) -- is left out whole,
+because OMP demands a literal key and this run writes no credential into a file (measured: without a key
+it refuses to start at all, and ``$VAR``/``${VAR}`` in ``apiKey`` is **not** expanded).
+``modelRoles.default`` is ``--model`` when the host's own home defines its provider (or
 ``--provider-base-url`` defined it), else that home's own configured default when its provider survived,
 else the first surviving provider's first model, else nothing (and the report says so, because a home
 with no model role answers no model and the conversion then writes no binding -- OMP's own measured
 behaviour, reported as a named check rather than a crash). Nothing in a credential store is read, copied
-or written: a home the caller names with ``--target-home`` is used exactly as found, and this harness
-writes nothing into one.
+or written: a home the caller names with ``--target-home`` is not seeded and nothing is planted in it --
+the converted session the conversion installs there is the only file this run leaves (and a requested
+turn grows it) -- and its own configuration is read, never replaced.
 
 Measured on this host against OMP 18.18.7 (``omp --version`` prints ``omp/18.18.7``): the data directory
 comes from ``PI_CODING_AGENT_DIR`` (the same name Pi uses) and sessions live at
@@ -366,6 +373,24 @@ def loopback_url(url: str) -> bool:
     return (parts.hostname or "").lower() in LOOPBACK_HOSTS
 
 
+def block_has_credential_endpoint(lines: list[str]) -> bool:
+    """Whether any endpoint-bearing line of one provider block carries a credential.
+
+    The block is read textually like the rest of this seeder, and the walk is by field name at any depth
+    rather than by a fixed set of paths: a model entry may write its own ``baseUrl`` (OMP's own writer
+    does -- ``_first_field``), so a filter that looked only at the provider's own line would copy such a
+    URL verbatim into the scratch home, the loader home and a ``--keep`` tree, and a credential hides in
+    an endpoint URL as userinfo, a query or a fragment (``credential_free_url``). The reason this run
+    records names the provider, never the line: the line is where the credential is.
+    """
+    for line in lines:
+        stripped = line.strip()
+        match = re.match(r"^(?:-\s+)?baseUrl\s*:\s*(.*)$", stripped)
+        if match and not credential_free_url(_scalar(match.group(1))):
+            return True
+    return False
+
+
 def _seed_block(lines: list[str], placeholder: str) -> list[str]:
     """One provider block with apiKey's *value* replaced by the placeholder and every `headers` line and
     its sub-block dropped. The field itself is never removed: OMP refuses to start without a key."""
@@ -454,9 +479,10 @@ def seed_omp_home(home: Path, host_home: Path, preferred_model: str, provider_ba
     Answers the seeded provider names, the ones left out with their reason, and the model role the
     seeded home selects ("" when no provider survived). Every seeded definition is the host's own with
     one *value* replaced -- never a credential: a `headers` block is dropped whole, an `apiKey`'s value
-    is the placeholder this run invents, and a provider whose endpoint is not loopback (or whose endpoint
-    URL itself carries a credential) is not copied at all, because OMP demands a literal key and this run
-    writes none into a file.
+    is the placeholder this run invents, and a provider whose endpoint is not loopback, or any of whose
+    endpoint-bearing lines carries a credential -- its own `baseUrl`, or one of its model entries', which
+    is a level OMP writes (`_first_field`) -- is not copied at all, because OMP demands a literal key and
+    this run writes none into a file.
     """
     seeded: dict[str, list[str]] = {}
     left_out: list[str] = []
@@ -472,8 +498,11 @@ def seed_omp_home(home: Path, host_home: Path, preferred_model: str, provider_ba
         if not base_url:
             left_out.append(f"{name} (it names no baseUrl)")
             continue
-        if not credential_free_url(base_url):
-            left_out.append(f"{name} (its endpoint URL carries a credential)")
+        if block_has_credential_endpoint(lines):
+            # Every endpoint in the definition, not only the provider's own first line: a model entry's
+            # `baseUrl` would otherwise be copied verbatim, because `_seed_block` rewrites key values and
+            # drops headers, not URLs.
+            left_out.append(f"{name} (an endpoint URL in its definition carries a credential)")
             continue
         if not loopback_url(base_url):
             left_out.append(f"{name} (its endpoint {base_url} is not loopback: this run writes no "
@@ -737,7 +766,8 @@ def _build_ccc(args: argparse.Namespace, repo: Path, scratch: Path) -> int | Non
 def _plant_unrelated(args: argparse.Namespace, scratch: Path, unrelated: Path, body: str,
                      named_home: bool) -> int | None:
     """Plant this run's fabricated unrelated session, unless the caller named the home (which this run
-    never writes into). Returns the exit code to finish with when the file was already there, else None.
+    seeds nothing into, so the fabricated session goes to the scratch home alone). Returns the exit code
+    to finish with when the file was already there, else None.
     """
     if named_home:
         return None
@@ -808,8 +838,9 @@ def _record_unchanged_evidence(source_root: Path, source_root_before: dict[str, 
            f"{len(source_root_before)} file(s) digested before and after")
     if named_home:
         record("the planted unrelated session is unchanged", False,
-               "not planted: this run was given the caller's home with --target-home and writes nothing "
-               "into it; every session that home holds is digested instead", skipped=True)
+               "not planted: this run was given the caller's home with --target-home and seeds nothing "
+               "into it (the converted session the conversion installs there is the file it leaves); "
+               "every session that home holds is digested instead", skipped=True)
     else:
         record("the planted unrelated session is unchanged", sha256(unrelated) == planted_before)
     moved = [str(path) for path, digest in existing_sessions.items()
@@ -856,8 +887,8 @@ def _claude_to_omp(args: argparse.Namespace, repo: Path, scratch: Path, workspac
     print(f"workspace:   {workspace} -> OMP project dir {spelling}")
     print(f"target home: {home}")
     if named_home:
-        print(f"omp models:  the caller's home is read, never written to; its own modelRoles.default is "
-              f"{caller_role or '(none)'}")
+        print(f"omp models:  the caller's home is not seeded: its own modelRoles.default is "
+              f"{caller_role or '(none)'}; the conversion installs the session into it")
     else:
         print(f"omp models:  seeded provider(s) {', '.join(seeded) or '(none)'} from {host_omp_home()}"
               + (f"; left out: {'; '.join(left_out)}" if left_out else "")
@@ -1120,6 +1151,12 @@ def _omp_to_claude(args: argparse.Namespace, repo: Path, scratch: Path, workspac
     command = [str(repo / BINARY), "continue", f"{OMP_BACK_SOURCE_PROVIDER}:"
                f"{args.source or OMP_BACK_SOURCE_SESSION}", "--to", OMP_BACK_TARGET,
                "--target-home", str(home), "--target-binary", args.claude, "--json"]
+    if args.resume_prompt:
+        # The flag is the request for one real turn, and this direction runs it at the level the route
+        # has for it: the conversion CLI's own resume check (`--verify resume`), which runs the
+        # invocation the printed exec form spells and reports the harness's answer and the session's
+        # growth in the report read below. A turn that does not verify is a failed check, never a pass.
+        command += ["--verify", "resume", "--resume-prompt", args.resume_prompt]
     read = _convert_and_read_report(args, repo, scratch, home, command,
                                     {SOURCE_ROOT_ENV[OMP_BACK_SOURCE_PROVIDER]: str(source_root)})
     if isinstance(read, int):
@@ -1147,10 +1184,14 @@ def _omp_to_claude(args: argparse.Namespace, repo: Path, scratch: Path, workspac
     _check_claude_invocation(target, workspace, home, args.claude)
 
     if args.resume_prompt:
-        record("a real turn continues from the installed session", False,
-               "not attempted: this harness runs the turn half for the OMP target, whose printed "
-               "invocation it drives itself; the Claude Code target's own resume level is the conversion "
-               "CLI's, and this direction verifies its loader, which needs no model turn", skipped=True)
+        resume = verification.get("resume") or {}
+        record("the resume check verified one real turn through the printed invocation",
+               resume.get("state") == "verified", bounded(resume.get("detail", ""), 400))
+        print_answer(resume.get("output", ""))
+        if args.expect:
+            record(f"the turn's answer contains {args.expect!r}",
+                   args.expect in (resume.get("output") or ""),
+                   bounded(resume.get("output", ""), 160))
 
     _record_unchanged_evidence(source_root, source_root_before, named_home, unrelated, planted_before,
                                existing_sessions)

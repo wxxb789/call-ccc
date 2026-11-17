@@ -8,7 +8,9 @@ Harness: Oh My Pi `omp/18.18.7` (`omp --version`), the pinned AgentsView carry
 
 Every command below ran on the host named by each block, in this repository, on branch
 `feat/0006-omp-continuation`. Output is quoted verbatim; `…[the rest of this output was dropped]` is the
-harness's own elision of a bounded detail line and nothing else was edited.
+harness's own elision of a bounded detail line, and a block that stops above the CLI's trailing
+`carried:` footer (and above any `warning:` lines a run prints) says so in place; nothing else was
+edited.
 
 ## 0. What was measured before anything was written
 
@@ -71,6 +73,11 @@ claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 → omp
                 the harness answered from the installed session in one turn and wrote its own records into it (the session file went from 3595 to 7097 bytes)
   answer:       OMP-RESUME-OK
 ```
+
+(The block stops above the CLI's own trailing `carried:` footer — §3 below quotes that line verbatim:
+`carried:      AgentsView 83195c8a6861b8c74a4b6cb87512817fed6f8584, unmodified
+(scripts/upstream-parity.py)` — and above any `warning:` lines a run prints. Nothing else was edited
+out.)
 
 The CLI's own `answer:` line is the answer the harness returned from the installed session; the same
 words, as the harness's own printed output, are:
@@ -270,7 +277,7 @@ gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./c
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 267 tests in 6.159s (rc=0)
+  PASS     selftest Ran 268 tests in 5.888s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 30 project-owned prefix(es); files seen by git: 5688 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     secrets  no leaks found in 141 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
@@ -290,6 +297,18 @@ failed` (exit 0), whose own turn grew the session `3625 -> 7179 bytes` in that r
 appended bytes differ per run; §2's `7176` is its own run's number). Every check count and verdict the
 record holds is unchanged.
 
+The fix round that followed the review re-derived this block too (the gate run above; its `selftest` count
+is that round's `268` — its own new Python case — with every other line unchanged) and re-ran all four of
+those on its own tree, with the same commands and the same verdicts (21 / 18 / 15 / 25; exits 0 / 0 / 2 /
+0), and added the measurement that round's own finding asked for: `python3 scripts/omp-native-check.py --direction omp-to-claude --claude
+~/.local/share/ccc-native/claude-cli/node_modules/.bin/claude --resume-prompt 'Reply with exactly:
+OMP-NATIVE-CHECK-PROBE' --expect OMP-NATIVE-CHECK-PROBE` → `RESULT: FAIL — 3 check(s) failed: ccc continue
+exits 0 for a conversion whose verification ran, the resume check verified one real turn through the
+printed invocation, the turn's answer contains 'OMP-NATIVE-CHECK-PROBE'` (exit 1). In that direction
+`--resume-prompt` now drives the conversion CLI's own resume check (`--verify resume`) rather than
+recording a skip, and this host cannot answer the turn (`Not logged in · Please run /login`, §7), so a
+requested turn that does not verify fails the run instead of leaving it a pass.
+
 The counts the increment is pinned by:
 
 | Number | Where it comes from |
@@ -300,7 +319,7 @@ The counts the increment is pinned by:
 | `entries {'compaction': 1, 'message': 7, 'model_change': 1, 'role:assistant': 4, 'role:toolResult': 1, 'role:user': 2, 'session': 1, 'title': 1}` | the installed OMP file's own bytes (§2) |
 | `messageCount 3` with `['compactionSummary', 'user', 'assistant']` | OMP's own loader's answers, twice (§1, §2), against a file holding seven message entries — the loader builds context from the walk the file's own `parentId` values make, so the pre-compaction records are not in it |
 | `session 3625 -> 7176 bytes` / `3595 to 7097 bytes` | the two real turns: the session grew and its pre-existing bytes stayed a prefix (§1, §2) |
-| `267` | the harness's own cases (`python3 -m unittest discover -s scripts/tests`), up from 251 — the 16 new ones are `scripts/tests/test_omp_native_check.py`; the gate's own `selftest` step ran the same suite (`Ran 267 tests in 6.159s (rc=0)`) |
+| `268` | the harness's own cases (`python3 -m unittest discover -s scripts/tests`), up from 251: `scripts/tests/test_omp_native_check.py` holds the 17 new ones — its 16 at implementation plus the fix round's model-level credential case — and the gate's own `selftest` step ran the same suite (`Ran 268 tests in 5.888s (rc=0)`) |
 
 Documentation and bookkeeping this increment carries: `AGENTS.md` (the route list, the writer/installer/
 verifier files, the OMP native harness, and the OMP rules — its own project spelling, the 256-byte title
@@ -315,7 +334,10 @@ slot, the required per-assistant `model`+`provider`, the session binding being t
 
 - **The Claude half of §3 is a load, not a turn.** This host holds no Claude credential, so Claude Code's
   loader resolved the session and failed at the model call (`result "Not logged in · Please run /login"`).
-  The contract's clause is "native load/resume"; the load is verified, and no turn is claimed.
+  The contract's clause is "native load/resume"; the load is verified, and no turn is claimed. Asking for
+  one in that direction (`--resume-prompt`) now runs the conversion CLI's own resume check and reports it
+  not-verified with the harness's own words, ending the run non-zero (§6's fix-round run) rather than
+  passing with the turn skipped.
 - **The OMP half's turn ran under the host's own loopback proxy**, in a data directory the check seeded
   from the host's own OMP home with the key's *value* replaced by a placeholder. A host with no loopback
   provider (and no `LITELLM_BASE_URL`/`--provider-base-url`) reports a named skip for the turn; the load

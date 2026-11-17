@@ -29,8 +29,9 @@ key taken from the environment through a ``$NAME`` reference; a selected provide
 itself carries a credential (URL userinfo, a query) is not copied at all, because its address cannot be
 scrubbed without sending the harness somewhere the host did not name, and the report names it. Nothing
 in a credential store is read, copied or written. A home the caller names with ``--target-home`` is used
-exactly as it is found: this harness writes nothing into one, so a configuration (and the credential
-references in it) the caller put there is not replaced by the seed above. A host with no provider
+exactly as it is found: nothing is seeded into it, so a configuration (and the credential references in
+it) the caller put there is not replaced by the seed above -- the converted session this run installs
+there is the only file it leaves, and a requested turn grows that. A host with no provider
 configured for the chosen model is reported as a named skip with that reason, not as a pass.
 """
 
@@ -541,17 +542,17 @@ def main(argv: list[str] | None = None) -> int:
                       if refused else ""),
                    skipped=True)
     elif target_provider == TARGET_PROVIDER:
-        # A home the caller named is the caller's data directory and this harness writes nothing into it:
-        # seeding `models.json` there would replace provider definitions and credential references the
-        # caller put in it, and the comparisons this run makes cover session files only, so the loss
-        # would be invisible. What a real turn needs is a provider the home already defines, and that is
-        # what the check below reports.
+        # A home the caller named is the caller's data directory and the seed does not touch it: seeding
+        # `models.json` there would replace provider definitions and credential references the caller put
+        # in it, and the comparisons this run makes cover session files only, so the loss would be
+        # invisible. What a real turn needs is a provider the home already defines, and that is what the
+        # check below reports.
         configured_providers = sorted(host_pi_providers(home))
         record("a Pi provider is configured for the chosen model", bool(configured_providers),
                f"the caller's home already names {len(configured_providers)} provider(s): "
                f"{', '.join(configured_providers)}" if configured_providers else
                f"the caller's home {home} names no provider in its models.json, and this run does not "
-               f"write one there: a home the caller named is never written to, so a turn "
+               f"write one there: a home the caller named is not seeded, so a turn "
                f"(--resume-prompt) needs a provider that home already defines",
                skipped=not configured_providers)
 
@@ -603,7 +604,8 @@ def main(argv: list[str] | None = None) -> int:
               + "; every credential field dropped, keys resolved from the environment")
     elif target_provider == TARGET_PROVIDER:
         print(f"pi models:   the caller's home names {len(configured_providers)} provider(s); nothing was "
-              f"seeded into it (a home the caller named is never written to)")
+              f"seeded into it (a home the caller named is not seeded; the installed session is the file "
+              f"this run leaves there)")
     print(f"the source fixture's recorded working directory ({recorded_cwd or 'none recorded'}) is rewritten "
           f"to the workspace, so the session belongs to a path this run owns and the target's own lookup "
           f"can find what it installs")

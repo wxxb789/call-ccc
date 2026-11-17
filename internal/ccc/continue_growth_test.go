@@ -329,7 +329,7 @@ func TestContinueCarriesACompleteRecordThatHasNoLineFeed(t *testing.T) {
 		// offsets is what this provider's own declarations make of a line-record boundary for the file:
 		// SourceBoundaryRecordsClaimed where it is a transcript of appended lines whose bytes the offsets
 		// may be given for, SourceBoundaryRecordsNotClaimed where the provider's declarations do not make
-		// it one (the Pi provider), which the boundary states with its own reason instead.
+		// it one (the Pi and Oh My Pi providers), which the boundary states with its own reason instead.
 		offsets string
 	}{
 		{
@@ -357,6 +357,17 @@ func TestContinueCarriesACompleteRecordThatHasNoLineFeed(t *testing.T) {
 			fixture:     filepath.Join("pi", piFixtureRef.ID+".jsonl"),
 			destination: piFixtureRef.ID + ".jsonl",
 			fragment:    "pi-complete-turn.jsonl", target: TargetClaude,
+			offsets: SourceBoundaryRecordsNotClaimed,
+		},
+		{
+			// The second family member's own fragment, chained onto the ordinary OMP fixture's last
+			// *message* entry (its own `custom`/`session_exit` notice stands after that and stays off the
+			// grown file's walk): the fourth provider's reader held against the rule. Like the Pi
+			// source's, its declarations claim no record offset, so its boundary states the byte fact.
+			name: "an Oh My Pi source into Claude", agent: parser.AgentOMP, ref: ompFixtureRef,
+			fixture:     filepath.Join("omp", "--home-user-code-example-api--", ompFixtureRef.ID+".jsonl"),
+			destination: filepath.Join("--home-user-code-example-api--", ompFixtureRef.ID+".jsonl"),
+			fragment:    "omp-complete-turn.jsonl", target: TargetClaude,
 			offsets: SourceBoundaryRecordsNotClaimed,
 		},
 	} {
@@ -426,9 +437,9 @@ func TestContinueCarriesACompleteRecordThatHasNoLineFeed(t *testing.T) {
 			// The offsets are the *provider's* own answer, and the boundary may state only what that answer
 			// supports (the gate `SourceBoundaryRecordsClaimed` implements): a provider whose declarations
 			// make its source a transcript of appended line records has the terminated records' end and the
-			// unterminated tail named, and one whose declarations do not -- the Pi provider's -- says so,
-			// with its reason, and states the byte fact alone. Either way the record is *read* by the
-			// conversion, which is what this case is about and what the assertions below require.
+			// unterminated tail named, and one whose declarations do not -- the Pi family's -- says so, with its
+			// reason, and states the byte fact alone. Either way the record is *read* by the conversion, which is
+			// what this case is about and what the assertions below require.
 			if got := noFeedBoundary.RecordOffsets; got != testCase.offsets {
 				t.Errorf("the fragment-without-its-line-feed boundary claims %q, want %q for this provider's "+
 					"own declarations", got, testCase.offsets)

@@ -2255,3 +2255,46 @@ supersede it with a newer one and say which it supersedes.
   rewrite the recorded directory to the caller's own (writing a false record of where the conversation
   happened, and one the harness's own `--resume` would then report as moved).
 - **Settled by:** nothing owner-only.
+
+## Q-0006-05 — The printed resume line names the sessions tree inside the data directory
+
+- **Status:** resolved (default taken; 0006's implementation)
+- **Question:** OMP resolves a session's id through `PI_CODING_AGENT_SESSION_DIR` when it is set, and
+  measured on 18.18.7 that variable names the directory that holds session **files directly**: the
+  session's own project directory under `<home>/sessions` resolves the id, while the `sessions` root
+  above it answers `Error: Session "<id>" not found.`, and a caller's leftover value (a Pi user's
+  `settings.json`/environment, most obviously) sends the lookup to a tree this session is not in. The
+  data directory alone resolves an id too (OMP scans its own sessions tree by id), so does the printed
+  line have to name the sessions tree as well, and which spelling?
+- **Default taken:** both halves are named explicitly — `PI_CODING_AGENT_DIR` and
+  `PI_CODING_AGENT_SESSION_DIR=<home>/sessions/<the project directory the installer filed the session
+  under>` — by the printed `resume`/`non-interactive resume` lines and by both checks that drive the
+  route (the Go resume check and the native check's printed-invocation case). The directory named is the
+  one that holds the file directly, not the `sessions` root above it: measured, the root answers "not
+  found", and naming the right tree is also what keeps a caller's leftover setting from hiding the
+  session. This is the same shape the Pi route's printed line takes (its `PI_CODING_AGENT_SESSION_DIR`
+  names the sessions tree too, `docs/conventions.md`'s install rule), and the reason the evidence
+  record's §0 table carries the measurement.
+- **Reversal:** name the data directory alone and rely on OMP's own scan (measured to resolve an id, but
+  a caller's leftover `PI_CODING_AGENT_SESSION_DIR` then overrides the lookup), or name the `sessions`
+  root (measured to answer that no such session is installed).
+- **Settled by:** nothing owner-only.
+
+## Q-0006-06 — The alias directories OMP's own writer links beside the canonical one are not written
+
+- **Status:** resolved (default taken; 0006's implementation)
+- **Question:** an OMP home's project directory is not the only name OMP's own writer leaves behind for a
+  session — it also links alias directories beside the canonical one (`shadowedHomeDirName`,
+  `hashedDirName`, for a working directory whose name is ambiguous or long). Should a conversion create
+  them too, so every name the harness's own writer produces exists?
+- **Default taken:** not written. The aliases are lookup aliases for a directory the harness itself
+  derived, and the canonical directory is what the harness's own lookup reads: measured on 18.18.7, a
+  session filed in the canonical project directory resolves by id with no alias present, and the install
+  is exclusive — a conversion creates exactly one file and invents no second directory it cannot attest
+  (`OMPProjectDir` computes one spelling; `shadowedHomeDirName`/`hashedDirName` are not part of the
+  measured rule). The path a conversion reports is therefore the file's own directory, and the report's
+  install line names the mechanism.
+- **Reversal:** write the aliases too, if a harness version is measured to need one of them for a
+  session's own lookup (the file would then be linked under names this build derived rather than
+  measured).
+- **Settled by:** nothing owner-only.

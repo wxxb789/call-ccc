@@ -930,10 +930,13 @@ func runPiRPC(
 
 // runHarnessRPC is the RPC invocation both family harnesses are driven through: the command, its
 // working directory, its own environment, the protocol answers it writes and the deadline that bounds
-// the run. Pi names a sessions tree as well as its data directory; OMP is given its data directory
-// alone, because naming a sessions tree there *relocates* the lookup it replaces (measured: a session
-// filed under its project directory inside the named tree is not found), so the two routes differ in
-// the environment they build and not in how the harness is run or read.
+// the run. Pi names a sessions tree as well as its data directory, and OMP names one too: its own
+// variable must be given the directory that holds the session's file *directly* (the project directory
+// below `<home>/sessions`), because naming the `sessions` root above it is answered `Error: Session
+// "<id>" not found.` (measured on 18.18.7), and naming the project directory is also what keeps a
+// caller's leftover setting of the variable from sending the run to a tree this session is not in. The
+// two routes therefore differ in what they name, never in whether the harness is given one or in how it
+// is run and read.
 func runHarnessRPC(
 	ctx context.Context, binary, cwd string, arguments []string, stdin string, environment []string,
 	timeout time.Duration, stderr io.Writer,

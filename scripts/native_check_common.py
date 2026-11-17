@@ -343,8 +343,11 @@ def spelled_as_invocation(command: str, home_env: str) -> bool:
     value (`NAME=a;b` sets the variable to `a` and runs `b`); and an operator glued to a word
     (`cd /a&&b …` is a directory named `/a&&b` to a shell, not a change followed by an assignment) --
     which the whitespace test below answers, because a `&&` a shell reads as its operator is a word of
-    its own and therefore has whitespace on both sides. Every sibling harness shares this one
-    implementation, so a fix to the rule is not a fix to one route and a silent drift for the others.
+    its own and therefore has whitespace on both sides. The Pi and OMP checks read their lines through
+    this one implementation, so a fix to the rule is not a fix to one of those routes and a silent drift
+    for the other; the Claude and Codex checks keep readings of their own
+    (`claude-native-check.spelled_as_invocation`, `codex-native-check.reads_as_assignment`), which apply
+    the same rule to their own lines and their own variables.
     """
     text = unquoted_text(command)
     if text is None:
