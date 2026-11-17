@@ -64,6 +64,81 @@ const (
 	truncatedLine = `{"type":"assistant","timestamp":"2026-05-04T09:18:00.000Z","message":{"content":[{"type":"text","text":"Reading the ret`
 )
 
+// Growth-fragment identity: one further turn a harness wrote into a session that is already a fixture, in
+// each provider's own record shape, and a record a harness had not finished writing when the file was
+// copied.
+//
+// A growth fragment is *appended* to a copy of a committed fixture, which is how a test or the native check
+// makes one source session gain history without the committed bytes moving: the goal this serves is about
+// converting the same growing source twice. The complete turn exists once per accepted source provider
+// because the no-line-feed rule is pinned end to end in both directions: the fragment's own record shape is
+// what that provider's reader has to read whole when the file ends without a line feed. The fragment's
+// strings are invented like every other fixture string, and its one fact (the retry budget) appears in no
+// other fixture, so a target that continued from the grown snapshot can only have read it there.
+const (
+	claudeGrowthUserUUID      = "bbbbbbbb-0000-4000-8000-000000000011"
+	claudeGrowthAssistantUUID = "bbbbbbbb-0000-4000-8000-000000000012"
+
+	// The appended turn's own fact, quoted by the evidence record's native run when a real turn answers
+	// from the grown snapshot. Both providers' fragments carry it: the same question and the same answer,
+	// recorded in each provider's own shape.
+	growthQuestion = "What budget do retries share per session?"
+	growthAnswer   = "The retry budget is 120 seconds per session, held in internal/retry/budget.go."
+
+	codexGrowthTail = `{"payload":{"content":[{"text":"Which file holds the retry budget?","type":"input_text"}],"role":"user"},"timestamp":"2026-05-04T09:16:20.000Z","type":"response_item`
+
+	claudeGrowthTail = `{"type":"assistant","timestamp":"2026-05-04T09:20:04.000Z","message":{"content":[{"type":"text","text":"The retry budget is 120 sec`
+)
+
+// growthFiles maps a path relative to the growth root onto its content: the fragments a test or the native
+// check appends to a *copy* of a committed fixture, never to the fixture itself.
+//
+// The two tails are written as literals rather than through the inherited builders, and deliberately: a
+// fragment is a byte prefix of a record, so it cannot be re-encoded by canonicalJSONL (which is what makes
+// the complete fixtures reproducible), and the builders' own marshalling is not byte-stable between runs.
+// A prefix of a shape is the one fixture a literal is the honest form of — the same reason the fixture
+// above carries its truncated last line as a literal.
+func growthFiles() map[string]string {
+	return map[string]string{
+		"claude-complete-turn.jsonl":     canonicalJSONL(claudeGrowthTurn()),
+		"codex-complete-turn.jsonl":      canonicalJSONL(codexGrowthTurn()),
+		"claude-unfinished-record.jsonl": claudeGrowthTail,
+		"codex-unfinished-record.jsonl":  codexGrowthTail,
+	}
+}
+
+// claudeGrowthTurn is one further Claude Code turn as the harness records it: a user record carrying the
+// session's own identity and working directory, and the assistant record that answered it, chained to each
+// other by uuid and parentUuid.
+func claudeGrowthTurn() string {
+	builder := testjsonl.NewSessionBuilder().
+		AddClaudeUserWithUUID(
+			"2026-05-04T09:20:00.000Z",
+			growthQuestion,
+			claudeGrowthUserUUID,
+			"",
+			claudeCwd(),
+		).
+		AddClaudeAssistantWithUUID(
+			"2026-05-04T09:20:04.000Z",
+			growthAnswer,
+			claudeGrowthAssistantUUID,
+			claudeGrowthUserUUID,
+		)
+	return builder.String()
+}
+
+// codexGrowthTurn is one further Codex turn as a rollout records it: the user's response_item and the
+// assistant's answer to it, in the shape the committed rollout fixture carries -- the inherited builder's
+// own `response_item` records, one per message. A case removes this fragment's final line feed, so its last
+// record arrives complete and unterminated, which is the shape the Codex reader has to read whole.
+func codexGrowthTurn() string {
+	return testjsonl.JoinJSONL(
+		testjsonl.CodexMsgJSON("user", growthQuestion, "2026-05-04T09:16:20.000Z"),
+		testjsonl.CodexMsgJSON("assistant", growthAnswer, "2026-05-04T09:16:24.000Z"),
+	)
+}
+
 // fixtureFiles maps a path relative to the fixtures root onto its content.
 func fixtureFiles() map[string]string {
 	return map[string]string{
@@ -461,10 +536,23 @@ func marshal(value map[string]any) string {
 
 func main() {
 	root := flag.String("root", filepath.Join("internal", "ccc", "testdata", "fixtures"),
-		"directory to write the fixtures into")
+		"directory to write the fixtures into (relative to the working directory)")
+	growth := flag.String("growth-root", filepath.Join("internal", "ccc", "testdata", "growth"),
+		"directory to write the growth fragments into (relative to the working directory)")
 	flag.Parse()
 
-	files := fixtureFiles()
+	// Both trees are written in one run, and a caller that names one root without the other gets the other
+	// tree at its *default* root -- which is relative to the working directory, i.e. the committed tree
+	// only when this command runs from the repository root. Every path it wrote is printed below, so a run
+	// into a throw-away tree says where each tree landed.
+	writeAll(*root, fixtureFiles())
+	writeAll(*growth, growthFiles())
+}
+
+// writeAll writes one tree of generated files, creating the directories they need. Both trees are written
+// the same way so a caller cannot generate one and forget the other: the committed bytes of the fixtures
+// and of the growth fragments are both pinned against this generator.
+func writeAll(root string, files map[string]string) {
 	relatives := make([]string, 0, len(files))
 	for relative := range files {
 		relatives = append(relatives, relative)
@@ -473,7 +561,7 @@ func main() {
 	paths := make([]string, 0, len(files))
 	for _, relative := range relatives {
 		content := files[relative]
-		target := filepath.Join(*root, relative)
+		target := filepath.Join(root, relative)
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			fmt.Fprintln(os.Stderr, "fixturegen:", err)
 			os.Exit(1)

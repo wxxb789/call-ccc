@@ -187,7 +187,12 @@ says so.
 - `scripts/upstream-parity.py` — the source-side parity check (above).
 - `scripts/tests/` — regression tests for the gate, the parity checker, the importer, the native check
   and the continuation evidence's own claims (`test_evidence_claims.py`: a §5 comparison cell that
-  credits a recorded run's answer may only quote words that run's recorded output holds), run by the
+  credits a recorded run's answer may only quote words that run's recorded output holds;
+  `test_gate_transcript_claims.py`: a record's quoted `parity` line is the gate's own rendering — its end
+  is the checker's own — and the elision limit a record states is the gate's own call; and
+  `test_codex_native_check.py`'s `RecordStatesTheChecksOwnOrder`: the record's claim about *when* the
+  comparison taken where the copy grows runs is read against the positions of the native check's own
+  calls, so a record that drifts back to a placement the script does not have fails there), run by the
   `selftest` step.
 - `CALLCCC_GATE_ROOT` — run the gate against another tree. Most cases in `scripts/tests/` pin a rule
   against a throw-away tree instead of trusting the reader.
@@ -200,11 +205,19 @@ says so.
   whose value can hold a credential (a provider's authorization headers, an MCP server's environment
   table, a credential written into a URL). Its report line names what was copied and what was left
   behind, and a provider whose credential is written into the host configuration must take it from the
-  environment. The script plants an unrelated session in that home, runs
-  `ccc continue … --json`, checks the resume invocation the conversion reported (its argument vector
-  names the binary, `resume` and the session; its environment selects the data directory the session
-  was installed into, which is the only way Codex is told where to look), re-reads the installed file
-  with its own `ccc inspect` invocation and compares what the inherited reader made of it with what the
+  environment. The conversion reads a **copy** of the fixture under the run's own scratch directory,
+  never the committed bytes: the copy is what grows, by the committed
+  `internal/ccc/testdata/growth/claude-complete-turn.jsonl` fragment, and the copy — not the fixture —
+  is digested around each conversion, compared with the bytes it had before the first conversion immediately
+  before it grows (so the baseline every later comparison measures from is the bytes that conversion read,
+  across its loader and its optional turn), and digested once more at the end of the run, after the second
+  loader and the repeat turn: the final comparison that answers "the source session is unchanged" covers the
+  copy as well as the committed fixture tree and the growth fragment, so a mutation of the copy during the
+  second native stage is caught by the comparison that runs last. The script plants an unrelated session in
+  that home, runs `ccc continue … --json`, checks the resume invocation the conversion reported (its
+  argument vector names the binary, `resume` and the session; its environment selects the data directory the
+  session was installed into, which is the only way Codex is told where to look), re-reads the installed
+  file with its own `ccc inspect` invocation and compares what the inherited reader made of it with what the
   conversion says it carried (a second process, so the conversion's own round-trip verdict cannot stand
   in for that read), asks Codex's own app server to load the session (`thread/resume`), prints Codex's
   own view of it (`thread/read`), runs — with `--resume-prompt` — one real turn from the reported
@@ -213,6 +226,27 @@ says so.
   removed once every comparison has run), so a mutation during the loader or the turn is answered by the
   comparison that runs last rather than by an earlier verdict — an ordering the native check's own cases
   pin offline.
+  **The repeat scenario (goal 0004) runs in the same script, after the first conversion's own checks:
+  the copy grows by the committed fragment, the same session is converted a second time into the same
+  home, and the script then checks what the goal asks a caller to be able to see — the second
+  conversion's reported boundary is the grown copy's own bytes (measured by the script, not taken from
+  the report), including the read's own coverage answer (`read_bytes`/`read_coverage`: the file the
+  conversion read is still the size that read's own snapshot recorded — a size match, which is what that
+  record can show), the appended turn's words are in the second installed document and not in the first,
+  the first session's bytes are unchanged by the second conversion, and Codex's own loader opens the
+  second session with its own `thread/read` view holding the turn the source gained, while the first
+  session's own view does not.** `--repeat-resume-prompt` adds one real turn in that second session (one
+  turn per prompt flag, and the report line says how many ran), which is what answers the later
+  snapshot's model-visible history with the target's own words; the script's own cases pin the ordering
+  (the comparison about the first session runs after the second conversion, so a second conversion that
+  touched it is caught; and a copy changed while the second session's own loader runs is caught by the
+  final comparison, which covers it), that the attribution comparison is checked against the file rather
+  than trusted from the document, and that the search for the appended turn is live in both directions.
+  **What the second half does not re-check:** the second conversion's installation block and its
+  rendered resume line are not held to the two checks the first conversion's own are (the session is
+  installed under the target's sessions tree; the reported command selects the installation home). The
+  same route code writes both, and the renderer's spelling is pinned by `cmd/ccc`'s own cases, so the
+  second document is consumed for its identity, its path, what it carried and its boundary.
   The two rendered command lines (`resume_command`, `exec_resume_command`) are checked by **reading
   them the way a POSIX shell reads them**: word by word — a home the renderer quotes, any path holding
   a space or a Windows backslash, is accepted, while an unquoted home a shell would split into two words

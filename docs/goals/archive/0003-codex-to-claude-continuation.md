@@ -1,7 +1,7 @@
 # 0003 — Continue a Codex session in Claude Code
 
 **Status:** Ready  
-**Prerequisite:** [0002 — Continue a Claude Code session in Codex](archive/0002-claude-to-codex-continuation.md).
+**Prerequisite:** [0002 — Continue a Claude Code session in Codex](0002-claude-to-codex-continuation.md).
 
 ## Intended advance
 

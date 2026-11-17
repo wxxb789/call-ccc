@@ -26,6 +26,11 @@ rendered line is pure Python, and a case that needed the Codex binary would not 
 renderer's own half of the contract is pinned by the Go tests that assert the quoted spelling
 (``cmd/ccc/main_test.go``); these cases pin the half that reads that line back.
 
+One case reads beyond this module's subject: the evidence record's claim about *when* the comparison taken
+where the copy grows runs is read against the positions of the shipped script's own calls
+(``RecordStatesTheChecksOwnOrder``) in the same file, so a record that drifts back to the placement the
+review found fails here instead of being re-read as a claim nobody checks.
+
 Every case drives **both** ``pathlib`` flavours a host can hand the shipped check: this host's ``Path``
 and ``PureWindowsPath`` -- what ``Path`` *is* on Windows. That, and nothing about the host running this
 suite, is what keeps the fixtures honest. An earlier version of these cases spelled their homes
@@ -80,7 +85,17 @@ PATH_FLAVOURS = (Path, PureWindowsPath)
 
 
 def load_native_check():
-    """The shipped harness, imported by path (its file name is not an identifier)."""
+    """The shipped harness, imported by path (its file name is not an identifier).
+
+    An imported-from-source module is served from bytecode when the cache validates, and this loader's
+    cache is validated by the source's mtime in *whole seconds* and its size -- so a mutation study that
+    preserves the file's size (which moving a block does) and rewrites it within the same second as the
+    previous revision can have the previous revision's code executed. Measured, not assumed: the growth
+    baseline moved up before the first turn, then the closing comparisons moved up before the second turn
+    -- both within the same second -- and the second run answered the *first* mutation's failure set.
+    Every mutation run quoted in `docs/evidence/0004-repeatable-continuation-handoffs.md` used a fresh
+    ``PYTHONPYCACHEPREFIX`` per run.
+    """
     spec = importlib.util.spec_from_file_location(
         "shipped_codex_native_check", SCRIPTS / "codex-native-check.py")
     module = importlib.util.module_from_spec(spec)
@@ -536,6 +551,35 @@ PROTECTED_CHECKS = ("the source session is unchanged",
 #: host spells paths with.
 PRE_EXISTING_NAME = "rollout-2025-12-31T23-59-00-01a1e000-0000-7000-8000-000000000003.jsonl"
 
+#: The words the case's own growth fragment records, so the run has something to find in the *later*
+#: target's document and not in the earlier one. They are the case's, not the committed fixture's: what
+#: this half of the suite pins is that the shipped check reads the fragment it is given and searches the
+#: two documents for its words.
+GROWTH_QUESTION = "What budget do retries share per session?"
+GROWTH_ANSWER = "The retry budget is 120 seconds per session."
+
+#: The comparisons a case that asserts "nothing else was red" names, in the order the shipped check
+#: records them: the repeat half's own, plus the two the *first* conversion's stage records before the
+#: growth (the source copy's boundary and its unchanged bytes), which the later stages are built on. A
+#: comparison that stopped running -- or one that never runs because its stage was skipped -- is red here
+#: rather than silently absent.
+REPEAT_CHECKS = (
+    "the conversion reports the boundary of the source copy it read",
+    "the source copy is unchanged by the conversion",
+    "the source copy still holds the bytes the first conversion read",
+    "the source copy grew by exactly the appended turn",
+    "the second conversion reports the boundary of the grown source copy",
+    "the second conversion's identity is new, not the source's and not the first session's",
+    "the second installed file is one JSON object per line",
+    "the second conversion carries the history the source gained",
+    "the first conversion's session is unchanged by the second",
+    "the source copy is unchanged by the second conversion",
+    "the inherited reader reads the second installed file back as what was written",
+    "the target harness's own loader opens the second installed session",
+    "the target's own view of the second session lists the appended turn",
+    "the first session's own view does not hold the appended turn",
+)
+
 
 class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
     """The source session, the planted session and every session the home already held are compared
@@ -561,16 +605,97 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
     it compared (a count of one) and the mutating run has to name the file it caught changing, so a
     capture that is never taken, or a comparison that never runs, fails these cases instead of agreeing
     with itself.
+
+    The copy the conversions read is the fourth subject, and every window it has to survive has a case of
+    its own (`drive`'s `copy_mutation` table): a same-length change made while a conversion runs, while a
+    session's own loader runs, while either real turn runs, or -- for the second load -- after the second
+    conversion's comparison, must fail exactly the comparisons whose interval covers that moment, and each
+    comparison that claims an interval is named by the case whose window it is. The two turn windows are
+    what place the comparison taken where the copy grows in time: a change while the *first* turn runs is
+    caught by that comparison alone -- so that comparison is taken after the first conversion's loader and
+    its turn, and is the last check of the bytes the growth is measured from -- and a change while the
+    second turn runs is caught by the closing verdict alone, so the baseline comparison, and every other
+    comparison of the copy, is behind that turn. The change is a byte swap rather than an append, so a
+    comparison that weighed only sizes and a growth record whose claim is a size delta both still hold over
+    it: what catches such a change is a digest compared against the right earlier bytes. The second load's
+    case is also what keeps the final "the source session is unchanged" check non-vacuous, and the intact
+    run's detail has to name the copy's bytes it compared, so the clause cannot be green by not being there.
     """
 
-    def drive(self, mutate_during_resume: bool,
-              installed_extra_line: str | None = None) -> tuple[int, dict[str, tuple[str, str]]]:
+    def drive(self, mutate_during_resume: bool = False,
+              installed_extra_line: str | None = None,
+              mutate_first_session_by_second: bool = False,
+              second_boundary: str | None = None,
+              include_growth_in_second: bool = True,
+              copy_mutation: str | None = None,
+              repeat_turn: bool = False
+              ) -> tuple[int, dict[str, tuple[str, str]]]:
         """One run of the shipped ``main`` against stubs; answers its exit code and its recorded checks.
 
-        ``installed_extra_line`` is a line the stub appends to the installed file after its one object, so
-        the JSONL check's own failure paths are exercised: the line may be unparseable JSON or a valid
-        JSON value that is not an object, and the check has to name each as the failure its own name
-        promises.
+        ``installed_extra_line`` is a line the stub appends to the first installed file after its one
+        object, so the JSONL check's own failure paths are exercised: the line may be unparseable JSON or
+        a valid JSON value that is not an object, and the check has to name each as the failure its own
+        name promises.
+
+        ``mutate_first_session_by_second`` changes the asset the *second* conversion's comparisons are
+        about: the first conversion's installed file is rewritten while the second conversion runs, so the
+        comparison that says the earlier target is untouched -- and only it -- must fail. That is what
+        pins the new comparison to the end of the run rather than to the first conversion's own stage.
+
+        ``second_boundary`` replaces the boundary the second conversion's document reports (``sha256``,
+        ``bytes``, or any other field), so the attribution comparison is exercised against a report that
+        is not the grown copy's bytes: the check measures the file itself, so a document this off must be
+        a failure rather than something the harness takes the report's word for.
+
+        ``include_growth_in_second`` is the control for the *search* over the two documents: with it off,
+        the second conversion's file and the target's own view of it omit the appended turn's words, so
+        the comparisons that require them -- and only they -- must fail. A search that looked for nothing,
+        or one that searched the wrong file, would stay green here.
+
+        ``copy_mutation`` names the one window in which this case makes its *same-length* change to the
+        copy the conversions read, and nothing else: ``"first conversion"``, ``"first load"``, ``"first
+        turn"``, ``"second conversion"``, ``"second load"`` or ``"second turn"``. The change is a byte
+        swap, so every comparison that weighs only sizes still holds, and each window is answered by the
+        comparisons that can see it -- the table the cases below drive:
+
+        =================== ==========================================================
+        window              the checks that must fail, and only they
+        =================== ==========================================================
+        first conversion    "the source copy is unchanged by the conversion" (the
+                            conversion's own stage) and "the source copy still holds
+                            the bytes the first conversion read" (the growth's
+                            baseline, which that stage also precedes)
+        first load          "the source copy still holds the bytes the first conversion
+                            read" alone: the conversion's own comparison is already
+                            over, and the changed bytes are the baseline every later
+                            comparison would measure from
+        first turn          "the source copy still holds the bytes the first conversion
+                            read" alone: that comparison is taken after this
+                            conversion's loader *and* its real turn, so the turn's own
+                            window is inside the interval it answers for
+        second conversion   "the source copy is unchanged by the second conversion" and
+                            "the source session is unchanged": both compare the copy
+                            with the digest taken before that conversion
+        second load         "the source session is unchanged" alone, the comparison that
+                            runs last
+        second turn         "the source session is unchanged" alone: the baseline
+                            comparison is recorded before the growth, and so *before*
+                            this turn, and every other comparison of the copy is
+                            behind it too
+        =================== ==========================================================
+
+        A window whose mutation fails *nothing* is a comparison that does not cover the interval its name
+        claims: that is what the first-load case measured (the growth record's size delta and its
+        digest-differs clause both hold over a same-length change, so a run without the baseline
+        comparison answered PASS while the changed bytes became every later comparison's baseline).
+
+        ``repeat_turn`` asks the shipped run for the *second* session's turn as well
+        (``--repeat-resume-prompt`` beside ``--resume-prompt``, one turn each), which is the shape §6's
+        transcript quotes: both turns then run, and the copy the conversions read has two turn windows
+        instead of one -- the first before the growth, the second after the second conversion and its own
+        comparisons. The two ``* turn`` windows require it, because a turn that did not run has no window
+        to put a mutation in; their cases assert both turns' own checks passed, so a window whose turn was
+        skipped cannot read as one whose mutation nothing caught.
         """
         # The scratch root is resolved before anything is derived from it, because the shipped ``main``
         # resolves what it is handed (``--repo`` always, and ``--codex-home`` when the caller names one,
@@ -589,6 +714,15 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                    / "-fake-project" / f"{NATIVE_CHECK.SOURCE_SESSION}.jsonl")
         fixture.parent.mkdir(parents=True)
         fixture.write_text(json.dumps({"type": "user"}) + "\n")
+        # The committed growth fragment this run appends to its *copy*: two records, as the shipped
+        # fixturegen writes one, with the words the later target's document has to hold and the earlier
+        # one must not.
+        fragment = repo / NATIVE_CHECK.GROWTH_ROOT / NATIVE_CHECK.GROWTH_TURN
+        fragment.parent.mkdir(parents=True)
+        fragment.write_text(json.dumps({"type": "user", "message": {"content": GROWTH_QUESTION}}) + "\n"
+                            + json.dumps({"type": "assistant",
+                                          "message": {"content": [{"type": "text",
+                                                                   "text": GROWTH_ANSWER}]}}) + "\n")
         home = scratch / "codex-home"
         home.mkdir()
         # The two tools the harness resolves: names it only compares and runs through the stub below,
@@ -597,8 +731,11 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         go = str(scratch / "go")
 
         thread_id = "01a1e000-0000-7000-8000-000000000002"
+        second_thread_id = "01a1e000-0000-7000-8000-000000000004"
         installed = (home / "sessions" / "2026" / "05" / "04"
                      / f"rollout-2026-05-04T09-15-00-{thread_id}.jsonl")
+        second_installed = (home / "sessions" / "2026" / "05" / "04"
+                            / f"rollout-2026-05-04T09-15-00-{second_thread_id}.jsonl")
         planted = home / "sessions" / "2026" / "01" / "01" / NATIVE_CHECK.UNRELATED_NAME
         # A session the home already held before this run started, besides the one the harness plants:
         # the third comparison's subject. The harness only digests it, so a metadata line is all it needs
@@ -620,27 +757,77 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             """The words as the renderer under test spells them: each quoted where a shell acts."""
             return " ".join(shlex.quote(word) for word in words)
 
-        resume_arguments = [codex, "resume", thread_id]
-        exec_resume_arguments = [codex, "exec", "resume", thread_id, "<prompt>"]
-        document = {
-            "conversion": {
-                "state": "converted", "format": "codex-rollout-jsonl",
-                "carried": {"messages": 3, "user_messages": 1, "tool_calls": 1, "tool_results": 1,
-                            "compaction_boundaries": 0},
-                "losses": [{"category": "reasoning", "disposition": "omitted", "count": 1,
-                            "detail": "the stub's one loss"}],
-            },
-            "installation": {"state": "installed", "path": str(installed), "mechanism": "hard-link",
-                             "created": True, "source_check_state": "unchanged"},
-            "target_session": {
-                "session_id": thread_id, "path": str(installed), "binary_found": True,
-                "resume_arguments": resume_arguments, "exec_resume_arguments": exec_resume_arguments,
-                "resume_environment": {"CODEX_HOME": str(home)},
-                "resume_command": f"{assignment} {rendered(resume_arguments)}",
-                "exec_resume_command": f"{assignment} {rendered(exec_resume_arguments)}",
-            },
-            "verification": {"load": {"state": "verified"}, "resume": {"state": "verified"}},
-        }
+        def source_copy(env: dict | None) -> Path:
+            """The copy of the fixture the conversion under the stub is reading.
+
+            The harness makes the copy under its own scratch directory and hands the conversion its root
+            through ``CLAUDE_PROJECTS_DIR``, so that variable is where this case finds the file whose
+            bytes the conversion's reported boundary has to be -- the same file the *shipped* check
+            measures for itself.
+            """
+            root = Path((env or {}).get("CLAUDE_PROJECTS_DIR", str(scratch / "source")))
+            return root / "-fake-project" / f"{NATIVE_CHECK.SOURCE_SESSION}.jsonl"
+
+        def document_for(which: str, env: dict | None) -> dict:
+            """One conversion's stub document: its own session id, path and boundary of the copy's bytes."""
+            copy = source_copy(env)
+            boundary = {"state": "taken", "detail": "the case's stub boundary", "path": str(copy),
+                        "bytes": copy.stat().st_size, "sha256": NATIVE_CHECK.sha256(copy),
+                        "read_bytes": copy.stat().st_size, "read_coverage": "size-match",
+                        "record_offsets": "claimed",
+                        "terminated_records_end_bytes": copy.stat().st_size}
+            if which == "second":
+                boundary.update(second_boundary or {})
+            session, path = ((thread_id, installed) if which == "first"
+                             else (second_thread_id, second_installed))
+            resume_arguments = [codex, "resume", session]
+            exec_resume_arguments = [codex, "exec", "resume", session, "<prompt>"]
+            user_messages, assistant_messages = (1, 1) if which == "first" else (2, 2)
+            return {
+                "conversion": {
+                    "state": "converted", "format": "codex-rollout-jsonl",
+                    "carried": {"messages": user_messages + assistant_messages,
+                                "user_messages": user_messages,
+                                "assistant_messages": assistant_messages,
+                                "tool_calls": 1, "tool_results": 1, "compaction_boundaries": 0},
+                    "losses": [{"category": "reasoning", "disposition": "omitted", "count": 1,
+                                "detail": "the stub's one loss"}],
+                },
+                "installation": {"state": "installed", "path": str(path), "mechanism": "hard-link",
+                                 "created": True, "source_check_state": "unchanged"},
+                "target_session": {
+                    "session_id": session, "path": str(path), "binary_found": True,
+                    "resume_arguments": resume_arguments, "exec_resume_arguments": exec_resume_arguments,
+                    "resume_environment": {"CODEX_HOME": str(home)},
+                    "resume_command": f"{assignment} {rendered(resume_arguments)}",
+                    "exec_resume_command": f"{assignment} {rendered(exec_resume_arguments)}",
+                },
+                "source": {"boundary": boundary},
+                "verification": {"load": {"state": "verified"}, "resume": {"state": "verified"}},
+            }
+
+        conversions = {"made": 0}
+
+        def same_length_swap(path: Path) -> None:
+            """This case's own change to a copy: one field's value swapped for another of the same length.
+
+            Same-length is the point: a comparison that weighed only sizes, and a growth record whose claim
+            is a size delta, both still hold over this change, so only a digest compared against the right
+            earlier bytes can catch it. The guard keeps a fixture change from turning a case's premise
+            into nothing.
+            """
+            before = path.read_text()
+            changed = before.replace('"user"', '"turn"')
+            if changed == before or len(changed) != len(before):
+                raise AssertionError(
+                    "this case's own mutation has to be a same-length swap, and the copy it changes is "
+                    f"{before!r} -> {changed!r}")
+            path.write_text(changed)
+
+        #: The copy each conversion read, as the harness named it in the command's own environment: the
+        #: mutations below change one of them, and the harness's scratch directory is its own (this case
+        #: cannot guess its name).
+        converted_copy: dict[str, Path] = {}
 
         def fake_run(cmd, cwd=None, env=None, timeout=600):
             command = [str(part) for part in cmd]
@@ -648,19 +835,48 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 0, "", "")
             if command[0] == str(repo / NATIVE_CHECK.BINARY):
                 if command[1] == "continue":
-                    installed.parent.mkdir(parents=True, exist_ok=True)
-                    installed.write_text(json.dumps({"type": "session_meta"}) + "\n"
-                                         + (installed_extra_line or ""))
+                    conversions["made"] += 1
+                    which = "first" if conversions["made"] == 1 else "second"
+                    converted_copy[which] = source_copy(env)
+                    if copy_mutation == f"{which} conversion":
+                        # The window the conversion's own comparison is about: the change is made before
+                        # the stub builds its document, so the document and the boundary it reports are the
+                        # mutated file's own -- what fails is the comparison against the earlier bytes, not
+                        # a report that disagrees with the file it describes.
+                        same_length_swap(converted_copy[which])
+                    document = document_for(which, env)
+                    path = Path(document["target_session"]["path"])
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    body = json.dumps({"type": "session_meta"}) + "\n"
+                    if which == "first" and installed_extra_line:
+                        body += installed_extra_line
+                    elif which == "second" and include_growth_in_second:
+                        # The later document holds the turn the source gained; the earlier one is written
+                        # without it, which is the contrast the check searches for.
+                        body += fragment.read_text()
+                    if which == "second" and mutate_first_session_by_second:
+                        installed.write_text(installed.read_text() + json.dumps({"type": "turn"}) + "\n")
+                    path.write_text(body)
                     return subprocess.CompletedProcess(cmd, 0, json.dumps(document), "")
                 if command[1] == "inspect":
-                    counts = {"user_messages": 1, "tool_calls": 1, "tool_results": 1,
-                              "compact_boundaries": 0}
+                    which = "second" if second_thread_id in command[2] else "first"
+                    counts = {"user_messages": 2 if which == "second" else 1,
+                              "assistant_messages": 2 if which == "second" else 1,
+                              "tool_calls": 1, "tool_results": 1, "compact_boundaries": 0}
                     return subprocess.CompletedProcess(
                         cmd, 0, json.dumps({"source": {"counts": counts}}), "")
             if command[0] == codex and command[1] == "exec":
-                # The resume stage: a turn that continued (the installed file grows) and, when this case
-                # asks for it, the mutation both protected artifacts have to survive.
-                installed.write_text(installed.read_text() + json.dumps({"type": "turn"}) + "\n")
+                # The resume stage: a turn that continued (the session it names grows) and, when this
+                # case asks for it, the mutation both protected artifacts have to survive.
+                second = second_thread_id in command
+                turned = second_installed if second else installed
+                turned.write_text(turned.read_text() + json.dumps({"type": "turn"}) + "\n")
+                if copy_mutation == ("second turn" if second else "first turn"):
+                    # The copy the conversions read, changed while a real *turn* runs: for the first turn
+                    # the growth's baseline comparison is still ahead of it (so that comparison, and only
+                    # it, answers for this window), while for the second every comparison of the copy is
+                    # already recorded and only the comparison that runs last is left to answer.
+                    same_length_swap(converted_copy["second" if second else "first"])
                 if mutate_during_resume:
                     fixture.write_text(fixture.read_text() + json.dumps({"type": "assistant"}) + "\n")
                     planted.write_text(planted.read_text() + json.dumps({"type": "session_meta"}) + "\n")
@@ -680,18 +896,37 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             def call(self, method: str, params: dict) -> dict:
                 if method != "thread/resume":
                     raise AssertionError(f"the case's stub was asked for {method}")
-                return {"thread": {"id": thread_id, "path": str(installed), "historyMode": "legacy",
+                session = str(params.get("threadId"))
+                second = session == second_thread_id
+                path = second_installed if second else installed
+                if copy_mutation == ("second load" if second else "first load"):
+                    # The copy the conversions read, changed while the target harness's own loader runs:
+                    # for the second session that is after the second conversion and its own comparison, so
+                    # only the comparison that runs last can catch it; for the first it is before the
+                    # growth, so the changed bytes would become every later comparison's baseline.
+                    same_length_swap(converted_copy["second" if second else "first"])
+                return {"thread": {"id": session, "path": str(path), "historyMode": "legacy",
                                    "cwd": "/tmp"}}
 
             def close(self) -> None:
                 pass
 
         def fake_thread_view(server, thread):
-            return [f"thread {thread} (the case's stub's own view)"], ["userMessage", "agentMessage"]
+            lines = [f"thread {thread} (the case's stub's own view)"]
+            if str(thread) == second_thread_id and include_growth_in_second:
+                # The target's own view of the later session: the turn the source gained, as the harness
+                # itself lists it.
+                lines += [f"    userMessage: {GROWTH_QUESTION}", f"    agentMessage: {GROWTH_ANSWER}"]
+            return lines, ["userMessage", "agentMessage"]
 
         def fake_which(name, *args, **kwargs):
             return codex if name == "codex" else go
 
+        prompts = ["--resume-prompt", "answer only from this conversation"]
+        if repeat_turn:
+            # The second session's turn as well: the shape §6's transcript quotes (both prompt flags, one
+            # turn each), so a case can put its mutation in either turn's own window.
+            prompts += ["--repeat-resume-prompt", "answer only from this conversation"]
         before = len(NATIVE_CHECK.RESULTS)
         with mock.patch.object(NATIVE_CHECK, "run", fake_run), \
                 mock.patch.object(NATIVE_CHECK, "AppServer", FakeAppServer), \
@@ -699,8 +934,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 mock.patch("shutil.which", fake_which), \
                 contextlib.redirect_stdout(io.StringIO()):
             code = NATIVE_CHECK.main(["--repo", str(repo), "--codex", "codex",
-                                      "--codex-home", str(home),
-                                      "--resume-prompt", "answer only from this conversation"])
+                                      "--codex-home", str(home)] + prompts)
         results = {name: (state, detail) for name, state, detail in NATIVE_CHECK.RESULTS[before:]}
         del NATIVE_CHECK.RESULTS[before:]
         return code, results
@@ -715,6 +949,12 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         self.assertEqual(failed, sorted(PROTECTED_CHECKS),
                          f"the mutating run's failures are not exactly the three protected-artifact "
                          f"comparisons: {results}")
+        # The repeat half's own comparisons still pass here: the mutation this case makes is of the
+        # *committed* fixture, and the conversions read the copy. A check that read the fixture where it
+        # meant the copy would be red on this run.
+        for name in REPEAT_CHECKS:
+            state, detail = results.get(name, ("missing", ""))
+            self.assertEqual(state, "PASS", f"{name}: {state} — {detail}; all results: {results}")
         self.assertEqual(code, 1, f"exit {code} for a run with failed checks: {results}")
         self.assertIn("the fixture tree changed:", results[PROTECTED_CHECKS[0]][1])
         self.assertIn(" before, ", results[PROTECTED_CHECKS[1]][1])
@@ -734,6 +974,34 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         self.assertIn("1 pre-existing session file(s)", results[PROTECTED_CHECKS[2]][1],
                       "the run's pre-existing-session comparison did not name the session the home "
                       "already held: a capture that never happened agrees with itself")
+        # The first comparison's own evidence for its copy clause: it names the copy's bytes it compared,
+        # so a run that dropped the clause would not read as one that answered it.
+        self.assertIn("the converted copy identical too", results[PROTECTED_CHECKS[0]][1],
+                      "the source comparison did not name the converted copy it compared")
+        # Every comparison of the repeat half is present and passing, so none of them can be green by
+        # never running, and the only checks that did not run are the two real turns nobody asked for.
+        for name in REPEAT_CHECKS:
+            state, detail = results.get(name, ("missing", ""))
+            self.assertEqual(state, "PASS", f"{name}: {state} — {detail}; all results: {results}")
+        self.assertEqual(sorted(name for name, (state, _) in results.items() if state == "SKIP"),
+                         ["a real turn continues from the second installed session"],
+                         f"the run skipped something other than the one turn nobody asked for: {results}")
+        # The turn this run did ask for ran in the *first* session, which is what makes that session a
+        # session its own harness has already resumed by the time the second conversion happens.
+        self.assertEqual(results["a real turn continues from the installed session"][0], "PASS",
+                         f"the first session's turn did not run: {results}")
+        # The attribution comparisons say what they compared, so a comparison that read the wrong file
+        # (or an empty one) is visible in the record rather than only in a verdict.
+        self.assertIn("the first conversion's boundary was",
+                      results["the second conversion reports the boundary of the grown source copy"][1])
+        self.assertIn("before and after the second conversion",
+                      results["the first conversion's session is unchanged by the second"][1])
+        # The comparison taken where the copy grows names the pre-conversion bytes it compared, so a run
+        # that dropped the comparison, or one that compared the file with itself, is visible here.
+        self.assertIn("taken before the first conversion",
+                      results["the source copy still holds the bytes the first conversion read"][1],
+                      "the comparison taken where the copy grows did not name the bytes taken before the "
+                      "first conversion")
         self.assertEqual(code, 0, f"exit {code} for an intact run: {results}")
 
     def test_a_malformed_codex_installed_line_is_a_named_failure(self) -> None:
@@ -749,6 +1017,210 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                          f"the malformed installed line did not fail the JSONL check: {results}")
         self.assertIn("line 2 is not JSON", detail, detail)
         self.assertEqual(code, 1, f"exit {code} for a run whose JSONL check failed: {results}")
+
+    def test_a_first_session_mutated_by_the_second_conversion_is_caught(self) -> None:
+        """The comparison about the earlier target runs after the *second* conversion, not before it.
+
+        The stub rewrites the first conversion's installed file while the second conversion runs -- the
+        shape a second conversion that merged into, or overwrote, the session an agent may already have
+        continued would have. Exactly that comparison must fail: the earlier target's bytes are the
+        promise this half of the goal makes, and a comparison recorded before the second conversion would
+        answer on the state it was about before that state could change.
+        """
+        code, results = self.drive(mutate_first_session_by_second=True)
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed, ["the first conversion's session is unchanged by the second"],
+                         f"the mutating run's failures are not exactly the comparison about the first "
+                         f"session: {results}")
+        detail = results["the first conversion's session is unchanged by the second"][1]
+        self.assertIn(" before and after the second conversion", detail, detail)
+        self.assertEqual(code, 1, f"exit {code} for a run with a failed comparison: {results}")
+
+    def test_a_copy_mutated_during_the_second_load_is_caught_by_the_final_comparison(self) -> None:
+        """The copy the conversions read is part of the final "the source is unchanged" answer.
+
+        The stub changes the copy while the *second* session's own loader runs -- after the second
+        conversion and after that conversion's own copy comparison, so only the comparison that runs last
+        can answer for the copy. Its failure set must therefore be exactly that one check, and its detail
+        must name the copy's own wanted bytes: a run whose final comparison hashed only the committed
+        fixture tree and the growth fragment answers PASS here, which is the defect this pins.
+        """
+        code, results = self.drive(copy_mutation="second load")
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed, ["the source session is unchanged"],
+                         f"the copy mutation's failures are not exactly the final comparison: {results}")
+        detail = results["the source session is unchanged"][1]
+        self.assertIn("the converted source copy changed after the second conversion", detail, detail)
+        self.assertIn("want sha256", detail, detail)
+        self.assertEqual(code, 1, f"exit {code} for a run with a failed comparison: {results}")
+
+    def test_a_copy_mutated_during_the_first_conversion_is_caught_by_two_comparisons(self) -> None:
+        """A conversion that wrote to its own source is caught by the comparison about its own stage.
+
+        The stub changes the copy while the *first* conversion runs, before it builds the document it
+        reports: the bytes the conversion's own report describes are the file as it stands, so the failure
+        is the comparison against the earlier bytes rather than a report that disagrees with its file. Both
+        comparisons whose interval covers that moment must fail -- "the source copy is unchanged by the
+        conversion", whose name is the promise the conversion must not write its source, and "the source
+        copy still holds the bytes the first conversion read", because the changed bytes are what the
+        growth below measures from -- and nothing else, so the run still holds its other checks.
+        """
+        code, results = self.drive(copy_mutation="first conversion")
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed,
+                         sorted(["the source copy is unchanged by the conversion",
+                                 "the source copy still holds the bytes the first conversion read"]),
+                         f"a copy changed while the first conversion ran was not caught by exactly the two "
+                         f"comparisons whose interval covers it: {results}")
+        self.assertIn(" taken before and after",
+                      results["the source copy is unchanged by the conversion"][1])
+        self.assertIn(" taken before the first conversion",
+                      results["the source copy still holds the bytes the first conversion read"][1])
+        self.assertEqual(code, 1, f"exit {code} for a run with failed comparisons: {results}")
+
+    def test_a_copy_mutated_during_the_second_conversion_is_caught_by_two_comparisons(self) -> None:
+        """A second conversion that wrote to its own source is caught by the two comparisons about it.
+
+        The stub changes the copy while the *second* conversion runs, before it builds its document. Both
+        comparisons that hold the digest taken before that conversion must fail -- "the source copy is
+        unchanged by the second conversion" and the final "the source session is unchanged" -- and nothing
+        else: the attribution comparison still passes, because the document the conversion reported is the
+        mutated file's own bytes, which is what tells this case apart from a lying boundary report.
+        """
+        code, results = self.drive(copy_mutation="second conversion")
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed,
+                         sorted(["the source copy is unchanged by the second conversion",
+                                 "the source session is unchanged"]),
+                         f"a copy changed while the second conversion ran was not caught by exactly the two "
+                         f"comparisons whose interval covers it: {results}")
+        self.assertEqual(results["the second conversion reports the boundary of the grown source copy"][0],
+                         "PASS", f"the attribution comparison failed over a consistent report: {results}")
+        self.assertIn("the converted source copy changed after the second conversion",
+                      results["the source session is unchanged"][1])
+        self.assertEqual(code, 1, f"exit {code} for a run with failed comparisons: {results}")
+
+    def test_a_copy_mutated_during_the_first_load_is_caught_where_the_copy_grows(self) -> None:
+        """The bytes the copy grows from are the bytes the first conversion read, re-checked.
+
+        The stub makes a *same-length* change to the copy while the *first* session's own loader runs --
+        after the first conversion's own comparison and before the growth fragment is appended -- so the
+        growth record's size delta still holds and its digest still differs, and the changed bytes would
+        become the baseline every later comparison measures from. Exactly the comparison taken where the
+        copy grows must fail: a run without it answers PASS here while its final "the source session is
+        unchanged" verdict speaks for an interval whose baseline it never checked.
+        """
+        code, results = self.drive(copy_mutation="first load")
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed, ["the source copy still holds the bytes the first conversion read"],
+                         f"the first native stage's copy mutation was not caught by exactly the comparison "
+                         f"taken where the copy grows: {results}")
+        detail = results["the source copy still holds the bytes the first conversion read"][1]
+        self.assertIn(" taken before the first conversion", detail, detail)
+        # The other half of the same defect: the growth record's own size delta did hold (that is what
+        # makes this case about the baseline rather than about a length change), so it must not be what
+        # fails here -- if it did, this case would pass for a run that only compared sizes.
+        self.assertEqual(results["the source copy grew by exactly the appended turn"][0], "PASS",
+                         f"the growth record failed over a same-length mutation, so this case is no longer "
+                         f"about the baseline it pins: {results}")
+        self.assertEqual(code, 1, f"exit {code} for a run with a failed comparison: {results}")
+
+    def test_a_copy_mutated_during_the_first_turn_is_caught_where_the_copy_grows(self) -> None:
+        """The bytes the growth is measured from are re-checked *after* the first session's own turn.
+
+        The stub makes a same-length change to the copy while the first session's real turn runs -- after
+        that conversion's own comparison and after its loader, with the growth fragment not yet appended.
+        The comparison taken where the copy grows is recorded after this turn and before the growth (hence
+        before the second conversion, its loader and its turn), so exactly it must fail; a comparison
+        recorded *before* the turn -- the interval this record once attributed to it -- answers on the
+        pre-turn bytes, the changed copy becomes the baseline every later comparison measures from, and
+        this case's failure list is empty instead.
+        """
+        code, results = self.drive(copy_mutation="first turn", repeat_turn=True)
+        for name in ("a real turn continues from the installed session",
+                     "a real turn continues from the second installed session"):
+            self.assertEqual(results.get(name, ("", ""))[0], "PASS",
+                             f"{name}: {results.get(name)} — a turn that did not run has no window to "
+                             f"mutate in: {results}")
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed, ["the source copy still holds the bytes the first conversion read"],
+                         f"the first turn's copy mutation was not caught by exactly the comparison taken "
+                         f"where the copy grows: {results}")
+        detail = results["the source copy still holds the bytes the first conversion read"][1]
+        self.assertIn(" taken before the first conversion", detail, detail)
+        # The other half of the same defect: the growth record's own size delta did hold (that is what
+        # makes this case about the baseline rather than about a length change).
+        self.assertEqual(results["the source copy grew by exactly the appended turn"][0], "PASS",
+                         f"the growth record failed over a same-length mutation, so this case is no longer "
+                         f"about the baseline it pins: {results}")
+        self.assertEqual(code, 1, f"exit {code} for a run with a failed comparison: {results}")
+
+    def test_a_copy_mutated_during_the_second_turn_is_caught_by_the_final_comparison(self) -> None:
+        """The baseline comparison is behind the *second* turn, and the closing verdict is after it.
+
+        The stub changes the copy while the second session's turn runs -- after the second conversion's
+        own comparison and after the comparison taken where the copy grew, both recorded by then -- so
+        only the comparison that runs last can answer for it. Exactly that one must fail, its detail must
+        name the copy's wanted bytes, and the baseline comparison must have passed: that pair is what puts
+        the growth baseline in front of this turn rather than behind it, so a run whose baseline
+        comparison moved after the second turn would report two failures here, and a run that never
+        re-compared the copy at the end would report none.
+        """
+        code, results = self.drive(copy_mutation="second turn", repeat_turn=True)
+        self.assertEqual(results.get("a real turn continues from the second installed session",
+                                     ("", ""))[0], "PASS",
+                         f"the second turn did not run, so its mutation would not be what the comparison "
+                         f"catches: {results}")
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed, ["the source session is unchanged"],
+                         f"the second turn's copy mutation was not caught by exactly the comparison that "
+                         f"runs last: {results}")
+        detail = results["the source session is unchanged"][1]
+        self.assertIn("the converted source copy changed after the second conversion", detail, detail)
+        self.assertEqual(results["the source copy still holds the bytes the first conversion read"][0],
+                         "PASS",
+                         f"the comparison taken where the copy grows answered for a turn that had not run "
+                         f"yet: {results}")
+        self.assertEqual(code, 1, f"exit {code} for a run with a failed comparison: {results}")
+
+    def test_a_second_boundary_that_is_not_the_grown_copy_fails(self) -> None:
+        """The reported boundary is checked against the file, not taken on its word.
+
+        The stub's second document claims a digest that is not the grown copy's. The check measures the
+        file itself, so the attribution comparison must fail -- and each of the overrides below is a
+        different way a report can be wrong: a digest from another file, a size that is not the file's, a
+        boundary that was never taken, and a read whose own snapshot is not the file (`read_bytes` or
+        `read_coverage` disagreeing), which is the answer that makes the two conversions of one growing
+        copy attributable to their own bytes at all.
+        """
+        for override in ({"sha256": "0" * 64}, {"bytes": 1}, {"state": "not-taken"},
+                         {"read_coverage": "size-mismatch"}, {"read_bytes": 1}):
+            with self.subTest(override=override):
+                code, results = self.drive(second_boundary=override)
+                state, detail = results.get(
+                    "the second conversion reports the boundary of the grown source copy", ("missing", ""))
+                self.assertEqual(state, "FAIL", f"{override}: {state} — {detail}; all results: {results}")
+                # The first conversion's own boundary comparison is not the one that failed: the failure
+                # is attributed to the document that lied, not to the run.
+                self.assertEqual(results["the conversion reports the boundary of the source copy it read"][0],
+                                 "PASS", f"{override}: {results}")
+                self.assertEqual(code, 1, f"{override}: exit {code} for a failed comparison: {results}")
+
+    def test_a_second_document_without_the_appended_turn_fails_the_search(self) -> None:
+        """The two comparisons that look for the turn the source gained are live in both directions.
+
+        With the growth left out of the second conversion's document and out of the target's own view,
+        those two comparisons -- and only they -- must fail. A search that compared nothing, or one that
+        searched the first conversion's file, stays green here.
+        """
+        code, results = self.drive(include_growth_in_second=False)
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed,
+                         sorted(["the second conversion carries the history the source gained",
+                                 "the target's own view of the second session lists the appended turn"]),
+                         f"the run's failures are not exactly the two comparisons that search for the "
+                         f"appended turn: {results}")
+        self.assertEqual(code, 1, f"exit {code} for a run with failed comparisons: {results}")
 
     def test_a_non_object_codex_installed_line_is_a_named_failure(self) -> None:
         """A line that parses but is not a JSON object is a FAIL the check names, not a pass.
@@ -770,6 +1242,93 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 self.assertIn(f"line 2 is not a JSON object, but {kind}", detail, detail)
                 self.assertEqual(code, 1,
                                  f"exit {code} for a run whose JSONL check failed: {results}")
+
+
+#: This increment's evidence record: the file whose §6 and §13 passages state where the native check
+#: takes the comparison the growth is measured from.
+RECORD = SCRIPTS.parent / "docs" / "evidence" / "0004-repeatable-continuation-handoffs.md"
+
+#: The order the shipped check runs in, read from the script's own source, one ``(label, needle)`` per
+#: stage: the first session's real turn, the comparison taken where the copy grows, the growth append,
+#: then the second session's real turn. Each needle is a call the script makes exactly once, and the
+#: label is what a failure names instead of quoting the call.
+SHIPPED_ORDER = (
+    ("the first session's turn", "run_turn(repo, codex, home, installed,"),
+    ("the comparison taken where the copy grows",
+     'record("the source copy still holds the bytes the first conversion read"'),
+    ("the growth append", "append_fragment(copy, fragment)"),
+    ("the second session's turn", "run_turn(repo, codex, home, second_installed,"),
+)
+
+#: The two halves of that placement a record states: the comparison is taken after the first session's
+#: real turn, and before the copy the second conversion reads grows (hence before the second turn).
+STATED_ORDER = ("after the first conversion's loader and its own real turn",
+                "before the copy the second conversion reads grows")
+
+#: The reading this record carried before this round's correction, kept here as the shape the case
+#: reports rather than counts as the rule: the comparison placed ahead of *both* real turns, where no
+#: turn had yet run when it was taken.
+WRONG_ORDER = "runs *before* either"
+
+#: The fence a quoted run -- a transcript, a command, a failure message -- lives in.
+FENCE = "```"
+
+
+def prose(document: str) -> str:
+    """A record's own prose: its text with each fenced block dropped, whitespace collapsed to one line.
+
+    The two readings below are about what the record *states*, not about what it quotes: §15 quotes the
+    case's own failure message, and that message repeats the reading the record corrected, so a reading
+    that scanned the whole file would report the record's own evidence against it. Inside a fence is
+    quoted material; outside it is the record speaking.
+    """
+    kept, inside = [], False
+    for line in document.splitlines():
+        if line.startswith(FENCE):
+            inside = not inside
+            continue
+        if not inside:
+            kept.append(line)
+    return " ".join(" ".join(kept).split())
+
+
+class RecordStatesTheChecksOwnOrder(unittest.TestCase):
+    """The record's claim about when the growth baseline is taken is the shipped check's own order.
+
+    ``scripts/codex-native-check.py`` runs the first session's turn, takes the comparison whose detail is
+    "the source copy still holds the bytes the first conversion read", appends the growth fragment and
+    then runs the second session's turn -- the order read here from the script's own source. The record's
+    §6 and §13 passages must state both ends of it and must not carry the reading the review found (the
+    comparison ahead of *both* turns): the behavioural pins of that order are the two turn-window cases in
+    ``ProtectedArtifactsAfterNativeVerification``, and this case is what keeps the record's own words
+    answerable to them. What it does not read: a passage that states no placement at all, a claim spelled
+    in words neither half of ``STATED_ORDER`` holds, and anything inside a fence -- those are readable by a
+    person and by the review, not by this reading.
+    """
+
+    def test_the_record_states_the_order_the_shipped_script_runs_in(self) -> None:
+        source = (SCRIPTS / "codex-native-check.py").read_text(encoding="utf-8")
+        positions = []
+        for label, stage in SHIPPED_ORDER:
+            self.assertEqual(source.count(stage), 1,
+                             f"the shipped script no longer makes exactly one call that is {label} "
+                             f"({stage!r}), so the order this case reads from its source would name "
+                             f"another stage")
+            positions.append(source.index(stage))
+        order = ", ".join(f"{label} at {position}"
+                          for (label, _), position in zip(SHIPPED_ORDER, positions))
+        self.assertEqual(positions, sorted(positions),
+                         "the shipped script no longer runs the first session's turn, the comparison "
+                         "taken where the copy grows, the growth append and the second session's turn in "
+                         f"the order this rule is about: {order}")
+        document = prose(RECORD.read_text(encoding="utf-8"))
+        for half in STATED_ORDER:
+            self.assertIn(half, document,
+                          f"{RECORD.name} does not state {half!r}: this case reads the record's own "
+                          f"claim about where that comparison is taken")
+        self.assertNotIn(WRONG_ORDER, document,
+                         f"{RECORD.name} places the comparison ahead of both real turns: the shipped "
+                         f"script takes it after the first session's turn and before the second's")
 
 
 if __name__ == "__main__":

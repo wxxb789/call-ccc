@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,6 +55,50 @@ func fixturePath(t *testing.T, relative string) string {
 	return filepath.Join(fixtureRoot(t), relative)
 }
 
+// growthRoot is the committed tree of growth fragments: the bytes a test or the native check appends to a
+// *copy* of a fixture, so one source session grows without a committed fixture moving.
+func growthRoot(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.Abs(filepath.Join("testdata", "growth"))
+	if err != nil {
+		t.Fatalf("resolving the growth root: %v", err)
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Fatalf("growth root %s: %v", root, err)
+	}
+	return root
+}
+
+// growthFragment is one committed growth fragment's bytes.
+func growthFragment(t *testing.T, name string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(growthRoot(t), name))
+	if err != nil {
+		t.Fatalf("reading the growth fragment %s: %v", name, err)
+	}
+	return data
+}
+
+// appendGrowth appends one committed growth fragment to a session file, which is how a test makes its copy
+// of a fixture gain history: the file grows by exactly those bytes and nothing else is touched.
+func appendGrowth(t *testing.T, path, fragment string) int64 {
+	t.Helper()
+	data := growthFragment(t, fragment)
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("opening %s to grow it: %v", path, err)
+	}
+	defer file.Close()
+	if _, err := file.Write(data); err != nil {
+		t.Fatalf("appending %s to %s: %v", fragment, path, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("sizing the grown source: %v", err)
+	}
+	return info.Size()
+}
+
 // fixtureConfig points the inherited providers at the committed fixtures and the archive at a
 // throw-away directory, so nothing a test does can reach a real session or a real archive.
 func fixtureConfig(t *testing.T) config.Config {
@@ -97,30 +142,51 @@ func hashTree(t *testing.T, root string) map[string]string {
 	return hashes
 }
 
-// TestFixturesMatchTheirGenerator pins that the committed fixtures are exactly what the committed
-// generator writes, so the bytes in testdata cannot drift from the shape their comments describe.
+// TestFixturesMatchTheirGenerator pins that the committed fixtures — and the growth fragments a test or the
+// native check appends to a *copy* of one — are exactly what the committed generator writes, so the bytes
+// in testdata cannot drift from the shape their comments describe.
+//
+// The generator writes both trees in one run, and both of its roots are therefore named here: their
+// defaults are relative to the working directory (the repository root, which is where the documented
+// invocation runs from), while a test's working directory is this package, so a root left to its default
+// would land under `internal/ccc/internal/…` instead of the committed tree.
 func TestFixturesMatchTheirGenerator(t *testing.T) {
-	committed := hashTree(t, fixtureRoot(t))
-	regenerated := filepath.Join(t.TempDir(), "fixtures")
-	cmd := exec.Command("go", "run", "./fixturegen", "-root", regenerated)
+	trees := []struct{ name, committed, generated string }{
+		{"fixtures", fixtureRoot(t), "fixtures"},
+		{"growth fragments", growthRoot(t), "growth"},
+	}
+	committed := map[string]map[string]string{}
+	for _, tree := range trees {
+		committed[tree.name] = hashTree(t, tree.committed)
+	}
+
+	regenerated := t.TempDir()
+	cmd := exec.Command("go", "run", "./fixturegen",
+		"-root", filepath.Join(regenerated, "fixtures"),
+		"-growth-root", filepath.Join(regenerated, "growth"))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("running fixturegen: %v\n%s", err, output)
 	}
-	// The generator writes the same relative paths; compare content, not location.
-	generated := hashTree(t, regenerated)
-	if len(committed) != len(generated) {
-		t.Fatalf("committed fixture count %d, generated %d", len(committed), len(generated))
-	}
-	for path, sum := range committed {
-		if generated[path] != sum {
-			t.Errorf("fixture %s differs from what fixturegen writes; re-run "+
-				"`go run ./internal/ccc/fixturegen`", path)
+	for _, tree := range trees {
+		generated := hashTree(t, filepath.Join(regenerated, tree.generated))
+		if len(committed[tree.name]) != len(generated) {
+			t.Fatalf("%s: committed file count %d, generated %d",
+				tree.name, len(committed[tree.name]), len(generated))
 		}
-	}
-	if unchanged := hashTree(t, fixtureRoot(t)); len(unchanged) != len(committed) {
-		t.Errorf("the fixture tree changed during the test: %d -> %d file(s)",
-			len(committed), len(unchanged))
+		for path, sum := range committed[tree.name] {
+			if generated[path] != sum {
+				t.Errorf("%s: %s differs from what fixturegen writes; re-run "+
+					"`go run ./internal/ccc/fixturegen`", tree.name, path)
+			}
+		}
+		// The whole mapping is compared, not its length: a rewrite of a committed file during the case
+		// moves no count, and a count of files is not a digest of them.
+		unchanged := hashTree(t, tree.committed)
+		if !maps.Equal(unchanged, committed[tree.name]) {
+			t.Errorf("the %s tree changed during the test: %d file(s) before, %d after",
+				tree.name, len(committed[tree.name]), len(unchanged))
+		}
 	}
 }
 

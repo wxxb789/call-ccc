@@ -1,0 +1,2 @@
+{"cwd":"/home/user/code/example-api","message":{"content":"What budget do retries share per session?"},"timestamp":"2026-05-04T09:20:00.000Z","type":"user","uuid":"bbbbbbbb-0000-4000-8000-000000000011"}
+{"message":{"content":[{"text":"The retry budget is 120 seconds per session, held in internal/retry/budget.go.","type":"text"}]},"parentUuid":"bbbbbbbb-0000-4000-8000-000000000011","timestamp":"2026-05-04T09:20:04.000Z","type":"assistant","uuid":"bbbbbbbb-0000-4000-8000-000000000012"}

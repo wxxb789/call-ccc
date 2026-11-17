@@ -732,9 +732,11 @@ func archiveFixtureCopy(t *testing.T, cfg config.Config, fixture, destination st
 }
 
 // sourceFixtureCopy writes a copy of one committed fixture under a provider root of its own and answers
-// the configuration, whose Claude root now points at that root, plus the copy's path. A test that has to
-// change or remove the source session's file works on the copy: the committed fixture never moves.
-func sourceFixtureCopy(t *testing.T, cfg config.Config, fixture, destination string) (config.Config, string) {
+// the configuration, whose provider root now points at that root, plus the copy's path. A test that has to
+// change, grow or remove the source session's file works on the copy: the committed fixture never moves.
+func sourceFixtureCopy(
+	t *testing.T, cfg config.Config, agent parser.AgentType, fixture, destination string,
+) (config.Config, string) {
 	t.Helper()
 	data, err := os.ReadFile(fixture)
 	if err != nil {
@@ -748,7 +750,7 @@ func sourceFixtureCopy(t *testing.T, cfg config.Config, fixture, destination str
 	if err := os.WriteFile(copyPath, data, 0o600); err != nil {
 		t.Fatalf("writing the copy: %v", err)
 	}
-	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentClaude: {root}}
+	cfg.AgentDirs = map[parser.AgentType][]string{agent: {root}}
 	return cfg, copyPath
 }
 
@@ -1883,7 +1885,7 @@ func TestSourceCheckComparesTheFileBeforeAndAfter(t *testing.T) {
 	}
 	conversation := Conversation{Source: SourceIdentity{Provider: "claude", SourcePath: path}}
 
-	before, err := sourceFileDigest(conversation, "source")
+	before, err := fileDigest(path)
 	if err != nil {
 		t.Fatalf("digesting the source: %v", err)
 	}
@@ -1936,7 +1938,7 @@ func TestSourceCheckComparesTheFileBeforeAndAfter(t *testing.T) {
 // must not miss it.
 func TestContinueReportsASourceThatMovedDuringTheConversion(t *testing.T) {
 	cfg := fixtureConfig(t)
-	cfg, sourcePath := sourceFixtureCopy(t, cfg,
+	cfg, sourcePath := sourceFixtureCopy(t, cfg, parser.AgentClaude,
 		fixturePath(t, filepath.Join("claude", "-home-user-code-example-api", claudeFixtureRef.ID+".jsonl")),
 		filepath.Join("-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"))
 	before, err := fileDigest(sourcePath)
@@ -2066,13 +2068,11 @@ func TestContinueFromAContainerMemberReportsNoFileToCompare(t *testing.T) {
 // no file can earn: an identity that names a *member* (a row inside a container) is a fact about the
 // source, and the check answers not-verified with it; a read that reported no path at all is a read the
 // report cannot describe, and the caller stops the run rather than reporting a state of a file that was
-// never named. sourceFileOf answers the two apart, and each half is pinned by the test beside this one.
+// never named. sourceFileOf answers the two apart; the not-taken half each identity earns from the
+// boundary pass is pinned beside this one (TestTakeSourceBoundaryAnswersTheReadsThatHaveNoFileToMeasure),
+// and what this case holds is the stop the comparison itself makes.
 func TestSourceCheckStopsAReadThatNamesNoFileAtAll(t *testing.T) {
 	conversation := Conversation{Source: SourceIdentity{Provider: "claude"}}
-	digest, err := sourceFileDigest(conversation, "source")
-	if err != nil || digest != "" {
-		t.Fatalf("digest = %q, err = %v; a read that names no path has no file to digest", digest, err)
-	}
 	if _, _, err := sourceCheckAfter(conversation, "source", ""); err == nil ||
 		!strings.Contains(err.Error(), "no path") {
 		t.Fatalf("err = %v, want a stopped run naming the read that reported no path", err)
@@ -2103,10 +2103,6 @@ func TestSourceCheckStopsAComparisonWhoseDigestWasNeverTaken(t *testing.T) {
 // be a claim about a file that was never open.
 func TestSourceCheckSaysWhenThereWasNoFileToCompare(t *testing.T) {
 	conversation := Conversation{Source: SourceIdentity{Provider: "claude", SourcePath: "/absent/file.jsonl"}}
-	digest, err := sourceFileDigest(conversation, "archive")
-	if err != nil || digest != "" {
-		t.Fatalf("digest = %q, err = %v; an archive read has no source file to digest", digest, err)
-	}
 	state, detail, err := sourceCheckAfter(conversation, "archive", "")
 	if err != nil || state != SourceCheckNotVerified {
 		t.Fatalf("state = %q, err = %v; want a comparison that did not run", state, err)
@@ -2166,7 +2162,7 @@ func stoppedRunChecks(t *testing.T, result ContinueResult) {
 // leave an installed session with no identity reported for it.
 func TestContinueKeepsTheReportWhenTheSourceVanishesAfterTheInstall(t *testing.T) {
 	cfg := fixtureConfig(t)
-	cfg, sourcePath := sourceFixtureCopy(t, cfg,
+	cfg, sourcePath := sourceFixtureCopy(t, cfg, parser.AgentClaude,
 		fixturePath(t, filepath.Join("claude", "-home-user-code-example-api", claudeFixtureRef.ID+".jsonl")),
 		filepath.Join("-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"))
 
@@ -2316,7 +2312,7 @@ func TestContinueKeepsTheConversionReportWhenTheHomeCannotBeCreated(t *testing.T
 // its verdict too: a failure later in the run must not downgrade a check that did verify.
 func TestContinueKeepsTheDryRunReportWhenItsSourceCheckCannotRun(t *testing.T) {
 	cfg := fixtureConfig(t)
-	cfg, sourcePath := sourceFixtureCopy(t, cfg,
+	cfg, sourcePath := sourceFixtureCopy(t, cfg, parser.AgentClaude,
 		fixturePath(t, filepath.Join("claude", "-home-user-code-example-api", claudeFixtureRef.ID+".jsonl")),
 		filepath.Join("-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"))
 

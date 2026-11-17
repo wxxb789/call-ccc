@@ -1,6 +1,6 @@
 # Evidence — 0003 Continue a Codex session in Claude Code
 
-Contract: [`docs/goals/0003-codex-to-claude-continuation.md`](../goals/0003-codex-to-claude-continuation.md).
+Contract: [`docs/goals/archive/0003-codex-to-claude-continuation.md`](../goals/archive/0003-codex-to-claude-continuation.md).
 Plan: [`docs/plans/0003-codex-to-claude-continuation.md`](../plans/0003-codex-to-claude-continuation.md).
 Increment 0002's evidence: [`0002-claude-to-codex-continuation.md`](0002-claude-to-codex-continuation.md).
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Native verification for the Claude Code → Codex route (goal 0002).
+"""Native verification for the Claude Code → Codex route (goals 0002 and 0004).
 
 This harness answers the half of the goal that the gate cannot: whether the installed target session is
 readable by **Codex itself** and whether a **real turn** continues from it. It builds `ccc`, converts a
@@ -18,6 +18,21 @@ the comparison that runs last rather than by an earlier verdict standing in for 
 removed again when the run ends, so a `--codex-home` the caller named is left as it was found apart from
 the converted session.
 
+**The source grows, and is converted again (goal 0004).** The fixture is converted from a *copy* this run
+makes under its scratch directory, never from the committed bytes: the copy is what grows, by the
+committed growth fragment below, and it is then converted a second time into the same home. That second
+half answers the repeatable-handoff clauses: the second conversion's reported boundary is the grown
+copy's own bytes (the check hashes the file itself rather than trusting that report), the appended turn's
+words are in the second installed document and not in the first, the first session's bytes are unchanged
+by the second conversion, and Codex's own loader opens the second session with its own view holding the
+turn the source gained — all of it after the first session was loaded (and, with `--resume-prompt`,
+resumed by its harness). Immediately before it grows, the copy is compared with the bytes it had before the
+first conversion, because the loader and that turn run between the two: without that comparison a
+*same-length* change made during the first native stage keeps the growth record's size delta true and its
+digest different, and becomes the baseline every later comparison measures from. `--repeat-resume-prompt`
+runs one further real turn in the *second* session, so the later snapshot's model-visible history is
+answered by the target itself; each prompt flag runs one turn, and the run's report line says how many ran.
+
 It is **not** a gate step: it needs the Codex binary, and a turn needs model access. `scripts/gate.py`
 decides the offline half (round-trip through the inherited reader, install rules, reported losses, CLI
 shape); this script is the re-derivable native evidence, the way `scripts/upstream-compare.py` is for the
@@ -30,18 +45,19 @@ floods that pipe cannot grow this harness's memory either.
     python3 scripts/codex-native-check.py --resume-prompt "Which file did you read, and why?"
     python3 scripts/codex-native-check.py --model-provider tencent-litellm --model deepseek-v4.1-flash-fast \
         --resume-prompt "Which file did you read, and why?"
+    python3 scripts/codex-native-check.py --repeat-resume-prompt "What budget do retries share per session?"
     python3 scripts/codex-native-check.py --json          # machine-readable summary on stdout
 
 `--model-provider`/`--model` name what the throw-away Codex configuration should use, because the
 target's loader checks a session against the provider *its* configuration names: the load check only
-needs a configured provider, while `--resume-prompt` needs one that can actually answer on this host
-(its key comes from the environment, never from a copied credential). That throw-away configuration is
-built from the settings of the host's own `config.toml`, which is never copied as a document: it is
-seeded with that file's model settings and the named provider's definition, and never with a setting
-whose value can hold a credential -- a provider's authorization headers, an MCP server's environment
-table, a credential written into a URL -- because a configuration is exactly where those live. The
-report line names the settings that were copied and the ones that were left behind, so a provider whose
-credential is written into the configuration has to take it from the environment instead.
+needs a configured provider, while `--resume-prompt` and `--repeat-resume-prompt` need one that can
+actually answer on this host (its key comes from the environment, never from a copied credential). That
+throw-away configuration is built from the settings of the host's own `config.toml`, which is never
+copied as a document: it is seeded with that file's model settings and the named provider's definition,
+and never with a setting whose value can hold a credential -- a provider's authorization headers, an MCP
+server's environment table, a credential written into a URL -- because a configuration is exactly where
+those live. The report line names the settings that were copied and the ones that were left behind, so a
+provider whose credential is written into the configuration has to take it from the environment instead.
 
 Exit codes: 0 every check that ran passed; 1 a check failed; 2 the harness could not run (no Codex, no
 Go toolchain, a missing fixture).
@@ -95,6 +111,17 @@ TOOLING_SESSION = "b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef"
 FIXTURE_ROOT = Path("internal", "ccc", "testdata", "fixtures")
 GO_TAGS = "fts5"
 BINARY = Path("bin", "ccc-native-check")
+
+#: The committed growth fragment: the bytes this harness appends to its *copy* of the fixture between the
+#: two conversions, so the source session gains a turn without the committed fixture tree (which this run
+#: hashes) moving. It is generated and pinned by `internal/ccc/fixturegen`, the same way the fixtures are.
+GROWTH_ROOT = Path("internal", "ccc", "testdata", "growth")
+GROWTH_TURN = "claude-complete-turn.jsonl"
+
+#: The provider root the copy is written under: a Claude Code transcript is resolved through the directory
+#: its project-dir spelling names, and this run drives the conversions with `CLAUDE_PROJECTS_DIR` pointing
+#: at its scratch root rather than at the committed fixtures.
+COPY_ROOT = Path("source")
 
 #: The unrelated session the harness plants in the target home before converting: a conversion must not
 #: touch a session another agent may already have continued.
@@ -518,6 +545,84 @@ class AppServer:
         self.notify("initialized", {})
 
 
+def append_fragment(path: Path, fragment: Path) -> int:
+    """Append one fragment's bytes to a session file, answering the file's size afterwards.
+
+    This is how the run makes its *copy* of the fixture grow: the copy is written under the scratch
+    directory (``copy_of_fixture``), so the committed bytes this run also hashes never move.
+    """
+    data = fragment.read_bytes()
+    with path.open("ab") as handle:
+        handle.write(data)
+    return path.stat().st_size
+
+
+def appended_texts(fragment: Path) -> list[str]:
+    """The dialogue texts one growth fragment records, read from the fragment's own bytes.
+
+    They are what a run has to find in the *later* target's document and not in the earlier one, so the
+    expectation is derived from the committed fragment rather than re-typed here. A record whose message
+    content is a string holds one text; a record whose content is a block list holds the text of each of
+    its text blocks.
+    """
+    texts: list[str] = []
+    for line in fragment.read_text().splitlines():
+        if not line.strip():
+            continue
+        content = (json.loads(line).get("message") or {}).get("content")
+        if isinstance(content, str):
+            texts.append(content)
+        elif isinstance(content, list):
+            texts.extend(str(block.get("text", "")) for block in content
+                         if isinstance(block, dict) and block.get("type") == "text")
+    return [text for text in texts if text]
+
+
+def boundary_of(document: dict) -> dict:
+    """The source boundary one conversion's JSON document reports (an empty mapping when it reports none)."""
+    return ((document.get("source") or {}).get("boundary") or {})
+
+
+def boundary_matches(document: dict, path: Path) -> tuple[bool, str]:
+    """Whether a conversion's reported boundary is the bytes of ``path``, and that answer in words.
+
+    The size and the digest are measured here, from the file itself: a boundary taken from another file,
+    one that never ran, or one whose record offsets do not describe the file at all is a failure rather
+    than something this harness takes the report's word for. The path the report names is compared with
+    the same spelling this run handed the conversion, because that is the file the two must agree about.
+    The read's own coverage answer is checked the same way: the conversion has to report that the file is
+    still the size the snapshot it opened recorded (a size match, which is what the read's own record can
+    show), which is what makes the two conversions of one growing copy attributable to their own bytes at
+    all.
+    """
+    boundary = boundary_of(document)
+    size, digest = path.stat().st_size, sha256(path)
+    ok = (boundary.get("state") == "taken"
+          and boundary.get("path") == str(path)
+          and boundary.get("bytes") == size
+          and boundary.get("sha256") == digest
+          and boundary.get("read_bytes") == size
+          and boundary.get("read_coverage") == "size-match"
+          and boundary.get("record_offsets") == "claimed"
+          and boundary.get("terminated_records_end_bytes") == size
+          and not boundary.get("unterminated_tail_bytes"))
+    detail = (f"boundary={json.dumps(boundary)}; {path.name} is {size} bytes, "
+              f"sha256 {digest[:16]}…")
+    return ok, detail
+
+
+def copy_of_fixture(fixture: Path, root: Path) -> Path:
+    """Copy one committed fixture under `root`, in the project directory the fixture itself is filed in.
+
+    The copy — never the committed file — is what a run grows and converts: a Claude Code transcript is
+    resolved through the project directory its own path spells, so the copy keeps that directory's name.
+    """
+    target = root / fixture.parent.name / fixture.name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(fixture, target)
+    return target
+
+
 def thread_view(server: AppServer, thread_id: str) -> tuple[list[str], list[str]]:
     """The target harness's own view of a thread: the lines it shows, and the item types it lists.
 
@@ -542,6 +647,119 @@ def thread_view(server: AppServer, thread_id: str) -> tuple[list[str], list[str]
     return lines, kinds
 
 
+def record_installed_jsonl(path: Path, check_name: str, note: str = "") -> None:
+    """One installed file is one JSON object per line, under the check's own name.
+
+    ``note`` is what the first conversion's file earns for its passing detail -- it is also the file the
+    load check below reads -- while a file that is not that shape fails the check with the parse error
+    itself, so the failure names the line rather than restating the check's name.
+    """
+    parsed = jsonl_parse_error(path.read_text())
+    record(check_name, not parsed, parsed or f"{path.stat().st_size} bytes{note}")
+
+
+def inspect_counts(repo: Path, home: Path, thread_id: str) -> tuple[dict, subprocess.CompletedProcess]:
+    """The inherited reader's own read of one installed session: its counts, and the run that read them.
+
+    The file is read back by this script's own invocation of the reader, not by the conversion's own
+    structure block: `ccc inspect` is a second process reading the same isolated Codex root, and the
+    counts it reports are compared with what the conversion says it carried. A broken round-trip check
+    inside ccc -- or a CLI that mapped it to "verified" -- cannot make that comparison green.
+    """
+    readback = run([str(repo / BINARY), "inspect", f"codex:{thread_id}", "--json"],
+                   cwd=repo, env={"CODEX_HOME": str(home)})
+    try:
+        counts = json.loads(readback.stdout).get("source", {}).get("counts", {})
+    except json.JSONDecodeError:
+        counts = {}
+    return counts, readback
+
+
+def readback_verdict(thread_id: str, counts: dict, carried: dict) -> tuple[bool, str]:
+    """Whether the reader's counts agree with what one conversion carried, and that answer in words.
+
+    The comparison is over the counts that name evidence, because the reader normalises records it reads
+    (a standalone function_call becomes an assistant message of its own, for one), so a comparison of
+    whole message counts would compare the writer's shape with the reader's.
+    """
+    agreed = (counts.get("user_messages") == carried["user_messages"]
+              and counts.get("tool_calls") == carried["tool_calls"]
+              and counts.get("tool_results") == carried["tool_results"]
+              and counts.get("compact_boundaries") == carried["compaction_boundaries"])
+    detail = (f"ccc inspect codex:{thread_id}: {json.dumps(counts)}; conversion carried: "
+              f"{carried['user_messages']} user message(s), {carried['tool_calls']} tool call(s), "
+              f"{carried['tool_results']} tool result(s), "
+              f"{carried['compaction_boundaries']} boundary(ies)")
+    return agreed, detail
+
+
+def load_and_view(codex: str, home: Path, thread_id: str, installed: Path,
+                  loader_name: str, view_label: str) -> tuple[list[str], list[str]]:
+    """One installed session as the target harness itself answers for it: its own view, or the failure.
+
+    The strings a run records about a load are the run's own -- each conversion's checks have their own
+    names and the second session's own view has its own heading -- and the loader's answer is the
+    harness's reply itself: a server that stopped answering is a failed check carrying its diagnostics,
+    not a traceback, because the protocol is bounded and so is this run's verdict.
+    """
+    view: list[str] = []
+    kinds: list[str] = []
+    server = AppServer(codex, home)
+    try:
+        server.handshake()
+        loaded = server.call("thread/resume", {"threadId": thread_id})
+        loaded_thread = loaded.get("thread") or {}
+        record(loader_name,
+               loaded_thread.get("id") == thread_id and str(loaded_thread.get("path")) == str(installed),
+               f"thread/resume -> {loaded_thread.get('id')} [{loaded_thread.get('historyMode')}] "
+               f"cwd={loaded_thread.get('cwd')}")
+        view, kinds = thread_view(server, thread_id)
+    except RuntimeError as failure:
+        record(loader_name, False, str(failure))
+    finally:
+        server.close()
+    if view:
+        print()
+        print(view_label)
+        for line in view:
+            print("   ", line)
+    return view, kinds
+
+
+def turn_identity(codex: str, thread_id: str, reported_arguments: list[str]) -> list[str]:
+    """The words one real turn runs: the conversion's reported arguments, or the identity itself.
+
+    The turn runs the arguments the conversion reported -- binary, subcommand, identity -- rather than a
+    command line spelled here, so the printed invocation is what the check exercises. A report that did
+    not check out (the comparison above recorded that) leaves the identity spelled here, so the turn
+    still answers whether a turn can continue.
+    """
+    if reported_arguments == [codex, "exec", "resume", thread_id, PROMPT_PLACEHOLDER]:
+        return reported_arguments[1:-1]
+    return ["exec", "resume", thread_id]
+
+
+def run_turn(repo: Path, codex: str, home: Path, session_file: Path, identity: list[str],
+             prompt: str, check_name: str) -> None:
+    """One real turn in an installed session, recorded under ``check_name``, and its answer printed.
+
+    The flags this harness adds are its own isolation (no git repository, a read-only sandbox, no
+    approvals) and belong to the check, not to the reported command; what the check answers is whether
+    the turn ran and the session it names grew.
+    """
+    session_before = session_file.stat().st_size
+    turn = run([codex] + identity + [prompt] + [
+        "--skip-git-repo-check", "-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"',
+    ], cwd=repo, env={"CODEX_HOME": str(home)}, timeout=900)
+    session_after = session_file.stat().st_size
+    record(check_name, turn.returncode == 0 and session_after > session_before,
+           f"exit {turn.returncode}, session {session_before} -> {session_after} bytes")
+    print()
+    print(TURN_OUTPUT_MARKER)
+    for line in (turn.stdout or turn.stderr).splitlines():
+        print("   ", line)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parent.parent)
@@ -552,6 +770,8 @@ def main(argv: list[str] | None = None) -> int:
                              f"turn sees its tool calls)")
     parser.add_argument("--codex-home", type=Path, help="Codex data directory to use (default: a temporary one)")
     parser.add_argument("--resume-prompt", help="run one real turn in the installed session with this prompt")
+    parser.add_argument("--repeat-resume-prompt", help="run one real turn in the SECOND session — the one "
+                        "converted after the source copy grew — with this prompt")
     parser.add_argument("--model-provider", help="provider the throw-away Codex config should name "
                         "(default: the host configuration's own answer)")
     parser.add_argument("--model", help="model the throw-away Codex config should name")
@@ -567,6 +787,11 @@ def main(argv: list[str] | None = None) -> int:
               f"{fixture_root / SOURCE_PROVIDER}, found {len(candidates)}", file=sys.stderr)
         return 2
     source = candidates[0]
+    fragment = repo / GROWTH_ROOT / GROWTH_TURN
+    if not fragment.is_file():
+        print(f"the committed growth fragment {fragment} is missing: this harness needs the bytes the "
+              f"source copy grows by between the two conversions", file=sys.stderr)
+        return 2
     codex = shutil.which(args.codex)
     if codex is None:
         print(f"{args.codex} is not on PATH: this harness verifies native behaviour, which needs the "
@@ -578,6 +803,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     scratch = Path(tempfile.mkdtemp(prefix="ccc-native-check-"))
+    # The source session this run converts is a copy under the scratch directory, never the committed
+    # fixture: the second conversion needs a source that grew, and a committed file is not this run's to
+    # write. The copy keeps the project directory's name, because that is how a Claude Code transcript is
+    # spelled on disk and how the provider resolves it.
+    source_root = scratch / COPY_ROOT
+    copy = copy_of_fixture(source, source_root)
     home = args.codex_home.resolve() if args.codex_home else scratch / "codex-home"
     home.mkdir(parents=True, exist_ok=True)
     seeded_report = ""
@@ -619,10 +850,15 @@ def main(argv: list[str] | None = None) -> int:
     if seeded_report:
         print(seeded_report)
     print(f"source:      {source.relative_to(repo)}")
+    print(f"copy:        {copy.relative_to(scratch)} (the fixture's bytes; this is what grows)")
+    print(f"growth:      {fragment.relative_to(repo)} ({fragment.stat().st_size} bytes)")
     print(f"scratch:     {scratch}")
     print()
 
     fixture_before = tree_digest(fixture_root)
+    fragment_before = sha256(fragment)
+    copy_before = sha256(copy)
+    copy_size_before = copy.stat().st_size
     unrelated_before = sha256(unrelated)
     # Every session the home already held — the planted one and the caller's own, when --codex-home
     # names a real home — as the dashed id its file name ends with, and its bytes: a conversion must
@@ -636,7 +872,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         record("ccc builds with the flags upstream ships", True)
 
-        env = {"CLAUDE_PROJECTS_DIR": str(fixture_root / SOURCE_PROVIDER)}
+        env = {"CLAUDE_PROJECTS_DIR": str(source_root)}
         convert = run([
             str(repo / BINARY), "continue", f"{SOURCE_PROVIDER}:{args.session}", "--to", "codex",
             "--target-home", str(home), "--target-binary", codex, "--json",
@@ -667,6 +903,13 @@ def main(argv: list[str] | None = None) -> int:
                and any(loss["count"] > 0 for loss in conversion["losses"]),
                f"{conversion['carried']['messages']} message(s), {conversion['carried']['tool_calls']} "
                f"tool call(s), {len(conversion['losses'])} loss categories")
+        # The source boundary, against this harness's own reading of the file: the conversion's report is
+        # the claim, and the bytes here are what it is checked against.
+        boundary_ok, boundary_detail = boundary_matches(document, copy)
+        record("the conversion reports the boundary of the source copy it read", boundary_ok, boundary_detail)
+        record("the source copy is unchanged by the conversion",
+               sha256(copy) == copy_before and copy.stat().st_size == copy_size_before,
+               f"sha256 {copy_before[:16]}…, {copy_size_before} bytes, taken before and after")
         day_directory = installed.parent.relative_to(home / "sessions")
         record("the session is installed under the target's own sessions tree",
                installation["state"] == "installed" and installed.is_file()
@@ -675,61 +918,19 @@ def main(argv: list[str] | None = None) -> int:
         record("the target identity is new and is not the source's",
                thread_id != args.session and thread_id not in existing_ids,
                f"{thread_id}, not one of the {len(existing_ids)} id(s) already in the home")
-        parsed = jsonl_parse_error(installed.read_text())
-        record("the installed file is one JSON object per line",
-               not parsed,
-               parsed or f"{installed.stat().st_size} bytes (the target's own read of it is the load "
-                         f"check)")
-        # The installed file is read back by this script's own invocation of the inherited reader, not by
-        # the conversion's own structure block: `ccc inspect` is a second process reading the same
-        # isolated Codex root, and the counts it reports are compared with what the conversion says it
-        # carried. A broken round-trip check inside ccc -- or a CLI that mapped it to "verified" -- cannot
-        # make this check green.
-        readback = run([str(repo / BINARY), "inspect", f"codex:{thread_id}", "--json"],
-                       cwd=repo, env={"CODEX_HOME": str(home)})
-        try:
-            read_back = json.loads(readback.stdout).get("source", {}).get("counts", {})
-        except json.JSONDecodeError:
-            read_back = {}
+        record_installed_jsonl(installed, "the installed file is one JSON object per line",
+                               " (the target's own read of it is the load check)")
+        read_back, readback = inspect_counts(repo, home, thread_id)
         carried = conversion["carried"]
-        # The comparison is over the counts that name evidence, because the reader normalises records it
-        # reads (a standalone function_call becomes an assistant message of its own, for one), so a
-        # comparison of whole message counts would compare the writer's shape with the reader's.
-        agreed = (read_back.get("user_messages") == carried["user_messages"]
-                  and read_back.get("tool_calls") == carried["tool_calls"]
-                  and read_back.get("tool_results") == carried["tool_results"]
-                  and read_back.get("compact_boundaries") == carried["compaction_boundaries"])
-        detail = (f"ccc inspect codex:{thread_id}: {json.dumps(read_back)}; conversion carried: "
-                  f"{carried['user_messages']} user message(s), {carried['tool_calls']} tool call(s), "
-                  f"{carried['tool_results']} tool result(s), "
-                  f"{carried['compaction_boundaries']} boundary(ies)")
+        agreed, detail = readback_verdict(thread_id, read_back, carried)
         if readback.returncode != 0:
             detail += f"; inspect rc={readback.returncode}: {last_meaningful_line(readback.stderr)}"
         record("the inherited reader reads the installed file back as what was written", agreed, detail)
 
-        server = AppServer(codex, home)
-        view: list[str] = []
-        item_kinds: list[str] = []
-        try:
-            server.handshake()
-            loaded = server.call("thread/resume", {"threadId": thread_id})
-            loaded_thread = loaded.get("thread") or {}
-            record("the target harness's own loader opens the installed session",
-                   loaded_thread.get("id") == thread_id and str(loaded_thread.get("path")) == str(installed),
-                   f"thread/resume -> {loaded_thread.get('id')} [{loaded_thread.get('historyMode')}] "
-                   f"cwd={loaded_thread.get('cwd')}")
-            view, item_kinds = thread_view(server, thread_id)
-        except RuntimeError as failure:
-            # A server that stopped answering is a failed check with the harness's own diagnostics, not a
-            # traceback: the protocol is bounded, and so is this run's verdict.
-            record("the target harness's own loader opens the installed session", False, str(failure))
-        finally:
-            server.close()
-        if view:
-            print()
-            print("the target harness's own view of the installed session:")
-            for line in view:
-                print("   ", line)
+        view, item_kinds = load_and_view(
+            codex, home, thread_id, installed,
+            "the target harness's own loader opens the installed session",
+            "the target harness's own view of the installed session:")
         record("the target's own view lists the converted turns",
                "userMessage" in item_kinds and "agentMessage" in item_kinds,
                f"{len(item_kinds)} item(s) in the reply's own turn list")
@@ -758,43 +959,173 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.resume_prompt:
             print()
-            session_before = installed.stat().st_size
-            # The turn runs the arguments the conversion reported -- binary, subcommand, identity --
-            # rather than a command line spelled here, so the printed invocation is what this check
-            # exercises. The flags this harness adds are its own isolation (no git repository, a
-            # read-only sandbox, no approvals) and belong to the check, not to the reported command.
-            # A report that did not check out (the check above recorded that) leaves the identity
-            # spelled here, so this turn still answers whether a turn can continue.
-            identity = exec_resume_arguments[1:-1] if exec_resume_arguments == want_exec_resume \
-                else ["exec", "resume", thread_id]
-            turn_command = [codex] + identity + [args.resume_prompt] + [
-                "--skip-git-repo-check", "-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"',
-            ]
-            turn = run(turn_command, cwd=repo, env={"CODEX_HOME": str(home)}, timeout=900)
-            session_after = installed.stat().st_size
-            record("a real turn continues from the installed session",
-                   turn.returncode == 0 and session_after > session_before,
-                   f"exit {turn.returncode}, session {session_before} -> {session_after} bytes")
-            print()
-            print(TURN_OUTPUT_MARKER)
-            for line in (turn.stdout or turn.stderr).splitlines():
-                print("   ", line)
+            run_turn(repo, codex, home, installed,
+                     turn_identity(codex, thread_id, exec_resume_arguments),
+                     args.resume_prompt, "a real turn continues from the installed session")
         else:
             record("a real turn continues from the installed session", False,
                    "not attempted: pass --resume-prompt to run one", skipped=True)
+
+        # ---------------------------------------------------------------- the source grows, and is
+        # converted again. Everything above is the first conversion's own answer; what follows is the
+        # goal's repeatable-handoff half: the source gains one turn, the same session is converted a
+        # second time into the same home, and both results are held to their own bytes.
+        first_installed_digest = sha256(installed)
+        appended = appended_texts(fragment)
+        if not appended:
+            record("the growth fragment records dialogue to look for", False,
+                   f"{fragment.relative_to(repo)} holds no message text")
+            return 2
+        # The baseline the growth is measured from, compared against the bytes taken *before* the first
+        # conversion and therefore answering for the conversion, the loader and -- when it ran -- the real
+        # turn: without this the growth record's size delta would accept a same-length change made during
+        # the first native stage (the size still matches and the digest still differs) and adopt the
+        # changed bytes as the baseline every comparison below uses, so the run's own "the source session
+        # is unchanged" verdict could not answer for that interval. A conversion's read is over by now
+        # either way, so the comparison is recorded and the run continues: what it catches is stated as
+        # its own failure rather than folding into the growth record, whose size claim is still true.
+        copy_at_growth = sha256(copy)
+        copy_grew_from_baseline = copy_at_growth == copy_before \
+            and copy.stat().st_size == copy_size_before
+        record("the source copy still holds the bytes the first conversion read",
+               copy_grew_from_baseline,
+               f"sha256 {copy_at_growth[:16]}…, {copy.stat().st_size} bytes, against the "
+               f"{copy_before[:16]}…, {copy_size_before} bytes taken before the first conversion")
+        grown_size = append_fragment(copy, fragment)
+        grown_digest = sha256(copy)
+        record("the source copy grew by exactly the appended turn",
+               grown_size == copy_size_before + fragment.stat().st_size and grown_digest != copy_before,
+               f"{copy_size_before} -> {grown_size} bytes (+{fragment.stat().st_size} from "
+               f"{fragment.relative_to(repo)}), sha256 {grown_digest[:16]}…")
+
+        grown = run([
+            str(repo / BINARY), "continue", f"{SOURCE_PROVIDER}:{args.session}", "--to", "codex",
+            "--target-home", str(home), "--target-binary", codex, "--json",
+        ], cwd=repo, env=env)
+        second_document: dict = {}
+        if grown.returncode != 0:
+            try:
+                second_document = json.loads(grown.stdout)
+            except json.JSONDecodeError:
+                second_document = {}
+            record("ccc continue converts the grown source, installs and verifies", False,
+                   json.dumps(second_document.get("verification", {}))[:500] if second_document
+                   else last_meaningful_line(grown.stderr))
+            return 1
+        second_document = json.loads(grown.stdout)
+        second_conversion = second_document["conversion"]
+        second_target = second_document["target_session"]
+        second_thread_id = second_target["session_id"]
+        second_installed = Path(second_target["path"])
+        second_boundary_ok, second_boundary_detail = boundary_matches(second_document, copy)
+        record("the second conversion reports the boundary of the grown source copy",
+               second_boundary_ok
+               and boundary_of(second_document).get("sha256") != boundary_of(document).get("sha256"),
+               f"{second_boundary_detail}; the first conversion's boundary was "
+               f"{json.dumps(boundary_of(document))}")
+        record("the second conversion's identity is new, not the source's and not the first session's",
+               second_thread_id not in (args.session, thread_id) and second_thread_id not in existing_ids
+               and second_installed != installed,
+               f"{second_thread_id} at {second_installed.relative_to(home)}")
+        record_installed_jsonl(second_installed,
+                               "the second installed file is one JSON object per line")
+        gained = (second_conversion["carried"]["user_messages"]
+                  > conversion["carried"]["user_messages"]
+                  and second_conversion["carried"]["assistant_messages"]
+                  > conversion["carried"]["assistant_messages"])
+        first_text, second_text = installed.read_text(), second_installed.read_text()
+        carried_texts = all(text in second_text for text in appended) \
+            and not any(text in first_text for text in appended)
+        record("the second conversion carries the history the source gained",
+               gained and carried_texts,
+               f"carried user messages {conversion['carried']['user_messages']} -> "
+               f"{second_conversion['carried']['user_messages']}, assistant messages "
+               f"{conversion['carried']['assistant_messages']} -> "
+               f"{second_conversion['carried']['assistant_messages']}; the appended turn's own words are "
+               f"in the second document and not in the first")
+        record("the first conversion's session is unchanged by the second",
+               installed.is_file() and sha256(installed) == first_installed_digest,
+               f"sha256 {first_installed_digest[:16]}… before and after the second conversion")
+        record("the source copy is unchanged by the second conversion",
+               sha256(copy) == grown_digest and copy.stat().st_size == grown_size,
+               f"sha256 {grown_digest[:16]}…, {grown_size} bytes, taken before and after the second "
+               f"conversion")
+
+        # The inherited reader's own second read, and the target harness's own second load: this run's
+        # own stub-free answers about the later snapshot.
+        second_counts, second_readback = inspect_counts(repo, home, second_thread_id)
+        second_carried = second_conversion["carried"]
+        second_agreed, second_detail = readback_verdict(second_thread_id, second_counts, second_carried)
+        record("the inherited reader reads the second installed file back as what was written",
+               second_readback.returncode == 0 and second_agreed, second_detail)
+
+        second_view, second_kinds = load_and_view(
+            codex, home, second_thread_id, second_installed,
+            "the target harness's own loader opens the second installed session",
+            "the target harness's own view of the second installed session:")
+        second_view_text = "\n".join(second_view)
+        record("the target's own view of the second session lists the appended turn",
+               all(text in second_view_text for text in appended)
+               and "userMessage" in second_kinds and "agentMessage" in second_kinds,
+               f"{len(second_kinds)} item(s) in the reply's own turn list; the appended turn's own words "
+               f"are in its own view")
+        record("the first session's own view does not hold the appended turn",
+               bool(item_kinds) and not any(text in "\n".join(view) for text in appended),
+               f"the first session's own view holds {len(item_kinds)} item(s), none of them the turn the "
+               f"source gained after it was converted")
+
+        if args.repeat_resume_prompt:
+            print()
+            run_turn(repo, codex, home, second_installed,
+                     turn_identity(codex, second_thread_id,
+                                   second_target.get("exec_resume_arguments") or []),
+                     args.repeat_resume_prompt, "a real turn continues from the second installed session")
+        else:
+            record("a real turn continues from the second installed session", False,
+                   "not attempted: pass --repeat-resume-prompt to run one", skipped=True)
+        print()
+        print(f"conversions: 2 session(s) installed ({thread_id} then {second_thread_id}); real turn(s) "
+              f"run: {int(bool(args.resume_prompt)) + int(bool(args.repeat_resume_prompt))}")
 
         # Every promise about files this run must not change is answered here, after the loader and —
         # when it ran — the real turn: a comparison recorded beside the read-back above would let a
         # mutation during either native stage stand on an earlier verdict, and the planted session is
         # only deleted once this block has run.
+        #
+        # The check below is the scenario's "the source is unchanged" promise, and the source this run
+        # actually converted is the *copy*: its digest was measured before the second conversion ("the
+        # source copy is unchanged by the second conversion" answers for that stage) and is measured once
+        # more here, after the second loader and the optional turn — otherwise a mutation of the copy
+        # during the second native stage would leave every check green while this check's own name said
+        # the source had survived the whole repeated transfer. The other end of that interval is the
+        # comparison taken where the copy grew ("the source copy still holds the bytes the first
+        # conversion read"): it is what makes the state this check compares with — grown_digest — the
+        # baseline the first conversion's own read produced rather than whatever the bytes had become
+        # while that conversion's session was loaded and, with --resume-prompt, resumed.
         fixture_after = tree_digest(fixture_root)
         moved = sorted([name for name, digest in fixture_before.items()
                         if fixture_after.get(name) != digest]
                        + [name for name in fixture_after if name not in fixture_before])
+        fragment_unchanged = sha256(fragment) == fragment_before
+        copy_unchanged = (copy.is_file() and sha256(copy) == grown_digest
+                          and copy.stat().st_size == grown_size)
+        if not moved and fragment_unchanged and copy_unchanged:
+            detail = (f"sha256 {sha256(source)[:16]}… (fixture tree identical, "
+                      f"{fragment.relative_to(repo)} identical; the converted copy identical too: "
+                      f"sha256 {grown_digest[:16]}…, {grown_size} bytes)")
+        elif moved:
+            detail = f"the fixture tree changed: {', '.join(moved)}"
+        elif not fragment_unchanged:
+            detail = f"{fragment.relative_to(repo)} changed"
+        elif copy.is_file():
+            detail = (f"the converted source copy changed after the second conversion: want sha256 "
+                      f"{grown_digest[:16]}…, {grown_size} bytes, found sha256 {sha256(copy)[:16]}…, "
+                      f"{copy.stat().st_size} bytes")
+        else:
+            detail = (f"the converted source copy is gone after the second conversion: it was "
+                      f"sha256 {grown_digest[:16]}…, {grown_size} bytes")
         record("the source session is unchanged",
-               not moved,
-               f"sha256 {sha256(source)[:16]}… (fixture tree identical)" if not moved
-               else f"the fixture tree changed: {', '.join(moved)}")
+               not moved and fragment_unchanged and copy_unchanged, detail)
         planted_unchanged = unrelated.is_file() and sha256(unrelated) == unrelated_before
         record("the unrelated session in the target home is unchanged",
                planted_unchanged,
@@ -818,6 +1149,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.json:
             print(json.dumps({"results": [{"check": n, "state": s, "detail": d} for n, s, d in RESULTS],
                               "target_session": thread_id, "installed": str(installed),
+                              "second_session": second_thread_id, "second_installed": str(second_installed),
                               "codex": codex, "codex_home": str(home)}, indent=2))
         return 1 if failures else 0
     finally:

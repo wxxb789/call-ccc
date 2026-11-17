@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -354,6 +356,12 @@ func TestInspectJSONReportsIdentityAndConversation(t *testing.T) {
 	}
 	if source.Fidelity.MalformedLines != 1 {
 		t.Errorf("fidelity = %+v", source.Fidelity)
+	}
+	// An inspection takes no boundary (Q-0004-02): it reports what a session holds, and taking a
+	// boundary is another full read of the file. The absence is asserted rather than left to
+	// `omitempty`, which would read back a filled boundary as just another field of the document.
+	if source.Boundary != nil {
+		t.Errorf("an inspection reported a source boundary: %+v", source.Boundary)
 	}
 	if len(source.ToolNames) != 1 || source.ToolNames[0] != "Read" {
 		t.Errorf("tool names = %v", source.ToolNames)
@@ -750,6 +758,20 @@ type reportedContinueDocument struct {
 		Counts struct {
 			Messages int `json:"messages"`
 		} `json:"counts"`
+		Boundary struct {
+			State                     string `json:"state"`
+			Detail                    string `json:"detail"`
+			Path                      string `json:"path"`
+			Bytes                     int64  `json:"bytes"`
+			SHA256                    string `json:"sha256"`
+			ReadBytes                 int64  `json:"read_bytes"`
+			ReadCoverage              string `json:"read_coverage"`
+			ReadCoverageDetail        string `json:"read_coverage_detail"`
+			RecordOffsets             string `json:"record_offsets"`
+			RecordOffsetsDetail       string `json:"record_offsets_detail"`
+			TerminatedRecordsEndBytes int64  `json:"terminated_records_end_bytes"`
+			UnterminatedTailBytes     int64  `json:"unterminated_tail_bytes"`
+		} `json:"boundary"`
 	} `json:"source"`
 	Conversion struct {
 		State    string `json:"state"`
@@ -1434,6 +1456,217 @@ func TestContinueHumanOutputNamesAPartialSourceRead(t *testing.T) {
 	}
 }
 
+// TestContinueJSONCarriesTheSourceBoundary pins the machine-readable half of the snapshot boundary: the
+// conversion's own JSON states the source file, its size, the digest of those bytes and how far its records
+// reach, which is what lets a caller compare two continuations of one growing session — or re-check the
+// source — without an always-on session index.
+func TestContinueJSONCarriesTheSourceBoundary(t *testing.T) {
+	continueEnvironment(t)
+	sessionID, fixture := claudeFixture(t)
+	code, stdout, stderr := runCLI(t, continueArgs(sessionID, "--json")...)
+	if code != exitOK {
+		t.Fatalf("exit %d, stderr: %s", code, stderr)
+	}
+	var document reportedContinueDocument
+	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
+	}
+	boundary := document.Source.Boundary
+	info, err := os.Stat(fixture)
+	if err != nil {
+		t.Fatalf("reading the committed fixture's size: %v", err)
+	}
+	data, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatalf("reading the committed fixture: %v", err)
+	}
+	sum := sha256.Sum256(data)
+	if boundary.State != ccc.SourceBoundaryTaken {
+		t.Fatalf("boundary.state = %q (%s), want %q", boundary.State, boundary.Detail, ccc.SourceBoundaryTaken)
+	}
+	if boundary.Path != fixture {
+		t.Errorf("boundary.path = %q, want the file the conversion read (%q)", boundary.Path, fixture)
+	}
+	if boundary.Bytes != info.Size() {
+		t.Errorf("boundary.bytes = %d, want the file's %d bytes", boundary.Bytes, info.Size())
+	}
+	if boundary.SHA256 != hex.EncodeToString(sum[:]) {
+		t.Errorf("boundary.sha256 = %q, want the file's own digest", boundary.SHA256)
+	}
+	if boundary.RecordOffsets != ccc.SourceBoundaryRecordsClaimed {
+		t.Errorf("boundary.record_offsets = %q, want %q for a provider whose source is appended line records",
+			boundary.RecordOffsets, ccc.SourceBoundaryRecordsClaimed)
+	}
+	if boundary.RecordOffsetsDetail != "" {
+		t.Errorf("boundary.record_offsets_detail = %q, want no reason for a claim that was made",
+			boundary.RecordOffsetsDetail)
+	}
+	if boundary.ReadBytes != info.Size() || boundary.ReadCoverage != ccc.SourceBoundaryCoverageSizeMatch {
+		t.Errorf("boundary = %+v, want the read's own snapshot of the file (%d byte(s)) reported as the "+
+			"size the file still is", boundary, info.Size())
+	}
+	// The committed fixture ends at a line boundary — its last line is invalid JSON, but it is a complete
+	// line — so its terminated records end at its last byte and it has no unterminated record.
+	if boundary.TerminatedRecordsEndBytes != boundary.Bytes || boundary.UnterminatedTailBytes != 0 {
+		t.Errorf("boundary = %+v, want the terminated records to end at byte %d with nothing unterminated",
+			boundary, boundary.Bytes)
+	}
+	if boundary.Detail == "" {
+		t.Error("the boundary carries no detail saying how it was taken")
+	}
+}
+
+// TestContinueHumanOutputStatesTheSourceBoundary pins the human half, on a real conversion and on the
+// shapes a running session can have: a file whose terminated records end at its last byte, one whose last
+// bytes are a record the file had not terminated, one whose bytes are not the records at all (a compressed
+// container), one a read moved away from, and one read from an archive.
+func TestContinueHumanOutputStatesTheSourceBoundary(t *testing.T) {
+	continueEnvironment(t)
+	sessionID, _ := claudeFixture(t)
+	code, stdout, stderr := runCLI(t, continueArgs(sessionID)...)
+	if code != exitOK {
+		t.Fatalf("exit %d, stderr: %s", code, stderr)
+	}
+	for _, want := range []string{
+		"boundary:     2051 byte(s) read; the file is the size the read's own snapshot recorded (a size " +
+			"match, not a byte-identity check)\n",
+		"records:      the source's records end at a line feed at byte 2051: the file ends at a record " +
+			"boundary\n",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("the human output is missing %q:\n%s", want, stdout)
+		}
+	}
+	if strings.Contains(stdout, "unterminated:") {
+		t.Errorf("a source with nothing unterminated printed an unterminated line:\n%s", stdout)
+	}
+
+	for _, testCase := range []struct {
+		name      string
+		boundary  *ccc.SourceBoundary
+		wantLines []string
+		absent    []string
+	}{
+		{
+			name: "a record the file had not terminated",
+			boundary: &ccc.SourceBoundary{
+				State: ccc.SourceBoundaryTaken, Path: "/src/session.jsonl", Bytes: 1835,
+				SHA256: "010a14dd", ReadBytes: 1835,
+				ReadCoverage:              ccc.SourceBoundaryCoverageSizeMatch,
+				RecordOffsets:             ccc.SourceBoundaryRecordsClaimed,
+				TerminatedRecordsEndBytes: 1792, UnterminatedTailBytes: 43,
+			},
+			wantLines: []string{
+				"boundary:     1835 byte(s) read; the file is the size the read's own snapshot recorded " +
+					"(a size match, not a byte-identity check)\n",
+				"records:      the source's records end at a line feed at byte 1792: the last 43 byte(s) are " +
+					"a record the source had not terminated\n",
+			},
+			// The human block does not claim the record was left out of the conversion: whether it was
+			// read is the read's own answer (the fidelity line above and the run's warnings say it).
+			absent: []string{"not part of this conversion", "unpublished"},
+		},
+		{
+			name: "a compressed container of the records",
+			boundary: &ccc.SourceBoundary{
+				State: ccc.SourceBoundaryTaken, Path: "/src/rollout.jsonl.zst", Bytes: 3626,
+				SHA256: "415bbc31", ReadBytes: 3626,
+				ReadCoverage:  ccc.SourceBoundaryCoverageSizeMatch,
+				RecordOffsets: ccc.SourceBoundaryRecordsNotClaimed,
+				RecordOffsetsDetail: "the file's own bytes are not a transcript of text lines (a compressed " +
+					"or otherwise binary container of the records, or a sequence that does not decode as " +
+					"text), so no byte offset into them is a record boundary",
+			},
+			wantLines: []string{
+				"boundary:     3626 byte(s) read; the file is the size the read's own snapshot recorded " +
+					"(a size match, not a byte-identity check)\n",
+				"records:      no line-record offsets claimed: the file's own bytes are not a transcript of " +
+					"text lines (a compressed or otherwise binary container of the records, or a sequence " +
+					"that does not decode as text), so no byte offset into them is a record boundary\n",
+			},
+			absent: []string{"records end at byte", "unterminated:"},
+		},
+		{
+			name: "a file that moved while it was read",
+			boundary: &ccc.SourceBoundary{
+				State: ccc.SourceBoundaryTaken, Path: "/src/session.jsonl", Bytes: 1835,
+				SHA256: "010a14dd", ReadBytes: 1792,
+				ReadCoverage:              ccc.SourceBoundaryCoverageSizeMismatch,
+				RecordOffsets:             ccc.SourceBoundaryRecordsClaimed,
+				TerminatedRecordsEndBytes: 1835,
+			},
+			wantLines: []string{
+				"boundary:     1835 byte(s) read; the file moved while it was read: the read's own snapshot " +
+					"of it recorded 1792 byte(s), so which of these bytes the conversion covered is not " +
+					"established\n",
+			},
+		},
+		{
+			name: "no file was open",
+			boundary: &ccc.SourceBoundary{
+				State:  ccc.SourceBoundaryNotTaken,
+				Detail: "the conversion read an archive row, so no source file was open at all",
+			},
+			wantLines: []string{
+				"boundary:     not taken (the conversion read an archive row, so no source file was open " +
+					"at all)\n",
+			},
+			absent: []string{"byte(s) read"},
+		},
+		{
+			name: "records that are not appended lines",
+			boundary: &ccc.SourceBoundary{
+				State: ccc.SourceBoundaryTaken, Path: "/src/state.json", Bytes: 3626,
+				SHA256: "415bbc31", RecordOffsets: ccc.SourceBoundaryRecordsNotClaimed,
+				RecordOffsetsDetail: "the provider's own declarations do not make this source a transcript " +
+					"of appended line records",
+			},
+			wantLines: []string{
+				"boundary:     3626 byte(s) read\n",
+				"records:      no line-record offsets claimed: the provider's own declarations do not make " +
+					"this source a transcript of appended line records\n",
+			},
+			absent: []string{"records end at byte"},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			var block bytes.Buffer
+			writeContinuation(&block, ccc.ContinueResult{
+				Ref:    ccc.Ref{Provider: "claude", ID: sessionID},
+				Target: ccc.TargetCodex,
+				Source: &ccc.SessionReport{Boundary: testCase.boundary},
+				Conversion: ccc.ConversionReport{
+					State: ccc.ConversionStateConverted, Format: ccc.CodexTargetFormat,
+				},
+			})
+			for _, want := range testCase.wantLines {
+				if !strings.Contains(block.String(), want) {
+					t.Errorf("the human output is missing %q:\n%s", want, block.String())
+				}
+			}
+			for _, absent := range testCase.absent {
+				if strings.Contains(block.String(), absent) {
+					t.Errorf("the human output claims %q for a boundary that does not state it:\n%s",
+						absent, block.String())
+				}
+			}
+		})
+	}
+
+	// A report with no boundary at all (an inspection, or one this build did not write) prints no
+	// boundary line: an absent block is not a claim about a file.
+	var absent bytes.Buffer
+	writeContinuation(&absent, ccc.ContinueResult{
+		Ref:        ccc.Ref{Provider: "claude", ID: sessionID},
+		Target:     ccc.TargetCodex,
+		Source:     &ccc.SessionReport{},
+		Conversion: ccc.ConversionReport{State: ccc.ConversionStateConverted, Format: ccc.CodexTargetFormat},
+	})
+	if strings.Contains(absent.String(), "boundary:") {
+		t.Errorf("a report without a boundary printed one:\n%s", absent.String())
+	}
+}
+
 // TestContinueDryRunInstallsNothingThroughTheCLI pins the flag's promise at the CLI boundary.
 func TestContinueDryRunInstallsNothingThroughTheCLI(t *testing.T) {
 	_, targetHome := continueEnvironment(t)
@@ -1831,6 +2064,33 @@ func TestContinueHelpIsARequestNotAFailure(t *testing.T) {
 			t.Errorf("help is missing %q", want)
 		}
 	}
+	// The repeat rule is stated where a caller learns the command: a conversion is a snapshot, converting
+	// the same source again after it grew writes another session rather than merging into one, and a record
+	// the source file had not terminated is named rather than published. The line the help names for that
+	// record is read back out of the human block itself rather than restated here, so the help cannot point
+	// a caller at a line the renderer does not print -- the round-2 review's finding was exactly that: the
+	// help named an 'unterminated:' line this block never had.
+	var tail bytes.Buffer
+	writeBoundary(&tail, &ccc.SourceBoundary{
+		State: ccc.SourceBoundaryTaken, Path: "/src/session.jsonl", Bytes: 1835,
+		SHA256: "010a14dd", ReadBytes: 1835,
+		ReadCoverage:              ccc.SourceBoundaryCoverageSizeMatch,
+		RecordOffsets:             ccc.SourceBoundaryRecordsClaimed,
+		TerminatedRecordsEndBytes: 1792, UnterminatedTailBytes: 43,
+	})
+	unterminatedLabel := tailLabelOf(t, tail.String())
+	snapshot := strings.Join(strings.Fields(stdout), " ")
+	for _, want := range []string{
+		"A conversion is a snapshot of the source at one moment",
+		"writes another new session -- never a merge into one that an agent may already have continued",
+		"names the boundary each snapshot covers",
+		"'" + unterminatedLabel + ":' line and the run's warnings state those bytes",
+		"no record offset claimed for them",
+	} {
+		if !strings.Contains(snapshot, want) {
+			t.Errorf("help does not state the repeat rule (%q)", want)
+		}
+	}
 	// The --target-binary line states the two routes' rules, which differ: the Claude Code commands name
 	// the path the probe found, because that invocation changes into the session's working directory and
 	// a shell there would search its own PATH for a bare name, while the Codex commands keep the spelling
@@ -1847,6 +2107,27 @@ func TestContinueHelpIsARequestNotAFailure(t *testing.T) {
 			t.Errorf("help does not state the route-scoped rule %q", want)
 		}
 	}
+}
+
+// tailLabelOf reads the label the boundary block prints the unterminated record's line under: the text
+// before the first colon on the line that states the tail. The help names that label, so the agreement
+// between the two is checked against the block's own output rather than against a spelling this test may
+// assume -- a label renamed in the renderer and not in the help fails the case instead of being pinned
+// twice in two places that can disagree.
+func tailLabelOf(t *testing.T, block string) string {
+	t.Helper()
+	for _, line := range strings.Split(block, "\n") {
+		if !strings.Contains(line, "had not terminated") {
+			continue
+		}
+		label, _, ok := strings.Cut(line, ":")
+		if !ok {
+			t.Fatalf("the unfinished-record line carries no label: %q", line)
+		}
+		return strings.TrimSpace(label)
+	}
+	t.Fatalf("the block prints no unfinished-record line:\n%s", block)
+	return ""
 }
 
 // continueDocumentOf reads one `ccc continue --json` run's document, requiring the run's exit status.

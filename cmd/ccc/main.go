@@ -52,6 +52,19 @@ usage:
   harness finds a session through the directory it is run from), naming the data directory the session
   was installed into as well as the session itself.
 
+  A conversion is a snapshot of the source at one moment: it reads the source as it is and writes a new
+  session, so converting the same source again after it has grown writes another new session -- never a
+  merge into one that an agent may already have continued, and never a rewrite of the source. The result
+  names the boundary each snapshot covers (the source file's sha256 and size, whether the file is still the
+  size the read's own snapshot recorded -- a size match, which is what a size can show -- and, for a source
+  whose records are the lines a harness appends, where its last line-feed-terminated record ends), so two
+  continuations of one growing session can be told apart and the newer one chosen. A file that ends without
+  a line feed holds a record the source may still be writing: the 'records:' line and the run's warnings
+  state those bytes, and leave what the read made of them to the read's own fidelity, so nothing the read
+  did not read is presented as history. A source whose own bytes are a compressed container of the records
+  -- Codex reads its compressed rollouts -- is reported by its bytes and digest with no record offset claimed
+  for them, because no offset into such a file is a record boundary.
+
   inspect reports the session's identity, agent, source and conversation shape. It reads the
   source session through the provider's own reader and, when an archive is present, says what the
   archive holds for the same session. It never writes: the source session and any archive are read
@@ -568,6 +581,7 @@ func writeContinuation(out io.Writer, result ccc.ContinueResult) {
 			fmt.Fprintf(out, "  fidelity:     %d malformed line(s)%s\n",
 				source.Fidelity.MalformedLines, truncatedSuffix(source.Fidelity.Truncated))
 		}
+		writeBoundary(out, source.Boundary)
 	}
 	carried := result.Conversion.Carried
 	fmt.Fprintf(out, "  converted:    %s, %d bytes: %d message(s), %d tool call(s), %d tool result(s), %d boundary(ies), %d turn(s)\n",
@@ -651,6 +665,62 @@ func sourceCheckWord(state string) string {
 	default:
 		return "not verified"
 	}
+}
+
+// writeBoundary prints where the conversion's snapshot of the source stops. It is the human half of
+// `source.boundary`: a caller comparing two conversions of one growing session has to be able to see, by
+// eye, which source bytes each of them read and covers, and whether either ended on a record the file was
+// still writing. The digest itself is not repeated here -- on a run that reached the comparison, the
+// `source file:` line below prints the same sha256 in full, taken in the same pass -- so these lines
+// carry what only the boundary states.
+func writeBoundary(out io.Writer, boundary *ccc.SourceBoundary) {
+	if boundary == nil {
+		return
+	}
+	if boundary.State != ccc.SourceBoundaryTaken {
+		fmt.Fprintf(out, "  boundary:     not taken (%s)\n", oneLine(boundary.Detail))
+		return
+	}
+	fmt.Fprintf(out, "  boundary:     %d byte(s) read%s\n", boundary.Bytes, coverageSuffix(boundary))
+	if boundary.RecordOffsets != ccc.SourceBoundaryRecordsClaimed {
+		fmt.Fprintf(out, "  records:      no line-record offsets claimed: %s\n",
+			oneLine(boundary.RecordOffsetsDetail))
+		return
+	}
+	fmt.Fprintf(out, "  records:      %s\n", recordsLine(boundary))
+}
+
+// coverageSuffix spells what the read's own snapshot of the file has to do with the bytes the boundary
+// reports. The ordinary case is stated in words rather than left implicit, because the whole point of the
+// boundary is that a conversion is attributed to the bytes it read -- and the words say which comparison
+// was made (a size, and only a size) rather than claiming byte identity the read's own record cannot
+// support; the case that must never read as the ordinary one is a file that moved while it was being read,
+// whose bytes this build cannot attribute the conversation to at all. Empty where the read recorded no size
+// to compare (a representation this build may not read as one file's, or none at all).
+func coverageSuffix(boundary *ccc.SourceBoundary) string {
+	switch boundary.ReadCoverage {
+	case ccc.SourceBoundaryCoverageSizeMatch:
+		return "; the file is the size the read's own snapshot recorded (a size match, not a " +
+			"byte-identity check)"
+	case ccc.SourceBoundaryCoverageSizeMismatch:
+		return fmt.Sprintf("; the file moved while it was read: the read's own snapshot of it recorded %d "+
+			"byte(s), so which of these bytes the conversion covered is not established", boundary.ReadBytes)
+	default:
+		return ""
+	}
+}
+
+// recordsLine spells the file's own record structure: where its line-feed-terminated records end, and what
+// the bytes after that are. Nothing here says whether the read carried the unterminated record -- that is the
+// read's own answer, and the fidelity line above and the run's warnings are where it is stated -- so this
+// line reports the bytes the file had and stops there.
+func recordsLine(boundary *ccc.SourceBoundary) string {
+	if boundary.UnterminatedTailBytes <= 0 {
+		return fmt.Sprintf("the source's records end at a line feed at byte %d: the file ends at a record "+
+			"boundary", boundary.TerminatedRecordsEndBytes)
+	}
+	return fmt.Sprintf("the source's records end at a line feed at byte %d: the last %d byte(s) are a record "+
+		"the source had not terminated", boundary.TerminatedRecordsEndBytes, boundary.UnterminatedTailBytes)
 }
 
 func describeCounts(counts ccc.Counts) string {

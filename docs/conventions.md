@@ -27,6 +27,9 @@ internal/ccc/       continuation core: conversation document, readers, archive a
                     codex_install.go, codex_verify.go, claude_target.go, claude_install.go,
                     claude_verify.go, continue.go)
 internal/ccc/parity the canonical dump and the oracle a pristine checkout runs too
+internal/ccc/testdata/fixtures  committed native-shaped sessions, written by internal/ccc/fixturegen
+internal/ccc/testdata/growth    committed fragments a run appends to a *copy* of one fixture, so one
+                    source session grows; the same generator writes and pins them
 docs/core-design/   the long-lived product and engineering boundaries
 docs/goals/         numbered outcome contracts (archive/ once accepted)
 docs/plans/         one plan per increment, written before its implementation
@@ -83,6 +86,24 @@ gate runs as a required step.
 - **Non-destructive by default.** Never modify the source transcript, never overwrite an existing
   target session, never copy credentials or login stores, and never log conversation bodies, tool
   arguments or secrets by default. Write into isolated data directories for tests and demos.
+- **A conversion is a snapshot at a stated boundary, and repeating it is the same operation.** A source
+  that grew is read again and written as *another* fresh target session: no run merges later source
+  history into a session an agent may already have continued, and no run rewrites the source or an
+  earlier target. Every conversion reports the boundary it covers (`source.boundary`: the source file,
+  the digest of its bytes at the boundary instant, whether the file is still the size the read's own
+  snapshot recorded — a size match, which is what that record can show, since it holds no digest of the
+  bytes the read opened — and, for a source whose records are the lines a harness appends, where its
+  line-feed-terminated records end and how many bytes of an unterminated record follow) and the same facts
+  in the human block, so a caller — or an agent choosing which continuation to resume — can tell two
+  snapshots of one growing session apart without any index. A read whose own snapshot recorded a size the
+  file no longer has says so (`read_coverage: size-mismatch`) instead of attributing a conversation to
+  bytes it is not shown to have read. An unterminated trailing record is *disclosed* as what it is — the
+  file's last bytes with no line feed, which the source may still be writing — and never claimed to be
+  published or left out: whether a read carried it is the read's own answer, and the read's fidelity and
+  the conversion's counts state it. The boundary is computed from the file's own bytes rather than from a
+  provider's classification, the record offsets are claimed only where the provider's own declarations say
+  the source is a transcript of appended lines *and* the file's own bytes can be one, and a compressed
+  container of those records is reported by its bytes and digest with no record offset claimed for it.
 - **A target session is discoverable where the target's own loader looks.** A target that finds a
   session only from the working directory its process runs in — Claude Code resolves a session through
   the directory whose project-dir spelling matches the one it was installed under — is installed under
