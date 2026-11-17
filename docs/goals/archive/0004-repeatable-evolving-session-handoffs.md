@@ -1,7 +1,7 @@
 # 0004 — Repeat continuation as source history grows
 
-**Status:** Implemented on `feat/0004-repeatable-evolving-session-handoffs`; awaiting operator acceptance  
-**Prerequisite:** [0002 — Continue a Claude Code session in Codex](archive/0002-claude-to-codex-continuation.md). Can be pursued independently of 0003.
+**Status:** Accepted: merged onto `main` as `8a8265a`; archived  
+**Prerequisite:** [0002 — Continue a Claude Code session in Codex](0002-claude-to-codex-continuation.md). Can be pursued independently of 0003.
 
 ## Intended advance
 

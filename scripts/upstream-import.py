@@ -107,6 +107,7 @@ OWNED = (
     "scripts/tests/",
     "scripts/claude-native-check.py",
     "scripts/codex-native-check.py",
+    "scripts/pi-native-check.py",
     "scripts/upstream-compare.py",
     "scripts/upstream-import.py",
     "scripts/upstream_manifest.py",

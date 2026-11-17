@@ -33,6 +33,18 @@ var (
 	// codexPatchFixtureRef is the third Codex rollout: one `apply_patch` touching two files, which the
 	// inherited reader projects into one call per file, every projection sharing the call's id and input.
 	codexPatchFixtureRef = Ref{Provider: "codex", ID: "5b2d7c14-6e8a-4f31-b0c5-9d7e21a4c8fe"}
+	// piFixtureRef is the Pi session: two turns and a tool call answered by its result -- the ordinary
+	// conversation both directions of goal 0005 read.
+	piFixtureRef = Ref{Provider: "pi", ID: "01a1c335-7098-71c2-a91b-b5295c0464f5"}
+	// piHistoryFixtureRef is the second Pi session: a compaction boundary whose summary stands in for the
+	// turns before it, and a branch the conversation left -- the history a conversion must not flatten
+	// into an invented active conversation.
+	piHistoryFixtureRef = Ref{Provider: "pi", ID: "01a1c336-4b02-78d3-9e15-6c7a2f0b8d41"}
+	// piBranchSwitchFixtureRef is the third Pi session: the file a `/tree` branch switch leaves behind, whose
+	// own last entry is the switch's `branch_summary` and whose active path is the branch the conversation
+	// returned to. The inherited reader skips that entry, so the last record *it* answers is the abandoned
+	// branch's own turn -- the shape a conversion must refuse rather than resume.
+	piBranchSwitchFixtureRef = Ref{Provider: "pi", ID: "01a1c337-6d1e-7f84-9b2c-4e5f6a7b8c90"}
 )
 
 // fixtureRoot is the directory the committed sanitized fixtures live in; each provider subdirectory
@@ -114,6 +126,7 @@ func fixtureConfig(t *testing.T) config.Config {
 	cfg.AgentDirs = map[parser.AgentType][]string{
 		parser.AgentClaude: {filepath.Join(root, "claude")},
 		parser.AgentCodex:  {filepath.Join(root, "codex")},
+		parser.AgentPi:     {filepath.Join(root, "pi")},
 	}
 	cfg.DisabledAgents = nil
 	return cfg

@@ -70,11 +70,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from native_check_common import (  # noqa: E402  (path set up above)
     CONTINUE_TERMINATOR,
     PROMPT_PLACEHOLDER,
+    REPORT_BLOCK_CHARS_MAX,
+    REPORT_BLOCK_LINES_MAX,
     RESULTS,
     SHELL_SYNTAX_CHARACTERS,
     TURN_OUTPUT_MARKER,
+    bounded_block,
     jsonl_parse_error,
     record,
+    rewrite_source_cwd,
     run,
     sha256,
     shell_words,
@@ -120,14 +124,6 @@ OPERATOR_WORD = "&&"
 #: rather than about the loader starting at all: measured on Claude Code 2.1.326, the same command with an
 #: unknown session id exits non-zero with no result document and this line on stderr.
 CONTROL_ARM_TEXT = "No conversation found with session ID"
-
-#: The bound on a block this harness reports: the load-detail block printed before any turn exists (the
-#: target loader's own words, re-read from the conversion's report) and -- when a turn runs -- the
-#: target's own answer printed under `native_check_common.TURN_OUTPUT_MARKER`. Both are printed line by
-#: line and cut to a bound on both axes, so a runaway load detail or answer cannot turn into this
-#: harness's own memory or make the report it prints unbounded.
-REPORT_BLOCK_LINES_MAX = 200
-REPORT_BLOCK_CHARS_MAX = 20000
 
 
 def claude_project_dir(cwd: str) -> str:
@@ -241,33 +237,6 @@ def reports_posix_mode_bits() -> bool:
     return os.name != "nt"
 
 
-def rewrite_source_cwd(fixture: Path, destination: Path, cwd: str) -> str:
-    """Write `fixture` to `destination` with its session_meta record's working directory rewritten.
-
-    The target's loader finds a session through the working directory it is run from and files the
-    transcript under that directory's own spelling, so the conversion needs a working directory that
-    exists on this host: the committed fixture's (`/home/user/code/example-api`) is a path no run here
-    could be started from. Only that one field is touched -- every other value of every record is the
-    fixture's own -- so the copy answers the same conversation the committed file does. Answers the
-    working directory the fixture recorded, or "" when it records none.
-    """
-    original = ""
-    lines: list[str] = []
-    for line in fixture.read_text().splitlines():
-        if not line.strip():
-            continue
-        record_ = json.loads(line)
-        payload = record_.get("payload")
-        if (record_.get("type") == "session_meta" and isinstance(payload, dict)
-                and isinstance(payload.get("cwd"), str)):
-            original = original or payload["cwd"]
-            payload["cwd"] = cwd
-        lines.append(json.dumps(record_))
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text("\n".join(lines) + "\n")
-    return original
-
-
 def resume_line(command: str, prompt: str) -> tuple[str | None, str]:
     """The printed exec resume line with the caller's prompt in place of the placeholder word.
 
@@ -308,23 +277,6 @@ def turn_answer(stdout: str, stderr: str) -> str:
                 return result
             break
     return (stdout or "").strip() or (stderr or "").strip()
-
-
-def bounded_block(text: str, lines_max: int, chars_max: int) -> list[str]:
-    """`text` as printable lines, cut to a bound on both axes and marked where it was cut."""
-    lines = (text or "").splitlines() or [""]
-    kept: list[str] = []
-    used = 0
-    for line in lines[:lines_max]:
-        if used + len(line) > chars_max:
-            kept.append(line[: max(chars_max - used, 0)] + " …[the rest of this answer was dropped]")
-            used = chars_max
-            break
-        kept.append(line)
-        used += len(line)
-    if len(lines) > len(kept):
-        kept.append(f"…[{len(lines) - len(kept)} more line(s) of this answer were dropped]")
-    return kept
 
 
 def main(argv: list[str] | None = None) -> int:

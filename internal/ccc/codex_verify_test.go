@@ -128,7 +128,7 @@ func TestCodexTurnStubFloodsItsOutput(t *testing.T) {
 	if os.Getenv(turnFloodEnv) == "" {
 		t.Skip("this is the child half of TestCodexTurnBoundsTheOutputItRetains")
 	}
-	flood := strings.Repeat("x", codexTurnOutputMax+codexTurnDiagnosticsMax+1)
+	flood := strings.Repeat("x", harnessOutputMax+harnessDiagnosticsMax+1)
 	os.Stdout.WriteString(flood)
 	os.Stderr.WriteString(flood)
 }
@@ -154,13 +154,13 @@ func TestCodexTurnBoundsTheOutputItRetains(t *testing.T) {
 	if err != nil {
 		t.Fatalf("running the flooding stub: %v", err)
 	}
-	if len(answer) != codexTurnOutputMax {
+	if len(answer) != harnessOutputMax {
 		t.Errorf("the turn's answer holds %d byte(s) of a flood, want the bound (%d)",
-			len(answer), codexTurnOutputMax)
+			len(answer), harnessOutputMax)
 	}
-	if len(diagnostics) != codexTurnDiagnosticsMax {
+	if len(diagnostics) != harnessDiagnosticsMax {
 		t.Errorf("the turn's diagnostics hold %d byte(s) of a flood, want the bound (%d)",
-			len(diagnostics), codexTurnDiagnosticsMax)
+			len(diagnostics), harnessDiagnosticsMax)
 	}
 	if !truncated {
 		t.Error("the answer filled the bound and the caller was not told it is an excerpt")

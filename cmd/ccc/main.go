@@ -29,7 +29,7 @@ import (
 const usage = `ccc — continue one agent session in another, through AgentsView's own reader
 
 usage:
-  ccc continue <provider>:<session-id-or-path> --to codex|claude [options]
+  ccc continue <provider>:<session-id-or-path> --to codex|claude|pi [options]
   ccc inspect <provider>:<session-id-or-path> [--json] [--data-dir DIR]
   ccc help
 
@@ -47,10 +47,15 @@ usage:
   an existing target session. The common invocations are:
       ccc continue claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to codex   # Claude Code → Codex
       ccc continue codex:0c8e5f21-6f24-4a57-9d59-0d1a51b4c8e3 --to claude  # Codex → Claude Code
+      ccc continue pi:01a1c335-7098-71c2-a91b-b5295c0464f5 --to claude      # Pi → Claude Code
+      ccc continue claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to pi      # Claude Code → Pi
   and the result says which command resumes it (for Codex: CODEX_HOME=<dir> codex resume <session-id>;
-  for Claude Code: cd <dir> && CLAUDE_CONFIG_DIR=<dir> claude --resume <session-id>, because that
-  harness finds a session through the directory it is run from), naming the data directory the session
-  was installed into as well as the session itself.
+  for Claude Code: cd <dir> && CLAUDE_CONFIG_DIR=<dir> claude --resume <session-id>; for Pi:
+  cd <dir> && PI_CODING_AGENT_DIR=<dir> pi --session <session-id> — both of those harnesses find a
+  session through the directory they are run from), naming the data directory the session was installed
+  into as well as the session itself. A Pi resume command names no provider and no model: a Pi session
+  binds none for itself, and a provider label the source recorded is a source-side name the target home
+  need not define.
 
   A conversion is a snapshot of the source at one moment: it reads the source as it is and writes a new
   session, so converting the same source again after it has grown writes another new session -- never a
@@ -71,24 +76,28 @@ usage:
   only.
 
 continuation options:
-  --to NAME          target harness to write (codex, claude)
+  --to NAME          target harness to write (codex, claude, pi)
   --json             write the result as one JSON object on stdout (diagnostics stay on stderr)
   --dry-run          convert and verify without writing anything into the target's data directory
   --target-home DIR  that harness's data directory (codex: $CODEX_HOME, else ~/.codex; claude:
-                     $CLAUDE_CONFIG_DIR, else ~/.claude)
-  --target-binary P  that harness's executable (default: codex, or claude, on PATH). The Claude Code
+                     $CLAUDE_CONFIG_DIR, else ~/.claude; pi: $PI_CODING_AGENT_DIR, else ~/.pi/agent)
+  --target-binary P  that harness's executable (default: codex, claude or pi, on PATH). The Claude Code
                      resume commands name the path the probe found for it -- the program this run asked
                      and verified -- else the spelling given here, where a spelling that names a path is
                      resolved against this directory, because that invocation runs from the session's
                      own working directory and a shell there would search its own PATH for a bare name.
-                     The Codex commands keep the spelling given here (or codex): that invocation stays
-                     in the caller's own directory, so a bare name is the caller's own PATH lookup.
+                     A Pi command names the path the probe found for the same reason (it changes into the
+                     session's working directory too). The Codex commands keep the spelling given here
+                     (or codex): that invocation stays in the caller's own directory, so a bare name is
+                     the caller's own PATH lookup.
   --data-dir DIR     read the AgentsView archive in DIR (%s/sessions.db) when the source file itself
                      cannot answer the reference
   --verify LEVEL     none, load (default) or resume: load asks the target harness's own loader to
                      open the installed session offline (Codex: its app server; Claude Code: the
                      harness with --bare and no model credentials in its environment, plus an
-                     unknown-id control); resume runs one real turn in it and needs --resume-prompt
+                     unknown-id control; Pi: the harness in its own RPC mode, asked for the session
+                     state and messages, plus an unknown-id control); resume runs one real turn in it
+                     and needs --resume-prompt
   --resume-prompt T  the turn --verify resume runs; call/ccc never writes a prompt of its own into a
                      session
 
@@ -405,7 +414,7 @@ func writeHuman(out io.Writer, inspection ccc.Inspection) {
 
 // continueUsage is the one-line usage `ccc continue` prints for `-h`, for a usage error and for a
 // missing operand.
-const continueUsage = "usage: ccc continue <provider>:<session-id-or-path> --to codex|claude [--json] [--dry-run]\n" +
+const continueUsage = "usage: ccc continue <provider>:<session-id-or-path> --to codex|claude|pi [--json] [--dry-run]\n" +
 	"                         [--target-home DIR] [--target-binary PATH] [--data-dir DIR]\n" +
 	"                         [--verify none|load|resume] [--resume-prompt TEXT]\n"
 

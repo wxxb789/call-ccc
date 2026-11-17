@@ -303,13 +303,81 @@ says so.
   access is **inherited** by that turn, never copied into an isolated home; the run hashes the source
   fixture, a planted unrelated session and every session the home already held before and after, so a
   mutation during the loader or the turn is answered by the comparison that runs last.
-- `scripts/native_check_common.py` — the mechanism the two native checks share, so neither keeps its own
+- `scripts/pi-native-check.py` — the target-side native verification for goal 0005, both directions, and
+  **deliberately not a gate step** for the same reason the other two are not: it needs the target harness
+  installed and, for a real turn, model access. It converts a **copy** of a committed fixture whose
+  recorded working directory has been rewritten mechanically to a directory inside the run's own scratch
+  tree (Pi resolves a session id through the project directory spelled from the process's own working
+  directory, so a session filed under a path no host has can never be loaded by it), plants an unrelated
+  session in the target home, and reads the conversion's own report rather than trusting it: the
+  structural read-back's state, the loss categories, and the installed file's own record shapes (one
+  `session` header, the message roles, the tool-call blocks and their `toolResult`, and the `usage` object
+  Pi's loader indexes into). It then asks **Pi's own loader**, offline, in its RPC mode
+  (`pi --mode rpc --session <id>`, then `get_state`/`get_messages`) — against a **throw-away copy** of the
+  converted bytes in a scratch agent directory, because measured on 1.5.2 an RPC run appends its own
+  records (a `thinking_level_change` among them) to the session it opens, so driving the loader against
+  the installed file would alter what the conversion published; the installed file's digest is compared
+  around that whole stage, which is what makes the copy an assertion rather than a preference. The loader
+  must answer with this session's id and with the file's own model-visible history — the walk the loader
+  itself makes from the file's last entry back through `parentId`: the latest compaction entry *on that
+  path*, rendered as `compactionSummary`, then every message entry after it on the path. The count is
+  *not* the file's `message` count, measured, and not every entry in the file either: an entry the file
+  holds but no later record hangs off is recorded history the loader does not build context from, and a
+  compaction entry that stands off the path is not a boundary it rebuilds from (the Pi provider's own
+  reader answers a record after a tool result as hanging off the message that made the call, so the path
+  is read from the file's own `parentId` values and never from a document this build holds). An
+  unknown-id control arm must answer `No session
+  found matching '…'`, which is what makes the first arm an answer about *this* session rather than about
+  a process that started. With `--resume-prompt` the run also drives one real turn through the invocation
+  the report printed, prints the target's own answer under `TURN_OUTPUT_MARKER`, and requires the session
+  file to have grown. Both the printed line and the loader stage name the **sessions tree inside the data
+  directory** explicitly (`PI_CODING_AGENT_SESSION_DIR`, the project directory the installer filed the
+  session under, `piSessionTree`), because Pi resolves a session directory as `--session-dir` first, then
+  that variable, then the data directory's own `settings.json` `sessionDir`, and only then its default
+  tree: measured on 1.5.2, a caller's leftover setting, or a `settings.json` naming another directory,
+  otherwise sends the printed line looking where the session is not, while the check — which used to
+  remove the variable — found it. The loader home is a throw-away directory holding the check's copy of
+  the session and **none of the caller's configuration**: a home the caller names with `--target-home`
+  may hold a `models.json` with literal API keys or authorization headers, and copying that document
+  would copy a secret the conversion contract copies nowhere (measured: with the sessions tree named, the
+  loader answers `get_state`/`get_messages` from a home holding the session alone, since an RPC run is
+  started with `--offline --no-tools`).
+  The scratch home a run makes for itself holds a `models.json` seeded from the
+  host's provider definitions with every credential-bearing field dropped — a provider's `apiKey` and
+  `headers`, a `models` entry's `headers` and a `modelOverrides` entry's `headers`, every level Pi's own
+  schema allows one — and the chosen provider's key left as an `$ENV` reference, so nothing is read from
+  or written to a credential store; a **selected provider whose endpoint URL itself carries a credential
+  (userinfo, a query) is left out whole** rather than copied with its address rewritten, the same policy
+  the Codex check applies to a provider's `base_url`, and the run's report names it and records the
+  named skip; a home the caller names with `--target-home` is **read, never written
+  to** — the seed would replace a configuration the caller keeps there, and the comparisons this run
+  makes cover session files
+  only — and the provider check then reports what that home already defines. A host whose harness is
+  absent ends as `RESULT: INCOMPLETE` (exit 2) naming what could not run, never as a pass: for
+  `--direction claude-to-pi` a missing Pi binary is that verdict before any check runs, while the
+  `pi-to-claude` direction needs no Pi at all (its source is a committed fixture read by the inherited
+  reader and its native half is Claude's loader). It builds `ccc` into `bin/`, which `.gitignore` covers,
+  so a run leaves no untracked file for the `parity` step to report; `--pi PATH` names the Pi binary the
+  *conversion* is driven through — the resolved executable is what the CLI is handed as
+  `--target-binary` and what the version query and the loader stage name, so a binary outside `PATH` is
+  the one verified rather than a second installation a bare name would find — and, for the
+  `--direction pi-to-claude` half, `--claude PATH` names the Claude Code binary to drive (its absence
+  from `PATH` is exactly the case that flag exists for). The fabricated unrelated session it plants is
+  removed again in a `finally`, so a home the caller named is left as it was found apart from the
+  converted session (and its own configuration, which the run never touched).
+- `scripts/native_check_common.py` — the mechanism the native checks share, so none keeps its own
   copy of it: the file digests (`sha256`, `tree_digest`), the check recorder (`record`, `RESULTS`), the
   subprocess runner (`run`), the POSIX-shell reading of a rendered command (`shell_words`,
-  `unquoted_text` and the character set a shell acts on), the JSONL record-shape test both checks report
+  `unquoted_text` and the character set a shell acts on), the JSONL record-shape test the checks report
   through (a line may be blank or one JSON **object**; anything else — unparseable, or a value that is not
-  an object — is that check's FAIL with the line's number), and the two strings the record's own rules
-  read (`TURN_OUTPUT_MARKER`, `PROMPT_PLACEHOLDER`).
+  an object — is that check's FAIL with the line's number), the two strings the record's own rules
+  read (`TURN_OUTPUT_MARKER`, `PROMPT_PLACEHOLDER`), the fixture-copy mechanism (`rewrite_source_cwd`:
+  the working directory rewritten through the session's own JSON `cwd` record field, never its raw
+  bytes, with a torn line carried through verbatim), the printed-block bound (`bounded_block` with
+  `REPORT_BLOCK_LINES_MAX`/`REPORT_BLOCK_CHARS_MAX`), and the endpoint policy both seeding checks apply
+  (`credential_free_url`: a URL whose userinfo, query or fragment would write a credential into a
+  configuration the check copies, so the Codex check leaves that provider's table behind whole and the Pi
+  check leaves the provider out of its seeded document).
   It is project-owned (`OWNED` and the manifest), imports nothing, and each check stays runnable on its
   own; what the shared module does **not** absorb is the checks' independent restatements of the
   contracts they check (the spelling rules their case files re-implement, the marker their case files

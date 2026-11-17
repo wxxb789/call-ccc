@@ -784,6 +784,12 @@ func messageFromParsed(parsed parser.ParsedMessage) Message {
 		IsSystem:          parsed.IsSystem,
 		IsSidechain:       parsed.IsSidechain,
 		IsCompactBoundary: parsed.IsCompactBoundary,
+		// The provider's own record identity and the record it hangs off, as the inherited reader
+		// answered them: a target format that is itself a tree (a Pi session) writes the source's own
+		// shape with them instead of a flat chain this build invented. Empty where the provider records
+		// neither, which the writers treat as "no relation recorded".
+		SourceUUID:       parsed.SourceUUID,
+		SourceParentUUID: parsed.SourceParentUUID,
 	}
 	if parsed.DialogueText != nil {
 		message.Dialogue = *parsed.DialogueText

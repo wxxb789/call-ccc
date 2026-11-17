@@ -127,6 +127,17 @@ type Message struct {
 	IsSystem          bool `json:"is_system,omitempty"`
 	IsSidechain       bool `json:"is_sidechain,omitempty"`
 	IsCompactBoundary bool `json:"is_compact_boundary,omitempty"`
+	// SourceUUID is the provider's own identity for this record and SourceParentUUID the record it
+	// hangs off, both empty where the provider records neither (a Codex rollout has no per-message
+	// identity). They are the read's own answer about the source's structure, not a second parse: a
+	// provider whose records form a tree -- a Pi session's `id`/`parentId`, a Claude transcript's
+	// `uuid`/`parentUuid` -- answers them per record, and a target format that is itself a tree needs
+	// them to write the source's own shape instead of inventing one flat chain. SourceParentUUID is the
+	// provider's *visible* ancestor where the parser resolves one (a Pi tool result is not one: a record
+	// that follows a tool result names the message that made the call), which is why a writer that wants
+	// the source's line must ask the document's own order as well.
+	SourceUUID       string `json:"source_uuid,omitempty"`
+	SourceParentUUID string `json:"source_parent_uuid,omitempty"`
 }
 
 // Fidelity records what the source itself said about the completeness of this read. A caller that

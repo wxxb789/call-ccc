@@ -581,6 +581,13 @@ func messageFromArchive(archived db.Message) Message {
 		IsSystem:          archived.IsSystem,
 		IsSidechain:       archived.IsSidechain,
 		IsCompactBoundary: archived.IsCompactBoundary,
+		// The writer stored the source record's own identity and the record it hangs off, so an archive
+		// read answers the same relation a source read does: a target writer that reproduces the
+		// source's tree (or filters to its active path) needs them, and dropping them here would make
+		// the same session convert differently depending on which read reached it -- an archive-backed
+		// Pi session would flatten into a chain the source's own loader would not walk.
+		SourceUUID:       archived.SourceUUID,
+		SourceParentUUID: archived.SourceParentUUID,
 	}
 	if archived.DialogueText != nil {
 		message.Dialogue = *archived.DialogueText

@@ -263,7 +263,7 @@ func ConvertToCodexRollout(conv Conversation, opts CodexTargetOptions) (CodexRol
 		sessionID:      sessionID,
 		cwd:            source.Cwd,
 		cliVersion:     cliVersion,
-		clock:          newCodexClock(startedAt),
+		clock:          newEntryClock(startedAt, time.RFC3339Nano),
 		callOwners:     map[string]struct{}{},
 		gitBranch:      source.GitBranch,
 		gitRemote:      source.GitRemote,
@@ -309,26 +309,6 @@ func firstRecordedTime(messages []Message) time.Time {
 	return first.UTC()
 }
 
-// codexClock hands out envelope timestamps that never go backwards: the target orders records by the
-// envelope's timestamp, and a source whose messages are unordered (a DAG, a replayed fork) would
-// otherwise write a file whose order contradicts its own times.
-type codexClock struct {
-	last time.Time
-}
-
-func newCodexClock(start time.Time) *codexClock {
-	return &codexClock{last: start.UTC()}
-}
-
-func (c *codexClock) next(at time.Time) string {
-	at = at.UTC()
-	if at.IsZero() || at.Before(c.last) {
-		at = c.last
-	}
-	c.last = at
-	return at.Format(time.RFC3339Nano)
-}
-
 // codexRolloutBuilder accumulates the rollout's lines and the report while it walks the document.
 type codexRolloutBuilder struct {
 	buffer     bytes.Buffer
@@ -336,7 +316,7 @@ type codexRolloutBuilder struct {
 	sessionID  string
 	cwd        string
 	cliVersion string
-	clock      *codexClock
+	clock      *entryClock
 	opts       CodexTargetOptions
 	gitBranch  string
 	gitRemote  string
@@ -375,16 +355,13 @@ type codexRolloutBuilder struct {
 	lossEmptyResults       int
 	lossWhitespaceResults  int
 	lossResultBlocks       int
-	foreignToolNames       map[string]struct{}
-	toolNameOrder          []string
+	lossInactiveBranch     int
+	lossUnresolvedParents  int
 
-	// pendingCalls holds the calls this conversion carried that no result has answered yet. It is what
-	// an id-less result may be paired with, and only while exactly one call is outstanding: with two
-	// or more, the result could belong to any of them, and that ambiguity must not disappear just
-	// because a further call arrived.
-	pendingCalls map[string]struct{}
-	sawBoundary  bool
-	turnOpen     bool
+	ledger
+
+	sawBoundary bool
+	turnOpen    bool
 }
 
 func (b *codexRolloutBuilder) write(record codexEnvelope) {
@@ -417,9 +394,28 @@ func (b *codexRolloutBuilder) sessionMeta(startedAt time.Time) {
 // writeConversation walks the document once and writes every record it can express. The message's place
 // in the walk keys the ids generated for calls that recorded none (toolCall), so two messages whose
 // ordinals were never assigned cannot collapse into one call.
+//
+// A record the source's own relations place off the line its loader walks is not written. This target's
+// log is one sequence of records with no parent relation to hang a record off, and a response item
+// written into it becomes part of the conversation a resumed turn reads: an abandoned branch cannot
+// travel here as recorded history without being revived as an active turn, so it is omitted and counted
+// (inactive_branch_records). The branch itself is still in the source session, where its own
+// conversation can be converted on demand.
+//
+// The walk's own answer about the places it chose travels with it: where the read left a record's place
+// open -- a record the read left parentless or gave a parent this read does not hold, or one chained
+// through a tool result standing between it and the call it named -- the record's place on this line is
+// this conversion's reading rather than the read's, and the report counts it (unresolved_source_parents)
+// instead of presenting the line as the source's own by right.
 func (b *codexRolloutBuilder) writeConversation(conv Conversation) {
+	inactive, unresolved := inactiveSourceRecords(conv.Messages, conv.Source.Provider)
+	b.lossUnresolvedParents = unresolved
 	for index, message := range conv.Messages {
 		b.messageIndex = index
+		if inactive[index] {
+			b.lossInactiveBranch++
+			continue
+		}
 		b.writeMessage(message)
 	}
 }
@@ -708,19 +704,6 @@ func (b *codexRolloutBuilder) toolCall(index int, call ToolCall, at time.Time) {
 	b.items = append(b.items, TargetItem{Kind: ItemToolCall, CallID: callID, ToolName: name, InputJSON: input})
 }
 
-// solePendingCall answers the one call an id-less result may belong to: exactly one carried call with no
-// result yet. Two or more outstanding calls make the pairing a guess -- the result could belong to any
-// of them -- and no outstanding call leaves nothing to pair with.
-func (b *codexRolloutBuilder) solePendingCall() (string, bool) {
-	if len(b.pendingCalls) != 1 {
-		return "", false
-	}
-	for callID := range b.pendingCalls {
-		return callID, true
-	}
-	return "", false
-}
-
 func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time) {
 	callID := strings.TrimSpace(result.ToolUseID)
 	// resultIDInferred says the pairing below is the only id this result has: the source recorded none of
@@ -798,17 +781,6 @@ func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time) {
 	})
 	b.carried.ToolResults++
 	b.items = append(b.items, TargetItem{Kind: ItemToolResult, CallID: callID, Text: text})
-}
-
-func (b *codexRolloutBuilder) noteToolName(name string) {
-	if b.foreignToolNames == nil {
-		b.foreignToolNames = map[string]struct{}{}
-	}
-	if _, ok := b.foreignToolNames[name]; ok {
-		return
-	}
-	b.foreignToolNames[name] = struct{}{}
-	b.toolNameOrder = append(b.toolNameOrder, name)
 }
 
 // losses reports every category the writer knows about, in a fixed order, so a caller can read the
@@ -989,6 +961,34 @@ func (b *codexRolloutBuilder) losses() []Loss {
 				"loader checks when the session is resumed; the value is a binding to the target's " +
 				"configuration, not a claim that a target model produced the conversation, and changing " +
 				"that configuration later makes the target refuse to resume it",
+		},
+		{
+			Category:    "inactive_branch_records",
+			Disposition: DispositionOmitted,
+			Count:       b.lossInactiveBranch,
+			Detail: "the source's own relations record these turns as a branch the conversation left: " +
+				"no later record descends from them, so the source's own loader does not build context " +
+				"from them. This target's log is one sequence of records with no parent relation to hang " +
+				"a record off, and a response item written into it becomes part of the conversation a " +
+				"resumed turn reads, so the branch cannot travel here as recorded history without being " +
+				"revived as an active turn; it is omitted instead. The branch is still in the source " +
+				"session, and its own conversation can be converted on demand like any other history",
+		},
+		{
+			Category:    "unresolved_source_parents",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.lossUnresolvedParents,
+			Detail: "a relation the read could not place exactly, so a record's place on this line is " +
+				"this conversion's reading: the record named the message that made a call while a " +
+				"result of that call stands between them in the file (the inherited Pi reader resolves " +
+				"a result's descendants to their visible ancestor, so the read answers both relations " +
+				"the same way, and the file's own reading -- call → result → what follows -- is what " +
+				"keeps the result on this line); the record carried an identity but no parent, and is " +
+				"not the conversation's first; or the record named a parent this read does not hold. " +
+				"Each of those records is still written; what the count names is that the source's own " +
+				"place for it is not the one this line was built from. A record the read answered no " +
+				"identity for is never counted: the read's own order is all there is to follow, and " +
+				"following it invents nothing",
 		},
 		{
 			Category:    "pre_compaction_history",

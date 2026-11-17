@@ -3,7 +3,6 @@ package ccc
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,25 +30,7 @@ const claudeSessionFileMode os.FileMode = 0o600
 // they were given -- the explicit branch has never rewritten the caller's own string, and the
 // environment is a caller's string too.
 func ResolveClaudeHome(explicit string) (string, bool, error) {
-	if strings.TrimSpace(explicit) != "" {
-		home, err := filepath.Abs(explicit)
-		if err != nil {
-			return "", true, fmt.Errorf("resolving %s: %w", explicit, err)
-		}
-		return home, true, nil
-	}
-	if fromEnv := os.Getenv(claudeHomeEnv); strings.TrimSpace(fromEnv) != "" {
-		home, err := filepath.Abs(fromEnv)
-		if err != nil {
-			return "", false, fmt.Errorf("resolving $%s: %w", claudeHomeEnv, err)
-		}
-		return home, false, nil
-	}
-	dir, err := os.UserHomeDir()
-	if err != nil {
-		return "", false, fmt.Errorf("resolving the home directory: %w", err)
-	}
-	return filepath.Join(dir, ".claude"), false, nil
+	return resolveRouteHome(explicit, claudeHomeEnv, ".claude")
 }
 
 // InstallClaudeTranscript writes a converted transcript into a Claude Code data directory and returns
@@ -63,55 +44,7 @@ func ResolveClaudeHome(explicit string) (string, bool, error) {
 // session another agent may already have continued. The returned path and the error are independent
 // answers, as they are there: a non-empty path means the session is published.
 func InstallClaudeTranscript(transcript ClaudeTranscript, home string) (string, string, error) {
-	directory := filepath.Join(home, claudeProjectsSubdir, filepath.FromSlash(transcript.Directory))
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return "", "", fmt.Errorf("creating %s: %w", directory, err)
-	}
-	target := filepath.Join(directory, transcript.FileName)
-	if _, err := os.Lstat(target); err == nil {
-		return "", "", fmt.Errorf("%w: %s", ErrTargetExists, target)
-	} else if !os.IsNotExist(err) {
-		return "", "", fmt.Errorf("checking %s: %w", target, err)
-	}
-
-	temp, err := os.CreateTemp(directory, "."+transcript.FileName+".tmp-")
-	if err != nil {
-		return "", "", fmt.Errorf("creating a temporary session file in %s: %w", directory, err)
-	}
-	tempName := temp.Name()
-	cleanup := func() {
-		temp.Close()
-		removeFile(tempName)
-	}
-	if err := temp.Chmod(claudeSessionFileMode); err != nil {
-		cleanup()
-		return "", "", fmt.Errorf("restricting %s: %w", tempName, err)
-	}
-	if _, err := temp.Write(transcript.Data); err != nil {
-		cleanup()
-		return "", "", fmt.Errorf("writing %s: %w", tempName, err)
-	}
-	if err := temp.Sync(); err != nil {
-		cleanup()
-		return "", "", fmt.Errorf("flushing %s: %w", tempName, err)
-	}
-	if err := temp.Close(); err != nil {
-		removeFile(tempName)
-		return "", "", fmt.Errorf("closing %s: %w", tempName, err)
-	}
-
-	if err := linkSession(tempName, target); err != nil {
-		removeFile(tempName)
-		if os.IsExist(err) {
-			return "", "", fmt.Errorf("%w: %s", ErrTargetExists, target)
-		}
-		return "", "", fmt.Errorf("%w: %s: %v; install into a filesystem that supports hard links",
-			ErrNoExclusiveInstall, directory, err)
-	}
-	if err := removeFile(tempName); err != nil {
-		return target, "hard-link", fmt.Errorf("removing the temporary file %s: %w", tempName, err)
-	}
-	return target, "hard-link", nil
+	return installFile(home, claudeProjectsSubdir, transcript.Directory, transcript.FileName, transcript.Data, claudeSessionFileMode)
 }
 
 // VerifyClaudeTranscriptStructure reads the installed transcript back through the inherited AgentsView
@@ -125,42 +58,12 @@ func InstallClaudeTranscript(transcript ClaudeTranscript, home string) (string, 
 func VerifyClaudeTranscriptStructure(
 	ctx context.Context, projectsDir string, transcript ClaudeTranscript, cfg config.Config,
 ) (StructureVerification, error) {
-	verification := StructureVerification{
-		State:      VerificationStateNotVerified,
-		Method:     structureMethodClaude,
-		TargetPath: filepath.Join(projectsDir, filepath.FromSlash(transcript.Directory), transcript.FileName),
-	}
-	readerConfig := cfg
-	dirs := make(map[parser.AgentType][]string, len(cfg.AgentDirs)+1)
-	for agent, roots := range cfg.AgentDirs {
-		dirs[agent] = roots
-	}
-	dirs[parser.AgentClaude] = []string{projectsDir}
-	readerConfig.AgentDirs = dirs
-	readerConfig.DisabledAgents = nil
-
-	conversation, err := NewSourceReader(readerConfig).Read(ctx,
-		Ref{Provider: string(parser.AgentClaude), ID: verification.TargetPath})
-	if err != nil {
-		verification.Detail = "the inherited Claude reader could not read the installed session back: " + err.Error()
-		return verification, nil
-	}
-	verification.ReadBack = readBackCounts(conversation)
-	installed, err := os.ReadFile(verification.TargetPath)
-	if err != nil {
-		verification.Detail = "the installed session could not be read back for comparison: " + err.Error()
-		return verification, nil
-	}
-	roundTrip := compareClaudeRoundTrip(transcript, conversation, installed)
-	verification.NotReadBackVerbatim = roundTrip.notReadBackVerbatim
-	if len(roundTrip.differences) > 0 {
-		verification.Detail = "the installed session does not hold the evidence in the target document: " +
-			strings.Join(roundTrip.differences, "; ")
-		return verification, nil
-	}
-	verification.State = VerificationStateVerified
-	verification.Detail = roundTrip.detail(structureReaderClaude)
-	return verification, nil
+	return verifyStructure(ctx, projectsDir, parser.AgentClaude, structureMethodClaude,
+		"Claude", structureReaderClaude,
+		filepath.Join(projectsDir, filepath.FromSlash(transcript.Directory), transcript.FileName),
+		func(readBack Conversation, installed []byte) roundTripComparison {
+			return compareClaudeRoundTrip(transcript, readBack, installed)
+		}, cfg)
 }
 
 // compareClaudeRoundTrip names every way the file's read-back differs from the target document, through

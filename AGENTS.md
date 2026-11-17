@@ -25,16 +25,27 @@ with their exit codes and counts).
   step — proves the carried files are still the pin's. Change a carried file only upstream.
 - **Precision over apparent completeness.** An explicitly partial translation beats a
   plausible-looking one. Never fabricate tool results, reasoning, roles, resume identities or a
-  success result; a valid file is not evidence that anything can resume it.
+  success result; a valid file is not evidence that anything can resume it. A target format that is
+  itself a tree (Pi's session JSONL, a Claude Code transcript) is written as the *source's* own tree:
+  each entry hangs off the entry of the record the source named as its parent, so the target's own
+  loader walks the source's active path and an inactive branch stays off it as recorded history rather
+  than being chained in as an active turn. A target that is one line of records with no parent relation
+  (a Codex rollout) cannot hold a branch that way, so it writes the source's own line and omits the
+  records the source's relations place off it, counted as `inactive_branch_records`; and a relation the
+  read cannot answer is counted (`unresolved_source_parents`) instead of being presented as one the
+  source recorded — on that route too, where the count is the line walk's own accounting of the places it
+  chose, not only of the records it left out.
 - **A target writer's claim is shown through the target harness's own loader.** Call `ccc continue …
-  --to codex` or `--to claude` converts, installs and reports **converted / installed / natively
-  resumable** as three separate states; "resumable" is only ever `verification.load` or
+  --to codex`, `--to claude` or `--to pi` converts, installs and reports **converted / installed /
+  natively resumable** as three separate states; "resumable" is only ever `verification.load` or
   `verification.resume` coming back `verified`, and every one of a conversion's omissions or narrowing
   is named in `conversion.losses[]`. The native half needs the target harness installed and, for a real
-  turn, model access, so it is **not** a gate step: `scripts/codex-native-check.py` and
-  `scripts/claude-native-check.py` re-derive it and report each check's own verdict (the gate keeps
-  deciding the offline half — round-trip through the inherited reader, install rules, reported losses,
-  CLI shape). The Codex check also runs the repeat scenario goal 0004 added: it converts a *copy* of the
+  turn, model access, so it is **not** a gate step: `scripts/codex-native-check.py`,
+  `scripts/claude-native-check.py` and `scripts/pi-native-check.py` re-derive it and report each check's
+  own verdict (the gate keeps deciding the offline half — round-trip through the inherited reader,
+  install rules, reported losses, CLI shape). A check whose target harness is absent exits 2 naming the
+  harness it needs — the Pi check ends its run with `RESULT: INCOMPLETE` and the reason, the Codex and
+  Claude checks print the reason on stderr — so a partial run is never quoted as a pass. The Codex check also runs the repeat scenario goal 0004 added: it converts a *copy* of the
   fixture, loads it, appends the committed `internal/ccc/testdata/growth/` fragment to the copy,
   converts again, and shows Codex's own loader opening the second session with its own view holding the
   appended turn while the first session's bytes did not move (`--repeat-resume-prompt` adds one real
@@ -46,8 +57,14 @@ with their exit codes and counts).
   provider — asked of the harness itself — and no model, never the source's: recording nothing is
   refused by a home that has migrated to paginated threads, and recording the source's provider would
   be false. A Claude Code transcript has no provider field at all, so `--to claude` states that as the
-  `model_provider_binding` format limit and binds the session to no provider, and neither route ever
-  writes the source's.
+  `model_provider_binding` format limit and binds the session to no provider, and no route ever writes the
+  source's provider as the session's own. A Pi session binds no provider either — its records carry a
+  model and a provider per assistant message, and the read answers the model each source message recorded
+  but not the endpoint that served it, so a converted entry carries that model and no provider (writing
+  the read's session-level harness label in the endpoint's place was measured wrong) and the report names
+  that as the attribution it cannot answer — and its printed resume command names no provider or model,
+  because the source's provider label is a source-side name the target home need not define and a flagged
+  model can leave the target unable to open the session at all.
 - **A conversion is a snapshot of the source at one boundary, and repeating it is the same operation.**
   The source is read again and written as *another* fresh target session; nothing ever merges later
   source history into an existing target session, and nothing rewrites the source. Every conversion's
@@ -73,14 +90,44 @@ with their exit codes and counts).
 ## How to work here
 
 - The continuation core and its per-harness target writers live in `internal/ccc` — the route table
-  `targets.go` and the writers/installers/verifiers `codex_target.go`, `codex_install.go`,
-  `codex_verify.go`, `claude_target.go`, `claude_install.go`, `claude_verify.go`; its committed
+  `targets.go`, the install/verify/probe machinery the three routes share (`route_shared.go`), and the
+  writers/installers/verifiers `codex_target.go`, `codex_install.go`,
+  `codex_verify.go`, `claude_target.go`, `claude_install.go`, `claude_verify.go`, `pi_target.go`,
+  `pi_install.go`, `pi_verify.go`; its committed
   native-shaped fixtures are `internal/ccc/testdata/fixtures/` and the growth fragments a run appends to
   a *copy* of one (`internal/ccc/testdata/growth/`, written by the same `internal/ccc/fixturegen` and
   pinned against it) are what makes one source session grow; `cmd/ccc` adds
   argument handling and presentation only, and a target-side native harness
-  (`scripts/codex-native-check.py`, `scripts/claude-native-check.py`) is registered in
-  `docs/harness.md`, re-runnable, and deliberately not a gate step.
+  (`scripts/codex-native-check.py`, `scripts/claude-native-check.py`, `scripts/pi-native-check.py`) is
+  registered in `docs/harness.md`, re-runnable, and deliberately not a gate step. A target whose own
+  loader resolves a session id through the process's working directory — Claude Code, and Pi — is
+  installed under the project spelling of the source read's recorded working directory, and a source that
+  recorded none is refused (`ErrNoTargetCwd`) rather than installed where no lookup finds it. The source's
+  own relation is reproduced as the read answered it, with the one step the read itself projects: a record
+  the Pi-family readers answer as hanging off the message that made a call is chained through the tool
+  result standing between them, and counted (`unresolved_source_parents`) where the projection cannot
+  settle which of the two the record named. The step is taken only where the read may project, because it
+  exists to undo a projection: an exact answer — a Claude transcript's `parentUuid` — names the record it
+  means, and a result standing beside a record the read chains to the same message is that record's
+  sibling, not its place. A record the target leaves out keeps the place its own walk resolved — the
+  result's own entry where that place came through the projection — so a record naming the omitted one
+  follows that place rather than the nearest ancestor of its raw relation. A source whose *selected leaf*
+  the target's loader would not reach — the entry written last stands for a record off the line the read's
+  last record answers — is refused
+  (`ErrUnrepresentableLeaf`) rather than written as a file that resumes a branch the conversation left, and
+  for a Pi-family source the *source-side* half of that rule is checked too: the carried Pi reader skips the
+  tree entries the harness's own loader builds context from (`branch_summary`, `custom_message`), so the
+  read's last record is not by itself the entry the source's file selects as its leaf — the file's own last
+  entry is. `internal/ccc/pi_source_leaf.go` walks that file's own path (the same entry reader the load
+  check reads a converted file with) and refuses a conversion whose read cannot be reconciled with it: the
+  deepest record the read holds on that path must be the record the read's last message stands for, and
+  every entry on the path the read does not carry must be a kind the harness's own loader keeps out of the
+  conversation (an unknown kind is not assumed to be outside it). Where no source file stands behind the
+  read — an archive row, a file that moved while it was read — the entry is not established, and that is
+  stated in the run's warnings instead of being presented as the read's own answer. A
+  Pi invocation the report prints and the check runs names the sessions tree inside the data directory
+  explicitly (`PI_CODING_AGENT_SESSION_DIR`), so the printed line, the verified lookup and the
+  installation agree even when the caller's shell, or the home's own `settings.json`, names another tree.
 - Gate: `python3 scripts/gate.py`, which must print `GATE: PASS`; it runs `parity` and `selftest` as
   required steps, and its Go steps are narrowed to `./cmd/ccc/... ./internal/ccc/...` with the measured
   reasons in [`docs/harness.md`](docs/harness.md#why-the-go-steps-target-a-subset) — that narrowing is

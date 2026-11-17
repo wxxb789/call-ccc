@@ -51,6 +51,7 @@ PRICING_TOOL_PACKAGE = "./internal/pricing/cmd/litellm-snapshot"
 CASES = (
     ("claude", "-home-user-code-example-api/9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10.jsonl"),
     ("codex", "2026/05/04/rollout-2026-05-04T09-15-00-0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812.jsonl"),
+    ("pi", "01a1c335-7098-71c2-a91b-b5295c0464f5.jsonl"),
 )
 
 #: Build tags upstream ships with: without fts5 the inherited schema cannot load an archive that has

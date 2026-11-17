@@ -1,6 +1,6 @@
 # 0005 — Continue conversations into and out of Pi
 
-**Status:** Ready  
+**Status:** Implemented on `feat/0005-pi-continuation`; awaiting operator acceptance  
 **Prerequisite:** [0003 — Continue a Codex session in Claude Code](archive/0003-codex-to-claude-continuation.md).
 
 ## Intended advance

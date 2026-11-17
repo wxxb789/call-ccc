@@ -302,16 +302,21 @@ func TestUnterminatedSourceTailIsBoundaryedAndNeverPublished(t *testing.T) {
 }
 
 // TestContinueCarriesACompleteRecordThatHasNoLineFeed is the contradiction the review measured, pinned in
-// both directions: a complete record without its final line feed is a record both inherited readers read
-// (internal/parser's codex_cursor_test.go pins that for Codex; the Claude reader processes a valid
-// unterminated line), so the conversion must carry its dialogue -- while the boundary may state the byte
-// fact (the file ends without a line feed) and must not claim the record was left out.
+// both directions: a complete record without its final line feed is a record every inherited reader this
+// build reads carries (internal/parser's codex_cursor_test.go pins that for Codex; the Claude reader
+// processes a valid unterminated line, and the Pi reader carries one too), so the conversion must carry its
+// dialogue -- while the boundary may state the byte fact (the file ends without a line feed) and must not
+// claim the record was left out.
 //
-// Both accepted source providers are driven, each converted into the other's harness: each provider's own
-// committed growth fragment holds a further turn in that provider's record shape, and the two conversions
-// of one direction differ in one byte of the source -- the fragment as committed, and the same fragment
-// with its last byte (its line feed) removed. Their conversations must be the same conversation, and only
-// the second boundary may say the file's last bytes are an unterminated record.
+// Each source provider is driven with its own committed growth fragment, converted into another harness:
+// the fragment holds a further turn in that provider's record shape, and the two conversions of one row
+// differ in one byte of the source -- the fragment as committed, and the same fragment with its last byte
+// (its line feed) removed. Their conversations must be the same conversation, and only the second boundary
+// may say the file's last bytes are an unterminated record. What the boundary may *claim* about those bytes
+// is the provider's own answer (a provider whose declarations make its source a transcript of appended
+// lines has the offsets named; the Pi provider's do not, and its boundary states the byte fact and its
+// reason), which is the per-row `offsets` field: the record-offset gate is the reader's, and a case that
+// required the same claim of every provider would assert something the reader itself refuses.
 func TestContinueCarriesACompleteRecordThatHasNoLineFeed(t *testing.T) {
 	for _, testCase := range []struct {
 		name        string
@@ -321,12 +326,18 @@ func TestContinueCarriesACompleteRecordThatHasNoLineFeed(t *testing.T) {
 		destination string
 		fragment    string
 		target      string
+		// offsets is what this provider's own declarations make of a line-record boundary for the file:
+		// SourceBoundaryRecordsClaimed where it is a transcript of appended lines whose bytes the offsets
+		// may be given for, SourceBoundaryRecordsNotClaimed where the provider's declarations do not make
+		// it one (the Pi provider), which the boundary states with its own reason instead.
+		offsets string
 	}{
 		{
 			name: "a Claude source into Codex", agent: parser.AgentClaude, ref: claudeFixtureRef,
 			fixture:     filepath.Join("claude", "-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"),
 			destination: filepath.Join("-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"),
 			fragment:    "claude-complete-turn.jsonl", target: TargetCodex,
+			offsets: SourceBoundaryRecordsClaimed,
 		},
 		{
 			name: "a Codex source into Claude", agent: parser.AgentCodex, ref: codexFixtureRef,
@@ -335,6 +346,18 @@ func TestContinueCarriesACompleteRecordThatHasNoLineFeed(t *testing.T) {
 			destination: filepath.Join("2026", "05", "04",
 				"rollout-2026-05-04T09-15-00-"+codexFixtureRef.ID+".jsonl"),
 			fragment: "codex-complete-turn.jsonl", target: TargetClaude,
+			offsets: SourceBoundaryRecordsClaimed,
+		},
+		{
+			// The Pi source's own fragment: it chains to the ordinary fixture's last entry, so the grown
+			// file is one further turn of that same conversation, and the provider's reader is the third
+			// one the no-line-feed rule is held against. Its boundary claims no record offset, because
+			// this provider's declarations do not make the source a transcript of appended line records.
+			name: "a Pi source into Claude", agent: parser.AgentPi, ref: piFixtureRef,
+			fixture:     filepath.Join("pi", piFixtureRef.ID+".jsonl"),
+			destination: piFixtureRef.ID + ".jsonl",
+			fragment:    "pi-complete-turn.jsonl", target: TargetClaude,
+			offsets: SourceBoundaryRecordsNotClaimed,
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -396,12 +419,30 @@ func TestContinueCarriesACompleteRecordThatHasNoLineFeed(t *testing.T) {
 				t.Errorf("the fragment-as-committed boundary = %+v, want a %d-byte file with nothing "+
 					"unterminated", feedBoundary, sizeWithFeed)
 			}
-			if noFeedBoundary.Bytes != sizeWithoutFeed ||
-				noFeedBoundary.TerminatedRecordsEndBytes != sizeWithoutFeed-wantTail ||
-				noFeedBoundary.UnterminatedTailBytes != wantTail {
-				t.Errorf("the fragment-without-its-line-feed boundary = %+v, want the terminated records to "+
-					"end at byte %d with its last %d byte(s) unterminated",
-					noFeedBoundary, sizeWithoutFeed-wantTail, wantTail)
+			if noFeedBoundary.Bytes != sizeWithoutFeed {
+				t.Errorf("the fragment-without-its-line-feed boundary = %+v, want the file's own %d bytes",
+					noFeedBoundary, sizeWithoutFeed)
+			}
+			// The offsets are the *provider's* own answer, and the boundary may state only what that answer
+			// supports (the gate `SourceBoundaryRecordsClaimed` implements): a provider whose declarations
+			// make its source a transcript of appended line records has the terminated records' end and the
+			// unterminated tail named, and one whose declarations do not -- the Pi provider's -- says so,
+			// with its reason, and states the byte fact alone. Either way the record is *read* by the
+			// conversion, which is what this case is about and what the assertions below require.
+			if got := noFeedBoundary.RecordOffsets; got != testCase.offsets {
+				t.Errorf("the fragment-without-its-line-feed boundary claims %q, want %q for this provider's "+
+					"own declarations", got, testCase.offsets)
+			}
+			if testCase.offsets == SourceBoundaryRecordsClaimed {
+				if noFeedBoundary.TerminatedRecordsEndBytes != sizeWithoutFeed-wantTail ||
+					noFeedBoundary.UnterminatedTailBytes != wantTail {
+					t.Errorf("the fragment-without-its-line-feed boundary = %+v, want the terminated records "+
+						"to end at byte %d with its last %d byte(s) unterminated",
+						noFeedBoundary, sizeWithoutFeed-wantTail, wantTail)
+				}
+			} else if strings.TrimSpace(noFeedBoundary.RecordOffsetsDetail) == "" {
+				t.Errorf("the boundary claims no record offset for this provider and carries no reason: %+v",
+					noFeedBoundary)
 			}
 			// What the record is and what the conversion did with it: read in both cases, and written into
 			// both target documents. A boundary that called the unterminated record unpublished while the

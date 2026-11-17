@@ -79,7 +79,6 @@ import time
 import tomllib
 from pathlib import Path
 from typing import Callable, Iterable, NamedTuple
-from urllib.parse import urlsplit
 
 # The shared module lives beside this script, and the tests load both of them by file location (neither
 # file name is an identifier). Python does not put a script's own directory on `sys.path` when it is
@@ -91,6 +90,7 @@ from native_check_common import (  # noqa: E402  (path set up above)
     RESULTS,
     SHELL_SYNTAX_CHARACTERS,
     TURN_OUTPUT_MARKER,
+    credential_free_url,
     jsonl_parse_error,
     record,
     run,
@@ -207,20 +207,6 @@ def toml_key(name: str) -> str:
     if name and all(char.isascii() and (char.isalnum() or char in "_-") for char in name):
         return name
     return toml_string(name)
-
-
-def credential_free_url(url: str) -> bool:
-    """Whether a base URL is one this check copies: an endpoint with no userinfo, query or fragment.
-
-    A username or a password in a URL is a credential written into the configuration, and a query can
-    hold one too (`?api_key=…` is what a provider's `query_params` setting would otherwise carry). A URL
-    the standard library cannot read at all is not one this check can vouch for.
-    """
-    try:
-        parts = urlsplit(url)
-    except ValueError:
-        return False
-    return not (parts.username or parts.password or parts.query or parts.fragment)
 
 
 def bounded_names(names: list[str]) -> str:

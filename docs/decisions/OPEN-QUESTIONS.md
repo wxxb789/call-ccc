@@ -1711,3 +1711,462 @@ supersede it with a newer one and say which it supersedes.
   also failing the search for the last record's dialogue; and by reading the fragment's *first* text field
   instead of its last, which failed the Codex half alone with `the case searches for "What budget do retries
   share per session?", which is not in the fragment's last record …`.
+
+## Q-0005-01 — A Pi assistant entry always carries a `usage` object, with zero counts
+
+- **Status:** resolved (default taken)
+- **Question:** Pi's assistant records carry a `usage` object whose counts are the harness's own
+  accounting. A converted session's turns were produced by the source's provider, so what counts should
+  the record carry — the source's, a computed estimate, or none?
+- **Default taken:** always write a `usage` object, its counts zero, and name it in the report
+  (`unrecorded_token_usage`, carried-with-caveat, with what it costs). Measured on 1.5.2: the loader
+  indexes `message.usage.input` for every assistant message it loads, and a written message without a
+  usage object stops a resumed run with `undefined is not an object (evaluating 'message.usage.input')`
+  — so "none" is not available. Zero is the answer that attributes nothing: the source's provider billed
+  the source's session, and no number this build could write would be that provider's rate or this
+  session's spend.
+- **Reversal:** carry the source's recorded per-message counts (the inherited reader holds them per
+  message: `parser.ParsedMessage.TokenUsage`), which would make the target's own totals look like this
+  session's spending; or copy the source's cost table, which this build has no rates to justify.
+- **Settled by:** nothing owner-only. The caveat names the cost of the default: a long carried history
+  reads to Pi's own context estimate as cheaper than it is until the first resumed turn reports its own
+  usage.
+
+## Q-0005-02 — `firstKeptEntryId` is the boundary's own id, and `systemMessage` is null
+
+- **Status:** resolved (default taken)
+- **Question:** Pi's compaction entry names the first entry the boundary kept and may carry the prompt
+  checkpoint the context is rebuilt from. A source's compaction record (a Codex `compacted` record, a
+  Claude `compact_boundary` summary) names the summary and the boundary but not which entries were kept,
+  and no checkpoint at all.
+- **Default taken:** write `firstKeptEntryId` as the compaction entry's own id — Pi's own retain-none
+  shape, measured in the harness's `buildContextEntries`, where a boundary whose kept id is its own
+  leaves nothing before it retained — and `systemMessage` as an explicit null, because Pi installs its
+  own prompt and tool loadout at request time and a reconstructed checkpoint would be a prompt nobody
+  recorded. Measured on the converted fixture: the loader then reports the boundary's summary as the
+  leading `compactionSummary` entry of its model-visible history, with the turns after the boundary
+  following it.
+- **Reversal:** claim the entries after the source's boundary as the kept range (inventing a boundary
+  position the source never recorded), or reconstruct a checkpoint from the target's own prompt.
+- **Settled by:** nothing owner-only.
+
+## Q-0005-03 — A Pi native check drives the loader against a copy, from the session's recorded directory
+
+- **Status:** resolved (default taken)
+- **Question:** Pi's loader is driven offline by its RPC mode, and it resolves a session id through the
+  project directory spelled from the process's own working directory. Should the check run the loader
+  against the installed session, and from where?
+- **Default taken:** against a throw-away copy in a scratch agent directory, from the session's own
+  recorded working directory. Two measurements settled it: (1) an RPC run **appends** its own records (a
+  `thinking_level_change` among them) to the session it opens, so driving the loader against the
+  installed file alters what the conversion published — the installed file's digest is compared around
+  the whole stage, which is what makes the copy an assertion rather than a preference; and (2) a process
+  whose working directory spells another project is answered with `Session found in different project:
+  <recorded>` and a *fork* offer rather than a load, which is not the conversation's own resume command —
+  so the check runs from the recorded directory and reports a recorded directory that does not exist on
+  this machine as "the load could not be verified" rather than reading the fork offer as a pass. The
+  scratch copy is installed under the same project spelling as the real one, which is what makes the
+  lookup find it.
+- **Reversal:** run the loader against the installed file (mutating it), or recreate a stand-in path
+  inside the scratch tree (whose project spelling is a different project's, which is the fork offer
+  again).
+- **Settled by:** nothing owner-only.
+
+## Q-0005-04 — The Pi resume command prints no `--provider` and no `--model`
+
+- **Status:** resolved (default taken)
+- **Question:** the source's own last message records a provider and a model. Should the printed Pi
+  resume command carry them, so the resumed turn runs under the instruction the session records?
+- **Default taken:** neither is printed. The source's provider is a *source-side* label — AgentsView
+  spells the agent that wrote the words (`claude`, `codex`, `pi`) — and Pi's own provider ids are the
+  endpoints the caller's configuration defines, so the label names an endpoint the target home need not
+  have. Measured twice on 1.5.2, both times before the session was even opened: `--provider claude`
+  against a Pi home whose `models.json` defines one endpoint stopped with `Unknown provider "claude"`,
+  and `--model claude-sonnet-4-5` stopped with `ambiguous across providers … No matching provider is
+  authenticated`. A resume command that cannot open the session is not a resume command, and the earlier
+  candidate flags also failed goal 0005's own "resumed by Pi" evidence. The attribution is not lost: the
+  assistant entries carry the source's provider and model verbatim, and the report says so
+  (`message_model_attribution`, carried-with-caveat) beside the `model_provider_binding` format limit.
+- **Reversal:** print the model (risk: the target cannot open the session when the id is ambiguous or
+  unauthenticated), or print `provider/model` from the source's label (which Pi cannot resolve at all).
+- **Settled by:** nothing owner-only; a caller who wants a specific model passes Pi's own flags.
+
+## Q-0005-05 — `ccc continue --to pi` accepts a session whose recorded directory is not on this machine
+
+- **Status:** resolved (default taken)
+- **Question:** Pi's lookup is path-scoped, so a session installed under a working directory this host
+  does not have cannot be loaded here. Should the conversion be refused (as a missing recorded directory
+  is, `ErrNoTargetCwd`), or written and reported?
+- **Default taken:** written and reported. The design's rule is that a conversion is a snapshot and that
+  the native half needs the target installed; the target home is the caller's, and the session is
+  installed exactly where the target's own discovery will find it on a machine that has the directory —
+  which is the machine a cross-machine handoff is for. The load check reports `not-verified` naming the
+  missing directory, the run's warnings carry it, and the exit code is the one a verification that could
+  not run earns.
+- **Reversal:** refuse the conversion when the recorded directory is absent here (which would make a
+  cross-machine continuation impossible), or install into an invented directory (which is what
+  `ErrNoTargetCwd` exists to prevent).
+- **Settled by:** nothing owner-only.
+
+## Q-0005-06 — Which fixture the Pi parity oracle records
+
+- **Status:** resolved (default taken)
+- **Question:** goal 0005 adds two Pi fixtures. Which one gets a recorded upstream-parity dump, given
+  that `scripts/upstream-compare.py` needs network and a second checkout?
+- **Default taken:** the ordinary session (`pi/01a1c335-…`), which exercises the reader's identity,
+  ordering, tool-call/result pairing and per-message model fields in both trees. The branch/compaction
+  fixture has no recorded dump in this increment; its own properties are pinned offline by this tree's
+  tests (`TestPiHistoryFixtureBranchIsNotOnTheActivePath` walks the fixture's tree, and the continuation
+  cases pin what a conversion does with it), and the case can be added the next time the comparison is
+  run with `--record`.
+- **Reversal:** run `python3 scripts/upstream-compare.py --record` with the second fixture added to both
+  `Cases` and `CASES`; nothing depends on the omission except that the reader's projection of *that*
+  fixture is not proven against the pin.
+- **Settled by:** nothing owner-only.
+
+## Q-0005-07 — A Pi target reproduces the source's own parent relation, rather than being flattened or cut
+
+- **Status:** resolved (default taken; the review named the choice as an operator decision and this is the
+  reversible default it landed on)
+- **Question:** the target's session format is a tree (`id`/`parentId`), and the inherited readers answer
+  each record's own identity and the record it hangs off (`Message.SourceUUID` / `Message.SourceParentUUID`;
+  a Pi session's `parentId`, a Claude transcript's `parentUuid`). 0005's first writer chained every written
+  entry to the one before it and dropped those two fields. That was measured wrong: for the committed
+  branch fixture the pre-fix conversion made Pi's own loader read
+  `[compactionSummary, user, assistant, assistant]` — the abandoned prompt "And the retry cap?" standing as
+  an active user turn — where the source file answers `[user, assistant, assistant]`. The goal forbids
+  exactly that (`Bounds`: "do not treat unrelated inactive branches as additional user turns"). Should the
+  writer reproduce the source's tree, or write only the source's active path and count the rest as omitted?
+- **Default taken:** reproduce the source's tree. Each entry is chained to the entry of the record the
+  source named as its parent, so the target's loader walks the source's own active path from the file's
+  last entry and an abandoned branch stays off it as *recorded history* — which is where the source's own
+  file keeps it, so nothing is dropped either. Three consequences are part of the rule: a record whose
+  named parent the target omitted is chained to the nearest ancestor that was written; a record that
+  follows a tool result is chained to the *result* (the reader answers a Pi tool result as not a visible
+  ancestor, while the source's file runs call → result → what follows, and the other reading would leave a
+  resumed session with a call and no result); and a parent the read cannot resolve at all follows the entry
+  before it and is counted (`unresolved_source_parents`), because that relation is this conversion's and
+  not the source's. Re-derived natively (offline, Pi's own RPC loader on the source and on the conversion):
+  both answer `messageCount 3`, `[user, assistant, assistant]`.
+- **Reversal:** write only the source's active path, omitting and counting the off-path records (a smaller
+  file, at the cost of the recorded history the source's own compaction leaves in place), or write a
+  `branch_summary` entry for an abandoned path (which would require inventing a summary the source never
+  recorded). Neither is needed to satisfy the goal's clause; the default keeps every record the read
+  produced.
+- **Settled by:** nothing owner-only; the review's own alternative (omit-and-count) is the reversal above.
+
+## Q-0005-08 — A converted Pi assistant entry records the model and no provider (Q-0005-04's attribution clause superseded)
+
+- **Status:** resolved (default taken; 0005's review named the substitution as a defect)
+- **Question:** Pi's `message` record has a `provider` field beside its `model`, and the read reports a
+  session-level provider too. 0005's first revision wrote that session-level provider — the *harness*
+  label, `claude` / `codex` / `pi` as AgentsView spells the agent that wrote the words — into the field,
+  and reported it as `model_provider_source: source-messages` with a detail saying the source's own
+  provider travelled verbatim. That is false twice over: the committed ordinary Pi fixture records
+  `example-proxy` while the conversion wrote `pi`, and the read's provider is not an endpoint Pi's own
+  configuration defines. Should the entry name the harness, omit the field, or invent an endpoint?
+- **Default taken:** the model travels verbatim and **no provider is written**. The read answers the model
+  each source message recorded (`Message.Model`, which the inherited Pi reader projects: reading the
+  committed fixture through it answers `example-model-2` per assistant message) and no endpoint
+  attribution at all — the Pi reader does not project a message's `provider` field — while the session-level
+  provider names the harness. The report records none (`model_provider_source: unrecorded`) and states why
+  in `model_provider_detail`, and `message_model_attribution`'s detail says the endpoint attribution is
+  what the read cannot answer. Q-0005-04's own conclusion is unaffected (the printed resume command still
+  names no provider or model); only its closing claim that "the assistant entries carry the source's
+  provider and model verbatim" was wrong and is superseded here.
+- **Reversal:** write the harness label as before (measured wrong: it states an endpoint the caller's
+  configuration need not define), or add a per-message provider to the interchange document and fill it
+  from the parse where the reader answers one (`ParsedMessage.ProviderID`: Codex's service tier, Cline's,
+  Posit's). That would be a real option for a later increment, but a billing identity is not necessarily
+  an endpoint either, and for this route the Pi reader answers none — the reversal changes nothing here.
+- **Settled by:** nothing owner-only.
+
+## Q-0005-09 — A target whose format is one line writes the source's own line and counts the rest (Q-0005-07 extended)
+
+- **Status:** resolved (default taken; 0005's second review round named the flattening as the same defect
+  Q-0005-07 had fixed for the Pi target)
+- **Question:** the outbound routes write a source's records into targets whose formats differ. Pi's
+  session JSONL and a Claude Code transcript are trees — a record names its parent — while a Codex rollout
+  is one sequence of records with no parent relation. Both routes wrote *every* record of the branch
+  fixture as ordinary history, so the compaction boundary and the abandoned retry exchange became part of
+  the target's model-visible conversation (measured: the installed Claude transcript's `parentUuid` walk
+  held the summary, the abandoned prompt and its answer, where the source file's own walk holds three
+  turns). Should those routes reproduce the source's tree too, or drop what the source's own line does not
+  reach?
+- **Default taken:** the tree-shaped targets are written as the source's own tree, exactly as Q-0005-07
+  decided for Pi: each record hangs off the record the source named as its parent (a record's *final*
+  entry, when it writes more than one, and the tool result standing between a call and what follows),
+  so the target's loader walks the source's active path and the branch stays in the file beside it as
+  recorded history — the shape Claude Code's own transcripts have when a conversation is rewound. A
+  Codex rollout cannot hold one: a response item written into it becomes model-visible history (measured:
+  the same fixture converted to a rollout read back as `6` messages where the source's own line holds
+  `3`), so that route writes the source's own line and omits the records the source's relations place off
+  it, counted as `inactive_branch_records`; the boundary that stood on the branch is not written at all,
+  because a `compacted` record there would cut a line it was never on. Every omission is named in
+  `conversion.losses[]`, and the branch itself is still in the source session, convertible on demand.
+- **Reversal:** write the branch into the Codex rollout as well (measured wrong: an abandoned turn
+  becomes active history), or refuse a branched source for that target (which would trade a disclosed
+  omission for an unavailable conversion).
+- **Settled by:** nothing owner-only.
+
+## Q-0005-10 — A projected parent is read through the tool result standing between the records, and the reading is gated on the source's own reader
+
+- **Status:** resolved (default taken; 0005's second review round named the projection as a defect: a
+  record the Pi reader answers as hanging off the message that made a call may in the source's file have
+  hung off a result of it, and treating the answer as exact left the result off the target's walk — and,
+  for the Codex target, omitted it as an inactive branch)
+- **Question:** the inherited Pi reader resolves a record under a tool result to its visible ancestor, so
+  a record whose real parent is a tool result answers with the *call's* message. When another record (a
+  branch's own turn) was written between the result and that record, the writers' immediate-predecessor
+  rule no longer sees the result: the entry is chained straight to the call and the result stands off the
+  walk (or is omitted by the Codex target as inactive). Should the writers undo the projection by walking
+  back to the nearest result of the call the record names, and what should the report say about a relation
+  the read's projection cannot settle?
+- **Default taken:** where the read may answer projections, a record naming a call message is chained
+  through the nearest tool result of that call written before it — the reading the source's own file order
+  supports (`call → result → what follows`) — and the relation is counted
+  (`unresolved_source_parents`) because the read's answer cannot settle whether the record hung off the
+  call or off the result; the count's detail says exactly that. The reading is gated on the source's own
+  reader: only the Pi parser and the Pi-derived readers (the agents `internal/parser/provider.go` builds
+  with `newPiProviderFactory` and `newTauProviderFactory`) resolve descendants of a tool result to their
+  visible ancestor, and for a read whose parent answers are exact (a Claude transcript's `parentUuid`
+  names a record) the narrower immediate-predecessor reading is kept, so no relation is invented for a
+  read that did not project. (The gate's first revision took the step for an exact read too, where the
+  result was the record immediately before the one naming the call; 0005's third review round measured that
+  as the same defect in a narrower shape — an exact read's answer names the record it means, so the result
+  is that record's *sibling* — and Q-0005-12 records the correction: for an exact read the step is not
+  taken at all.) The gate is a small name list in `internal/ccc/route_shared.go`
+  (`projectedParentProviders`) because the inherited registry exposes no format-family predicate and the
+  carried parser is not edited here.
+- **Reversal:** apply the reading to every reader (which invents a relation for an exact read: measured
+  against the Claude fixture's shape, a record naming a call while a result of that call stands between
+  them would be chained through the result and counted, although the read answered the relation exactly),
+  or leave the answer exact everywhere (measured wrong for Pi: the Codex target omitted the active result
+  as `inactive_branch_records` and the tree targets left it off the walk — the defect this entry answers).
+- **Settled by:** an upstream registry predicate naming the readers that project (the list would then be
+  read from it), or a reader that keeps the record's own parent answer beside the projected one. A
+  Pi-family agent this list does not name keeps the narrower reading, which under-discloses rather than
+  inventing a relation.
+
+## Q-0005-11 — A source whose selected leaf writes no entry is refused rather than converted
+
+- **Status:** resolved (default taken; 0005's second review round measured that an omitted final record can
+  make the target's loader select an abandoned branch's entry as its leaf)
+- **Question:** the target's own loader walks from the last entry a conversion wrote, while the source's
+  loader walks from the read's last record. When the read's last record writes no entry (an empty
+  assistant turn, a system record, a subagent's own row) and the entry written last stands for a record
+  the read's last record does not reach, the target would resume from a branch the source's conversation
+  left — a context substitution no per-record loss count discloses. Should the conversion write an entry
+  for the leaf anyway, silently keep the branch's entry as the last one (what it did), or refuse?
+- **Default taken:** refuse (`ErrUnrepresentableLeaf`, naming the record the last entry stands for and
+  that it is off the line the read's last record answers). The check runs after the walk, on the same
+  line computation the writers use, so it is the read's own answer that decides; a source whose last
+  record writes no entry *on* that line is unaffected (the last written entry is then an ancestor of the
+  leaf, and the walk the target makes is the written part of the source's line), and so is a read with no
+  relations at all, whose order is linear. The refusal is narrow by construction: it fires only when the
+  last written record is off the leaf's line, which requires an omitted tail *and* a branch written after
+  the last on-line entry.
+- **Reversal:** write a minimal entry for the omitted leaf so the target's last entry is the leaf's own
+  (narrowed by the omission's reason: a system record's text, a subagent's own words and a whitespace-only
+  dialogue must not be written as the conversation's own turn, so no single rule covers every reason), or
+  keep the silent substitution (measured wrong: the target resumes the abandoned branch).
+- **Settled by:** nothing owner-only. A target format that records its own selected leaf (a `leafId`-like
+  field) would make the refusal unnecessary where the format can name one.
+
+## Q-0005-12 — The projection step is taken only where the read projects, and the Codex line walk's own places are counted
+
+- **Status:** resolved (default taken; 0005's third review round named both halves as defects: the ungated
+  immediate tool-result step revived an exact read's sibling result, and the Codex route disclosed only
+  `inactive_branch_records` while its walk placed records through relations the read never answered)
+- **Question:** two halves of one rule. (a) `sourceTree.parentFor` chained a record through the tool result
+  immediately before it whenever that result named the same record, and `sourceLineParent` did the same for
+  the Codex walk — without asking whether the read may answer a projection at all. For an exact read (a
+  Claude transcript's `parentUuid`) that result is a *sibling*: in the shape `C, R(parent=C), A(parent=C)`
+  the source's relations place `R` off the line the conversation runs, and chaining `A` through `R` revives
+  `R`'s own turn — a user record can hold dialogue beside its result — as an ancestor of the active path,
+  while the report counted nothing. (b) The tree writers count the relations the read could not place
+  (`unresolved_source_parents`); the Codex route consumed only the boolean of `inactiveSourceRecords`, so a
+  record the walk kept on the line through a projected parent — or through the record before it when the
+  read answered no parent, or none it holds — travelled as "the source's own line" with no count.
+- **Default taken:** (a) the tool-result step is taken only where `projectedParentProvider` says the read
+  may project, on both the tree writers and the Codex walk; an exact read resolves every named parent by
+  its own answer, and a result standing beside the record it names is that record's sibling (kept in the
+  file for the tree targets, off the walk). `sourceToolResultBefore` lost its `projected` parameter: where
+  the read does not project the step is not taken at all. (b) `inactiveSourceRecords` answers the count
+  beside the flags — the places its walk chose that the read did not answer: the record chained through a
+  result standing between it and the call it named (a result immediately before it is the file's own
+  continuation, `call → result → what follows`, and is not counted, exactly as the tree writers do not
+  count it); a record the read gave an identity but no parent, that is not the conversation's first; and a
+  record naming a parent this read does not hold. The count is reported as `unresolved_source_parents`
+  (carried-with-caveat) with a detail that names the three relations, and every one of those records is
+  still written: the count names the place, not an omission.
+- **Reversal:** take the immediate step for every read (measured wrong: with the gate removed the adjacent
+  exact case's assertion fails — the sibling result and its dialogue come back as an ancestor of the
+  active path), or keep the Codex report to `inactive_branch_records` (measured under-disclosing: the
+  projection case is the tree writers' count of 1 on the same document, and without it the rollout
+  presents the line it built as the source's by right).
+- **Settled by:** nothing owner-only; the gate follows the reader predicate Q-0005-10 already names, and a
+  future upstream registry predicate would replace it there.
+
+## Q-0005-13 — A written tool result is registered under the record a record hanging off it would answer, and the projection step's place is counted wherever it is taken (Q-0005-12's "(b)" clause superseded)
+
+- **Status:** resolved (default taken; 0005's fourth review round named both halves as defects: the
+  registration key was the *carrier's* own read-answered parent, so a call's outcome the archive folds onto
+  the call's message was registered under the record the call's message hangs off and a sibling of the call
+  naming that record was chained through the abandoned call's result — reviving the call branch on the tree
+  writers and on the Codex walk alike — and both writers read a result *immediately* before the record as
+  settling the projection, which the read cannot do)
+- **Question:** two halves of one place. (a) Which source record is a written tool result registered under,
+  so that a later record naming that record is chained through the result rather than off the walk the
+  target's loader makes? The registration used the walking record's read-answered parent, which is the
+  call's message only for a result the read holds as a record of its own: an archive read folds a
+  result-only row onto the call's own message and drops the row (`ingest.PairAndFilterContext` feeding
+  `archive.messageFromArchive`), so the walking record *is* the call's message and its read-answered parent
+  is the message above the call — a record naming that one is no candidate for the outcome at all, and
+  registering it there chained such a record through the abandoned call's result. (b) Is the projection
+  step counted when the result stands immediately before the record that names the call, or is adjacency
+  evidence that the record hung off the result (the file's own continuation, `call → result → what
+  follows`)? The two source files — `C, R(parent=C), A(parent=C)` and `C, R(parent=C), A(parent=R)` — are
+  the same answer in the read (the Pi-family readers resolve a result's descendants to the visible
+  ancestor), so adjacency cannot settle which one the file held: the review's measurement showed the same
+  read reactivating an inactive result while reporting zero uncertainty.
+- **Default taken:** (a) the registration key is the record a record *hanging off the outcome* would read
+  as its parent (toolResultCarrierRecord): the message's own identity where that message carries a call at
+  all (the folded shape the archive produces — a result record of its own carries no call, because the
+  reader pairs its result with a call of another record) and the result record's read-answered parent
+  otherwise. One function answers it for all three routes — the Pi writer per written result, the Claude
+  writer once per outcome-holding record, and the Codex walk's `sourceToolResultBefore` — so the routes
+  cannot drift; the registration itself stays gated on the read that may project (Q-0005-12 (a)). (b) the
+  step is counted wherever it is taken: the reading taken is the file's own order, and the count names the
+  place as this conversion's rather than the read's. The consequence is disclosed rather than hidden: an
+  ordinary *linear* Pi conversation reports one counted place per record that follows a tool result (the
+  committed Pi fixture's own `pi:… → --to claude` conversion now reports `unresolved_source_parents ×1`
+  where the earlier revision reported nothing, with the converted bytes unchanged), and the folded-outcome
+  cases (a record naming the parent of a call whose outcome is folded onto the call's message) report zero
+  counted places, because no result of that parent stands anywhere for the read to have projected through.
+- **Reversal:** (a) register under the walking record's read-answered parent (measured wrong in this
+  round: the folded shape chains a sibling of the call through the abandoned call's result — the
+  regression fails on the Pi tree writer, the Claude tree writer, the Codex line walk and the pipeline's
+  archive read, in both spellings of the folded outcome), or always under the message's own identity
+  (measured wrong: the standalone result record's descendants then answer the result's own id, which no
+  record in the read names, and an intervening-branch record is chained to the call instead of through the
+  result — the source-shape cases fail); (b) keep adjacency uncounted (measured wrong: the two source trees
+  above convert identically and report zero uncertainty, so the conversion presents its own reading as the
+  read's answer).
+- **Settled by:** nothing owner-only; a reader that answers a record's own parent beside the projected one
+  (Q-0005-10's own settlement) would make both halves answerable rather than counted.
+
+## Q-0005-14 — Which provider definitions the Pi native check seeds into its scratch home (Q-0002-21's policy, on Pi's own schema)
+
+- **Status:** resolved (default taken; 0005's third and fourth review rounds named the seed's credential
+  surface: a nested `models`/`modelOverrides` `headers` field was copied while only the provider's own
+  levels were scrubbed, and a selected provider's `baseUrl` could carry URL userinfo or a credential in
+  its query, which the field scrubber preserved)
+- **Question:** the Pi check seeds the scratch home it makes for itself with the host's provider
+  definitions so a real turn can reach a model. Pi resolves a literal secret wherever its schema allows one
+  (a provider's `apiKey` and `headers`, a `models` entry's `headers`, a `modelOverrides` entry's
+  `headers`), and a credential can also be written into the endpoint URL itself — as userinfo
+  (`https://user:token@host`) or as a query (`?token=…`). What may cross into the seeded `models.json`?
+- **Default taken:** every credential-bearing *field* is dropped at every level (`scrub_credentials`), the
+  chosen provider's key is re-spelled as an `$ENV` reference the host's environment resolves, and a
+  selected provider whose endpoint URL is not credential-free (`credential_free_url`: no userinfo, query or
+  fragment) is **not copied at all** — the provider is left out whole rather than copied with its address
+  rewritten, because that address is the endpoint the harness would call and half a definition would send
+  it to Pi's own default; the run's `pi models:` line names it, and a run that seeded nothing because of it
+  records the named `SKIP` (`a Pi provider is configured for the chosen model`) rather than failing later
+  in a turn. A provider the run does not need is left out by name. The policy and the URL helper are shared
+  with the Codex check through `scripts/native_check_common.py` (Q-0002-21 is the Codex-side entry), so the
+  two definitions' rules cannot drift.
+- **Reversal:** strip only the credential *fields* and copy the endpoint as spelled (measured wrong: a
+  second copy of the credential lands in a home `--keep` prints and leaves on disk), or strip the
+  credential out of the endpoint (measured wrong: the address is rewritten, sending the harness somewhere
+  the host did not name).
+- **Settled by:** nothing owner-only.
+
+## Q-0005-15 — An omitted record keeps the place its own walk resolved (Q-0005-07's first consequence, in composition with Q-0005-10's projection)
+
+- **Status:** resolved (default taken; 0005's fifth review round measured that the consequence and the
+  projection step did not compose)
+- **Question:** Q-0005-07 chains a record whose named parent the target omitted to "the nearest ancestor
+  that was written", and Q-0005-10 chains a record whose read-answered parent is a call through the tool
+  result standing between them. Where the two meet — a Pi chain `U → C → R → E → A` in which `C` makes a
+  call, `R` answers it, `E` is an empty assistant record and `A` names `E` — the omitted record resolved
+  *its* place through `R`'s entry at its own walk and was then omitted, and a child re-resolving `E`'s
+  **raw** relation reached `C`'s entry instead: the converted path became `U → C → A`, with the written
+  result off the walk the target's loader makes although the report counted it as carried. Should an
+  omitted record's resolved place be kept, or should a child of it be re-resolved from the raw relation?
+- **Default taken:** the place an omitted record's own walk resolved is kept under the record's identity
+  (`sourceTree.omittedAncestorEntry`), and a later record naming it follows *that* place (the result's own
+  entry in the shape above). A record whose own walk resolved nothing — its recorded parent was read later,
+  with nothing yet written to fall back to — keeps no place, and a child of it follows the document's own
+  relations to the nearest written ancestor as before. Both tree writers write this through the shared
+  tree, and the relation is not counted again on the child: the projection's place was counted once, where
+  the omitted record's own walk took it (`unresolved_source_parents`).
+- **Reversal:** re-resolve the child from the raw relation (measured wrong in this round: the new
+  conversion-level cases fail on both tree writers — the record after the omitted one hangs off the call's
+  own entry and the result stands off the model-visible walk), or keep a place for every record including
+  the ones that wrote entries (the entry written for the record is already the place its children follow,
+  so the map would only duplicate it).
+- **Settled by:** nothing owner-only.
+
+## Q-0005-16 — The source's own file answers the Pi-family leaf, and a read with no file says so instead of judging
+
+- **Status:** resolved (default taken; 0005's sixth review round found the read's own last record standing in
+  for the entry the source's file selects)
+- **Question:** the carried Pi reader skips the tree entries the harness's own loader builds context from
+  (`branch_summary`, `custom_message`), so a session switched back to an earlier branch with `/tree` ends
+  with a `branch_summary` entry while the read's last record is still the abandoned branch's own last
+  message. A target written from that record would resume the branch the source's conversation left, and the
+  native load check could not tell: it compares the harness's answer with the *converted* file's own
+  history. The source's own file answers the leaf — Pi's loader walks from the file's last entry back through
+  `parentId` — but only where the file was read: an archive row is a projection with no file open, and a file
+  that moved while it was read is not shown to be the bytes the read covered. Should a read with no file
+  standing behind it be refused, or converted with the limit stated?
+- **Default taken:** the file's own answer decides where the file stands behind the read (the read came from
+  the source, and the file's size is the size the read recorded), and the tree-shaped and line-shaped targets
+  share the refusal (`ErrUnrepresentableLeaf`) through the source-side check in
+  `internal/ccc/pi_source_leaf.go`. Where no file stands behind the read the leaf is *stated* in the run's
+  warnings and the conversion proceeds — the same shape the boundary uses for a source file it could not
+  measure (`source_boundary.state: not-taken`) — because the archive projection is a documented route with
+  its own recorded evidence (the archive read answers the same relations as the source read, §3 of the
+  evidence record), and refusing it would remove a capability rather than a false claim. The refusal's own
+  rules are the mutation-pinned ones the evidence record lists: the deepest record the read holds on the
+  file's leaf path must be its last record, and every entry on that path the read does not carry must be a
+  kind the harness's loader keeps out of its context.
+- **Reversal:** refuse an archive-backed Pi-family conversion too (a smaller rule, at the cost of sessions
+  whose file is gone: `ccc continue` would report "the source's own loader selects a leaf this conversion
+  cannot write" for a session an archive legitimately holds), or convert silently as before (measured wrong
+  in this round: the harness's own loader answers the branch fixture's copy with
+  `[user, assistant, assistant, branchSummary]` while the read's last record is the abandoned branch's own
+  turn).
+- **Settled by:** nothing owner-only.
+
+## Q-0005-17 — A Pi system record is an accounted omission, not a refusal (Q-0005-16's second rule refined)
+
+- **Status:** resolved (default taken; 0005's eighth review round found that every session Pi itself has run
+  a turn in was unconvertible)
+- **Question:** Pi's own format document places a system record at the head of every session that has run a
+  request and writes further ones as its prompt and tool loadout changes (`docs/session-format.md`,
+  "message", shipped with 1.5.2), and Pi's own loader builds a message from it — so a session Pi itself has
+  extended holds an uncarried record of a kind the loader's context holds, and Q-0005-16's second rule
+  (every uncarried entry on the leaf path must be a kind the loader keeps out of its context) refused it
+  with `ErrUnrepresentableLeaf`. The source direction then worked only for hand-written fixtures: the
+  recorded native probe on this host answered exit 1 for a session a real turn had extended, naming the
+  system record. Should such a record be refused, carried, or omitted with the omission reported?
+- **Default taken:** omitted and *counted*, as `conversion.losses[]`'s `source_system_records`, whose count
+  comes from the source file's own entries (the differentiator the refusal was built on,
+  `piAccountedSourceOmission`): the record is the harness's own prompt and tool-loadout state rather than a
+  turn, the inherited reader does not carry the role (and a second parser in this tree is what the design forbids),
+  and no target has that state to hold — a target harness resumes under its own prompt, and Pi rebuilds a
+  session's prompt from its configuration when a session records no system message at all. The refusal
+  stays for every *other* uncarried context record (`custom_message`, `branch_summary`, an unknown kind or
+  an unknown message role), so the reader's own limits are still refused rather than disclosed. The count
+  is reported where a source file stood behind the read: an archive-backed read cannot count the records
+  (the row holds the read's own answer, which never carried them), and that is stated in the run's warnings
+  through Q-0005-16's existing leaf statement.
+- **Reversal:** refuse the shape and disclose the restriction instead (the smaller rule the eighth round's
+  finding allowed; measured to remove the capability for every native Pi session, which is the route's
+  point), or carry the record by re-reading the file into conversation records in this tree (forbidden: a
+  second source parser), or leave the omission uncounted and rely on the loss table's other categories
+  (would present a dropped record as a carried conversation).
+- **Settled by:** nothing owner-only.

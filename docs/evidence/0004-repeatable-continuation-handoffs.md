@@ -1,6 +1,6 @@
 # Evidence — 0004 Repeat continuation as source history grows
 
-Contract: [`docs/goals/0004-repeatable-evolving-session-handoffs.md`](../goals/0004-repeatable-evolving-session-handoffs.md).
+Contract: [`docs/goals/archive/0004-repeatable-evolving-session-handoffs.md`](../goals/archive/0004-repeatable-evolving-session-handoffs.md).
 Plan: [`docs/plans/0004-repeatable-evolving-session-handoffs.md`](../plans/0004-repeatable-evolving-session-handoffs.md).
 Route evidence this increment extends: [`0002-claude-to-codex-continuation.md`](0002-claude-to-codex-continuation.md)
 (the accepted Claude Code → Codex route) and [`0003-codex-to-claude-continuation.md`](0003-codex-to-claude-continuation.md).

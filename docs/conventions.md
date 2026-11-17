@@ -25,7 +25,8 @@ cmd/ccc/            the standalone CLI; no continuation-core types leak into it
 internal/ccc/       continuation core: conversation document, readers, archive access,
                     target writers and the route table (targets.go, codex_target.go,
                     codex_install.go, codex_verify.go, claude_target.go, claude_install.go,
-                    claude_verify.go, continue.go)
+                    claude_verify.go, pi_target.go, pi_install.go, pi_verify.go, continue.go),
+                    and the install/verify/probe machinery the three routes share (route_shared.go)
 internal/ccc/parity the canonical dump and the oracle a pristine checkout runs too
 internal/ccc/testdata/fixtures  committed native-shaped sessions, written by internal/ccc/fixturegen
 internal/ccc/testdata/growth    committed fragments a run appends to a *copy* of one fixture, so one
@@ -37,8 +38,8 @@ docs/evidence/      one evidence record per increment: real commands, exit codes
 docs/upstream.md    the carried AgentsView pin, its declared deviations and the update procedure
 docs/decisions/     append-only record of decisions taken and defaults chosen
 scripts/            harness entry points (gate, knobs, carry importer, parity, comparison,
-                    codex-native-check and claude-native-check: the target-side native
-                    verifications, deliberately not gate steps)
+                    codex-native-check, claude-native-check and pi-native-check: the
+                    target-side native verifications, deliberately not gate steps)
 ```
 
 Inherited AgentsView packages keep their upstream paths and stay where upstream put them. The carry is
@@ -72,8 +73,26 @@ gate runs as a required step.
   **converted**, **installed** and **natively resumable** as separate states; the last one comes from
   the harness's own loader (and, at the level that runs one, from a real turn), never from the file
   parsing. The target's records are written the way the target writes them (the model-visible item
-  *and* the harness's own view of the turn), and the provider the session records is the target's own
-  answer about its configuration — never the source's, and never invented.
+  *and* the harness's own view of the turn): where the target format is itself a tree, it is written as
+  the *source's* own tree — each entry hangs off the entry of the record the source named as its parent —
+  so the target's loader walks the source's active path instead of one this build invented, and a branch
+  the conversation left stays in the file off that walk; where the target is one line of records with no
+  parent relation (a Codex rollout), the source's own line is written and the records the source placed
+  off it are omitted and counted (`inactive_branch_records`), because a record written there becomes
+  model-visible history, and the walk's own accounting — the places it chose that the read did not answer
+  (`unresolved_source_parents`) — is disclosed on that route as it is on the tree writers. A record that
+  follows a tool result is chained through it only where the read itself projects (the Pi-family readers
+  resolve a result's descendants to their visible ancestor); an exact answer names the record it means, so
+  a result standing beside a record the read chains to the same message is that record's sibling and not
+  its place. A record the target leaves out keeps the place its own walk resolved — the result's own entry
+  where that place came through the projection — so a record naming the omitted one follows that place
+  rather than the nearest ancestor of its raw relation, and the place is counted once, where the omitted
+  record's own walk took it. Where the step is taken it is counted even when the result stands immediately
+  before the record: the read answers a record the source placed under the call and one it placed under the
+  call's result the same way, so adjacency cannot settle which of the two the file held, and the count
+  names the reading as this conversion's rather than the read's. The provider a record states is the
+  provider the read actually answered — the target's own configured endpoint where the harness was asked,
+  and none where the read answers the model alone — never the source's, and never invented.
 - **A native-verification harness is a re-derivable script, not a gate step**, exactly like
   `scripts/upstream-compare.py`: it needs the target harness installed (and model access for a real
   turn), so the gate keeps deciding the offline half. A check that cannot run says so. The default
@@ -85,7 +104,10 @@ gate runs as a required step.
   unrepresentable limits are stated as limits rather than as this run's counts.
 - **Non-destructive by default.** Never modify the source transcript, never overwrite an existing
   target session, never copy credentials or login stores, and never log conversation bodies, tool
-  arguments or secrets by default. Write into isolated data directories for tests and demos.
+  arguments or secrets by default. Write into isolated data directories for tests and demos, and a
+  native check seeds its provider configuration only into the scratch home it made itself: a home the
+  caller named is read, never written to, because replacing a configuration there (and the credential
+  references in it) is a change no session digest would show.
 - **A conversion is a snapshot at a stated boundary, and repeating it is the same operation.** A source
   that grew is read again and written as *another* fresh target session: no run merges later source
   history into a session an agent may already have continued, and no run rewrites the source or an
@@ -106,13 +128,21 @@ gate runs as a required step.
   container of those records is reported by its bytes and digest with no record offset claimed for it.
 - **A target session is discoverable where the target's own loader looks.** A target that finds a
   session only from the working directory its process runs in — Claude Code resolves a session through
-  the directory whose project-dir spelling matches the one it was installed under — is installed under
-  the directory the source read recorded, and the printed resume command carries that directory as well
-  as the target data home (`cd <cwd> && CLAUDE_CONFIG_DIR=<home> claude --resume <id>`). A source that
-  recorded no working directory is refused (`ErrNoTargetCwd`) rather than given an invented one, since
-  a session installed anywhere else is one no loader finds.
-- **Fixtures are sanitized native shapes.** Small, version-identified, committed fixtures; no real
-  personal session content, no secrets, no absolute host paths in committed evidence.
+  the directory whose project-dir spelling matches the one it was installed under, and Pi resolves a
+  session id through the project directory spelled from the process's own working directory — is
+  installed under the directory the source read recorded, and the printed resume command carries that
+  directory as well as the target data home (`cd <cwd> && CLAUDE_CONFIG_DIR=<home> claude --resume
+  <id>`, `cd <cwd> && PI_CODING_AGENT_DIR=<home> pi --session <id>`). A source that recorded no working
+  directory is refused (`ErrNoTargetCwd`) rather than given an invented one, since a session installed
+  anywhere else is one no loader finds. A native check of such a target runs the loader from the
+  session's own recorded directory and against a **copy** of the converted bytes: measured on Pi 1.5.2,
+  an RPC run appends its own records (a `thinking_level_change` among them) to the session it opens, so
+  driving the loader against the installed file would alter what the conversion published.
+- **Fixtures are sanitized native shapes.** Small, version-identified, committed fixtures — one
+  provider directory per source (`fixtures/claude/`, `fixtures/codex/`, `fixtures/pi/`) — with no real
+  personal session content, no secrets and no absolute host paths in committed evidence; a fixture that
+  must be driven by a harness whose lookup is path-scoped is copied into the run's own scratch tree with
+  its recorded working directory rewritten mechanically, never edited in place.
 - **Comments and docs state what the code does, not what it was meant to do.** A comment or test name
   claiming a rule the code no longer implements is a correctness defect.
 - **A test pins the rule it names, on every platform and every Python 3 these docs name.** An

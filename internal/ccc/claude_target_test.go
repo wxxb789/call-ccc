@@ -3,6 +3,7 @@ package ccc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -320,7 +321,8 @@ func TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers(t *testing.T) {
 		"tool_result_statuses", "empty_tool_inputs", "generated_call_ids", "coalesced_tool_call_projections",
 		"subagent_session_links",
 		"tool_name_vocabulary",
-		"message_model_attribution", "pre_compaction_history", "empty_compaction_summary",
+		"message_model_attribution", "unresolved_source_parents", "pre_compaction_history",
+		"empty_compaction_summary",
 		"malformed_source_lines", "summary_transcript", "source_needs_retry",
 	} {
 		lossCount(t, transcript.Losses, category)
@@ -339,6 +341,7 @@ func TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers(t *testing.T) {
 		{"message_model_attribution", 1},
 		{"tool_name_vocabulary", 1},
 		{"subagent_session_links", 0},
+		{"unresolved_source_parents", 0},
 		{"pre_compaction_history", 3},
 		{"empty_user_messages", 0},
 		{"summary_transcript", 0},
@@ -830,4 +833,229 @@ func readFixtureConversation(t *testing.T, ref Ref) Conversation {
 		t.Fatalf("reading %s:%s: %v", ref.Provider, ref.ID, err)
 	}
 	return conversation
+}
+
+// TestClaudeTranscriptRefusesASelectedLeafOffTheLine pins the shared tree rule on this writer too: the
+// target's loader walks from the transcript's last record and the source's from the read's last record,
+// so an empty leaf whose own line does not hold the record whose entry would be written last is refused
+// rather than written as a transcript that resumes the branch the source's conversation left. The same
+// document with a representable leaf converts.
+func TestClaudeTranscriptRefusesASelectedLeafOffTheLine(t *testing.T) {
+	at := func(second int) time.Time { return time.Date(2026, 5, 5, 10, 0, second, 0, time.UTC) }
+	base := func(leaf Message) Conversation {
+		return Conversation{
+			Source: SourceIdentity{Provider: "claude", SessionID: "source-session", Cwd: "/work/project"},
+			Messages: []Message{
+				{Ordinal: 0, Role: "user", Content: "start", Dialogue: "start", DialogueProjected: true,
+					SourceUUID: "u1", Timestamp: at(0)},
+				{Ordinal: 1, Role: "assistant", Content: "answer", Dialogue: "answer",
+					DialogueProjected: true, SourceUUID: "a2", SourceParentUUID: "u1", Timestamp: at(1)},
+				{Ordinal: 2, Role: "assistant", Content: "left turn", Dialogue: "left turn",
+					DialogueProjected: true, SourceUUID: "b3", SourceParentUUID: "a2", Timestamp: at(2)},
+				leaf,
+			},
+			Fidelity: Fidelity{ReadFrom: "source"},
+		}
+	}
+	empty := Message{Ordinal: 3, Role: "assistant", SourceUUID: "e4", SourceParentUUID: "u1",
+		Timestamp: at(3)}
+	if _, err := ConvertToClaudeTranscript(base(empty), ClaudeTargetOptions{}); !errors.Is(err, ErrUnrepresentableLeaf) {
+		t.Fatalf("error = %v, want ErrUnrepresentableLeaf for a leaf off the last written record's line", err)
+	}
+	spoken := empty
+	spoken.Content = "the last word"
+	spoken.Dialogue = "the last word"
+	spoken.DialogueProjected = true
+	if _, err := ConvertToClaudeTranscript(base(spoken), ClaudeTargetOptions{}); err != nil {
+		t.Fatalf("converting a representable leaf: %v", err)
+	}
+}
+
+// TestClaudeTranscriptKeepsAFoldedOutcomeOffAnAbandonedBranch pins the shared rule on this writer's own
+// call site: an outcome the read folded onto the call's own message (an archive read's shape, in either
+// of the two spellings the writer carries outcomes from) is registered under that message, so a record
+// that names the message's *parent* hangs off the parent's record rather than through the abandoned
+// call's result. Registering it under the parent instead chained the sibling through the result record,
+// putting the abandoned call branch on the walk the loader makes. The outcome still travels: it is
+// recorded history, off the walk rather than dropped.
+func TestClaudeTranscriptKeepsAFoldedOutcomeOffAnAbandonedBranch(t *testing.T) {
+	at := func(second int) time.Time { return time.Date(2026, 5, 5, 10, 0, second, 0, time.UTC) }
+	folded := func(outcomeAsResults bool) Conversation {
+		call := ToolCall{ToolUseID: "toolu_1", Name: "grep", InputJSON: `{"pattern":"maxBackoff"}`}
+		if !outcomeAsResults {
+			call.ResultContent = `"internal/retry/config.go:41"`
+			call.ResultContentSize = 28
+		}
+		callMessage := Message{Ordinal: 1, Role: "assistant", Content: "running the check",
+			Dialogue: "running the check", DialogueProjected: true, SourceUUID: "c2",
+			SourceParentUUID: "u1", Timestamp: at(1), ToolCalls: []ToolCall{call}}
+		if outcomeAsResults {
+			callMessage.ToolResults = []ToolResult{{ToolUseID: "toolu_1",
+				ContentRaw: `"internal/retry/config.go:41"`, ContentSize: 28, ContentDecoded: true}}
+		}
+		conversation := testConversation(
+			Message{Ordinal: 0, Role: "user", Content: "start", Dialogue: "start",
+				DialogueProjected: true, SourceUUID: "u1", Timestamp: at(0)},
+			callMessage,
+			// The call's branch is abandoned: the record after it names the call's own parent.
+			Message{Ordinal: 2, Role: "assistant", Content: "after the branch",
+				Dialogue: "after the branch", DialogueProjected: true, SourceUUID: "d3",
+				SourceParentUUID: "u1", Timestamp: at(2)},
+		)
+		// The folded shape is what an *archive* read of a Pi session produces, so the read is the one that
+		// may answer a projection: with an exact read the rule under test is not applied at all (nothing is
+		// registered for a later record to chain through), and the case would pass without exercising it.
+		conversation.Source.Provider = "pi"
+		return conversation
+	}
+	for _, spelling := range []struct {
+		name            string
+		outcomeAsResult bool
+	}{
+		{"the outcome as the call's message's own results", true},
+		{"the outcome as the call's summary", false},
+	} {
+		t.Run(spelling.name, func(t *testing.T) {
+			transcript, err := ConvertToClaudeTranscript(folded(spelling.outcomeAsResult),
+				ClaudeTargetOptions{})
+			if err != nil {
+				t.Fatalf("converting: %v", err)
+			}
+			records := decodeTranscript(t, transcript)
+			uuidOf := func(text string) string {
+				t.Helper()
+				for _, record := range records {
+					for _, block := range recordBlocks(record) {
+						if block["type"] == "text" && block["text"] == text {
+							id, _ := record["uuid"].(string)
+							return id
+						}
+					}
+				}
+				t.Fatalf("no record carries the text %q:\n%s", text, transcript.Data)
+				return ""
+			}
+			parentOf := func(text string) any {
+				t.Helper()
+				id := uuidOf(text)
+				for _, record := range records {
+					if record["uuid"] == id {
+						return record["parentUuid"]
+					}
+				}
+				t.Fatalf("no record carries the uuid %q", id)
+				return nil
+			}
+			if got := parentOf("after the branch"); got != uuidOf("start") {
+				t.Errorf("the record the conversation continues with hangs off %v, want the record it "+
+					"named (%q): the call's outcome answers a call of the call's message, so a record "+
+					"naming that message's parent cannot have hung off the outcome, and chaining it "+
+					"through the outcome revives the abandoned call branch as an ancestor", got,
+					uuidOf("start"))
+			}
+			if !strings.Contains(string(transcript.Data), "internal/retry/config.go:41") {
+				t.Error("the abandoned call's outcome is not in the transcript at all: it is recorded " +
+					"history and must travel, off the walk rather than dropped")
+			}
+			if loss := lossCount(t, transcript.Losses, "unresolved_source_parents"); loss.Count != 0 {
+				t.Errorf("unresolved_source_parents = %+v, want 0: the record names the call's parent, "+
+					"and no result of that parent stands anywhere for the read to have projected through",
+					loss)
+			}
+		})
+	}
+}
+
+// TestClaudeTranscriptChainsPastAnOmittedRecordToItsResolvedPlace pins the composition of omission and
+// the tool-result projection on this writer's own call site: a record the target omits standing under a
+// written result, and a later record naming it. The omitted record's place was resolved when its own
+// walk started -- through the result, because the read answers the record as hanging off the call the
+// result answers -- and its child follows *that* place. Resolving the child from the omitted record's
+// raw relation instead reaches the call's own record, leaving the written result off the walk the
+// loader makes although the report counts it as carried. The omitted record is the empty assistant turn
+// the read produces for a usage-only row, and the case requires the omission (its own category is
+// counted): a written entry would give the record a place of its own and hide the rule.
+func TestClaudeTranscriptChainsPastAnOmittedRecordToItsResolvedPlace(t *testing.T) {
+	at := func(second int) time.Time { return time.Date(2026, 5, 5, 10, 0, second, 0, time.UTC) }
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "start", Dialogue: "start", DialogueProjected: true,
+			SourceUUID: "u1", Timestamp: at(0)},
+		Message{Ordinal: 1, Role: "assistant", Content: "[grep: maxBackoff]", DialogueProjected: true,
+			SourceUUID: "c2", SourceParentUUID: "u1", Timestamp: at(1),
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_1", Name: "grep",
+				InputJSON: `{"pattern":"maxBackoff"}`}}},
+		// The result record: the reader answers its parent as the call message.
+		Message{Ordinal: 2, Role: "user", SourceUUID: "r3", SourceParentUUID: "c2", Timestamp: at(2),
+			ToolResults: []ToolResult{{ToolUseID: "toolu_1",
+				ContentRaw: `"internal/retry/config.go:41"`, ContentSize: 28}}},
+		// The record the target omits: an empty assistant turn, answered as hanging off the call although
+		// the source's own file placed it under the call's result.
+		Message{Ordinal: 3, Role: "assistant", SourceUUID: "e4", SourceParentUUID: "c2", Timestamp: at(3)},
+		// The record continuing from the omitted one: it names the omitted record, so it hangs off the
+		// omitted record's resolved place.
+		Message{Ordinal: 4, Role: "assistant", Content: "after the omitted record",
+			Dialogue: "after the omitted record", DialogueProjected: true, SourceUUID: "a5",
+			SourceParentUUID: "e4", Timestamp: at(4)},
+	)
+	// The projection this rule undoes is the inherited Pi reader's, so the read must be one that may
+	// answer a projection: with an exact read the rule under test is not applied at all and the case
+	// would pass without exercising it.
+	conversation.Source.Provider = "pi"
+	transcript, err := ConvertToClaudeTranscript(conversation, ClaudeTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if loss := lossCount(t, transcript.Losses, "empty_assistant_messages"); loss.Count != 1 {
+		t.Fatalf("empty_assistant_messages = %+v, want the one record the target omits: a written entry "+
+			"would give the record a place of its own and hide the rule under test", loss)
+	}
+	records := decodeTranscript(t, transcript)
+	resultUUID := ""
+	for _, record := range records {
+		for _, block := range recordBlocks(record) {
+			if block["type"] == "tool_result" && block["tool_use_id"] == "toolu_1" {
+				resultUUID, _ = record["uuid"].(string)
+			}
+		}
+	}
+	if resultUUID == "" {
+		t.Fatalf("no record carries the tool result:\n%s", transcript.Data)
+	}
+	uuidOf := func(text string) string {
+		t.Helper()
+		for _, record := range records {
+			for _, block := range recordBlocks(record) {
+				if block["type"] == "text" && block["text"] == text {
+					id, _ := record["uuid"].(string)
+					return id
+				}
+			}
+		}
+		t.Fatalf("no record carries the text %q:\n%s", text, transcript.Data)
+		return ""
+	}
+	parentOf := func(text string) any {
+		t.Helper()
+		id := uuidOf(text)
+		for _, record := range records {
+			if record["uuid"] == id {
+				return record["parentUuid"]
+			}
+		}
+		t.Fatalf("no record carries the uuid %q", id)
+		return nil
+	}
+	if got := parentOf("after the omitted record"); got != resultUUID {
+		t.Errorf("the record continuing from an omitted one hangs off %v, want the omitted record's "+
+			"resolved place, the tool result's record (%q): resolving its raw relation instead reaches "+
+			"the call's own record and leaves the written result off the walk the loader makes", got,
+			resultUUID)
+	}
+	if !strings.Contains(string(transcript.Data), "internal/retry/config.go:41") {
+		t.Error("the tool result is not in the transcript at all: it is recorded history and must travel")
+	}
+	if loss := lossCount(t, transcript.Losses, "unresolved_source_parents"); loss.Count != 1 {
+		t.Errorf("unresolved_source_parents = %+v, want the one place the read's projection left "+
+			"unanswerable (the omitted record's own), counted once rather than again on its child", loss)
+	}
 }

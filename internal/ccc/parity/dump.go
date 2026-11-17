@@ -65,6 +65,13 @@ var Cases = []Case{
 		Provider: "codex",
 		Fixture:  "2026/05/04/rollout-2026-05-04T09-15-00-0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812.jsonl",
 	},
+	{
+		// Pi became a continuation participant in goal 0005, and a projection is not proven by its
+		// consumer's own tests: this case runs the inherited Pi reader over the committed Pi fixture in
+		// both trees, so the fields a conversion reads are pinned upstream's rather than this tree's.
+		Provider: "pi",
+		Fixture:  "01a1c335-7098-71c2-a91b-b5295c0464f5.jsonl",
+	},
 }
 
 // Options describes one comparison run.

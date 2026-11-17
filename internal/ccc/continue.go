@@ -428,6 +428,22 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 	// finished writing, which another conversion carries.
 	result.Warnings = append(result.Warnings, boundaryWarnings(&boundary)...)
 
+	// The record the source's own loader selects as the conversation's leaf, asked of the source file's own
+	// entries: for the Pi-family readers the read's own last record is not that answer (pi_source_leaf.go),
+	// and a conversion written from a record the file's leaf path does not reach would resume a branch the
+	// source's conversation left. Where no source file stands behind the read the leaf is not established,
+	// and the report says so rather than presenting the read's own last record as the source's leaf. The
+	// same pass counts the records on that path the read does not carry whose omission the conversion
+	// accounts for -- records the read never held, so no target writer can count them -- and those travel
+	// into the conversion's losses below.
+	leaf, err := piSourceLeafCheck(conversation, readFrom, boundary)
+	if err != nil {
+		return ContinueResult{}, err
+	}
+	if leaf.Warning != "" {
+		result.Warnings = append(result.Warnings, leaf.Warning)
+	}
+
 	// What only the target's own harness can answer (Codex: the model provider its loader checks). It is
 	// asked here, after the read, because the answer can depend on the session's own working directory.
 	facts := route.Facts(ctx, targetFactsInput{
@@ -463,6 +479,10 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 		Losses:         session.Losses,
 		SourceFidelity: conversation.Fidelity,
 	}
+	// The source-side check's counted omissions stand beside the target writer's own categories: the
+	// records are ones the read never held, so the writer has no record of them to count
+	// (piSystemRecordLoss). The category is absent when the source file held none.
+	result.Conversion.Losses = append(result.Conversion.Losses, leaf.Losses...)
 	// The invocation is built here, where the session identity exists, and rendered twice: as the
 	// argument vector and environment a caller runs, and as the shell line a person pastes.
 	resumeName := strings.TrimSpace(opts.TargetBinary)
@@ -693,6 +713,17 @@ const (
 
 	structureMethodClaude       = "the inherited AgentsView Claude reader over the installed session"
 	structureMethodClaudeDryRun = "the inherited AgentsView Claude reader over a throw-away copy (dry run)"
+
+	structureMethodPi       = "the inherited AgentsView Pi reader over the installed session"
+	structureMethodPiDryRun = "the inherited AgentsView Pi reader over a throw-away copy (dry run)"
+	// The Pi load check drives the harness's own RPC loader against a throw-away copy, with the
+	// variables that could reach a model removed, and asks the same question about an unknown id beside
+	// it: see pi_verify.go.
+	loadMethodPi = "the target harness's own loader (pi --mode rpc, get_state/get_messages, with no " +
+		"model variables in its environment, plus an unknown-id control)"
+
+	resumeMethodPi = "one turn in the installed session through the target harness's non-interactive " +
+		"resume (pi -p --session)"
 	// The Claude load check drives the harness's own loader with --bare and with the environment
 	// variables that could reach a model removed, so the loader resolves the installed session without a
 	// model turn, and runs an unknown-id control arm beside it: see claude_verify.go.
@@ -711,6 +742,7 @@ const (
 	// once per route and no target's check can name another target's reader.
 	structureReaderCodex  = "Codex"
 	structureReaderClaude = "Claude Code"
+	structureReaderPi     = "Pi"
 )
 
 // hasAnswer reports whether a check carries an answer of its own: it verified, or it came back
