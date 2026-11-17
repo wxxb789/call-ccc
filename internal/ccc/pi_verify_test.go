@@ -115,6 +115,15 @@ func TestPiLoaderCwd(t *testing.T) {
 		t.Errorf("error = %q, want it to say the session records no working directory", err)
 	}
 
+	// A value that is only whitespace names no directory either: trimming is what decides whether a
+	// directory was named at all, so the answer is the empty value's own sentence rather than a stat of
+	// some other spelling.
+	if _, err := piLoaderCwd("", "   "); err == nil {
+		t.Error("piLoaderCwd accepted a recorded working directory that names none")
+	} else if !strings.Contains(err.Error(), "records no working directory") {
+		t.Errorf("error = %q, want it to say the session records no working directory", err)
+	}
+
 	missing := filepath.Join(t.TempDir(), "not-here")
 	if _, err := piLoaderCwd("", missing); err == nil {
 		t.Error("piLoaderCwd accepted a recorded working directory this host does not have")
@@ -139,6 +148,28 @@ func TestPiLoaderCwd(t *testing.T) {
 	}
 	if got != existing {
 		t.Errorf("piLoaderCwd(%q) = %q, want the process to run in the session's own directory", existing, got)
+	}
+
+	// A directory whose own name ends with a space: trimming the recorded value before the stat would ask
+	// this host about a *different* directory (`/tmp/.../project`) than the session recorded, so a
+	// correctly installed session would be reported as one whose directory this host does not have, and a
+	// run that did start would start from a directory the session never named. The directory is created
+	// here rather than assumed: a platform whose filesystem cannot hold the trailing space cannot express
+	// the case, and it says so instead of passing on a directory it did not create.
+	spaced := filepath.Join(t.TempDir(), "project ")
+	if err := os.Mkdir(spaced, 0o755); err != nil {
+		t.Skipf("this host cannot create a directory whose name ends with a space: %v", err)
+	}
+	if info, err := os.Stat(spaced); err != nil || !info.IsDir() {
+		t.Skipf("this host does not keep a directory name's trailing space (%v, %v)", info, err)
+	}
+	got, err = piLoaderCwd("a-scratch-home", spaced)
+	if err != nil {
+		t.Fatalf("piLoaderCwd(%q) = %v, want the session's own directory, trailing space and all", spaced, err)
+	}
+	if got != spaced {
+		t.Errorf("piLoaderCwd(%q) = %q, want the recorded spelling unchanged: the writer, the installation "+
+			"directory, the session header and the printed resume command all keep it", spaced, got)
 	}
 }
 
@@ -638,6 +669,52 @@ func TestVerifyPiLoadRefusesEveryBadAnswer(t *testing.T) {
 				verification.Detail)
 		}
 	})
+}
+
+// TestVerifyPiLoadRunsFromTheRecordedDirectorySpelling pins the rule that a recorded working directory is
+// read exactly as the session recorded it: this session's directory name ends with a space, that spelling
+// is the only directory that exists, and the load check must still run its arms from it and verify.
+// Trimming the value before the stat asks this host about the trimmed directory instead, which reports a
+// valid installation as one whose recorded directory is not available. The directory is created here
+// rather than assumed: a platform whose filesystem cannot hold the trailing space cannot express the
+// case, and says so.
+func TestVerifyPiLoadRunsFromTheRecordedDirectorySpelling(t *testing.T) {
+	cwd := filepath.Join(t.TempDir(), "project ")
+	if err := os.Mkdir(cwd, 0o755); err != nil {
+		t.Skipf("this host cannot create a directory whose name ends with a space: %v", err)
+	}
+	data, err := os.ReadFile(fixturePath(t, filepath.Join("pi", piFixtureRef.ID+".jsonl")))
+	if err != nil {
+		t.Fatalf("reading the Pi fixture: %v", err)
+	}
+	home := t.TempDir()
+	installed, _, err := InstallPiSession(PiSession{
+		SessionID: piFixtureRef.ID,
+		Directory: PiProjectDir(cwd),
+		FileName:  "2026-05-04T09-15-00-000Z_" + piFixtureRef.ID + ".jsonl",
+		Cwd:       cwd,
+		Data:      data,
+	}, home)
+	if err != nil {
+		t.Fatalf("installing the Pi session under the recorded spelling: %v", err)
+	}
+	rpc := &fakePiRPC{installed: piFixtureRef.ID, roles: piModelVisibleRoles(data)}
+	withFakePiHarness(t, rpc, nil)
+
+	verification := VerifyPiLoad(context.Background(), PiLoadOptions{
+		Binary: PiBinaryDefault, SessionID: piFixtureRef.ID, Cwd: cwd,
+		Directory: PiProjectDir(cwd), FileName: filepath.Base(installed),
+		Data: data, Installed: installed, Timeout: time.Minute,
+	})
+	if verification.State != VerificationStateVerified {
+		t.Fatalf("load = %+v, want a verified load: the directory the session recorded is here, spelled "+
+			"exactly as it recorded it", verification)
+	}
+	for index, call := range rpc.calls {
+		if call.cwd != cwd {
+			t.Errorf("arm %d ran in %q, want the recorded spelling %q", index, call.cwd, cwd)
+		}
+	}
 }
 
 // TestVerifyPiResumeReportsTheTurnAndTheGrowth pins the resume level's report through the turn seam: the

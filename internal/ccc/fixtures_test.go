@@ -40,6 +40,11 @@ var (
 	// turns before it, and a branch the conversation left -- the history a conversion must not flatten
 	// into an invented active conversation.
 	piHistoryFixtureRef = Ref{Provider: "pi", ID: "01a1c336-4b02-78d3-9e15-6c7a2f0b8d41"}
+	// piBranchSwitchFixtureRef is the third Pi session: the file a `/tree` branch switch leaves behind, whose
+	// own last entry is the switch's `branch_summary` and whose active path is the branch the conversation
+	// returned to. The inherited reader skips that entry, so the last record *it* answers is the abandoned
+	// branch's own turn -- the shape a conversion must refuse rather than resume.
+	piBranchSwitchFixtureRef = Ref{Provider: "pi", ID: "01a1c337-6d1e-7f84-9b2c-4e5f6a7b8c90"}
 )
 
 // fixtureRoot is the directory the committed sanitized fixtures live in; each provider subdirectory

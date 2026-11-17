@@ -170,7 +170,11 @@ message that was omitted, so the chain never points at something the file does n
 leaf is part of this rule**: the target's own loader walks from the last entry written and the source's from
 the read's last record, so a source whose last record writes no entry while the entry written last stands
 for a record the read's last record does not reach is refused (`ErrUnrepresentableLeaf`) rather than written
-as a file that resumes a branch the source's conversation left.
+as a file that resumes a branch the source's conversation left. The source side of that rule is the
+source *file*'s own answer rather than the read's last record — the carried Pi reader skips tree entries the
+harness's own loader builds context from, so a file that switched branches with `/tree` can end above a
+record the read does not answer — and the source-side check, the fixture and the measured harness answer are
+in the evidence record's sixth review round (Q-0005-16).
 
 ### 2.3 Mapping rules, category by category
 

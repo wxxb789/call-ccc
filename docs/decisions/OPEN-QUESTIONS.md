@@ -2108,3 +2108,35 @@ supersede it with a newer one and say which it supersedes.
   the ones that wrote entries (the entry written for the record is already the place its children follow,
   so the map would only duplicate it).
 - **Settled by:** nothing owner-only.
+
+## Q-0005-16 — The source's own file answers the Pi-family leaf, and a read with no file says so instead of judging
+
+- **Status:** resolved (default taken; 0005's sixth review round found the read's own last record standing in
+  for the entry the source's file selects)
+- **Question:** the carried Pi reader skips the tree entries the harness's own loader builds context from
+  (`branch_summary`, `custom_message`), so a session switched back to an earlier branch with `/tree` ends
+  with a `branch_summary` entry while the read's last record is still the abandoned branch's own last
+  message. A target written from that record would resume the branch the source's conversation left, and the
+  native load check could not tell: it compares the harness's answer with the *converted* file's own
+  history. The source's own file answers the leaf — Pi's loader walks from the file's last entry back through
+  `parentId` — but only where the file was read: an archive row is a projection with no file open, and a file
+  that moved while it was read is not shown to be the bytes the read covered. Should a read with no file
+  standing behind it be refused, or converted with the limit stated?
+- **Default taken:** the file's own answer decides where the file stands behind the read (the read came from
+  the source, and the file's size is the size the read recorded), and the tree-shaped and line-shaped targets
+  share the refusal (`ErrUnrepresentableLeaf`) through the source-side check in
+  `internal/ccc/pi_source_leaf.go`. Where no file stands behind the read the leaf is *stated* in the run's
+  warnings and the conversion proceeds — the same shape the boundary uses for a source file it could not
+  measure (`source_boundary.state: not-taken`) — because the archive projection is a documented route with
+  its own recorded evidence (the archive read answers the same relations as the source read, §3 of the
+  evidence record), and refusing it would remove a capability rather than a false claim. The refusal's own
+  rules are the mutation-pinned ones the evidence record lists: the deepest record the read holds on the
+  file's leaf path must be its last record, and every entry on that path the read does not carry must be a
+  kind the harness's loader keeps out of its context.
+- **Reversal:** refuse an archive-backed Pi-family conversion too (a smaller rule, at the cost of sessions
+  whose file is gone: `ccc continue` would report "the source's own loader selects a leaf this conversion
+  cannot write" for a session an archive legitimately holds), or convert silently as before (measured wrong
+  in this round: the harness's own loader answers the branch fixture's copy with
+  `[user, assistant, assistant, branchSummary]` while the read's last record is the abandoned branch's own
+  turn).
+- **Settled by:** nothing owner-only.

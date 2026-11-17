@@ -1,7 +1,6 @@
 package ccc
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -331,21 +330,29 @@ func piAskLoader(
 // A recorded directory that does not exist here is an answer of its own: the harness would offer the same
 // fork prompt (or fail to start), so the caller reports that the load could not be verified from the
 // session's own working directory rather than reading a fork prompt as a pass.
+//
+// The recorded working directory is read exactly as the session recorded it: trimming decides whether a
+// directory was named at all, and nothing else, because a directory's own name may begin or end with a
+// space -- and the writer, the installation directory, the session header and the printed resume command
+// all keep the recorded spelling. A trimmed stat and a trimmed answer would ask this host about a
+// different directory than the one the session names: a session whose directory is `project ` would be
+// reported as one the host does not have while the directory it names is there, and a run started in the
+// trimmed spelling is a run from a directory the session did not record (resolveRouteHome reads its own
+// value the same way, for the same reason).
 func piLoaderCwd(_ string, sessionCwd string) (string, error) {
-	trimmed := strings.TrimSpace(sessionCwd)
-	if trimmed == "" {
+	if strings.TrimSpace(sessionCwd) == "" {
 		return "", errors.New("the session records no working directory")
 	}
-	info, err := os.Stat(trimmed)
+	info, err := os.Stat(sessionCwd)
 	if err != nil {
 		return "", fmt.Errorf(
 			"the session's recorded working directory %s is not readable here, and the harness resolves a "+
-				"session id through the process's own working directory: %w", trimmed, err)
+				"session id through the process's own working directory: %w", sessionCwd, err)
 	}
 	if !info.IsDir() {
-		return "", fmt.Errorf("the session's recorded working directory %s is not a directory", trimmed)
+		return "", fmt.Errorf("the session's recorded working directory %s is not a directory", sessionCwd)
 	}
-	return trimmed, nil
+	return sessionCwd, nil
 }
 
 // stateSummary is the harness's own view of the session, for the verification detail.
@@ -765,27 +772,21 @@ type piConversationEntry struct {
 }
 
 // piConversationEntries answers the file's own entries, in the file's own order, skipping the header and
-// any line it cannot read.
+// any line it cannot read. It is the byte-shaped reading of the family's entry scan (a converted file is
+// in hand as bytes); the scan's own bound is the one this checks a *converted* file with, which this
+// build wrote and which holds no line of its own that its writer did not write.
 func piConversationEntries(data []byte) []piConversationEntry {
 	var records []piConversationEntry
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 0, 64*1024), 8<<20)
-	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) == 0 {
-			continue
-		}
-		var entry piConversationEntry
-		if err := json.Unmarshal(line, &entry); err != nil {
-			continue
-		}
-		if entry.Type == "" || entry.Type == piEntrySession {
-			continue
-		}
+	// The scan cannot fail on a []byte reader: a line beyond the bound is a line this build's own writer
+	// did not write, and the records before it are what this answers with, exactly as before.
+	_ = piScanConversationEntries(bytes.NewReader(data), piConvertedEntryLineMax, func(entry piConversationEntry) {
 		records = append(records, entry)
-	}
+	})
 	return records
 }
+
+// piConvertedEntryLineMax bounds one line of a converted session file this build wrote.
+const piConvertedEntryLineMax = 8 << 20
 
 // piHomeEnv is the environment variable that selects the Pi data directory a run reads: the harness has
 // no command-line flag for the directory itself, so a resume command that does not set it opens the

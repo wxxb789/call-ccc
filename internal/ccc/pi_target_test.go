@@ -1591,4 +1591,23 @@ func TestPiSessionRefusesASelectedLeafOffTheLine(t *testing.T) {
 			t.Error("the branch's turn is on the walk: the branch was flattened into the active conversation")
 		}
 	}
+
+	// A read that answered no identity for its last record is not this refusal: nothing was answered about
+	// the record's place, so the writers follow the read's own order and the conversion is written. This is
+	// the other half of the same rule, and it is the answer every conversion of an identity-free source
+	// (a Pi v1 session) depends on: an empty identity is not an off-line record.
+	unnamed := spoken
+	unnamed.SourceUUID = ""
+	unnamed.SourceParentUUID = ""
+	session, err = ConvertToPiSession(base(unnamed), PiTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting a leaf the read answered no identity for: %v", err)
+	}
+	lines = decodePiSession(t, session.Data)
+	texts = piEntryTexts(t, lines)
+	lastEntry := lines[len(lines)-1]
+	if text := texts[lastEntry.ID]; text != "the last word" {
+		t.Errorf("the file's last entry carries %q, want the record the read's last message stands for: a "+
+			"record with no answered identity follows the read's own order", text)
+	}
 }

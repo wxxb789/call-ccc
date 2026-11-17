@@ -77,6 +77,13 @@ const (
 	piHistorySessionCwd   = "/home/user/code/history"
 	piHistorySessionStamp = "2026-05-05T11:00:00.000Z"
 
+	// The third carries the shape a `/tree` branch switch leaves in the file: the conversation continues on
+	// one branch, the user takes a second one and then switches back with a generated summary, so the file's
+	// own last entry is the summary and its active path is the branch the conversation returned to.
+	piBranchSwitchSessionID = "01a1c337-6d1e-7f84-9b2c-4e5f6a7b8c90"
+	piBranchSwitchCwd       = "/home/user/code/archive"
+	piBranchSwitchStamp     = "2026-05-07T08:30:00.000Z"
+
 	// The growth fragment's own entries: one further turn, chained onto the committed session's last
 	// entry so a copy that grew by it is one session rather than two roots.
 	piGrowthUserID          = "a1b2c3d4"
@@ -321,6 +328,68 @@ func piAssistantMap(text string, timestamp int64) map[string]any {
 	}
 }
 
+// piBranchSwitchSession is the third Pi fixture: the file a `/tree` branch switch leaves behind.
+//
+// The conversation continues on one branch, the user goes back and takes a second one, and then switches
+// back with a generated summary: Pi appends the `branch_summary` entry the switch creates *last*, with the
+// `parentId` of the entry the continued branch hangs off and the `fromId` of the leaf that was left, so the
+// file's own active path -- the walk its loader makes from the file's last entry back through `parentId` --
+// is the first branch and the summary, while the second branch's turns stand off it as recorded history
+// (Pi 1.5.2 `docs/session-format.md`, `BranchSummaryEntry` and "Tree Structure"). The inherited Pi reader
+// skips `branch_summary` entries, so the last message *it* answers is the abandoned branch's own last
+// record: a conversion written from there would resume the branch this file's summary switched away from,
+// which is what the fixture pins (continue_pi_test.go).
+//
+// The summary's own text is invented like every other fixture string, and its one fact -- which lock the
+// reader takes -- appears in no other fixture.
+func piBranchSwitchSession() string {
+	const (
+		modelID     = "8a1b2c3d"
+		promptID    = "9b2c3d4e"
+		answerID    = "ac3d4e5f"
+		continuedID = "bd4e5f60"
+		secondID    = "ce5f6071"
+		secondAnsID = "df607182"
+		summaryID   = "e0718293"
+	)
+	return testjsonl.JoinJSONL(
+		marshal(map[string]any{
+			"type": "session", "version": 3, "id": piBranchSwitchSessionID,
+			"timestamp": piBranchSwitchStamp, "cwd": piBranchSwitchCwd,
+		}),
+		marshal(map[string]any{
+			"type": "model_change", "id": modelID, "parentId": nil,
+			"timestamp": "2026-05-07T08:30:00.100Z",
+			"provider":  piFixtureProvider, "modelId": piFixtureModel,
+		}),
+		marshal(piEntryMap(promptID, modelID, "2026-05-07T08:30:01.000Z", map[string]any{
+			"message": piMessageMap("user", "How long does the archive writer wait for its lock?", 1795499401000),
+		})),
+		marshal(piEntryMap(answerID, promptID, "2026-05-07T08:30:04.000Z", map[string]any{
+			"message": piAssistantMap("The archive writer waits up to thirty seconds for its lock.", 1795499404000),
+		})),
+		// The first branch's own tip, and the entry the switch continues from.
+		marshal(piEntryMap(continuedID, answerID, "2026-05-07T08:30:06.000Z", map[string]any{
+			"message": piAssistantMap("It is set in internal/archive/writer.go.", 1795499406000),
+		})),
+		// The second branch: the user went back to the answer and asked something else, which is why these
+		// two entries hang off the answer rather than off the turn before them.
+		marshal(piEntryMap(secondID, answerID, "2026-05-07T08:31:10.000Z", map[string]any{
+			"message": piMessageMap("user", "And does the reader take the same lock?", 1795499470000),
+		})),
+		marshal(piEntryMap(secondAnsID, secondID, "2026-05-07T08:31:13.000Z", map[string]any{
+			"message": piAssistantMap("The reader takes the same lock, in internal/archive/reader.go.", 1795499473000),
+		})),
+		// The switch itself, and the file's last entry: the branch continues from the first branch's tip, and
+		// the summary is of the leaf that was left behind.
+		marshal(map[string]any{
+			"type": "branch_summary", "id": summaryID, "parentId": continuedID,
+			"timestamp": "2026-05-07T08:32:00.000Z", "fromId": secondAnsID,
+			"summary": "The user asked whether the archive reader takes the same lock as the writer.",
+		}),
+	)
+}
+
 // claudeGrowthTurn is one further Claude Code turn as the harness records it: a user record carrying the
 // session's own identity and working directory, and the assistant record that answered it, chained to each
 // other by uuid and parentUuid.
@@ -362,6 +431,7 @@ func fixtureFiles() map[string]string {
 		filepath.Join("codex", "2026", "05", "06", codexPatchRollout+".jsonl"):         canonicalJSONL(codexPatchSession()),
 		filepath.Join("pi", piSessionID+".jsonl"):                                      canonicalJSONL(piSession()),
 		filepath.Join("pi", piHistorySessionID+".jsonl"):                               canonicalJSONL(piHistorySession()),
+		filepath.Join("pi", piBranchSwitchSessionID+".jsonl"):                          canonicalJSONL(piBranchSwitchSession()),
 	}
 }
 

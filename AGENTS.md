@@ -114,7 +114,17 @@ with their exit codes and counts).
   follows that place rather than the nearest ancestor of its raw relation. A source whose *selected leaf*
   the target's loader would not reach — the entry written last stands for a record off the line the read's
   last record answers — is refused
-  (`ErrUnrepresentableLeaf`) rather than written as a file that resumes a branch the conversation left. A
+  (`ErrUnrepresentableLeaf`) rather than written as a file that resumes a branch the conversation left, and
+  for a Pi-family source the *source-side* half of that rule is checked too: the carried Pi reader skips the
+  tree entries the harness's own loader builds context from (`branch_summary`, `custom_message`), so the
+  read's last record is not by itself the entry the source's file selects as its leaf — the file's own last
+  entry is. `internal/ccc/pi_source_leaf.go` walks that file's own path (the same entry reader the load
+  check reads a converted file with) and refuses a conversion whose read cannot be reconciled with it: the
+  deepest record the read holds on that path must be the record the read's last message stands for, and
+  every entry on the path the read does not carry must be a kind the harness's own loader keeps out of the
+  conversation (an unknown kind is not assumed to be outside it). Where no source file stands behind the
+  read — an archive row, a file that moved while it was read — the entry is not established, and that is
+  stated in the run's warnings instead of being presented as the read's own answer. A
   Pi invocation the report prints and the check runs names the sessions tree inside the data directory
   explicitly (`PI_CODING_AGENT_SESSION_DIR`), so the printed line, the verified lookup and the
   installation agree even when the caller's shell, or the home's own `settings.json`, names another tree.

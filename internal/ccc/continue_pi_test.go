@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/parser"
 )
 
@@ -687,6 +690,20 @@ func TestContinueFromTheArchiveKeepsAPiSessionsBranch(t *testing.T) {
 		t.Errorf("the archive-backed conversion's model-visible history = %q, while the source file's "+
 			"own walk is %q: the archive read lost the relations the native read answers", got, sourceWalk)
 	}
+	// An archive read has no source file open, so the entry the source's own loader selects as the
+	// conversation's leaf is not established from the source's bytes: the report says so, rather than
+	// presenting the read's own last record as the leaf the source's file answered.
+	leafStated := false
+	for _, warning := range result.Warnings {
+		if strings.Contains(warning, "conversation's leaf was not established") &&
+			strings.Contains(warning, "rather than from a source file of its own") {
+			leafStated = true
+		}
+	}
+	if !leafStated {
+		t.Errorf("warnings = %v, want one saying the source's leaf was not established because the read did "+
+			"not come from a source file of its own", result.Warnings)
+	}
 	if loss := lossCount(t, result.Conversion.Losses, "unresolved_source_parents"); loss.Count != 0 {
 		t.Errorf("unresolved_source_parents = %d, want 0: the archive read answers the same relations "+
 			"the source read does", loss.Count)
@@ -1090,6 +1107,584 @@ func TestPiHistoryFixtureBranchIsNotOnTheActivePath(t *testing.T) {
 			t.Errorf("the off-path entry %s does not reach the active path through its own parents, so "+
 				"it is a line of its own rather than a branch the conversation left", id)
 		}
+	}
+}
+
+// piSourceCopy writes a copy of one committed Pi fixture into a throw-away provider root, with the given
+// lines appended, and answers the configuration that reads it, the reference that names it and its path.
+// A copy is how a case bends a committed fixture -- growing it, or hanging one more record off an entry --
+// without the fixture's own bytes moving; a case that appended to the fixture itself would edit a
+// committed artifact, and the archive-backed cases already copy for the same reason.
+func piSourceCopy(t *testing.T, fixtureID string, extra ...string) (config.Config, Ref, string) {
+	t.Helper()
+	data, err := os.ReadFile(fixturePath(t, filepath.Join("pi", fixtureID+".jsonl")))
+	if err != nil {
+		t.Fatalf("reading the fixture: %v", err)
+	}
+	content := string(data)
+	if len(extra) > 0 {
+		content += strings.Join(extra, "\n") + "\n"
+	}
+	root := t.TempDir()
+	dir := filepath.Join(root, "pi", "-home-user-code-copy")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("preparing the provider root: %v", err)
+	}
+	path := filepath.Join(dir, fixtureID+".jsonl")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("writing the fixture copy: %v", err)
+	}
+	cfg := fixtureConfig(t)
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentPi: {filepath.Join(root, "pi")}}
+	return cfg, Ref{Provider: "pi", ID: fixtureID}, path
+}
+
+// TestPiBranchSwitchFixtureEndsOffTheReadsLastRecord pins what the branch-switch fixture holds and what
+// the read answers for it, both read from the fixture's own bytes rather than restated: the file's last
+// entry is the switch's `branch_summary`, hanging off the first branch's tip, and the read's last record
+// is the abandoned branch's own last turn -- which is the shape the conversion below refuses. Pi's own
+// loader answers this file with the first branch plus the summary (measured natively; see
+// docs/evidence/0005-pi-continuation.md), so a conversion written from the read's last record would
+// resume the branch the summary switched away from.
+func TestPiBranchSwitchFixtureEndsOffTheReadsLastRecord(t *testing.T) {
+	data, err := os.ReadFile(fixturePath(t, filepath.Join("pi", piBranchSwitchFixtureRef.ID+".jsonl")))
+	if err != nil {
+		t.Fatalf("reading the fixture: %v", err)
+	}
+	type entry struct {
+		Type     string  `json:"type"`
+		ID       string  `json:"id"`
+		ParentID *string `json:"parentId"`
+		FromID   string  `json:"fromId"`
+		Summary  string  `json:"summary"`
+		Message  struct {
+			Role string `json:"role"`
+		} `json:"message"`
+	}
+	var entries []entry
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		decoded := entry{}
+		if err := json.Unmarshal([]byte(line), &decoded); err != nil {
+			t.Fatalf("decoding a fixture line: %v", err)
+		}
+		if decoded.Type == "session" {
+			continue
+		}
+		entries = append(entries, decoded)
+	}
+	if len(entries) == 0 {
+		t.Fatal("the fixture holds no entry")
+	}
+	last := entries[len(entries)-1]
+	if last.Type != "branch_summary" || last.Summary == "" || last.FromID == "" {
+		t.Fatalf("the fixture's last entry = %+v, want the branch switch's own summary record", last)
+	}
+	if last.ParentID == nil {
+		t.Fatal("the fixture's branch_summary names no parent, so the fixture cannot show a switch that " +
+			"continues another branch")
+	}
+	// The entry the switch continues from is a record the read holds, and it is not the read's last record:
+	// the summary hangs off the branch the conversation returned to while the abandoned branch's own turns
+	// are still in the file behind it.
+	continued := *last.ParentID
+	conversation, err := NewSourceReader(fixtureConfig(t)).Read(context.Background(), piBranchSwitchFixtureRef)
+	if err != nil {
+		t.Fatalf("reading the fixture: %v", err)
+	}
+	if len(conversation.Messages) == 0 {
+		t.Fatal("the read holds no message")
+	}
+	lastRead := conversation.Messages[len(conversation.Messages)-1]
+	if lastRead.SourceUUID != last.FromID {
+		t.Errorf("the read's last record = %s, want the leaf the switch left behind (%s): the fixture "+
+			"cannot show a read whose last record is off the branch the file continues",
+			lastRead.SourceUUID, last.FromID)
+	}
+	if lastRead.SourceUUID == continued {
+		t.Fatalf("the read's last record is the entry the switch continues from (%s), so the fixture "+
+			"does not hold the shape under test", continued)
+	}
+	held := false
+	for _, message := range conversation.Messages {
+		if message.SourceUUID == continued {
+			held = true
+		}
+	}
+	if !held {
+		t.Errorf("the read does not hold the entry the switch continues from (%s): the refusal's own "+
+			"answer would be a record outside the read", continued)
+	}
+}
+
+// TestContinueRefusesABranchSwitchTheReadDoesNotReach pins the source-side leaf rule end to end: a Pi
+// session whose file switched back to an earlier branch is refused for every target, because the record
+// the target's loader would walk from -- the read's own last record -- is not on the branch the source's
+// own loader selects. A target that wrote from the read's last record would resume the branch the
+// conversation left, and a target that writes the source's own line (Codex) would omit the branch the
+// file continues while keeping the abandoned one; both are the same wrong conversation, so the refusal is
+// the source's own answer rather than one target writer's.
+func TestContinueRefusesABranchSwitchTheReadDoesNotReach(t *testing.T) {
+	data, err := os.ReadFile(fixturePath(t, filepath.Join("pi", piBranchSwitchFixtureRef.ID+".jsonl")))
+	if err != nil {
+		t.Fatalf("reading the fixture: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	var last struct {
+		Type     string `json:"type"`
+		ID       string `json:"id"`
+		ParentID string `json:"parentId"`
+	}
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &last); err != nil {
+		t.Fatalf("decoding the fixture's last entry: %v", err)
+	}
+	path := fixturePath(t, filepath.Join("pi", piBranchSwitchFixtureRef.ID+".jsonl"))
+	for _, target := range []string{TargetPi, TargetClaude, TargetCodex} {
+		t.Run(target, func(t *testing.T) {
+			_, err := Continue(context.Background(), ContinueOptions{
+				Ref:          piBranchSwitchFixtureRef,
+				Target:       target,
+				Config:       fixtureConfig(t),
+				TargetHome:   t.TempDir(),
+				TargetBinary: missingTargetBinary,
+			})
+			if !errors.Is(err, ErrUnrepresentableLeaf) {
+				t.Fatalf("continuing to %s = %v, want ErrUnrepresentableLeaf: the read's last record is "+
+					"not the record the source file's own loader walks from", target, err)
+			}
+			for _, want := range []string{path, last.Type, last.ID} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal %q does not name %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// TestContinueKeepsARecordOutsideTheContextOutOfTheLeafRefusal pins the other half of the leaf rule: an
+// entry the read does not carry may stand on the file's own leaf path when the harness's own loader keeps
+// its kind out of the conversation. The copy's last line is the metadata record Pi writes when a session
+// is renamed, hanging off the last message; the file's leaf is therefore not the read's last record, and
+// the conversion must still go through -- the record adds no message to the source's conversation, so the
+// record the read's last message stands for is still the entry the loader walks from.
+func TestContinueKeepsARecordOutsideTheContextOutOfTheLeafRefusal(t *testing.T) {
+	cfg, ref, path := piSourceCopy(t, piFixtureRef.ID,
+		`{"type":"session_info","id":"f1e2d3c4","parentId":"1d4e7a90","timestamp":"2026-05-04T09:17:00.000Z","name":"retry cap notes"}`)
+	result, err := Continue(context.Background(), ContinueOptions{
+		Ref:          ref,
+		Target:       TargetPi,
+		Config:       cfg,
+		TargetHome:   t.TempDir(),
+		TargetBinary: missingTargetBinary,
+	})
+	if err != nil {
+		t.Fatalf("continuing a session whose file ends with a rename record: %v", err)
+	}
+	if result.Conversion.State != ConversionStateConverted {
+		t.Errorf("conversion state = %q, want the copy converted", result.Conversion.State)
+	}
+	if result.Source == nil || result.Source.Boundary == nil || result.Source.Boundary.Path != path {
+		t.Errorf("the source report names %+v, want the copy's own file %s", result.Source, path)
+	}
+	for _, warning := range result.Warnings {
+		if strings.Contains(warning, "not established") {
+			t.Errorf("warning %q says the leaf was not established, while the file's own leaf path was "+
+				"read and supported the read's last record", warning)
+		}
+	}
+	// The installed session's own leaf is the record the read's last message stands for, which is what the
+	// target's loader walks from: the walk the converted file answers is the copy's own walk.
+	source, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the copy: %v", err)
+	}
+	installed, err := os.ReadFile(result.TargetSession.Path)
+	if err != nil {
+		t.Fatalf("reading the installed session: %v", err)
+	}
+	sourceWalk := transcriptWalkTexts(t, source)
+	if got := transcriptWalkTexts(t, installed); !slices.Equal(got, sourceWalk) {
+		t.Errorf("the installed session's model-visible history = %q, want the copy's own %q", got, sourceWalk)
+	}
+}
+
+// TestContinueRefusesADroppedContextRecordOnTheLeafsPath pins the leaf rule's second half on its own: an
+// entry this read does not carry must not stand on the file's own leaf path unless the harness's own loader
+// keeps its kind out of the conversation. The copy's last line is a branch switch whose summary hangs off
+// the record the read's last message stands for -- the shape a `/tree` switch to the branch the session is
+// already on leaves -- so the record the target's loader would walk from is the right one, and what the
+// conversion cannot give the target is the message the source's own loader builds from the summary.
+// Refusing is the rule: a converted session whose conversation is silently missing a context record the
+// source's own loader reads would be claiming the source's conversation.
+func TestContinueRefusesADroppedContextRecordOnTheLeafsPath(t *testing.T) {
+	cfg, ref, _ := piSourceCopy(t, piBranchSwitchFixtureRef.ID,
+		`{"type":"branch_summary","id":"f1e2d3c4","parentId":"df607182","timestamp":"2026-05-07T08:34:00.000Z","fromId":"e0718293","summary":"The user compared the archive lock with the retry backoff."}`)
+	conversation, err := NewSourceReader(cfg).Read(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("reading the copy: %v", err)
+	}
+	if last := conversation.Messages[len(conversation.Messages)-1].SourceUUID; last != "df607182" {
+		t.Fatalf("the read's last record = %s, want the copy's abandoned-branch leaf: the case is about a "+
+			"leaf path whose deepest record the read *does* hold", last)
+	}
+	_, err = Continue(context.Background(), ContinueOptions{
+		Ref:          ref,
+		Target:       TargetPi,
+		Config:       cfg,
+		TargetHome:   t.TempDir(),
+		TargetBinary: missingTargetBinary,
+	})
+	if !errors.Is(err, ErrUnrepresentableLeaf) {
+		t.Fatalf("continuing the copy = %v, want ErrUnrepresentableLeaf: the file's leaf path holds a "+
+			"branch_summary record whose words the harness's own loader puts in the conversation and "+
+			"this read does not carry", err)
+	}
+	if !strings.Contains(err.Error(), "branch_summary") {
+		t.Errorf("the refusal %q does not name the record's kind", err)
+	}
+}
+
+// TestContinueRefusesALeafPathThatReachesAnotherBranch pins the leaf rule's identity comparison on the
+// shape the summary itself is not part of: the copy's last line is another rename record, but this one
+// hangs off the branch the switch continued from rather than off the read's last record. The file's leaf
+// path therefore reaches a record the read holds -- and that record is not the read's last record, so the
+// conversion is refused while the earlier refusal (an entry whose kind this build cannot place) does not
+// apply here.
+func TestContinueRefusesALeafPathThatReachesAnotherBranch(t *testing.T) {
+	cfg, ref, path := piSourceCopy(t, piBranchSwitchFixtureRef.ID,
+		`{"type":"session_info","id":"f1e2d3c4","parentId":"bd4e5f60","timestamp":"2026-05-07T08:33:00.000Z","name":"archive lock notes"}`)
+	conversation, err := NewSourceReader(cfg).Read(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("reading the copy: %v", err)
+	}
+	lastRead := conversation.Messages[len(conversation.Messages)-1].SourceUUID
+	err = piSourceLeafRefusal(conversation, path)
+	if !errors.Is(err, ErrUnrepresentableLeaf) {
+		t.Fatalf("the leaf check = %v, want ErrUnrepresentableLeaf: the file's leaf path reaches the "+
+			"branch the switch continued from, not the read's last record (%s)", err, lastRead)
+	}
+	for _, want := range []string{"bd4e5f60", lastRead, "branch the source's conversation left"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal %q does not name %q", err, want)
+		}
+	}
+}
+
+// TestContinueRefusesALeafPathWithNoRecordTheReadHolds pins the third answer the walk gives: a file whose
+// leaf path holds no record this read holds at all. The copy's last line is a usage record hanging off the
+// session's own root, so the walk from the leaf passes only records outside the conversation -- and the
+// read's messages, including its last record, are on a branch the file's leaf does not reach.
+func TestContinueRefusesALeafPathWithNoRecordTheReadHolds(t *testing.T) {
+	cfg, ref, path := piSourceCopy(t, piFixtureRef.ID,
+		`{"type":"usage","id":"aabbccdd","parentId":"9e7a5bd5","timestamp":"2026-05-04T09:18:00.000Z","kind":"cache_warm","usage":{"input":0,"output":0,"cacheRead":1200,"cacheWrite":0,"totalTokens":1200}}`)
+	conversation, err := NewSourceReader(cfg).Read(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("reading the copy: %v", err)
+	}
+	lastRead := conversation.Messages[len(conversation.Messages)-1].SourceUUID
+	err = piSourceLeafRefusal(conversation, path)
+	if !errors.Is(err, ErrUnrepresentableLeaf) {
+		t.Fatalf("the leaf check = %v, want ErrUnrepresentableLeaf: the file's own leaf path reaches no "+
+			"record this read holds, while the read's last record is %s", err, lastRead)
+	}
+	for _, want := range []string{"reaches no record this read holds", lastRead} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal %q does not name %q", err, want)
+		}
+	}
+}
+
+// TestPiSourceLeafRefusalAnswersAnIdentityFreeFileByOrder pins the file that records no tree: a Pi v1
+// session writes no entry identities, so its own order is its answer -- it cannot hold a branch, because a
+// branch is a `parentId` link -- and the entry its loader selects is the file's last entry. A metadata
+// record after the last message is outside the context and asks nothing of the read; a record kind the
+// harness's own loader builds context from is refused.
+func TestPiSourceLeafRefusalAnswersAnIdentityFreeFileByOrder(t *testing.T) {
+	const header = `{"type":"session","version":1,"timestamp":"2026-05-04T09:15:00.000Z","cwd":"/home/user/code/example-api"}`
+	const prompt = `{"type":"message","timestamp":"2026-05-04T09:15:01.000Z","message":{"role":"user","content":"Where is the retry cap configured?"}}`
+	const answer = `{"type":"message","timestamp":"2026-05-04T09:15:04.000Z","message":{"role":"assistant","content":[{"type":"text","text":"It is set in internal/retry/config.go."}],"usage":{"input":412,"output":38,"totalTokens":450}}}`
+	write := func(t *testing.T, lines ...string) (string, Conversation) {
+		t.Helper()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "v1-session.jsonl")
+		if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+			t.Fatalf("writing the session: %v", err)
+		}
+		cfg := fixtureConfig(t)
+		cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentPi: {dir}}
+		conversation, err := NewSourceReader(cfg).Read(context.Background(), Ref{Provider: "pi", ID: path})
+		if err != nil {
+			t.Fatalf("reading the v1 session: %v", err)
+		}
+		if len(conversation.Messages) != 2 || conversation.Messages[1].SourceUUID != "" {
+			t.Fatalf("the read = %+v, want the file's two messages with no identities answered: a v1 "+
+				"session records none, and the check below is about a file that answers no tree",
+				conversation.Messages)
+		}
+		return path, conversation
+	}
+
+	t.Run("a record outside the context after the last message", func(t *testing.T) {
+		path, conversation := write(t, header, prompt, answer,
+			`{"type":"session_info","timestamp":"2026-05-04T09:16:00.000Z","name":"retry cap notes"}`)
+		if err := piSourceLeafRefusal(conversation, path); err != nil {
+			t.Errorf("the leaf check = %v, want none: a session title adds no message to the conversation", err)
+		}
+	})
+
+	t.Run("a record the loader builds context from", func(t *testing.T) {
+		path, conversation := write(t, header, prompt, answer,
+			`{"type":"branch_summary","timestamp":"2026-05-04T09:16:00.000Z","fromId":"","summary":"another branch"}`)
+		err := piSourceLeafRefusal(conversation, path)
+		if !errors.Is(err, ErrUnrepresentableLeaf) {
+			t.Fatalf("the leaf check = %v, want ErrUnrepresentableLeaf: the file's last record is one the "+
+				"harness's own loader builds a message from and this read does not carry", err)
+		}
+		if !strings.Contains(err.Error(), "branch_summary") {
+			t.Errorf("the refusal %q does not name the record's kind", err)
+		}
+	})
+}
+
+// TestPiSourceLeafCheckStatesTheLeafItCouldNotEstablish pins the two answers that say a leaf was *not*
+// established, at the seam where each is produced: a read whose source file was not open (an archive row,
+// or a conversation with no file behind it) and a file that moved while it was being read. Both are the
+// report's own channel -- the same state the boundary reports for the same situations -- rather than a
+// refusal: the read is real, and what the report owes its caller is that the record the source's own
+// loader selects was not established from the source's bytes.
+func TestPiSourceLeafCheckStatesTheLeafItCouldNotEstablish(t *testing.T) {
+	conversation := Conversation{
+		Source:   SourceIdentity{Provider: "pi", SourcePath: "/home/user/code/example-api/session.jsonl"},
+		Messages: []Message{{Ordinal: 0, Role: string(parser.RoleUser), Content: "hello", SourceUUID: "aa11bb22"}},
+	}
+	t.Run("a read with no source file open", func(t *testing.T) {
+		for _, readFrom := range []string{"archive", "source"} {
+			boundary := SourceBoundary{State: SourceBoundaryNotTaken, Detail: "no source file was open at all"}
+			warning, err := piSourceLeafCheck(conversation, readFrom, boundary)
+			if err != nil {
+				t.Fatalf("the leaf check (%s) = %v, want a stated answer rather than a refusal", readFrom, err)
+			}
+			if !strings.Contains(warning, "was not established") {
+				t.Errorf("the warning %q does not say the leaf was not established", warning)
+			}
+		}
+		// The boundary pass's own reason travels: a read that came from the source but whose conversation no
+		// file holds (a container member, a read that reported no path) is answered with the pass's sentence
+		// for it, and a conversation no boundary pass answered for gets the check's own.
+		stated := SourceBoundary{State: SourceBoundaryNotTaken, Detail: "the source read resolved member x inside the container y"}
+		warning, err := piSourceLeafCheck(conversation, "source", stated)
+		if err != nil || !strings.Contains(warning, "inside the container y") {
+			t.Errorf("the leaf check = %q, %v; want the boundary's own reason quoted", warning, err)
+		}
+		warning, err = piSourceLeafCheck(conversation, "source", SourceBoundary{})
+		if err != nil || !strings.Contains(warning, "no source file of its own was measured") {
+			t.Errorf("the leaf check = %q, %v; want its own sentence for a conversation no boundary answered",
+				warning, err)
+		}
+		// A boundary that was taken but names no file is the same answer: the gate asks for a path.
+		warning, err = piSourceLeafCheck(conversation, "source", SourceBoundary{State: SourceBoundaryTaken})
+		if err != nil || !strings.Contains(warning, "was not established") {
+			t.Errorf("the leaf check = %q, %v; want a stated answer for a taken boundary with no file",
+				warning, err)
+		}
+	})
+	t.Run("a source that is not a Pi-family read", func(t *testing.T) {
+		claude := conversation
+		claude.Source.Provider = "claude"
+		warning, err := piSourceLeafCheck(claude, "source", SourceBoundary{State: SourceBoundaryNotTaken})
+		if warning != "" || err != nil {
+			t.Errorf("the leaf check for a Claude read = %q, %v; want no answer at all: the rule is about "+
+				"the carried Pi parser, and another reader answers its own source's leaf", warning, err)
+		}
+	})
+	t.Run("a file that moved while it was read", func(t *testing.T) {
+		conversation := conversation
+		conversation.Source.FileSize = 8
+		boundary := SourceBoundary{State: SourceBoundaryTaken, Path: "/tmp/session.jsonl", Bytes: 16}
+		warning, err := piSourceLeafCheck(conversation, "source", boundary)
+		if err != nil {
+			t.Fatalf("the leaf check = %v, want a stated answer rather than a refusal", err)
+		}
+		for _, want := range []string{"16 byte(s)", "recorded 8", "was not established"} {
+			if !strings.Contains(warning, want) {
+				t.Errorf("the warning %q does not name %q", warning, want)
+			}
+		}
+	})
+}
+
+// TestPiScanConversationEntriesStopsAtItsLineBound pins the scan's own rule: its line bound is what one
+// line may be, and a line beyond it stops the scan with the read error rather than leaving either caller
+// to judge a file by the entries before the line it could not read. The bound's own values are the two
+// callers': the load check reads a converted file this build wrote, and the leaf check reads a source file
+// with the bound the carried parser reads a line with (piSourceEntryLineMax, internal/parser's
+// maxLineSize). A bufio.Scanner's maximum token size is the larger of the bound and the initial buffer, so
+// the line this case uses is beyond both.
+func TestPiScanConversationEntriesStopsAtItsLineBound(t *testing.T) {
+	long := `{"type":"message","id":"aa11bb22","parentId":null,"message":{"role":"user","content":"` +
+		strings.Repeat("x", 70<<10) + `"}}`
+	content := long + "\n" + `{"type":"usage","id":"cc33dd44","parentId":"aa11bb22"}` + "\n"
+	var seen []string
+	err := piScanConversationEntries(strings.NewReader(content), 64<<10, func(entry piConversationEntry) {
+		seen = append(seen, entry.ID)
+	})
+	if err == nil {
+		t.Fatalf("the scan answered no error for a line beyond its bound (it read %v): a caller would "+
+			"judge the file by the entries before the line it could not read", seen)
+	}
+	if len(seen) != 0 {
+		t.Errorf("the scan answered %v before failing: the first line is already beyond the bound", seen)
+	}
+	seen = nil
+	if err := piScanConversationEntries(strings.NewReader(content), len(content), func(entry piConversationEntry) {
+		seen = append(seen, entry.ID)
+	}); err != nil {
+		t.Fatalf("the scan failed within its bound: %v", err)
+	}
+	if len(seen) != 2 || seen[0] != "aa11bb22" || seen[1] != "cc33dd44" {
+		t.Errorf("the scan read %v, want both entries in the file's order", seen)
+	}
+}
+
+// TestPiSourceLeafRefusalEndsAWalkThroughARecordedCycle pins the walk's termination rule on a malformed
+// file: a record naming itself and two records naming each other are walked until the file's own entry
+// count is spent, and the answer is what the walk reached -- here no record of the read at all, because the
+// loop stands beside the conversation. The bound is the file's own size in entries rather than a depth
+// constant, so a linear history longer than any fixed bound is still walked to its end; without it the walk
+// would never finish, which is why the case runs the check under a deadline of its own rather than under
+// the suite's.
+func TestPiSourceLeafRefusalEndsAWalkThroughARecordedCycle(t *testing.T) {
+	const header = `{"type":"session","version":3,"id":"01a1c339-0000-4000-8000-000000000000","timestamp":"2026-05-04T09:15:00.000Z","cwd":"/home/user/code/example-api"}`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cycle.jsonl")
+	content := strings.Join([]string{
+		header,
+		`{"type":"message","id":"aa11bb22","parentId":null,"timestamp":"2026-05-04T09:15:01.000Z","message":{"role":"user","content":"hello"}}`,
+		// A record naming itself, then two records naming each other, and the file's last entry is the one
+		// the cycle reaches: the walk from it visits the model_change records and never the message.
+		`{"type":"model_change","id":"bb22cc33","parentId":"bb22cc33","timestamp":"2026-05-04T09:15:02.000Z","provider":"p","modelId":"m"}`,
+		`{"type":"model_change","id":"cc33dd44","parentId":"dd44ee55","timestamp":"2026-05-04T09:16:00.000Z","provider":"p","modelId":"m"}`,
+		`{"type":"model_change","id":"dd44ee55","parentId":"cc33dd44","timestamp":"2026-05-04T09:16:01.000Z","provider":"p","modelId":"m"}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("writing the session: %v", err)
+	}
+	cfg := fixtureConfig(t)
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentPi: {dir}}
+	conversation, err := NewSourceReader(cfg).Read(context.Background(), Ref{Provider: "pi", ID: path})
+	if err != nil {
+		t.Fatalf("reading the session: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- piSourceLeafRefusal(conversation, path) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrUnrepresentableLeaf) {
+			t.Fatalf("the leaf check = %v, want ErrUnrepresentableLeaf: the file's leaf path is a cycle of "+
+				"records outside the read, so it reaches none of them", err)
+		}
+		if !strings.Contains(err.Error(), "reaches no record this read holds") {
+			t.Errorf("the refusal %q does not say the leaf path reaches no record of the read", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the leaf check did not answer for a file whose leaf path is a cycle: the walk's bound must " +
+			"be the file's own entries rather than an unbounded search")
+	}
+}
+
+// TestContinueWalksALeafPathLongerThanOneStep pins the walk's reach: the bound is the file's own entry
+// count, not a depth constant, so a leaf path longer than any fixed bound is still walked to the record the
+// read holds at its top. The copy's last lines are five records the harness's own loader keeps out of the
+// conversation, each hanging off the one before, and the first of them hangs off the read's last message:
+// the file's leaf path is six entries long, and the conversion goes through.
+func TestContinueWalksALeafPathLongerThanOneStep(t *testing.T) {
+	chain := make([]string, 0, 5)
+	parent := "1d4e7a90"
+	for index := 1; index <= 5; index++ {
+		id := fmt.Sprintf("f1e2d3%02d", index)
+		chain = append(chain, fmt.Sprintf(
+			`{"type":"label","id":%q,"parentId":%q,"timestamp":"2026-05-04T09:17:00.000Z","targetId":"1d4e7a90","label":"checkpoint-%d"}`,
+			id, parent, index))
+		parent = id
+	}
+	cfg, ref, _ := piSourceCopy(t, piFixtureRef.ID, chain...)
+	result, err := Continue(context.Background(), ContinueOptions{
+		Ref:          ref,
+		Target:       TargetPi,
+		Config:       cfg,
+		TargetHome:   t.TempDir(),
+		TargetBinary: missingTargetBinary,
+	})
+	if err != nil {
+		t.Fatalf("continuing a session whose leaf path holds %d records outside the conversation: %v",
+			len(chain), err)
+	}
+	if result.Conversion.State != ConversionStateConverted {
+		t.Errorf("conversion state = %q, want the copy converted", result.Conversion.State)
+	}
+}
+
+// TestPiSourceLeafRefusalRefusesAReadWithNoIdentityForItsLastRecord pins the answer the walk gives when
+// the file records a tree but the read answered no identity for its last record: the copy's last two lines
+// are a message the file records without an identity (which the read carries as a record it cannot name)
+// and a rename record after it, so the walk from the file's leaf reaches an identity-bearing record while
+// the read's own leaf stands for no identity at all. Which entry the file's leaf stands for is then not
+// established, and a conversion claiming a leaf would be claiming a relation the read never answered.
+func TestPiSourceLeafRefusalRefusesAReadWithNoIdentityForItsLastRecord(t *testing.T) {
+	cfg, ref, path := piSourceCopy(t, piFixtureRef.ID,
+		`{"type":"message","parentId":"1d4e7a90","timestamp":"2026-05-04T09:16:30.000Z","message":{"role":"assistant","content":[{"type":"text","text":"a record the file never named"}]}}`,
+		`{"type":"session_info","id":"f1e2d3c4","parentId":"1d4e7a90","timestamp":"2026-05-04T09:17:00.000Z","name":"retry cap notes"}`)
+	conversation, err := NewSourceReader(cfg).Read(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("reading the copy: %v", err)
+	}
+	if last := conversation.Messages[len(conversation.Messages)-1]; last.SourceUUID != "" {
+		t.Fatalf("the read's last record answered the identity %q, want none: the copy's last message "+
+			"entry records no id, and the check's answer for a read that answered no leaf is what this "+
+			"case pins", last.SourceUUID)
+	}
+	err = piSourceLeafRefusal(conversation, path)
+	if !errors.Is(err, ErrUnrepresentableLeaf) {
+		t.Fatalf("the leaf check = %v, want ErrUnrepresentableLeaf: the read answered no identity for its "+
+			"last record", err)
+	}
+	if !strings.Contains(err.Error(), "answered no identity") {
+		t.Errorf("the refusal %q does not say the read answered no identity for its last record", err)
+	}
+}
+
+// TestPiSourceLeafRefusalAnswersAReadWithNoRecordsAndAFileWithNoEntries pins the two shapes the check
+// answers without walking anything: a read that holds no record at all (there is no leaf to resume
+// wrongly) and a file that holds nothing beyond its session header (there is no entry the loader could
+// select). Neither is a refusal: an empty conversation converts to an empty session, and no branch can be
+// revived by it. The empty read is asked of a file that *does* hold an entry, so the answer is the guard's
+// own rather than the file's.
+func TestPiSourceLeafRefusalAnswersAReadWithNoRecordsAndAFileWithNoEntries(t *testing.T) {
+	dir := t.TempDir()
+	header := `{"type":"session","version":3,"id":"01a1c338-0000-4000-8000-000000000000","timestamp":"2026-05-04T09:15:00.000Z","cwd":"/home/user/code/example-api"}`
+	headerOnly := filepath.Join(dir, "header-only.jsonl")
+	if err := os.WriteFile(headerOnly, []byte(header+"\n"), 0o600); err != nil {
+		t.Fatalf("writing the header-only session: %v", err)
+	}
+	metadataOnly := filepath.Join(dir, "metadata-only.jsonl")
+	if err := os.WriteFile(metadataOnly, []byte(header+"\n"+
+		`{"type":"usage","id":"aabbccdd","parentId":null,"timestamp":"2026-05-04T09:16:00.000Z","kind":"cache_warm","usage":{"input":0,"output":0,"cacheRead":1200,"cacheWrite":0,"totalTokens":1200}}`+"\n"),
+		0o600); err != nil {
+		t.Fatalf("writing the metadata-only session: %v", err)
+	}
+	recorded := Conversation{
+		Source:   SourceIdentity{Provider: "pi", SourcePath: headerOnly},
+		Messages: []Message{{Ordinal: 0, Role: string(parser.RoleUser), Content: "hello", SourceUUID: "aa11bb22"}},
+	}
+	if err := piSourceLeafRefusal(recorded, headerOnly); err != nil {
+		t.Errorf("the leaf check on a file holding no entry = %v, want none: the file selects nothing", err)
+	}
+	empty := Conversation{Source: SourceIdentity{Provider: "pi", SourcePath: metadataOnly}}
+	if err := piSourceLeafRefusal(empty, metadataOnly); err != nil {
+		t.Errorf("the leaf check on a read holding no record = %v, want none: there is no leaf to resume "+
+			"wrongly, whatever the file holds", err)
 	}
 }
 

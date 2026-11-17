@@ -428,6 +428,19 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 	// finished writing, which another conversion carries.
 	result.Warnings = append(result.Warnings, boundaryWarnings(&boundary)...)
 
+	// The record the source's own loader selects as the conversation's leaf, asked of the source file's own
+	// entries: for the Pi-family readers the read's own last record is not that answer (pi_source_leaf.go),
+	// and a conversion written from a record the file's leaf path does not reach would resume a branch the
+	// source's conversation left. Where no source file stands behind the read the leaf is not established,
+	// and the report says so rather than presenting the read's own last record as the source's leaf.
+	leafWarning, err := piSourceLeafCheck(conversation, readFrom, boundary)
+	if err != nil {
+		return ContinueResult{}, err
+	}
+	if leafWarning != "" {
+		result.Warnings = append(result.Warnings, leafWarning)
+	}
+
 	// What only the target's own harness can answer (Codex: the model provider its loader checks). It is
 	// asked here, after the read, because the answer can depend on the session's own working directory.
 	facts := route.Facts(ctx, targetFactsInput{
