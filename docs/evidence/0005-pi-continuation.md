@@ -370,7 +370,7 @@ gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./c
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 251 tests in 5.858s (rc=0)
+  PASS     selftest Ran 251 tests in 5.845s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 29 project-owned prefix(es); files seen by git: 5669 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     secrets  no leaks found in 121 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
@@ -380,7 +380,9 @@ No gate step was added, skipped, bounded or narrowed: the new tests live in `int
 which `scripts/gate-targets.txt` already builds and runs, the new Python case module lives in
 `scripts/tests/`, which the `selftest` step already discovers, and the carry's `parity` step is unchanged
 because the pin, the manifest's carried records and every carried byte are untouched (the manifest gained
-one `owned` line, which is this repository's own file list, not a carried path).
+one `owned` line, which is this repository's own file list, not a carried path). The fifth review round
+adds no Python case (its five new cases are Go ones), so the `selftest` count stays `251`; the narrowed
+tree's `func Test` count moves `274 → 279`.
 
 Test counts and the changes to existing cases:
 
@@ -405,6 +407,7 @@ Test counts and the changes to existing cases:
 | the native harness's own cases for the fixes: `--pi PATH` resolving the executable the conversion is driven through (asserted against the version query and `--target-binary`), the missing-Pi run's `RESULT: INCOMPLETE` verdict and the reverse direction needing no Pi at all, and the run's own home being seeded while a caller-named home is never written to (asserted both in the report and against the file system) | `scripts/tests/test_pi_native_check.py` (30 → 35 cases) |
 | the third review round's cases: the adjacent exact-parent shape (a record naming a call immediately after that call's result) on both the tree writer and the Codex walk, the Codex report's accounting of the places its walk could not answer, and the seed's nested credential levels (a provider's `models` entry and its `modelOverrides` entry, plus the two fields' asymmetry — the key re-spelled as an `$ENV` reference, a header reference dropped) | `internal/ccc/pi_target_test.go`, `internal/ccc/codex_target_test.go` (one new case), `scripts/tests/test_pi_native_check.py` (39 → 41 cases) |
 | the fourth review round's cases: a call's outcome the archive folds onto the call's own message, in both spellings (`ToolResults` on that message and the call's `ResultContent` summary), on the Pi tree writer, the Claude tree writer, the Codex line walk and the pipeline's archive read — each with a sibling turn naming the call's parent that must not be chained through the abandoned call's result — plus the seed's endpoint policy (every URL branch of `credential_free_url` at both levels a definition can name an endpoint, the credential-free counter-arm, and the run-level refusal naming the provider and recording the named skip) | `internal/ccc/pi_target_test.go`, `internal/ccc/claude_target_test.go`, `internal/ccc/codex_target_test.go`, `internal/ccc/continue_pi_test.go` (one new case each), `scripts/tests/test_pi_native_check.py` (41 → 44 cases) |
+| the fifth review round's cases: the omission/projection composition on both tree writers (a Pi chain call → result → omitted empty assistant → next turn, which a re-resolved raw relation leaves the result off the walk of), the same tree case that pins `endRecord`'s two effects (the place kept, the walk dropped), the omitted record whose own walk resolved nothing and whose child follows the document's relations instead, and a read that recorded a cycle (a record naming itself, and a two-record loop) which the size bound ends | `internal/ccc/pi_target_test.go` (16 → 20 cases), `internal/ccc/claude_target_test.go` (12 → 13) |
 
 The upstream comparison (`python3 scripts/upstream-compare.py --record`, network + a pristine checkout at
 the pin) ran three cases and agreed on all three:
@@ -576,6 +579,71 @@ the shared-module entry gained `credential_free_url`), `docs/conventions.md` (th
 clause), `docs/plans/0005-pi-continuation.md` (the same clause, corrected where the plan states it) and
 Q-0005-13/Q-0005-14.
 
+**The fifth review round's fix pass** answers that round's one finding, on the class that had survived two
+rounds, so the surface was closed out with an executed mutation per rule rather than one patch for the one
+shape. The finding: where Q-0005-10's projection step met Q-0005-07's omitted-record consequence, an
+omitted record's *resolved* place was discarded. For the Pi chain `U → C → R → E → A` (`C` makes a call,
+`R` answers it, `E` is an empty assistant record, `A` names `E`) the inherited reader answers `E`'s parent
+as `C` while the source's own file placed it under `R`, so `startRecord` resolved `E`'s first-entry parent
+to `R`'s entry — and `endRecord` threw that resolution away when `E` produced no entry, after which `A`
+re-walked `E`'s *raw* relation to `C`'s entry. The converted path became `U → C → A` with the written
+result standing in the file off the walk the target's loader makes, although the report counted it as
+carried (the finding was itself static; this pass executed the reproduction: both new writer cases are red
+on the tree before the fix — `the record continuing from an omitted one hangs off "", want the omitted
+record's resolved place, the tool result ("internal/retry/config.go:41")`, with the Pi case's
+`the model-visible history = [user assistant assistant], want [user assistant toolResult assistant]`, and
+the Claude case naming the call's record where the result's is expected). `internal/ccc/route_shared.go`
+keeps the place under the omitted record's identity and answers a child with it before stepping through the
+raw relation (`omittedAncestorEntry`, registered by `endRecord` exactly when nothing was written for the
+record — `wrote` clears the resolved parent, so a record with entries of its own needs no flag to be told
+apart from one that wrote nothing); a record whose own walk resolved nothing keeps no place, and a child
+of it follows the document's relations to the nearest written ancestor as before. Both tree writers get the
+rule through the shared tree. Five Go cases were added (no Python case, so the `selftest` count is
+unchanged): the composition on the Pi writer and on the Claude writer, the tree-level case that pins both
+of `endRecord`'s effects (the place kept; the walk dropped, so a write that follows an ended record records
+no relation of it), the omitted record with no resolved place whose child follows the document's relations
+to its written ancestor, and a read that recorded a cycle (a record naming itself and a two-record loop)
+that the walk's size bound ends. The mutation sweep — revert the line, run the case that names it, restore
+the line — covered the resolution surface's rules; every mutation below failed its named case except the
+two the sweep found unpinned, whose pins were added and whose mutations then failed:
+
+| Rule (`internal/ccc/route_shared.go`) | Line disabled | Observed |
+| --- | --- | --- |
+| an omitted record's resolved place answers a child (`writtenAncestor`) | `omittedAncestorEntry` lookup deleted | both new writer cases FAIL (`the record continuing from an omitted one hangs off ""`, `… hangs off <call record>`) and the Pi model-visible history reads `[user assistant assistant]` |
+| the place is registered (`endRecord`) | registration body deleted | the same two cases and the tree case FAIL (`the omitted record's place = "", false`) |
+| the walk is closed after an omission (`endRecord`) | `t.pending = sourceRecordOrigin{}` deleted | whole suite green — the rule was unpinned; the tree case added for it then FAILs (`an entry written after a record ended recorded "s1" as the record it stands for`) |
+| a record's *final* entry is the place its children follow (`wrote`) | map write made first-entry-wins | `TestPiSessionChainsPastAMixedRecordToItsResult` FAIL (`hangs off … "the output:"`) |
+| a written record's entry answers for a reader of it (`writtenAncestor`) | `writtenEntryID` answer replaced by "not found" | `TestPiSessionWritesTheSourcesOwnRelations` FAIL (`the abandoned turn hangs off "after the result", want … "answer"`; count `7`, walk flattened) |
+| a written tool result answers for a record naming its carrier (`parentFor`) | `toolResultEntry` lookup deleted | the two projection cases FAIL (result off the walk, count `0`) |
+| the projection is gated on the read that may project (`wrote`) | `projectedParents` gate dropped | the exact-read counter-arms FAIL (`Count:1`, want `0`; a sibling result on the walk) |
+| the projection's place is counted (`parentFor`) | `t.unresolved++` deleted in the projection branch | three count assertions FAIL (`Count:0`, want `1`/`2`) |
+| a written result is registered under its *carrier*, not the walker's parent (`wrote`) | key changed to `pending.sourceParent` | both folded-outcome cases FAIL (the record after the call hangs off the abandoned outcome) |
+| the document's own relations answer a child whose omitted parent resolved nothing (`startRecord`/`writtenAncestor`) | `sourceRecordParents` fill deleted | whole suite green — unpinned; the forward-parent case added for it then FAILs (`hangs off "middle", want … "the recorded parent"`) |
+| the walk may step at least once (`writtenAncestor`) | bound set to `steps <= 0` | the same case FAILs (the child falls back to the entry before it) |
+| a cycle the source recorded cannot keep the walk going (`writtenAncestor`) | bound deleted | the cycle case FAILs by its own deadline (`the conversion did not finish`) |
+| the parentless record is counted, the identity-less read is not, the first record is not (`startRecord`) | each of the three conditions dropped in turn | the parentless case FAILs each time (`Count:0`/`2`, want `1`; `2`, want `0`) |
+| a parent the read cannot resolve follows the entry before it and is counted (`parentFor`) | fallback's `t.unresolved++` deleted | the relations case FAILs (`Count:1`, want `2`) |
+
+One line was **removed** by the sweep rather than pinned: `writtenAncestor`'s early exit for a record
+naming itself (`next == sourceID`) survived its own mutation with the whole package green — the size bound
+answers the same relation one step later, so the branch carried only the loop's iteration count, which no
+caller can observe. The cycle case pins the termination rule through the bound, and the function's own
+comment states why no early exit sits beside it. No case was removed, skipped or weakened; the rules the
+sweep found unpinned were pinned by the new cases above, and the one branch that could not be is the line
+removed here. `AGENTS.md` gained one clause (the sentence about the source's own relation now says an
+omitted record keeps the place its own walk resolved), because that sentence is the file's
+binding statement of the writer rule this pass fixed; `docs/conventions.md` gained
+the same clause in the tree-rule bullet, `docs/plans/0005-pi-continuation.md`'s statement of the rule was
+corrected to match, and Q-0005-15 records the default. The native halves were re-run in this pass too,
+because the fix moves the parents a tree conversion writes: `pi-to-claude` prints
+`RESULT: PASS — 12 check(s), none failed` (its conversion line still `carried 4 message(s), 1 call(s), 1
+result(s)` with `27` loss categories) and `claude-to-pi` prints `RESULT: PASS — 21 check(s), none failed`
+(`carried 6 message(s), 1 call(s), 1 result(s)`, `29` categories; the §2 block's 23-check run is the same
+check list with the two real-turn checks) — the same verdicts, counts and installed-file roles the fourth
+round recorded, which is the expected outcome of a fix whose shape (an omitted record standing under a
+written tool result, with a later record naming it) no committed fixture reaches. No gate step, layout,
+command or read-order line changed.
+
 ## 7. Limits and residual risks
 
 - **The Pi → previously-supported-target native half did not run for the harness's first run here**
@@ -643,6 +711,6 @@ Q-0005-13/Q-0005-14.
 | `2231 bytes`, `4 message(s)`, `1 call(s)`, `1 result(s)`, `1 turn(s)`, `unresolved_source_parents ×1` | the Pi → Codex conversion of the *other* committed Pi fixture (`pi:01a1c335-…`, the same source §3 converts to Claude), measured in the fourth round: the rollout's own counts, with the one counted place the adjacent projection step takes (Q-0005-13 (b)); the earlier revision reported that category at `0` on this conversion |
 | `unresolved_source_parents = 1` on the projection case and `= 2` on the walk's other two places | the Codex-target cases (`TestCodexRolloutKeepsAnActiveResultAcrossAnInterveningBranch`, `TestCodexRolloutCountsThePlacesItsWalkCouldNotAnswer`): the Codex-target loss list gained the category in the third review round's fix pass, with a detail naming the three relations it counts (Q-0005-12). The fourth round added the adjacent place to every route's count (Q-0005-13 (b)): the intervening case is still `1`, the adjacent one is now `1` where it was `0`, `TestPiSessionWritesTheSourcesOwnRelations` asserts `2` (the parent outside the read and the record naming the call its result stands directly before), and the committed linear Pi fixture converts with `×1` on both outbound routes (§3; the row below pins the same conversion's bytes) |
 | `3067 → 32999 bytes` | the installed Pi session's growth across one real turn (§2). What the check asserts is that the file grew, not a byte count, so a later run measures different ends: the runs this record has quoted measured `3123 → 33055` / `3123 → 33042` (the first revision), `3107 → 33039` (the earlier fix pass) and `3067 → 32986`, then `3067 → 32999`, in the third review round's fix pass |
-| `23 checks, none failed` / `12 checks, none failed` | the two native runs' verdicts (§2, §3); both were re-run for this pass. §3's run has one check more than the `11` the first run reported, because the earlier fix pass records the non-Pi target's load state as a check of its own. The fourth round's re-runs (no turn) report `21 check(s), none failed` for `claude-to-pi` — the §2 block's run is the same check list plus the two real-turn checks — and `12 check(s), none failed` for `pi-to-claude`, both with the loader's own verdicts unchanged |
+| `23 checks, none failed` / `12 checks, none failed` | the two native runs' verdicts (§2, §3); both were re-run for this pass. §3's run has one check more than the `11` the first run reported, because the earlier fix pass records the non-Pi target's load state as a check of its own. The fourth round's re-runs (no turn) report `21 check(s), none failed` for `claude-to-pi` — the §2 block's run is the same check list plus the two real-turn checks — and `12 check(s), none failed` for `pi-to-claude`, both with the loader's own verdicts unchanged; the fifth round's re-runs (no turn) print the same `21`/`12` lines, with the same carried counts (`6`/`4` messages, `1` call, `1` result) and loss-category counts (`29`/`27`) as the fourth round's |
 | the branch fixture's loader answers | `messageCount 3` / `[user, assistant, assistant]` for the *source* file and for its conversion, against `messageCount 4` / `[compactionSummary, user, assistant, assistant]` for the conversion the pre-fix writer produced (§4) |
-| `251 selftest cases`, `274 Go test functions`, `5553 carried files`, `29 owned prefixes`, `3601 gofmt-clean files`, `121 owned file(s)` scanned | the gate run (§6) and the current case count: the selftest count went `246 → 248` with the third review round's two Python cases (`seed_pi_home`'s nested-credential cases) and `248 → 251` with the fourth round's three (the endpoint-policy cases at both levels, the credential-free counter-arm, and the run-level refusal), while the narrowed tree's `func Test` count went `269 → 270` with the third round's one new Go case and `270 → 274` with the fourth round's four (one per route: the Pi tree writer, the Claude tree writer, the Codex line walk and the pipeline's archive read). The owned-file count includes the ignored build/test artifacts the working tree holds (the check's `bin/` and the two `__pycache__` directories), which the scan stages with the owned files; a fresh checkout counts fewer, and the pre-fix tree's own gate run (a detached worktree of `711e256`) printed `114` |
+| `251 selftest cases`, `279 Go test functions`, `5553 carried files`, `29 owned prefixes`, `3601 gofmt-clean files`, `121 owned file(s)` scanned | the gate run (§6) and the current case count: the selftest count went `246 → 248` with the third review round's two Python cases (`seed_pi_home`'s nested-credential cases) and `248 → 251` with the fourth round's three (the endpoint-policy cases at both levels, the credential-free counter-arm, and the run-level refusal), while the narrowed tree's `func Test` count went `269 → 270` with the third round's one new Go case, `270 → 274` with the fourth round's four (one per route: the Pi tree writer, the Claude tree writer, the Codex line walk and the pipeline's archive read) and `274 → 279` with the fifth round's five Go cases (the omission/projection composition on the Pi writer and on the Claude writer, `endRecord`'s two-effects case, the omitted record with no resolved place, and the recorded-cycle case), the selftest count unchanged because the fifth round added no Python case. The owned-file count includes the ignored build/test artifacts the working tree holds (the check's `bin/` and the two `__pycache__` directories), which the scan stages with the owned files; a fresh checkout counts fewer, and the pre-fix tree's own gate run (a detached worktree of `711e256`) printed `114` |

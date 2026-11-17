@@ -109,8 +109,11 @@ with their exit codes and counts).
   settle which of the two the record named. The step is taken only where the read may project, because it
   exists to undo a projection: an exact answer — a Claude transcript's `parentUuid` — names the record it
   means, and a result standing beside a record the read chains to the same message is that record's
-  sibling, not its place. A source whose *selected leaf* the target's loader would not reach — the entry
-  written last stands for a record off the line the read's last record answers — is refused
+  sibling, not its place. A record the target leaves out keeps the place its own walk resolved — the
+  result's own entry where that place came through the projection — so a record naming the omitted one
+  follows that place rather than the nearest ancestor of its raw relation. A source whose *selected leaf*
+  the target's loader would not reach — the entry written last stands for a record off the line the read's
+  last record answers — is refused
   (`ErrUnrepresentableLeaf`) rather than written as a file that resumes a branch the conversation left. A
   Pi invocation the report prints and the check runs names the sessions tree inside the data directory
   explicitly (`PI_CODING_AGENT_SESSION_DIR`), so the printed line, the verified lookup and the

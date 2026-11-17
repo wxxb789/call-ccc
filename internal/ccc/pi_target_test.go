@@ -680,6 +680,281 @@ func piWalkIDs(t *testing.T, lines []piLine) map[string]bool {
 	return onPath
 }
 
+// TestPiSessionChainsPastAnOmittedRecordToItsResolvedPlace pins the composition of the two rules the
+// mixed-record case and the relations case each pin alone: a record the target *omits* standing under a
+// written tool result, and a later record naming it. The omitted record's place was resolved when its
+// own walk started -- through the result, because the read answers the record as hanging off the call
+// the result answers -- and its child follows *that* place. Re-resolving the child from the omitted
+// record's raw relation instead reaches the call's own entry, which leaves the written result off the
+// walk the target's loader makes although the report counts it as carried. The omitted record is the
+// empty assistant turn the read produces for a usage-only row, and the case requires the omission (its
+// own category is counted): a written entry would give the record a place of its own and hide the rule.
+func TestPiSessionChainsPastAnOmittedRecordToItsResolvedPlace(t *testing.T) {
+	at := func(second int) time.Time { return time.Date(2026, 5, 5, 10, 0, second, 0, time.UTC) }
+	conversation := Conversation{
+		Source: SourceIdentity{Provider: "pi", SessionID: "source-session", Cwd: "/work/project"},
+		Messages: []Message{
+			{Ordinal: 0, Role: string(parser.RoleUser), Content: "start", Dialogue: "start",
+				SourceUUID: "u1", Timestamp: at(0)},
+			{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "[grep: maxBackoff]",
+				DialogueProjected: true, SourceUUID: "c2", SourceParentUUID: "u1", Timestamp: at(1),
+				ToolCalls: []ToolCall{{ToolUseID: "toolu_1", Name: "grep",
+					InputJSON: `{"pattern":"maxBackoff"}`}}},
+			// The result record: the reader answers its parent as the call message.
+			{Ordinal: 2, Role: string(parser.RoleUser), SourceUUID: "r3", SourceParentUUID: "c2",
+				Timestamp: at(2), ToolResults: []ToolResult{{ToolUseID: "toolu_1",
+					ContentRaw: `"internal/retry/config.go:41"`, ContentSize: 28}}},
+			// The record the target omits: an empty assistant turn, answered as hanging off the call
+			// although the source's own file placed it under the call's result.
+			{Ordinal: 3, Role: string(parser.RoleAssistant), SourceUUID: "e4", SourceParentUUID: "c2",
+				Timestamp: at(3)},
+			// The record continuing from the omitted one: it names the omitted record, so it hangs off
+			// the omitted record's resolved place.
+			{Ordinal: 4, Role: string(parser.RoleAssistant), Content: "after the omitted record",
+				Dialogue: "after the omitted record", SourceUUID: "a5", SourceParentUUID: "e4",
+				Timestamp: at(4)},
+		},
+		Fidelity: Fidelity{ReadFrom: "source"},
+	}
+	session, err := ConvertToPiSession(conversation, PiTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if loss := lossCount(t, session.Losses, "empty_assistant_messages"); loss.Count != 1 {
+		t.Fatalf("empty_assistant_messages = %+v, want the one record the target omits: a written entry "+
+			"would give the record a place of its own and hide the rule under test", loss)
+	}
+	lines := decodePiSession(t, session.Data)
+	texts := piEntryTexts(t, lines)
+	ids := map[string]string{}
+	for id, text := range texts {
+		if text != "" {
+			ids[text] = id
+		}
+	}
+	parentTextOf := func(text string) string {
+		t.Helper()
+		id, ok := ids[text]
+		if !ok {
+			t.Fatalf("no entry carries the text %q:\n%s", text, session.Data)
+		}
+		for _, line := range lines[1:] {
+			if line.ID != id {
+				continue
+			}
+			if line.ParentID == nil {
+				return ""
+			}
+			return texts[*line.ParentID]
+		}
+		t.Fatalf("no entry carries the id %q", id)
+		return ""
+	}
+	if got := parentTextOf("after the omitted record"); got != "internal/retry/config.go:41" {
+		t.Errorf("the record continuing from an omitted one hangs off %q, want the omitted record's "+
+			"resolved place, the tool result (%q): resolving its raw relation instead reaches the call's "+
+			"own entry and leaves the written result off the walk the target's loader makes", got,
+			"internal/retry/config.go:41")
+	}
+	onPath := piWalkIDs(t, lines)
+	for _, text := range []string{"start", "internal/retry/config.go:41", "after the omitted record"} {
+		if !onPath[ids[text]] {
+			t.Errorf("%q is not on the walk the loader makes from the file's last entry, and it is part "+
+				"of the conversation", text)
+		}
+	}
+	if loss := lossCount(t, session.Losses, "unresolved_source_parents"); loss.Count != 1 {
+		t.Errorf("unresolved_source_parents = %+v, want the one place the read's projection left "+
+			"unanswerable (the omitted record's own), counted once rather than again on its child", loss)
+	}
+	want := []string{"user", "assistant", "toolResult", "assistant"}
+	if got := piModelVisibleRoles(session.Data); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("the model-visible history = %v, want %v", got, want)
+	}
+}
+
+// TestSourceTreeEndRecordKeepsThePlaceAndDropsTheWalk pins endRecord's contract on the tree's own API,
+// which the two writers drive. A record the target omits leaves the place its first entry would have
+// hung off under its own identity -- the conversion-level cases
+// (TestPiSessionChainsPastAnOmittedRecordToItsResolvedPlace and its Claude twin) pin what a later record
+// naming it does with that place -- and leaves no pending walk of its own: an entry written after the
+// record ended (the writers always name a record with startRecord before writing, so no conversion takes
+// this path) must not record the ended record's relation as its own origin, which is the answer
+// `selectedLeafRefusal` reads. The case exists because both halves are this tree's stated rules and
+// disabling either survived the suite green before this pass: a rule only its own comment states is what
+// the repository treats as unpinned.
+func TestSourceTreeEndRecordKeepsThePlaceAndDropsTheWalk(t *testing.T) {
+	tree := newSourceTree("pi")
+	tree.startRecord("s0", "")
+	tree.wrote("entry-0")
+	tree.endRecord()
+	// The omitted record: its named parent is outside the read, so its own walk resolved to the entry
+	// written last, and that resolution is what endRecord keeps.
+	tree.startRecord("s1", "absent")
+	tree.endRecord()
+	if id, ok := tree.writtenAncestor("s1"); !ok || id != "entry-0" {
+		t.Errorf("the omitted record's place = %q, %v; want the entry its own walk resolved to (%q)",
+			id, ok, "entry-0")
+	}
+	tree.wrote("stray")
+	if tree.lastOrigin.sourceID != "" {
+		t.Errorf("an entry written after a record ended recorded %q as the record it stands for: endRecord "+
+			"must leave no pending walk for a later write to inherit", tree.lastOrigin.sourceID)
+	}
+}
+
+// TestPiSessionChainsPastAnOmittedRecordWithNoResolvedPlace pins the other answer the parent resolution
+// gives, which no conversion shape exercised before this pass: an omitted record whose own walk resolved
+// *nothing* -- its recorded parent is a record the read answers later, after nothing had been written for
+// it to fall back to -- leaves no place of its own, and a later record naming it is chained to the
+// nearest ancestor the document's own relations reach and this conversion did write. The walk over the
+// read's own relations is what answers that (sourceRecordParents), and disabling the map's filling left
+// the whole suite green before this case existed.
+func TestPiSessionChainsPastAnOmittedRecordWithNoResolvedPlace(t *testing.T) {
+	at := func(second int) time.Time { return time.Date(2026, 5, 5, 10, 0, second, 0, time.UTC) }
+	conversation := Conversation{
+		Source: SourceIdentity{Provider: "pi", SessionID: "source-session", Cwd: "/work/project"},
+		Messages: []Message{
+			// The omitted record first: its recorded parent is read later, and nothing had been written
+			// when its own walk resolved a place.
+			{Ordinal: 0, Role: string(parser.RoleAssistant), SourceUUID: "e1", SourceParentUUID: "p3",
+				Timestamp: at(0)},
+			{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "the recorded parent",
+				Dialogue: "the recorded parent", SourceUUID: "p3", Timestamp: at(1)},
+			{Ordinal: 2, Role: string(parser.RoleUser), Content: "middle", Dialogue: "middle",
+				SourceUUID: "m2", SourceParentUUID: "p3", Timestamp: at(2)},
+			// The record naming the omitted one: the document's own relations run e1 -> p3, so the entry
+			// follows the parent's written entry rather than the entry before it.
+			{Ordinal: 3, Role: string(parser.RoleAssistant), Content: "after the omitted record",
+				Dialogue: "after the omitted record", SourceUUID: "a4", SourceParentUUID: "e1",
+				Timestamp: at(3)},
+		},
+		Fidelity: Fidelity{ReadFrom: "source"},
+	}
+	session, err := ConvertToPiSession(conversation, PiTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if loss := lossCount(t, session.Losses, "empty_assistant_messages"); loss.Count != 1 {
+		t.Fatalf("empty_assistant_messages = %+v, want the one record the target omits: a written entry "+
+			"would give the record a place of its own and hide the rule under test", loss)
+	}
+	lines := decodePiSession(t, session.Data)
+	texts := piEntryTexts(t, lines)
+	ids := map[string]string{}
+	for id, text := range texts {
+		if text != "" {
+			ids[text] = id
+		}
+	}
+	if got := parentTextOfEntry(t, lines, texts, ids, "after the omitted record"); got != "the recorded parent" {
+		t.Errorf("the record naming the omitted one hangs off %q, want the written ancestor the "+
+			"document's own relations reach (%q)", got, "the recorded parent")
+	}
+	onPath := piWalkIDs(t, lines)
+	for _, text := range []string{"the recorded parent", "after the omitted record"} {
+		if !onPath[ids[text]] {
+			t.Errorf("%q is not on the walk the loader makes from the file's last entry", text)
+		}
+	}
+	if onPath[ids["middle"]] {
+		t.Error("the record between the parent and the child is on the walk: the child was chained to the " +
+			"entry before it instead of the ancestor the document reaches")
+	}
+	if loss := lossCount(t, session.Losses, "unresolved_source_parents"); loss.Count != 1 {
+		t.Errorf("unresolved_source_parents = %+v, want the omitted record's own unresolved place alone: "+
+			"the relation the document answers is not one this conversion invented", loss)
+	}
+}
+
+// TestPiSessionEndsAWalkThroughARecordedCycle pins the walk's termination rule on a malformed read: a
+// record naming itself and two records naming each other are walked until the records the read answered
+// are spent, and the record naming the loop follows the entry before it with the relation counted -- a
+// conversion finishes rather than hanging on a relation no conversation could hold. The bound by the
+// document's own size is what ends the longer loop, so disabling it hangs the walk and this case fails
+// by the deadline below rather than by the suite's own timeout.
+func TestPiSessionEndsAWalkThroughARecordedCycle(t *testing.T) {
+	at := func(second int) time.Time { return time.Date(2026, 5, 5, 10, 0, second, 0, time.UTC) }
+	conversation := Conversation{
+		Source: SourceIdentity{Provider: "pi", SessionID: "source-session", Cwd: "/work/project"},
+		Messages: []Message{
+			{Ordinal: 0, Role: string(parser.RoleAssistant), SourceUUID: "x1", SourceParentUUID: "x1",
+				Timestamp: at(0)},
+			{Ordinal: 1, Role: string(parser.RoleAssistant), SourceUUID: "y2", SourceParentUUID: "z3",
+				Timestamp: at(1)},
+			{Ordinal: 2, Role: string(parser.RoleAssistant), SourceUUID: "z3", SourceParentUUID: "y2",
+				Timestamp: at(2)},
+			{Ordinal: 3, Role: string(parser.RoleUser), Content: "middle", Dialogue: "middle",
+				SourceUUID: "w4", Timestamp: at(3)},
+			// Names the two-record loop: the walk through it must end, and the entry follows the entry
+			// before it, counted as a place this conversion chose.
+			{Ordinal: 4, Role: string(parser.RoleAssistant), Content: "after the loop",
+				Dialogue: "after the loop", SourceUUID: "a5", SourceParentUUID: "y2", Timestamp: at(4)},
+		},
+		Fidelity: Fidelity{ReadFrom: "source"},
+	}
+	type answer struct {
+		session PiSession
+		err     error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		converted, err := ConvertToPiSession(conversation, PiTargetOptions{})
+		done <- answer{converted, err}
+	}()
+	var converted answer
+	select {
+	case converted = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the conversion did not finish: the walk through the cycle the source recorded did not end")
+	}
+	if converted.err != nil {
+		t.Fatalf("converting: %v", converted.err)
+	}
+	if loss := lossCount(t, converted.session.Losses, "empty_assistant_messages"); loss.Count != 3 {
+		t.Fatalf("empty_assistant_messages = %+v, want the three records of the loop the target omits", loss)
+	}
+	lines := decodePiSession(t, converted.session.Data)
+	texts := piEntryTexts(t, lines)
+	ids := map[string]string{}
+	for id, text := range texts {
+		if text != "" {
+			ids[text] = id
+		}
+	}
+	if got := parentTextOfEntry(t, lines, texts, ids, "after the loop"); got != "middle" {
+		t.Errorf("the record naming the loop hangs off %q, want the entry before it (%q): the loop's "+
+			"relation is not one the document can answer", got, "middle")
+	}
+	if loss := lossCount(t, converted.session.Losses, "unresolved_source_parents"); loss.Count != 4 {
+		t.Errorf("unresolved_source_parents = %+v, want the loop's three places and the record naming it",
+			loss)
+	}
+}
+
+// parentTextOfEntry answers the text of the entry the written session's record with this text hangs
+// off, or "" when the entry carries no parent, failing when no entry carries the text: the parent lookup
+// the tree cases above spell out for themselves.
+func parentTextOfEntry(t *testing.T, lines []piLine, texts map[string]string, ids map[string]string,
+	text string) string {
+	t.Helper()
+	id, ok := ids[text]
+	if !ok {
+		t.Fatalf("no entry carries the text %q", text)
+	}
+	for _, line := range lines[1:] {
+		if line.ID != id {
+			continue
+		}
+		if line.ParentID == nil {
+			return ""
+		}
+		return texts[*line.ParentID]
+	}
+	t.Fatalf("no entry carries the id %q", id)
+	return ""
+}
+
 // TestPiSessionCarriesACompactionBoundaryAsTheTargetsOwnRecord pins what a compacted source becomes: a
 // `compaction` entry whose `firstKeptEntryId` is its own id (the target's own retain-none shape: the
 // source records the summary and the boundary, not which entries the boundary kept, so claiming a kept

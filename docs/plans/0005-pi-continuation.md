@@ -143,7 +143,10 @@ a Pi session's `parentId` and a Claude transcript's `parentUuid`), `null` for a 
 no parent at all — so the file is the source's own tree rather than one chain this build invented, and a
 branch the conversation left stands off the path the target's loader walks from the file's last entry, as
 recorded history, exactly where the source put it. A record whose named parent has no entry of its own (the
-target omitted it) is chained to the nearest ancestor that does have one; a record that follows a tool
+target omitted it) is chained to the place that record's own walk resolved — the nearest ancestor that does
+have an entry, the tool result's own entry where the place was resolved through it — and, where that walk
+resolved nothing (its recorded parent was read later, with nothing yet written to fall back to), to the
+nearest ancestor the read's own relations reach and this conversion wrote; a record that follows a tool
 result is chained to the result **where the read may answer a projection**, because the reader answers a Pi
 tool result as *not* a visible ancestor while the source's own file runs call → result → what follows, and
 writing the result after the record would leave a resumed session with a call and no result. The step is

@@ -2082,3 +2082,29 @@ supersede it with a newer one and say which it supersedes.
   credential out of the endpoint (measured wrong: the address is rewritten, sending the harness somewhere
   the host did not name).
 - **Settled by:** nothing owner-only.
+
+## Q-0005-15 — An omitted record keeps the place its own walk resolved (Q-0005-07's first consequence, in composition with Q-0005-10's projection)
+
+- **Status:** resolved (default taken; 0005's fifth review round measured that the consequence and the
+  projection step did not compose)
+- **Question:** Q-0005-07 chains a record whose named parent the target omitted to "the nearest ancestor
+  that was written", and Q-0005-10 chains a record whose read-answered parent is a call through the tool
+  result standing between them. Where the two meet — a Pi chain `U → C → R → E → A` in which `C` makes a
+  call, `R` answers it, `E` is an empty assistant record and `A` names `E` — the omitted record resolved
+  *its* place through `R`'s entry at its own walk and was then omitted, and a child re-resolving `E`'s
+  **raw** relation reached `C`'s entry instead: the converted path became `U → C → A`, with the written
+  result off the walk the target's loader makes although the report counted it as carried. Should an
+  omitted record's resolved place be kept, or should a child of it be re-resolved from the raw relation?
+- **Default taken:** the place an omitted record's own walk resolved is kept under the record's identity
+  (`sourceTree.omittedAncestorEntry`), and a later record naming it follows *that* place (the result's own
+  entry in the shape above). A record whose own walk resolved nothing — its recorded parent was read later,
+  with nothing yet written to fall back to — keeps no place, and a child of it follows the document's own
+  relations to the nearest written ancestor as before. Both tree writers write this through the shared
+  tree, and the relation is not counted again on the child: the projection's place was counted once, where
+  the omitted record's own walk took it (`unresolved_source_parents`).
+- **Reversal:** re-resolve the child from the raw relation (measured wrong in this round: the new
+  conversion-level cases fail on both tree writers — the record after the omitted one hangs off the call's
+  own entry and the result stands off the model-visible walk), or keep a place for every record including
+  the ones that wrote entries (the entry written for the record is already the place its children follow,
+  so the map would only duplicate it).
+- **Settled by:** nothing owner-only.

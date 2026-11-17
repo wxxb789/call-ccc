@@ -190,6 +190,17 @@ type sourceTree struct {
 	sourceRecordParents map[string]string
 	// writtenEntryID maps a source record's identity to the final entry written for it.
 	writtenEntryID map[string]string
+	// omittedAncestorEntry maps a source record the target left out -- a record that produced no entry
+	// of its own -- to the entry its first entry would have been chained to: its nearest written
+	// ancestor as the conversion *resolved* it when the record was walked, which for a record standing
+	// under a written tool result is the result's own entry and not the nearest ancestor of the record's
+	// raw relation (endRecord registers it; writtenAncestor answers with it). An omitted record has no
+	// entry to chain a child to, and re-resolving the child's relation from the raw one would drop the
+	// place the omitted record was resolved to -- measured: with a Pi chain call → result → empty
+	// assistant → next turn, the reader answers the empty record as hanging off the call, and a writer
+	// that re-resolved the turn's raw relation chained it straight to the call, leaving the written
+	// result off the walk the target's loader makes.
+	omittedAncestorEntry map[string]string
 	// toolResultEntry maps the source record a record hanging off a written tool result would read as
 	// its parent (toolResultCarrierRecord) to the entry of the most recent such result, and is filled
 	// only when projectedParents holds. The read answers a record under a tool result as hanging off the
@@ -216,10 +227,11 @@ type sourceTree struct {
 
 func newSourceTree(provider string) sourceTree {
 	return sourceTree{
-		sourceRecordParents: map[string]string{},
-		writtenEntryID:      map[string]string{},
-		toolResultEntry:     map[string]string{},
-		projectedParents:    projectedParentProvider(provider),
+		sourceRecordParents:  map[string]string{},
+		writtenEntryID:       map[string]string{},
+		omittedAncestorEntry: map[string]string{},
+		toolResultEntry:      map[string]string{},
+		projectedParents:     projectedParentProvider(provider),
 	}
 }
 
@@ -244,7 +256,21 @@ func (t *sourceTree) startRecord(id, parent string) {
 
 // endRecord ends the record's walk, so a record that produced no entry cannot leak its relation onto the
 // next record's first entry.
-func (t *sourceTree) endRecord() { t.pending = sourceRecordOrigin{} }
+//
+// A record the target leaves out produced no entry of its own, but it still had a place resolved for it
+// (startRecord): the entry its first entry would have been chained to. That place is kept under the
+// record's own identity, because a later record naming it must hang off the same place -- the omitted
+// record has no entry of its own for the child to follow, and re-resolving the child's raw relation can
+// only reach a *different* entry where the place was resolved through a written tool result. The
+// registration is exact rather than conditional: parentID is non-nil only when nothing was written for
+// the record (wrote clears it), so a record with entries of its own keeps its entry as the place its
+// children hang off, through writtenEntryID.
+func (t *sourceTree) endRecord() {
+	if t.pending.sourceID != "" && t.pending.parentID != nil {
+		t.omittedAncestorEntry[t.pending.sourceID] = *t.pending.parentID
+	}
+	t.pending = sourceRecordOrigin{}
+}
 
 // markToolResult says the entry about to be written is a tool result, carrying the source record a
 // record hanging off that result would read as its parent (toolResultCarrierRecord). Where the read may
@@ -292,6 +318,8 @@ func (t *sourceTree) wrote(id string) {
 //
 //   - the named record was written: its final entry is the parent;
 //   - the named record was left out of the target (an omitted record, or one with no entry of its own):
+//     the place resolved for it when it was walked (omittedAncestorEntry -- for a record standing under a
+//     written tool result that is the result's own entry, which the raw walk alone cannot reach), else
 //     the nearest ancestor that *was* written, walked through the document's own relations;
 //   - the named record is the place a written tool result stands for (toolResultEntry): the tool
 //     result's own entry, because the source's own file runs call → result → what follows while the
@@ -336,18 +364,29 @@ func (t *sourceTree) parentFor(parent string) *string {
 	return t.lastEntryID
 }
 
-// writtenAncestor answers the entry this conversion wrote for the nearest record a walk from sourceID
-// reaches, and whether it found one at all. The walk is bounded by the document's own size rather than by
-// a depth constant: it can step through each record the read holds at most once, so a linear history
-// longer than any fixed bound is still walked to its end, while a cycle the source recorded (a record
-// naming itself or a longer loop) cannot keep it going past the records the read answered.
+// writtenAncestor answers the place the nearest record a walk from sourceID stands for, and whether it
+// found one at all: the entry this conversion wrote for the record, or -- for a record the target left
+// out -- the place resolved for it when its own walk started (omittedAncestorEntry), which is the entry
+// its first entry would have been chained to. That place is consulted before the raw relation is stepped
+// through because it may be one the raw walk alone cannot reach: a record the read answers as hanging off
+// a call may in the source's own file have stood under a result of that call, and the place's resolution
+// took the result's entry. The walk runs bounded by the records the read answered rather than by a depth
+// constant, so a linear history longer than any fixed bound is still walked to its end while a cycle the
+// source recorded (a record naming itself or a longer loop) can only walk the relations the read holds
+// before the bound ends it -- it cannot keep the conversion going, and the relation is answered as one
+// this conversion could not place. No early exit for a record naming itself is kept beside the bound:
+// removing one leaves every test green, because the same relation is answered one step later, so an exit
+// would state only the loop's iteration count.
 func (t *sourceTree) writtenAncestor(sourceID string) (string, bool) {
 	for steps := 0; sourceID != "" && steps <= len(t.sourceRecordParents); steps++ {
 		if id, ok := t.writtenEntryID[sourceID]; ok {
 			return id, true
 		}
+		if id, ok := t.omittedAncestorEntry[sourceID]; ok {
+			return id, true
+		}
 		next, ok := t.sourceRecordParents[sourceID]
-		if !ok || next == sourceID {
+		if !ok {
 			return "", false
 		}
 		sourceID = next
