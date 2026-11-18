@@ -689,8 +689,11 @@ func installFile(home, subdir, projectDir, fileName string, data []byte, mode os
 // verifyStructure reads an installed session back through the inherited AgentsView reader the route
 // names and compares it, item by item, with what the writer intended to carry. sessionsDir is the
 // target's own directory; targetPath is the file the conversion published (or the dry run's copy of the
-// same bytes); cfg supplies the provider configuration (its roots for the route's agent are replaced,
-// never mutated: the map is copied); compare walks the read-back against the file's own bytes with the
+// same bytes), or -- for a target whose artifact is a row inside a database rather than a file -- the
+// reader's own reference to it; installedBytes answers the bytes of the artifact that was published
+// (the file at targetPath for every file-backed route, and the document the importer was handed for the
+// database-backed one); cfg supplies the provider configuration (its roots for the route's agent are
+// replaced, never mutated: the map is copied); compare walks the read-back against those bytes with the
 // route's reader rules.
 //
 // The read-back is the file this call names, read through the inherited reader's own path reference, so
@@ -703,6 +706,7 @@ func verifyStructure(
 	sessionsDir string,
 	agent parser.AgentType,
 	method, readerMessage, readerLabel, targetPath string,
+	installedBytes func(targetPath string) ([]byte, error),
 	compare func(readBack Conversation, installed []byte) roundTripComparison,
 	cfg config.Config,
 ) (StructureVerification, error) {
@@ -727,7 +731,7 @@ func verifyStructure(
 		return verification, nil
 	}
 	verification.ReadBack = readBackCounts(conversation)
-	installed, err := os.ReadFile(verification.TargetPath)
+	installed, err := installedBytes(verification.TargetPath)
 	if err != nil {
 		verification.Detail = "the installed session could not be read back for comparison: " + err.Error()
 		return verification, nil

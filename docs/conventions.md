@@ -26,9 +26,13 @@ internal/ccc/       continuation core: conversation document, readers, archive a
                     target writers and the route table (targets.go, codex_target.go,
                     codex_install.go, codex_verify.go, claude_target.go, claude_install.go,
                     claude_verify.go, pi_target.go, pi_install.go, pi_verify.go, omp_target.go,
-                    omp_install.go, omp_verify.go, continue.go),
+                    omp_install.go, omp_verify.go, opencode_target.go, opencode_install.go,
+                    opencode_verify.go, continue.go),
                     and the install/verify/probe machinery the routes share (route_shared.go)
 internal/ccc/parity the canonical dump and the oracle a pristine checkout runs too
+internal/ccc/opencodefixture  the store a test builds when it needs one the inherited OpenCode reader
+                    can open (a fixture, not a writer of this build's: OpenCode sessions exist only
+                    inside the harness's own SQLite store)
 internal/ccc/testdata/fixtures  committed native-shaped sessions, written by internal/ccc/fixturegen
 internal/ccc/testdata/growth    committed fragments a run appends to a *copy* of one fixture, so one
                     source session grows; the same generator writes and pins them
@@ -39,8 +43,8 @@ docs/evidence/      one evidence record per increment: real commands, exit codes
 docs/upstream.md    the carried AgentsView pin, its declared deviations and the update procedure
 docs/decisions/     append-only record of decisions taken and defaults chosen
 scripts/            harness entry points (gate, knobs, carry importer, parity, comparison,
-                    codex-native-check, claude-native-check, pi-native-check and
-                    omp-native-check: the target-side native verifications, deliberately not gate
+                    codex-native-check, claude-native-check, pi-native-check, omp-native-check and
+                    opencode-native-check: the target-side native verifications, deliberately not gate
                     steps)
 ```
 
@@ -163,6 +167,24 @@ gate runs as a required step.
   configuration answers, so a provider or model spelled `123`, `null` or `2026-11-18` is ordinary, and a
   bare spelling would reach the harness as a number, a null or a timestamp — measured, the harness refuses
   such a session (`SessionModelRestoreError`).
+  **OpenCode is the fourth, and its rule is its store's.** A session is a row in the harness's own
+  SQLite store (`<XDG data home>/opencode/opencode.db`), not a file, so nothing but the harness can write
+  one: this route's installation **is** the harness's own importer (`opencode session import … --directory
+  <the session's recorded directory> --standalone`, the directory required to exist — measured: a missing
+  one is refused with `LocationNotFoundError`), and a host without the binary has no installation at all,
+  which the report states as the boundary it is. The load level asks the harness's own reader
+  (`session export <id>`), never `run`: measured, `run` *creates* a session for an id the store does not
+  hold and appends its own records, so a `run`-based load would answer for a session it had just made —
+  and the same command's answer for an unknown id is the control arm (`Session not found: <id>`). An
+  export changes none of a session's own records (measured: identical rows and an identical document
+  around it), while the database *file's* bytes move with its WAL handling, which is why the check claims
+  the records and not the file. A session is looked up from the directory its own document records
+  (`session list --format json` names it there and not from another directory) and its model binding is
+  the target home's own configured `<provider>/<model>`, asked of the harness (`debug agents`). Two
+  members this format's importer requires are worth naming where a writer meets it: an assistant message
+  whose `time` carries `created` alone is accepted and then **silently dropped** (measured on 2.2.5 by
+  bisecting the message's members), and a tool part's `state.input` is stored re-encoded, so the
+  comparison canonicalizes that member's JSON while every other member is compared as recorded.
 - **Fixtures are sanitized native shapes.** Small, version-identified, committed fixtures — one
   provider directory per source (`fixtures/claude/`, `fixtures/codex/`, `fixtures/pi/`,
   `fixtures/omp/`) — with no real
@@ -172,7 +194,12 @@ gate runs as a required step.
   one project directory below its provider root, because that provider's own discovery requires that
   level for this agent (measured: a file at the root is not discovered for `omp`, while the Pi provider
   accepts one there); the directory name is the absolute `--…--` spelling, the one branch of OMP's own
-  rule that does not depend on the machine the generator runs on.
+  rule that does not depend on the machine the generator runs on. OpenCode has **no fixture directory of
+  its own**: a session is a row in one store rather than a file, so a committed fixture could only be a
+  store the harness (not this build) writes. Its shapes are pinned instead as the document bytes the
+  writer produces (`internal/ccc/opencode_target_test.go`) and as a store the tests build through
+  `internal/ccc/opencodefixture`, and the native check materialises a real session through the harness's
+  own importer.
 - **Comments and docs state what the code does, not what it was meant to do.** A comment or test name
   claiming a rule the code no longer implements is a correctness defect.
 - **A test pins the rule it names, on every platform and every Python 3 these docs name.** An

@@ -36,17 +36,20 @@ with their exit codes and counts).
   source recorded — on that route too, where the count is the line walk's own accounting of the places it
   chose, not only of the records it left out.
 - **A target writer's claim is shown through the target harness's own loader.** Call `ccc continue …
-  --to codex`, `--to claude`, `--to pi` or `--to omp` converts, installs and reports **converted / installed /
+  --to codex`, `--to claude`, `--to pi`, `--to omp` or `--to opencode` converts, installs and reports
+  **converted / installed /
   natively resumable** as three separate states; "resumable" is only ever `verification.load` or
   `verification.resume` coming back `verified`, and every one of a conversion's omissions or narrowing
   is named in `conversion.losses[]`. The native half needs the target harness installed and, for a real
   turn, model access, so it is **not** a gate step: `scripts/codex-native-check.py`,
-  `scripts/claude-native-check.py`, `scripts/pi-native-check.py` and `scripts/omp-native-check.py`
+  `scripts/claude-native-check.py`, `scripts/pi-native-check.py`, `scripts/omp-native-check.py` and
+  `scripts/opencode-native-check.py`
   re-derive it and report each check's
   own verdict (the gate keeps deciding the offline half — round-trip through the inherited reader,
   install rules, reported losses, CLI shape). A check whose target harness is absent exits 2 naming the
-  harness it needs — the Pi and OMP checks end their run with `RESULT: INCOMPLETE` and the reason, the
-  Codex and Claude checks print the reason on stderr — so a partial run is never quoted as a pass. The Pi and OMP
+  harness it needs — the Pi, OMP and OpenCode checks end their run with `RESULT: INCOMPLETE` and the
+  reason, the Codex and Claude checks print the reason on stderr — so a partial run is never quoted as a
+  pass. The Pi and OMP
   checks drive their harness's own RPC loader against a **throw-away copy** of the converted bytes
   (measured on both: a load writes records of its own into the session it opens) and read the harness's
   own `get_state`/`get_messages` answers beside an unknown-id control arm; the OMP check's scratch data
@@ -56,6 +59,18 @@ with their exit codes and counts).
   converts again, and shows Codex's own loader opening the second session with its own view holding the
   appended turn while the first session's bytes did not move (`--repeat-resume-prompt` adds one real
   turn in the second session; each prompt flag runs one turn).
+- **OpenCode is a target whose store only the harness writes.** A session is a row in
+  `<XDG data home>/opencode/opencode.db`, not a file, so `--to opencode` installs **through the harness's
+  own importer** (`opencode session import … --directory <the session's recorded directory> --standalone`)
+  and never writes SQL into that store: a host without the binary has no installation, and the report says
+  so instead of working around it. Two members that importer requires are rules a writer here must keep,
+  both measured on 2.2.5: an assistant message's `time.completed` (a message whose `time` carries
+  `created` alone is accepted and then **silently dropped** — no row, no export entry) and a tool part's
+  `state.input`, which the store holds re-encoded, so the structural comparison canonicalizes that one
+  member's JSON and compares every other member as recorded. The load level asks the harness's own
+  `session export`, never `run`: `run` *creates* a session for an id the store does not hold. The
+  directory a session is resolved from is the one its own document records, and the model binding it runs
+  under is the target home's own, asked of the harness (`debug agents`).
 - **A conversion writes a fresh native identity and replaces nothing.** The install is exclusive, the
   source is never opened for writing, no credential or login store is copied, and a target data
   directory nobody named is an error rather than a directory invented here. Tests and demos use
@@ -111,13 +126,15 @@ with their exit codes and counts).
   `codex_verify.go`, `claude_target.go`, `claude_install.go`, `claude_verify.go`, `pi_target.go`,
   `pi_install.go`, `pi_verify.go`, `omp_target.go`, `omp_install.go`,
   `omp_verify.go` (the last three are the Pi family's second format, whose shared writer is Pi's own
-  parameterized by `piFamilyShape`); its committed
+  parameterized by `piFamilyShape`), and the OpenCode target's `opencode_target.go`, `opencode_install.go`
+  and `opencode_verify.go` (whose store a test builds through `internal/ccc/opencodefixture` — a fixture
+  package, because a real OpenCode session exists only inside the harness's own store); its committed
   native-shaped fixtures are `internal/ccc/testdata/fixtures/` and the growth fragments a run appends to
   a *copy* of one (`internal/ccc/testdata/growth/`, written by the same `internal/ccc/fixturegen` and
   pinned against it) are what makes one source session grow; `cmd/ccc` adds
   argument handling and presentation only, and a target-side native harness
   (`scripts/codex-native-check.py`, `scripts/claude-native-check.py`, `scripts/pi-native-check.py`,
-  `scripts/omp-native-check.py`) is
+  `scripts/omp-native-check.py`, `scripts/opencode-native-check.py`) is
   registered in `docs/harness.md`, re-runnable, and deliberately not a gate step. A target whose own
   loader resolves a session id through the process's working directory — Claude Code, and Pi — is
   installed under the project spelling of the source read's recorded working directory, and a source that

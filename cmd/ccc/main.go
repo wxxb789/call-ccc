@@ -29,7 +29,7 @@ import (
 const usage = `ccc — continue one agent session in another, through AgentsView's own reader
 
 usage:
-  ccc continue <provider>:<session-id-or-path> --to codex|claude|pi|omp [options]
+  ccc continue <provider>:<session-id-or-path> --to codex|claude|pi|omp|opencode [options]
   ccc inspect <provider>:<session-id-or-path> [--json] [--data-dir DIR]
   ccc help
 
@@ -51,13 +51,16 @@ usage:
       ccc continue claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to pi      # Claude Code → Pi
       ccc continue omp:01a1eb89-363f-7049-85cc-33c574dc5183 --to claude    # Oh My Pi → Claude Code
       ccc continue claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to omp     # Claude Code → Oh My Pi
+      ccc continue claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to opencode # Claude Code → OpenCode
   and the result says which command resumes it (for Codex: CODEX_HOME=<dir> codex resume <session-id>;
   for Claude Code: cd <dir> && CLAUDE_CONFIG_DIR=<dir> claude --resume <session-id>; for Pi:
   cd <dir> && PI_CODING_AGENT_DIR=<dir> pi --session <session-id>; for Oh My Pi:
-  cd <dir> && PI_CODING_AGENT_DIR=<dir> omp --resume <session-id> — Claude Code and Pi find a session
-  through the directory they are run from, while Oh My Pi resolves an id from any directory and refuses
-  one whose recorded directory it cannot find), naming the data directory the session was installed
-  into as well as the session itself. A Pi resume command names no provider and no model: a Pi session
+  cd <dir> && PI_CODING_AGENT_DIR=<dir> omp --resume <session-id>; for OpenCode:
+  cd <dir> && XDG_DATA_HOME=<data root> opencode run --standalone --session <session-id> — Claude Code
+  and Pi find a session through the directory they are run from, while Oh My Pi resolves an id from any
+  directory and refuses one whose recorded directory it cannot find, and OpenCode resolves an id from
+  any directory but refuses one whose recorded directory it cannot find), naming the data directory the
+  session was installed into as well as the session itself. A Pi resume command names no provider and no model: a Pi session
   binds none for itself, and a provider label the source recorded is a source-side name the target home
   need not define. An Oh My Pi command names neither either, for the same reason -- but the session it
   was installed as records the *target home's* own model, asked of that harness, because its loader
@@ -83,13 +86,15 @@ usage:
   only.
 
 continuation options:
-  --to NAME          target harness to write (codex, claude, pi, omp)
+  --to NAME          target harness to write (codex, claude, pi, omp, opencode)
   --json             write the result as one JSON object on stdout (diagnostics stay on stderr)
   --dry-run          convert and verify without writing anything into the target's data directory
   --target-home DIR  that harness's data directory (codex: $CODEX_HOME, else ~/.codex; claude:
                      $CLAUDE_CONFIG_DIR, else ~/.claude; pi: $PI_CODING_AGENT_DIR, else ~/.pi/agent;
-                     omp: $PI_CODING_AGENT_DIR, else ~/.omp/agent)
-  --target-binary P  that harness's executable (default: codex, claude, pi or omp, on PATH). The Claude Code
+                     omp: $PI_CODING_AGENT_DIR, else ~/.omp/agent; opencode: $XDG_DATA_HOME/opencode,
+                     else ~/.local/share/opencode), and a directory whose base name is not opencode is
+                     read as the XDG data root whose opencode directory holds the harness's sessions
+  --target-binary P  that harness's executable (default: codex, claude, pi, omp or opencode, on PATH). The Claude Code
                      resume commands name the path the probe found for it -- the program this run asked
                      and verified -- else the spelling given here, where a spelling that names a path is
                      resolved against this directory, because that invocation runs from the session's
@@ -97,7 +102,10 @@ continuation options:
                      A Pi or Oh My Pi command names the path the probe found for the same reason (each
                      changes into the session's working directory too). The Codex commands keep the
                      spelling given here (or codex): that invocation stays in the caller's own directory,
-                     so a bare name is the caller's own PATH lookup.
+                     so a bare name is the caller's own PATH lookup. An OpenCode command names the path
+                     the probe found too, for the same reason as Pi's and Oh My Pi's -- and because that
+                     target's installation is the harness's own importer, so the run cannot report an
+                     installation without the program itself.
   --data-dir DIR     read the AgentsView archive in DIR (%s/sessions.db) when the source file itself
                      cannot answer the reference
   --verify LEVEL     none, load (default) or resume: load asks the target harness's own loader to
@@ -106,8 +114,9 @@ continuation options:
                      unknown-id control; Pi: the harness in its own RPC mode, asked for the session
                      state and messages, plus an unknown-id control; Oh My Pi: the harness in its own
                      RPC mode with --resume, asked for the session state and messages, plus an
-                     unknown-id control); resume runs one real turn in it
-                     and needs --resume-prompt
+                     unknown-id control; OpenCode: its own reader, the 'session export' command, with a
+                     scratch configuration and no model turn, plus an unknown-id control); resume runs
+                     one real turn in it and needs --resume-prompt
   --resume-prompt T  the turn --verify resume runs; call/ccc never writes a prompt of its own into a
                      session
 
@@ -424,7 +433,7 @@ func writeHuman(out io.Writer, inspection ccc.Inspection) {
 
 // continueUsage is the one-line usage `ccc continue` prints for `-h`, for a usage error and for a
 // missing operand.
-const continueUsage = "usage: ccc continue <provider>:<session-id-or-path> --to codex|claude|pi|omp [--json] [--dry-run]\n" +
+const continueUsage = "usage: ccc continue <provider>:<session-id-or-path> --to codex|claude|pi|omp|opencode [--json] [--dry-run]\n" +
 	"                         [--target-home DIR] [--target-binary PATH] [--data-dir DIR]\n" +
 	"                         [--verify none|load|resume] [--resume-prompt TEXT]\n"
 

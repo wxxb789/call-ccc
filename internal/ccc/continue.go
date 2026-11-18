@@ -465,6 +465,8 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 		CLIVersion:     facts.CLIVersion,
 		Provider:       facts.ModelProvider,
 		Model:          facts.Model,
+		ModelVariant:   facts.ModelVariant,
+		Agent:          facts.Agent,
 		ProviderDetail: facts.ProviderDetail,
 		Now:            opts.Now,
 		MaxToolNames:   opts.MaxToolNames,
@@ -543,7 +545,13 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 			return reportAfterFailure(result, verification, level, fmt.Errorf("creating a scratch directory: %w", err))
 		}
 		defer os.RemoveAll(scratch)
-		if _, _, err := route.Install(session, scratch); err != nil {
+		if _, _, err := route.Install(ctx, session, targetInstallInput{
+			Home:    scratch,
+			Binary:  probe.Binary,
+			Probe:   probe,
+			Timeout: opts.Timeout,
+			Stderr:  opts.Stderr,
+		}); err != nil {
 			return reportAfterFailure(result, verification, level, fmt.Errorf("verifying the conversion: %w", err))
 		}
 		structure, err := route.ReadBack(ctx, route.StructureRoot(scratch), session, cfg)
@@ -600,7 +608,13 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 			return reportAfterFailure(result, verification, level, fmt.Errorf("creating %s: %w", home, err))
 		}
 	}
-	path, mechanism, err := route.Install(session, home)
+	path, mechanism, err := route.Install(ctx, session, targetInstallInput{
+		Home:    home,
+		Binary:  probe.Binary,
+		Probe:   probe,
+		Timeout: opts.Timeout,
+		Stderr:  opts.Stderr,
+	})
 	if path != "" {
 		// The installer returns the path it published even when it also reports a failure (a temporary
 		// file it could not remove): the report carries the identity the installed session can be resumed
@@ -760,6 +774,19 @@ const (
 
 	resumeMethodOMP = "one turn in the installed session through the target harness's non-interactive " +
 		"resume (omp -p --resume)"
+
+	// The OpenCode route. Its target artifact is a session inside the harness's own SQLite store, so the
+	// structure check reads the installed session back through the inherited OpenCode reader by its own
+	// reference form (`<database path>#<session id>`), the load check asks the harness's own reader
+	// (`session export`) -- a command measured to leave the session's own records unchanged, unlike a
+	// turn -- and the resume check runs the reported invocation's one real turn.
+	structureMethodOpenCode       = "the inherited AgentsView OpenCode reader over the installed session"
+	structureMethodOpenCodeDryRun = "the inherited AgentsView OpenCode reader over a throw-away copy (dry run)"
+	loadMethodOpenCode            = "the target harness's own reader (opencode session export, with a " +
+		"scratch configuration and no model turn, plus an unknown-id control)"
+	resumeMethodOpenCode = "one turn in the installed session through the target harness's " +
+		"non-interactive resume (opencode run --session)"
+	structureReaderOpenCode = "OpenCode"
 )
 
 // hasAnswer reports whether a check carries an answer of its own: it verified, or it came back

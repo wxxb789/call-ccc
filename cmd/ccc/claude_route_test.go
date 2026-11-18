@@ -181,15 +181,15 @@ func TestContinueToClaudeHumanOutputCarriesTheResumeLine(t *testing.T) {
 
 // TestContinueRefusesATargetThisBuildDoesNotWrite pins the refusal's wording: it names every target this
 // build writes, so a caller learns the alternatives instead of only the one that failed. The list grows
-// with each accepted target (0005 added pi, 0006 added omp), and this case is what keeps the sentence and
-// the route table from drifting apart.
+// with each accepted target (0005 added pi, 0006 added omp, 0007 added opencode), and this case is what
+// keeps the sentence and the route table from drifting apart.
 func TestContinueRefusesATargetThisBuildDoesNotWrite(t *testing.T) {
 	isolatedEnvironment(t)
 	code, _, stderr := runCLI(t, "continue", "codex:"+codexFixtureRefRelative, "--to", "gemini")
 	if code != exitUsage {
 		t.Fatalf("exit %d, want %d", code, exitUsage)
 	}
-	if !strings.Contains(stderr, `this build writes codex, claude, pi, omp, not "gemini"`) {
+	if !strings.Contains(stderr, `this build writes codex, claude, pi, omp, opencode, not "gemini"`) {
 		t.Errorf("stderr = %q, want it to name every target this build writes", stderr)
 	}
 }

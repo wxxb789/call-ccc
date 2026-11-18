@@ -1,6 +1,6 @@
 # Plan — 0006 Continue conversations into and out of Oh My Pi
 
-Contract: [`docs/goals/0006-omp-continuation.md`](../goals/0006-omp-continuation.md).
+Contract: [`docs/goals/archive/0006-omp-continuation.md`](../goals/archive/0006-omp-continuation.md).
 Governing design: [`docs/core-design/README.md`](../core-design/README.md).
 Shape reference: increment 0005 ([`docs/plans/0005-pi-continuation.md`](0005-pi-continuation.md)).
 

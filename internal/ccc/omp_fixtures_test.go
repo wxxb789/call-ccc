@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"go.kenn.io/agentsview/internal/parser"
 )
@@ -224,6 +225,26 @@ func TestOMPFixturesAreReadThroughTheSameModelAsEveryOtherSource(t *testing.T) {
 		t.Errorf("read_from = %q, want the source file", conversation.Fidelity.ReadFrom)
 	}
 	for _, target := range Targets() {
+		if target == TargetOpenCode {
+			// This target's installation *is* the harness's own importer -- a session is a row in the
+			// harness's database and there is no file this build may write for it -- so a run with the
+			// harness missing stops at the installation naming the program it needs, and the writer is
+			// exercised directly here. What the pipeline does when it is missing is pinned by
+			// TestOpenCodeInstallNeedsTheHarness in continue_opencode_test.go.
+			session, err := ConvertToOpenCodeSession(conversation, OpenCodeTargetOptions{
+				CLIVersion: OpenCodeFormatVersion,
+				Now:        time.UnixMilli(1_800_000_000_000).UTC(),
+			})
+			if err != nil {
+				t.Fatalf("converting into %s: %v", target, err)
+			}
+			if session.Carried.Messages != 4 || session.Carried.ToolCalls != 1 ||
+				session.Carried.ToolResults != 1 {
+				t.Errorf("%s: carried %+v, want the fixture's four messages and its call/result pair",
+					target, session.Carried)
+			}
+			continue
+		}
 		result, err := Continue(context.Background(), ContinueOptions{
 			Ref: ompFixtureRef, Target: target, Config: fixtureConfig(t),
 			TargetHome: t.TempDir(), TargetBinary: missingTargetBinary, Verify: VerifyNone,

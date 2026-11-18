@@ -147,6 +147,9 @@ func TestMain(m *testing.M) {
 	if os.Getenv(stubCodexEnv) != "" {
 		os.Exit(stubCodex(os.Args[1:]))
 	}
+	if os.Getenv(openCodeStubEnv) != "" {
+		os.Exit(stubOpenCode(os.Args[1:]))
+	}
 	os.Exit(m.Run())
 }
 

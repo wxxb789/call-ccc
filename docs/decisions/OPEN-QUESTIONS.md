@@ -2298,3 +2298,91 @@ supersede it with a newer one and say which it supersedes.
   session's own lookup (the file would then be linked under names this build derived rather than
   measured).
 - **Settled by:** nothing owner-only.
+
+## Q-0007-01 — The OpenCode installation is the harness's own importer, so a missing binary is a boundary
+
+- **Status:** resolved (default taken; 0007's implementation)
+- **Question:** an OpenCode session is a row in the harness's own SQLite store, and the harness ships an
+  importer (`opencode session import`). Should a host without that binary still get an installation — by
+  writing the store's rows from this build, or by writing a second store the harness might read?
+- **Default taken:** no. The install runs the harness's own importer with the document staged outside the
+  home (a temporary file removed once the importer has it) and reports installed only when the harness
+  answers `Imported session: <id>` for this conversion's id; a host whose binary is absent fails the run
+  with the boundary named (`… is not on PATH, and this target's installation is the harness's own
+  importer: …`), and the native check ends `RESULT: INCOMPLETE` (exit 2) before any check. Writing the
+  store's rows here would be a second writer of a private store — exactly what the goal's Bounds refuse —
+  and a store this build invented is one no harness was shown to read. An `already exists` answer (which
+  the harness prints on stderr with exit 0) is a failure rather than a success, because this run did not
+  install that session.
+- **Reversal:** teach the installer a store writer if a harness version ships no import path at all (then
+  the check would have to show the harness reading what this build wrote, and the report would say which
+  writer ran).
+- **Settled by:** an OpenCode release that documents a stable on-disk session format, or an operator
+  decision that a missing-binary run should install anyway.
+
+## Q-0007-02 — The data root the report names is the harness's own, taken from XDG_DATA_HOME
+
+- **Status:** resolved (default taken; 0007's implementation)
+- **Question:** `--target-home DIR` on every other route names the directory the harness keeps its data
+  in. OpenCode has no variable that names its own directory: it reads `$XDG_DATA_HOME/opencode`. Should
+  `--target-home` name the data root (`…/opencode`'s parent) or the data directory itself?
+- **Default taken:** both spellings are accepted and resolved to the same directory. `ResolveOpenCodeHome`
+  treats a value whose base name is `opencode` as the data directory itself (and names its parent as the
+  data root) and any other value as the data root; the report, the `XDG_DATA_HOME` every command this
+  route runs is given, and the store path all agree, `OPENCODE_DB` is removed from the child environment
+  (it would point the harness at another store), and a caller's own `XDG_DATA_HOME` is the fallback when
+  no flag is given. A demo therefore cannot silently split the store the report names from the store the
+  harness reads.
+- **Reversal:** accept only one spelling (the data root), which would make a caller who names
+  `…/opencode` install into a sibling directory.
+- **Settled by:** nothing owner-only.
+
+## Q-0007-03 — The load level asks `session export`, never `run`
+
+- **Status:** resolved (default taken; 0007's implementation)
+- **Question:** OpenCode's non-interactive turn command (`run --session <id>`) is the command a caller
+  resumes with. Can the load level use it, as a harness whose loader reads a file might?
+- **Default taken:** no. Measured on 2.2.5: `run --session <id>` **creates** a session for an id the store
+  does not hold and appends its own records even when the turn fails, so a `run`-based load would answer
+  about a session it had just made rather than about the installed one. The load level therefore asks
+  `session export <id> --standalone` (the harness's own reader, content-neutral for the session's own
+  records — measured: identical rows and an identical document around it) with an unknown-id control arm
+  that must refuse naming that id, and the answer is accepted only when it names the installed session's
+  own id. The real turn belongs to the resume level, which runs it explicitly
+  (`--verify resume --resume-prompt TEXT`) and measures the growth through the harness's own reader.
+- **Reversal:** use `run` for the load level, at the cost of the check being about a session the check
+  itself created.
+- **Settled by:** a harness version whose `run` refuses an unknown id.
+
+## Q-0007-04 — An assistant record's completion instant is written from the record's own instant
+
+- **Status:** resolved (default taken; 0007's implementation)
+- **Question:** the harness's importer requires an assistant message's `time.completed` — measured: a
+  message whose `time` carries `created` alone is accepted and then **silently dropped** (no row, no
+  export entry; every other member was bisected). The source read answers one instant per record, not a
+  span. What should the member hold?
+- **Default taken:** the record's own instant, so the message reads as a zero-length turn; the choice is
+  disclosed on every run as `assistant_completion_instant ×<n>` (carried with caveat) with the
+  measurement in its detail. The alternatives were a span derived from the *next* record's instant (an
+  interval the source never recorded) or leaving the member out (the harness would drop the message, and
+  the dialogue and tool evidence with it).
+- **Reversal:** write the next record's instant as the completion if a future harness version is measured
+  to need a positive span (the report's detail sentence would then say which instant it wrote).
+- **Settled by:** an OpenCode release whose importer keeps a message without `time.completed`, or one that
+  documents what it does with the member.
+
+## Q-0007-05 — The structural comparison canonicalizes a tool part's input JSON
+
+- **Status:** resolved (default taken; 0007's implementation)
+- **Question:** the inherited reader renders a tool call's input with Go's own JSON encoding (compact,
+  keys sorted), while the document a conversion writes carries the source's own spelling
+  (`{"file_path": "…"}`). Should the read-back comparison treat the two spellings as a difference?
+- **Default taken:** no, for that one member. Measured on 2.2.5: the importer stores `state.input` as a
+  parsed value and re-encodes it, so the store's own row holds the compact spelling and the document's
+  whitespace is not evidence the store keeps. The comparison therefore canonicalizes the *intended* side's
+  input JSON through `canonicalJSONValue` (a value that does not parse is left exactly as recorded, so the
+  walk reports it) while every other member — dialogue, call id and name, the result's text, the boundary
+  summary — is compared as recorded, and a changed value (or a changed tool name) is still a difference.
+- **Reversal:** compare the raw spelling, which would report every real conversion as a difference over a
+  member the harness itself normalizes.
+- **Settled by:** a harness version that stores the input's original spelling.

@@ -430,6 +430,29 @@ says so.
   script builds `ccc` into `bin/ccc-native-check-omp` (`.gitignore` covers `bin/`), takes the same
   `--resume-prompt`/`--expect`/`--keep`/`--json` flags as its siblings, and prints the turn's own answer
   under `TURN_OUTPUT_MARKER`.
+- `scripts/opencode-native-check.py` — the target-side native verification for goal 0007, and
+  **deliberately not a gate step** for the same reason the others are not: it needs the OpenCode binary
+  installed (this route's installation *is* that harness's own importer, so a host without it has no
+  offline half to verify at all — the run ends as `RESULT: INCOMPLETE`, exit 2, before any check) and, for
+  a real turn, model access. It takes a **copy** of the committed Claude fixture with only its recorded
+  working directory rewritten mechanically to a directory the run owns — measured: the harness's importer
+  refuses a session whose `location.directory` does not exist (`LocationNotFoundError`) — plants an
+  unrelated session **through the harness's own importer**, reads that session's document back around the
+  run, converts through the CLI (`--json`) and reads the report's three states rather than trusting them,
+  and then asks the harness itself: `session export <id>` for the installed session (its own document,
+  compared with the source's first prompt, its tool call and recorded result and its compaction boundary),
+  the same command for an id nothing installed as the control arm (it must refuse, naming the id),
+  `session list --format json` from the session's own recorded directory (it must name the session) and
+  from another (it must not), and `session delete` to remove the planted session — the run records that
+  removal and that the id no longer resolves, because the store can only be written by the harness. A
+  requested turn runs the **printed** invocation's own words (`run --standalone --session <id> -- <prompt>`,
+  the flag immediately after its subcommand: a flag left on the managed service's side of the `--`
+  terminator answers from a store this run did not grow, measured) with the report's `resume_environment`
+  and working directory, prints the harness's own words under `TURN_OUTPUT_MARKER`, and measures the
+  growth through the harness's own reader (before/after `session export`: a turn appends its own records,
+  3 per turn measured). The script builds `ccc` into `bin/ccc-native-check-opencode` (`.gitignore` covers
+  `bin/`), takes `--opencode`/`--source`/`--target-home`/`--resume-prompt`/`--expect`/`--keep`/`--json`,
+  and prints each check's own state.
 - `scripts/native_check_common.py` — the mechanism the native checks share, so none keeps its own
   copy of it: the file digests (`sha256`, `tree_digest`), the check recorder (`record`, `RESULTS`), the
   subprocess runner (`run`), the POSIX-shell reading of a rendered command (`shell_words`,

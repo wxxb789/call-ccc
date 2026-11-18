@@ -257,9 +257,6 @@ func TestOMPRouteIsRegistered(t *testing.T) {
 	if !slices.Contains(Targets(), TargetOMP) {
 		t.Errorf("Targets() = %v, want the OMP target among them", Targets())
 	}
-	if Targets()[len(Targets())-1] != TargetOMP {
-		t.Errorf("Targets() = %v, want the new target last", Targets())
-	}
 	route, err := targetRouteFor(TargetOMP)
 	if err != nil {
 		t.Fatalf("targetRouteFor(%q): %v", TargetOMP, err)

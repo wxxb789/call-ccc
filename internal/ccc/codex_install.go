@@ -155,6 +155,7 @@ func VerifyCodexRolloutStructure(
 	return verifyStructure(ctx, sessionsDir, parser.AgentCodex, structureMethodCodex,
 		structureReaderCodex, structureReaderCodex,
 		filepath.Join(sessionsDir, filepath.FromSlash(rollout.Directory), rollout.FileName),
+		os.ReadFile,
 		func(readBack Conversation, installed []byte) roundTripComparison {
 			return compareCodexRoundTrip(rollout, readBack, installed)
 		}, cfg)
@@ -279,6 +280,19 @@ func intendedRoundTripEvidence(items []TargetItem) roundTripEvidence {
 type roundTripReader struct {
 	classifiesAway func(Message) bool
 	kindOf         func(Message) (TargetItemKind, bool)
+	// dialogueOf is the route's own rule for the dialogue a read-back message shows, for a reader whose
+	// own projection renders a message differently from the way the shared rule reads one (OpenCode's
+	// reader joins a message's dialogue and its persisted reasoning into one text). Nil -- every route
+	// whose reader answers dialogue or plain text -- leaves the shared rule in place.
+	dialogueOf func(Message) string
+}
+
+// readDialogue is one read-back message's dialogue as this route's reader shows it.
+func (reader roundTripReader) readDialogue(message Message) string {
+	if reader.dialogueOf != nil {
+		return reader.dialogueOf(message)
+	}
+	return dialogueText(message)
 }
 
 // readRoundTripEvidence collects what a read-back of the installed file shows, minus the records the
@@ -293,7 +307,7 @@ func readRoundTripEvidence(readBack Conversation, reader roundTripReader) roundT
 		if reader.classifiesAway(message) {
 			continue
 		}
-		if text := dialogueText(message); strings.TrimSpace(text) != "" {
+		if text := reader.readDialogue(message); strings.TrimSpace(text) != "" {
 			if kind, ok := reader.kindOf(message); ok {
 				evidence.dialogue = append(evidence.dialogue, dialogueKey(string(kind), text))
 			}

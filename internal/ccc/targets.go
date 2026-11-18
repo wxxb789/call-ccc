@@ -14,15 +14,16 @@ import (
 // A target harness this build can write. Every other name is refused: a target that has no writer would
 // otherwise be answered with a plausible-looking file.
 const (
-	TargetCodex  = "codex"
-	TargetClaude = "claude"
-	TargetPi     = "pi"
-	TargetOMP    = "omp"
+	TargetCodex    = "codex"
+	TargetClaude   = "claude"
+	TargetPi       = "pi"
+	TargetOMP      = "omp"
+	TargetOpenCode = "opencode"
 )
 
 // Targets names every target harness this build writes, in the order a caller lists them.
 func Targets() []string {
-	return []string{TargetCodex, TargetClaude, TargetPi, TargetOMP}
+	return []string{TargetCodex, TargetClaude, TargetPi, TargetOMP, TargetOpenCode}
 }
 
 // harnessProbe is what a target harness's own binary answered about itself: where it is, whether it is
@@ -77,6 +78,12 @@ type targetFacts struct {
 	ProviderSource   string
 	ProviderDetail   string
 	Model            string
+	// Agent is the target home's own primary agent id, for a format whose records must name one. It is
+	// empty for every target whose records carry no agent, and for one whose harness was not asked.
+	Agent string
+	// ModelVariant is the variant the harness's own model answer carried, where its reference has one
+	// (OpenCode's does): empty for every other target and for an answer without one.
+	ModelVariant string
 }
 
 // targetConvertInput is what one target's writer is configured with: the version the document is written
@@ -87,6 +94,12 @@ type targetConvertInput struct {
 	CLIVersion string
 	Provider   string
 	Model      string
+	// Agent is the target home's own primary agent id where its harness was asked for one (a format
+	// whose assistant records must name an agent), empty otherwise.
+	Agent string
+	// ModelVariant is the variant the harness's own model answer carried, where its model reference has
+	// one; empty otherwise.
+	ModelVariant string
 	// ProviderDetail is what the target's own harness answered about that endpoint (or why it was not
 	// asked), so a writer whose format records the binding can state the answer rather than leaving its
 	// presence or absence to be read off a count.
@@ -115,6 +128,19 @@ type targetInvocation struct {
 	ExecArguments []string
 	Environment   map[string]string
 	WorkingDir    string
+}
+
+// targetInstallInput is everything one target's installation is given: the directory to install into,
+// the executable the run probed, and the deadline and debug channel an installation that is the
+// harness's own command needs. Every target's Install receives all of it, and the routes that publish a
+// file of their own read only Home.
+type targetInstallInput struct {
+	Home   string
+	Binary string
+	Probe  harnessProbe
+	// Timeout bounds the harness's own command, where the installation runs one.
+	Timeout time.Duration
+	Stderr  io.Writer
 }
 
 // targetVerificationInput is everything a native verification of one target session is given.
@@ -158,7 +184,7 @@ type targetRoute struct {
 	DryRunWarnings func(facts targetFacts, probe harnessProbe) []string
 
 	Convert func(conv Conversation, in targetConvertInput) (convertedTarget, error)
-	Install func(session convertedTarget, home string) (string, string, error)
+	Install func(ctx context.Context, session convertedTarget, in targetInstallInput) (string, string, error)
 	// StructureRoot is the directory inside a data directory that holds the target's sessions.
 	StructureRoot func(home string) string
 	ReadBack      func(ctx context.Context, root string, session convertedTarget, cfg config.Config) (StructureVerification, error)
@@ -190,6 +216,8 @@ func targetRouteFor(target string) (targetRoute, error) {
 		return piRoute(), nil
 	case TargetOMP:
 		return ompRoute(), nil
+	case TargetOpenCode:
+		return openCodeRoute(), nil
 	default:
 		return targetRoute{}, fmt.Errorf("%w: %q (this build writes %s)",
 			ErrUnsupportedTarget, target, strings.Join(Targets(), ", "))
@@ -238,8 +266,8 @@ func codexRoute() targetRoute {
 				Raw:       rollout,
 			}, nil
 		},
-		Install: func(session convertedTarget, home string) (string, string, error) {
-			return InstallCodexRollout(session.Raw.(CodexRollout), home)
+		Install: func(_ context.Context, session convertedTarget, in targetInstallInput) (string, string, error) {
+			return InstallCodexRollout(session.Raw.(CodexRollout), in.Home)
 		},
 		StructureRoot: func(home string) string { return filepath.Join(home, codexSessionsSubdir) },
 		ReadBack: func(ctx context.Context, root string, session convertedTarget, cfg config.Config) (StructureVerification, error) {
@@ -354,8 +382,8 @@ func claudeRoute() targetRoute {
 				Raw:       transcript,
 			}, nil
 		},
-		Install: func(session convertedTarget, home string) (string, string, error) {
-			return InstallClaudeTranscript(session.Raw.(ClaudeTranscript), home)
+		Install: func(_ context.Context, session convertedTarget, in targetInstallInput) (string, string, error) {
+			return InstallClaudeTranscript(session.Raw.(ClaudeTranscript), in.Home)
 		},
 		StructureRoot: func(home string) string { return filepath.Join(home, claudeProjectsSubdir) },
 		ReadBack: func(ctx context.Context, root string, session convertedTarget, cfg config.Config) (StructureVerification, error) {
@@ -505,8 +533,8 @@ func piRoute() targetRoute {
 				Raw:       session,
 			}, nil
 		},
-		Install: func(session convertedTarget, home string) (string, string, error) {
-			return InstallPiSession(session.Raw.(PiSession), home)
+		Install: func(_ context.Context, session convertedTarget, in targetInstallInput) (string, string, error) {
+			return InstallPiSession(session.Raw.(PiSession), in.Home)
 		},
 		StructureRoot: func(home string) string { return filepath.Join(home, piSessionsSubdir) },
 		ReadBack: func(ctx context.Context, root string, session convertedTarget, cfg config.Config) (StructureVerification, error) {
@@ -668,8 +696,8 @@ func ompRoute() targetRoute {
 				Raw:       session,
 			}, nil
 		},
-		Install: func(session convertedTarget, home string) (string, string, error) {
-			return InstallOMPSession(session.Raw.(PiSession), home)
+		Install: func(_ context.Context, session convertedTarget, in targetInstallInput) (string, string, error) {
+			return InstallOMPSession(session.Raw.(PiSession), in.Home)
 		},
 		StructureRoot: func(home string) string { return filepath.Join(home, ompSessionsSubdir) },
 		ReadBack: func(ctx context.Context, root string, session convertedTarget, cfg config.Config) (StructureVerification, error) {
@@ -782,4 +810,108 @@ func ompFacts(ctx context.Context, in targetFactsInput) targetFacts {
 		facts.ProviderSource = probe.Source
 	}
 	return facts
+}
+
+// openCodeRoute is the route increment 0007 adds: the harness's own session import document, installed
+// by the harness's own importer (there is no file to write -- a session is a row in the harness's
+// database), read back through the inherited AgentsView OpenCode reader by its own `path#id` reference,
+// verified through the harness's own reader (a `session export`, measured to change none of the
+// session's own records) and one real turn through the printed invocation.
+func openCodeRoute() targetRoute {
+	return targetRoute{
+		Name:          TargetOpenCode,
+		Format:        OpenCodeTargetFormat,
+		HomeEnv:       openCodeDataRootEnv,
+		BinaryDefault: OpenCodeBinaryDefault,
+		PinVersion:    OpenCodeFormatVersion,
+		FormatLimits:  openCodeFormatLimits(),
+		ResolveHome:   ResolveOpenCodeHome,
+		Probe:         ProbeOpenCodeBinary,
+		Facts:         openCodeFacts,
+		// A dry run never starts the harness, and this format needs its answer: every assistant record
+		// names an agent and a model reference, and the session's own model binding is what a resumed
+		// turn runs under. A run that installs asks, and records its own answer.
+		DryRunWarnings: func(facts targetFacts, probe harnessProbe) []string {
+			if !probe.Found {
+				return nil
+			}
+			return []string{"this was a dry run, so the target harness was not started and the agent " +
+				"and model its home resolves for a new session of it were not asked: the written " +
+				"document records no session model binding and the built-in default agent's name on its " +
+				"assistant records. An installed run asks the harness and records its own answer"}
+		},
+		Convert: func(conv Conversation, in targetConvertInput) (convertedTarget, error) {
+			session, err := ConvertToOpenCodeSession(conv, OpenCodeTargetOptions{
+				CLIVersion:     in.CLIVersion,
+				Provider:       in.Provider,
+				Model:          in.Model,
+				ModelVariant:   in.ModelVariant,
+				Agent:          in.Agent,
+				ProviderDetail: in.ProviderDetail,
+				Now:            in.Now,
+				MaxToolNames:   in.MaxToolNames,
+			})
+			if err != nil {
+				return convertedTarget{}, err
+			}
+			return convertedTarget{
+				ID:        session.SessionID,
+				FileName:  session.FileName,
+				Directory: session.Directory,
+				Cwd:       session.Cwd,
+				StartedAt: session.StartedAt,
+				Data:      session.Data,
+				Carried:   session.Carried,
+				Losses:    session.Losses,
+				Raw:       session,
+			}, nil
+		},
+		Install: func(ctx context.Context, session convertedTarget, in targetInstallInput) (string, string, error) {
+			return InstallOpenCodeSession(ctx, session.Raw.(OpenCodeSession), in)
+		},
+		// The store is what the harness reads sessions from; the inherited reader's own `path#id`
+		// reference inside it is the check's business (VerifyOpenCodeSessionStructure).
+		StructureRoot: func(home string) string { return openCodeDataDir(home) },
+		ReadBack: func(ctx context.Context, root string, session convertedTarget, cfg config.Config) (StructureVerification, error) {
+			return VerifyOpenCodeSessionStructure(ctx, root, session.Raw.(OpenCodeSession), cfg)
+		},
+		Load: func(ctx context.Context, in targetVerificationInput) LoadVerification {
+			return VerifyOpenCodeLoad(ctx, in)
+		},
+		Resume: func(ctx context.Context, in targetVerificationInput) ResumeVerification {
+			// The turn is the invocation's own words, run through the same environment and working
+			// directory the printed line names, so the check exercises what the report prints.
+			return VerifyOpenCodeResume(ctx, in)
+		},
+		Invocation: func(session convertedTarget, in targetInvocationInput) targetInvocation {
+			// This invocation changes into the session's recorded working directory, so its words are
+			// the program this run probed and verified (invocationBinary): a bare name re-searched by a
+			// shell from there can find a different program. The data root is named for the same reason
+			// the other routes name their home: a caller's leftover setting would otherwise send the
+			// pasted line to another store than the one the check read.
+			binary := invocationBinary(in.Binary, in.Probe)
+			arguments := append([]string{binary}, openCodeResumeArguments(session.ID, "")...)
+			execArguments := append([]string{binary},
+				openCodeResumeArguments(session.ID, resumePromptPlaceholder)...)
+			return targetInvocation{
+				Arguments:     arguments,
+				ExecArguments: execArguments,
+				Environment:   openCodeResumeEnvironment(in.Home),
+				WorkingDir:    session.Cwd,
+			}
+		},
+		Fields: func(session convertedTarget, facts targetFacts) targetFacts {
+			// The document records the target home's own model and provider on the session and the
+			// endpoint label on every assistant record, so the report states them as that: the provider
+			// a new session of this harness runs under (the value asked of it) and that answer's model.
+			target := session.Raw.(OpenCodeSession)
+			facts.CLIVersion = target.CLIVersion
+			return facts
+		},
+		StructureMethod:       structureMethodOpenCode,
+		StructureMethodDryRun: structureMethodOpenCodeDryRun,
+		LoadMethod:            loadMethodOpenCode,
+		ResumeMethod:          resumeMethodOpenCode,
+		StructureReader:       structureReaderOpenCode,
+	}
 }
