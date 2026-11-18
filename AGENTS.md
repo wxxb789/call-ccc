@@ -70,20 +70,23 @@ with their exit codes and counts).
   each listed reader's construction site in the carried reader is named there, a reader that also projects
   a dialogue is answered by its projection instead, and a reader that records `Content` as the source
   wrote it — Vibe's independent `content` and `reasoning_content` — carries a marker block only as the
-  model's own words, which nothing may drop), where the record's own trace still holds the block's words,
-  and where the block stands as the reader's own whole part of `Content` — the readers join the parts they
-  render with feeds of their own, so a marker pair standing inside a part of the record's own text is the
-  model's own words too. A part of the trace is rendered once, and the words a removal accounts for are
-  spent as it is made: a block holding words an earlier removal has accounted for is the record's own text
-  as well. What stands: the words are the record's own wherever the reader put them — a reader that keeps
-  the record's part order (ZCode's) renders the trace after the text it followed as readily as before it —
-  so a trace the read answered nothing for, a block no trace of that record holds, a marker pair standing
-  inside a part the record wrote, and a block the trace's renderings have already accounted for keep their
-  `Content` byte for byte, while a record whose `Content` is nothing but a rendering of its own trace has
-  no dialogue at all (the readers' own rule for that shape). The trace travels to the target beside that
-  dialogue as the record's reasoning, or is counted where the target has no shape for it; a writer that
-  fell back to the raw `Content` would carry the trace twice — once as reasoning and once as words the
-  source never recorded the agent as saying.
+  model's own words, which nothing may drop), and where the record's own bytes and its own trace leave the
+  block no choice: the readers write each part of the trace as one block in the record's own part order,
+  so a removal is established by a *reading* of the record — an assignment of some of `Content`'s marker
+  blocks to the trace's parts, in order, whose words open the trace, close it, and account for everything
+  between them — and a block is taken only where every reading the bytes admit takes it. The feeds around
+  a marker pair are not a part boundary: a part of the record's own text may carry feeds of its own around
+  a pair whose words the trace holds, as a substring of it as readily as the whole (round 12), so where
+  the readings disagree about a block the block keeps its place as the model's own words. What stands: the
+  words are the record's own wherever the reader put them — a reader that keeps the record's part order
+  (ZCode's) renders the trace after the text it followed as readily as before it — so a trace the read
+  answered nothing for, a block no trace of that record accounts for, a marker pair inside a part the
+  record wrote, and a block the record's own bytes leave ambiguous keep their `Content` byte for byte,
+  while a record whose `Content` is nothing but a rendering of its own trace has no dialogue at all (the
+  readers' own rule for that shape, which asks the block's words to *be* the trace, whole). The trace
+  travels to the target beside that dialogue as the record's reasoning, or is counted where the target has
+  no shape for it; a writer that fell back to the raw `Content` would carry the trace twice — once as
+  reasoning and once as words the source never recorded the agent as saying.
 - **OpenCode is a target whose store only the harness writes.** A session is a row in
   `<XDG data home>/opencode/opencode.db`, not a file, so `--to opencode` installs **through the harness's
   own importer** (`opencode session import … --directory <the session's recorded directory> --standalone`)
@@ -96,7 +99,13 @@ with their exit codes and counts).
   other member as recorded, and an assistant message's `model` member, which must be present although
   its values need not be: a record neither the source read nor the harness answered a model for is
   written with the member's id empty — measured: an empty id is imported, stored and exported as
-  written — rather than a name this build cannot support. The load level asks the harness's own
+  written — rather than a name this build cannot support. A tool part's `time.completed` is the instant of
+  the record the carried result was recorded on, which the read answers per result
+  (`ToolResult.Timestamp`: a result event's own envelope instant, which may be later than the record that
+  carried its call) and only where the read holds none is the containing record's instant written — the
+  report counts that substitution (`result_completion_fallbacks`) rather than presenting it as recorded,
+  because the call's own instant stated twice turns a recorded span into one the source never recorded.
+  The load level asks the harness's own
   `session export`, never `run`: `run` *creates* a session for an id the store does not hold. The
   directory a session is resolved from is the one its own document records, and the model
   binding it runs under is the target home's own, asked of the harness (`debug agents`). Every OpenCode

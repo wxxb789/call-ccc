@@ -620,6 +620,7 @@ func messageFromArchive(archived db.Message, rendersThinkingTrace bool) Message 
 				ToolUseID:      event.ToolUseID,
 				Status:         event.Status,
 				Source:         event.Source,
+				Timestamp:      parseArchiveTimestamp(event.Timestamp),
 				ContentRaw:     event.Content,
 				ContentSize:    event.ContentLength,
 				ContentDecoded: true,

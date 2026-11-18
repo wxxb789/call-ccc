@@ -332,6 +332,11 @@ type openCodeCall struct {
 	// inferredResultID says the result was paired through a generated call id (a result that recorded
 	// none), which is what the generated_call_ids caveat counts beside the calls themselves.
 	inferredResultID bool
+	// resultCompletionFallback says the read held no instant of the carried result's own record (a
+	// result event the provider recorded without one, an archive summary stored on the call's row), so
+	// the part's `completed` member is the containing record's instant: the result_completion_fallbacks
+	// caveat counts it, only for a part that is written.
+	resultCompletionFallback bool
 	// It counts only what is written: a call whose result turns out to be unrepresentable is counted
 	// under its own category and does not also claim a generated id.
 	generatedID bool
@@ -369,39 +374,40 @@ type openCodeConverter struct {
 	ledger
 
 	// Loss counters, one per category the report names (see losses()).
-	lossCoalesced        int
-	lossInactiveBranch   int
-	lossUnresolvedParent int
-	lossSidechain        int
-	lossSystemRecords    int
-	lossToolRoles        int
-	lossUnclassified     int
-	lossEmptyUser        int
-	lossEmptyAssistant   int
-	lossNonDialogue      int
-	lossWhitespace       int
-	lossReasoning        int
-	lossUnpairedCalls    int
-	lossUnpairedResults  int
-	lossRepeatedResults  int
-	lossNonterminal      int
-	lossEmptyResults     int
-	lossWhitespaceRes    int
-	lossResultBlocks     int
-	lossUnresolved       int
-	lossStatuses         int
-	lossEmptyInputs      int
-	lossGeneratedIDs     int
-	lossSyntheticCalls   int
-	lossPreBoundary      int
-	lossEmptySummaries   int
-	lossMessageModels    int
-	lossModelFromTarget  int
-	lossModelUnnamed     int
-	lossGeneratedAgent   int
-	lossCompactionReason int
-	lossCompletion       int
-	sawBoundary          bool
+	lossCoalesced                 int
+	lossInactiveBranch            int
+	lossUnresolvedParent          int
+	lossSidechain                 int
+	lossSystemRecords             int
+	lossToolRoles                 int
+	lossUnclassified              int
+	lossEmptyUser                 int
+	lossEmptyAssistant            int
+	lossNonDialogue               int
+	lossWhitespace                int
+	lossReasoning                 int
+	lossUnpairedCalls             int
+	lossUnpairedResults           int
+	lossRepeatedResults           int
+	lossNonterminal               int
+	lossEmptyResults              int
+	lossWhitespaceRes             int
+	lossResultBlocks              int
+	lossUnresolved                int
+	lossStatuses                  int
+	lossEmptyInputs               int
+	lossGeneratedIDs              int
+	lossResultCompletionFallbacks int
+	lossSyntheticCalls            int
+	lossPreBoundary               int
+	lossEmptySummaries            int
+	lossMessageModels             int
+	lossModelFromTarget           int
+	lossModelUnnamed              int
+	lossGeneratedAgent            int
+	lossCompactionReason          int
+	lossCompletion                int
+	sawBoundary                   bool
 }
 
 // openCodeClock hands out message timestamps that never go backwards: the harness orders a session's
@@ -605,7 +611,19 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 			}
 			stored := result
 			entry.Result = &stored
+			// The part's own completion instant is the result's own record, where the read holds one: a
+			// provider may record a result event after the record that carried its call (the committed
+			// Codex fixture's call stands at 09:15:05 and its output at 09:15:06), and taking the
+			// containing message's instant for both would state a zero-length span the source never
+			// recorded (round 12's finding). The containing record's instant is written only where the
+			// read holds no instant of the result's own record, and the report counts that fallback
+			// (result_completion_fallbacks) rather than presenting it as the recorded one.
 			entry.ResultAt = message.Timestamp
+			if !result.Timestamp.IsZero() {
+				entry.ResultAt = result.Timestamp
+			} else {
+				entry.resultCompletionFallback = true
+			}
 			entry.inferredResultID = inferred
 			delete(c.ledger.pendingCalls, id)
 		}
@@ -629,8 +647,10 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 			entry.Result = &result
 			// The summary is stored on the call's own row, not on a result record: the call's instant is
 			// the only one the read holds for it, and it keeps the part's own span zero-length rather than
-			// inventing a completion time nobody recorded.
+			// inventing a completion time nobody recorded. That is a completion instant the read cannot
+			// answer for the result's own record, so it is counted like the event-time fallback above.
 			entry.ResultAt = entry.At
+			entry.resultCompletionFallback = true
 		}
 	}
 }
@@ -966,6 +986,9 @@ func (c *openCodeConverter) toolPart(call *openCodeCall, floor int64) (openCodeP
 	}
 	if call.generatedID || call.inferredResultID {
 		c.lossGeneratedIDs++
+	}
+	if call.resultCompletionFallback {
+		c.lossResultCompletionFallbacks++
 	}
 	// The vocabulary holds the calls' own names: a call that recorded none is not a name this report
 	// lists, so an empty one is not noted.
@@ -1429,6 +1452,20 @@ func (c *openCodeConverter) losses() []Loss {
 				"projection sharing the call's id and its input); OpenCode's tool part carries one id " +
 				"and one input, so the call is written once and what has no field is the per-file " +
 				"attribution of a second projection",
+		},
+		{
+			Category:    "result_completion_fallbacks",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       c.lossResultCompletionFallbacks,
+			Detail: "a tool part's `completed` member is the instant of the record the carried result " +
+				"was recorded on, which a source read answers for a result event of its own " +
+				"(`timestamp` on the interchange document's result) and an archive read answers from " +
+				"the stored event's own column. Where the read holds no instant of the result's own " +
+				"record -- a provider-recorded event with no timestamp, or the archive's derived " +
+				"summary, which is stored on the call's own row -- the instant of the record that " +
+				"carried the result is written (for a folded event, the call's own record), so the " +
+				"part states the call's instant twice rather than one this build invented; only parts " +
+				"that were written are counted here",
 		},
 		{
 			Category:    "tool_name_vocabulary",

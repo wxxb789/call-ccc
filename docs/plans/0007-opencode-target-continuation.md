@@ -123,7 +123,7 @@ writer emits `{info, messages}` in that order):
 | — reasoning | the message's persisted reasoning trace | one `{type:"reasoning", text}` block (no `native`: the read answers no provider-native payload) |
 | — tool call with a recorded, non-empty **outcome** | the call and its paired terminal result | one `{type:"tool", id, name, state, time:{created,completed}}` block with `state.status` `"completed"` (`input` = the object written for the call's own input, `content:[{type:"text", text:<the result text>}]`) or `"error"` (`error:{type:"tool.execution", message:<the result text>}`). A result event whose status is progress rather than an outcome (the inherited readers' `running`/`pending`/`streaming`/`started`/`in_progress`: a Codex subagent notification streams in while its call executes) is **not** an outcome: the terminal event the same call recorded is what the part carries (counted as `nonterminal_tool_events`), and a call whose read holds only progress has no outcome here (counted as `unpaired_tool_calls`). A recorded status word with a third meaning — the `cancelled` outcome the Vibe and Amp readers preserve, a provider's own word — is not written either: the two states would each claim an outcome the source did not record, so the call is left out and the result counted (`tool_result_statuses`). The archive's derived summary column is a view of a call's result events, not a second outcome: it is written only for a call whose read recorded no result event at all, so a column restored from a progress event (the shape `messageFromArchive` carries beside that event) is not written as a `completed` state either |
 | a compaction boundary | a record the source marked as a boundary | `{id, type:"compaction", time, status:"completed", reason:"auto", summary}` |
-| timestamps | the recorded timestamps | a message's `time.created` is its own record's instant; a message's `time.completed` is that same instant (a zero-length turn: the read answers one instant per record, `assistant_completion_instant`); a tool part's `time.created` is the call's record instant and its `time.completed` the instant of the record the carried result was recorded on (the call's own, where the result came from the archive's derived summary). Each part's pair is read under the message's own instant as the clock's floor and raises the floor to its own end afterwards: siblings recorded on one message start together, so one call's completion cannot move another's recorded start, and an unordered source still cannot write a part whose end precedes its start |
+| timestamps | the recorded timestamps | a message's `time.created` is its own record's instant; a message's `time.completed` is that same instant (a zero-length turn: the read answers one instant per record, `assistant_completion_instant`); a tool part's `time.created` is the call's record instant and its `time.completed` the instant of the record the carried result was recorded on — the result's *own* record where the read answers it (`ToolResult.Timestamp`: a folded result event's envelope instant, which the committed Codex fixture records one second after its call's record; a result block's containing record, which is where it stands; an archive row's stored event instant), and the containing record's instant (or the call's own row, for the archive's derived summary) only where the read holds no instant of the result's own record, counted as `result_completion_fallbacks` rather than presented as recorded. Each part's pair is read under the message's own instant as the clock's floor and raises the floor to its own end afterwards: siblings recorded on one message start together, so one call's completion cannot move another's recorded start, and an unordered source still cannot write a part whose end precedes its start |
 | the document's message order | the read's own order | the order the conversation document holds (the importer assigns `seq` from it) |
 
 ### 2.3 Mapping rules, category by category
@@ -133,7 +133,7 @@ counted with the same shape (`Loss{Category, Count, Detail}`), and OpenCode-spec
 
 | Category | Rule | Why |
 | --- | --- | --- |
-| `dialogueText`, `whitespace_only_dialogue`, `reasoning_text`, `generated_call_ids`, `coalesced_tool_call_projections`, `empty_tool_inputs`, `unpaired_tool_results`, `empty_tool_results`, `whitespace_only_tool_results`, `unrepresentable_result_blocks`, `unresolved_tool_outputs`, `system_records`, `tool_role_messages`, `unclassified_role_messages`, `empty_assistant_messages`, `empty_user_messages`, `non_dialogue_content`, `sidechain_messages`, `pre_compaction_history`, `empty_compaction_summary`, `unresolved_source_parents` | the family's rules, unchanged in meaning (the source read's own projections, the pairing of results to calls, the empty-evidence counters) | one loss vocabulary for every route |
+| `dialogueText`, `whitespace_only_dialogue`, `reasoning_text`, `generated_call_ids`, `coalesced_tool_call_projections`, `result_completion_fallbacks`, `empty_tool_inputs`, `unpaired_tool_results`, `empty_tool_results`, `whitespace_only_tool_results`, `unrepresentable_result_blocks`, `unresolved_tool_outputs`, `system_records`, `tool_role_messages`, `unclassified_role_messages`, `empty_assistant_messages`, `empty_user_messages`, `non_dialogue_content`, `sidechain_messages`, `pre_compaction_history`, `empty_compaction_summary`, `unresolved_source_parents` | the family's rules, unchanged in meaning (the source read's own projections, the pairing of results to calls, the empty-evidence counters) | one loss vocabulary for every route |
 | `unpaired_tool_calls` | a call the source recorded with no outcome — no result at all, or only progress events: **left out** and counted | the importer accepts only `completed`/`error` tool states (measured); writing `pending` is refused, and inventing an error would fabricate a result |
 | `nonterminal_tool_events` | a result event the read records as progress (`running`/`pending`/`streaming`/`started`/`in_progress`): **not written**; the terminal event the same call recorded is what the part carries, and a call with only progress is counted as `unpaired_tool_calls` — and is not given the archive's summary column in its place, because that column is a view of the events the read recorded | the harness's tool states are `completed` and `error`; writing a progress event's text under `completed` would state an outcome the source had not recorded when it wrote those words (measured source shape: a Codex subagent's `running` notification followed by its completion) |
 | `tool_result_statuses` | a result whose recorded status word names neither a failure nor `completed` — the `cancelled` outcome the Vibe and Amp readers preserve, a provider's own word: the call is **left out** and the result counted (a failure word is written as the `error` state the target has a field for) | the harness's own states are `completed` and `error`, and its own reader resolves only those two as terminal (`internal/parser/opencode.go`); writing the word under `completed` would state a success the source did not record, and under `error` a failure |
@@ -142,7 +142,7 @@ counted with the same shape (`Loss{Category, Count, Detail}`), and OpenCode-spec
 | `target_model_binding` | `info.model` written from the harness's own answer (or omitted, with its detail, when it answered none) | a turn runs under this binding; the source's model there would be a claim about the target's endpoint |
 | `target_agent` | every assistant record's `agent` is the target home's own primary agent id (written `build` when the harness answered none: its built-in default agent) | the field is required and the read answers no agent; naming the source's agent would name an agent the target does not have |
 | `usage_zeroed` | `info.cost`/`info.tokens` zeros | the conversation document holds no usage |
-| `tool_part_times` | the `time` member a tool part requires is the recorded instant, else the entry clock | the member is required; the clock never goes backwards |
+| `tool_part_times` / `result_completion_fallbacks` | the `time` member a tool part requires is the recorded instant, else the entry clock; its `completed` is the result's own record where the read answers one (`ToolResult.Timestamp`), and the containing record's instant only where it answers none — counted as `result_completion_fallbacks`, so a fallback is never presented as recorded | the member is required; the clock never goes backwards, and the call's own instant twice would turn a recorded span into one the source never recorded |
 | `compaction_reason` | the boundary's `reason` is written `auto` | the member is required and must be one of the harness's own values (measured); the source read answers no reason, and the count names the value as the target's vocabulary rather than the source's answer |
 
 **Format limits** (properties of the pair, not of one run): the source's session-level title, its
@@ -473,6 +473,31 @@ truthful state was reported as carrying a replacement input, and an unresolved p
 held no text as carrying its text — so both are committed past every omission guard, together with
 `generated_call_ids`, and a case drives the omitted and written halves of each counter in one conversion.
 
+The twelfth review round replaces the removal's own criterion: the feeds around a marker pair do not
+establish that the bytes between them are a part of the record's own text, because a text part may carry
+feeds of its own around a pair whose words the trace holds — as a substring of the trace as readily as the
+whole of it (the round's own ZCode counterexample: a text part `Before\n[Thinking]\nprivate\n[/Thinking]\nAfter`
+before a thinking part `private reasoning`; the pre-fix scan deleted the literal pair, spent `private`
+from the trace, and left the real rendering as dialogue). **A block is taken only where every *reading*
+the record's own bytes admit takes it** (`dialogueFromContent`, `renderingDialogue`): a reading assigns
+some of `Content`'s candidate blocks, in order, to the trace's own parts — its first taken block's words
+open the trace, its last close it, and the bytes between two taken blocks are the separator the reader
+joined its parts with, which the readings do not assume (the readers join with a blank line, a single
+feed, or nothing at all, and a guess at the wrong separator could only be a reading left uncounted, whose
+blocks are all kept) — and the dialogue is a reading's only where *every* reading that accounts for the
+whole trace leaves the same bytes. `renderingPart` becomes the blocks' *candidacy* (a pair standing
+inside a run of the record's text, or abutting a kept block, cannot be a rendering at all); round 11's
+spending rule survives as the readings' consequence (two identical renderings each answer the same bytes;
+the shared table's arm for it is renamed to say so and its expectation is unchanged), and the readers'
+whole-content rule now asks the block's words to *be* the trace, whole, rather than a substring of it.
+**A tool part's `completed` is the result's own record's instant where the read answers one**
+(`ToolResult.Timestamp`: a folded result event's envelope instant from `ParsedToolResultEvent.Timestamp`,
+a result block's containing record from that message's own instant, an archive event's stored instant),
+so the committed Codex fixture's one-second call survives; the containing record's instant is written
+only where the read answers none of the result's own (an event without a timestamp, the archive's derived
+summary on the call's row), and a new `result_completion_fallbacks` caveat counts it — only for parts
+that were written — so the substitution is never presented as recorded.
+
 ## 7. Gate, docs, bookkeeping
 
 - Gate: **no new step and no new required step.** New tests live in `internal/ccc` and `cmd/ccc`, which
@@ -481,11 +506,14 @@ held no text as carrying its text — so both are committed past every omission 
 - `AGENTS.md`: the route list (writer/installer/verifier file names), the native check's name, and the
   OpenCode-specific rules (the importer as the only install path, the data directory's own rule and the
   `XDG_DATA_HOME` spelling, the fresh identity the harness adopts, the content-neutral export the load
-  level uses, the required document members); its dialogue bullet now states the provenance the
+  level uses, the required document members, and the tool part's `completed` as the result's own record's
+  instant with its fallback caveat); its dialogue bullet now states the provenance the
   rendering removal requires (`Message.ContentRendersThinking`, established by `dialogue_provenance.go`'s
-  `thinkingRenderingReaders`) beside the rule that a block's words must be the record's own trace, the
-  shape the renderer's own part join gives a rendering (`renderingPart`), and the spent words each removal
-  accounts for (a part of the trace is rendered once).
+  `thinkingRenderingReaders`) beside the readings rule that establishes a removal (a block is taken only
+  where every reading of the record's own bytes against its own trace takes it, the feeds around a pair
+  being no part boundary), what the readers' own rule keeps (`renderingPart` as candidacy; the
+  whole-content rule asking the block's words to be the trace, whole), and what stands where the readings
+  disagree (the block keeps its place as the model's own words).
 - `docs/conventions.md`: the layout block gains the three files; the install rule gains OpenCode's
   data-directory rule and the importer; the fixture note records why 0007 adds no fixture directory.
 - `docs/harness.md`: the new script's entry and why it is not a step.

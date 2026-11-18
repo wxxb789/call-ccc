@@ -9,10 +9,14 @@ import "go.kenn.io/agentsview/internal/parser"
 //
 // Every entry is the carried reader itself -- internal/parser is the source-side authority, and the
 // construction site is named -- and each of them writes the block from the same text it records as the
-// record's trace, with no dialogue projection of its own, and builds the block as a whole part of the
-// record's Content on its own part join (the shape renderingPart establishes: the block opens at the
-// Content's first byte or just after one feed and closes at its end or just before one), so a marker
-// pair the record's own text carries inside a part is never removed:
+// record's trace, with no dialogue projection of its own, and builds the block where a rendered part
+// could stand (the shape renderingPart establishes: the block opens at the Content's first byte or just
+// after one feed and closes at its end or just before one). That shape is the block's *candidacy*, not a
+// removal: the feeds around a pair do not establish that the bytes between them are a part of their own,
+// because a part of the record's own text may carry feeds of its own around a marker pair. Which
+// candidates a record's Content gives up is decided by the readings of the record's own bytes against the
+// record's own trace (dialogueFromContent), so a pair whose placement and words the readings do not
+// establish is never removed:
 //
 //   - Cline (internal/parser/cline.go:601,617-620), RooCode (roocode.go:488) and legacy Kilo
 //     (kilo_legacy.go:914) render a reasoning record as a block, and a record carrying text beside it

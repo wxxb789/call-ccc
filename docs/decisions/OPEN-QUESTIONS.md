@@ -2464,7 +2464,16 @@ supersede it with a newer one and say which it supersedes.
   reader's construction site in the carried tree. A reader that records `Content` as the source wrote it —
   Vibe's independent `content` and `reasoning_content` among them — keeps its `Content` byte for byte *even
   where its words are the record's trace*, the coincidence the round's finding measured: a reader the table
-  does not name is treated as a non-renderer, and the table is maintained with the carried readers.)
+  does not name is treated as a non-renderer, and the table is maintained with the carried readers. Round
+  12 replaced the words test's own criterion with the readings: a block is removed only where *every*
+  reading of the record's own bytes against its own trace takes it — an assignment of some of `Content`'s
+  marker blocks, in order, to the trace's parts, whose words open the trace, close it and account for
+  everything between them — because the feeds around a marker pair establish no part boundary (a part of
+  the record's own text may carry feeds of its own around a pair whose words the trace holds, as a
+  substring of it as readily as the whole); where the readings disagree about the dialogue, every block
+  they disagree about stays in the dialogue as text the record carries, and the whole-content shape — a
+  record whose `Content` is nothing but a rendering — is the one reading the readers' own rule states: the
+  block's words must *be* the trace, whole.)
 - **Reversal:** make the writer refuse such a record (or drop its `Content` and count it under a loss
   category), which is stricter about provenance and loses the record's own text with it.
 - **Settled by:** a reader that renders a trace into `Content` in a shape where the block's own words are

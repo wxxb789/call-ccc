@@ -81,11 +81,22 @@ type ToolCall struct {
 // provider's own raw content field for a tool-result block, or the content text of a result event the
 // provider attached to its call; Source says which kind it is, and both reads map it the same way.
 type ToolResult struct {
-	ToolUseID   string `json:"tool_use_id,omitempty"`
-	Status      string `json:"status,omitempty"`
-	Source      string `json:"source,omitempty"`
-	ContentRaw  string `json:"content_raw,omitempty"`
-	ContentSize int    `json:"content_size,omitempty"`
+	ToolUseID string `json:"tool_use_id,omitempty"`
+	Status    string `json:"status,omitempty"`
+	Source    string `json:"source,omitempty"`
+	// Timestamp is the instant of the record the result itself was recorded on, where the read holds
+	// one: a result event the provider attached to its call carries the event's own timestamp
+	// (parser.ParsedToolResultEvent.Timestamp), which may be later than the call's own record, and a
+	// result block recorded inside a message carries that message's own instant (messageFromParsed). It
+	// is distinct from the call's instant: a writer that states a call's span needs both, and taking the
+	// call's record for the completion turns a recorded span into one the source never recorded (round
+	// 12's finding). Zero means the read holds no instant of the result's own record -- an event the
+	// provider recorded without one, an archive row whose stored event carries none -- and a writer then
+	// falls back to the containing record's instant and says so rather than presenting the fallback as
+	// the recorded one.
+	Timestamp   time.Time `json:"timestamp,omitempty"`
+	ContentRaw  string    `json:"content_raw,omitempty"`
+	ContentSize int       `json:"content_size,omitempty"`
 	// ContentDecoded says which representation ContentRaw holds. False (the zero value) means the
 	// provider's own content field as it recorded it -- JSON, a string or an array of blocks -- which a
 	// writer decodes once through the inherited reader. True means text a read has already decoded (a
@@ -119,8 +130,9 @@ type Message struct {
 	DialogueProjected bool `json:"dialogue_projected,omitempty"`
 	// ContentRendersThinking says whether the reader that produced Content builds the record's persisted
 	// reasoning trace into it as a `[Thinking]…[/Thinking]` block (readerRendersThinkingTrace), so a
-	// block whose words the trace holds is that reader's rendering of the trace rather than dialogue
-	// (dialogueFromContent). False means the reader records Content as the source wrote it -- Vibe's
+	// block that stands where a rendered part could and whose words the record's own trace accounts for
+	// is that reader's rendering of the trace rather than dialogue (dialogueFromContent's readings).
+	// False means the reader records Content as the source wrote it -- Vibe's
 	// reader copies the record's content and reasoning_content independently -- and a marker block
 	// standing there is text the record itself carries, whatever the trace holds.
 	ContentRendersThinking bool         `json:"content_renders_thinking,omitempty"`

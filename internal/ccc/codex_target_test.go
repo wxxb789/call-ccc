@@ -1208,20 +1208,27 @@ func TestCodexRolloutKeepsAReasoningOnlyRecordOutOfTheDialogue(t *testing.T) {
 // writer reads its text through (dialogueText → dialogueFromContent), on the shape the readers produce
 // for a record that carries its own persisted trace *beside* its text: the reader renders the trace into
 // Content as `[Thinking]…[/Thinking]` and the trace travels to the target as the message's reasoning, so
-// the rendering is not dialogue. Four conditions have to hold, and each of them alone keeps the block as
-// the record's own text. The reader renders the record's trace into Content
-// (Message.ContentRendersThinking, from the reader's own identity): a reader that records Content as the
-// source wrote it writes no block at all, so a matching block standing in its record was written by the
-// model and is never removed (internal/parser's Vibe reader copies content and reasoning_content
-// independently). The message's own trace stands behind the block's words: what the removal takes is
-// only a block the record's trace holds, wherever it stands -- a reader that keeps the record's part
-// order (ZCode's) renders the trace after the text it followed, and a target must not drop text nothing
-// shows to be reasoning. The block stands as a whole part of Content on the renderer's own feeds
-// (renderingPart): the readers build each rendering as one part and join the parts with single feeds, so
-// a marker pair standing inside a part was written by the model, and its words occurring in the trace
-// does not make it a rendering. And the words a removal accounts for are spent as it is made: the reader
-// renders each part of the trace at most once, so a second block holding them is text the record carries
-// (the round-11 findings; each arm's own name says which condition it drives).
+// the rendering is not dialogue. The rule reads the record's own bytes against the record's own trace:
+// the rendering readers write each part of the trace as one block, in the record's own part order, so a
+// removal is established by a *reading* of the record -- an assignment of some of Content's marker blocks
+// to the trace's parts, in Content's own order, whose words open the trace, close it, and account for
+// everything between them -- and a block is taken only where every reading the record's bytes admit takes
+// it. Each arm's own name says which condition it drives. The reader renders the record's trace into
+// Content (Message.ContentRendersThinking, from the reader's own identity): a reader that records Content
+// as the source wrote it writes no block at all, so a matching block standing in its record was written
+// by the model and is never removed (internal/parser's Vibe reader copies content and reasoning_content
+// independently). The block's words are the trace's own parts, whole and in order: what the removal takes
+// is only a block whose words account for the trace, wherever the block stands -- a reader that keeps the
+// record's part order (ZCode's) renders the trace after the text it followed, and a target must not drop
+// text nothing shows to be reasoning. A pair that does not stand where a reader's part could
+// (renderingPart: the content's first byte or just after one feed, with its closer at the content's end
+// or before a feed) is never a candidate, so a pair standing inside a part with no feeds of its own
+// around it -- round 11's shape rule -- or one abutting a kept block's closer is kept whole. And where
+// the record's bytes admit more than one reading, and the readings disagree about the dialogue, every
+// block they disagree about keeps its place as text the record carries (round 12's finding: the feeds
+// around a pair are not a part boundary, because a part of the record's own text may carry feeds of its
+// own around a pair whose words the trace holds too -- as a substring of the trace as readily as the
+// whole of it).
 // Of the line feeds around a removed rendering, only the one feed the reader's
 // own join put on each side goes with it: a feed a neighbouring text part records is that part's own
 // bytes (ZCode joins its parts with `strings.Join(parts, "\n")`), so a recorded blank line -- a
@@ -1237,6 +1244,10 @@ func TestDialogueFromContentKeepsOnlyTheRecordsOwnText(t *testing.T) {
 	)
 	rendering := func(text string) string {
 		return thinkingRenderOpen + "\n" + text + "\n" + thinkingRenderClose
+	}
+	// blocks writes count copies of one block joined as the readers join parts: one feed between them.
+	blocks := func(block string, count int) string {
+		return strings.TrimSuffix(strings.Repeat(block+"\n", count), "\n")
 	}
 	cases := []struct {
 		name    string
@@ -1316,17 +1327,48 @@ func TestDialogueFromContentKeepsOnlyTheRecordsOwnText(t *testing.T) {
 		{"a carried marker block between two removed renderings keeps its own bytes",
 			// The trace holds its words twice because the shape this arm is about -- two renderings
 			// around a carried block -- is what a reader with two such thinking parts produces, and the
-			// words each removal accounts for are spent as it is made (round 11): one rendering's worth
-			// of words is a single removal's to spend.
+			// reading that accounts for the trace's two parts takes exactly the two renderings: the
+			// carried pair stands inside a run ("A…B"), where no reader's part could, so it is no
+			// candidate and its bytes are kept.
 			Message{Role: "assistant", Thinking: trace + "\n\n" + trace, ContentRendersThinking: true,
 				Content: rendering(trace) + "\n" + "A" + rendering("literal") + "B" + "\n" + rendering(trace)},
 			"A" + rendering("literal") + "B"},
-		// The rendering is the reader's own whole part: the readers build the block as one part of the
-		// record and join the parts with single feeds, so a marker pair standing inside a part was
-		// written by the model -- even where its words are the record's trace, which is what a text part
-		// can quote. And the words each removal accounts for are spent: the reader renders each part of
-		// the trace once, so a second block holding them is not another rendering of that part.
-		{"a marker pair standing inside a text part is kept where the trace holds its words too",
+		// Round 12's finding, at this seam: a part of the record's own text may carry feeds of its own
+		// around a marker pair, and its words may be a *substring* of the record's trace. The feeds around
+		// the pair do not establish that the bytes between them are a part of their own, so the pair is
+		// kept; the pair whose words account for the whole trace is the one the reading takes.
+		{"a feed-delimited literal pair whose words are a substring of the trace is kept",
+			Message{Role: "assistant", Thinking: "private reasoning", ContentRendersThinking: true,
+				Content: "Before\n" + rendering("private") + "\nAfter\n" + rendering("private reasoning")},
+			"Before\n" + rendering("private") + "\nAfter"},
+		{"a text part quoting the whole trace beside its rendering leaves the bytes whole",
+			// Both pairs could be the rendering, and the record's own bytes do not say which — the text
+			// part quoted the trace exactly. The readings disagree about the dialogue, so nothing is
+			// removed: a pair kept as text is a duplication a reader can see, while a pair deleted as
+			// though it were the rendering is text the record carried.
+			Message{Role: "assistant", Thinking: "private reasoning", ContentRendersThinking: true,
+				Content: "Before\n" + rendering("private reasoning") + "\nAfter\n" + rendering("private reasoning")},
+			"Before\n" + rendering("private reasoning") + "\nAfter\n" + rendering("private reasoning")},
+		{"a lone block whose words are a substring of the trace accounts for none of it",
+			Message{Role: "assistant", Thinking: "private reasoning", ContentRendersThinking: true,
+				Content: "Before\n" + rendering("private") + "\nAfter"},
+			"Before\n" + rendering("private") + "\nAfter"},
+		{"a lone block that accounts for one part of a two-part trace is kept too",
+			Message{Role: "assistant", Thinking: "part one\n\npart two", ContentRendersThinking: true,
+				Content: "Before\n" + rendering("part one") + "\nAfter"},
+			"Before\n" + rendering("part one") + "\nAfter"},
+		{"a whole-content block holding a substring of the trace is the record's own text",
+			// The reasoning-only shortcut asks the same question the readings ask -- are the block's words
+			// the record's whole trace? -- so a block holding a substring of it is text here too.
+			Message{Role: "assistant", Thinking: "private reasoning", ContentRendersThinking: true,
+				Content: rendering("private")},
+			rendering("private")},
+		{"the rendering is the reader's own whole part: a pair inside a text part is kept where the trace holds its words too",
+			// The readers build the block as one part of the record and join the parts with feeds, so a
+			// marker pair standing inside a part was written by the model -- even where its words are the
+			// record's trace, which is what a text part can quote. The pair inside the run ("Before…After")
+			// stands where no reader's part could, so it is no candidate and nothing can take its bytes;
+			// the pair that stands where a part could is the reading's.
 			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
 				Content: rendering(trace) + "\n" + "Before" + rendering(trace) + "After"},
 			"Before" + rendering(trace) + "After"},
@@ -1351,10 +1393,29 @@ func TestDialogueFromContentKeepsOnlyTheRecordsOwnText(t *testing.T) {
 			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
 				Content: rendering(trace) + "After"},
 			rendering(trace) + "After"},
-		{"a block holding words the removals have already accounted for is the record's own text",
+		{"two identical blocks: every reading leaves the same bytes",
+			// The record's bytes admit two readings -- the first pair taken, or the second -- and both
+			// leave the same bytes, so the dialogue is theirs (round 11's spending rule's own outcome,
+			// read from the record's side: one rendering's worth of words is one reading's to take).
 			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
 				Content: rendering(trace) + "\n" + rendering(trace)},
 			rendering(trace)},
+		// The bounds the readings are given up at, each with its own arm: a record whose text spells more
+		// blocks than one record the readers produce holds, and one whose bytes admit more readings than
+		// the enumeration is allowed to walk, are both kept whole (a conversion cannot spend an unbounded
+		// amount on a single record's text, and a record shaped this way is not one the readers produce).
+		{"a record spelling more blocks than the readings will read is kept whole",
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				Content: rendering(trace) + "\n" +
+					strings.Repeat(rendering("literal")+"\n", thinkingRenderingCandidateLimit)},
+			rendering(trace) + "\n" +
+				strings.Repeat(rendering("literal")+"\n", thinkingRenderingCandidateLimit)},
+		{"a record whose bytes admit more readings than the enumeration walks is kept whole",
+			// Each identical block could be the rendering on its own, so the readings number one per
+			// block -- past the bound, which is where the record is kept whole rather than read.
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				Content: blocks(rendering(trace), thinkingRenderingCoveringLimit+1)},
+			blocks(rendering(trace), thinkingRenderingCoveringLimit+1)},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -1432,17 +1493,16 @@ func TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader(t *testi
 	}
 }
 
-// TestDialogueKeepsALiteralMarkerBlockWhoseWordsTheTraceHolds pins the scan's own bound through the
+// TestDialogueKeepsALiteralMarkerBlockWhoseWordsTheTraceHolds pins the candidacy rule through the
 // inherited reader that produces the shape: internal/parser's ZCode reader keeps every text part of a
 // record verbatim and renders each thinking part as a part of its own, the parts joined with single
 // line feeds (internal/parser/zcode.go:577), so a text part can itself hold the markers around words
-// the record's trace also holds -- the model wrote them. The rendering is the reader's own part, whole
-// and on the join's own feeds (renderingPart); the text part's marker pair stands inside the part the
-// model wrote, and a rule that removed every block whose words occur in the trace deleted its bytes,
-// leaving `Before\nAfter` -- a difference no target writer can notice, because the items it builds are
-// built after the deletion (round 11's finding). This case reads the source through NewSourceReader,
-// asserts the reader's own content shape and that the record's own text survives the shared rule, and
-// converts the read so the words the file holds are the ones the source recorded.
+// the record's trace also holds -- the model wrote them. The pair inside the text part stands where no
+// reader's own part could -- abutting the text that follows it, with no feed of its own around it
+// (renderingPart's bound: round 11's finding) -- so it is no candidate, and the pair that stands where a
+// part could is the reading's. This case reads the source through NewSourceReader, asserts the reader's
+// own content shape and that the record's own text survives the shared rule, and converts the read so
+// the words the file holds are the ones the source recorded.
 func TestDialogueKeepsALiteralMarkerBlockWhoseWordsTheTraceHolds(t *testing.T) {
 	const trace = "Inspect the parser before answering."
 	rendered := thinkingRenderOpen + "\n" + trace + "\n" + thinkingRenderClose
@@ -1487,6 +1547,65 @@ func TestDialogueKeepsALiteralMarkerBlockWhoseWordsTheTraceHolds(t *testing.T) {
 	if len(assistantTexts) != 1 || assistantTexts[0] != literal {
 		t.Errorf("the rollout's assistant text = %q, want the record's own text %q: the marker block the "+
 			"source recorded was deleted as though it were a rendering of the trace", assistantTexts, literal)
+	}
+}
+
+// TestDialogueKeepsANewlineDelimitedLiteralPairWhoseWordsTheTraceHolds pins round 12's finding through
+// the inherited reader that produces the shape: a ZCode text part may carry feeds of its own *inside the
+// part* around a marker pair whose words are a substring of the record's trace, and the record's own
+// rendering may follow it. The feeds around such a pair do not establish that the bytes between them are
+// a part of their own -- a text part is the bytes the model wrote, feeds included -- so the pair is kept,
+// and the removal is the reading's: the pair whose words account for the whole trace is the one taken.
+// Pre-fix, the scan took the literal pair first (its words `private` occur in the trace `private
+// reasoning`), spent those words, and left the actual rendering standing as dialogue: the text part's
+// bytes were deleted and the render's bytes were kept as the record's own words (the finding's own
+// counterexample, traced statically there). This case reads the source through NewSourceReader, asserts
+// the reader's own content shape and that the text part's bytes survive the shared rule, and converts the
+// read so the words the file holds are the ones the source recorded.
+func TestDialogueKeepsANewlineDelimitedLiteralPairWhoseWordsTheTraceHolds(t *testing.T) {
+	const trace = "private reasoning"
+	rendered := thinkingRenderOpen + "\n" + trace + "\n" + thinkingRenderClose
+	literal := "Before\n" + thinkingRenderOpen + "\nprivate\n" + thinkingRenderClose + "\nAfter"
+	conversation := zCodeMixedConversation(t,
+		`{"type":"text","text":`+jsonString(t, literal)+`}`,
+		`{"type":"thinking","thinking":`+jsonString(t, trace)+`}`)
+	sawRecord := false
+	for _, message := range conversation.Messages {
+		if message.Thinking != trace {
+			continue
+		}
+		sawRecord = true
+		if !message.ContentRendersThinking {
+			t.Error("the read did not establish the reader's rendering provenance for the record, so " +
+				"nothing here drives the rule this case is about")
+		}
+		if want := literal + "\n" + rendered; message.Content != want {
+			t.Fatalf("the ZCode record's content = %q, want the text part verbatim followed by the "+
+				"reader's own rendering (%q)", message.Content, want)
+		}
+		if got := dialogueText(message); got != literal {
+			t.Errorf("dialogueText over the ZCode record = %q, want the text part's own bytes %q: the "+
+				"literal pair's words are a substring of the trace, but the pair that accounts for the "+
+				"whole of it is the rendering", got, literal)
+		}
+	}
+	if !sawRecord {
+		t.Fatalf("the read holds no record carrying %q, so nothing here pins the shape this case is "+
+			"about", trace)
+	}
+	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	var assistantTexts []string
+	for _, item := range rollout.Items {
+		if item.Kind == ItemAssistant {
+			assistantTexts = append(assistantTexts, item.Text)
+		}
+	}
+	if len(assistantTexts) != 1 || assistantTexts[0] != literal {
+		t.Errorf("the rollout's assistant text = %q, want the text part's own bytes %q: the literal pair "+
+			"the source recorded was deleted as though it were a rendering of the trace", assistantTexts, literal)
 	}
 }
 

@@ -823,6 +823,7 @@ func messageFromParsed(parsed parser.ParsedMessage, rendersThinkingTrace bool) M
 				ToolUseID:      event.ToolUseID,
 				Status:         event.Status,
 				Source:         event.Source,
+				Timestamp:      event.Timestamp,
 				ContentRaw:     event.Content,
 				ContentSize:    len(event.Content),
 				ContentDecoded: true,
@@ -837,6 +838,10 @@ func messageFromParsed(parsed parser.ParsedMessage, rendersThinkingTrace bool) M
 			ContentRaw:                result.ContentRaw,
 			ContentSize:               result.ContentLength,
 			PersistedOutputUnresolved: result.PersistedOutputUnresolved,
+			// A result block recorded inside this message was recorded on it: the reader answers one
+			// instant per record, so the message's own timestamp is the instant of the record the
+			// result stands on (ParsedToolResult carries none of its own).
+			Timestamp: parsed.Timestamp,
 		})
 	}
 	return message

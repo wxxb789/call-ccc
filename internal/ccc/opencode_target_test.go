@@ -844,6 +844,176 @@ func TestOpenCodeToolPartsCarryOnlyWhatTheImporterAccepts(t *testing.T) {
 	}
 }
 
+// TestOpenCodeToolPartsCarryTheResultsOwnRecordInstant pins the pair of instants a tool part states
+// through the shape the committed Codex fixture records: its shell call stands on the 09:15:05 record and
+// its output on the 09:15:06 one, folded into the call's message by the inherited reader. The part's
+// `created` is the call's record and its `completed` the result's own record, so the one-second span the
+// source recorded survives into the store instead of being collapsed to the call's instant -- a carry
+// that starts where the read answers it: the interchange document's result event carries the instant of
+// the record the event was recorded on (ToolResult.Timestamp, from ParsedToolResultEvent.Timestamp, the
+// output line's own envelope timestamp), not the containing message's (round 12's finding).
+//
+// The fallback half pins the other direction: where the read holds no instant of the result's own record
+// -- a hand-built record here, a provider event without a timestamp or an archive-derived summary in a
+// real read -- the containing record's instant is the only one there is, and the report counts it
+// (result_completion_fallbacks) rather than presenting the fallback as the recorded instant.
+func TestOpenCodeToolPartsCarryTheResultsOwnRecordInstant(t *testing.T) {
+	conversation := readFixtureConversation(t, codexFixtureRef)
+	callAt := time.Date(2026, 5, 4, 9, 15, 5, 0, time.UTC)
+	resultAt := time.Date(2026, 5, 4, 9, 15, 6, 0, time.UTC)
+	sawResult := false
+	for _, message := range conversation.Messages {
+		for _, result := range message.ToolResults {
+			if strings.TrimSpace(result.ToolUseID) == "" {
+				continue
+			}
+			sawResult = true
+			if !result.Timestamp.Equal(resultAt) {
+				t.Errorf("the read's own result %s carries instant %s, want the output record's own %s: "+
+					"the event's timestamp is the record it was recorded on, not the message that carried "+
+					"its call", result.ToolUseID, result.Timestamp, resultAt)
+			}
+		}
+	}
+	if !sawResult {
+		t.Fatal("the fixture's read holds no tool result, so nothing here drives the rule")
+	}
+	session, err := ConvertToOpenCodeSession(conversation, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting the fixture: %v", err)
+	}
+	// Each arm reads the document its own conversion wrote, through a parser of its own: unmarshalling
+	// into a reused document would leave a message's members that this arm's JSON does not carry
+	// standing from the arm before it.
+	toolPartTimes := func(t *testing.T, data []byte) []*openCodeTimeSpan {
+		t.Helper()
+		var parsed openCodeDocument
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("the document does not parse: %v", err)
+		}
+		var times []*openCodeTimeSpan
+		for _, message := range parsed.Messages {
+			for _, part := range message.Content {
+				if part.Type == openCodePartTool {
+					times = append(times, part.Time)
+				}
+			}
+		}
+		return times
+	}
+	times := toolPartTimes(t, session.Data)
+	if len(times) != 1 || times[0] == nil || times[0].Created != callAt.UnixMilli() ||
+		times[0].Completed != resultAt.UnixMilli() {
+		t.Errorf("the fixture's tool part times = %+v, want created %d (the call's record) and "+
+			"completed %d (the result's own record)", times, callAt.UnixMilli(), resultAt.UnixMilli())
+	}
+	openCodeRequireLoss(t, session, "result_completion_fallbacks", 0)
+
+	// The fallback arm: a result whose own record holds no instant. The part is written (the importer
+	// needs the member), its `completed` is the record that carried the result -- here the same instant
+	// the call's record states -- and the report names the substitution instead of leaving a caller to
+	// read the zero-length span as recorded.
+	at := time.UnixMilli(1_700_000_000_000).UTC()
+	blank := openCodeTestConversation(
+		Message{Role: "assistant", Content: "[Read: x]", Timestamp: at,
+			ToolCalls: []ToolCall{openCodeTestCall("call-blank", "Read", `{"file_path":"/x"}`)}},
+		Message{Role: "user", Timestamp: at.Add(3 * time.Second), ToolResults: []ToolResult{
+			openCodeTestResult("call-blank", "completed", `"x"`),
+		}},
+	)
+	session, err = ConvertToOpenCodeSession(blank, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting the fallback arm: %v", err)
+	}
+	times = toolPartTimes(t, session.Data)
+	if len(times) != 1 || times[0] == nil || times[0].Created != at.UnixMilli() ||
+		times[0].Completed != at.Add(3*time.Second).UnixMilli() {
+		t.Errorf("the fallback part times = %+v, want created %d and completed %d: the containing "+
+			"record's instant is the only one the read holds", times, at.UnixMilli(),
+			at.Add(3*time.Second).UnixMilli())
+	}
+	openCodeRequireLoss(t, session, "result_completion_fallbacks", 1)
+	if detail := openCodeLossDetail(t, session, "result_completion_fallbacks"); !strings.Contains(detail, "no timestamp") {
+		t.Errorf("result_completion_fallbacks detail = %q, want the missing instant named", detail)
+	}
+
+	// The archive's derived summary takes the same fallback: it is stored on the call's own row, so no
+	// record of the result's own carries an instant and the part states that row's -- counted too.
+	summary := openCodeTestConversation(
+		Message{Role: "assistant", Content: "[Read: x]", Timestamp: at, ToolCalls: []ToolCall{
+			{ToolUseID: "call-summary", Name: "Read", InputJSON: `{"file_path":"/x"}`,
+				ResultContent: "the outcome the archive kept", ResultContentSize: 29},
+		}},
+	)
+	session, err = ConvertToOpenCodeSession(summary, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting the summary arm: %v", err)
+	}
+	times = toolPartTimes(t, session.Data)
+	if len(times) != 1 || times[0] == nil || times[0].Created != at.UnixMilli() ||
+		times[0].Completed != at.UnixMilli() {
+		t.Errorf("the derived summary part times = %+v, want the call's own instant %d twice: the "+
+			"summary is stored on the call's row and has no record of its own", times, at.UnixMilli())
+	}
+	openCodeRequireLoss(t, session, "result_completion_fallbacks", 1)
+
+	// The archive half: the same session read back from a store the inherited sync engine wrote. The
+	// stored event keeps the record's own instant (tool_result_events.timestamp), the archive read maps
+	// it onto the same interchange field, and the part's `completed` is that instant -- not the call's
+	// record, which is where the message the event hangs off was recorded (round 12's finding's "archive
+	// events encounter the same problem").
+	cfg := fixtureConfig(t)
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(cfg, archivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	sourcePath := fixturePath(t, filepath.Join("codex", "2026", "05", "04",
+		"rollout-2026-05-04T09-15-00-"+codexFixtureRef.ID+".jsonl"))
+	if err := ingestor.IngestPaths(context.Background(), sourcePath); err != nil {
+		t.Fatalf("ingesting the fixture: %v", err)
+	}
+	archive, err := OpenArchive(context.Background(), archivePath)
+	if err != nil {
+		t.Fatalf("opening the archive: %v", err)
+	}
+	defer func() { _ = archive.Close() }()
+	archived, err := archive.Read(context.Background(), codexFixtureRef)
+	if err != nil {
+		t.Fatalf("reading the archived session: %v", err)
+	}
+	if archived.Fidelity.ReadFrom != "archive" {
+		t.Fatalf("the read came from %q, want the archive", archived.Fidelity.ReadFrom)
+	}
+	sawResult = false
+	for _, message := range archived.Messages {
+		for _, result := range message.ToolResults {
+			if strings.TrimSpace(result.ToolUseID) == "" {
+				continue
+			}
+			sawResult = true
+			if !result.Timestamp.Equal(resultAt) {
+				t.Errorf("the archive read's result %s carries instant %s, want the stored event's own %s",
+					result.ToolUseID, result.Timestamp, resultAt)
+			}
+		}
+	}
+	if !sawResult {
+		t.Fatal("the archived read holds no tool result, so nothing here pins the archive path")
+	}
+	session, err = ConvertToOpenCodeSession(archived, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting the archived read: %v", err)
+	}
+	times = toolPartTimes(t, session.Data)
+	if len(times) != 1 || times[0] == nil || times[0].Created != callAt.UnixMilli() ||
+		times[0].Completed != resultAt.UnixMilli() {
+		t.Errorf("the archived tool part times = %+v, want created %d and completed %d from the "+
+			"stored records' own instants", times, callAt.UnixMilli(), resultAt.UnixMilli())
+	}
+	openCodeRequireLoss(t, session, "result_completion_fallbacks", 0)
+}
+
 // TestOpenCodeCaveatCountsFollowThePartThatWasWritten pins what the two caveat categories' own details
 // state -- `empty_tool_inputs` that an empty object "was written" in the part's input member, and
 // `unresolved_tool_outputs` that "only results that were written are counted here" -- by counting each
