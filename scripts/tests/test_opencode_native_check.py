@@ -598,6 +598,28 @@ class DataRootRule(unittest.TestCase):
                 store = root / NATIVE_CHECK.OPENCODE_DATA_DIR / NATIVE_CHECK.OPENCODE_STORE
                 self.assertEqual(store, named_directory / NATIVE_CHECK.OPENCODE_STORE)
 
+    def test_the_conversion_is_given_the_callers_own_spelling(self) -> None:
+        """The route applies the same rule once to the ``--target-home`` it is handed, so the conversion
+        must be handed the caller's own spelling: this check's already-normalized root, when it itself
+        names a data directory, would be normalized a second time by the route and resolve to another
+        store than the one this check plants, converts and reads."""
+        for flavour in PATH_FLAVOURS:
+            with self.subTest(flavour=flavour.__name__):
+                named = (flavour("/data") / NATIVE_CHECK.OPENCODE_DATA_DIR
+                         / NATIVE_CHECK.OPENCODE_DATA_DIR)
+                home = NATIVE_CHECK.conversion_target_home(named, flavour("/scratch"))
+                self.assertEqual(home, named, "the conversion was handed a normalized spelling")
+                self.assertEqual(NATIVE_CHECK.opencode_data_root_of(home),
+                                 flavour("/data") / NATIVE_CHECK.OPENCODE_DATA_DIR,
+                                 "the two sides resolved different roots")
+                self.assertEqual(NATIVE_CHECK.opencode_data_root_of(home) / NATIVE_CHECK.OPENCODE_DATA_DIR
+                                 / NATIVE_CHECK.OPENCODE_STORE,
+                                 named / NATIVE_CHECK.OPENCODE_STORE,
+                                 "the two sides resolved different stores")
+                self.assertEqual(NATIVE_CHECK.conversion_target_home(None, flavour("/scratch")),
+                                 flavour("/scratch"),
+                                 "a run with no named home did not hand the conversion its own root")
+
 
 class ModelBinding(unittest.TestCase):
     """The offline half accepts a home that resolves no model -- the report's own ``model_provider_detail``
@@ -870,10 +892,14 @@ class CommandDeadlines(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as scratch:
             scratch_path = Path(scratch)
-            # The named root is resolved the way the check resolves it, and its own name is not
-            # `opencode`, so the data directory below it is `opencode/` and the report's own environment
-            # can name exactly the root and store the check computes.
-            data_root = (scratch_path / "data").resolve()
+            # The caller's spelling names a data directory itself (`…/opencode/opencode`): the check's own
+            # root is its parent, the store it plants, exports and deletes below is the store inside that
+            # named directory, and the conversion must be handed the caller's own spelling -- not the
+            # normalized root -- or the route would normalize a second time and install into
+            # `<root>/opencode.db`, a different store than the one this check reads.
+            target_argument = (scratch_path / NATIVE_CHECK.OPENCODE_DATA_DIR
+                               / NATIVE_CHECK.OPENCODE_DATA_DIR).resolve()
+            data_root = NATIVE_CHECK.opencode_data_root_of(target_argument)
             store = data_root / NATIVE_CHECK.OPENCODE_DATA_DIR / NATIVE_CHECK.OPENCODE_STORE
             report = {
                 "conversion": {"state": "converted", "carried": {"messages": 7, "tool_calls": 1,
@@ -897,7 +923,10 @@ class CommandDeadlines(unittest.TestCase):
                 },
             }
 
+            commands: list[list[str]] = []
+
             def fake_run(command, cwd=None, env=None, timeout=None, replace_env=False):
+                commands.append(list(command))
                 if "--version" in command:
                     return completed(stdout="opencode v2.2.5")
                 if "build" in command:
@@ -919,7 +948,8 @@ class CommandDeadlines(unittest.TestCase):
                 with recorded() as results:
                     stdout = io.StringIO()
                     with contextlib.redirect_stdout(stdout):
-                        code = NATIVE_CHECK.main(["--opencode", "opencode", "--target-home", str(data_root),
+                        code = NATIVE_CHECK.main(["--opencode", "opencode",
+                                                  "--target-home", str(target_argument),
                                                   "--resume-prompt", "a turn"])
                     states = {name: state for name, state, _ in results}
         printed = stdout.getvalue()
@@ -931,6 +961,12 @@ class CommandDeadlines(unittest.TestCase):
         self.assertIn(["session", "delete", NATIVE_CHECK.UNRELATED_SESSION], verbs,
                       "a timeout left the planted session in the home")
         self.assertEqual(states["the planted session is removed through the harness's own session delete"],
+                         "PASS")
+        conversion = next(command for command in commands if "continue" in command)
+        self.assertEqual(conversion[conversion.index("--target-home") + 1], str(target_argument),
+                         "the conversion was handed a normalized spelling: the route would normalize "
+                         "again and install into another store than the one this check reads")
+        self.assertEqual(states["the report names the store the harness reads as the installed path"],
                          "PASS")
 
 

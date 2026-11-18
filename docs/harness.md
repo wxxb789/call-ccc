@@ -463,8 +463,11 @@ says so.
   its own and answered as a failed exit status, so a hung harness cannot skip the planted session's
   removal or the run's final `RESULT` line. A named
   `--target-home` whose own name is `opencode` is read through the harness's own rule first (it is the
-  data directory itself, and its parent becomes the root), so the conversion and the check are pointed at
-  one store. The script builds `ccc` into `bin/ccc-native-check-opencode` (`.gitignore` covers `bin/`),
+  data directory itself, and its parent becomes the root), and the conversion is handed the caller's own
+  spelling so each side applies that rule once — so the conversion and the check are pointed at one store
+  for every spelling, where handing the conversion this check's normalized root would have the route
+  normalize a second time and split the two. The script builds `ccc` into
+  `bin/ccc-native-check-opencode` (`.gitignore` covers `bin/`),
   takes `--opencode`/`--source`/`--target-home`/`--resume-prompt`/`--expect`/`--keep`/`--json`, and prints
   each check's own state.
 - `scripts/native_check_common.py` — the mechanism the native checks share, so none keeps its own

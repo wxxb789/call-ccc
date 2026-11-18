@@ -484,18 +484,22 @@ func TestOpenCodeToolPartsCarryOnlyWhatTheImporterAccepts(t *testing.T) {
 	}
 }
 
-// TestOpenCodeFlatTargetOmitsABranchAndCountsIt pins the flat target's source-side rule: a record the
-// read's own relations place off the line its conversation reached is omitted (a message list has no
-// parent relation to hang it on, and writing it would revive an abandoned branch as active history), and
-// the walk's own count of the places it could not answer exactly is reported.
+// TestOpenCodeFlatTargetOmitsABranchAndCountsIt pins the flat target's source-side rule: the line is
+// the one the read's *last* record selects (here rec-3, which named rec-1), so that record's own text
+// stays and the sibling branch the conversation left (rec-2, hanging off the same rec-1) is omitted --
+// a message list has no parent relation to hang the branch on, and writing it would revive an abandoned
+// branch as active history -- and the walk's own count of the places it could not answer exactly is
+// reported. Both members the writer puts dialogue in are inspected: a user message's `text` and an
+// assistant message's content parts. Reading only `message.Text` never saw an assistant branch at all,
+// which is how a reversed expectation could sit here unnoticed.
 func TestOpenCodeFlatTargetOmitsABranchAndCountsIt(t *testing.T) {
 	at := time.UnixMilli(1_700_000_000_000).UTC()
 	conversation := openCodeTestConversation(
 		Message{Role: "user", Dialogue: "first", DialogueProjected: true, Content: "first",
 			SourceUUID: "rec-1", Timestamp: at},
-		Message{Role: "assistant", Dialogue: "on the line", DialogueProjected: true, Content: "on the line",
+		Message{Role: "assistant", Dialogue: "off the line", DialogueProjected: true, Content: "off the line",
 			SourceUUID: "rec-2", SourceParentUUID: "rec-1", Timestamp: at.Add(time.Second)},
-		Message{Role: "assistant", Dialogue: "left behind", DialogueProjected: true, Content: "left behind",
+		Message{Role: "assistant", Dialogue: "on the line", DialogueProjected: true, Content: "on the line",
 			SourceUUID: "rec-3", SourceParentUUID: "rec-1", Timestamp: at.Add(2 * time.Second)},
 	)
 	session, err := ConvertToOpenCodeSession(conversation, openCodeTargetTestOptions())
@@ -506,10 +510,23 @@ func TestOpenCodeFlatTargetOmitsABranchAndCountsIt(t *testing.T) {
 	if err := json.Unmarshal(session.Data, &document); err != nil {
 		t.Fatalf("the document does not parse: %v", err)
 	}
+	var spoken []string
 	for _, message := range document.Messages {
-		if strings.Contains(message.Text, "left behind") {
-			t.Error("a branch the conversation left was written as an active message")
+		if message.Text != "" {
+			spoken = append(spoken, message.Text)
 		}
+		if dialogue := openCodePartsDialogue(message.Content); dialogue != "" {
+			spoken = append(spoken, dialogue)
+		}
+	}
+	dialogue := strings.Join(spoken, "\n")
+	if !strings.Contains(dialogue, "on the line") {
+		t.Errorf("dialogue = %q, want the last record's own \"on the line\": that record selects the line "+
+			"the conversation reached", spoken)
+	}
+	if strings.Contains(dialogue, "off the line") {
+		t.Errorf("dialogue = %q, want the sibling branch omitted: its text was written as an active "+
+			"message", spoken)
 	}
 	openCodeRequireLoss(t, session, "inactive_branch_records", 1)
 	// The branch record's own parent is one the read answered (it named the first record), so this walk
@@ -668,6 +685,125 @@ func TestOpenCodeArchiveSummaryIsAViewOfRecordedEvents(t *testing.T) {
 	}
 	openCodeRequireLoss(t, session, "nonterminal_tool_events", 0)
 	openCodeRequireLoss(t, session, "unpaired_tool_calls", 0)
+}
+
+// TestOpenCodeOmitsAStatusWordWithNoTruthfulState pins the outcome vocabulary's third arm: the harness's
+// own states are `completed` and `error`, and a result whose recorded status word means neither -- the
+// `cancelled` outcome the inherited Vibe reader preserves verbatim (internal/parser/vibe_unified.go,
+// whose own case pins its `"Stop requested"` text) -- must not be presented as either. The call is left
+// out and the result counted rather than written under `completed`, which would state a success the
+// source did not record, or under `error`, which would state a failure; and the archive's summary of the
+// same event cannot restore it, because the pairing consumes the recorded event and the fallback never
+// fires for a call that has one.
+func TestOpenCodeOmitsAStatusWordWithNoTruthfulState(t *testing.T) {
+	at := time.UnixMilli(1_700_000_000_000).UTC()
+	cancelled := "Stop requested"
+	conversation := openCodeTestConversation(
+		Message{Role: "assistant", Dialogue: "running the suite", DialogueProjected: true,
+			Content: "running the suite", Timestamp: at,
+			ToolCalls: []ToolCall{
+				openCodeTestCall("call-ok", "Read", `{"file_path":"/x"}`),
+				openCodeTestCall("call-cancelled", "Bash", `{"command":"sleep 60"}`),
+			}},
+		Message{Role: "user", Timestamp: at.Add(time.Second), ToolResults: []ToolResult{
+			openCodeTestResult("call-ok", "completed", `"done"`),
+			openCodeTestResult("call-cancelled", "cancelled", cancelled),
+		}},
+	)
+	session, err := ConvertToOpenCodeSession(conversation, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if strings.Contains(string(session.Data), cancelled) {
+		t.Error("a cancelled result's text was written into the document: neither tool state names that " +
+			"outcome, and the words must not travel under one of them")
+	}
+	var document openCodeDocument
+	if err := json.Unmarshal(session.Data, &document); err != nil {
+		t.Fatalf("the document does not parse: %v", err)
+	}
+	parts := map[string]openCodePart{}
+	for _, message := range document.Messages {
+		for _, part := range message.Content {
+			if part.Type == openCodePartTool {
+				parts[part.ID] = part
+			}
+		}
+	}
+	if part, ok := parts["call-cancelled"]; ok {
+		t.Errorf("call-cancelled part = %+v, want no part: its recorded status word has no truthful state",
+			part)
+	}
+	if ok := parts["call-ok"]; ok.State == nil || ok.State.Status != openCodeToolCompleted ||
+		len(ok.State.Content) != 1 || ok.State.Content[0].Text != "done" {
+		t.Errorf("call-ok part = %+v, want the completed part beside it unaffected", ok)
+	}
+	openCodeRequireLoss(t, session, "tool_result_statuses", 1)
+	openCodeRequireLoss(t, session, "unpaired_tool_calls", 0)
+	openCodeRequireLoss(t, session, "empty_tool_results", 0)
+	if session.Carried.ToolCalls != 1 || session.Carried.ToolResults != 1 {
+		t.Errorf("carried = %+v, want only the call whose part was written", session.Carried)
+	}
+
+	// The archive shape of the same event: the summary column holds the cancelled event's own text (the
+	// inherited write path restores it from that event), and it must not put the outcome back.
+	archive := openCodeTestConversation(
+		Message{Role: "assistant", Dialogue: "running the suite", DialogueProjected: true,
+			Content: "running the suite", Timestamp: at,
+			ToolCalls: []ToolCall{{
+				ToolUseID: "call-cancelled", Name: "Bash", InputJSON: `{"command":"sleep 60"}`,
+				ResultContent: cancelled, ResultContentSize: len(cancelled),
+			}},
+			ToolResults: []ToolResult{{
+				ToolUseID: "call-cancelled", Status: "cancelled", ContentRaw: cancelled,
+				ContentSize: len(cancelled), ContentDecoded: true,
+			}}},
+	)
+	session, err = ConvertToOpenCodeSession(archive, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting the archive shape: %v", err)
+	}
+	if strings.Contains(string(session.Data), cancelled) {
+		t.Error("the archive's summary restored a cancelled event as the call's outcome")
+	}
+	openCodeRequireLoss(t, session, "tool_result_statuses", 1)
+	openCodeRequireLoss(t, session, "unpaired_tool_calls", 0)
+	openCodeRequireNoToolPart(t, session)
+}
+
+// TestOpenCodePreservesTheRecordedWorkingDirectory pins the directory's own bytes: the read answers the
+// source's recorded path, and a path that ends (or begins) with a space is a different directory from its
+// trimmed form -- the document's `location.directory`, the importer's `--directory` argument and the
+// printed resume command all take the recorded path as it was recorded. Only an empty value is refused,
+// and only against its trimmed form, because a directory that holds nothing but whitespace names no
+// path the importer could record.
+func TestOpenCodePreservesTheRecordedWorkingDirectory(t *testing.T) {
+	at := time.UnixMilli(1_700_000_000_000).UTC()
+	conversation := openCodeTestConversation(
+		Message{Role: "user", Dialogue: "hello", DialogueProjected: true, Content: "hello", Timestamp: at},
+	)
+	conversation.Source.Cwd = "/tmp/ccc opencode target "
+	session, err := ConvertToOpenCodeSession(conversation, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if session.Cwd != conversation.Source.Cwd {
+		t.Errorf("session cwd = %q, want the recorded path %q verbatim", session.Cwd, conversation.Source.Cwd)
+	}
+	var document openCodeDocument
+	if err := json.Unmarshal(session.Data, &document); err != nil {
+		t.Fatalf("the document does not parse: %v", err)
+	}
+	if document.Info.Location.Directory != conversation.Source.Cwd {
+		t.Errorf("info.location.directory = %q, want the recorded path %q verbatim",
+			document.Info.Location.Directory, conversation.Source.Cwd)
+	}
+	conversation.Source.Cwd = " \t "
+	if _, err := ConvertToOpenCodeSession(conversation, openCodeTargetTestOptions()); err == nil {
+		t.Fatal("a conversation whose working directory holds nothing but whitespace was converted")
+	} else if !strings.Contains(err.Error(), ErrNoTargetCwd.Error()) {
+		t.Errorf("error = %v, want the refusal to name ErrNoTargetCwd", err)
+	}
 }
 
 // TestOpenCodeParallelToolSpansKeepTheirOwnInstants pins every call's recorded pair: calls recorded on one

@@ -186,12 +186,24 @@ def opencode_data_root_of(target: Path) -> Path:
     ``internal/ccc/opencode_install.go``'s ``openCodeDataRoot``: a directory whose own name is the data
     directory's name (``opencode``) *is* the data directory, so the root that ``$XDG_DATA_HOME`` must name
     for ``$XDG_DATA_HOME/opencode`` to be that directory is its parent. Any other directory is the root
-    itself. The conversion and this check are then pointed at the same store either way: without the rule,
-    ``--target-home scratch/opencode`` would plant and export sessions from
+    itself. Without the rule, ``--target-home scratch/opencode`` would plant and export sessions from
     ``scratch/opencode/opencode/opencode.db`` while the conversion installed into
     ``scratch/opencode/opencode.db``, and a successful conversion would be checked against the wrong
     database."""
     return target.parent if target.name == OPENCODE_DATA_DIR else target
+
+
+def conversion_target_home(target_home: Path | None, data_root: Path) -> Path:
+    """The directory the conversion's ``--target-home`` names: the caller's own argument (already resolved
+    by the caller, which is the spelling the route's own ``openCodeDataRoot`` then normalizes exactly
+    once), or this run's scratch root when the caller named none. This check's already-normalized root is
+    never passed on: it applies its own rule (``opencode_data_root_of``) to the same argument, and a root
+    that itself names a data directory would be normalized a second time by the route, which would install
+    into another store than the one this check reads (measured shape:
+    ``--target-home scratch/opencode/opencode`` resolves to ``scratch/opencode`` on both sides, where
+    handing the conversion the normalized ``scratch/opencode`` installed into ``scratch/opencode/opencode.db``
+    while this check read ``scratch/opencode/opencode/opencode.db``)."""
+    return target_home if target_home is not None else data_root
 
 
 def opencode_arguments(verb: list[str]) -> list[str]:
@@ -501,9 +513,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="the harness's data root (default: a scratch one). A directory whose own name "
                              "is `opencode` is the data directory itself -- the rule the route itself "
                              "applies, whose parent then becomes the root -- so the conversion and this "
-                             "check read the same store. A caller's own root is used exactly as it is "
-                             "found: nothing is installed into it but the converted session, and the "
-                             "planted session this run adds is removed again")
+                             "check read the same store: the conversion is handed this argument's own "
+                             "spelling and each side applies the rule once. A caller's own root is used "
+                             "exactly as it is found: nothing is installed into it but the converted "
+                             "session, and the planted session this run adds is removed again")
     parser.add_argument("--resume-prompt",
                         help="run one real turn in the installed session with this prompt")
     parser.add_argument("--expect", help="require the resume turn's answer to contain this text")
@@ -541,11 +554,15 @@ def main(argv: list[str] | None = None) -> int:
 
     named_home = args.target_home is not None
     # A named directory is read through the harness's own rule first (opencode_data_root_of): a directory
-    # whose own name is `opencode` is the data directory itself, and the root that both this check's
-    # environment and the conversion's --target-home must name for the harness to read that directory is
-    # its parent. Without the normalization the check's store and the conversion's would be two files.
+    # whose own name is `opencode` is the data directory itself, and the root this check's own environment
+    # must name for the harness to read that directory is its parent.
     data_root = (opencode_data_root_of(args.target_home.resolve())
                  if args.target_home else scratch / "opencode-data")
+    # The conversion is handed the caller's own spelling, never this check's normalized root: each side
+    # applies the harness's rule exactly once to the same argument, so both resolve one store (without
+    # it, a caller spelling that names a data directory split the two: the check read
+    # scratch/opencode/opencode/opencode.db while the conversion installed into scratch/opencode/opencode.db).
+    conversion_home = conversion_target_home(args.target_home.resolve() if named_home else None, data_root)
     data_dir = data_root / OPENCODE_DATA_DIR
     store = data_dir / OPENCODE_STORE
     data_root.mkdir(parents=True, exist_ok=True)
@@ -604,7 +621,7 @@ def main(argv: list[str] | None = None) -> int:
     # (the shape the round's reading measured: the conversion grew the session 7 -> 10 and the check's own
     # turn grew it 10 -> 13). The load level bills nothing and writes no records.
     command = [str(repo / BINARY), "continue", f"{SOURCE_PROVIDER}:{source_session}", "--to",
-               TARGET_PROVIDER, "--target-home", str(data_root), "--target-binary", opencode,
+               TARGET_PROVIDER, "--target-home", str(conversion_home), "--target-binary", opencode,
                "--verify", "load", "--json"]
     convert = deadline_run(command, cwd=repo, env={SOURCE_ROOT_ENV[SOURCE_PROVIDER]: str(source_root)})
     try:

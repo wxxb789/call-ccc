@@ -285,8 +285,12 @@ type OpenCodeTargetOptions struct {
 // without one could not be installed where the harness would read it. A document that records none is
 // refused here (ErrNoTargetCwd), before anything is written.
 func ConvertToOpenCodeSession(conv Conversation, opts OpenCodeTargetOptions) (OpenCodeSession, error) {
-	cwd := strings.TrimSpace(conv.Source.Cwd)
-	if cwd == "" {
+	// The recorded directory is kept exactly as the read answered it: a path may legitimately hold
+	// leading or trailing spaces, and trimming one would hand the document, the importer's `--directory`
+	// and the printed resume command a directory the source did not record. Only emptiness is checked,
+	// and against the trimmed value, because a directory that holds nothing but whitespace is no path.
+	cwd := conv.Source.Cwd
+	if strings.TrimSpace(cwd) == "" {
 		return OpenCodeSession{}, fmt.Errorf("%w: the OpenCode importer records the session's working "+
 			"directory and refuses a session whose directory is unknown", ErrNoTargetCwd)
 	}
@@ -641,8 +645,10 @@ func (c *openCodeConverter) callNamedByResult(result ToolResult) string {
 // record streamed chunks as `running` and flip the last one to the aggregate's own final status, and
 // Copilot's and OpenCode's own call events spell the same state `started`/`pending`/`streaming`
 // (internal/parser/copilot.go, internal/parser/opencode_v2.go). Anything else -- `completed`, `errored`,
-// a provider's own word, or no status at all -- is a recorded outcome, which the writer's own status rule
-// then reads (tool_result_statuses).
+// a provider's own word, or no status at all -- is a recorded outcome, and the writer's own status rule
+// (toolPart) then decides whether the target has a truthful state for it: a failure word is written as
+// `error`, an absent word or `completed` as `completed`, and any other word is left out and counted
+// (tool_result_statuses) rather than given an outcome of this build's making.
 func openCodeResultStatesAnOutcome(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case "running", "pending", "streaming", "started", "in_progress":
@@ -892,7 +898,10 @@ func (c *openCodeConverter) writeCompaction(message Message) error {
 // where the source recorded none, or recorded one this target cannot write, counted), a non-empty result
 // text for `completed`, and a type and message for `error`; the importer accepts no other state
 // (measured: `pending` and `running` are refused), and a call whose result holds no text at all is left
-// out and counted rather than written with an invented outcome.
+// out and counted rather than written with an invented outcome. A result whose recorded status word
+// names neither a failure nor `completed` is the same kind of answer: the vocabulary has no truthful
+// state for it, so the call is left out and the result counted (tool_result_statuses) rather than
+// written under `completed` or `error`.
 func (c *openCodeConverter) toolPart(call *openCodeCall, floor int64) (openCodePart, bool, error) {
 	if call.Result == nil {
 		// The source recorded the call and no result: the target has no state for a call that has not
@@ -917,18 +926,29 @@ func (c *openCodeConverter) toolPart(call *openCodeCall, floor int64) (openCodeP
 	if !ok {
 		c.lossEmptyInputs++
 	}
-	state := &openCodeToolState{Status: openCodeToolCompleted, Input: input}
+	var state *openCodeToolState
 	switch status := strings.ToLower(strings.TrimSpace(call.Result.Status)); status {
 	case "errored", "error", "failed", "failure":
-		state.Status = openCodeToolError
-		state.Error = &openCodeToolFail{Type: openCodeToolErrorType, Message: text}
-	default:
-		if status != "" && status != openCodeToolCompleted {
-			// The harness's own state vocabulary has the two words above and no other; any other status
-			// word has no field here, and the result travels as the recorded text under `completed`.
-			c.lossStatuses++
+		state = &openCodeToolState{
+			Status: openCodeToolError,
+			Input:  input,
+			Error:  &openCodeToolFail{Type: openCodeToolErrorType, Message: text},
 		}
-		state.Content = []openCodeBlock{{Type: openCodePartText, Text: text}}
+	case "", openCodeToolCompleted:
+		state = &openCodeToolState{
+			Status:  openCodeToolCompleted,
+			Input:   input,
+			Content: []openCodeBlock{{Type: openCodePartText, Text: text}},
+		}
+	default:
+		// A recorded status word with a third meaning -- the `cancelled` outcome the inherited Vibe and
+		// Amp readers preserve, a provider's own word -- has no state the target can state truthfully:
+		// its vocabulary is `completed` and `error`, and its own reader treats any other word as a call
+		// that has not finished (internal/parser/opencode.go's terminal rule reads only those two), so a
+		// part written under either word would claim an outcome the source did not record. The call is
+		// left out and the result counted rather than presented as a completion or a failure.
+		c.lossStatuses++
+		return openCodePart{}, false, nil
 	}
 	if call.generatedID || call.inferredResultID {
 		c.lossGeneratedIDs++
@@ -1317,12 +1337,15 @@ func (c *openCodeConverter) losses() []Loss {
 		},
 		{
 			Category:    "tool_result_statuses",
-			Disposition: DispositionCarriedWithCaveat,
+			Disposition: DispositionOmitted,
 			Count:       c.lossStatuses,
 			Detail: "the harness's own tool states are `completed` and `error`; a result whose recorded " +
 				"status says the call failed is written as an `error` state whose message is the recorded " +
-				"output text, and any other status word is not written at all -- the output travels as " +
-				"recorded under `completed`. Only results that were written are counted",
+				"output text. A result whose recorded status word is a third meaning -- the `cancelled` " +
+				"outcome the inherited Vibe and Amp readers preserve, a provider's own word -- has no " +
+				"truthful state here: writing it under `completed` would state a success the source did " +
+				"not record, and the word is not a failure either, so no part is written for that call " +
+				"and the result is counted here rather than carried under an outcome it does not name",
 		},
 		{
 			Category:    "empty_tool_inputs",
