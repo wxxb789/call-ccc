@@ -794,6 +794,27 @@ class HarnessExecutable(unittest.TestCase):
         self.assertEqual(seen, [(self.resolved(), None)],
                          "a stage ran the caller's relative spelling")
 
+    def test_a_rooted_word_without_a_drive_is_resolved_by_the_hosts_own_rule(self) -> None:
+        """A word the host does *not* call absolute is resolved rather than passed on.
+
+        Since Python 3.13 ``os.path.isabs`` answers False for a rooted path that carries no drive
+        (``/usr/local/bin/opencode`` hangs off the *current* drive), so a Windows run's word for a harness
+        installed outside a drive is the ``os.path.abspath`` answer -- the word the run then hands the
+        conversion and reads the report's own vector against. This host's ``os.path`` calls that shape
+        absolute, so the two answers a Windows host gives it are put in front of the shipped resolution
+        here, as the gate's own cases put the Windows compiler answer in front of their probe: without the
+        resolution the case fails, which is what the round that added it left unchecked -- an end-to-end
+        case spelled its report with the literal, the run probed the resolved word, and `windows-latest`
+        measured the mismatch (the turn never reached its deadline record; the case raised ``KeyError``).
+        """
+        rooted = "/usr/local/bin/opencode"
+        resolved = "D:\\usr\\local\\bin\\opencode"
+        with mock.patch.object(NATIVE_CHECK.shutil, "which", return_value=rooted), \
+             mock.patch.object(NATIVE_CHECK.os.path, "isabs", return_value=False), \
+             mock.patch.object(NATIVE_CHECK.os.path, "abspath", return_value=resolved):
+            self.assertEqual(NATIVE_CHECK.harness_executable(rooted), resolved,
+                             "a word the host does not call absolute was passed on unresolved")
+
     def test_a_directory_changing_stage_is_handed_an_absolute_word(self) -> None:
         """The stage the defect was reached through: the harness's own reader, asked from the session's
         own working directory, whose command would be looked up in *that* directory rather than the
@@ -940,6 +961,18 @@ class CommandDeadlines(unittest.TestCase):
     the planted session would stay in a caller-named home, and its fixed id would make every later run's
     planting meet it."""
 
+    #: The harness word the end-to-end case hands the run: a path absolute in the *host's own* spelling,
+    #: spelled for the run this case drives rather than for one platform. The check resolves the word it
+    #: drives once (``harness_executable``) and reads the report's own vector against that answer, and a
+    #: word that is rooted but carries no drive (``/usr/local/bin/opencode``) is not absolute on Windows --
+    #: ``os.path.isabs`` answers False for exactly that shape since Python 3.13 -- so the resolution would
+    #: rewrite the literal against the current drive and the report's vector would name another word than
+    #: the run probed. Measured on ``windows-latest``: the turn never reached its deadline record and this
+    #: case's own ``states[…]`` lookup raised the ``KeyError`` (the ``states`` lookups must not be spelled
+    #: with a word the host resolves; the resolution's own rule has
+    #: ``HarnessExecutable.test_a_rooted_word_without_a_drive_is_resolved_by_the_hosts_own_rule``).
+    HARNESS = str(Path(tempfile.gettempdir()) / "bin" / "opencode")
+
     def test_a_timed_out_command_is_recorded_and_answered(self) -> None:
         cmd = ["opencode", "session", "export", SESSION]
         with mock.patch.object(NATIVE_CHECK, "run",
@@ -981,6 +1014,10 @@ class CommandDeadlines(unittest.TestCase):
         """The end-to-end guarantee: a run whose own turn times out still reaches ``remove_planted`` --
         the planted session is deleted through the harness's own verb -- and ends with a ``RESULT`` line
         and its exit code, because the timeout is answered rather than raised."""
+        self.assertTrue(os.path.isabs(self.HARNESS),
+                        "the case's own harness word is not absolute in the host's own spelling, so the "
+                        "run's resolution would rewrite it and the report's vector would name another word "
+                        f"than the run probed: {self.HARNESS!r}")
         session_id = "ses_installed000000000000000"
         verbs: list[list[str]] = []
         planted = {"removed": False}
@@ -1032,8 +1069,9 @@ class CommandDeadlines(unittest.TestCase):
                     "model_provider_source": "the harness's own debug agents answer",
                     "resume_environment": {NATIVE_CHECK.OPENCODE_DATA_ROOT_ENV: str(data_root),
                                            NATIVE_CHECK.OPENCODE_DB_ENV: str(store)},
-                    "resume_arguments": [OPENCODE, "run", "--standalone", "--session", session_id, "--", ""],
-                    "exec_resume_arguments": [OPENCODE, "run", "--standalone", "--session", session_id,
+                    "resume_arguments": [self.HARNESS, "run", "--standalone", "--session", session_id,
+                                         "--", ""],
+                    "exec_resume_arguments": [self.HARNESS, "run", "--standalone", "--session", session_id,
                                               "--", NATIVE_CHECK.PROMPT_PLACEHOLDER],
                 },
             }
@@ -1053,7 +1091,7 @@ class CommandDeadlines(unittest.TestCase):
                 raise AssertionError(f"unexpected command {command}")
 
             def which(name):
-                return "/usr/local/bin/opencode" if name == "opencode" else "/usr/local/bin/go"
+                return self.HARNESS if name == "opencode" else "/usr/local/bin/go"
 
             with mock.patch.object(NATIVE_CHECK.shutil, "which", side_effect=which), \
                  mock.patch.object(NATIVE_CHECK, "BINARY",
@@ -1070,7 +1108,7 @@ class CommandDeadlines(unittest.TestCase):
         printed = stdout.getvalue()
         self.assertIn("RESULT:", printed, f"the run printed no verdict: {printed[-800:]}")
         self.assertEqual(code, 1, printed)
-        self.assertEqual(states[f"{OPENCODE} run answers within its {NATIVE_CHECK.TURN_TIMEOUT}s bound"],
+        self.assertEqual(states[f"{self.HARNESS} run answers within its {NATIVE_CHECK.TURN_TIMEOUT}s bound"],
                          "FAIL")
         self.assertEqual(states["the turn ran through the printed invocation and exited 0"], "FAIL")
         self.assertIn(["session", "delete", NATIVE_CHECK.UNRELATED_SESSION], verbs,

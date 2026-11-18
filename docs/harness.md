@@ -467,9 +467,13 @@ says so.
   spelling so each side applies that rule once — so the conversion and the check are pointed at one store
   for every spelling, where handing the conversion this check's normalized root would have the route
   normalize a second time and split the two. The harness word is **resolved once, before any command
-  runs**: a `--opencode` spelling that names a path is made absolute against the directory this check runs
-  in, because `shutil.which` answers such a spelling unchanged, and the export, its unknown-id control arm,
-  the listing and the turn run *from the session's own directory* — where a relative spelling raised
+  runs**: a `--opencode` spelling that names a path is made absolute by the host's own rule — against the
+  directory this check runs in, and on Windows against the *current drive*, because a rooted word with no
+  drive is not absolute there (`os.path.isabs` answers False for exactly that shape since Python 3.13; the
+  `windows-latest` job measured the mismatch when a report's own vector was spelled with such a literal
+  and this check resolved it). It is resolved because `shutil.which` answers such a spelling unchanged,
+  and the export, its unknown-id control arm, the listing and the turn run *from the session's own
+  directory* — where a relative spelling raised
   `FileNotFoundError` out of the run, before its cleanup and its `RESULT` line, leaving the planted session
   in a caller-named home (measured). The conversion's own CLI resolves the same word against its own
   directory, and a spelling that means different programs in the two is refused by the report's vector

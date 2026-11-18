@@ -1090,6 +1090,68 @@ branch with its row; 0006 was archived in an earlier round and its row says so. 
 entry: both findings apply rules the increment already states (a printed line's assignments set the
 variables a harness reads; the run drives the harness it probed), so no owner-only default was taken.
 
+### The CI repair on the sixth round's head (`2c6513c` + working tree), re-measured
+
+The hosted `gate (windows-latest)` check failed on that head (run 44255296535, job 134635437454, 2m21s) for
+a real reason, inside the `selftest` step: the gate's own lines are `FAIL selftest REQUIRED but was FAIL:
+scripts/tests -> rc=1`, `Ran 339 tests in 16.061s`, `FAILED (failures=2, errors=1)`. The two failures are
+the `HostCase` nested-run cases, whose child broke; the error is the parent's own copy of the child's one
+broken case, whose name the summary the parent quotes ends with
+(`broken: … test_a_timed_out_turn_still_removes_the_planted_session_and_prints_a_verdict`):
+`CommandDeadlines.test_a_timed_out_turn_still_removes_the_planted_session_and_prints_a_verdict`.
+
+The cause is the resolution the sixth round had just added
+(`opencode-native-check.harness_executable`), met with a word only Windows' `os.path` calls non-absolute.
+`ntpath.isabs("/usr/local/bin/opencode")` is **False** since Python 3.13 — a root without a drive hangs off
+the *current* drive — so the check resolved the case's stubbed lookup answer against that drive. The case
+had spelled the report's own vectors with the same literal, so `_read_turn_vector` read them as naming
+another word than the run probed, `_run_turn` returned before its deadline record, and the case's own
+`states[…]` lookup raised the `KeyError` the job reports. Reproduced here with Windows' two answers put in
+front of `os.path` (`isabs` False for that shape, `abspath` prefixing the drive): the pre-repair case raises
+exactly `KeyError: '/usr/local/bin/opencode run answers within its 600s bound'`, and the same two answers
+leave a drive-qualified word unchanged — so the repair is a host-spelled word, not a weakened assertion.
+
+The repair is in `scripts/tests/test_opencode_native_check.py` (`44e9f467…`; the check itself is unchanged,
+`scripts/opencode-native-check.py` `212c9e79…`, because the resolution *is* the shipped rule the round
+added and the report the case authored was the side that disagreed with it). The end-to-end case hands the
+run a word absolute in the *host's* spelling (`str(Path(tempfile.gettempdir()) / "bin" / "opencode")`), uses
+it in the stubbed lookup, in the report's two vectors and in the deadline record's name, and asserts that
+word is `os.path.isabs` before driving — a word the host's own rules would rewrite is refused by the case
+itself instead of surfacing as a `KeyError`. The resolution's rule is pinned on this host by a new case that
+puts the two Windows answers in front of the shipped function:
+
+| Rule | Mutation | Observed |
+| --- | --- | --- |
+| a word the host does not call absolute is resolved, not passed on | `harness_executable`'s `return found if os.path.isabs(found) else os.path.abspath(found)` replaced by `return found`, executed and restored (the file hashes back to `212c9e79…`) | `HarnessExecutable.test_a_rooted_word_without_a_drive_is_resolved_by_the_hosts_own_rule` FAIL — `'/usr/local/bin/opencode' != 'D:\\usr\\local\\bin\\opencode'` — and the class's two older cases FAIL with it (7 tests, `failures=3`) |
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3620 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 340 tests in 8.045s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 31 project-owned prefix(es); files seen by git: 5701 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
+  PASS     secrets  no leaks found in 146 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+(A `…` inside the parity line is this record's own elision, as above.)
+
+`selftest` ran 339 tests before the repair and 340 after: the repair's own case, the repaired case keeping
+its own place. The `secrets` scope's count reads `146` where the blocks above read `155`: that step counts
+this repository's own files *present in the tree*, and this run's tree holds none of the byte-code caches
+one suite run writes under `scripts/tests/__pycache__` (all 146 owned files here are tracked; nothing owned
+is untracked). What else the repair moved: `docs/harness.md` (the check's entry now states the host's own
+rule for the resolved word, Windows' drive included) and this record. `AGENTS.md` is **not** edited: the
+repair changes no repository layout, gate step, command, read order or rule that file states — it repairs
+conformance to a rule that file already states (a case must hold on every platform and every Python 3 the
+docs name). No goal file is moved: 0007 is still the increment on its branch, awaiting acceptance. No new
+OPEN-QUESTIONS entry: the repair spells a test's own word, so no owner-only default was taken.
+
 ## 5. What travels, source side and target side
 
 | Source evidence | Target side, and the run that recorded it |
