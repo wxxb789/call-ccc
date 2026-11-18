@@ -25,8 +25,8 @@ plan's, each found while making the route verify against the real importer.
 | the import interface | `opencode session import <file> [--directory DIR] --standalone` — prints `Imported session: <id>` on stdout with exit 0, **preserves the document's `info.id`**, requires `--directory` to exist (`LocationNotFoundError` otherwise), prints `Session already exists` on **stderr with exit 0** for an id the store holds, and leaves the store unchanged for a refused import (`Bad Request` / `Internal Server Error`) |
 | the import document | `{info, messages}` — the harness's own `session export` output. Required: `info.id`, `info.projectID` (value **ignored, recomputed**, `""` accepted), `info.cost`, `info.tokens{input,output,reasoning,cache{read,write}}`, `info.time.updated`, `info.location.directory`; assistant `agent`, `model{id,providerID}`, tool `state.input` + state body + its own `time`. Optional: `title`, `subpath`, `outcome`, `info.model`, `time.idle`, `finish`, `executed`, `metadata`, reasoning `native`/`time`, idle messages |
 | **new**: the model reference's values | the member (`model{id,providerID}`) is required on every assistant message, its values need not be — measured on the installed 2.2.5 against documents the conversion itself wrote: `{"id":"","providerID":""}` imports (exit 0), is stored without a silent drop, and `session export` answers the member as written, exactly as it does for a non-empty id (`build`, the agent name, was measured the same way). Which value a writer puts there is a choice the harness leaves open, so this build writes the empty id where neither the source read nor the harness answered a model rather than naming one it cannot support |
-| **new**: the assistant message's own completion instant | an assistant message whose `time` carries `created` alone is accepted by the importer and **silently dropped**: exit 0, no row in `session_message`, no entry in `session export` (all seven members bisected; only `time.completed` changed the outcome). This is what the structural read-back caught on the first real conversion (§1, and the fix is `openCodeTargetFormat`'s `time.completed`, disclosed as `assistant_completion_instant`) |
-| **new**: the tool input's spelling | the harness stores a tool part's `state.input` as a parsed value and re-encodes it: the document's own `{"file_path": "…"}` is held and read back as `{"file_path":"…"}`, so the whitespace and key order of the recorded spelling are not evidence the store keeps. The structural comparison canonicalizes that one member (a value that does not parse is left as recorded and reported) |
+| **new**: the assistant message's own completion instant | an assistant message whose `time` carries `created` alone is accepted by the importer and **silently dropped**: exit 0, no row in `session_message`, no entry in `session export` (all seven members bisected; only `time.completed` changed the outcome). This is what the structural read-back caught on the first real conversion (§1, and the fix is the completion instant `writeAssistantMessage` writes into the message's own `time`, disclosed as `assistant_completion_instant`) |
+| **new**: the tool input's spelling | the harness stores a tool part's `state.input` as a parsed value: a document's own `{"limit": 5, "file_path": "…"}` (the recorded key order, with the source's whitespace) is held and read back as `{"limit":5,"file_path":"…"}`, so the store keeps the JSON value and the recorded key order while the recorded whitespace is not what it keeps. The structural comparison accordingly canonicalizes that one member's JSON on both sides -- the writer's item from the source's spelling, the read-back's call from the store's -- while every other member is compared as recorded (a value that does not parse is left as recorded and reported) |
 | the tool states | `completed` (non-empty `state.content` text) and `error` (`error.type` + `error.message`); `pending` and `running` are refused |
 | a compaction message | needs `summary` + `status` + `reason` (`auto`/`manual` accepted, others refused); an empty summary is accepted |
 | the export interface | `opencode session export <id> --standalone` — the session's own document, or exit 1 with `Session not found: <id>`; **content-neutral** (identical rows, identical session row, identical exported document around it, while the database *file's* bytes move with WAL handling) |
@@ -284,6 +284,52 @@ ok, `selftest` Ran 308 tests (rc=0), `parity` 5553 carried file(s) identical to 
 project-owned prefix(es) / `files seen by git` 5701 (that line counts tracked ∪ untracked, and the earlier
 block's 5702 is its own moment's set, when this increment's output was still untracked), and `secrets` no
 leaks in 155 file(s).
+
+### The code-review round's fixes, re-measured
+
+This round's fixes came from the review of the whole increment (`338df94..f5668f5`). The one that changes
+behaviour this record rests on is the structural comparison's rule for a tool part's `state.input`: only the
+writer's side was canonicalized, so a conversation whose call recorded its keys in an order Go's encoder does
+not write was reported not-installed although the store held the same value — the review's measurement, and
+the scenario below. Both sides are canonicalized now (the recorded key order and the recorded whitespace are
+not evidence the walk asks about). Re-measured against the installed harness with a copy of the committed
+Claude fixture whose recorded working directory is rewritten to a scratch tree (as in §1) and whose tool
+input is recorded with the two keys out of order:
+
+```
+$ CLAUDE_PROJECTS_DIR=/tmp/ocfix/ws/claude /tmp/ocfix/ccc continue claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 \
+    --to opencode --target-home /tmp/ocfix/data --target-binary /home/azureuser/.npm-global/bin/opencode --json
+$ echo $?
+0                       # stderr empty
+  installation:            installed — the harness's own session importer (opencode session import)
+  verification:            structure verified, load verified
+  target_session.file_name: absent
+  the source records:      "input":{"limit": 5, "file_path": "/tmp/ocfix/ws/internal/retry/policy.go"}
+  the store holds:         "input":{"limit":5,"file_path":"/tmp/ocfix/ws/internal/retry/policy.go"}
+                           (opencode session export answers the same bytes)
+```
+
+The Go case this round adds fails when the read-back side is left as the store spells it (the canonicalization
+reverted for one run, then restored): `tool call 1 differs (written … sha256 bfd7b7e2…, read back … sha256
+747b0542…)` — the same pair the review measured. The round's other fixes changed no measurement: the dry-run
+warning names the harness's own agent listing as what a dry run leaves unasked (the importer does run for a
+dry run, against the throw-away copy the structure check reads — the new route case and the recorded
+`calls.Roots` case), the expected refusals of the exclusivity probe and of the load check's control arm no
+longer print their `Session not found` lines (the re-run's stderr is empty, where §2's own log recorded
+`PASS: ccc continue exits 0 — exit 0; stderr Session not found: ses_ZjrlIZ1tSPyXFq2E6RVtPcVT2D`),
+`target_session.file_name` is absent for this route (its artifact is a store row, not a file), and the
+measured spelling is stated the same way in the evidence table, the plan, `docs/conventions.md` and
+`AGENTS.md`.
+
+```
+$ go test -count=1 -tags fts5 ./internal/ccc/ ./cmd/ccc/
+ok  	go.kenn.io/agentsview/internal/ccc
+ok  	go.kenn.io/agentsview/cmd/ccc
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode
+… RESULT: PASS — 27 check(s), none failed     # the offline half, the same step set §2 lists
+$ python3 scripts/gate.py
+GATE: PASS
+```
 
 ## 5. What travels, source side and target side
 

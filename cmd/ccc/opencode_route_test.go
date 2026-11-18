@@ -294,6 +294,7 @@ func TestContinueToOpenCodeThroughTheCLI(t *testing.T) {
 			ModelProvider     string            `json:"model_provider"`
 			Model             string            `json:"model"`
 			SessionID         string            `json:"session_id"`
+			FileName          *string           `json:"file_name"`
 			Path              string            `json:"path"`
 			ResumeCommand     string            `json:"resume_command"`
 			ResumeEnvironment map[string]string `json:"resume_environment"`
@@ -330,6 +331,18 @@ func TestContinueToOpenCodeThroughTheCLI(t *testing.T) {
 	if document.Target != "opencode" || document.TargetSession.Provider != "opencode" {
 		t.Errorf("target = %q / provider = %q, want the OpenCode target", document.Target,
 			document.TargetSession.Provider)
+	}
+	// This route's artifact is a row inside the harness's own store, not a file: the document names the
+	// store's path and the import mechanism, and no file_name a consumer could look for.
+	if document.TargetSession.FileName != nil {
+		t.Errorf("target_session.file_name = %q, want none: this route writes no file a caller could name",
+			*document.TargetSession.FileName)
+	}
+	// The refusals this run asks for on purpose -- the exclusivity probe and the load check's unknown-id
+	// control arm -- are the harness's own answers, and its diagnostics about them are not the caller's to
+	// read: a successful run prints no `Session not found` line.
+	if strings.Contains(stderr, "Session not found") {
+		t.Errorf("stderr = %q, want the expected refusals' own diagnostics kept out of it", stderr)
 	}
 	if document.Conversion.State != "converted" || document.Conversion.ReadFrom != "source" {
 		t.Errorf("conversion = %+v, want a conversion read from the source", document.Conversion)

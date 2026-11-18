@@ -180,11 +180,14 @@ gate runs as a required step.
   around it), while the database *file's* bytes move with its WAL handling, which is why the check claims
   the records and not the file. A session is looked up from the directory its own document records
   (`session list --format json` names it there and not from another directory) and its model binding is
-  the target home's own configured `<provider>/<model>`, asked of the harness (`debug agents`). Two
-  members this format's importer requires are worth naming where a writer meets it: an assistant message
-  whose `time` carries `created` alone is accepted and then **silently dropped** (measured on 2.2.5 by
-  bisecting the message's members), and a tool part's `state.input` is stored re-encoded, so the
-  comparison canonicalizes that member's JSON while every other member is compared as recorded.
+  the target home's own configured `<provider>/<model>`, asked of the harness (`debug agents`). Three
+  members this format's importer requires are worth naming where a writer meets it: an assistant
+  message's `model` member must be present on every assistant message although its values need not be
+  (`{"id":"","providerID":""}` imports, is stored and re-exports as written), an assistant message whose
+  `time` carries `created` alone is accepted and then **silently dropped** (measured on 2.2.5 by
+  bisecting the message's members), and a tool part's `state.input` is stored with the JSON value and the
+  recorded key order and without the recorded whitespace, so the comparison canonicalizes that member's
+  JSON on both sides while every other member is compared as recorded.
 - **Fixtures are sanitized native shapes.** Small, version-identified, committed fixtures — one
   provider directory per source (`fixtures/claude/`, `fixtures/codex/`, `fixtures/pi/`,
   `fixtures/omp/`) — with no real

@@ -255,7 +255,10 @@ type ConversionReport struct {
 	SourceFidelity Fidelity `json:"source_fidelity"`
 }
 
-// TargetReport describes the session that was written and how to resume it.
+// TargetReport describes the session that was written and how to resume it. FileName is the name of the
+// file the session occupies inside its home; a route whose artifact is a row in the harness's own store
+// rather than a file (OpenCode) names none, and the member is then absent rather than naming a file that
+// exists nowhere.
 type TargetReport struct {
 	Provider         string        `json:"provider"`
 	Format           string        `json:"format"`
@@ -266,7 +269,7 @@ type TargetReport struct {
 	BinaryVersion    string        `json:"binary_version,omitempty"`
 	BinaryDetail     string        `json:"binary_detail,omitempty"`
 	SessionID        string        `json:"session_id"`
-	FileName         string        `json:"file_name"`
+	FileName         string        `json:"file_name,omitempty"`
 	Path             string        `json:"path,omitempty"`
 	Cwd              string        `json:"cwd,omitempty"`
 	StartedAt        time.Time     `json:"started_at,omitempty"`
@@ -589,7 +592,7 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 		result.Installation.Detail = sourceDetail
 		result.Warnings = append(result.Warnings, sourceChangedWarnings(sourceState)...)
 		// A dry run's conversion may record nothing a target harness would have filled in, because the
-		// harness was never started against the home; the route says what that means for its format.
+		// harness's own answer was not asked; the route says what that means for its format.
 		result.Warnings = append(result.Warnings, route.DryRunWarnings(facts, probe)...)
 		if homeMissing {
 			result.Warnings = append(result.Warnings, fmt.Sprintf(

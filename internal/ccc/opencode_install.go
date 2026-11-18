@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -200,12 +201,16 @@ func InstallOpenCodeSession(
 // home, before anything is staged. An answered export is that answer; a refusal of any kind (the
 // command's own `Session not found`, a store the harness cannot open, a deadline) is not -- the importer
 // gives its own answer next, and a failure to ask must not be read as "the id is free".
+//
+// The refusal is the expected answer, so its own diagnostic line (`Session not found: <id>`) is discarded
+// rather than forwarded: it is the harness's words about a session that is supposed not to exist yet, and
+// the returned text is what a refusal this run reports is worded from.
 func openCodeSessionExists(
 	ctx context.Context, binary, sessionID string, environment []string, in targetInstallInput,
 ) (string, bool) {
 	arguments := []string{"session", "export", sessionID, "--standalone"}
 	output, diagnostics, err := runOpenCodeImporter(ctx, binary, "", arguments, environment,
-		openCodeTimeout(in.Timeout), in.Stderr)
+		openCodeTimeout(in.Timeout), io.Discard)
 	if err != nil {
 		return "", false
 	}
@@ -280,11 +285,13 @@ func compareOpenCodeRoundTrip(
 	if err != nil {
 		return roundTripComparison{differences: []string{err.Error()}}
 	}
-	// A tool part's `state.input` is the one member the harness re-encodes: measured on 2.2.5, the
-	// document's own `{"file_path": "…"}` is held in the store and read back as `{"file_path":"…"}`, so
-	// the whitespace and key order of the recorded spelling are not evidence the store keeps while the
-	// JSON *value* is. The intended side is canonicalized the way the reader writes a value, and a value
-	// that does not parse is left as recorded so the walk reports it instead of hiding it.
+	// A tool part's `state.input` is the one member the harness re-encodes: measured on 2.2.5, a
+	// document's own `{"limit": 5, "file_path": "…"}` is held in the store -- and answered by the
+	// harness's own reader -- as `{"limit":5,"file_path":"…"}`, so the store keeps the JSON *value* and
+	// the recorded key order while the recorded whitespace is not what it keeps. Both sides are therefore
+	// canonicalized to the value: the intended side from the source's own spelling, the read-back's calls
+	// from the store's. A value that does not parse is left as recorded so the walk reports it instead of
+	// hiding it.
 	items := make([]TargetItem, 0, len(session.Items))
 	for _, item := range session.Items {
 		if item.Kind == ItemToolCall {
@@ -292,12 +299,38 @@ func compareOpenCodeRoundTrip(
 		}
 		items = append(items, item)
 	}
-	return compareRoundTrip(items, readBack, openCodeRoundTripReader(), newDialogueRecords(keys))
+	return compareRoundTrip(items, canonicalOpenCodeReadBack(readBack), openCodeRoundTripReader(),
+		newDialogueRecords(keys))
 }
 
-// canonicalJSONValue re-encodes one JSON value the way the inherited reader writes one: compact, with a
-// map's keys in Go's own order (sorted). A number keeps its own spelling through `json.Number`, because
-// re-encoding a large integer through a float would change the value the call recorded.
+// canonicalOpenCodeReadBack re-spells a read-back's tool calls through canonicalJSONValue, for the same
+// reason the intended side is re-spelled: the store answers this member in its own spelling, and the walk
+// compares the value. The messages and the calls they carry are copied rather than rewritten in place --
+// the read-back belongs to the caller, and a check must not edit the evidence it was handed.
+func canonicalOpenCodeReadBack(readBack Conversation) Conversation {
+	messages := make([]Message, len(readBack.Messages))
+	copy(messages, readBack.Messages)
+	for index := range messages {
+		if len(messages[index].ToolCalls) == 0 {
+			continue
+		}
+		calls := make([]ToolCall, len(messages[index].ToolCalls))
+		copy(calls, messages[index].ToolCalls)
+		for call := range calls {
+			calls[call].InputJSON = canonicalJSONValue(calls[call].InputJSON)
+		}
+		messages[index].ToolCalls = calls
+	}
+	readBack.Messages = messages
+	return readBack
+}
+
+// canonicalJSONValue re-encodes one JSON value into the one spelling this comparison asks about: compact,
+// with a map's keys in Go's own order (sorted). Both sides of the OpenCode round trip pass through it --
+// the writer's item, which carries the source's spelling of the value, and the read-back's call, which
+// carries the store's -- because neither spelling is what the walk is about. A number keeps its own
+// spelling through `json.Number`, because re-encoding a large integer through a float would change the
+// value the call recorded.
 func canonicalJSONValue(text string) string {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {

@@ -178,8 +178,8 @@ type targetRoute struct {
 	// Facts asks the target's own harness what only it can answer. It is not called for a dry run or for
 	// a target whose format records no such thing.
 	Facts func(ctx context.Context, in targetFactsInput) targetFacts
-	// DryRunWarnings are what a dry run has to say about the fields it did not fill in because the harness
-	// was never started.
+	// DryRunWarnings are what a dry run has to say about the fields it did not fill in because the
+	// harness's own answer was not asked.
 	DryRunWarnings func(facts targetFacts, probe harnessProbe) []string
 
 	Convert func(conv Conversation, in targetConvertInput) (convertedTarget, error)
@@ -827,17 +827,19 @@ func openCodeRoute() targetRoute {
 		ResolveHome:   ResolveOpenCodeHome,
 		Probe:         ProbeOpenCodeBinary,
 		Facts:         openCodeFacts,
-		// A dry run never starts the harness, and this format needs its answer: every assistant record
-		// names an agent and a model reference, and the session's own model binding is what a resumed
-		// turn runs under. A run that installs asks, and records its own answer.
+		// A dry run leaves this format's own answer unasked: every assistant record names an agent and a
+		// model reference, and the session's own model binding is what a resumed turn runs under -- none
+		// of which the harness's importer answers, and it is the importer that does run for a dry run
+		// (against the throw-away copy the structure check reads). A run that installs asks the harness's
+		// own agent listing, and records its answer.
 		DryRunWarnings: func(facts targetFacts, probe harnessProbe) []string {
 			if !probe.Found {
 				return nil
 			}
-			return []string{"this was a dry run, so the target harness was not started and the agent " +
-				"and model its home resolves for a new session of it were not asked: the written " +
-				"document records no session model binding, the built-in default agent's name on its " +
-				"assistant records, and the empty model id on the records the source read recorded no " +
+			return []string{"this was a dry run, so the harness's own agent listing was not asked and " +
+				"the agent and model its home resolves for a new session of it are not recorded: the " +
+				"written document records no session model binding, the built-in default agent's name on " +
+				"its assistant records, and the empty model id on the records the source read recorded no " +
 				"model for. An installed run asks the harness and records its own answer"}
 		},
 		Convert: func(conv Conversation, in targetConvertInput) (convertedTarget, error) {
@@ -854,11 +856,11 @@ func openCodeRoute() targetRoute {
 			if err != nil {
 				return convertedTarget{}, err
 			}
+			// This route files nothing inside a session root: the harness's own store is the artifact,
+			// and the session's recorded directory travels as Cwd. FileName stays empty -- there is no
+			// file to name, so the report's target_session names none.
 			return convertedTarget{
-				ID:       session.SessionID,
-				FileName: session.FileName,
-				// This route files nothing inside a session root: the harness's own store is the
-				// artifact, and the session's recorded directory travels as Cwd.
+				ID:        session.SessionID,
 				Cwd:       session.Cwd,
 				StartedAt: session.StartedAt,
 				Data:      session.Data,

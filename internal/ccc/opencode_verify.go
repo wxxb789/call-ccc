@@ -215,8 +215,8 @@ func openCodeFacts(ctx context.Context, in targetFactsInput) targetFacts {
 	probe := openCodeAgentProbe{}
 	switch {
 	case in.DryRun:
-		probe.Detail = "a dry run does not start the target harness against its data directory, so the " +
-			"agent and model a new session of it would run under were not asked and none is recorded"
+		probe.Detail = "a dry run does not ask the harness's own agent listing, so the agent and model a " +
+			"new session of it would run under were not asked and none is recorded"
 	case in.Probe.Found:
 		probe = ProbeOpenCodeAgents(ctx, in.Home, in.Probe.Binary, in.Timeout, in.Stderr)
 	default:
@@ -324,7 +324,10 @@ func VerifyOpenCodeLoad(ctx context.Context, in targetVerificationInput) LoadVer
 			"installed session %s", document.Info.ID, in.SessionID)
 		return verification
 	}
-	control, controlErr := openCodeExport(ctx, path, openCodeUnknownSessionID, environment, timeout, in.Stderr)
+	// The control arm's refusal is the answer this check requires, so its own diagnostic line is
+	// discarded: the contrast is read from the returned text and the error, and forwarding the line would
+	// print an expected refusal beside a verified run's output.
+	control, controlErr := openCodeExport(ctx, path, openCodeUnknownSessionID, environment, timeout, io.Discard)
 	if controlErr == nil {
 		verification.Detail = fmt.Sprintf("the same command with an unknown session id answered a "+
 			"session, so its answer is not shown to be about the installed one: %s",

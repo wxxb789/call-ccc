@@ -32,6 +32,35 @@ func writeOpenCodeTestStore(t *testing.T, dataDir string, written OpenCodeSessio
 	return path
 }
 
+// openCodeStoreMessage reads one message out of a store into the writer's own type, so a case can change
+// the member it is about and write the message back the way the store held it: what the case edits is a
+// value, not a spelling. The first message of the type, in the store's own order.
+func openCodeStoreMessage(t *testing.T, database *sql.DB, messageType string) (string, openCodeMessage) {
+	t.Helper()
+	var id, data string
+	if err := database.QueryRow(`SELECT id, data FROM session_message WHERE type = ?
+		ORDER BY seq LIMIT 1`, messageType).Scan(&id, &data); err != nil {
+		t.Fatalf("finding a %s message: %v", messageType, err)
+	}
+	var message openCodeMessage
+	if err := json.Unmarshal([]byte(data), &message); err != nil {
+		t.Fatalf("parsing the message: %v", err)
+	}
+	return id, message
+}
+
+// writeOpenCodeStoreMessage writes one message back into the row it came from.
+func writeOpenCodeStoreMessage(t *testing.T, database *sql.DB, id string, message openCodeMessage) {
+	t.Helper()
+	encoded, err := json.Marshal(message)
+	if err != nil {
+		t.Fatalf("encoding the message: %v", err)
+	}
+	if _, err := database.Exec(`UPDATE session_message SET data = ? WHERE id = ?`, string(encoded), id); err != nil {
+		t.Fatalf("rewriting the message: %v", err)
+	}
+}
+
 // openCodeTestInstallInput is the installation input one check is given: the home the conversion resolved,
 // the executable a probe would have found, and a deadline.
 func openCodeTestInstallInput(home, binary string) targetInstallInput {
@@ -298,14 +327,35 @@ func TestVerifyOpenCodeSessionStructureReadsTheStoreBack(t *testing.T) {
 	}
 }
 
-// TestVerifyOpenCodeSessionStructureAcceptsTheImportersOwnReEncoding pins the one normalization the
-// comparison makes for this target: the harness stores a tool part's `state.input` as a parsed value and
-// re-encodes it, so the document's own `{"file_path": "…"}` is held and read back as `{"file_path":"…"}`
-// (measured on 2.2.5). A store holding the same JSON value in the harness's own spelling is the same
-// evidence, while a changed value is a difference -- the walk reports what the store holds, not the
-// whitespace the source happened to record.
+// TestVerifyOpenCodeSessionStructureAcceptsTheImportersOwnReEncoding pins the comparison's rule for a tool
+// part's `state.input`, the one member the harness re-encodes: measured on 2.2.5, the store keeps the JSON
+// value and the key order the document recorded while dropping the recorded whitespace, so the source's
+// own spelling of the value is not what the walk asks about. A call whose input records two keys in an
+// order Go's own encoder would not write verifies through the store's spelling of the same value, while a
+// changed value is the difference the walk names.
 func TestVerifyOpenCodeSessionStructureAcceptsTheImportersOwnReEncoding(t *testing.T) {
-	session := openCodeTestConversion(t)
+	at := time.UnixMilli(1_700_000_000_000).UTC()
+	// The source's own spelling: the recorded key order, and the whitespace the source recorded. The
+	// document compacts the member when it is written, and that is the spelling the store holds -- the
+	// fixture writes the document's own member bytes, and the harness's importer keeps the recorded order
+	// while dropping the recorded whitespace (measured) -- so the writer's item and the store's member are
+	// two spellings of one value from here on.
+	recordedInput := `{"limit": 5, "file_path": "internal/retry/policy.go"}`
+	conversation := openCodeTestConversation(
+		Message{Role: "assistant", Timestamp: at,
+			ToolCalls: []ToolCall{openCodeTestCall("toolu_reencoded", "Read", recordedInput)}},
+		Message{Role: "user", Timestamp: at.Add(time.Second), ToolResults: []ToolResult{
+			openCodeTestResult("toolu_reencoded", "completed", `"the recorded output"`)}},
+	)
+	session, err := ConvertToOpenCodeSession(conversation, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	// The case's own input, stated so the dimension it names cannot go missing silently: the document
+	// holds the recorded key order, not Go's sorted spelling of it.
+	if !strings.Contains(string(session.Data), `"input":{"limit":5,"file_path":"internal/retry/policy.go"}`) {
+		t.Fatalf("the document does not hold the recorded key order this case is about: %s", session.Data)
+	}
 	home := filepath.Join(t.TempDir(), openCodeDataDirName)
 	writeOpenCodeTestStore(t, openCodeDataDir(home), session)
 	database, err := sql.Open("sqlite3", openCodeStorePath(home))
@@ -313,73 +363,106 @@ func TestVerifyOpenCodeSessionStructureAcceptsTheImportersOwnReEncoding(t *testi
 		t.Fatalf("opening the store: %v", err)
 	}
 	defer database.Close()
-	rewrite := func(t *testing.T, mutate func(message map[string]any)) {
-		t.Helper()
-		var id, data string
-		if err := database.QueryRow(`SELECT id, data FROM session_message WHERE type = ?
-			ORDER BY seq LIMIT 1`, openCodeMessageAssistant).Scan(&id, &data); err != nil {
-			t.Fatalf("finding an assistant message: %v", err)
-		}
-		var message map[string]any
-		if err := json.Unmarshal([]byte(data), &message); err != nil {
-			t.Fatalf("parsing the message: %v", err)
-		}
-		mutate(message)
-		encoded, err := json.Marshal(message)
-		if err != nil {
-			t.Fatalf("encoding the message: %v", err)
-		}
-		if _, err := database.Exec(`UPDATE session_message SET data = ? WHERE id = ?`, string(encoded), id); err != nil {
-			t.Fatalf("rewriting the message: %v", err)
-		}
-	}
 
-	// The importer's own spelling: re-encoding every member (which compacts the input's JSON) leaves the
-	// evidence the same.
-	rewrite(t, func(message map[string]any) {})
 	verification, err := VerifyOpenCodeSessionStructure(context.Background(), openCodeDataDir(home), session, fixtureConfig(t))
 	if err != nil {
-		t.Fatalf("reading the re-encoded session back: %v", err)
+		t.Fatalf("reading the installed session back: %v", err)
 	}
 	if verification.State != VerificationStateVerified {
-		t.Fatalf("structure = %+v, want a store holding the same value in the importer's own spelling to "+
-			"verify (detail %q)", verification, verification.Detail)
+		t.Fatalf("structure = %+v, want the store's own spelling of the recorded value to verify (detail %q)",
+			verification, verification.Detail)
+	}
+	if verification.Detail != "" {
+		t.Errorf("detail = %q, want none: the read-back showed every written item", verification.Detail)
 	}
 
-	// A changed value is a difference, whichever piece of evidence it is. The attribution members (the
-	// agent, the model) are not part of this walk: what it compares is the conversation the read-back
-	// shows -- dialogue, calls, results, boundaries -- and the report names the attribution members
-	// separately (the writer's own categories).
-	for _, mutate := range []func(message map[string]any){
-		func(message map[string]any) {
-			if parts, ok := message["content"].([]any); ok && len(parts) > 0 {
-				if part, ok := parts[0].(map[string]any); ok {
-					part["text"] = "edited"
-				}
-			}
-		},
-		func(message map[string]any) { message["content"] = []any{} },
-	} {
-		before := func() string {
-			var data string
-			if err := database.QueryRow(`SELECT data FROM session_message WHERE type = ?
-				ORDER BY seq LIMIT 1`, openCodeMessageAssistant).Scan(&data); err != nil {
-				t.Fatalf("reading the message: %v", err)
-			}
-			return data
-		}()
-		rewrite(t, mutate)
-		verification, err := VerifyOpenCodeSessionStructure(context.Background(), openCodeDataDir(home), session, fixtureConfig(t))
-		if err != nil {
-			t.Fatalf("reading the edited session back: %v", err)
+	// The value is what the walk asks about: the store holding the same spelling with the call's value
+	// changed is the difference it names.
+	id, message := openCodeStoreMessage(t, database, openCodeMessageAssistant)
+	changed := false
+	for index := range message.Content {
+		part := &message.Content[index]
+		if part.Type == openCodePartTool && part.ID == "toolu_reencoded" {
+			part.State.Input = json.RawMessage(`{"limit":7,"file_path":"internal/retry/policy.go"}`)
+			changed = true
 		}
-		if verification.State == VerificationStateVerified {
-			t.Errorf("structure = %+v, want an edited assistant message reported as a difference", verification)
-		}
-		if _, err := database.Exec(`UPDATE session_message SET data = ? WHERE type = ?`,
-			before, openCodeMessageAssistant); err != nil {
-			t.Fatalf("restoring the message: %v", err)
-		}
+	}
+	if !changed {
+		t.Fatal("the store holds no part for the call this case is about")
+	}
+	writeOpenCodeStoreMessage(t, database, id, message)
+	verification, err = VerifyOpenCodeSessionStructure(context.Background(), openCodeDataDir(home), session, fixtureConfig(t))
+	if err != nil {
+		t.Fatalf("reading the edited session back: %v", err)
+	}
+	if verification.State == VerificationStateVerified {
+		t.Errorf("structure = %+v, want a changed tool input reported as a difference", verification)
+	}
+	if !strings.Contains(verification.Detail, "tool call") {
+		t.Errorf("detail = %q, want it to name the tool call difference", verification.Detail)
+	}
+}
+
+// TestVerifyOpenCodeSessionStructureReadsPersistedReasoningBack pins the route's own dialogue rule through
+// a read-back: the inherited reader renders an assistant message's persisted reasoning as
+// `[Thinking]…[/Thinking]` joined with the dialogue by a line feed, and the walk's intended side is spelled
+// by openCodePartsDialogue for the same reason. The fixture the other read-back cases convert carries no
+// persisted reasoning, so this is the case that dimension has: a store holding the trace verifies, while a
+// store whose trace re-renders as other words is the dialogue difference the walk names.
+func TestVerifyOpenCodeSessionStructureReadsPersistedReasoningBack(t *testing.T) {
+	at := time.UnixMilli(1_700_000_000_000).UTC()
+	conversation := openCodeTestConversation(
+		Message{Role: "user", Content: "hello", Dialogue: "hello", DialogueProjected: true, Timestamp: at},
+		Message{Role: "assistant", Content: "hi", Dialogue: "hi", DialogueProjected: true,
+			Thinking: "weigh the options", Model: "source-model", Timestamp: at.Add(time.Second)},
+	)
+	session, err := ConvertToOpenCodeSession(conversation, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	home := filepath.Join(t.TempDir(), openCodeDataDirName)
+	writeOpenCodeTestStore(t, openCodeDataDir(home), session)
+	verification, err := VerifyOpenCodeSessionStructure(context.Background(), openCodeDataDir(home), session, fixtureConfig(t))
+	if err != nil {
+		t.Fatalf("reading the installed session back: %v", err)
+	}
+	if verification.State != VerificationStateVerified {
+		t.Fatalf("structure = %+v, want the reasoning-carrying message read back through the reader's own "+
+			"rendering (detail %q)", verification, verification.Detail)
+	}
+	if verification.ReadBack.UserMessages != 1 || verification.ReadBack.AssistantMessages != 1 {
+		t.Errorf("read back = %+v, want the two messages the document writes", verification.ReadBack)
+	}
+	if verification.NotReadBackVerbatim != 0 {
+		t.Errorf("not_read_back_verbatim = %d, want the reasoning-carrying message read back verbatim",
+			verification.NotReadBackVerbatim)
+	}
+
+	// The trace's own text is evidence: a store whose reasoning text re-renders as other words is not the
+	// written message, and the walk names the dialogue difference. (This replacement's words are not a run
+	// of the written text, so nothing can pair it as that message's reading.)
+	database, err := sql.Open("sqlite3", openCodeStorePath(home))
+	if err != nil {
+		t.Fatalf("opening the store: %v", err)
+	}
+	defer database.Close()
+	id, message := openCodeStoreMessage(t, database, openCodeMessageAssistant)
+	if len(message.Content) == 0 || message.Content[0].Type != openCodePartReasoning {
+		t.Fatalf("the assistant message carries %+v, want the reasoning part this case is about first",
+			message.Content)
+	}
+	message.Content[0].Text = "a different trace"
+	writeOpenCodeStoreMessage(t, database, id, message)
+	verification, err = VerifyOpenCodeSessionStructure(context.Background(), openCodeDataDir(home), session, fixtureConfig(t))
+	if err != nil {
+		t.Fatalf("reading the edited session back: %v", err)
+	}
+	if verification.State == VerificationStateVerified {
+		t.Errorf("structure = %+v, want a store whose reasoning text was changed reported as a difference",
+			verification)
+	}
+	if !strings.Contains(verification.Detail, "dialogue") {
+		t.Errorf("detail = %q, want it to name the dialogue difference", verification.Detail)
 	}
 }
 

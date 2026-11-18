@@ -66,13 +66,14 @@ with their exit codes and counts).
   so instead of working around it. Three members the importer requires are rules a writer here must keep,
   all measured on 2.2.5: an assistant message's `time.completed` (a message whose `time` carries
   `created` alone is accepted and then **silently dropped** — no row, no export entry), a tool part's
-  `state.input`, which the store holds re-encoded, so the structural comparison canonicalizes that one
-  member's JSON and compares every other member as recorded, and an assistant message's `model` member,
-  which must be present although its values need not be: a record neither the source read nor the harness
-  answered a model for is written with the member's id empty — measured: an empty id is imported, stored
-  and exported as written — rather than a name this build cannot support. The load level asks the
-  harness's own `session export`, never `run`: `run` *creates* a session for an id the store does not
-  hold. The directory a session is resolved from is the one its own document records, and the model
+  `state.input`, which the store holds with the recorded key order and without the recorded whitespace,
+  so the structural comparison canonicalizes that one member's JSON on both sides and compares every
+  other member as recorded, and an assistant message's `model` member, which must be present although
+  its values need not be: a record neither the source read nor the harness answered a model for is
+  written with the member's id empty — measured: an empty id is imported, stored and exported as
+  written — rather than a name this build cannot support. The load level asks the harness's own
+  `session export`, never `run`: `run` *creates* a session for an id the store does not hold. The
+  directory a session is resolved from is the one its own document records, and the model
   binding it runs under is the target home's own, asked of the harness (`debug agents`). Every OpenCode
   subcommand this build prints or runs carries `--standalone`, and none leaves the flag past a `--`
   terminator, where it hands the run to the managed service and that service answers from a store this

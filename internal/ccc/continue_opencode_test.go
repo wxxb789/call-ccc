@@ -264,6 +264,11 @@ func TestContinueIntoOpenCodeConvertsInstallsAndReadsBack(t *testing.T) {
 		t.Errorf("resume command = %q, want it to change into the session's recorded directory",
 			result.TargetSession.ResumeCommand)
 	}
+	// The artifact is a row in the harness's own store: the report names the store's path and the import
+	// mechanism, and no file name, because there is no file a caller could look for.
+	if result.TargetSession.FileName != "" {
+		t.Errorf("file name = %q, want none: this route writes no file", result.TargetSession.FileName)
+	}
 	if len(calls.Invocations) != 2 {
 		t.Errorf("the importer was run %d time(s) as %q, want the exclusivity question and one import",
 			len(calls.Invocations), calls.Invocations)
@@ -366,6 +371,38 @@ func TestContinueIntoOpenCodeDryRunAsksNothingAndInstallsNothing(t *testing.T) {
 	if result.Verification.Load.State != VerificationStateNotVerified ||
 		!strings.Contains(result.Verification.Load.Detail, "dry run") {
 		t.Errorf("load = %+v, want the dry run named as why nothing could be loaded", result.Verification.Load)
+	}
+}
+
+// TestOpenCodeDryRunWarningNamesWhatWasNotAsked pins the sentence a dry run's report carries about this
+// format's own answer: what a dry run leaves unasked is the harness's own agent listing, while the
+// harness itself does run -- its importer materialises the throw-away copy the structure check reads
+// (TestContinueIntoOpenCodeDryRunAsksNothingAndInstallsNothing records those invocations) -- so the
+// warning must not claim it was not started, and it must name the records the unasked answer would have
+// filled in.
+func TestOpenCodeDryRunWarningNamesWhatWasNotAsked(t *testing.T) {
+	route, err := targetRouteFor(TargetOpenCode)
+	if err != nil {
+		t.Fatalf("the OpenCode route is not in this build: %v", err)
+	}
+	warnings := route.DryRunWarnings(targetFacts{}, harnessProbe{Binary: "opencode", Found: true})
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %q, want the one sentence a found harness leaves for a dry run", warnings)
+	}
+	warning := warnings[0]
+	for _, want := range []string{"agent listing", "model binding", "agent", "model id"} {
+		if !strings.Contains(warning, want) {
+			t.Errorf("warning = %q, want it to name %q", warning, want)
+		}
+	}
+	if strings.Contains(warning, "was not started") || strings.Contains(warning, "never started") {
+		t.Errorf("warning = %q, want no claim that the harness was not started: a dry run's structure "+
+			"check reads a throw-away copy its importer materialises", warning)
+	}
+	// A harness that was never found has nothing to warn about here: the report's own binary fields carry
+	// why no answer could be asked.
+	if warnings := route.DryRunWarnings(targetFacts{}, harnessProbe{Binary: "opencode"}); len(warnings) != 0 {
+		t.Errorf("warnings = %q, want none for a harness that was not found", warnings)
 	}
 }
 

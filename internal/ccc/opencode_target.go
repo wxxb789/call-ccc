@@ -237,10 +237,14 @@ type openCodeToolFail struct {
 // OpenCodeSession is one converted target session, in memory and ready to install. Data is the exact
 // byte string the harness's importer reads; Items is what the writer placed in it, for the round-trip
 // check, and is never serialized into a CLI document.
+//
+// There is no file name: the artifact is a row inside the harness's own store, the document is staged
+// under a random temporary name (outside the home) and removed once the importer has it, and nothing this
+// build writes carries a name a caller could look for. The report's target_session carries the store's
+// path and the import mechanism instead.
 type OpenCodeSession struct {
 	SessionID  string       `json:"session_id"`
 	CLIVersion string       `json:"cli_version"`
-	FileName   string       `json:"file_name"`
 	Cwd        string       `json:"cwd,omitempty"`
 	StartedAt  time.Time    `json:"started_at,omitempty"`
 	Data       []byte       `json:"-"`
@@ -921,7 +925,6 @@ func (c *openCodeConverter) session() (OpenCodeSession, error) {
 	return OpenCodeSession{
 		SessionID:  c.sessionID,
 		CLIVersion: c.opts.CLIVersion,
-		FileName:   c.sessionID + ".json",
 		Cwd:        c.cwd,
 		StartedAt:  time.UnixMilli(c.document.Info.Time.Created).UTC(),
 		Data:       data,

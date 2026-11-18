@@ -267,10 +267,13 @@ found by the structural read-back rather than by reading the harness:
   bisected over the message's members, and the only member that changed the outcome was `time.completed`.
   The writer now writes the record's own instant as that member and discloses the choice
   (`assistant_completion_instant`), and a Go case pins the member on every assistant message.
-- **A tool part's `state.input` is re-encoded by the importer.** The document's own
-  `{"file_path": "…"}` is held and read back as `{"file_path":"…"}`, so the structural comparison
-  canonicalizes that one member's JSON (`canonicalJSONValue`) while comparing every other member as
-  recorded; a changed value is still a difference, and a Go case drives both halves.
+- **A tool part's `state.input` is re-spelled by the importer.** The document's own
+  `{"limit": 5, "file_path": "…"}` (the recorded key order, with the source's whitespace) is held and
+  read back as `{"limit":5,"file_path":"…"}`: the store keeps the JSON value and the recorded key order
+  while the recorded whitespace is not what it keeps. The structural comparison therefore canonicalizes
+  that one member's JSON on both sides (`canonicalJSONValue`) while comparing every other member as
+  recorded; a changed value is still a difference, and Go cases drive the recorded order, a changed value
+  and a reasoning part's read-back rendering.
 
 A third measurement is about the harness's *invocation* rather than its format: `--standalone` placed
 after a `--` terminator leaves the run on the managed background service (measured: the turn answered
