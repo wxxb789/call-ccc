@@ -2305,21 +2305,24 @@ supersede it with a newer one and say which it supersedes.
   manifest*, 2026-11-18 — which ships `docs/evidence/0002-citations.tsv` as the mechanism's seed)
 - **Question:** the manifest's citation form is one row per rule id, verified by running that row's Go
   test in the package it names (`docs/conventions.md`; the `citations` gate step in `docs/harness.md`).
-  Of the matrix's forty rule ids, four have no such test: D4 (the source tree and every pre-existing
+  Of the matrix's forty rule ids, four have no such test. D4 (the source tree and every pre-existing
   session compared *after* the native stages) and F1 (no credential-bearing setting copied into the
-  throw-away home) are discharged by the **native** check `scripts/codex-native-check.py` — a script that
-  is deliberately not a gate step — and F4 (the harness's cases hold on every host) and F5 (a required
-  gate step cannot pass by not running) are discharged by the **python** suite the `selftest` step runs.
-  Which ids does the file leave out, and on what grounds?
-- **Default taken:** D4 and F1 are left out for the reason the mechanism's scope already states — a
-  machine gate cannot re-run a native harness (the owner's option-1 choice), so that class keeps its
-  prose record and is the separate post-run evidence-anchor follow-up — and F4/F5 are left out because
-  this file's citation form cannot hold a python case: the form is one Go test function in a package
-  `scripts/gate-targets.txt` covers, and F4/F5's gate is the `selftest` step, which runs them directly on
-  every run. All four ids are named in the manifest's own header comment, one line per reason, so
-  nothing is dropped silently; a new obligation of either class joins that list the same way.
+  throw-away home) take their own positive evidence from the **native** check
+  `scripts/codex-native-check.py` — a script that is deliberately not a gate step — and are re-derived in
+  the gate by the python cases `ProtectedArtifactsAfterNativeVerification` and `SeededHostConfiguration`
+  in `scripts/tests/test_codex_native_check.py`, which the `selftest` step runs; F4 (the harness's cases
+  hold on every host) and F5 (a required gate step cannot pass by not running) are rules of the harness
+  itself, pinned by cases in the same suite. Which ids does the file leave out, and on what grounds?
+- **Default taken:** all four are left out for the one form-based reason this file's citation form has
+  for any id: a row is one Go test function in a package `scripts/gate-targets.txt` covers, and each of
+  the four is re-derived by the gate through a python case under `scripts/tests/` that the `selftest`
+  step runs — `ProtectedArtifactsAfterNativeVerification` and `SeededHostConfiguration` for D4/F1 (their
+  native run stays their own positive evidence), the suite's own cases for F4/F5. All four ids are named
+  in the manifest's own header comment, one line per reason, so nothing is dropped silently; a new
+  obligation of either class joins that list the same way.
 - **Reversal:** extend the row form with a second citation kind (a python case under `scripts/tests/`,
   verified through the `selftest` step) — the schema, the checker and the step then carry two kinds of
-  citation — or drop the two harness ids from the manifest and rely on `selftest` alone for them.
+  citation — or leave every id whose re-derivation is a python case to `selftest` alone, which is the
+  present state.
 - **Settled by:** nothing owner-only; the owner may ask for the python-case row form when a goal's
   acceptance surface carries enough harness rules to justify it.

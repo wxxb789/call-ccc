@@ -86,11 +86,14 @@ ignored, one row per rule id:
 | `artifact` | free text that reaches the prose, e.g. the matrix section the pair comes from |
 
 **Which obligations get a row:** only those a gate-runnable Go test discharges. An obligation whose
-evidence is a native harness run (a real turn through a target harness) is beyond a machine gate by
-design: it keeps its prose record and is the post-run-evidence-anchor follow-up. An obligation that is a
-rule of the harness itself is discharged by the python suite the `selftest` step runs, which this
-citation form (one Go test in a package `gate-targets.txt` covers) cannot hold. The manifest's header
-comment names the rule ids deliberately left out, one line per reason — nothing is dropped silently.
+gate re-derivation is a python case under `scripts/tests/` — the `selftest` step runs them on every gate
+run — cannot be held by this form, which is one Go test function in a package `gate-targets.txt` covers.
+That is the reason for every id the seed manifest's header comment lists as left out: the native-check
+obligations (the native run is their own positive evidence, and the case beside it is what re-derives the
+rule in the gate) and the harness's own rules alike. The manifest's header comment names the rule ids
+deliberately left out, one line per reason — nothing is dropped silently. A discovered manifest that
+declares no data rows is a failure naming the file, not a pass: a goal with no Go-test-dischargeable
+obligation ships no citations file, rather than an empty one.
 
 ## Rules of the work
 

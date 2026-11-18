@@ -179,7 +179,9 @@ What it does, in order:
    printed;
 2. **parse**, per file — the first non-comment line is the header and names exactly `rule_id`, `test`,
    `package`, `artifact` in that order; every data row holds exactly four non-empty cells; no `rule_id`
-   repeats within a file. A violation fails the run naming the file and the line;
+   repeats within a file; and a header followed by no data rows is a violation too — a goal with no
+   Go-test-dischargeable obligation ships no citations file rather than an empty one, so a manifest that
+   declares nothing cannot read as passing. A violation fails the run naming the file and the line;
 3. **static checks**, per row — the `test` is a name `go test` would run at top level (`TestXxx`, `Xxx`
    not a lowercase letter), the `package` is one package in the tree's own `./` spelling that
    `scripts/gate-targets.txt` covers (a citation may not point outside what the gate itself tests), and

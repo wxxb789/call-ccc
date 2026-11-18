@@ -13,7 +13,10 @@ Rules (``docs/conventions.md`` states the schema, ``docs/harness.md`` the gate s
 - discovery: ``docs/evidence/*-citations.tsv``, sorted by file name; the order is pinned and printed;
 - parse, per file: the first non-comment line is the header and names exactly ``rule_id``, ``test``,
   ``package``, ``artifact`` in that order; every data row holds exactly four non-empty cells; no
-  ``rule_id`` repeats within a file. A violation fails the run, named by file and line;
+  ``rule_id`` repeats within a file; and a header followed by no data rows is a violation too — the
+  header alone is the shape a lost acceptance surface leaves behind when the file itself survived, and a
+  goal with no Go-test-dischargeable obligation ships no citations file rather than an empty one. A
+  violation fails the run, named by file and line;
 - verify, per row: ``package`` is one package ``scripts/gate-targets.txt`` covers, ``test`` is a legal
   Go test name that a ``_test.go`` under that package declares, and the test must **run and pass** —
   one ``go test -count=1 -v -run '^(…|…)$' <package>`` per package (the same ``scripts/gate-goflags.txt``
@@ -161,7 +164,9 @@ def parse_manifest(path: Path) -> tuple[list[Citation], list[str]]:
     """One manifest's rows, and the violations that keep it from being one.
 
     A violation names the file and the line, because a row is only a citation where a reader can follow
-    the line number back to the text that failed.
+    the line number back to the text that failed. A header followed by no data rows is a violation of
+    its own: the file is then an empty acceptance surface, and the step is required so that such a shape
+    cannot read as passing.
     """
     name = relative(path)
     try:
@@ -200,6 +205,11 @@ def parse_manifest(path: Path) -> tuple[list[Citation], list[str]]:
     if header is None:
         violations.append(
             f"{name}: no header line (the first non-comment line must name {', '.join(COLUMNS)})"
+        )
+    elif not rows:
+        violations.append(
+            f"{name}: the header declares no data rows; a goal with no Go-test-dischargeable "
+            f"obligation ships no citations file rather than an empty one"
         )
     return rows, violations
 

@@ -3,13 +3,16 @@
 
 A manifest under ``docs/evidence/`` is an increment's acceptance surface, and the ``citations`` step is
 required, so the checker's own rules need tests like the gate's: a header that is not the four columns,
-a row with a missing or an extra cell, a rule cited twice, a test no ``_test.go`` declares, a name
-``go test`` would not run, a package the gate does not test, a cited test that fails, skips or is not
-reported at all, a run that exited non-zero with no verdict line, a run that outran its deadline, a
-cited name longer than the batch bound, a flood of violations past the printed bound, a tree whose
-manifest is gone, and a tree whose ``scripts/gate.py`` cannot be loaded all have to come back as the
-verdict the contract names — and the positive control proves the reading is live rather than vacuous (it
-asserts the row count the run verified, so a checker that verified nothing cannot pass it).
+a row with a missing or an extra cell, a rule cited twice, a header that declares no data rows, a
+manifest of comments with no header at all, a manifest the parse cannot read, a test no ``_test.go``
+declares, a name ``go test`` would not run, a package the gate does not test, a cited test that fails,
+skips or is not reported at all, a run that exited non-zero with no verdict line, a run that outran its
+deadline, a cited name longer than the batch bound, a flood of violations past the printed bound, a tree
+whose manifest is gone, and a tree whose ``scripts/gate.py`` cannot be loaded all have to come back as
+the verdict the contract names — and the positive control proves the reading is live rather than vacuous
+(it asserts the row count the run verified, so a checker that verified nothing cannot pass it). The
+targets knob is read positively too: a file naming one package covers exactly that package, and a tree
+with no such file falls back to ``./...`` the way the gate's own steps do.
 
 Every case drives the shipped checker in-process with ``ROOT`` pointed at a throw-away tree and the
 checker's runner seam (``run``) answering the ``go test`` invocation, so no case depends on a Go
@@ -253,6 +256,42 @@ class CitationsCase(CitationsTree):
                 self.assertIn("docs/evidence/0002-citations.tsv:3: the header must name exactly", text)
                 self.assertEqual(commands, [], text)
 
+    def test_a_manifest_of_comments_with_no_header_line_fails(self) -> None:
+        """Comments and blank lines only: the file never reaches a header, and that FAIL names the file.
+
+        The first non-comment line *is* the header, so a manifest that holds none is a parse failure
+        naming the file — the shape a commented-out or truncated file has.
+        """
+        self.write("docs/evidence/0002-citations.tsv", "# only a comment\n\n# and another\n")
+        rc, text, commands = self.drive()
+        self.assertEqual(rc, 1, text)
+        self.assertEqual(self.status_of(text), "FAIL", text)
+        self.assertIn("docs/evidence/0002-citations.tsv: no header line", text)
+        self.assertEqual(commands, [], text)
+
+    def test_a_manifest_that_cannot_be_read_fails_naming_it(self) -> None:
+        """A manifest the parse cannot open is a FAIL naming the file, not a crash and not a pass.
+
+        The read is the parse's first step, and its failure reaches the verdict in the gate's own
+        vocabulary the way every other parse failure does. The unreadable file is driven through the
+        platform's own ``Path.read_text``, so the case needs no file mode this host may not allow.
+        """
+        self.declare("TestAlpha")
+        self.manifest([self.row("A1", "TestAlpha")])
+        read_text = Path.read_text
+
+        def unreadable(path, *args, **kwargs):
+            if path.name == "0002-citations.tsv":
+                raise PermissionError(13, "Permission denied")
+            return read_text(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "read_text", unreadable):
+            rc, text, commands = self.drive()
+        self.assertEqual(rc, 1, text)
+        self.assertEqual(self.status_of(text), "FAIL", text)
+        self.assertIn("docs/evidence/0002-citations.tsv: could not be read", text)
+        self.assertEqual(commands, [], text)
+
     def test_a_row_that_is_not_four_non_empty_cells_fails(self) -> None:
         for label, row in (
             ("missing", "A1\tTestAlpha\t./internal/ccc"),
@@ -278,6 +317,20 @@ class CitationsCase(CitationsTree):
         self.assertIn(
             "docs/evidence/0002-citations.tsv:5: rule id 'A1' is already cited at line 4", text
         )
+        self.assertEqual(commands, [], text)
+
+    def test_a_manifest_whose_header_declares_no_rows_fails(self) -> None:
+        """A header with nothing under it is an empty acceptance surface, and the step refuses it.
+
+        The header alone is the shape a lost acceptance surface leaves behind when the file itself
+        survived — a goal with no Go-test-dischargeable obligation ships no citations file rather than an
+        empty one — and no tool runs for it.
+        """
+        self.manifest([])
+        rc, text, commands = self.drive()
+        self.assertEqual(rc, 1, text)
+        self.assertEqual(self.status_of(text), "FAIL", text)
+        self.assertIn("docs/evidence/0002-citations.tsv: the header declares no data rows", text)
         self.assertEqual(commands, [], text)
 
     def test_a_cited_test_no_test_file_declares_fails_before_any_tool_runs(self) -> None:
@@ -326,6 +379,40 @@ class CitationsCase(CitationsTree):
         rc, text, commands = self.drive()
         self.assertEqual(rc, 1, text)
         self.assertIn("package ./internal/ccc is not covered by scripts/gate-targets.txt", text)
+
+    def test_a_targets_file_naming_one_package_covers_exactly_that_package(self) -> None:
+        """A pattern without ``...`` is one package: ``./internal/ccc`` covers it and nothing beside it.
+
+        The knob file may name the package itself instead of the subtree; the citation then verifies,
+        while a package the pattern only prefixes stays uncovered — the exact-match arm, both ways.
+        """
+        self.write("scripts/gate-targets.txt", "./internal/ccc\n")
+        self.declare("TestAlpha")
+        self.manifest([self.row("A1", "TestAlpha")])
+        rc, text, commands = self.drive()
+        self.assertEqual(rc, 0, text)
+        self.assertEqual(self.status_of(text), "PASS", text)
+
+        self.manifest([self.row("A1", "TestAlpha", package="./internal/cccx")])
+        rc, text, commands = self.drive()
+        self.assertEqual(rc, 1, text)
+        self.assertIn("package ./internal/cccx is not covered by scripts/gate-targets.txt", text)
+        self.assertEqual(commands, [], text)
+
+    def test_a_tree_without_the_targets_file_falls_back_to_the_whole_module(self) -> None:
+        """No ``scripts/gate-targets.txt`` reads as ``./...``, the same default the Go steps take.
+
+        The knob is a file a tree may not carry yet; without it the gate's own default covers the tree,
+        so a citation inside the module still verifies. An empty fallback would refuse every package
+        instead.
+        """
+        (self.root / "scripts" / "gate-targets.txt").unlink()
+        self.declare("TestAlpha")
+        self.manifest([self.row("A1", "TestAlpha")])
+        rc, text, commands = self.drive()
+        self.assertEqual(rc, 0, text)
+        self.assertEqual(self.status_of(text), "PASS", text)
+        self.assertEqual(len(commands), 1, text)
 
     def test_a_cited_test_that_does_not_pass_fails(self) -> None:
         """Failing, skipping and never-reported are all failures naming the row.

@@ -10,15 +10,15 @@
 # citation that went stale, fails the gate instead of passing partially. Columns: rule_id, test,
 # package, artifact. Tab-separated; `#` comments and blank lines are ignored; a rule id appears once.
 #
-# Deliberately not covered, with the reason:
-#   D4, F1 — the obligation's evidence is the *native* harness run (scripts/codex-native-check.py) and
-#            the python case beside it, not a gate test. A machine gate cannot re-run a native harness
-#            (the owner's option-1 choice, 2026-11-18), so that class keeps its prose record; making it
-#            machine-checked is the separate post-run-evidence-anchor follow-up.
-#   F4, F5 — the obligation is a rule of the *harness itself*, discharged by the python suite under
-#            scripts/tests/ that the `selftest` step runs. That suite is a gate step of its own; this
-#            file's citation form is one Go test function in a package scripts/gate-targets.txt covers,
-#            so these two ids have no row here.
+# Deliberately not covered, with the reason: all four are re-derived by the gate through the
+# `selftest` step, which runs the python case that pins each one — but this file's citation form is one
+# Go test function in a package scripts/gate-targets.txt covers, so no row can hold them:
+#   D4, F1 — the obligation's own positive evidence is the *native* harness run
+#            (scripts/codex-native-check.py), and what the gate re-derives is the python case beside it
+#            (scripts/tests/test_codex_native_check.py: ProtectedArtifactsAfterNativeVerification for
+#            D4, SeededHostConfiguration for F1).
+#   F4, F5 — the obligation is a rule of the *harness itself*, pinned by the python suite under
+#            scripts/tests/ that the `selftest` step runs.
 #
 rule_id	test	package	artifact
 A1	TestReadReportsAForkedPathAsAmbiguous	./internal/ccc	0002-obligation-matrix.md §A1

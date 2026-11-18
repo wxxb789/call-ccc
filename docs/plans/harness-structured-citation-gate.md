@@ -84,11 +84,13 @@ the case is not about. Cases:
 
 ## 6. Seed manifest — `docs/evidence/0002-citations.tsv`
 
-Covers every rule id of `docs/evidence/0002-obligation-matrix.md` that a **gate-runnable Go or harness
-test** discharges. A header comment names the rule ids deliberately **not** covered — obligations whose
-evidence is a native harness run rather than a gate test — with the reason: out of this mechanism's
-scope **by design** (the owner's option-1 choice: a machine gate cannot re-run a native harness; that
-class keeps its prose record and is the separate "post-run evidence anchor" follow-up). Each row's
+Covers every rule id of `docs/evidence/0002-obligation-matrix.md` that a **gate-runnable Go test**
+discharges. A header comment names the rule ids deliberately **not** covered, with the reason: the row
+form is one Go test in a `gate-targets.txt` package, so an obligation whose matrix pin is a python case
+has no row. Those python cases are not outside the gate — the required `selftest` step runs them
+(`ProtectedArtifactsAfterNativeVerification`, `SeededHostConfiguration`) — they simply have no Go test
+to cite; a machine gate cannot re-run a *native* harness, which is the separate "post-run evidence
+anchor" follow-up. Each row's
 `artifact` cites the matrix section the pair comes from, so the row is traceable back to its prose.
 
 Extraction is by reading the matrix's own rows. The checker is the arbiter: a wrong test name or package

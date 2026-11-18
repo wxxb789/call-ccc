@@ -1,6 +1,6 @@
 # 0006 — Continue conversations into and out of Oh My Pi: evidence
 
-Contract: [`docs/goals/0006-omp-continuation.md`](../goals/0006-omp-continuation.md) (archived to
+Contract: [`docs/goals/archive/0006-omp-continuation.md`](../goals/archive/0006-omp-continuation.md) (archived to
 `docs/goals/archive/` in the increment that merges it, per `AGENTS.md`).
 Plan: [`docs/plans/0006-omp-continuation.md`](../plans/0006-omp-continuation.md).
 Harness: Oh My Pi `omp/18.18.7` (`omp --version`), the pinned AgentsView carry
