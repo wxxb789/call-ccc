@@ -348,6 +348,37 @@ func (f *fakeOMPTurn) run(
 	return f.answer, f.diagnostics, f.runErr
 }
 
+// fakeOMPProbe stands in for the harness's RPC mode in the model-probe cases and records the environment
+// the probe asked under, which is the half of the probe's rule the loader's fake cannot see: the
+// production runner hands the environment the probe built straight to the harness, so a case that pins
+// the policy reads it here.
+type fakeOMPProbe struct {
+	responses []piRPCResponse
+	err       error
+	calls     []fakeOMPProbeCall
+}
+
+type fakeOMPProbeCall struct {
+	executable  string
+	cwd         string
+	arguments   []string
+	stdin       string
+	environment []string
+}
+
+func (f *fakeOMPProbe) run(
+	_ context.Context, executable, cwd string, arguments []string, stdin string, environment []string,
+	_ time.Duration, _ io.Writer,
+) ([]piRPCResponse, error) {
+	f.calls = append(f.calls, fakeOMPProbeCall{
+		executable: executable, cwd: cwd, arguments: arguments, stdin: stdin, environment: environment,
+	})
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.responses, nil
+}
+
 // withFakeOMPHarness installs one fake harness for the duration of a test: the two seams the checks drive
 // a harness through -- the loader's RPC mode and the resume turn -- are answered by the fakes that are
 // given (nil leaves a seam at its real implementation), and the executable lookup is answered by a path
@@ -365,6 +396,22 @@ func withFakeOMPHarness(t *testing.T, rpc *fakeOMPRPC, turn *fakeOMPTurn) string
 		runOMPResumeTurn = turn.run
 	}
 	t.Cleanup(func() { runOMPResumeTurn = originalTurn })
+	resolved := filepath.Join(t.TempDir(), OMPBinaryDefault)
+	originalLookup := resolveOMPExecutable
+	resolveOMPExecutable = func(string) (string, error) { return resolved, nil }
+	t.Cleanup(func() { resolveOMPExecutable = originalLookup })
+	return resolved
+}
+
+// withFakeOMPModelProbe installs one fake for the model probe's own seam and answers the executable lookup
+// with a path of the test's own. The probe's seam takes the environment the probe built rather than
+// building it below the seam (which is what the load check's runner does), so a case can pin which policy
+// the harness was asked under.
+func withFakeOMPModelProbe(t *testing.T, probe *fakeOMPProbe) string {
+	t.Helper()
+	originalProbe := runOMPModelProbe
+	runOMPModelProbe = probe.run
+	t.Cleanup(func() { runOMPModelProbe = originalProbe })
 	resolved := filepath.Join(t.TempDir(), OMPBinaryDefault)
 	originalLookup := resolveOMPExecutable
 	resolveOMPExecutable = func(string) (string, error) { return resolved, nil }
@@ -752,30 +799,47 @@ func TestVerifyOMPResumeRequiresAnAnswerAndGrowth(t *testing.T) {
 	})
 }
 
-// TestProbeOMPModelAsksTheHarnessItself pins the fact the route writes into the session: the model a new
-// session of this harness would run under, asked of the harness through its own protocol rather than read
-// out of a configuration file. The probe must run with --no-session (it writes no session of its own) and
-// must report what the harness answered, or the reason it answered nothing.
+// TestProbeOMPModelAsksTheHarnessItself pins the two facts the route writes into the session: the model a
+// new session of this harness would run under, asked of the harness through its own protocol rather than
+// read out of a configuration file, and the environment it is asked under. The probe must run with
+// --no-session (it writes no session of its own), must report what the harness answered (or the reason it
+// answered nothing), and must ask under the caller's own environment -- the one the printed resume command
+// runs with, LITELLM_BASE_URL and LITELLM_API_KEY included -- rather than the load check's denylist
+// (TestOMPLoadEnvironmentRemovesEveryModelPath pins that side), because the caller's own provider
+// configuration is exactly what decides which model the home resolves (measured on 18.18.7).
 func TestProbeOMPModelAsksTheHarnessItself(t *testing.T) {
-	rpc := &fakeOMPRPC{installed: ""}
-	withFakeOMPHarness(t, rpc, nil)
+	t.Setenv("LITELLM_BASE_URL", "http://127.0.0.1:4141/v1")
+	t.Setenv("LITELLM_API_KEY", "sk-the-callers-own-gateway-key")
+	probeFake := &fakeOMPProbe{responses: ompProbeAnswers(t, true)}
+	withFakeOMPModelProbe(t, probeFake)
 	probe := ProbeOMPModel(context.Background(), "/scratch/home", OMPBinaryDefault, time.Minute, nil)
 	if !probe.Found || probe.Provider != "example-proxy" || probe.Model != "example-model-2" {
 		t.Fatalf("probe = %+v, want the harness's own answer", probe)
 	}
-	if len(rpc.calls) != 1 {
-		t.Fatalf("the probe ran %d command(s), want one", len(rpc.calls))
+	if len(probeFake.calls) != 1 {
+		t.Fatalf("the probe ran %d command(s), want one", len(probeFake.calls))
 	}
-	if !slices.Contains(rpc.calls[0].arguments, "--no-session") {
-		t.Errorf("the probe ran %v, want --no-session: a preview must leave no session behind",
-			rpc.calls[0].arguments)
+	call := probeFake.calls[0]
+	if !slices.Contains(call.arguments, "--no-session") {
+		t.Errorf("the probe ran %v, want --no-session: a preview must leave no session behind", call.arguments)
 	}
-	if rpc.calls[0].home != "/scratch/home" {
-		t.Errorf("the probe ran against %q, want the data directory it was asked about", rpc.calls[0].home)
+	if !strings.Contains(call.stdin, `"get_state"`) {
+		t.Errorf("the probe wrote %q, want it to ask the protocol's own get_state", call.stdin)
+	}
+	environment := strings.Join(call.environment, "\n")
+	for _, want := range []string{
+		"LITELLM_BASE_URL=http://127.0.0.1:4141/v1",
+		"LITELLM_API_KEY=sk-the-callers-own-gateway-key",
+		ompHomeEnv + "=/scratch/home",
+	} {
+		if !strings.Contains(environment, want) {
+			t.Errorf("the probe asked without %q, so it asked a differently configured harness than the "+
+				"printed resume command runs (%v)", want, call.environment)
+		}
 	}
 
 	t.Run("a harness that answers no model", func(t *testing.T) {
-		withFakeOMPHarness(t, &fakeOMPRPC{omitModel: true}, nil)
+		withFakeOMPModelProbe(t, &fakeOMPProbe{responses: ompProbeAnswers(t, false)})
 		probe := ProbeOMPModel(context.Background(), "/scratch/home", OMPBinaryDefault, time.Minute, nil)
 		if probe.Found || probe.Detail == "" {
 			t.Fatalf("probe = %+v, want it reported as an answer that named no model", probe)
@@ -786,7 +850,7 @@ func TestProbeOMPModelAsksTheHarnessItself(t *testing.T) {
 	})
 
 	t.Run("a harness that cannot start", func(t *testing.T) {
-		withFakeOMPHarness(t, &fakeOMPRPC{refuseEveryCall: "Error: No default model selected."}, nil)
+		withFakeOMPModelProbe(t, &fakeOMPProbe{err: errors.New("Error: No default model selected.")})
 		probe := ProbeOMPModel(context.Background(), "/scratch/home", OMPBinaryDefault, time.Minute, nil)
 		if probe.Found || probe.Detail == "" {
 			t.Fatalf("probe = %+v, want it reported as an answer it could not get", probe)
@@ -795,4 +859,17 @@ func TestProbeOMPModelAsksTheHarnessItself(t *testing.T) {
 			t.Errorf("detail = %q, want the harness's own refusal quoted", probe.Detail)
 		}
 	})
+}
+
+// ompProbeAnswers is the protocol answer the probe's cases are driven with: a `get_state` response holding
+// the resolved model, or the same answer without one. Both are built in the shape the harness was measured
+// to write (ompRPCStdout) and read back through the check's own parser, so the cases feed the probe what
+// the production path would.
+func ompProbeAnswers(t *testing.T, withModel bool) []piRPCResponse {
+	t.Helper()
+	responses, err := readPiResponses(strings.NewReader(ompRPCStdout("", 0, nil, "", withModel)))
+	if err != nil {
+		t.Fatalf("building the probe's protocol answer: %v", err)
+	}
+	return responses
 }

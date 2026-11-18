@@ -237,6 +237,62 @@ providers:
             self.assertIn("model-two", written)
             self.assertEqual(NATIVE_CHECK.configured_default_role(home), f"{LOOPBACK}/model-one")
 
+    def test_a_multiline_key_value_is_removed_whole(self):
+        # A provider whose apiKey is a block scalar -- a shape its YAML configuration vocabulary allows --
+        # writes its value on the lines *below* the field. Replacing only the opening line would copy the
+        # credential's continuation lines into the scratch home, the loader home and a --keep tree, so the
+        # whole value is removed: the field keeps the one-line placeholder and every line deeper than it is
+        # dropped. The folded and plain-continuation spellings of the same shape are covered for the same
+        # reason.
+        block_secret = "sk-block-scalar-value-that-must-not-be-written"
+        folded_secret = "sk-folded-value-that-must-not-be-written"
+        plain_secret = "sk-plain-continuation-that-must-not-be-written"
+        second_line = "a-second-line-that-must-not-be-written"
+        plain_continuation = "a-continuation-that-must-not-be-written"
+        with tempfile.TemporaryDirectory() as scratch:
+            host = Path(scratch) / "host"
+            home = Path(scratch) / "home"
+            host.mkdir()
+            home.mkdir()
+            (host / "models.yml").write_text(f"""\
+providers:
+  block-key-proxy:
+    baseUrl: http://127.0.0.1:4141/v1
+    api: openai-responses
+    apiKey: |-
+      {block_secret}
+      {second_line}
+    models:
+    - id: block-model
+      name: block-model
+  folded-key-proxy:
+    baseUrl: http://127.0.0.1:4142/v1
+    api: openai-responses
+    apiKey: >-
+      {folded_secret}
+    models:
+    - id: folded-model
+  plain-key-proxy:
+    baseUrl: http://127.0.0.1:4143/v1
+    api: openai-responses
+    apiKey: {plain_secret}
+      {plain_continuation}
+    models:
+    - id: plain-model
+""", encoding="utf-8")
+            seeded, left_out, role = self.seed(home, host)
+            self.assertEqual(
+                seeded, ["block-key-proxy", "folded-key-proxy", "plain-key-proxy"],
+                f"left out: {left_out}")
+            self.assertEqual(role, "block-key-proxy/block-model")
+            written = (home / "models.yml").read_text(encoding="utf-8")
+            for value in (block_secret, folded_secret, plain_secret, second_line, plain_continuation):
+                self.assertNotIn(value, written, "a credential line was written into a data directory")
+            self.assertEqual(written.count(f"apiKey: {NATIVE_CHECK.SANDBOX_KEY}"), 3,
+                             "each provider must keep the field with the one-line placeholder")
+            for indicator in ("|-", ">-"):
+                self.assertNotIn(indicator, written, "a block indicator survived the replacement")
+
     def test_the_callers_own_model_wins_when_its_provider_survived(self):
         with tempfile.TemporaryDirectory() as scratch:
             host = Path(scratch) / "host"

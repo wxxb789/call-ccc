@@ -361,6 +361,75 @@ command, read order or agent rule — the rule it repairs is the one `AGENTS.md`
 already state (no case may hold only on the host or `PATH` it happens to run on). No goal file is moved:
 0006 is still the increment under review.
 
+### The review round that followed the CI repair
+
+The next review round (review head `12be17c`) named three defects; all three were fixed on the same tree,
+and each fix's own case was shown to redden without it (the mutation executed and restored, each file
+hashed after its restore; the gate and the native run below ran on those bytes).
+
+- **A multiline `apiKey` value was copied whole** (`scripts/omp-native-check.py`). `_seed_block` replaced
+  only the line a value opened on, so a provider whose key is a block scalar (`apiKey: |-`) had its
+  credential's continuation lines written into the scratch home, the loader home and a `--keep` tree. The
+  replacement now drops every line deeper than the field -- the whole value -- until the next line the
+  block owns. The new case `SeedCases.test_a_multiline_key_value_is_removed_whole` covers the block,
+  folded and plain-continuation spellings and asserts none of the values reaches a written file.
+- **The model probe asked a differently configured harness than the printed resume command**
+  (`internal/ccc/omp_verify.go`). `ProbeOMPModel` ran through the load check's runner, which removes the
+  provider variables -- `LITELLM_BASE_URL`/`LITELLM_API_KEY` among them -- while the increment's own
+  measured format table makes exactly that configuration the way an environment-configured home resolves
+  a model. The probe now builds its own environment (`ompProbeEnvironment`: the caller's own, with the
+  data directory set, nothing removed) and drives a seam that takes it, so a case can pin the policy
+  (`TestProbeOMPModelAsksTheHarnessItself`).
+- **An all-fallback conversion explained nothing about the models it supplied**
+  (`internal/ccc/pi_target.go`). `losses()` selected the OMP `message_model_attribution` explanation by the
+  travelled-model count alone, so a conversion whose every assistant model came from the target home
+  reported only "the source recorded no model on any message" beside records stating that home's ids. The
+  explanation is now selected by the count the entry carries (`modelAttributionCount`), and
+  `TestOMPSessionExplainsTheModelsItSuppliedForEveryRecord` pins the all-fallback output, its count and its
+  detail; the OMP detail's own sentence now says the model travels verbatim *where the source recorded
+  one*, which is what is true when none did.
+
+The mutations that name the three repaired rules, executed and restored (each file hashed after its
+restore; the gate and the native run below ran on those bytes):
+
+| Rule | Line disabled | Observed |
+| --- | --- | --- |
+| a seeded provider's `apiKey` value is removed whole (`scripts/omp-native-check.py`, sha256 `c025030b…` after the restore) | the drop after the field's replacement removed, i.e. `_seed_block` keeps the value's continuation lines | `test_a_multiline_key_value_is_removed_whole` FAIL — `'sk-block-scalar-value-that-must-not-be-written' unexpectedly found in` the written `models.yml`, its continuation lines printed under `apiKey: ccc-native-check` |
+| the model probe asks under the caller's own environment (`internal/ccc/omp_verify.go`, sha256 `2ec1ce57…` after the restore) | `ompProbeEnvironment` built with the load check's denylist (`ompEnvironment(home, "", ompLoadEnvDenied)`) | `TestProbeOMPModelAsksTheHarnessItself` FAIL — `the probe asked without "LITELLM_BASE_URL=http://127.0.0.1:4141/v1"` and the same for `LITELLM_API_KEY`, the captured environment naming neither |
+| the attribution caveat is selected by the count it carries (`internal/ccc/pi_target.go`, sha256 `5c3ec11d…` after the restore) | the condition restored to `b.lossModels > 0` | `TestOMPSessionExplainsTheModelsItSuppliedForEveryRecord` FAIL — `detail = "the source recorded no model on any message", want it to explain the substituted ids` |
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3611 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 269 tests in 5.993s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 30 project-owned prefix(es); files seen by git: 5688 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 141 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The load half of the OMP native check was re-run on the same tree (`python3 scripts/omp-native-check.py`,
+no `--resume-prompt`, so no model turn): `RESULT: PASS — 23 check(s), none failed` (exit 0). Its seeded line
+is the one §2 records -- `seeded provider(s) ghc-proxy, ghc-proxy-chat from /home/azureuser/.omp/agent; …
+apiKey values replaced by 'ccc-native-check', headers dropped, modelRoles.default ghc-proxy/gpt-5.6-sol`
+-- and the harness's own loader verified the installed session
+(`sessionId "01a1ec05-c625-7ccc-aad7-3d8b0763ad1d"`, `messageCount 3`) beside the unknown-id control arm,
+with every digest check around it passing. The direction's source is the committed Claude fixture, so the
+run needed no Claude CLI installed. A repeat of that run with `--keep` read the probe's own answer out of
+the installed session's bytes: its `model_change` record states `ghc-proxy/gpt-5.6-sol`, the seeded home's
+own `modelRoles.default` -- the binding is the harness's answer, asked under the caller's own environment.
+
+No owner-only default was taken by the round: it re-applies rules the record already states (no credential
+is copied; the probe asks the harness the printed command resumes; a substituted model is disclosed), so
+`docs/decisions/OPEN-QUESTIONS.md` gains no entry. `AGENTS.md` is not edited: the round changes no layout,
+gate step, command, read order or agent rule. No goal file is moved: 0006 is still the increment under
+review.
+
 The counts the increment is pinned by:
 
 | Number | Where it comes from |
@@ -371,7 +440,7 @@ The counts the increment is pinned by:
 | `entries {'compaction': 1, 'message': 7, 'model_change': 1, 'role:assistant': 4, 'role:toolResult': 1, 'role:user': 2, 'session': 1, 'title': 1}` | the installed OMP file's own bytes (§2) |
 | `messageCount 3` with `['compactionSummary', 'user', 'assistant']` | OMP's own loader's answers, twice (§1, §2), against a file holding seven message entries — the loader builds context from the walk the file's own `parentId` values make, so the pre-compaction records are not in it |
 | `session 3625 -> 7176 bytes` / `3595 to 7097 bytes` | the two real turns: the session grew and its pre-existing bytes stayed a prefix (§1, §2) |
-| `268` | the harness's own cases (`python3 -m unittest discover -s scripts/tests`), up from 251: `scripts/tests/test_omp_native_check.py` holds the 17 new ones — its 16 at implementation plus the fix round's model-level credential case — and the gate's own `selftest` step ran the same suite (`Ran 268 tests in 5.888s (rc=0)`) |
+| `269` | the harness's own cases (`python3 -m unittest discover -s scripts/tests`), up from 251: `scripts/tests/test_omp_native_check.py` holds the 18 new ones — its 16 at implementation, the fix round's model-level credential case and the review round's multiline-key case — and the gate's own `selftest` step ran the same suite (`Ran 269 tests in 5.993s (rc=0)`) |
 
 Documentation and bookkeeping this increment carries: `AGENTS.md` (the route list, the writer/installer/
 verifier files, the OMP native harness, and the OMP rules — its own project spelling, the 256-byte title

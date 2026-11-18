@@ -218,6 +218,64 @@ func TestOMPSessionStatesTheHomesModelOnARecordTheSourceLeftModelLess(t *testing
 	t.Error("the report carries no message_model_attribution entry")
 }
 
+// TestOMPSessionExplainsTheModelsItSuppliedForEveryRecord pins the caveat when *no* source model travelled:
+// every assistant record then carries the harness's own configured id, the count is exactly those records,
+// and the detail is the OMP explanation saying those ids are the target home's answer -- the explanation
+// whose absence would leave the file's non-empty models unexplained (the sibling case keeps one source
+// model, which is why it does not see this branch).
+func TestOMPSessionExplainsTheModelsItSuppliedForEveryRecord(t *testing.T) {
+	conversation := piFixtureConversation()
+	for index := range conversation.Messages {
+		conversation.Messages[index].Model = ""
+	}
+	session, err := ConvertToOMPSession(conversation, ompFixtureTargetOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	fallbacks, travelled := 0, 0
+	for _, entry := range ompEntries(t, session.Data) {
+		if entry.Type != piEntryMessage || entry.Role != piRoleAssistant {
+			continue
+		}
+		switch entry.Model {
+		case "home-model":
+			fallbacks++
+		case "":
+			t.Errorf("an assistant record states no model: measured, the harness fails to build the next " +
+				"request when one assistant record has none")
+		default:
+			travelled++
+			t.Errorf("an assistant record states %q, want the target home's own configured id: the source "+
+				"recorded no model at all", entry.Model)
+		}
+	}
+	if fallbacks != 2 {
+		t.Fatalf("assistant models = %d answered by the target home and %d carried from the source; want "+
+			"the fixture's two assistant messages all answered by the target home", fallbacks, travelled)
+	}
+	for _, loss := range session.Losses {
+		if loss.Category != "message_model_attribution" {
+			continue
+		}
+		if loss.Count != fallbacks {
+			t.Errorf("message_model_attribution count = %d, want %d: every record the target home supplied "+
+				"a model for is counted", loss.Count, fallbacks)
+		}
+		for _, want := range []string{"request builder", "configured model id"} {
+			if !strings.Contains(loss.Detail, want) {
+				t.Errorf("message_model_attribution detail = %q, want it to explain the substituted ids "+
+					"(%q)", loss.Detail, want)
+			}
+		}
+		if strings.Contains(loss.Detail, "the source recorded no model on any message") {
+			t.Errorf("message_model_attribution detail = %q, want the substitution explained rather than "+
+				"only the missing source model", loss.Detail)
+		}
+		return
+	}
+	t.Error("the report carries no message_model_attribution entry")
+}
+
 // TestOMPSessionWithoutTheHomesAnswerRecordsNoBinding pins the dry-run shape and the report that goes with
 // it: the harness is not started, so no session model binding is written and no endpoint label is stated
 // on the assistant records -- and both facts are named in the report rather than left to be inferred from

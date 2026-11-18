@@ -886,14 +886,14 @@ func piModelDetail(family string) string {
 			"request builder reads both on every assistant record of the session it resumes: a record " +
 			"without a provider (or without a model) makes the next turn fail while it builds its request " +
 			"(measured on 18.18.7, `undefined is not an object (evaluating 'e.length')`, by dropping the " +
-			"member from one record of an otherwise loadable session). The model travels verbatim -- it is " +
-			"what the source's own message recorded -- while the provider is the *target home's* own " +
-			"configured endpoint, asked of the harness: the inherited read answers no endpoint " +
-			"attribution for a message, and the source's own provider label is a name the target home " +
-			"need not define, so the field states the endpoint this session runs under rather than one " +
-			"that served the words. A record whose model the read did not answer carries the harness's own " +
-			"configured model id for the same measured reason. What the source's conversation is, and " +
-			"which model wrote each turn the read answered, is unchanged by it"
+			"member from one record of an otherwise loadable session). The model travels verbatim where " +
+			"the source's own message recorded one -- the record states that recorded model -- while the " +
+			"provider is the *target home's* own configured endpoint, asked of the harness: the inherited " +
+			"read answers no endpoint attribution for a message, and the source's own provider label is a " +
+			"name the target home need not define, so the field states the endpoint this session runs " +
+			"under rather than one that served the words. A record whose model the read did not answer " +
+			"carries the harness's own configured model id for the same measured reason. What the source's " +
+			"conversation is, and which model wrote each turn the read answered, is unchanged by it"
 	}
 	return "Pi's message record states which model and which provider produced the words. The " +
 		"model travels verbatim -- it is what the source's own message recorded, and the target's own " +
@@ -1162,8 +1162,12 @@ func (b *piSessionBuilder) losses() []Loss {
 	if b.sawBoundary {
 		preBoundaryDetail = preBoundaryHistoryDetail()
 	}
+	// The explanation is selected by the count the entry carries (modelAttributionCount): a family whose
+	// format requires a non-empty model on every assistant record can have supplied the target home's own
+	// model for *every* record, and lossModels is then zero while the file still states model ids this
+	// conversion chose. A detail selected by the travelled count alone would call those ids unexplained.
 	modelDetail := "the source recorded no model on any message"
-	if b.lossModels > 0 {
+	if b.modelAttributionCount() > 0 {
 		modelDetail = piModelDetail(b.shape.Name)
 	}
 	return append([]Loss{

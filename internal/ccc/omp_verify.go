@@ -636,6 +636,14 @@ type OMPModelProbe struct {
 // into, so the answer is the one that home resolves rather than this host's default. A home with no model
 // configured answers nothing: measured, the harness refuses to start at all there (`No default model
 // selected`), which is reported as the detail rather than as an empty answer.
+//
+// It is asked under the caller's own environment -- the one the printed resume command runs with -- and
+// not the load check's denylist: which model a home resolves can be exactly the caller's own provider
+// configuration (measured on 18.18.7, the built-in `litellm` provider reads LITELLM_BASE_URL and
+// LITELLM_API_KEY from the environment), so a probe that removed those variables would ask a differently
+// configured harness than the one the printed line resumes, and could record no binding -- or another
+// model -- for a home whose only model is configured that way. ompProbeEnvironment builds that environment
+// and the probe's own runner (runOMPModelProbe) is handed it.
 func ProbeOMPModel(
 	ctx context.Context, home, binary string, timeout time.Duration, stderr io.Writer,
 ) OMPModelProbe {
@@ -651,9 +659,9 @@ func ProbeOMPModel(
 	if timeout <= 0 {
 		timeout = ompProbeTimeout
 	}
-	responses, err := runOMPLoaderRPC(ctx, path, "", home, "",
-		[]string{"--mode", "rpc", "--no-tools", "--no-session"},
-		`{"id":"model","type":"get_state"}`+"\n", timeout, stderr)
+	arguments := []string{"--mode", "rpc", "--no-tools", "--no-session"}
+	responses, err := runOMPModelProbe(ctx, path, "", arguments,
+		`{"id":"model","type":"get_state"}`+"\n", ompProbeEnvironment(home), timeout, stderr)
 	if err != nil {
 		probe.Detail = "the harness did not answer get_state: " + summariseText(err.Error(), 300)
 		return probe
@@ -680,6 +688,36 @@ func ProbeOMPModel(
 // ompProbeTimeout bounds one model probe. Measured: the answer arrives in about a second, and a harness
 // that cannot answer is stopped by this deadline rather than by the caller's patience.
 const ompProbeTimeout = 90 * time.Second
+
+// ompProbeEnvironment builds the environment the model probe asks the harness under: the caller's own,
+// with the data directory the conversion will install into set, the sessions-tree variable cleared (the
+// probe's `--no-session` run names no session file) and *nothing* removed. It is deliberately not the load
+// check's environment (ompEnvironment with ompLoadEnvDenied): that one exists so a load reads a converted
+// session with no model path at all, while the probe's question is which model this home resolves for a
+// new session of the harness the printed resume command runs -- and that command runs with the caller's
+// own environment. The built-in `litellm` provider reads LITELLM_BASE_URL and LITELLM_API_KEY from the
+// environment (measured on 18.18.7), so a probe that removed them would ask a differently configured
+// harness than the caller resumes.
+func ompProbeEnvironment(home string) []string {
+	return ompEnvironment(home, "", nil)
+}
+
+// runOMPProbeRPC starts one OMP RPC run for the model probe: the command, its working directory and the
+// environment the probe built (ompProbeEnvironment), handed straight to the shared runner.
+func runOMPProbeRPC(
+	ctx context.Context, binary, cwd string, arguments []string, stdin string, environment []string,
+	timeout time.Duration, stderr io.Writer,
+) ([]piRPCResponse, error) {
+	return runHarnessRPC(ctx, binary, cwd, arguments, stdin, environment, timeout, stderr)
+}
+
+// runOMPModelProbe is the seam the model probe drives the harness's RPC mode through: the rule under test
+// is what the probe makes of the harness's own answer *and* which environment it asks under, so a test
+// answers the protocol itself and records the environment instead of the case needing the host's harness.
+// The environment travels through the seam rather than being built inside it, because that is what lets a
+// case tell this probe's policy apart from the load check's denylist, which runOMPLoaderRPC applies below
+// its own seam.
+var runOMPModelProbe = runOMPProbeRPC
 
 // ompResolvedModel answers the model identity a `get_state` answer names, or an error describing what the
 // harness said instead.

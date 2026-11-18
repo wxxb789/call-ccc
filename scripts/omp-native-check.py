@@ -393,7 +393,14 @@ def block_has_credential_endpoint(lines: list[str]) -> bool:
 
 def _seed_block(lines: list[str], placeholder: str) -> list[str]:
     """One provider block with apiKey's *value* replaced by the placeholder and every `headers` line and
-    its sub-block dropped. The field itself is never removed: OMP refuses to start without a key."""
+    its sub-block dropped. The field itself is never removed: OMP refuses to start without a key.
+
+    The *whole* value is replaced, not only the line it opens with: a value may be a block scalar
+    (``apiKey: |-``) or any other multi-line scalar, whose own lines are indented deeper than the field
+    and would otherwise be copied -- the credential among them -- into the scratch home, the loader home
+    and a ``--keep`` tree. So the replacement also drops every line deeper than the field until the next
+    line the block itself owns, exactly as a dropped ``headers`` sub-block is dropped.
+    """
     kept: list[str] = []
     drop_deeper_than: int | None = None
     replaced = False
@@ -411,6 +418,11 @@ def _seed_block(lines: list[str], placeholder: str) -> list[str]:
         if stripped.startswith(f"{SEEDED_KEY_FIELD}:"):
             kept.append(" " * indent + f"{SEEDED_KEY_FIELD}: {placeholder}")
             replaced = True
+            # Any line deeper than this field is a continuation of its value -- a block scalar's own
+            # lines, a folded or quoted scalar continued, a plain scalar's continuation -- never a field
+            # of the block, so dropping to the next line at this indent or shallower removes the original
+            # value whole.
+            drop_deeper_than = indent
             continue
         kept.append(line)
         if insert_at is None and any(stripped.startswith(f"{key}:")
