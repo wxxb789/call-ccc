@@ -434,18 +434,17 @@ func writeOMPScratchHome(home, provider, model string) error {
 	return os.WriteFile(filepath.Join(home, "config.yml"), []byte(config), ompCheckFileMode)
 }
 
-// ompYAMLScalar spells one value for the check's own YAML, whose schema is small and known: a value that
-// is a plain scalar in YAML's own rules is written as it is, and anything else is written as a
-// double-quoted JSON string, which is a valid YAML scalar and is what keeps an exotic provider or model
-// id from changing the document's shape.
+// ompYAMLScalar spells one value for the check's own YAML as a double-quoted scalar: JSON's string
+// encoding, which is also a valid YAML scalar. Every value is quoted, not only the ones holding a
+// character YAML acts on, because a *plain* scalar is typed by its own spelling -- YAML reads `123` as a
+// number, `null` as a null, `yes` as a boolean and `2026-11-18` as a timestamp -- and a provider, a model
+// or a `provider/model` role the target home defines as that string would reach the harness as one of
+// those instead of as the identity the session binds. The ids are the target home's own configuration
+// answers (the probe's), so a spelling this build did not anticipate is ordinary.
 func ompYAMLScalar(value string) string {
-	if value != "" && !strings.ContainsAny(value, ":#{}[],&*!|>'\"%@`\n\t ") {
-		return value
-	}
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return `""`
-	}
+	// json.Marshal of a string has no failure case -- invalid UTF-8 is replaced, never refused -- so the
+	// error is dropped rather than branched on.
+	encoded, _ := json.Marshal(value)
 	return string(encoded)
 }
 

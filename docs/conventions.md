@@ -157,7 +157,12 @@ gate runs as a required step.
   declares its own provider definition for the converted file's own records without a credential of the
   caller's — `auth: none` in the Go verifier's scratch home (`internal/ccc/omp_verify.go`), the
   placeholder `apiKey` value `ccc-native-check` in the native check's loader data directory — a home with
-  no model refuses to start the harness at all, and this way a load needs no credential.
+  no model refuses to start the harness at all, and this way a load needs no credential. Every value such
+  a home's own YAML spells (its provider's name, a model's id and name, `modelRoles.default`) is written
+  as a **quoted** scalar rather than left to YAML's implicit typing: the ids are the target home's own
+  configuration answers, so a provider or model spelled `123`, `null` or `2026-11-18` is ordinary, and a
+  bare spelling would reach the harness as a number, a null or a timestamp — measured, the harness refuses
+  such a session (`SessionModelRestoreError`).
 - **Fixtures are sanitized native shapes.** Small, version-identified, committed fixtures — one
   provider directory per source (`fixtures/claude/`, `fixtures/codex/`, `fixtures/pi/`,
   `fixtures/omp/`) — with no real

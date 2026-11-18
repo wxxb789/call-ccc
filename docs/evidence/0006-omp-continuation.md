@@ -658,6 +658,11 @@ The counts the increment is pinned by:
 | `RESULT: FAIL — 5 check(s) failed: … every assistant record carries a non-empty model and provider, the load check verified the installed session natively, …` (exit 1) | the fourth round's no-provider measurement (§6): the failure a host with no provider this check can use must see instead of a pass |
 | `11 caught` | the fourth round's mutation check: each seeder rule the round touched, reverted once and its pinning case watched fail, script restored byte for byte (`sha256 d304c451…` before and after) |
 | `4 caught` | the fifth round's mutation check: the four rules its new case pins -- the entry states the read's model, the fallback only where it answered none, the calls travel, the entry holds no dialogue -- each disabled once and the case watched fail, `internal/ccc/pi_target.go` restored byte for byte (`sha256 3655d6a3…` after the restores) |
+| `290` | the harness's own cases after the sixth round (`python3 -m unittest discover -s scripts/tests`, `Ran 290 tests in 5.984s`), up from `287`: that round's three cases are `ScalarSpellingCases`' two and `SeedCases.test_the_runs_own_definition_spells_ambiguous_ids_as_strings`, taking `scripts/tests/test_omp_native_check.py` from 36 to 39 methods |
+| `302 -> 303` (`cmd/ccc` unchanged at `41`) | the sixth round's Go test functions, counted as `grep -h '^func Test'` over the gate's own packages' `_test.go` files (`internal/ccc` and its subpackages): the new `TestOMPScratchHomeDeclaresTheSessionsIdAsStrings` and the rule test renamed `TestOMPYAMLScalarQuotesExoticValues` -> `TestOMPYAMLScalarQuotesEveryValue` with its rows extended; none removed |
+| `23 check(s), none failed` (exit 0) with `--model 123/123 --provider-base-url http://127.0.0.1:4141/v1` | the sixth round's ambiguous-id measurement (§6): a home whose provider and model are the *string* `123`, verified by the harness's own loader through both writers |
+| `RESULT: FAIL — 2 check(s) failed: …` with `SessionModelRestoreError: Could not restore model 123/123` (exit 1) | the same measurement with the old conditional quoting restored (§6): the failure a non-string-valued scratch home produces for a correctly bound session |
+| `6 caught` | the sixth round's mutation check: the helper's rule, its three call sites (models.yml, config.yml) and the Python twin's two writers, each disabled once and its case watched fail -- plus the harness-level re-run -- every file restored (`sha256 16c6571b…`/`da406bec…`/`0266e142…`/`9c11d873…` for the delivered files, taken after the round's last edit) |
 
 Documentation and bookkeeping this increment carries: `AGENTS.md` (the route list, the writer/installer/
 verifier files, the OMP native harness, and the OMP rules — its own project spelling, the 256-byte title
@@ -667,6 +672,96 @@ slot, the required per-assistant `model`+`provider`, the session binding being t
 `--to omp` and its printed resume line); `scripts/upstream-import.py` and `scripts/upstream-manifest.txt`
 (the new owned script); `docs/decisions/OPEN-QUESTIONS.md` (Q-0006-01 … Q-0006-04); goal 0005 archived to
 `docs/goals/archive/` with its index row and every link to it updated.
+
+### The sixth review round
+
+Round 6's finding was a **type**, not a shape. `ompYAMLScalar` (`internal/ccc/omp_verify.go`) and its twin
+`yaml_scalar` (`scripts/omp-native-check.py`) wrote a value as a *plain* scalar whenever it held none of a
+fixed set of characters — and a plain scalar is typed by its own spelling, so a target home whose
+configured model id is the string `123` (or `null`, `yes`, `2026-11-18`) reached the harness as a number,
+a null, a boolean or a timestamp. Both functions now emit every value as a **double-quoted JSON string**
+(which is a valid YAML scalar), and `_generated_block` — the one provider definition the Python check
+writes itself — spells the provider's name and the model's id and name through the same function instead
+of interpolating them bare. `writeOMPScratchHome`'s three call sites are unchanged: they already went
+through the helper, which is why one rule now covers every value both homes hold.
+
+Proven against the harness rather than argued, with a home whose only provider and model are spelled
+`123` (`python3 scripts/omp-native-check.py --model 123/123 --provider-base-url
+http://127.0.0.1:4141/v1`): the run seeds its own home with `  "123":` / `- id: "123"` /
+`modelRoles:\n  default: "123/123"\n`, the conversion writes the binding the harness answered for that home
+(`"model":"123/123"` in the session's `model_change`, `"model":"123","provider":"123"` on its assistant
+records), and OMP's own loader opens the installed session — `RESULT: PASS — 23 check(s), none failed`,
+exit **0**. With the old conditional quoting restored (one mutation, `bin/ccc` rebuilt, reverted after the
+measurement), the *same* command ends exit **1**:
+
+```console
+FAIL: the load check verified the installed session natively — the harness's own loader did not answer for session 01a1ec5f-e9ec-723f-90fa-8ae12a8e406e: exit status 1; stderr: … throw new Aee(Xn[0]); ^ SessionModelRestoreError: Could not restore model 123/123 at VQ (/$bunfs/root/chunks/cli-k …
+RESULT: FAIL — 2 check(s) failed: ccc continue exits 0 for a conversion whose verification ran, the load check verified the installed session natively
+scratch removed (/tmp/ccc-omp-native-check-tlfqdfig)
+```
+
+That is the finding's own impact, measured: the default load verification of a correctly bound session
+failing because the verifier's scratch home defined a *different model* (`123` as a number, the model's
+name as `null`) than the session binds. The default invocation was re-run on this tree as well
+(`python3 scripts/omp-native-check.py`, no `--model`), printing the same `RESULT: PASS — 23 check(s), none
+failed` with §2's seeded line unchanged (`seeded provider(s) ghc-proxy, ghc-proxy-chat …;
+modelRoles.default ghc-proxy/gpt-5.6-sol`): quoting every value is accepted by the harness for its
+ordinary provider names too, and the load arm — the Go verifier's own scratch home — ran there as well.
+
+The mutations that name the rules this round's cases pin, each line disabled once and its case watched
+fail, every file restored (these are the delivered files' digests, taken after the round's last edit):
+`internal/ccc/omp_verify.go` sha256 `16c6571b…`, `internal/ccc/omp_verify_test.go` `da406bec…`,
+`scripts/omp-native-check.py` `0266e142…`, `scripts/tests/test_omp_native_check.py` `9c11d873…`:
+
+| Rule | Line disabled | Observed |
+| --- | --- | --- |
+| every value the scratch home writes is a quoted scalar | `ompYAMLScalar`'s body reverted to the reviewed conditional | `TestOMPYAMLScalarQuotesEveryValue` FAIL (14 rows: `example-proxy`, `123`, `-1`, `1e3`, `0x1f`, `1_000`, `null`, `~`, `true`, `yes`, `no`, `on`, `.inf`, `2026-11-18` — `ompYAMLScalar("123") = "123", want "\"123\""`), and `TestOMPScratchHomeDeclaresTheSessionsIdAsStrings` FAIL -- `the scratch home's model id decoded as <nil> (<nil>), want the string "null"` (a YAML reader's own answer) beside `config.yml = "modelRoles:\n  default: 123/null\n"` |
+| the same rule spells `models.yml`'s own fields (three call sites) | the three calls replaced by bare `%s` interpolation | `TestOMPScratchHomeDeclaresTheSessionsIdAsStrings` FAIL -- `the scratch home's model id decoded as <nil> (<nil>), want the string "null"` and the same for the model's name (the unit case above stays green: it pins the helper, and the home's fields are what this one pins) |
+| the same rule spells `config.yml`'s default role | the role's call site replaced by `provider+"/"+model` | the same case FAIL -- `the scratch home's config.yml = "modelRoles:\n  default: 123/null\n", want "modelRoles:\n  default: \"123/null\"\n"`; a `provider/model` value is not a spelling YAML types by itself (its `/` rules that out), so the byte expectation is what pins this site |
+| the Python twin quotes every value it is handed | `yaml_scalar`'s body reverted to the reviewed conditional | `ScalarSpellingCases.test_every_value_is_a_quoted_scalar` FAIL — 14 subtests, `AssertionError: '2026-11-18' != '"2026-11-18"'`; the round-trip case beside it stays green, which is the measured shape of that rule (`configured_default_role` answers the same role either way — the role has no scalar type to be re-read as) |
+| the run's own generated definition spells its ids that way | `_generated_block` reverted to the bare f-strings | `SeedCases.test_the_runs_own_definition_spells_ambiguous_ids_as_strings` FAIL — 13 subtests, `AssertionError: '  "2026-11-18":' not found in 'providers:\n  2026-11-18:\n …'` |
+| (at the harness, not at a case) | `ompYAMLScalar`'s conditional restored, `bin/ccc` rebuilt | the ambiguous-id native check FAIL — `RESULT: FAIL — 2 check(s) failed: …`, the harness's own `SessionModelRestoreError: Could not restore model 123/123` above |
+
+The cases themselves, one per rule above: `TestOMPYAMLScalarQuotesEveryValue`
+(`internal/ccc/omp_verify_test.go`) pins the spelling of 19 values, the punctuation-free type spellings
+among them, and `TestOMPScratchHomeDeclaresTheSessionsIdAsStrings` writes the home for `123`/`null` and
+reads both files back **with an independent YAML reader** (`go.yaml.in/yaml/v3`): the provider's key, the
+model's id and name and the default role must decode as the strings the session binds, and the home's
+role line is asserted literally beside them (a `provider/model` value has no type to be misread as, so its
+spelling is what is left to pin); on the Python side
+`ScalarSpellingCases.test_every_value_is_a_quoted_scalar` pins the same table against `json.dumps`,
+`ScalarSpellingCases.test_a_role_this_run_writes_is_read_back_as_the_same_role` pins the write→read round
+trip through `configured_default_role`, and
+`SeedCases.test_the_runs_own_definition_spells_ambiguous_ids_as_strings` drives `seed_omp_home`'s
+generated block with 13 ambiguous ids, asserting each quoted spelling and the role the run's own reader
+reads back.
+
+`python3 scripts/gate.py` was re-run on this round's tree and printed `GATE: PASS` (exit 0):
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3611 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 290 tests in 5.984s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 30 project-owned prefix(es); files seen by git: 5688 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 141 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+This round adds one Go case and three Python cases, and removes none: `internal/ccc` + its subpackages
+holds 302 -> 303 test functions (`grep -h '^func Test'` over the package's `_test.go` files; `cmd/ccc`
+stays 41), and `scripts/tests/test_omp_native_check.py` 36 -> 39 methods, taking the harness's own suite
+`287 -> 290` (`Ran 290 tests in 5.984s` in the block above).
+
+Documentation this round carries: `docs/conventions.md`'s OMP scratch-home clause now states the rule
+(every value such a home's own YAML spells is a quoted scalar, with the measured `SessionModelRestoreError`
+as the reason). `AGENTS.md` is unchanged: the round changes neither the layout, the gate or its steps, the
+commands, the read order, nor a rule an agent must follow. Nothing is archived: goal 0006 is still
+`Implemented on feat/0006-omp-continuation; awaiting operator acceptance`, so it stays under `docs/goals/`,
+and no owner-only question arose (the finding itself named the direction: quoted strings).
 
 ## 7. Limits, and what this record does not claim
 

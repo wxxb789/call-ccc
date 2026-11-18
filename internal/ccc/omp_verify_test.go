@@ -7,12 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"go.yaml.in/yaml/v3"
 )
 
 // TestOMPVersionFrom pins the version line the probe reads: the harness answers `omp/18.18.7`, and the
@@ -180,14 +183,33 @@ func TestOMPSessionBindingReadsTheBindingThenTheMessages(t *testing.T) {
 	}
 }
 
-// TestOMPYAMLScalarQuotesExoticValues pins the rule that keeps the scratch data directory's own YAML the
-// shape the harness's reader expects: a value that is a plain scalar stays as it is, and one holding a
-// character YAML acts on -- or holding nothing at all -- becomes a double-quoted JSON string. The provider
-// and model ids are the target home's own configuration answers, so an id this build did not anticipate is
-// ordinary; the Python check's twin rule is pinned in scripts/tests/test_omp_native_check.py.
-func TestOMPYAMLScalarQuotesExoticValues(t *testing.T) {
+// TestOMPYAMLScalarQuotesEveryValue pins the rule the scratch data directory's own YAML is written by:
+// every value is a double-quoted scalar, including the ones holding no character YAML acts on. Those are
+// exactly the spellings YAML *types* by itself -- a number, a null, a boolean, a timestamp -- and the
+// provider, model and role are the target home's own configuration answers (the probe's), so an id
+// spelled `123` or `null` is ordinary and must arrive as that string rather than as the value YAML's
+// implicit typing makes of it. The Python check's twin rule is pinned in
+// scripts/tests/test_omp_native_check.py.
+func TestOMPYAMLScalarQuotesEveryValue(t *testing.T) {
 	for _, testCase := range []struct{ value, want string }{
-		{"example-proxy", "example-proxy"},
+		{"example-proxy", `"example-proxy"`},
+		// The punctuation-free spellings YAML gives a type of its own: its number forms, its null forms,
+		// its boolean forms and its timestamp form.
+		{"123", `"123"`},
+		{"-1", `"-1"`},
+		{"1e3", `"1e3"`},
+		{"0x1f", `"0x1f"`},
+		{"1_000", `"1_000"`},
+		{"null", `"null"`},
+		{"~", `"~"`},
+		{"true", `"true"`},
+		{"yes", `"yes"`},
+		{"no", `"no"`},
+		{"on", `"on"`},
+		{".inf", `".inf"`},
+		{"2026-11-18", `"2026-11-18"`},
+		// Values holding a character that can change a document's own shape (punctuation, whitespace),
+		// and the empty value.
 		{"a:b", `"a:b"`},
 		{"a b", `"a b"`},
 		{"", `""`},
@@ -197,6 +219,89 @@ func TestOMPYAMLScalarQuotesExoticValues(t *testing.T) {
 		if got := ompYAMLScalar(testCase.value); got != testCase.want {
 			t.Errorf("ompYAMLScalar(%q) = %q, want %q", testCase.value, got, testCase.want)
 		}
+	}
+}
+
+// TestOMPScratchHomeDeclaresTheSessionsIdAsStrings pins that rule where it is consumed: the data
+// directory the load check writes is read back with a YAML reader's own answers (an independent one --
+// the harness's own is the reader the run cannot require), and the provider, the model's id and name and
+// the default role must decode as the *strings* the session binds. A scratch home that defines the
+// number 123 or a null where the session names `123`/`null` is one the harness restores no model from.
+func TestOMPScratchHomeDeclaresTheSessionsIdAsStrings(t *testing.T) {
+	home := t.TempDir()
+	// Spelled so that a YAML reader given them bare answers a number and a null rather than these strings.
+	provider, model := "123", "null"
+	if err := writeOMPScratchHome(home, provider, model); err != nil {
+		t.Fatalf("writeOMPScratchHome: %v", err)
+	}
+
+	var definition struct {
+		Providers map[string]struct {
+			Models []struct {
+				ID   any `yaml:"id"`
+				Name any `yaml:"name"`
+			} `yaml:"models"`
+		} `yaml:"providers"`
+	}
+	models, err := os.ReadFile(filepath.Join(home, "models.yml"))
+	if err != nil {
+		t.Fatalf("reading the scratch home's models.yml: %v", err)
+	}
+	if err := yaml.Unmarshal(models, &definition); err != nil {
+		t.Fatalf("the scratch home's models.yml is not the YAML the harness reads: %v\n%s", err, models)
+	}
+	providerDefinition, ok := definition.Providers[provider]
+	if !ok {
+		t.Fatalf("the scratch home defines no provider %q, only %v:\n%s",
+			provider, slices.Sorted(maps.Keys(definition.Providers)), models)
+	}
+	if len(providerDefinition.Models) != 1 {
+		t.Fatalf("the scratch home defines %d model(s), want the session's one:\n%s",
+			len(providerDefinition.Models), models)
+	}
+	for _, field := range []struct {
+		what  string
+		value any
+	}{
+		{"model id", providerDefinition.Models[0].ID},
+		{"model name", providerDefinition.Models[0].Name},
+	} {
+		text, isString := field.value.(string)
+		if !isString {
+			t.Errorf("the scratch home's %s decoded as %T (%v), want the string %q",
+				field.what, field.value, field.value, model)
+			continue
+		}
+		if text != model {
+			t.Errorf("the scratch home's %s decoded as %q, want %q", field.what, text, model)
+		}
+	}
+
+	var roles struct {
+		ModelRoles struct {
+			Default any `yaml:"default"`
+		} `yaml:"modelRoles"`
+	}
+	config, err := os.ReadFile(filepath.Join(home, "config.yml"))
+	if err != nil {
+		t.Fatalf("reading the scratch home's config.yml: %v", err)
+	}
+	if err := yaml.Unmarshal(config, &roles); err != nil {
+		t.Fatalf("the scratch home's config.yml is not the YAML the harness reads: %v\n%s", err, config)
+	}
+	role, isString := roles.ModelRoles.Default.(string)
+	if !isString {
+		t.Fatalf("the scratch home's default role decoded as %T (%v), want the string %q",
+			roles.ModelRoles.Default, roles.ModelRoles.Default, provider+"/"+model)
+	}
+	if role != provider+"/"+model {
+		t.Errorf("the scratch home's default role decoded as %q, want %q", role, provider+"/"+model)
+	}
+	// The role's own bytes: a `provider/model` value is not a spelling YAML types by itself (the `/`
+	// rules its own scalar types out), so what is pinned here is that the role goes through the one
+	// function that spells every value this home holds rather than being concatenated bare.
+	if want := "modelRoles:\n  default: \"123/null\"\n"; string(config) != want {
+		t.Errorf("the scratch home's config.yml = %q, want %q", config, want)
 	}
 }
 

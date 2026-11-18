@@ -174,6 +174,41 @@ class ProjectDirCases(unittest.TestCase):
         self.assertEqual(NATIVE_CHECK.omp_separator_spelling("C:\\work\\api"), "C--work-api")
 
 
+class ScalarSpellingCases(unittest.TestCase):
+    """How this run spells a value it writes into its own YAML: always a quoted scalar.
+
+    The provider, model and role are the caller's own configuration answers, so an id spelled the way
+    YAML itself types a scalar -- ``123``, ``null``, ``yes``, ``2026-11-18`` -- is ordinary, and a home
+    written with one of those bare would define a number, a null, a boolean or a timestamp where the
+    session binds a string. The Go twin is ``TestOMPYAMLScalarQuotesEveryValue``
+    (``internal/ccc/omp_verify_test.go``).
+    """
+
+    #: The punctuation-free spellings YAML gives a type of its own, and the values holding a character
+    #: that can change a document's own shape (punctuation, whitespace) beside the empty value.
+    AMBIGUOUS = ("123", "-1", "1e3", "0x1f", "1_000", "null", "~", "true", "yes", "no", "on", ".inf",
+                 "2026-11-18")
+    STRUCTURAL = ("a:b", "a b", "", "provider#one")
+
+    def test_every_value_is_a_quoted_scalar(self):
+        for value in ("example-proxy",) + self.AMBIGUOUS + self.STRUCTURAL:
+            with self.subTest(value):
+                self.assertEqual(NATIVE_CHECK.yaml_scalar(value), json.dumps(value),
+                                 "every value this run writes is a double-quoted scalar")
+
+    def test_a_role_this_run_writes_is_read_back_as_the_same_role(self):
+        # The write and the read have to agree: `configured_default_role` is what answers whether a
+        # requested turn can run, and it reads the same file this run writes.
+        for role in ("proxy/model", "123/123", "null/null", "yes/2026-11-18"):
+            with self.subTest(role):
+                with tempfile.TemporaryDirectory() as scratch:
+                    home = Path(scratch)
+                    (home / "config.yml").write_text(
+                        f"modelRoles:\n  default: {NATIVE_CHECK.yaml_scalar(role)}\n",
+                        encoding="utf-8")
+                    self.assertEqual(NATIVE_CHECK.configured_default_role(home), role)
+
+
 class SeedCases(unittest.TestCase):
     """What the run's own data directory is seeded with, and what must not be written."""
 
@@ -494,6 +529,33 @@ providers:
             seeded, _, role = self.seed(home, host, preferred=f"{LOOPBACK}/model-two")
             self.assertEqual(seeded, [LOOPBACK])
             self.assertEqual(role, f"{LOOPBACK}/model-two")
+
+    def test_the_runs_own_definition_spells_ambiguous_ids_as_strings(self):
+        # The run writes its own provider definition from the caller's `--model`/`--provider-base-url`,
+        # so the caller's own spelling of an id is what reaches the home: an id YAML types by itself
+        # (`123`, `null`, `yes`, `2026-11-18`) must be written as the *string* the caller named -- a home
+        # defining the number 123 defines no model the session's records name.
+        with tempfile.TemporaryDirectory() as scratch:
+            host = Path(scratch) / "host"
+            home = Path(scratch) / "home"
+            host.mkdir()  # no models.yml: nothing is seeded from the host, so the block is this run's own
+            home.mkdir()
+            for model_id in ScalarSpellingCases.AMBIGUOUS:
+                with self.subTest(model_id):
+                    preferred = f"{model_id}/{model_id}"
+                    seeded, left_out, role = self.seed(home, host, preferred=preferred,
+                                                       base_url="http://127.0.0.1:4141/v1")
+                    self.assertEqual(seeded, [model_id], f"left out: {left_out}")
+                    self.assertEqual(role, preferred)
+                    written = (home / "models.yml").read_text(encoding="utf-8")
+                    self.assertIn(f'  "{model_id}":', written,
+                                  "the provider's own name is a quoted scalar")
+                    self.assertIn(f'    - id: "{model_id}"', written,
+                                  "the model's id is a quoted scalar")
+                    self.assertIn(f'      name: "{model_id}"', written,
+                                  "the model's name is a quoted scalar")
+                    self.assertEqual(NATIVE_CHECK.configured_default_role(home), preferred,
+                                     "the role this run wrote reads back as the caller's own pair")
 
     def test_a_non_loopback_endpoint_is_never_defined_even_when_asked(self):
         with tempfile.TemporaryDirectory() as scratch:

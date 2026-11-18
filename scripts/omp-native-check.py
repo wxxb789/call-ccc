@@ -293,11 +293,14 @@ def host_omp_home() -> Path:
 
 
 def yaml_scalar(value: str) -> str:
-    """One value spelled for the check's own YAML: a plain scalar in YAML's own rules where it is one,
-    else a double-quoted JSON string (which is a valid YAML scalar). It mirrors the Go function
-    ``ompYAMLScalar`` (internal/ccc/omp_verify.go), whose schema is the same small one."""
-    if value and not any(character in value for character in ":#{}[],&*!|>'\"%@`\n\t "):
-        return value
+    """One value spelled for the check's own YAML as a double-quoted scalar -- JSON's string encoding,
+    which is also a valid YAML scalar. Every value is quoted, not only the ones holding a character YAML
+    acts on, because a *plain* scalar is typed by its own spelling: YAML reads ``123`` as a number,
+    ``null`` as a null, ``yes`` as a boolean and ``2026-11-18`` as a timestamp, so a provider, a model or
+    a ``provider/model`` role a home defines as that string would reach the harness as one of those
+    instead of as the identity the session binds (these are the caller's own configuration answers, so a
+    spelling this run did not anticipate is ordinary). It mirrors the Go function ``ompYAMLScalar``
+    (internal/ccc/omp_verify.go), whose schema is the same small one."""
     return json.dumps(value)
 
 
@@ -704,15 +707,18 @@ def _seed_block(lines: list[str], placeholder: str) -> list[str]:
 
 def _generated_block(name: str, base_url: str, model_id: str) -> list[str]:
     """A provider definition this run writes itself, in the shape the harness's own writer produces for
-    a one-model provider: the endpoint, the api, the placeholder key, and one model entry."""
+    a one-model provider: the endpoint, the api, the placeholder key, and one model entry. The provider's
+    name and the model's id and name are spelled through `yaml_scalar` -- quoted scalars -- for the reason
+    that function states: they are strings, and a YAML reader would type `123` or `null` by its own
+    spelling and reach the harness as a number or a null rather than as the id the session binds."""
     return [
-        f"  {name}:",
+        f"  {yaml_scalar(name)}:",
         f"    baseUrl: {base_url}",
         "    api: openai-completions",
         f"    apiKey: {SANDBOX_KEY}",
         "    models:",
-        f"    - id: {model_id}",
-        f"      name: {model_id}",
+        f"    - id: {yaml_scalar(model_id)}",
+        f"      name: {yaml_scalar(model_id)}",
         "      reasoning: false",
         "      input: [text]",
         "      contextWindow: 1000",
