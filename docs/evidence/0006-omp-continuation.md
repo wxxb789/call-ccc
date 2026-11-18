@@ -544,6 +544,58 @@ is stated in `docs/harness.md` and the script's own docstrings, where it already
 question arose, so `docs/decisions/OPEN-QUESTIONS.md` gains no entry; no goal file is moved (0006 is still
 the increment under review).
 
+### The fourth review round
+
+Round 4's behavioural finding was again the seeder's credential policy, in the shape a plain scalar takes
+when it continues on a later line: `baseUrl: http://localhost:4141/v1` followed by an indented
+`?api_key=…` is one folded value to any YAML reader, while the seeder's line reader saw only the first
+line's endpoint and copied the continuation verbatim into its scratch home, its loader copy and a
+`--keep` tree. The folded and next-line shapes were checked against a YAML reader before the fix
+(`gopkg.in/yaml.v3` from the module graph the inherited tree carries, run against the shapes the new
+cases seed): the continuation of a field, of a sequence item's own scalar, a continuation line that
+itself opens with `- ` (which folds into the value too), a value spelled under its field's name on the
+next line, and a block-scalar sequence item. `_seed_block` now carries continuation state per line --
+after any plain scalar value it read, a later line indented past the key column that value belongs to (or
+past a sequence item's own marker) is refused as a second line of that value -- and refuses any line that
+is neither an entry nor a sequence item, while a sequence item's own text is decoded like every entry
+value. The refusal rule in the script's docstrings and `docs/harness.md` now names those forms; the two
+new cases in `scripts/tests/test_omp_native_check.py` pin them beside a canonical provider that must
+still seed, and the 11 seeder rules this round touched were each reverted once, every revert making its
+pinning case fail (`11 caught`), with the script restored byte for byte (sha256 `d304c451…` before and
+after).
+
+The second finding was this record's own limit, not the check's behaviour: §7 had promised that a host
+with no loopback provider "reports a named skip for the turn" and that "the load half runs regardless".
+Measured on this host with `PI_CODING_AGENT_DIR` pointed at a home holding one remote provider
+(`python3 scripts/omp-native-check.py`, exit `1`):
+
+```console
+SKIP: an OMP provider definition was seeded into the run's own scratch home — no provider survived the seed: remote-endpoint (its endpoint https://api.example.com/v1 is not loopback: …)
+SKIP: the seeded home selects a model role a real turn can use — no model role was written, so this home answers no model: a turn (--resume-prompt) has nothing to run under
+FAIL: ccc continue exits 0 for a conversion whose verification ran — exit 1; stderr No default model selected. Use /login, set an API key environment variable, or select a local model with /model or --model.
+FAIL: every assistant record carries a non-empty model and provider — 4 assistant message(s), 4 without the pair
+FAIL: the load check verified the installed session natively — the converted session names no model and no provider in its own records, and this harness refuses to start in a data directory that defines no model: the load could not be verified against a home built for it
+FAIL: the harness's own loader answers about the installed session — … SessionModelRestoreError: Could not res…
+FAIL: the loader's own message list is the file's model-visible history — loader [] vs file ['compactionSummary', 'user', 'assistant']
+RESULT: FAIL — 5 check(s) failed: ccc continue exits 0 for a conversion whose verification ran, every assistant record carries a non-empty model and provider, the load check verified the installed session natively, the harness's own loader answers about the installed session, the loader's own message list is the file's model-visible history
+```
+
+so §7 now states that limit as it was measured: a data directory that resolves a model is the
+prerequisite the conversion's binding (and so the load half) needs, and the run ends failed -- a requested
+turn through `record_unavailable_requested_turn()`, never a skip. The check was re-run on the host's own
+home on the fixed tree (no `--resume-prompt`): `RESULT: PASS — 23 check(s), none failed` (exit 0), with the
+seeded line unchanged from §2 (`seeded provider(s) ghc-proxy, ghc-proxy-chat from /home/azureuser/.omp/agent;
+left out: tencent-litellm (its endpoint … is not loopback…)`, `modelRoles.default ghc-proxy/gpt-5.6-sol`),
+the load check verified, and the harness's own loader answering `messageCount 3` beside the unknown-id
+control arm.
+
+Bookkeeping for round 4: no carried file changed (an owned script, its tests and docs), so
+`docs/upstream.md`, `scripts/upstream-manifest.txt` and the parity step's inputs are untouched; `AGENTS.md`
+is not edited (no layout, gate step, command, read order or agent rule changes -- the refusal rule lives in
+`docs/harness.md` and the script's docstrings); no owner-only question arose, so
+`docs/decisions/OPEN-QUESTIONS.md` gains no entry; no goal file is moved (0006 is still the increment under
+review); the gate's own steps and counts are in the table below.
+
 The counts the increment is pinned by:
 
 | Number | Where it comes from |
@@ -554,7 +606,10 @@ The counts the increment is pinned by:
 | `entries {'compaction': 1, 'message': 7, 'model_change': 1, 'role:assistant': 4, 'role:toolResult': 1, 'role:user': 2, 'session': 1, 'title': 1}` | the installed OMP file's own bytes (§2) |
 | `messageCount 3` with `['compactionSummary', 'user', 'assistant']` | OMP's own loader's answers, twice (§1, §2), against a file holding seven message entries — the loader builds context from the walk the file's own `parentId` values make, so the pre-compaction records are not in it |
 | `session 3625 -> 7176 bytes` / `3595 to 7097 bytes` | the two real turns: the session grew and its pre-existing bytes stayed a prefix (§1, §2) |
-| `285` | the harness's own cases (`python3 -m unittest discover -s scripts/tests`), up from `267` at implementation: `scripts/tests/test_omp_native_check.py` holds 34 of them — 16 at implementation, the fix round's model-level credential case, the review round's eleven (that round's own counts row and console kept `269`, the count of its earlier state; measured on its tree, `ef31bea`, the suite is `280`), and this round's five — and the gate's own `selftest` step ran the same suite (`Ran 285 tests in 5.941s (rc=0)`) |
+| `287` | the harness's own cases (`python3 -m unittest discover -s scripts/tests`), up from `267` at implementation: `scripts/tests/test_omp_native_check.py` holds 36 of them — 16 at implementation, the fix round's model-level credential case, the review round's eleven (that round's own counts row and console kept `269`, the count of its earlier state; measured on its tree, `ef31bea`, the suite is `280`), the third round's five, and the fourth round's two (the continuation and keyless-provider cases; measured per round on the branch, that file holds `17`, `18`, `29`, `34` methods at `12be17c`/`d3e91ff`/`ef31bea`/`a4acf53`) — and the gate's own `selftest` step ran the same suite (`Ran 287 tests in 5.933s (rc=0)`) |
+| `23 check(s), none failed` (exit 0) | the OMP native check re-run on the host's own home, once per later review round (§6); no `--resume-prompt`, so the two turn checks do not run |
+| `RESULT: FAIL — 5 check(s) failed: … every assistant record carries a non-empty model and provider, the load check verified the installed session natively, …` (exit 1) | the fourth round's no-provider measurement (§6): the failure a host with no provider this check can use must see instead of a pass |
+| `11 caught` | the fourth round's mutation check: each seeder rule the round touched, reverted once and its pinning case watched fail, script restored byte for byte (`sha256 d304c451…` before and after) |
 
 Documentation and bookkeeping this increment carries: `AGENTS.md` (the route list, the writer/installer/
 verifier files, the OMP native harness, and the OMP rules — its own project spelling, the 256-byte title
@@ -574,10 +629,18 @@ slot, the required per-assistant `model`+`provider`, the session binding being t
   not-verified with the harness's own words, ending the run non-zero (§6's fix-round run) rather than
   passing with the turn skipped.
 - **The OMP half's turn ran under the host's own loopback proxy**, in a data directory the check seeded
-  from the host's own OMP home with the key's *value* replaced by a placeholder. A host with no loopback
-  provider (and no `LITELLM_BASE_URL`/`--provider-base-url`) reports a named skip for the turn; the load
-  half runs regardless, since its loader data directory carries this run's own provider definition (the
-  placeholder `apiKey` value this run writes, never a credential of the caller's).
+  from the host's own OMP home with the key's *value* replaced by a placeholder. A data directory that
+  resolves a model, though, is a prerequisite this check cannot supply itself: the conversion asks the
+  harness for the `<provider>/<model>` binding the session records, and the load half needs that binding
+  as much as a real turn does. On a host with no loopback provider and no
+  `LITELLM_BASE_URL`/`--provider-base-url`, the seed records are skips, the harness itself answers
+  `No default model selected…` so the conversion exits non-zero, and the checks that read the binding
+  fail -- the per-record `model`+`provider` pair, the conversion's own load verification, and the script's
+  loader arm, where the harness raises `SessionModelRestoreError` -- so the run ends
+  `RESULT: FAIL` (exit 1; the measurement is §6's). A requested turn there is a failed check through
+  `record_unavailable_requested_turn()`, never a skip. Re-deriving the numbers in §1–§5 needs the loopback
+  provider the recorded runs had; a host without one can still run the check and will see the failure
+  derivation above, never a pass.
 - **`messageCount` is the loader's own count**, not the file's `message` entry count (§6): seven message
   entries, three messages on the file's own walk after its latest compaction entry. The check compares the
   loader's answer with the roles it computes from the file's bytes, which is the strongest comparison two

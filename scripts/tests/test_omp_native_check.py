@@ -301,6 +301,189 @@ providers:
             for indicator in ("|-", ">-"):
                 self.assertNotIn(indicator, written, "a block indicator survived the replacement")
 
+    def test_a_plain_continuation_of_a_field_is_refused_whole(self):
+        # A plain scalar can continue on a later, deeper line (checked against a YAML reader: the lines
+        # fold into one value -- `http://…/v1 ?api_key=…`, and even a continuation line that opens with
+        # `- ` folds, `a-name - ?api_key=…`), so a credential riding on the continuation line is a value
+        # this seeder's line reader never attributed to a field -- and a definition carrying one was
+        # copied, that line included, into the scratch home, the loader home and a --keep tree. Every
+        # place a value can continue is refused whole, with the reason naming the continuation: the
+        # provider's own field, a model entry's field, a kept field of any name, and a sequence item's
+        # own scalar (a continuation line that itself looks like a sequence marker is caught the same
+        # way, because it is one value to YAML). Three more spellings are refused on the same ground:
+        # a value spelled under its field's name on the next line (the same single value, one line
+        # lower), a line YAML reads as one plain scalar and not as a sequence item (`-text` opens no
+        # item -- only `- ` does), and a sequence item whose own text is a form this reader cannot
+        # follow (a block scalar, whose content lines are the item's value). The canonical provider
+        # beside them is still seeded, so the refusal is about the spelling and not about the file.
+        provider_secret = "sk-provider-continuation-that-must-not-be-written"
+        model_secret = "sk-model-continuation-that-must-not-be-written"
+        field_secret = "sk-field-continuation-that-must-not-be-written"
+        marker_secret = "sk-marker-continuation-that-must-not-be-written"
+        item_secret = "sk-item-continuation-that-must-not-be-written"
+        marker_item_secret = "sk-item-marker-continuation-that-must-not-be-written"
+        next_line_secret = "sk-next-line-plain-value-that-must-not-be-written"
+        next_line_quoted_secret = "sk-next-line-quoted-value-that-must-not-be-written"
+        block_item_secret = "sk-item-block-scalar-that-must-not-be-written"
+        with tempfile.TemporaryDirectory() as scratch:
+            host = Path(scratch) / "host"
+            home = Path(scratch) / "home"
+            host.mkdir()
+            home.mkdir()
+            (host / "models.yml").write_text(f"""\
+providers:
+  provider-continuation:
+    baseUrl: http://127.0.0.1:4141/v1
+      ?api_key={provider_secret}
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    models:
+    - id: provider-continuation-model
+  model-continuation:
+    baseUrl: http://127.0.0.1:4142/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    models:
+    - id: model-continuation-model
+      baseUrl: http://127.0.0.1:4143/v1
+        ?api_key={model_secret}
+  field-continuation:
+    baseUrl: http://127.0.0.1:4144/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    name: a-name
+      ?api_key={field_secret}
+    models:
+    - id: field-continuation-model
+  marker-continuation:
+    baseUrl: http://127.0.0.1:4145/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    name: a-name
+     - ?api_key={marker_secret}
+    models:
+    - id: marker-continuation-model
+  item-continuation:
+    baseUrl: http://127.0.0.1:4146/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    models:
+    - id: item-continuation-model
+      input:
+      - text
+        ?api_key={item_secret}
+  item-marker-continuation:
+    baseUrl: http://127.0.0.1:4147/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    models:
+    - id: item-marker-continuation-model
+      input:
+      - text
+        - ?api_key={marker_item_secret}
+  next-line-plain-value:
+    baseUrl: http://127.0.0.1:4148/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    models:
+    - id: next-line-plain-model
+      baseUrl:
+        http://127.0.0.1:4149/v1?api_key={next_line_secret}
+  next-line-quoted-value:
+    baseUrl: http://127.0.0.1:4150/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    models:
+    - id: next-line-quoted-model
+      baseUrl:
+        "http://127.0.0.1:4151/v1?api_key={next_line_quoted_secret}"
+  empty-block-item:
+    baseUrl: http://127.0.0.1:4152/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    models:
+    - id: empty-block-item-model
+      input:
+      - |
+  block-item-with-content:
+    baseUrl: http://127.0.0.1:4153/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    models:
+    - id: block-item-model
+      input:
+      - |
+        {block_item_secret}
+  bare-scalar-line:
+    baseUrl: http://127.0.0.1:4155/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    models:
+    - id: bare-scalar-model
+      input:
+        -text
+  canonical-continuation:
+    # a comment line the copy keeps
+    baseUrl: http://127.0.0.1:4154/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    models:
+    - id: canonical-model
+""", encoding="utf-8")
+            seeded, left_out, role = self.seed(home, host)
+            self.assertEqual(seeded, ["canonical-continuation"], f"left out: {left_out}")
+            self.assertEqual(role, "canonical-continuation/canonical-model")
+            continuations = ("provider-continuation", "model-continuation", "field-continuation",
+                             "marker-continuation", "item-continuation", "item-marker-continuation")
+            attributed_by_name = ("next-line-plain-value", "next-line-quoted-value", "bare-scalar-line")
+            refused = continuations + attributed_by_name + ("empty-block-item", "block-item-with-content")
+            for name in refused:
+                self.assertTrue(any(reason.startswith(name) for reason in left_out),
+                                f"{name} is not named among {left_out}")
+            for name in continuations:
+                reason = next(reason for reason in left_out if reason.startswith(name))
+                self.assertIn("continues a plain scalar", reason,
+                              f"{name}'s refusal should name the continuation: {reason}")
+            for name in attributed_by_name:
+                reason = next(reason for reason in left_out if reason.startswith(name))
+                self.assertIn("cannot attribute to a field", reason,
+                              f"{name}'s refusal should say why the line has no field: {reason}")
+            written = (home / "models.yml").read_text(encoding="utf-8")
+            self.assertIn("# a comment line the copy keeps", written,
+                          "a comment line inside the definition is kept, as every other line is")
+            for value in (provider_secret, model_secret, field_secret, marker_secret, item_secret,
+                          marker_item_secret, next_line_secret, next_line_quoted_secret,
+                          block_item_secret):
+                self.assertNotIn(value, written, "a value line was written into a data directory")
+            for name in refused:
+                self.assertNotIn(name, written, "a refused provider's definition was copied")
+            self.assertIn(f"apiKey: {NATIVE_CHECK.SANDBOX_KEY}", written)
+
+    def test_a_provider_with_no_key_gains_the_runs_own_placeholder(self):
+        # OMP refuses to start in a data directory whose provider carries no literal key (measured), so a
+        # surviving provider that defines no `apiKey` at all keeps its definition and gains this run's
+        # placeholder: a seeder that only rewrote an existing field would write a home the harness will
+        # not start in.
+        with tempfile.TemporaryDirectory() as scratch:
+            host = Path(scratch) / "host"
+            home = Path(scratch) / "home"
+            host.mkdir()
+            home.mkdir()
+            (host / "models.yml").write_text("""\
+providers:
+  keyless-proxy:
+    baseUrl: http://127.0.0.1:4141/v1
+    api: openai-responses
+    models:
+    - id: keyless-model
+""", encoding="utf-8")
+            seeded, left_out, role = self.seed(home, host)
+            self.assertEqual(seeded, ["keyless-proxy"], f"left out: {left_out}")
+            self.assertEqual(role, "keyless-proxy/keyless-model")
+            written = (home / "models.yml").read_text(encoding="utf-8")
+            self.assertIn(f"apiKey: {NATIVE_CHECK.SANDBOX_KEY}", written)
+            self.assertIn("keyless-model", written)
+
     def test_the_callers_own_model_wins_when_its_provider_survived(self):
         with tempfile.TemporaryDirectory() as scratch:
             host = Path(scratch) / "host"

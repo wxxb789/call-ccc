@@ -3,9 +3,12 @@
 
 This is the target-side native verification for goal 0006 (OMP continuation), and it is deliberately
 **not** a gate step, exactly like ``scripts/claude-native-check.py``, ``scripts/codex-native-check.py``
-and ``scripts/pi-native-check.py``: it needs the OMP binary installed and, for a real turn, a model the
-harness's data directory resolves. The gate keeps deciding the offline half (the inherited reader's round
-trip, the install rules, the reported losses and the CLI shape).
+and ``scripts/pi-native-check.py``: it needs the OMP binary installed and a data directory for the target
+that resolves a model -- the harness's own answer is the binding the conversion writes into the session,
+and the load check needs that binding as much as a real turn does, so a host whose data directory names no
+model this run can use ends its run with those checks failed, never passed. The gate keeps deciding the
+offline half (the inherited reader's round trip, the install rules, the reported losses and the CLI
+shape).
 
 What it does, for the direction it is asked about:
 
@@ -55,9 +58,13 @@ reader cannot decode is left out whole too, with that reason in the run's own ou
 unread: YAML's explicit ``? key``, a quoted key that does not close on its own line or whose escapes
 cannot be unquoted, an entry or a kept field's value spelled in YAML's flow form (``- {id: …}``,
 ``models: [{…}]``), a value under a tag, anchor or alias, a block scalar, a nested sequence or an empty
-key, and a quoted value whose escapes cannot be decoded. A quoted value's escapes are decoded before any
-check reads it, so ``"…/v1\\u003fapi_key=…"`` carries the ``?`` the credential check sees, while a value
-the reader cannot decode is refused rather than guessed at.
+key, a quoted value whose escapes cannot be decoded, a plain scalar continued on a later line (or a
+sequence item's own scalar so continued -- a multi-line value this reader does not fold), a value a field
+holds on a line of its own, and a line that is neither an entry nor a sequence item; the last three are
+lines the copy cannot show a field owning, which is where an endpoint URL or a credential would ride
+unscrubbed. A quoted value's escapes are decoded before any check reads it, so
+``"…/v1\\u003fapi_key=…"`` carries the ``?`` the credential check sees, while a value the reader cannot
+decode is refused rather than guessed at.
 ``modelRoles.default`` is ``--model`` when the host's own home defines its provider (or
 ``--provider-base-url`` defined it), else that home's own configured default when its provider survived,
 else the first surviving provider's first model, else nothing (and the report says so, because a home
@@ -343,14 +350,16 @@ def _scalar(text: str) -> str:
 
 
 def _require_readable_value(value: str) -> None:
-    """Refuse one entry's value unless its form is one this seeder reads, by decoding it.
+    """Refuse one entry's or sequence item's value unless its form is one this seeder reads, by decoding
+    it.
 
     Called for every value a block is copied with -- `_seed_block`'s fields other than the two names
-    whose whole value it replaces or drops -- so the copy carries no value the seeder did not read. A
-    flow collection's keys, a block scalar's content lines and an escaped quoted scalar are each a place
-    a field -- an endpoint URL among them -- can be spelled without this reader seeing it; `_scalar` is
-    the same reading the credential checks use, so a supported value costs one decode and an unsupported
-    one is refused with the reason every unread form raises.
+    whose whole value it replaces or drops, and every sequence item's own text -- so the copy carries no
+    value the seeder did not read. A flow collection's keys, a block scalar's content lines and an
+    escaped quoted scalar are each a place a field -- an endpoint URL among them -- can be spelled
+    without this reader seeing it; `_scalar` is the same reading the credential checks use, so a
+    supported value costs one decode and an unsupported one is refused with the reason every unread form
+    raises.
     """
     _scalar(value)
 
@@ -361,11 +370,13 @@ class _UnseedableBlock(Exception):
     Raised for a form YAML itself could read and this seeder's textual reader cannot: a key spelled in
     YAML's explicit ``?`` form, a quoted key that does not close on its own line or whose escapes this
     reader cannot unquote, an entry or value spelled in flow form (``- {id: …, baseUrl: …}``), a value
-    that is a tagged or anchored node, a block scalar or a nested block structure, and a quoted value
-    whose escapes this reader cannot decode. A definition carrying one is left out of the seed whole, with
-    this reason in the run's own output, because copying a line the seeder did not read is exactly how a
-    credential-bearing ``headers``/``apiKey``/``baseUrl`` spelling would reach the scratch home, the
-    loader home and a ``--keep`` tree unscrubbed.
+    that is a tagged or anchored node, a block scalar or a nested block structure, a quoted value whose
+    escapes this reader cannot decode, a scalar a field or sequence item holds on a later line (a plain
+    scalar continued, or one spelled under its own field's name), and a line that is neither an entry nor
+    a sequence item and so cannot be attributed to a field at all. A definition carrying one is left out
+    of the seed whole, with this reason in the run's own output, because copying a line the seeder did
+    not read is exactly how a credential-bearing ``headers``/``apiKey``/``baseUrl`` spelling would reach
+    the scratch home, the loader home and a ``--keep`` tree unscrubbed.
     """
 
 
@@ -375,9 +386,10 @@ class _UnseedableBlock(Exception):
 _QUOTED_SCALAR = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'(?:[^']|'')*'")
 
 
-def _mapping_entry(line: str) -> tuple[str, str, int] | None:
-    """One line that opens a YAML mapping entry as ``(key, value, colon)``: the key's own text, the text
-    after the colon that closes it, and that colon's index in `line`.
+def _mapping_entry(line: str) -> tuple[str, str, int, int] | None:
+    """One line that opens a YAML mapping entry as ``(key, value, colon, key_column)``: the key's own
+    text, the text after the colon that closes it, that colon's index in `line`, and the column the key
+    itself starts at.
 
     The seeder's credential policy rests on reading a key the way YAML itself spells it rather than by a
     literal prefix: a key may be quoted (``"headers"``), whitespace may stand between it and its colon
@@ -389,6 +401,11 @@ def _mapping_entry(line: str) -> tuple[str, str, int] | None:
     YAML reads it (an implicit key of the whole scalar, not a field). Callers compare the returned key
     case-insensitively, which is the conservative direction: a value under a case-variant spelling must not
     pass unscrubbed.
+
+    The key's column is what a plain scalar value's own continuation lines are indented deeper than
+    (YAML: a continuation line must be more indented than the innermost enclosing block collection, whose
+    indentation a block mapping's keys stand at), which is why `_seed_block` reads it: a line indented
+    past it is a second line of the value, never a field.
 
     Returns None for a line that opens no entry -- a value or content line, a comment, a sequence of plain
     scalars -- and raises `_UnseedableBlock` for a line whose own start says it opens an entry in a form
@@ -437,7 +454,7 @@ def _mapping_entry(line: str) -> tuple[str, str, int] | None:
         except json.JSONDecodeError:
             raise _UnseedableBlock(
                 "it spells a quoted key with escapes this seeder's reader cannot decode")
-        return key, after[separator.end():], offset + token.end() + separator.end() - 1
+        return key, after[separator.end():], offset + token.end() + separator.end() - 1, offset
     for index, character in enumerate(rest):
         if character == ":" and (index + 1 == len(rest) or rest[index + 1] in " \t"):
             key = rest[:index].strip()
@@ -445,8 +462,26 @@ def _mapping_entry(line: str) -> tuple[str, str, int] | None:
                 raise _UnseedableBlock(
                     "it opens a mapping entry with an empty key, which this seeder's reader cannot "
                     "name")
-            return key, rest[index + 1:], offset + index
+            return key, rest[index + 1:], offset + index, offset
     return None
+
+
+def _sequence_item(line: str) -> str | None:
+    """The text one line's block-sequence item carries after its own ``- `` marker, or None when the
+    line opens no item.
+
+    ``- `` is what YAML opens a block-sequence entry with, and nothing else is: ``-text`` is one plain
+    scalar, and a line whose marker is followed by a mapping entry (``- id: demo``) is read as that
+    entry instead (`_mapping_entry` takes the marker into account). That marker's own column is what an
+    item's plain scalar continues past -- YAML indents the continuation lines of a sequence item's
+    scalar deeper than the sequence itself, and the sequence's indentation is its markers' -- so the
+    caller sets its continuation threshold from this line's indentation.
+    """
+    offset = len(line) - len(line.lstrip(" \t"))
+    rest = line[offset:]
+    if not rest.startswith("-") or rest[1:2] not in ("", " ", "\t"):
+        return None
+    return rest[1:].strip()
 
 
 def provider_blocks(text: str) -> dict[str, list[str]]:
@@ -594,11 +629,25 @@ def _seed_block(lines: list[str], placeholder: str) -> list[str]:
     tagged or anchored node, a block scalar -- may spell fields of its own, so it is refused before
     anything is copied rather than copied unread. The two names whose whole value is replaced or dropped
     above are not read that way: no part of either is copied.
+
+    A scalar can also continue, or start, on a line of its own, and both spellings are values this
+    line-at-a-time reader does not read as a field: a plain scalar's continuation lines are indented
+    deeper than the key they belong to (or than a sequence item's own marker), and a field whose value
+    begins on the next line stands under a name this reader saw but a value it did not. Neither line can
+    be attributed to a field, so any line that is not a comment, an entry, or a sequence item whose own
+    text this reader decodes is refused whole -- otherwise an endpoint or credential the YAML reader
+    folds into ``baseUrl``/``apiKey`` would be copied into the scratch home, the loader home and a
+    ``--keep`` tree unscrubbed. Blank and comment lines carry no field and are kept as they were.
     """
     kept: list[str] = []
     drop_deeper_than: int | None = None
     replaced = False
     insert_at: int | None = None
+    #: The column past which a following line continues the last plain scalar this walk read: the key
+    #: column of the entry that value belongs to, or the marker column of the sequence item. A line
+    #: indented deeper than it is a second line of that value -- YAML folds the two into one -- and is
+    #: refused rather than copied unread.
+    scalar_above: int | None = None
     for line in lines:
         stripped = line.strip()
         indent = len(line) - len(line.lstrip(" "))
@@ -606,9 +655,18 @@ def _seed_block(lines: list[str], placeholder: str) -> list[str]:
             if not stripped or indent > drop_deeper_than:
                 continue
             drop_deeper_than = None
+        if not stripped or stripped.startswith("#"):
+            kept.append(line)
+            continue
+        if scalar_above is not None:
+            if indent > scalar_above:
+                raise _UnseedableBlock(
+                    "it continues a plain scalar on a later line -- a multi-line value this seeder's "
+                    "reader does not reconstruct -- so the value is not one this reader can read")
+            scalar_above = None
         entry = _mapping_entry(line)
         if entry is not None:
-            key, value, colon = entry
+            key, value, colon, key_column = entry
             name = key.strip().lower()
             if name in _SEEDED_DROPPED_FIELDS:
                 drop_deeper_than = indent
@@ -623,6 +681,18 @@ def _seed_block(lines: list[str], placeholder: str) -> list[str]:
                 drop_deeper_than = indent
                 continue
             _require_readable_value(value)
+            if value.strip():
+                scalar_above = key_column
+        else:
+            item = _sequence_item(line)
+            if item is None:
+                raise _UnseedableBlock(
+                    "it is a line this seeder's reader cannot attribute to a field: it opens no entry "
+                    "and no sequence item, so a value it carries -- an endpoint URL among them -- would "
+                    "be copied unread")
+            if item:
+                _require_readable_value(item)
+                scalar_above = indent
         kept.append(line)
         if insert_at is None and entry is not None and entry[0].strip().lower() in ("baseurl", "api"):
             insert_at = len(kept)
@@ -1306,7 +1376,10 @@ def _check_omp_loader(omp: str, home: Path, workspace: Path, installed: Path, se
     the caller named is never copied -- its configuration may hold literal keys or headers -- so when the
     copy carries no `models.yml` this check writes its own provider definition instead, in the shape
     `_generated_block` writes: the provider and model the file's own records name, with the placeholder
-    `apiKey` value `SANDBOX_KEY` (`ccc-native-check`) and no `auth:` key anywhere.
+    `apiKey` value `SANDBOX_KEY` (`ccc-native-check`) and no `auth:` key anywhere. A file whose own
+    records name no provider and model has no definition to build for it, and the harness's own refusal to
+    start in a home that holds none -- the same absence the conversion's own load check reports -- is then
+    this arm's answer: a failed check that names the absence, never a pass.
     """
     before = sha256(installed)
     loader_home = Path(tempfile.mkdtemp(prefix="ccc-omp-native-loader-"))

@@ -405,14 +405,21 @@ says so.
   never read: YAML's explicit `? key`, a quoted key it cannot unquote, an entry — or a value of a field the
   block keeps — spelled in flow form (`- {id: …, baseUrl: …}`, `models: [{…}]`), a value under a tag,
   anchor or alias, a block scalar (whose content lines this reader does not read as fields), a nested
-  sequence, an empty key, a quoted value that does not close on its line, and content after a quoted
-  value's closing quote. With no surviving provider the home names no model role, the conversion writes no
-  binding, and the run reports that as a named check instead of crashing — OMP's own measured behaviour for
-  a home with no model. A home the caller names with `--target-home` is never seeded and nothing is
-  planted in it — the converted session the conversion installs there is the file the run leaves, and a
-  requested turn grows it — and the run reports both the role its own textual read finds in that home's
-  `config.yml` and, when the conversion's own probe answered, the model the harness's own `get_state`
-  resolved for it (the answer that
+  sequence, an empty key, a quoted value that does not close on its line, content after a quoted
+  value's closing quote, a plain scalar continued on a later line (a multi-line value this reader does not
+  fold — a sequence item's own scalar continues the same way, and a continuation line that itself opens
+  with `- ` folds too), a value a field holds on a line of its own, and a line that is neither an entry
+  nor a sequence item; the last three are lines the copy cannot show a field owning, which is where an
+  endpoint URL or a credential would ride unscrubbed. With no surviving provider the home names no model
+  role, the conversion writes no binding, and the run reports that as a named check instead of crashing —
+  OMP's own measured behaviour for a home with no model; the checks that read the binding (the per-record
+  `model`+`provider` pair, the conversion's own load verification, and the loader arm, where the harness
+  raises `SessionModelRestoreError`) then fail, so a host with no provider this run can seed and no
+  `--provider-base-url`/`--model` ends `RESULT: FAIL`, never a pass with a named skip. A home the caller
+  names with `--target-home` is never seeded and nothing is planted in it — the converted session the
+  conversion installs there is the file the run leaves, and a requested turn grows it — and the run
+  reports both the role its own textual read finds in that home's `config.yml` and, when the conversion's
+  own probe answered, the model the harness's own `get_state` resolved for it (the answer that
   decides the turn when the reading cannot follow the home's spelling) beside its every-session digests.
   `--resume-prompt` is a request for one real turn: the run attempts it whenever any of the seed's role,
   that reading and the harness's own answer names a model, and a requested turn the run could not attempt
