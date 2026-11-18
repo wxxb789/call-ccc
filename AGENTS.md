@@ -74,10 +74,14 @@ with their exit codes and counts).
   block no choice: the readers write each part of the trace as one block in the record's own part order,
   so a removal is established by a *reading* of the record — an assignment of some of `Content`'s marker
   blocks to the trace's parts, in order, whose words open the trace, close it, and account for everything
-  between them — and a block is taken only where every reading the bytes admit takes it. The feeds around
-  a marker pair are not a part boundary: a part of the record's own text may carry feeds of its own around
-  a pair whose words the trace holds, as a substring of it as readily as the whole (round 12), so where
-  the readings disagree about a block the block keeps its place as the model's own words. What stands: the
+  between them — and a block is taken only where every reading the bytes admit takes it. The blocks the
+  readings weigh are enumerated at every opener — each paired with the first closer that follows it, an
+  opener standing inside a pair read before it included — because a text part's own trailing opener
+  otherwise pairs with the rendering's closer and hides the rendering whose words the trace holds, so the
+  reading takes the record's own pair and deletes words it wrote (round 13). The feeds around a marker
+  pair are not a part boundary: a part of the record's own text may carry feeds of its own around a pair
+  whose words the trace holds, as a substring of it as readily as the whole (round 12), so where the
+  readings disagree about a block the block keeps its place as the model's own words. What stands: the
   words are the record's own wherever the reader put them — a reader that keeps the record's part order
   (ZCode's) renders the trace after the text it followed as readily as before it — so a trace the read
   answered nothing for, a block no trace of that record accounts for, a marker pair inside a part the

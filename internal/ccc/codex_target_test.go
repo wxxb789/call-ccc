@@ -1228,7 +1228,11 @@ func TestCodexRolloutKeepsAReasoningOnlyRecordOutOfTheDialogue(t *testing.T) {
 // block they disagree about keeps its place as text the record carries (round 12's finding: the feeds
 // around a pair are not a part boundary, because a part of the record's own text may carry feeds of its
 // own around a pair whose words the trace holds too -- as a substring of the trace as readily as the
-// whole of it).
+// whole of it). The blocks the readings weigh are enumerated at every opener -- each paired with the
+// first closer that follows it, an opener standing inside a pair read before it included -- because a
+// text part's own trailing opener otherwise pairs with the rendering's closer and hides the rendering
+// whose words the trace holds, so the reading takes the record's own pair and deletes words it wrote
+// (round 13's finding).
 // Of the line feeds around a removed rendering, only the one feed the reader's
 // own join put on each side goes with it: a feed a neighbouring text part records is that part's own
 // bytes (ZCode joins its parts with `strings.Join(parts, "\n")`), so a recorded blank line -- a
@@ -1349,6 +1353,47 @@ func TestDialogueFromContentKeepsOnlyTheRecordsOwnText(t *testing.T) {
 			Message{Role: "assistant", Thinking: "private reasoning", ContentRendersThinking: true,
 				Content: "Before\n" + rendering("private reasoning") + "\nAfter\n" + rendering("private reasoning")},
 			"Before\n" + rendering("private reasoning") + "\nAfter\n" + rendering("private reasoning")},
+		// Round 13's finding, at this seam: a part of the record's own text may end with an opener its
+		// own part never closes, and the reader's rendering that follows *does* close -- so the text's
+		// opener pairs with the rendering's closer, and the rendering's own opener stands inside that
+		// span. Pre-fix the scan resumed past the pair it had read, so the rendering was never a
+		// candidate; the pair the record wrote was the only one the trace accounted for, and the removal
+		// deleted the record's own words while the rendering stayed in the dialogue. Every opener is read
+		// now, so both pairs are candidates, both account for the trace, and the readings disagree about
+		// the dialogue: nothing is removed.
+		{"a text part ending with an opener before the rendering leaves the bytes whole",
+			Message{Role: "assistant", Thinking: "private", ContentRendersThinking: true,
+				Content: "Before\n" + rendering("private") + "\nAfter\n" + thinkingRenderOpen +
+					"\n" + rendering("private")},
+			"Before\n" + rendering("private") + "\nAfter\n" + thinkingRenderOpen + "\n" + rendering("private")},
+		{"an opener the text part ends with is read on to the rendering's closer",
+			// The same span, without the quoted pair: the text part's opener is a candidate whose words
+			// (`[Thinking]` and the trace) open none of the trace, and the rendering's own opener is a
+			// candidate whose words are the whole trace -- so the reading is unique and removes the
+			// rendering, leaving the text part's own bytes as the dialogue.
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				Content: "Before\n" + thinkingRenderOpen + "\n" + rendering(trace)},
+			"Before\n" + thinkingRenderOpen},
+		{"an opener the record never closes keeps the bytes that follow it",
+			// An opener is a block only where a closer stands beside or after it: the readers write a
+			// rendering's own closer, so an opener the record left unclosed is text the model wrote, and
+			// the bytes that follow it are that text's own. The arm above ("a marker the record carries
+			// without its closer is text, not a rendering") spells its marker inside a run, where
+			// renderingPart refuses the pair for its opening side alone; this arm puts one feed before the
+			// opener, so only the closer's absence keeps the bytes after it -- and it is the rule's own
+			// pin (round 13's close-out).
+			Message{Role: "assistant", Thinking: "private", ContentRendersThinking: true,
+				Content: "Before\n" + thinkingRenderOpen + " private"},
+			"Before\n" + thinkingRenderOpen + " private"},
+		{"an empty block beside the rendering is text, not a rendering",
+			// A block with no words is not a part any reader could have rendered: the readers write the
+			// trace's own text between the markers, and a trace that holds no words is not rendered at
+			// all (thinkingRenderingOnly asks the same). Kept as a candidate it would be a block a
+			// reading could take for nothing, and the readings would disagree about the rendering's
+			// bytes beside it.
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				Content: rendering(trace) + "\n" + rendering("")},
+			rendering("")},
 		{"a lone block whose words are a substring of the trace accounts for none of it",
 			Message{Role: "assistant", Thinking: "private reasoning", ContentRendersThinking: true,
 				Content: "Before\n" + rendering("private") + "\nAfter"},
@@ -1606,6 +1651,86 @@ func TestDialogueKeepsANewlineDelimitedLiteralPairWhoseWordsTheTraceHolds(t *tes
 	if len(assistantTexts) != 1 || assistantTexts[0] != literal {
 		t.Errorf("the rollout's assistant text = %q, want the text part's own bytes %q: the literal pair "+
 			"the source recorded was deleted as though it were a rendering of the trace", assistantTexts, literal)
+	}
+}
+
+// TestDialogueKeepsAnUnmatchedOpenerBeforeTheRendering pins round 13's finding through the inherited
+// reader that produces the shape: a ZCode text part may end with an opener its own part never closes, and
+// the reader's rendering of the record's thinking part -- which does close -- follows it, the parts joined
+// with one feed (internal/parser/zcode.go:577). Read as a pair, the text part's opener takes the
+// rendering's closer, so the rendering's own opener stands inside that pair's span; pre-fix the scan
+// resumed past the pair it had read, the rendering was never a candidate, the pair the record's own text
+// wrote was the only one the trace accounted for, and the removal deleted the record's own words while
+// the rendering stayed as dialogue (the finding's own counterexample, traced statically there). Every
+// opener is read now: where the text part also quotes the trace, the two readings disagree about the
+// dialogue and nothing is removed, so the source's own bytes -- the quotation and the rendering alike --
+// are what the rollout holds; where it does not, the rendering is the block whose words are the whole
+// trace and the text part's bytes survive as the dialogue. This case reads the source through
+// NewSourceReader, asserts the reader's own content shape and what the shared rule answers for it, and
+// converts the read so the words the file holds are the ones the source recorded.
+func TestDialogueKeepsAnUnmatchedOpenerBeforeTheRendering(t *testing.T) {
+	const trace = "private"
+	rendered := thinkingRenderOpen + "\n" + trace + "\n" + thinkingRenderClose
+	cases := []struct {
+		name string
+		// text is the record's own text part, verbatim; the reader renders the trace after it.
+		text string
+		// want is what the rule answers: the text part with the rendering removed where the reading is
+		// unique, and the reader's whole Content where the readings disagree.
+		want string
+	}{
+		{"a text part that quotes the trace and ends with an opener",
+			"Before\n" + rendered + "\nAfter\n" + thinkingRenderOpen,
+			"Before\n" + rendered + "\nAfter\n" + thinkingRenderOpen + "\n" + rendered},
+		{"a text part that only ends with an opener",
+			"Before\n" + thinkingRenderOpen,
+			"Before\n" + thinkingRenderOpen},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			conversation := zCodeMixedConversation(t,
+				`{"type":"text","text":`+jsonString(t, testCase.text)+`}`,
+				`{"type":"thinking","thinking":`+jsonString(t, trace)+`}`)
+			sawRecord := false
+			for _, message := range conversation.Messages {
+				if message.Thinking != trace {
+					continue
+				}
+				sawRecord = true
+				if !message.ContentRendersThinking {
+					t.Error("the read did not establish the reader's rendering provenance for the record, so " +
+						"nothing here drives the rule this case is about")
+				}
+				if want := testCase.text + "\n" + rendered; message.Content != want {
+					t.Fatalf("the ZCode record's content = %q, want the text part verbatim followed by the "+
+						"reader's own rendering (%q)", message.Content, want)
+				}
+				if got := dialogueText(message); got != testCase.want {
+					t.Errorf("dialogueText over the ZCode record = %q, want %q: the rendering's own opener "+
+						"stands inside the pair the text part's opener would make, and it is a candidate too",
+						got, testCase.want)
+				}
+			}
+			if !sawRecord {
+				t.Fatalf("the read holds no record carrying %q, so nothing here pins the shape this case "+
+					"is about", trace)
+			}
+			rollout, err := ConvertToCodexRollout(conversation, testOptions())
+			if err != nil {
+				t.Fatalf("converting: %v", err)
+			}
+			var assistantTexts []string
+			for _, item := range rollout.Items {
+				if item.Kind == ItemAssistant {
+					assistantTexts = append(assistantTexts, item.Text)
+				}
+			}
+			if len(assistantTexts) != 1 || assistantTexts[0] != testCase.want {
+				t.Errorf("the rollout's assistant text = %q, want %q: the record's own bytes are the "+
+					"dialogue, and a removed rendering is the trace's to carry beside it", assistantTexts,
+					testCase.want)
+			}
+		})
 	}
 }
 

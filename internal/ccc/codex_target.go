@@ -1235,28 +1235,48 @@ type thinkingRenderingCandidate struct {
 }
 
 // thinkingRenderingCandidates answers the blocks of content that stand where a reader's rendered part
-// could (thinkingRenderingCandidate), in the content's own order. An opener without a closer is text the
-// record carries -- a model writing the marker itself -- and the scan goes on after it, where a later
-// pair can still close.
+// could (thinkingRenderingCandidate), in the content's own order: every opener is paired with the first
+// closer that follows it. An opener with no closer after it opens no block -- a model writing the marker
+// itself -- and the walk stops there, because a closer after a later opener would be one after this opener
+// too.
+//
+// Every opener is read, including one that stands inside a pair read before it. The pair a part of the
+// record's own text ends with can span the rendering that follows it -- its closer is the closer of that
+// next opener -- so the rendering's own opener stands inside the span its *own* closer ends, and a scan
+// that resumed past the pair it had read left the rendering out of the candidates: the reading then took
+// the record's own pair, the only one the trace accounted for, and deleted words the record wrote while
+// the rendering stayed in the dialogue (round 13's finding). A pair whose inner text holds an opener is
+// not that opening marker's own block -- the inner text is one run of bytes, the pair's words -- and the
+// opener inside it is read as a block of its own for the readings to weigh.
 func thinkingRenderingCandidates(content string) []thinkingRenderingCandidate {
 	var candidates []thinkingRenderingCandidate
-	position := 0
-	for position < len(content) {
-		open := strings.Index(content[position:], thinkingRenderOpen)
-		if open < 0 {
+	// The closer search only moves forward: an opener's first closer stands at or after the earlier
+	// opener's own first closer, so no closer between the two is ever searched for twice.
+	ruledOut := 0
+	for open := strings.Index(content, thinkingRenderOpen); open >= 0; {
+		after := open + len(thinkingRenderOpen)
+		from := after
+		if ruledOut > from {
+			from = ruledOut
+		}
+		at := strings.Index(content[from:], thinkingRenderClose)
+		if at < 0 {
+			// No closer stands beside or after this opener, and none can stand after a later one either:
+			// from here on, every opener the content holds is text the record carries.
 			break
 		}
-		open += position
-		inner, after, closed := strings.Cut(content[open+len(thinkingRenderOpen):], thinkingRenderClose)
-		if !closed {
-			position = open + len(thinkingRenderOpen)
-			continue
-		}
-		end := open + len(thinkingRenderOpen) + len(inner) + len(thinkingRenderClose)
-		if words := strings.TrimSpace(inner); words != "" && renderingPart(content, open, after) {
+		close := from + at
+		end := close + len(thinkingRenderClose)
+		if words := strings.TrimSpace(content[after:close]); words != "" &&
+			renderingPart(content, open, content[end:]) {
 			candidates = append(candidates, thinkingRenderingCandidate{open: open, end: end, words: words})
 		}
-		position = end
+		ruledOut = close
+		next := strings.Index(content[after:], thinkingRenderOpen)
+		if next < 0 {
+			break
+		}
+		open = after + next
 	}
 	return candidates
 }

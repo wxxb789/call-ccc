@@ -498,6 +498,29 @@ only where the read answers none of the result's own (an event without a timesta
 summary on the call's row), and a new `result_completion_fallbacks` caveat counts it — only for parts
 that were written — so the substitution is never presented as recorded.
 
+The thirteenth review round's finding is in the same family, one level up: the readings are only as good
+as the blocks they weigh. **Every opener is a candidate, paired with the first closer that follows it**
+(`thinkingRenderingCandidates`): the pair a part of the record's own text ends with can *span* the
+rendering that follows it — its opener pairs with the rendering's closer — so the rendering's own opener
+stands inside that span, and a scan that resumed past the pair it had read (as every version through round
+12 did) left the rendering out of the candidates: the text part's own pair was then the only one the trace
+accounted for, and the removal deleted the record's own words while the rendering stayed in the dialogue.
+The finding's own ZCode counterexample — a text part
+`Before\n[Thinking]\nprivate\n[/Thinking]\nAfter\n[Thinking]` before the thinking part `private` — was
+executed pre-fix through `NewSourceReader`: `dialogueText` answered
+`Before\nAfter\n[Thinking]\n[Thinking]\nprivate\n[/Thinking]`, the quoted pair gone and the rendering kept,
+and the rollout held the same bytes. Both pairs are candidates now, the two readings disagree about the
+dialogue, and nothing is removed, so the bytes the source recorded (quotation and rendering alike) are what
+the rollout holds (`TestDialogueKeepsAnUnmatchedOpenerBeforeTheRendering`, whose second arm — a text part
+that ends with an opener and quotes nothing — is the reading the fix recovers: the rendering is the block
+whose words are the whole trace, and the text part's bytes survive as the dialogue). The scan reads every
+opener once and searches for each one's first closer from where the earlier one's search ended, so the walk
+stays linear in the record's bytes. The shared table gains the arms the rule's own shapes need, and the
+round's close-out executed one mutation per rule the surface claims — the scan's rules, the readings',
+the removal's and the gates above them (the table is in the evidence record): two rules survived their
+first mutation — an opener with no closer read to the content's end, and an empty block taken as a
+candidate — and each got its own arm in this round, where its mutation reddens.
+
 ## 7. Gate, docs, bookkeeping
 
 - Gate: **no new step and no new required step.** New tests live in `internal/ccc` and `cmd/ccc`, which
@@ -513,7 +536,9 @@ that were written — so the substitution is never presented as recorded.
   where every reading of the record's own bytes against its own trace takes it, the feeds around a pair
   being no part boundary), what the readers' own rule keeps (`renderingPart` as candidacy; the
   whole-content rule asking the block's words to be the trace, whole), and what stands where the readings
-  disagree (the block keeps its place as the model's own words).
+  disagree (the block keeps its place as the model's own words) — and, from the thirteenth round, the
+  blocks the readings weigh: every opener, each paired with the first closer that follows it, because a
+  text part's own trailing opener otherwise spans the rendering whose words the trace holds.
 - `docs/conventions.md`: the layout block gains the three files; the install rule gains OpenCode's
   data-directory rule and the importer; the fixture note records why 0007 adds no fixture directory.
 - `docs/harness.md`: the new script's entry and why it is not a step.
