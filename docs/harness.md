@@ -190,10 +190,23 @@ What it does, in order:
 4. **the run**, per package — one `go test -count=1 -v -run '^(<test>|<test>|…)$' <package>` with the
    `scripts/gate-goflags.txt` flags the gate's own steps use, whose output must hold `--- PASS: <test>`
    for every cited test. A cited test the run reports `--- SKIP`, `--- FAIL`, or never at all is a
-   failure naming the row. One invocation per *package*, never per row: the gate must not pay a compile
+   failure naming the row, and an explicit `--- FAIL`/`--- SKIP` prevails over a `--- PASS` recorded
+   for the same name (a repeated test's markers that disagree resolve to the outcome that refuses the
+   row). One invocation per *package*, never per row: the gate must not pay a compile
    per citation. Names go over in bounded batches with the same bound `gofmt_batches` uses, so a
    package whose cited set outgrows a process command line cannot make the step unstartable, and the
    batches together are the whole set in the same order.
+5. **the run's own failures**, which are the step's — every way the run can end is a printed verdict,
+   never a kill with none. A batch that exits non-zero with no reported `--- FAIL`/`--- SKIP` accounting
+   for it (a `TestMain` failing after `m.Run()`) is rejected by a violation of its own, and none of that
+   run's `--- PASS` markers verifies a row. The run is bounded twice: each batch's deadline is the
+   smaller of `GO_TIMEOUT` (1800 s, the gate's own per-command default) and the time left of the run's
+   `TOTAL_TIMEOUT` (2 × 1800 s, across every batch), and a batch the total can no longer afford is not
+   started — its rows fail naming the bound. The `citations` step hands the checker `CITATIONS_TIMEOUT`
+   (the total plus a 300 s margin), so a bound the checker can reach is one it still has time to answer
+   on; a checker that outlives even that is answered by the step's own FAIL naming the budget (the
+   runner's deadline is caught there, and the child has been killed and reaped by then), not by a
+   traceback that leaves the gate with no verdict.
 
 Print and verdict: one line per file (`<relative path>: <n> row(s) verified`), the summary
 (`citations: <rows> row(s) across <files> file(s) verified`), and the verdict line, which is the last

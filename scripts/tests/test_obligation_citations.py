@@ -6,10 +6,13 @@ required, so the checker's own rules need tests like the gate's: a header that i
 a row with a missing or an extra cell, a rule cited twice, a header that declares no data rows, a
 manifest of comments with no header at all, a manifest the parse cannot read, a test no ``_test.go``
 declares, a name ``go test`` would not run, a package the gate does not test, a cited test that fails,
-skips or is not reported at all, a run that exited non-zero with no verdict line, a run that outran its
-deadline, a cited name longer than the batch bound, a flood of violations past the printed bound, a tree
-whose manifest is gone, and a tree whose ``scripts/gate.py`` cannot be loaded all have to come back as
-the verdict the contract names — and the positive control proves the reading is live rather than vacuous
+skips or is not reported at all, a run that exited non-zero with no verdict line, a run that exited
+non-zero with every marker reading ``--- PASS``, a repeated test whose markers disagree, a run that
+outran its deadline, a run that spent its total bound before a batch, a cited name longer than the
+batch bound, a flood of violations past the printed bound, a tree whose manifest is gone, a tree whose
+``scripts/gate.py`` cannot be loaded, and a checker that outlives the step's own budget all have to
+come back as the verdict the contract names — and the positive control proves the reading is live
+rather than vacuous
 (it asserts the row count the run verified, so a checker that verified nothing cannot pass it). The
 targets knob is read positively too: a file naming one package covers exactly that package, and a tree
 with no such file falls back to ``./...`` the way the gate's own steps do.
@@ -169,23 +172,30 @@ class CitationsTree(unittest.TestCase):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(CHECKER, target)
 
-    def drive(self, answer=None, env: dict[str, str] | None = None):
+    def drive(self, answer=None, env: dict[str, str] | None = None, clock=None):
         """Run the shipped checker over this tree: ``(exit code, printed text, commands)``.
 
         ``ROOT`` is pointed at the throw-away tree and the runner seam is patched, so no host tool is
         executed; ``PATH`` stays pinned to the stub bin, so the shipped host probes answer the stubs.
+        ``clock`` (a ``mock`` ``side_effect`` list or callable) walks the checker's own clock seam, so a
+        case can pin the run's total bound without waiting it out, and ``self.timeouts`` records the
+        deadline every recorded invocation was handed.
         """
         checker = load_checker()
         checker.ROOT = self.root
         commands: list[list[str]] = []
+        self.timeouts: list[int | None] = []
 
         def recording(cmd, env=None, timeout=None):
             commands.append(list(cmd))
+            self.timeouts.append(timeout)
             return (answer or run_passing)(cmd)
 
+        clock_seam = checker.clock if clock is None else mock.Mock(side_effect=clock)
         out = io.StringIO()
         with mock.patch.dict(os.environ, {"PATH": str(self.stub_bin), **(env or {})}), \
                 mock.patch.object(checker, "run", side_effect=recording), \
+                mock.patch.object(checker, "clock", clock_seam), \
                 redirect_stdout(out):
             rc = checker.main()
         return rc, out.getvalue(), commands
@@ -479,6 +489,57 @@ class CitationsCase(CitationsTree):
         self.assertIn("did not pass — go test reported `--- FAIL: TestAlpha`", text)
         self.assertNotIn("exited rc=", text)
 
+    def test_a_batch_that_exited_nonzero_rejects_itself_however_its_markers_read(self) -> None:
+        """A run's own nonzero exit is a violation of its own: a ``--- PASS`` marker cannot swallow it.
+
+        ``TestMain`` can fail after ``m.Run()``, so every selected test can print ``--- PASS`` while
+        the invocation the rows rest on did not succeed. With no reported outcome accounting for the
+        exit, none of the run's markers verifies a row either: the batch names itself in a violation of
+        its own — one that names no rule — and the run comes back FAIL with zero rows verified.
+        """
+        self.declare("TestAlpha", "TestBeta")
+        self.manifest([self.row("A1", "TestAlpha"), self.row("B2", "TestBeta")])
+        rc, text, commands = self.drive(answer=run_reporting("PASS", 1))
+        self.assertEqual(rc, 1, text)
+        self.assertEqual(self.status_of(text), "FAIL", text)
+        self.assertIn(
+            "the `go test` run for ./internal/ccc exited rc=1 while none of the tests it was asked "
+            "for reported `--- FAIL` or `--- SKIP`: the failure is the run's own, so none of its "
+            "markers verifies a row",
+            text,
+        )
+        self.assertEqual(
+            self.file_lines(text), ["docs/evidence/0002-citations.tsv: 0 row(s) verified"], text
+        )
+        self.assertEqual(len(commands), 1, text)
+
+    def test_an_explicit_fail_or_skip_overrides_a_pass_for_the_same_test(self) -> None:
+        """Markers that disagree for one name resolve to the outcome that refuses the row.
+
+        A repeated test can be reported twice, once ``--- PASS`` and once ``--- FAIL``/``--- SKIP``;
+        reading the PASS first would count the row verified from a run that also refused it. The
+        explicit non-pass marker wins, and it is the one the row's failure names.
+        """
+        self.declare("TestAlpha")
+        self.manifest([self.row("A1", "TestAlpha")])
+        for refused, rc_of_run in (("FAIL", 1), ("SKIP", 0)):
+            with self.subTest(refused=refused):
+                def disagreeing(cmd, refused=refused, rc_of_run=rc_of_run):
+                    return tool_result(
+                        cmd,
+                        rc_of_run,
+                        f"--- PASS: TestAlpha (0.00s)\n--- {refused}: TestAlpha (0.00s)\n",
+                    )
+
+                rc, text, commands = self.drive(answer=disagreeing)
+                self.assertEqual(rc, 1, text)
+                self.assertEqual(self.status_of(text), "FAIL", text)
+                self.assertIn(
+                    f"rule A1: test TestAlpha in ./internal/ccc did not pass — go test reported "
+                    f"`--- {refused}: TestAlpha`",
+                    text,
+                )
+
     def test_a_run_that_outran_its_deadline_is_a_result_not_a_crash(self) -> None:
         """A stalled ``go test`` answers ``rc=124`` with its deadline named, rather than raising.
 
@@ -507,6 +568,48 @@ class CitationsCase(CitationsTree):
         self.assertEqual(proc.returncode, 124, proc.stderr)
         self.assertEqual(proc.stdout, "ok  \t./internal/ccc\n")
         self.assertEqual(proc.stderr, "go: no answer within 7 s\n")
+
+    def test_the_run_is_bounded_in_total_and_a_spent_bound_fails_the_batches_after_it(self) -> None:
+        """``TOTAL_TIMEOUT`` bounds the whole run, not only each batch, and both bounds end in a verdict.
+
+        Two packages put two invocations on the run's own budget. Walked past one command's deadline,
+        the second invocation is handed the time left of the total (and the first its per-command
+        ceiling — ``GO_TIMEOUT``, not the whole total); with the total spent, the second batch is not
+        started at all — its rows come back unverified naming the bound — so the run answers a printed
+        FAIL verdict where starting the tool would have ended in an outer kill with none.
+        """
+        self.declare("TestAlpha", package="./internal/ccc")
+        self.declare("TestBeta", package="./cmd/ccc")
+        self.manifest([
+            self.row("A1", "TestAlpha", package="./internal/ccc"),
+            self.row("B2", "TestBeta", package="./cmd/ccc"),
+        ])
+        checker = load_checker()
+        total, per_command = checker.TOTAL_TIMEOUT, checker.GO_TIMEOUT
+
+        rc, text, commands = self.drive(clock=[100.0, 100.0, 100.0 + per_command + 100.0])
+        self.assertEqual(rc, 0, text)
+        self.assertEqual(self.verdict(text), "citations: PASS", text)
+        self.assertEqual([cmd[-1] for cmd in commands], ["./internal/ccc", "./cmd/ccc"], text)
+        self.assertEqual(self.timeouts, [per_command, per_command - 100], text)
+
+        rc, text, commands = self.drive(clock=[100.0, 100.0, 100.0 + total])
+        self.assertEqual(rc, 1, text)
+        self.assertEqual(self.status_of(text), "FAIL", text)
+        self.assertEqual([cmd[-1] for cmd in commands], ["./internal/ccc"], text)
+        self.assertIn(
+            f"the `go test` run for ./cmd/ccc was not started: the run's total bound ({total} s "
+            f"across all batches) was already spent",
+            text,
+        )
+        self.assertIn(
+            f"rule B2: test TestBeta in ./cmd/ccc did not pass — the run ran out of its total bound "
+            f"of {total} s across all batches before its `go test` batch could start",
+            text,
+        )
+        self.assertEqual(
+            self.file_lines(text), ["docs/evidence/0002-citations.tsv: 1 row(s) verified"], text
+        )
 
     def test_the_printed_violations_are_bounded_and_the_verdict_counts_them_all(self) -> None:
         """A flood of violations prints the bound and names how many it held back.
@@ -755,6 +858,39 @@ class GateWiringCase(CitationsTree):
             status, detail = gate.step_citations()
         self.assertEqual(status, "PASS", stdout)
         self.assertEqual(detail, "docs/evidence/0002-citations.tsv: 1 row(s) verified", stdout)
+
+    def test_a_checker_outliving_the_step_s_own_budget_is_a_failure_never_a_crash(self) -> None:
+        """``step_citations()`` catches the runner's deadline: FAIL, and the budget sits past the bound.
+
+        The checker bounds its whole run itself and answers that bound as a FAIL verdict, so the step
+        hands it a budget past the bound (asserted here as the constants' own relation) — this arm is
+        only for a checker that could not report at all, and a step that ended without a verdict is a
+        failure naming the budget, not a traceback that leaves the gate with no verdict.
+        """
+        self.install_checker()
+        gate = load_gate()
+        gate.ROOT = self.root
+        checker = load_checker()
+        captured: dict[str, object] = {}
+
+        def expired(cmd, env=None, timeout=None):
+            captured["timeout"] = timeout
+            raise subprocess.TimeoutExpired(
+                cmd, timeout or 0, output="docs/evidence/0002-citations.tsv: 1 row(s) verified\n"
+            )
+
+        with mock.patch.object(gate, "run", side_effect=expired):
+            status, detail = gate.step_citations()
+        self.assertEqual(status, "FAIL", detail)
+        self.assertIn(f"no verdict within {gate.CITATIONS_TIMEOUT} s", detail)
+        self.assertIn("docs/evidence/0002-citations.tsv: 1 row(s) verified", detail)
+        self.assertEqual(captured["timeout"], gate.CITATIONS_TIMEOUT, detail)
+        self.assertGreater(
+            gate.CITATIONS_TIMEOUT,
+            checker.TOTAL_TIMEOUT,
+            "the step's budget must sit past the checker's total bound, or the checker's own FAIL "
+            "verdict can be pre-empted by the step's kill",
+        )
 
 
 if __name__ == "__main__":

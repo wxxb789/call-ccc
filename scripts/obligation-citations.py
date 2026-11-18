@@ -21,9 +21,15 @@ Rules (``docs/conventions.md`` states the schema, ``docs/harness.md`` the gate s
   Go test name that a ``_test.go`` under that package declares, and the test must **run and pass** —
   one ``go test -count=1 -v -run '^(…|…)$' <package>`` per package (the same ``scripts/gate-goflags.txt``
   flags the gate's own steps use), whose output must hold ``--- PASS: <test>`` for every cited test. A
-  cited test that is absent, that fails or that the run reports ``--- SKIP`` is a failure naming the row,
-  and a package whose cited names would outgrow a process command line goes over in bounded batches by
-  the gate's own ``gofmt_batches`` rule;
+  cited test that is absent, that fails or that the run reports ``--- SKIP`` is a failure naming the row
+  — an explicit ``--- FAIL``/``--- SKIP`` overrides a ``--- PASS`` recorded for the same name — and a
+  package whose cited names would outgrow a process command line goes over in bounded batches by the
+  gate's own ``gofmt_batches`` rule. A batch's own nonzero exit is a violation of its own, recorded
+  whether or not the tests it printed read as passing, so a run whose failure none of its reported
+  outcomes accounts for (``TestMain`` failing after ``m.Run()``) cannot be swallowed by a ``--- PASS``
+  marker. The whole run is bounded in total as well as per batch (``TOTAL_TIMEOUT``, ``GO_TIMEOUT``): a
+  batch the total can no longer afford is not started, its rows fail naming the bound, and the answer is
+  a printed verdict rather than a hang or an outer kill with none;
 - print: one line per file (``<relative path>: <n> row(s) verified``), the summary
   (``citations: <rows> row(s) across <files> file(s) verified``) and the verdict line
   (``citations: PASS``, ``citations: FAIL — …``, ``citations: SKIP — …``, ``citations: BOUNDARY — …``),
@@ -52,6 +58,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import NamedTuple
 
@@ -68,6 +75,15 @@ MANIFEST_GLOB = "*-citations.tsv"
 
 #: One Go command's deadline: the gate's own default, so a stalled run is a result rather than a hang.
 GO_TIMEOUT = 1800
+
+#: The deadline for the whole run, every batch together: two per-command deadlines — one for a batch
+#: that stalls, one for the batches behind it. A batch's own deadline is the smaller of ``GO_TIMEOUT``
+#: and the time left of this, so a stalled batch leaves the batches after it a bounded share and the
+#: run still ends in a printed verdict; a batch the total can no longer afford is not started at all,
+#: and its rows fail naming the bound. ``scripts/gate.py`` hands the step more than this (its
+#: ``CITATIONS_TIMEOUT``) precisely so this bound fires first, and the answer is then this checker's
+#: own verdict rather than an outer kill with no verdict at all.
+TOTAL_TIMEOUT = 2 * GO_TIMEOUT
 
 #: At most this many violation lines are printed (the gofmt step's own bound); the verdict line counts
 #: them all.
@@ -120,6 +136,11 @@ def run(cmd: list[str], env: dict[str, str] | None = None, timeout: int = GO_TIM
             expired.stdout if isinstance(expired.stdout, str) else "",
             f"{cmd[0]}: no answer within {timeout} s\n",
         )
+
+
+def clock() -> float:
+    """The run's own monotonic clock — a seam, so a case can pin the total bound without waiting it out."""
+    return time.monotonic()
 
 
 _GATE = None
@@ -387,6 +408,7 @@ def main() -> int:
     for _name, row in entries:
         if row.package not in order:
             order.append(row.package)
+    deadline = clock() + TOTAL_TIMEOUT
     for package in order:
         names: list[str] = []
         for _name, row in entries:
@@ -396,13 +418,43 @@ def main() -> int:
         # The gate's own batching rule: unless the alternation alone would outgrow a process command
         # line, a package's cited tests are one invocation.
         for group in gate.gofmt_batches(names):
-            proc = run(go_test_command(package, group, flags), env=env)
+            remaining = deadline - clock()
+            if remaining <= 0:
+                # The run's own bound, spent before this batch could start: nothing is invoked for it,
+                # and its rows fail naming the bound -- a printed verdict, where starting the tool
+                # would have ended in an outer kill with none at all.
+                violations.append(
+                    f"the `go test` run for {package} was not started: the run's total bound "
+                    f"({TOTAL_TIMEOUT} s across all batches) was already spent"
+                )
+                for name in group:
+                    unverified[name] = (
+                        f"the run ran out of its total bound of {TOTAL_TIMEOUT} s across all batches "
+                        f"before its `go test` batch could start"
+                    )
+                continue
+            proc = run(go_test_command(package, group, flags), env=env,
+                       timeout=max(1, int(min(GO_TIMEOUT, remaining))))
             passed, others = outcomes((proc.stdout or "") + (proc.stderr or ""))
+            # A batch is *accounted for* when it exited cleanly or when an outcome it reported explains
+            # its exit. A nonzero exit none of its tests accounts for is the invocation itself failing
+            # (``TestMain`` after ``m.Run()``): the batch gets a violation of its own -- independent of
+            # the per-row accounting below, so no ``--- PASS`` marker can swallow it -- and none of its
+            # markers verifies a row.
+            accounted = proc.returncode == 0 or any(name in others for name in group)
+            if not accounted:
+                violations.append(
+                    f"the `go test` run for {package} exited rc={proc.returncode} while none of the "
+                    f"tests it was asked for reported `--- FAIL` or `--- SKIP`: the failure is the "
+                    f"run's own, so none of its markers verifies a row"
+                )
             for name in group:
-                if name in passed:
-                    unverified.pop(name, None)
-                elif name in others:
+                # An explicit FAIL/SKIP precedes a PASS for the same name: where a repeated test's
+                # markers disagree, the outcome that refuses the row is the one that holds.
+                if name in others:
                     unverified[name] = f"go test reported `--- {others[name]}: {name}`"
+                elif name in passed and accounted:
+                    unverified.pop(name, None)
                 elif proc.returncode != 0:
                     unverified[name] = f"the `go test` run for it exited rc={proc.returncode}"
                 else:

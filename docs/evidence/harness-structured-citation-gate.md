@@ -6,7 +6,7 @@ Branch `chore/structured-obligation-citations`, off `origin/main` (`338df94`); t
 worktree for operator verification — nothing was committed, pushed or opened as a pull request.
 
 What it adds: `scripts/obligation-citations.py` (the checker), the **required** `citations` gate step
-(`scripts/gate.py`, `scripts/gate-required.txt`), `scripts/tests/test_obligation_citations.py` (26
+(`scripts/gate.py`, `scripts/gate-required.txt`), `scripts/tests/test_obligation_citations.py` (30
 cases), the seed manifest `docs/evidence/0002-citations.tsv` (36 rows), and the docs that state the
 schema and the step (`docs/conventions.md`, `docs/harness.md`, `AGENTS.md`). Beside those, it archives
 goal 0006 (`docs/goals/archive/0006-omp-continuation.md`, merged onto `main` as `338df94`) with the links
@@ -17,10 +17,12 @@ those changes and why it was forced.
 
 ## 1. The gate, on the delivered bytes
 
-`python3 scripts/gate.py` → `GATE: PASS`, exit `0` (36.8 s and 39.6 s on two runs of this tree; the
-`selftest` step's own time moves between runs — `7.4s` on the applied suite's own run, and `7.742s`,
-`7.988s` and `8.210s` on three runs here, minutes apart — the count and the exit status are the stable
-part):
+`python3 scripts/gate.py` → `GATE: PASS`, exit `0` — 37.1 s on the fix pass's last run of this tree, whose
+step lines are quoted below (`selftest` at `Ran 320 tests in 7.553s`), 69.7 s on its first run of the
+fixed code (`Ran 320` there too), and 36.8 s and 39.6 s on the increment's pre-fix bytes. The `selftest`
+step's own time moves between runs (`7.4s` on the applied suite's own run; `7.742s`, `7.988s`, `8.210s`,
+`8.290s` and `7.553s` on five runs here, minutes apart) — the count and the exit status are the stable
+part:
 
 ```
 gate: <repo>
@@ -29,7 +31,7 @@ gate: go=<go 1.27.4> targets=./cmd/ccc/... ./internal/ccc/...
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 316 tests in 7.988s (rc=0)
+  PASS     selftest Ran 320 tests in 7.553s (rc=0)
   PASS     parity   <the line quoted as fragments below>
   PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified
   PASS     secrets  no leaks found in 148 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
@@ -49,10 +51,9 @@ line:
 `reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584`, `carried: 5553 file(s) identical to the
 pinned revision (compared through git's own object store)`, `deviations: 27 upstream path(s) declared (1
 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared`,
-`owned: 31 project-owned prefix(es); files seen by git: 5694`. The pin is unchanged and the carried half
-is untouched. That count includes untracked files: the one file this branch's goal move adds is untracked
-until the rename is staged, so a committed tree counts 5693 — the number is this worktree's own answer,
-not a constant.
+`owned: 31 project-owned prefix(es); files seen by git: 5693`. The pin is unchanged and the carried half
+is untouched. (The increment's own runs counted 5694: the one file this branch's goal move adds was
+untracked until the rename was staged — the number is this worktree's own answer, not a constant.)
 
 The `citations` step on its own, same bytes — `python3 scripts/obligation-citations.py`:
 
@@ -62,10 +63,10 @@ citations: 36 row(s) across 1 file(s) verified
 citations: PASS
 ```
 
-exit `0`; 4.6 s with the packages already compiled — that compile is what the gate's own `test` step
-above has just paid for. That is two `go test` invocations — one per cited package (`./cmd/ccc`,
-`./internal/ccc`), never one per row — and each cited test is required to appear as `--- PASS: <test>` in
-its package's output, which is what `36 row(s) verified` reports.
+exit `0`; 4.6 s with the packages already compiled (4.2 s on the fix pass's own re-run) — that compile
+is what the gate's own `test` step above has just paid for. That is two `go test` invocations — one per
+cited package (`./cmd/ccc`, `./internal/ccc`), never one per row — and each cited test is required to
+appear as `--- PASS: <test>` in its package's output, which is what `36 row(s) verified` reports.
 
 ## 2. The checker's FAIL path, on a planted broken row
 
@@ -106,13 +107,17 @@ were recorded against the increment's pre-apply checker (`0c7cd18e…`) and gate
 rows after them were recorded by the apply pass on the applied checker (`49e88616…`) and the unchanged
 gate — they are the simplify report's findings 6–11 and the two discovery-guard rows, and the four
 earlier rows whose mutation anchor moved with the delegation (the three `batches` rows and the `go_flags`
-row) were re-run there too rather than left as text about code that moved. The fix pass added five rows —
-its `F4` and `F5` cover — recorded on the shipped checker (`1f6f6a71…`), whose parse gained the
-no-data-rows violation; that clause and the checker's docstring, plus the five cases, are the whole of
-the fix pass's code, and every mutation target the rows above name is still a line of the shipped checker
-or gate, so their observations are about code this record ships. Every command below is
-`python3 -m unittest <module>.<Case>.<case>` — `scripts.tests.test_obligation_citations` unless the row
-names another module — and exited `1`.
+row) were re-run there too rather than left as text about code that moved. The first fix pass added five
+rows — its `F4` and `F5` cover — recorded on the checker of that pass (`1f6f6a71…`), whose parse gained
+the no-data-rows violation. The second fix pass (the machine review of `e4a23c546`'s two findings) then
+changed the run accounting (`accounted`, the batch rejection, the FAIL/SKIP precedence) and the run's own
+budget, in the checker, and the step's budget in the gate; its seven rows are recorded on the shipped
+checker (`9592a02d…`) and gate (`5032a3bb…`), and it re-ran every earlier row whose anchor or observation
+its edit moved — the positive control, the three `batches` rows, the `--- PASS`-is-required row (whose
+old anchor no longer exists), and the rc row (same anchor, a new observation) — so every mutation target
+the rows above name is still a line of the shipped checker or gate, and their observations are about code
+this record ships. Every command below is `python3 -m unittest <module>.<Case>.<case>` —
+`scripts.tests.test_obligation_citations` unless the row names another module — and exited `1`.
 
 | case | rule it pins | mutation | observed |
 | --- | --- | --- | --- |
@@ -127,7 +132,7 @@ names another module — and exited `1`.
 | `test_a_name_go_test_would_not_run_fails_before_any_tool_runs` | a legal Go test name | checker: the identifier check → `if False:` | `AssertionError: 0 != 1` for `Testalpha`, `Tests` and `Test-Alpha` |
 | `test_a_package_the_gate_does_not_test_fails_before_any_tool_runs` | coverage from `gate-targets.txt`, one package per row | checker: `problem = package_problem(…)` → `problem = None` | `AssertionError: 'not covered by scripts/gate-targets.txt' not found`, the same for `must name one package`, and the narrowed-knob half beside them |
 | the same case | no tool runs before a static verdict | checker: the static short-circuit → `if violations and False:` | `AssertionError: Lists differ: [['go', 'test', '-count=1', …]] != []` (an invocation was recorded) |
-| `test_a_cited_test_that_does_not_pass_fails` | `--- PASS` is required; `--- FAIL`/`--- SKIP`/none are failures | checker: `if name in passed:` → `if True:` | `AssertionError: 0 != 1 : …: 2 row(s) verified` (the failing run was reported as a pass) |
+| `test_a_cited_test_that_does_not_pass_fails` | `--- PASS` is required; `--- FAIL`/`--- SKIP`/none are failures, and an explicit FAIL/SKIP precedes a PASS for the same name | checker: `if name in others:` → `if name in others and False:` | `AssertionError: 'rule A1: … go test reported `--- FAIL: TestAlpha`' not found in '…did not pass — the `go test` run for it exited rc=1…'` (the FAIL/SKIP arm removed, the rc fallback answered) |
 | `test_no_manifest_anywhere_is_a_skip_naming_where_it_looked` | no manifest → SKIP | checker: the `if not found:` branch → `if False:` | `AssertionError: 0 != 2 : citations: 0 row(s) across 0 file(s) verified` (an empty run read as a pass) |
 | `test_the_manifests_are_discovered_and_printed_in_sorted_order` | discovery order is the file-name order | checker: `sorted(…, key=name)` → `reverse=True` | `AssertionError: Lists differ: ['…b-second…', '…a-first…'] != ['…a-first…', '…b-second…']` |
 | `test_one_invocation_per_package_hands_every_cited_test_to_it` | one invocation per package, the knobs' flags | checker: `for group in gate.gofmt_batches(names):` → `for group in [[name] for name in names]:` | `AssertionError: Lists differ:` one three-row invocation `!=` three one-test invocations |
@@ -138,7 +143,7 @@ names another module — and exited `1`.
 | `…GateWiringCase.test_the_gate_step_reads_the_verdict_line_the_checker_printed` | the status comes from the verdict line | gate: `status = verdicts[0]…` → `status = PASS` | `AssertionError: 'FAIL' != 'SKIP'` and `'FAIL' != 'BOUNDARY'` |
 | `test_the_gate_discloses_a_skipped_citations_step_in_a_partial_verdict` | an unrequired SKIP stays a disclosed partial run | gate: the `status in (SKIP, BOUNDARY)` branch → `if False:` | `AssertionError: 1 != 0` (the gate refused a tree it should have disclosed) |
 | `test_the_gate_rewrites_a_skipped_citations_step_when_it_is_required` | a required step that skipped fails the gate | gate: `apply_required`'s rewrite → `if False:` | `AssertionError: 0 != 1` (a tree with no manifest passed) |
-| `…CitationsCase.test_a_run_that_exited_without_a_verdict_is_reported_by_its_rc` | a run that exited without a verdict is reported by its rc, after the per-test lines | checker: `elif proc.returncode != 0:` → `elif False:` | `AssertionError: '…exited rc=1' not found in '…go test printed no `--- PASS:` line for it…'` (the rc arm removed, the fallback answered) |
+| `…CitationsCase.test_a_run_that_exited_without_a_verdict_is_reported_by_its_rc` | a run that exited without a verdict is reported by its rc, after the per-test lines | checker: `elif proc.returncode != 0:` → `elif False:` | `AssertionError: '…the `go test` run for it exited rc=1' not found in '…exited rc=1 while none of the tests it was asked for reported `--- FAIL` or `--- SKIP`…go test printed no `--- PASS:` line for it…'` (the rc arm removed; the batch rejection and the fallback answered) |
 | `…CitationsCase.test_a_run_that_outran_its_deadline_is_a_result_not_a_crash` | a stalled `go test` is `rc=124`, not an exception | checker: `except subprocess.TimeoutExpired as expired:` → `except ZeroDivisionError:` | `subprocess.TimeoutExpired: Command '[…]' timed out after 0.2 seconds` (the arm removed, the platform's exception reached the case) |
 | `…CitationsCase.test_the_printed_violations_are_bounded_and_the_verdict_counts_them_all` | the printed violations stop at `VIOLATIONS_PRINTED`; the verdict counts every one | checker: `violations[:VIOLATIONS_PRINTED]` → `violations` | `AssertionError: 41 != 40` (41 violation lines printed) |
 | `…CitationsCase.test_a_tree_whose_gate_cannot_be_loaded_fails_naming_it` | a tree without `scripts/gate.py` is a FAIL naming the sibling | checker: the `try`/`except` around `gate_module()` → the bare call | `FileNotFoundError: [Errno 2] No such file or directory: '…/scripts/gate.py'` |
@@ -151,12 +156,21 @@ names another module — and exited `1`.
 | `…CitationsCase.test_a_tree_without_the_targets_file_falls_back_to_the_whole_module` | no `gate-targets.txt` falls back to `./...`, the Go steps' own default | checker: `patterns = gate.read_list("gate-targets.txt") or ["./..."]` → `patterns = gate.read_list("gate-targets.txt")` | `AssertionError: 1 != 0 : docs/evidence/0002-citations.tsv: 0 row(s) verified` (the empty list refused the package) |
 | `…CitationsCase.test_a_manifest_that_cannot_be_read_fails_naming_it` | an unreadable manifest is a FAIL naming the file | checker: `return [], [f"{name}: could not be read: {exc}"]` → `return [], []` | `AssertionError: 0 != 1 : docs/evidence/0002-citations.tsv: 0 row(s) verified` (the unreadable file read as a pass) |
 | `…CitationsCase.test_a_manifest_of_comments_with_no_header_line_fails` | a file that never reaches a header is a FAIL naming the file | checker: the post-loop `if header is None:` → `if False:` | `AssertionError: 'docs/evidence/0002-citations.tsv: no header line' not found in '…the header declares no data rows…'` (the no-header violation dropped, the no-rows answer reached instead) |
+| `…CitationsCase.test_a_batch_that_exited_nonzero_rejects_itself_however_its_markers_read` | a nonzero exit no reported outcome accounts for is a violation of the batch's own | checker: `if not accounted:` → `if False:` | `AssertionError: "the `go test` run for ./internal/ccc exited rc=1 while none of the tests it was asked for reported `--- FAIL` or `--- SKIP`: …" not found in '…rule A1: … did not pass — the `go test` run for it exited rc=1…rule B2: …'` (the rejection removed; its rows still failed through the rc fallback, which is what this row shows the rejection does not depend on) |
+| the same case | none of that run's markers verifies a row | checker: `elif name in passed and accounted:` → `elif name in passed:` | `AssertionError: Lists differ: ['docs/evidence/0002-citations.tsv: 2 row(s) verified'] != ['docs/evidence/0002-citations.tsv: 0 row(s) verified']` |
+| `…CitationsCase.test_an_explicit_fail_or_skip_overrides_a_pass_for_the_same_test` | an explicit FAIL/SKIP precedes a PASS for the same name | checker: `if name in others:` → `if name in others and False:` | `AssertionError: 0 != 1 : docs/evidence/0002-citations.tsv: 1 row(s) verified / citations: PASS` — both the `FAIL` and the `SKIP` subtest |
+| `…CitationsCase.test_the_run_is_bounded_in_total_and_a_spent_bound_fails_the_batches_after_it` | a batch the total can no longer afford is not started | checker: `if remaining <= 0:` → `if False:` | `AssertionError: 0 != 1 : docs/evidence/0002-citations.tsv: 2 row(s) verified / citations: PASS` (the spent bound ran the batch anyway, on a one-second slice) |
+| the same case | each batch's deadline is the smaller of GO_TIMEOUT and the time left of TOTAL_TIMEOUT | checker: `timeout=max(1, int(min(GO_TIMEOUT, remaining))))` → `timeout=GO_TIMEOUT)` | `AssertionError: Lists differ: [1800, 1800] != [1800, 1700]` |
+| `…GateWiringCase.test_a_checker_outliving_the_step_s_own_budget_is_a_failure_never_a_crash` | the step's runner deadline is caught and answered FAIL | gate: the `try`/`except subprocess.TimeoutExpired` → the bare `proc = run(…)` line | `subprocess.TimeoutExpired: Command '[…]' timed out after 3900 seconds` (the arm removed, the platform's exception reached the case) |
+| the same case | the step's budget sits past the checker's own total bound | gate: `CITATIONS_TIMEOUT = 3600 + 300` → `CITATIONS_TIMEOUT = 1800` | `AssertionError: 1800 not greater than 3600 : the step's budget must sit past the checker's total bound…` |
 
 No mutation survived; every restore was compared byte-for-byte, and the digest each row's restore was
-checked against is the one stated above for the pass that recorded it — the fix pass's five rows against
-the shipped checker's `1f6f6a71…` (and §2's plant against the manifest's `3a5fd4b5…`), the gate's the
-same `1472fb51…` throughout — and the case module was re-run whole on the restored bytes (`Ran 26 tests …
-OK`, §1's `selftest` step counting the same suite).
+checked against is the digest of the file that row's pass ran on: the pre-apply rows on the checker
+`0c7cd18e…` and the gate `1472fb51…`, the apply pass's eight on `49e88616…` (the unchanged gate), the
+first fix pass's five on `1f6f6a71…` (and §2's plant against the manifest's `3a5fd4b5…`, untouched by
+either fix pass), and the second fix pass's rows on the shipped checker's `9592a02d…` and gate's
+`5032a3bb…`. The case module was re-run whole on the restored bytes (`Ran 30 tests … OK`, §1's
+`selftest` step counting the same suite).
 
 ## 4. The seed manifest
 

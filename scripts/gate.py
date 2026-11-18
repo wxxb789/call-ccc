@@ -51,6 +51,13 @@ KNOWN_STEPS = ("gofmt", "build", "vet", "test", "selftest", "parity", "citations
 #: runs bounded batches that stay well inside the cap on every platform -- see ``gofmt_batches``.
 GOFMT_BATCH_CHARS = 8000
 
+#: The citations step's budget. The checker bounds its own whole run (``TOTAL_TIMEOUT`` in
+#: ``scripts/obligation-citations.py``: two per-command deadlines, 3 600 s) and answers a bound it
+#: reaches as a FAIL verdict, so the step is handed that bound plus a margin -- a bound the checker can
+#: reach is one it still has time to answer on, and this budget is only the backstop for a checker that
+#: could not report at all (its ``TimeoutExpired`` is caught and answered as FAIL, below).
+CITATIONS_TIMEOUT = 3600 + 300
+
 
 def read_list(name: str) -> list[str]:
     path = ROOT / "scripts" / name
@@ -252,11 +259,25 @@ def step_citations() -> tuple[str, str]:
     exits non-zero is a defect either way. The step is required (``scripts/gate-required.txt``): the
     manifests are an increment's acceptance surface, so a missing manifest or a stale citation fails
     the gate instead of passing partially.
+
+    The step's own budget (``CITATIONS_TIMEOUT``) sits past the total bound the checker puts on its
+    whole run, so a bound the checker reaches is answered by the checker's own FAIL verdict first; this
+    arm is the backstop for a checker that ends without a verdict anyway. ``run()`` has already killed
+    and reaped the child by the time ``TimeoutExpired`` is raised, and a step that ended without a
+    verdict is a failure -- not a traceback that leaves the gate with no verdict at all.
     """
     script = ROOT / "scripts" / "obligation-citations.py"
     if not script.exists():
         return NA, "no scripts/obligation-citations.py in this tree yet"
-    proc = run([sys.executable, str(script)])
+    try:
+        proc = run([sys.executable, str(script)], timeout=CITATIONS_TIMEOUT)
+    except subprocess.TimeoutExpired as expired:
+        out = expired.stdout if isinstance(expired.stdout, str) else ""
+        return FAIL, (
+            f"obligation-citations.py -> no verdict within {CITATIONS_TIMEOUT} s: the checker's own "
+            f"total bound fires first, so this backstop budget was reached by a run that could not "
+            f"report at all\n" + tail(out, 400)
+        )
     text = (proc.stdout or "") + (proc.stderr or "")
     verdicts = [
         line for line in (proc.stdout or "").splitlines()
