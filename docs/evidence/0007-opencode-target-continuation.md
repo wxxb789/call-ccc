@@ -238,6 +238,44 @@ inactive branch, the CLI's shape (`--to opencode`, the printed invocation, the r
 harness), and the offline native-check rules (the `--standalone` position, a turn that did not grow the
 store, a refusal that must name its id, a failed listing that is not an empty one).
 
+Documentation and bookkeeping this increment carries: `AGENTS.md` **had to move with this round** — it
+changed the route table (`--to opencode` with the writer/installer/verifier files it names), the commands a
+caller runs (the harness's own importer, the `XDG_DATA_HOME` data root, `session export`), the repository
+layout (`internal/ccc/opencodefixture/`, `scripts/opencode-native-check.py`) and rules an agent must
+follow (an OpenCode session exists only inside the harness's store, so that harness's own importer is the
+only install path and a host without the binary has no installation; the two document members the store
+requires; the load level asks `session export`, never `run`; the session's own recorded directory; the
+target home's own model binding; and the `--standalone` rule every subcommand keeps) — so its
+OpenCode bullet, the route list and the native-check name were written in the same increment, and the file
+is not edited as decoration. Also carried: `docs/conventions.md` (the layout block's three files and the
+fixture package, the install rule's OpenCode branch, why this route adds no fixture directory);
+`docs/harness.md` (the new script's entry and why it is not a gate step); `README.md` (the capability
+sentence, the quickstart's `--to opencode` line and its printed resume form, the "what `continue` writes"
+block, the loader list, `--target-home`/`--target-binary`); `docs/core-design/README.md` (one sentence: a
+target whose artifact is a row inside the harness's own store); `docs/goals/README.md` (goal 0006 archived
+with its row, 0007's row); goal `0006-omp-continuation.md` moved to `docs/goals/archive/` with every link
+to it updated; and `docs/decisions/OPEN-QUESTIONS.md` (Q-0007-01 … Q-0007-05). Goal 0007's own file stays
+in `docs/goals/` with its row marked *Implemented … awaiting operator acceptance*: it moves to the archive
+in the increment that merges it.
+
+### The control-file review round's re-run of the gate
+
+This round changed no Go file and no case: its fix is `AGENTS.md`'s `--standalone` rule, the "Documentation
+and bookkeeping" paragraph above, and two claims this increment's own edits had left stale in `README.md`
+(the directory-scoped route count, `all three` → `all four`, and the further-targets list, which still named
+`OpenCode` although this increment ships it as a target). It is also the round that gate-checked the
+increment's **tracked** bytes: the run quoted above is the stage's own, taken while its output was still
+untracked, and `gofmt` walks git's tracked `*.go` set (`scripts/gate.py`), so that line's 3611 is the tree's
+count without this increment's nine added `*.go` files — `git ls-tree 338df94` counted 3611 tracked `*.go`
+files and `git ls-files '*.go'` counts 3620 now (`git diff --name-status 338df94..HEAD -- '*.go'` → 9 added,
+12 modified) — and the nine went into this round's re-run. That run, `python3 scripts/gate.py` on the bytes
+this record ships, prints `GATE: PASS`, exit 0, with the same step set and the same contract counts as the
+block above: `gofmt` 3620 file(s) gofmt-clean (the line that moved), `build`/`vet` rc=0, `test` 3 package(s)
+ok, `selftest` Ran 308 tests (rc=0), `parity` 5553 carried file(s) identical to the pinned revision / 31
+project-owned prefix(es) / `files seen by git` 5701 (that line counts tracked ∪ untracked, and the earlier
+block's 5702 is its own moment's set, when this increment's output was still untracked), and `secrets` no
+leaks in 155 file(s).
+
 ## 5. What travels, source side and target side
 
 | Source evidence | Target side, and the run that recorded it |

@@ -70,7 +70,10 @@ with their exit codes and counts).
   member's JSON and compares every other member as recorded. The load level asks the harness's own
   `session export`, never `run`: `run` *creates* a session for an id the store does not hold. The
   directory a session is resolved from is the one its own document records, and the model binding it runs
-  under is the target home's own, asked of the harness (`debug agents`).
+  under is the target home's own, asked of the harness (`debug agents`). Every OpenCode subcommand this
+  build prints or runs carries `--standalone`, and none leaves the flag past a `--` terminator, where it
+  hands the run to the managed service and that service answers from a store this run did not grow
+  (measured); the printed resume line names it immediately after its subcommand.
 - **A conversion writes a fresh native identity and replaces nothing.** The install is exclusive, the
   source is never opened for writing, no credential or login store is copied, and a target data
   directory nobody named is an error rather than a directory invented here. Tests and demos use

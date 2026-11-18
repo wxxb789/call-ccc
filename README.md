@@ -46,7 +46,7 @@ the temporary tree becomes `-tmp…`, one under the home `-…`, and only a path
 2.2.5: `opencode session list --format json` names the session from that directory and lists nothing for
 it from another). The `cd` a printed line carries is therefore about the session rather than only about the
 lookup: where the harness resolves an id from the directory it is run in, the `cd` is what makes the
-pasted line find this session, and for all three of them the continued conversation runs in that
+pasted line find this session, and for all four of them the continued conversation runs in that
 directory — while the Oh My Pi line additionally names the directory that holds the file, because naming
 the `sessions` root above it answers that no such session is installed.
 
@@ -117,7 +117,7 @@ target writer, `ConvertToCodexRollout`/`ConvertToClaudeTranscript`/`ConvertToPiS
 convert into the five target formats (a Codex rollout, a Claude Code transcript, the Pi family's two: a
 Pi session and an Oh My Pi session, and OpenCode's own import document), and `Inspect` is what the
 `inspect` command calls. Further targets
-(OpenCode, GitHub Copilot CLI, …) arrive with the goals that specify them.
+(GitHub Copilot CLI, …) arrive with the goals that specify them.
 
 - Design and scope: [`docs/core-design/README.md`](docs/core-design/README.md)
 - Outcome contracts: [`docs/goals/README.md`](docs/goals/README.md)
