@@ -1,7 +1,10 @@
 # Steps that MUST be PASS: any other status (FAIL, SKIP, BOUNDARY, N/A) fails the gate.
 #
-# parity: the carried tree must match its pinned upstream revision, offline. selftest: the harness
-# rules themselves must still hold. The Go steps stay optional because the Windows C-compiler
-# boundary documented in docs/harness.md is a disclosed platform limit, not a failure.
+# parity: the carried tree must match its pinned upstream revision, offline. citations: a goal's
+# acceptance surface is its docs/evidence/<goal>-citations.tsv, so a tree that lost it (or whose cited
+# test stopped passing) must fail rather than pass partially. selftest: the harness rules themselves
+# must still hold. The Go steps stay optional because the Windows C-compiler boundary documented in
+# docs/harness.md is a disclosed platform limit, not a failure.
 parity
+citations
 selftest

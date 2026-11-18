@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """call/ccc project gate — one command, real exit codes, no network.
 
-Steps, in order: gofmt, build, vet, test, selftest, parity, secrets.
+Steps, in order: gofmt, build, vet, test, selftest, parity, citations, secrets.
 Exit 0 only when every step that RAN passed. A step that could not run prints
 SKIP/BOUNDARY with its reason, a step whose hook is not in the tree prints N/A,
 and none of the three is counted as a pass: the verdict line names every one of
@@ -18,6 +18,7 @@ Knobs (in-repo, auditable):
   scripts/gate-required.txt   steps that MUST be PASS; a listed step that is
                               skipped, unavailable or a platform boundary fails
   scripts/upstream-parity.py  source-side parity check, run when present
+  scripts/obligation-citations.py  the obligation manifests under docs/evidence/, run when present
   scripts/tests/              stdlib-unittest regression tests for this gate,
                               run by the selftest step
   CALLCCC_GATE_ROOT           run against another tree (used by
@@ -30,6 +31,7 @@ docs/harness.md; this file implements them.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -42,12 +44,19 @@ from upstream_manifest import ManifestError, load_manifest  # noqa: E402  (path 
 
 ROOT = Path(os.environ.get("CALLCCC_GATE_ROOT") or Path(__file__).resolve().parent.parent).resolve()
 PASS, FAIL, SKIP, BOUNDARY, NA = "PASS", "FAIL", "SKIP", "BOUNDARY", "N/A"
-KNOWN_STEPS = ("gofmt", "build", "vet", "test", "selftest", "parity", "secrets")
+KNOWN_STEPS = ("gofmt", "build", "vet", "test", "selftest", "parity", "citations", "secrets")
 
 #: How many characters of ``*.go`` paths one ``gofmt`` invocation may carry. Windows caps a process
 #: command line at 32 767 characters, and the carried tree's file list is far past that, so the step
 #: runs bounded batches that stay well inside the cap on every platform -- see ``gofmt_batches``.
 GOFMT_BATCH_CHARS = 8000
+
+#: The citations step's budget. The checker bounds its own whole run (``TOTAL_TIMEOUT`` in
+#: ``scripts/obligation-citations.py``: two per-command deadlines, 3 600 s) and answers a bound it
+#: reaches as a FAIL verdict, so the step is handed that bound plus a margin -- a bound the checker can
+#: reach is one it still has time to answer on, and this budget is only the backstop for a checker that
+#: could not report at all (its ``TimeoutExpired`` is caught and answered as FAIL, below).
+CITATIONS_TIMEOUT = 3600 + 300
 
 
 def read_list(name: str) -> list[str]:
@@ -241,6 +250,55 @@ def step_parity() -> tuple[str, str]:
     return PASS, tail(proc.stdout, 800).replace("\n", " | ") or "rc=0"
 
 
+def step_citations() -> tuple[str, str]:
+    """The obligation manifests: every cited test runs and passes.
+
+    ``scripts/obligation-citations.py`` answers the verdict in this gate's own vocabulary as the last
+    line it prints, so the status is read from that line rather than from a second spelling of the
+    checker's exit codes; the exit code is still cross-checked, because a run that claims PASS and
+    exits non-zero is a defect either way. The step is required (``scripts/gate-required.txt``): the
+    manifests are an increment's acceptance surface, so a missing manifest or a stale citation fails
+    the gate instead of passing partially.
+
+    The step's own budget (``CITATIONS_TIMEOUT``) sits past the total bound the checker puts on its
+    whole run, so a bound the checker reaches is answered by the checker's own FAIL verdict first; this
+    arm is the backstop for a checker that ends without a verdict anyway. ``run()`` has already killed
+    and reaped the child by the time ``TimeoutExpired`` is raised, and a step that ended without a
+    verdict is a failure -- not a traceback that leaves the gate with no verdict at all.
+    """
+    script = ROOT / "scripts" / "obligation-citations.py"
+    if not script.exists():
+        return NA, "no scripts/obligation-citations.py in this tree yet"
+    try:
+        proc = run([sys.executable, str(script)], timeout=CITATIONS_TIMEOUT)
+    except subprocess.TimeoutExpired as expired:
+        out = expired.stdout if isinstance(expired.stdout, str) else ""
+        return FAIL, (
+            f"obligation-citations.py -> no verdict within {CITATIONS_TIMEOUT} s: the checker's own "
+            f"total bound fires first, so this backstop budget was reached by a run that could not "
+            f"report at all\n" + tail(out, 400)
+        )
+    text = (proc.stdout or "") + (proc.stderr or "")
+    verdicts = [
+        line for line in (proc.stdout or "").splitlines()
+        if re.match(r"^citations: (PASS|FAIL|SKIP|BOUNDARY|N/A)(?: — .*)?$", line)
+    ]
+    if len(verdicts) != 1:
+        return FAIL, (
+            f"obligation-citations.py -> rc={proc.returncode}, {len(verdicts)} verdict line(s)\n"
+            + tail(text, 1500)
+        )
+    status = verdicts[0].split(":", 1)[1].split(" — ", 1)[0].strip()
+    if status == PASS and proc.returncode != 0:
+        return FAIL, f"obligation-citations.py answered PASS with rc={proc.returncode}\n" + tail(text, 1500)
+    if status == PASS:
+        lines = [line for line in (proc.stdout or "").splitlines() if not line.startswith("citations: ")]
+        return PASS, " | ".join(lines) or "rc=0"
+    if status in (SKIP, BOUNDARY):
+        return status, verdicts[0].split(" — ", 1)[-1]
+    return FAIL, tail(text, 1500)
+
+
 def secrets_scope() -> tuple[Path | None, int, str]:
     """Stage this repository's own files for the leak scan and describe the scope.
 
@@ -328,6 +386,7 @@ def build_steps() -> list[tuple[str, str, str]]:
         steps.append((sub, *step_go(sub, go_files, boundary, targets, flags)))
     steps.append(("selftest", *step_selftest()))
     steps.append(("parity", *step_parity()))
+    steps.append(("citations", *step_citations()))
     steps.append(("secrets", *step_secrets()))
     return steps
 

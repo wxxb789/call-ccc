@@ -20,8 +20,8 @@ finding and not only on the fix.
 
 An older increment's record is not read here: 0003's record quotes the same 2 500-character default about a
 *failed* ``go test`` step, which is that step's own limit, and its transcripts follow the scheme its own
-round chose. This rule is checked on the records that state it, and this increment's record must be among
-them.
+round chose. This rule is checked on the records that state it, and both the record the round-4 finding was
+about and the harness increment's record must be among them.
 
 The arithmetic below assumes the parity checker's stdout holds no `` | `` of its own (its source spells the
 separator only in type hints and a set union), so every `` | `` a body holds was a spelled line feed; a
@@ -41,9 +41,11 @@ ROOT = Path(__file__).resolve().parents[2]
 EVIDENCE = ROOT / "docs" / "evidence"
 RULE_CLAIM = "the gate's own elision"
 
-#: This increment's record -- the one the round-4 finding was about. Required to be among the records that
-#: state the rule, so a rewording or a rename cannot retire this case quietly.
+#: This increment's record -- the one the round-4 finding was about -- and the harness increment's
+#: record, which quotes a ``parity`` line of its own: both state the rule, so both are required to be
+#: among the records this case reads (a rewording or a rename cannot retire the case quietly).
 RULE_RECORD = "0004-repeatable-continuation-handoffs.md"
+HARNESS_RECORD = "harness-structured-citation-gate.md"
 
 #: The gate, its step that renders the one-line detail, and the checker whose output that detail holds.
 GATE = ROOT / "scripts" / "gate.py"
@@ -70,7 +72,7 @@ SEPARATOR = " | "
 
 def rule_records() -> list[Path]:
     """The evidence records that state the rule: the ones naming the gate's elision."""
-    return [path for path in sorted(EVIDENCE.glob("*continuation*.md"))
+    return [path for path in sorted(EVIDENCE.glob("*.md"))
             if RULE_CLAIM in path.read_text(encoding="utf-8")]
 
 
@@ -160,10 +162,11 @@ class GateTranscriptElisionClaims(unittest.TestCase):
     def test_every_rule_record_quotes_the_gate_s_own_rendering(self) -> None:
         self.assertTrue(EVIDENCE.is_dir(), f"no {EVIDENCE} to read the records from")
         discovered = {path.name for path in rule_records()}
-        self.assertIn(
-            RULE_RECORD, discovered,
-            f"{RULE_RECORD} is the record this case was written for and states the rule, but it is not "
-            f"among the records discovered as stating it (found: {sorted(discovered)})")
+        for required in (RULE_RECORD, HARNESS_RECORD):
+            self.assertIn(
+                required, discovered,
+                f"{required} states the rule and is required to be read by this case, but it is not "
+                f"among the records discovered as stating it (found: {sorted(discovered)})")
         for record in rule_records():
             document = record.read_text(encoding="utf-8")
             found = elision_violations(document) + stated_limit_violations(document)

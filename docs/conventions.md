@@ -35,7 +35,8 @@ internal/ccc/testdata/growth    committed fragments a run appends to a *copy* of
 docs/core-design/   the long-lived product and engineering boundaries
 docs/goals/         numbered outcome contracts (archive/ once accepted)
 docs/plans/         one plan per increment, written before its implementation
-docs/evidence/      one evidence record per increment: real commands, exit codes, counts
+docs/evidence/      one evidence record per increment: real commands, exit codes, counts, and
+                    the increment's obligation-citation manifest (<goal>-citations.tsv)
 docs/upstream.md    the carried AgentsView pin, its declared deviations and the update procedure
 docs/decisions/     append-only record of decisions taken and defaults chosen
 scripts/            harness entry points (gate, knobs, carry importer, parity, comparison,
@@ -65,6 +66,34 @@ gate runs as a required step.
 - The generated input `internal/pricing/snapshot/litellm_snapshot.json.gz` is committed although
   upstream does not track it (upstream's Makefile restores it before every Go build), is ignored by
   the carried `snapshot/.gitignore`, and therefore needs `git add -f` when it is first added.
+
+## Obligation citations
+
+A goal's acceptance surface is a **machine-checked manifest** beside its prose record:
+`docs/evidence/<goal>-citations.tsv`, one row per obligation that a gate-runnable Go test discharges. The
+gate's required `citations` step (`docs/harness.md`) parses every `docs/evidence/*-citations.tsv` and
+runs each row's test, so "this obligation is covered" is re-derived by a command instead of re-read by a
+reader.
+
+Tab-separated, a header line naming these four columns in this order, `#` comment lines and blank lines
+ignored, one row per rule id:
+
+| column | what it holds |
+| --- | --- |
+| `rule_id` | the obligation's id in the increment's matrix (`A1`, `B3`, `E2`, …) |
+| `test` | the Go test that pins it — a top-level test function's name (`TestXxx`) |
+| `package` | the package `go test` is handed, in the tree's own `./` spelling (`./internal/ccc`) |
+| `artifact` | free text that reaches the prose, e.g. the matrix section the pair comes from |
+
+**Which obligations get a row:** only those a gate-runnable Go test discharges. An obligation whose
+gate re-derivation is a python case under `scripts/tests/` — the `selftest` step runs them on every gate
+run — cannot be held by this form, which is one Go test function in a package `gate-targets.txt` covers.
+That is the reason for every id the seed manifest's header comment lists as left out: the native-check
+obligations (the native run is their own positive evidence, and the case beside it is what re-derives the
+rule in the gate) and the harness's own rules alike. The manifest's header comment names the rule ids
+deliberately left out, one line per reason — nothing is dropped silently. A discovered manifest that
+declares no data rows is a failure naming the file, not a pass: a goal with no Go-test-dischargeable
+obligation ships no citations file, rather than an empty one.
 
 ## Rules of the work
 

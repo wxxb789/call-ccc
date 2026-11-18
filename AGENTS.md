@@ -9,7 +9,9 @@ Read in this order; do not skip: this file → [`docs/core-design/README.md`](do
 
 An increment's own records live next to it: its plan in [`docs/plans/`](docs/plans/) (written before
 the implementation) and its evidence in [`docs/evidence/`](docs/evidence/) (the commands that ran,
-with their exit codes and counts).
+with their exit codes and counts). Every obligation a gate-runnable Go test discharges also gets a row
+in that increment's `<goal>-citations.tsv`, which the required `citations` gate step runs
+(`docs/conventions.md`).
 
 ## What is binding
 
@@ -152,9 +154,11 @@ with their exit codes and counts).
   Pi or Oh My Pi invocation the report prints and the check runs names the sessions tree inside the data
   directory explicitly (`PI_CODING_AGENT_SESSION_DIR`), so the printed line, the verified lookup and the
   installation agree even when the caller's shell, or the home's own `settings.json`, names another tree.
-- Gate: `python3 scripts/gate.py`, which must print `GATE: PASS`; it runs `parity` and `selftest` as
-  required steps, and its Go steps are narrowed to `./cmd/ccc/... ./internal/ccc/...` with the measured
-  reasons in [`docs/harness.md`](docs/harness.md#why-the-go-steps-target-a-subset) — that narrowing is
+- Gate: `python3 scripts/gate.py`, which must print `GATE: PASS`; it runs `parity`, `citations` and
+  `selftest` as required steps (`citations` verifies every `docs/evidence/*-citations.tsv` row: the
+  cited Go test must exist in the package the row names and run and pass), and its Go steps are
+  narrowed to `./cmd/ccc/... ./internal/ccc/...` with the measured reasons in
+  [`docs/harness.md`](docs/harness.md#why-the-go-steps-target-a-subset) — that narrowing is
   a disclosure, not a shortcut; a run in which a step was skipped,
   bounded or absent prints `GATE: PASS (partial: …)` naming it, so a partial run can never be quoted
   as a full one. It is the same file CI runs (the runners name the interpreter `python`); never narrow
