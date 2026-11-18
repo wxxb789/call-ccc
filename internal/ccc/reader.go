@@ -740,8 +740,9 @@ func conversationFromParse(
 		identity.Fingerprint = fingerprint.Key
 	}
 	messages := make([]Message, 0, len(result.Messages))
+	rendersThinkingTrace := readerRendersThinkingTrace(session.Agent)
 	for _, parsed := range result.Messages {
-		messages = append(messages, messageFromParsed(parsed))
+		messages = append(messages, messageFromParsed(parsed, rendersThinkingTrace))
 	}
 	fidelity := Fidelity{
 		MalformedLines:     session.MalformedLines,
@@ -773,7 +774,10 @@ func conversationFromParse(
 	}
 }
 
-func messageFromParsed(parsed parser.ParsedMessage) Message {
+// messageFromParsed maps one parsed record to the interchange document, carrying the reader's own
+// answer about its Content (rendersThinkingTrace, asked once per session because it is a property of the
+// reader -- readerRendersThinkingTrace -- and not of the record).
+func messageFromParsed(parsed parser.ParsedMessage, rendersThinkingTrace bool) Message {
 	message := Message{
 		Ordinal:           parsed.Ordinal,
 		Role:              string(parsed.Role),
@@ -784,6 +788,10 @@ func messageFromParsed(parsed parser.ParsedMessage) Message {
 		IsSystem:          parsed.IsSystem,
 		IsSidechain:       parsed.IsSidechain,
 		IsCompactBoundary: parsed.IsCompactBoundary,
+		// The reader that produced Content renders this record's own trace into it (`[Thinking]…[/Thinking]`,
+		// a block no dialogue projection covers), which is what lets a target writer remove the rendering
+		// from the dialogue instead of carrying the trace as words the source never recorded.
+		ContentRendersThinking: rendersThinkingTrace,
 		// The provider's own record identity and the record it hangs off, as the inherited reader
 		// answered them: a target format that is itself a tree (a Pi session) writes the source's own
 		// shape with them instead of a flat chain this build invented. Empty where the provider records

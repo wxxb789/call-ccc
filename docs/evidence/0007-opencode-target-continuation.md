@@ -1616,6 +1616,107 @@ default-taken text narrowed to the whole document with the round's measurement);
 still the increment under review, implemented on its branch with its row; the earlier goals are archived
 and their rows say so.
 
+### The tenth review round's fixes (`f7ea753` + working tree), re-measured
+
+The findings file (`review-findings-r10.md`, review head `f7ea753`) named two defects, both P2 and both
+dispositions FIX, and its own instruction was again the systematic close-out: enumerate every rule the
+touched surface claims and prove each with one executed mutation, pinning in this round any rule that
+survived its mutation. The eight mutations below are this round's evidence for the rules the two fixes
+touch.
+
+- **The rendering removal is authorised by the reader, not by a matching trace** (`dialogueFromContent`;
+  the new `internal/ccc/dialogue_provenance.go`). The ninth round's rule removed a
+  `[Thinking]…[/Thinking]` block whenever the record's trace held its words, and a transcript that records
+  an answer and a reasoning trace independently can carry such a block as its *own* content whose words a
+  trace happens to hold: measured through the inherited Vibe reader (a temp-root `messages.jsonl`, read
+  through `NewSourceReader`) with `content` exactly the block and `reasoning_content` exactly its words,
+  the pre-fix rule answered an empty dialogue and the converted rollout lost the message's words, while
+  the fixed one keeps the block as the record's dialogue with the trace traveling beside it (counted as
+  `reasoning_text` on this target, which has no shape for a plaintext trace). The read now answers the
+  provenance per record (`Message.ContentRendersThinking`): a source read asks the parsed session's agent,
+  an archive read asks the stored row's agent label — resolving a stored label to its provider the way the
+  archive's own lookups do (`readerRendersThinkingTrace`, `storedAgentOwner`) — and the table names the
+  thirteen readers that build the trace into `Content` with no dialogue projection of their own (Cline,
+  Codebuff, Crush, DeepSeek TUI, Evener, Forge, Goose, legacy Kilo, Kimi, Muse, RooCode, Tau, ZCode; each
+  entry carries its construction site in the carried reader). A reader that also projects a dialogue is
+  answered by its projection before this rule is reached, and a reader the table does not name keeps its
+  `Content` byte for byte whatever its trace holds — the answer that keeps the source's own words, with the
+  table's completeness a step of the carry's own update procedure rather than a guess about text. New and
+  updated cases: `TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader` now runs both traces
+  (the nonmatching one and one holding the block's words exactly — the finding's own scenario);
+  `TestRenderingReaderRemovesTheRenderedTraceThroughAnInheritedReader` reads a Cline session through
+  `NewSourceReader` (a temp-root `data/sessions/<id>/` metadata and transcript), asserts the reasoning-only
+  record's dialogue is empty and the mixed record's rendering is removed while its own text stays, and then
+  reads the same session back from a SQLite archive the ingestor wrote, to prove the archive read's label is
+  the reader's name too; the shared table gains arms for a raw-content reader's matching block (the
+  whole-content shape and one beside text).
+- **A block the removal does not take keeps the bytes that follow it** (`dialogueFromContent`). The scan
+  kept a carried marker block as a piece of its own and the join put a line feed between that piece and the
+  bytes after it, so a record carrying `A[Thinking]literal[/Thinking]B` beside a real rendering came out
+  with a feed inserted before `B` — bytes the source never recorded, inserted by the translation. The kept
+  bytes now continue one run (`atPartStart`), and only a *removed* rendering's own join feeds are dropped;
+  three new arms pin it (a carried block closing a run, one ending a run the removal did not touch, and one
+  standing between two removed renderings).
+
+The mutations, executed and restored (each file hashed before and after its mutation and quoted with the
+first twelve hex digits — `codex_target.go` `0c4358dc49e1…`, `dialogue_provenance.go` `65eb491689c6…`,
+`reader.go` `bb140241e5f4…`, `archive.go` `5cfc0ef5e4f0…`; every one of them was back to the quoted bytes
+after its run):
+
+| Rule | Line disabled | Observed (the case that reddened) |
+| --- | --- | --- |
+| a record whose reader records `Content` as written is never rewritten | `codex_target.go`: `if !message.ContentRendersThinking {` → `if false {` | `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/a_raw-content_reader's_matching_block_is_the_record's_own_text` and `… _beside_text_is_the_record's_own_text_too`; `TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader/the_trace_holds_the_block's_words_exactly` |
+| the table names a rendering reader (Cline) | `dialogue_provenance.go`: `parser.AgentCline: {},` dropped | `TestRenderingReaderRemovesTheRenderedTraceThroughAnInheritedReader` |
+| a reader that records `Content` as written is not in the table (Vibe) | `dialogue_provenance.go`: `parser.AgentVibe: {},` added | `TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader/the_trace_holds_the_block's_words_exactly` |
+| the source read establishes provenance from the parsed session | `reader.go`: `rendersThinkingTrace := readerRendersThinkingTrace(session.Agent)` → `rendersThinkingTrace := false` | `TestRenderingReaderRemovesTheRenderedTraceThroughAnInheritedReader` (its source half) |
+| the archive read establishes provenance from the stored row's label | `archive.go`: the same call on `parser.AgentType(session.Agent)` → `false` | `TestRenderingReaderRemovesTheRenderedTraceThroughAnInheritedReader` (its archive half) |
+| bytes after a carried marker block continue its run | `codex_target.go`: the kept-block arm's `atPartStart = false` → `atPartStart = true` | the three `carried marker block` arms |
+| only the reader's one join feed per side goes with a removed rendering | `codex_target.go`: `strings.TrimSuffix(rest[:open], "\n")` → `strings.TrimRight(…)` and `strings.TrimPrefix(after, "\n")` → `strings.TrimLeft(…)` | the two `… blank line …` arms |
+| a block whose words the trace does not hold is the record's own text | `codex_target.go`: `!strings.Contains(trace, rendered)` → `strings.TrimSpace(trace) == ""` | `a block the record's own trace does not hold …`, `a reasoning-only block …`, and the three `carried marker block` arms |
+
+The Go suites were re-run afterwards on the restored tree (`ok go.kenn.io/agentsview/internal/ccc`), and
+the round's own review of the surviving surface found one rule the tests could not reach: the shortcut's
+copy of the provenance test (`thinkingRenderingOnly`) could not be reddened by any case, because
+`dialogueFromContent`'s gate answers first — a duplicate of the rule that nothing pins is dead weight, so
+it was removed in this round rather than given a test of its own.
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3620 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 354 tests in 5.781s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 31 project-owned prefix(es); files seen by git: 5702 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 156 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+(The `… | ` at the parity line's front is what the run itself printed, and it is the only cut in the
+quoted line: the line above is the run's output whole, from its first byte to its last. The gate ran on
+this round's final working tree — this record included, with a placeholder line standing where this
+block now stands — and after it the placeholder was replaced by this block, repeating the run's own
+output, and by this sentence.)
+
+
+The narrowed Go suites' own test functions ran 392 before this round and 393 after — the one case added
+(`TestRenderingReaderRemovesTheRenderedTraceThroughAnInheritedReader`), counted as `^func Test` over the
+test files git lists under `cmd/ccc` and `internal/ccc`. `selftest` ran 354, the count round 9's run ended with: this
+round changed no Python. What else the round moved: `AGENTS.md` (the dialogue bullet now states the provenance
+the removal requires — `Message.ContentRendersThinking`, established by `dialogue_provenance.go`'s
+`thinkingRenderingReaders` — beside the rule that a block's words must be the record's own trace);
+`docs/decisions/OPEN-QUESTIONS.md` (Q-0007-08's default-taken text narrowed to the reader, with the
+coincidence the round measured and the table's maintenance); `docs/plans/0007-opencode-target-continuation.md`
+(§6.1's tenth-round paragraph and §7's `AGENTS.md` bullet). `README.md`, `docs/harness.md`,
+`docs/upstream.md` and the carry are untouched: no carried file changes, no new native check, no gate step
+change. No goal file is moved: 0007 is still the increment under review, implemented on its branch with its
+row; the earlier goals are archived and their rows say so. The tenth round also added one file
+(`internal/ccc/dialogue_provenance.go`, the table and its lookup) and no fixture: the Cline session the new
+case reads is written into the case's own temp root, not committed.
+
 ## 5. What travels, source side and target side
 
 | Source evidence | Target side, and the run that recorded it |

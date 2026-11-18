@@ -428,6 +428,28 @@ line feed the reader's own join put on each side of the rendering, so the feeds 
 records survive (ZCode joins its parts with `strings.Join(parts, "\n")`, and a recorded blank line is a
 paragraph break), and the parts come out joined as the reader joins neighbours.
 
+The tenth review round makes the removal stand on the reader instead of on the text it wrote, and turns the
+kept bytes of a block nothing removed into one run. **A rendering is removed only where the reader that
+wrote `Content` is one that renders the trace into it** (`dialogueFromContent`; the new
+`internal/ccc/dialogue_provenance.go` names the readers): the ninth round's rule removed a
+`[Thinking]…[/Thinking]` block whenever the record's trace held its words, and a transcript that records an
+answer and a reasoning trace independently can carry such a block as its *own* content whose words a trace
+happens to hold — measured through the inherited Vibe reader (`content` exactly the block,
+`reasoning_content` exactly its words): the pre-fix rule answered no dialogue, so the Codex rollout lost the
+spoken message, while the fixed one keeps the block as the record's dialogue with the trace traveling
+beside it. The read answers the provenance per record (`Message.ContentRendersThinking`), from the
+session's agent label on a source read and from the stored row's label on an archive read
+(`readerRendersThinkingTrace`, resolving a stored agent label to its provider the way the archive's own
+lookups do); the table names the readers that build the trace into `Content` with no dialogue projection of
+their own (Cline, Codebuff, Crush, DeepSeek TUI, Evener, Forge, Goose, legacy Kilo, Kimi, Muse, RooCode,
+Tau, ZCode — each entry carrying its construction site in the carried reader), a reader that also projects a
+dialogue is answered by its projection before this rule is reached, and a reader the table does not name
+keeps its `Content` byte for byte, whatever its trace holds. **A block the removal does not take keeps the
+bytes that follow it** (`dialogueFromContent`): the scan kept a carried marker block as a piece of its own
+and the join put a feed between it and the bytes after it, so a record carrying
+`A[Thinking]literal[/Thinking]B` beside a real rendering came out with a line feed inserted before `B`; the
+kept bytes now continue one run, and only a *removed* rendering's own join feeds are dropped.
+
 ## 7. Gate, docs, bookkeeping
 
 - Gate: **no new step and no new required step.** New tests live in `internal/ccc` and `cmd/ccc`, which
@@ -436,7 +458,9 @@ paragraph break), and the parts come out joined as the reader joins neighbours.
 - `AGENTS.md`: the route list (writer/installer/verifier file names), the native check's name, and the
   OpenCode-specific rules (the importer as the only install path, the data directory's own rule and the
   `XDG_DATA_HOME` spelling, the fresh identity the harness adopts, the content-neutral export the load
-  level uses, the required document members).
+  level uses, the required document members); its dialogue bullet now states the provenance the
+  rendering removal requires (`Message.ContentRendersThinking`, established by `dialogue_provenance.go`'s
+  `thinkingRenderingReaders`) beside the rule that a block's words must be the record's own trace.
 - `docs/conventions.md`: the layout block gains the three files; the install rule gains OpenCode's
   data-directory rule and the importer; the fixture note records why 0007 adds no fixture directory.
 - `docs/harness.md`: the new script's entry and why it is not a step.

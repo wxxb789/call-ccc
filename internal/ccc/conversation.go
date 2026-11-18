@@ -116,12 +116,19 @@ type Message struct {
 	// then renders blocks that are not dialogue (a persisted reasoning trace, a tool call), and a
 	// writer that fell back to that rendering would state words the source never recorded as spoken.
 	// False means the source classified nothing here and Content is the message's text.
-	DialogueProjected bool         `json:"dialogue_projected,omitempty"`
-	Thinking          string       `json:"thinking,omitempty"`
-	Timestamp         time.Time    `json:"timestamp,omitempty"`
-	Model             string       `json:"model,omitempty"`
-	ToolCalls         []ToolCall   `json:"tool_calls,omitempty"`
-	ToolResults       []ToolResult `json:"tool_results,omitempty"`
+	DialogueProjected bool `json:"dialogue_projected,omitempty"`
+	// ContentRendersThinking says whether the reader that produced Content builds the record's persisted
+	// reasoning trace into it as a `[Thinking]…[/Thinking]` block (readerRendersThinkingTrace), so a
+	// block whose words the trace holds is that reader's rendering of the trace rather than dialogue
+	// (dialogueFromContent). False means the reader records Content as the source wrote it -- Vibe's
+	// reader copies the record's content and reasoning_content independently -- and a marker block
+	// standing there is text the record itself carries, whatever the trace holds.
+	ContentRendersThinking bool         `json:"content_renders_thinking,omitempty"`
+	Thinking               string       `json:"thinking,omitempty"`
+	Timestamp              time.Time    `json:"timestamp,omitempty"`
+	Model                  string       `json:"model,omitempty"`
+	ToolCalls              []ToolCall   `json:"tool_calls,omitempty"`
+	ToolResults            []ToolResult `json:"tool_results,omitempty"`
 	// IsSystem marks a record the provider itself flagged as system-injected (a compaction summary,
 	// a notice). It is independent of Role: a compaction summary is recorded as an assistant record.
 	IsSystem          bool `json:"is_system,omitempty"`

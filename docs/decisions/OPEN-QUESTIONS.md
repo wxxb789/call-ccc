@@ -2457,7 +2457,14 @@ supersede it with a newer one and say which it supersedes.
   followed), and the line feeds that joined the rendering to its neighbours go with it. The alternative
   arms each lose something this one keeps: carrying the `Content` whole presents the trace as dialogue the
   source never recorded the agent as saying, and dropping it whole discards the record's own words, which
-  nothing shows to be reasoning.
+  nothing shows to be reasoning. (Round 10 narrowed it to the reader the words test cannot see: the removal
+  is authorised only for a record whose *reader* renders the trace into `Content` —
+  `Message.ContentRendersThinking`, established from the session's agent label by
+  `internal/ccc/dialogue_provenance.go`'s `thinkingRenderingReaders`, whose thirteen entries each name their
+  reader's construction site in the carried tree. A reader that records `Content` as the source wrote it —
+  Vibe's independent `content` and `reasoning_content` among them — keeps its `Content` byte for byte *even
+  where its words are the record's trace*, the coincidence the round's finding measured: a reader the table
+  does not name is treated as a non-renderer, and the table is maintained with the carried readers.)
 - **Reversal:** make the writer refuse such a record (or drop its `Content` and count it under a loss
   category), which is stricter about provenance and loses the record's own text with it.
 - **Settled by:** a reader that renders a trace into `Content` in a shape where the block's own words are

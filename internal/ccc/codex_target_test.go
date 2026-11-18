@@ -1208,13 +1208,21 @@ func TestCodexRolloutKeepsAReasoningOnlyRecordOutOfTheDialogue(t *testing.T) {
 // writer reads its text through (dialogueText → dialogueFromContent), on the shape the readers produce
 // for a record that carries its own persisted trace *beside* its text: the reader renders the trace into
 // Content as `[Thinking]…[/Thinking]` and the trace travels to the target as the message's reasoning, so
-// the rendering is not dialogue. It is removed only where the message's own trace stands behind it and
-// only where it stands, because a reader that keeps the record's part order (ZCode's) renders the trace
-// after the text it followed, and a target must not drop text nothing shows to be reasoning. Of the line
-// feeds around a removed rendering, only the one feed the reader's own join put on each side goes with
-// it: a feed a neighbouring text part records is that part's own bytes (ZCode joins its parts with
-// `strings.Join(parts, "\n")`), so a recorded blank line -- a paragraph break -- survives the removal,
-// and the parts the rendering stood between come out joined as the reader joins neighbours.
+// the rendering is not dialogue. Two conditions have to hold, and each of them alone keeps the block as
+// the record's own text. The reader renders the record's trace into Content
+// (Message.ContentRendersThinking, from the reader's own identity): a reader that records Content as the
+// source wrote it writes no block at all, so a matching block standing in its record was written by the
+// model and is never removed (internal/parser's Vibe reader copies content and reasoning_content
+// independently). And the message's own trace stands behind the block's words: what the removal takes is
+// only a block the record's trace holds, wherever it stands -- a reader that keeps the record's part
+// order (ZCode's) renders the trace after the text it followed, and a target must not drop text nothing
+// shows to be reasoning. Of the line feeds around a removed rendering, only the one feed the reader's
+// own join put on each side goes with it: a feed a neighbouring text part records is that part's own
+// bytes (ZCode joins its parts with `strings.Join(parts, "\n")`), so a recorded blank line -- a
+// paragraph break -- survives the removal, and the parts the rendering stood between come out joined as
+// the reader joins neighbours. A block the removal does *not* take keeps the bytes that follow it
+// directly: nothing is inserted between a carried block and its neighbour (the round-9 defect this arm
+// set pins).
 func TestDialogueFromContentKeepsOnlyTheRecordsOwnText(t *testing.T) {
 	const (
 		trace   = "Inspect the parser before answering."
@@ -1230,48 +1238,79 @@ func TestDialogueFromContentKeepsOnlyTheRecordsOwnText(t *testing.T) {
 		want    string
 	}{
 		{"the readers' order: the rendering stands before the record's text",
-			Message{Role: "assistant", Thinking: trace, Content: rendering(trace) + "\n" + spoken}, spoken},
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				Content: rendering(trace) + "\n" + spoken}, spoken},
 		{"ZCode's part order: the rendering stands after the text it followed",
-			Message{Role: "assistant", Thinking: trace, Content: spoken + "\n" + rendering(trace)}, spoken},
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				Content: spoken + "\n" + rendering(trace)}, spoken},
 		{"one trace rendered as two blocks around the record's text",
-			Message{Role: "assistant", Thinking: "part one\n\npart two",
+			Message{Role: "assistant", Thinking: "part one\n\npart two", ContentRendersThinking: true,
 				Content: rendering("part one") + "\n" + spoken + "\n" + rendering("part two")}, spoken},
 		{"a block the record's own trace does not hold is text the record carries",
-			Message{Role: "assistant", Thinking: trace, Content: rendering(foreign) + "\n" + spoken},
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				Content: rendering(foreign) + "\n" + spoken},
 			rendering(foreign) + "\n" + spoken},
 		{"a reasoning-only block the record's trace does not hold is the record's own text",
-			Message{Role: "assistant", Thinking: trace, Content: rendering(foreign)},
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				Content: rendering(foreign)},
 			rendering(foreign)},
 		{"the blank line the record recorded before the rendering survives the removal",
-			Message{Role: "assistant", Thinking: trace,
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
 				Content: "First paragraph.\n\n" + "\n" + rendering(trace) + "\n" + "Second paragraph."},
 			"First paragraph.\n\n\nSecond paragraph."},
 		{"the blank line the record recorded after the rendering survives too",
-			Message{Role: "assistant", Thinking: trace,
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
 				Content: "First paragraph." + "\n" + rendering(trace) + "\n\n" + "Second paragraph."},
 			"First paragraph.\n\nSecond paragraph."},
 		{"a record the read answered no trace for keeps its Content",
-			Message{Role: "assistant", Content: rendering(foreign) + "\n" + spoken},
+			Message{Role: "assistant", ContentRendersThinking: true, Content: rendering(foreign) + "\n" + spoken},
 			rendering(foreign) + "\n" + spoken},
 		{"nothing but the rendering is still no dialogue",
-			Message{Role: "assistant", Thinking: trace, Content: rendering(trace)}, ""},
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				Content: rendering(trace)}, ""},
 		{"a rendering the readers' own rule trims beside it is still no dialogue",
-			Message{Role: "assistant", Thinking: trace, Content: "  " + rendering(trace)}, ""},
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				Content: "  " + rendering(trace)}, ""},
 		{"a marker the record carries without its closer is text, not a rendering",
-			Message{Role: "assistant", Thinking: "the record says [Thinking] here",
+			Message{Role: "assistant", Thinking: "the record says [Thinking] here", ContentRendersThinking: true,
 				Content: "the record says [Thinking] here"},
 			"the record says [Thinking] here"},
 		{"an empty block the record carries is text, not a rendering",
-			Message{Role: "assistant", Thinking: trace, Content: rendering("") + "\n" + spoken},
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				Content: rendering("") + "\n" + spoken},
 			rendering("") + "\n" + spoken},
 		{"a projection is the dialogue even where the rendering stands beside it",
 			Message{Role: "assistant", Thinking: trace, DialogueProjected: true,
 				Content: rendering(trace) + "\n" + spoken}, ""},
 		{"a rendering with only whitespace beside it is still no dialogue (the readers' own rule)",
-			Message{Role: "assistant", Thinking: trace, Content: rendering(trace) + "\n   "}, ""},
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				Content: rendering(trace) + "\n   "}, ""},
 		{"a record carrying calls has no dialogue from its Content",
-			Message{Role: "assistant", Thinking: trace, Content: rendering(trace) + "\n" + spoken,
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				Content:   rendering(trace) + "\n" + spoken,
 				ToolCalls: []ToolCall{{ToolUseID: "toolu_1", Name: "Read"}}}, ""},
+		// The reader records Content as the source wrote it (no ContentRendersThinking): a matching block
+		// was written by the model, so the reasoning-only shortcut is not asked either.
+		{"a raw-content reader's matching block is the record's own text",
+			Message{Role: "assistant", Thinking: trace, Content: rendering(trace)},
+			rendering(trace)},
+		{"a raw-content reader's matching block beside text is the record's own text too",
+			Message{Role: "assistant", Thinking: trace, Content: rendering(trace) + "\n" + spoken},
+			rendering(trace) + "\n" + spoken},
+		// A block the removal does not take stands inside a run: the bytes after it continue that run
+		// rather than becoming a part of their own, so no feed is inserted between them.
+		{"a carried marker block keeps the bytes that followed it",
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				Content: rendering(trace) + "\n" + "A" + rendering("literal") + "B"},
+			"A" + rendering("literal") + "B"},
+		{"a carried marker block ends a run the removal did not touch",
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				Content: "A" + rendering("literal") + "B" + "\n" + rendering(trace)},
+			"A" + rendering("literal") + "B"},
+		{"a carried marker block between two removed renderings keeps its own bytes",
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				Content: rendering(trace) + "\n" + "A" + rendering("literal") + "B" + "\n" + rendering(trace)},
+			"A" + rendering("literal") + "B"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -1283,56 +1322,173 @@ func TestDialogueFromContentKeepsOnlyTheRecordsOwnText(t *testing.T) {
 	}
 }
 
-// TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader pins the reasoning-only shortcut
-// (thinkingRenderingOnly) through a reader that renders nothing: internal/parser's Vibe reader records a
-// message's own content and its reasoning_content independently -- Content is the recorded text, Thinking
-// the recorded trace, no dialogue projection and no rendering of either into the other
-// (internal/parser/vibe.go's convertVibeMessage) -- so a record whose content *is* a `[Thinking]…[/Thinking]`
-// block is the model's own words, and the shortcut must not drop them just because a trace happens to
-// stand beside them. The trace still travels as the record's reasoning (counted here: the Codex target has
-// no shape for a plaintext trace), so nothing is lost; the words the source recorded are what the target
-// must not state the agent never said.
+// TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader pins the provenance rule through a
+// reader that renders nothing: internal/parser's Vibe reader records a message's own content and its
+// reasoning_content independently -- Content is the recorded text, Thinking the recorded trace, no
+// dialogue projection and no rendering of either into the other (internal/parser/vibe.go's
+// convertVibeMessage) -- so a record whose content *is* a `[Thinking]…[/Thinking]` block is the model's
+// own words, and nothing may drop them: not the reasoning-only shortcut, which a trace holding the
+// block's words would satisfy (thinkingRenderingOnly), and not the removal a reader that renders the
+// trace would authorize (Vibe is not named by thinkingRenderingReaders). The trace still travels as the
+// record's reasoning (counted here: the Codex target has no shape for a plaintext trace), so nothing is
+// lost; the words the source recorded are what the target must not state the agent never said.
 func TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader(t *testing.T) {
+	const literal = "[Thinking]\nDocumentation example\n[/Thinking]"
+	cases := []struct {
+		name  string
+		trace string
+	}{
+		{"the trace holds none of the block's words", "private trace"},
+		{"the trace holds the block's words exactly", "Documentation example"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			root := t.TempDir()
+			sessionDir := filepath.Join(root, "session_20260613_123456_00000000-0000-4000-8000-000000000001")
+			if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+				t.Fatalf("creating the session directory: %v", err)
+			}
+			transcript := strings.Join([]string{
+				`{"role":"user","content":"Ask about the docs.","message_id":"m1"}`,
+				`{"role":"assistant","content":"[Thinking]\nDocumentation example\n[/Thinking]",` +
+					`"reasoning_content":"` + testCase.trace + `","message_id":"m2","model":"vibe-model"}`,
+			}, "\n") + "\n"
+			transcriptPath := filepath.Join(sessionDir, "messages.jsonl")
+			if err := os.WriteFile(transcriptPath, []byte(transcript), 0o600); err != nil {
+				t.Fatalf("writing the transcript: %v", err)
+			}
+			cfg := fixtureConfig(t)
+			cfg.AgentDirs[parser.AgentVibe] = []string{root}
+			conversation, err := NewSourceReader(cfg).Read(context.Background(),
+				Ref{Provider: "vibe", ID: transcriptPath})
+			if err != nil {
+				t.Fatalf("reading the Vibe transcript: %v", err)
+			}
+			if len(conversation.Messages) != 2 || conversation.Messages[1].Role != string(parser.RoleAssistant) {
+				t.Fatalf("the read answered %d message(s), want the transcript's two with the assistant second",
+					len(conversation.Messages))
+			}
+			if got := dialogueText(conversation.Messages[1]); got != literal {
+				t.Errorf("dialogueText over the read's own record = %q, want the model's own words %q: the "+
+					"reader renders nothing, so nothing shows the block to be a rendering of the trace "+
+					"recorded beside it", got, literal)
+			}
+			rollout, err := ConvertToCodexRollout(conversation, testOptions())
+			if err != nil {
+				t.Fatalf("converting: %v", err)
+			}
+			if !strings.Contains(string(rollout.Data), "Documentation example") {
+				t.Error("the rollout does not carry the record's literal block: its words were dropped as though " +
+					"they were a rendering of the trace recorded beside them")
+			}
+			if loss := lossCount(t, rollout.Losses, "reasoning_text"); loss.Count != 1 {
+				t.Errorf("reasoning_text = %+v, want the record's trace counted once", loss)
+			}
+		})
+	}
+}
+
+// TestRenderingReaderRemovesTheRenderedTraceThroughAnInheritedReader pins the other half of the
+// provenance rule through an inherited reader: internal/parser's Cline reader (internal/parser/cline.go's
+// parseClineRawMessages) writes a record's persisted trace into Content as a `[Thinking]…[/Thinking]`
+// block and records the same text as the record's trace, with no dialogue projection of its own, and
+// Cline is one of the readers thinkingRenderingReaders names -- so a read of such a source answers
+// ContentRendersThinking for its records, and a converted record carries the trace once, as the record's
+// reasoning, while the reader's rendering of it is not the record's dialogue. The shape is what a
+// target that fell back to Content would duplicate (round 7's and round 8's findings).
+func TestRenderingReaderRemovesTheRenderedTraceThroughAnInheritedReader(t *testing.T) {
 	root := t.TempDir()
-	sessionDir := filepath.Join(root, "session_20260613_123456_00000000-0000-4000-8000-000000000001")
+	sessionID := "cli-0001"
+	sessionDir := filepath.Join(root, "data", "sessions", sessionID)
 	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
 		t.Fatalf("creating the session directory: %v", err)
 	}
-	transcript := strings.Join([]string{
-		`{"role":"user","content":"Ask about the docs.","message_id":"m1"}`,
-		`{"role":"assistant","content":"[Thinking]\nDocumentation example\n[/Thinking]",` +
-			`"reasoning_content":"private trace","message_id":"m2","model":"vibe-model"}`,
-	}, "\n") + "\n"
-	transcriptPath := filepath.Join(sessionDir, "messages.jsonl")
-	if err := os.WriteFile(transcriptPath, []byte(transcript), 0o600); err != nil {
-		t.Fatalf("writing the transcript: %v", err)
+	metadata := `{"session_id":"` + sessionID + `","version":1,"model":"cline-model"}`
+	messages := `{"version":1,"messages":[` +
+		`{"id":"m1","role":"user","content":[{"type":"text","text":"Ask about the docs."}],` +
+		`"ts":1780000000000},` +
+		`{"id":"m2","role":"assistant","content":[{"type":"thinking","thinking":"reasoning only"}],` +
+		`"ts":1780000001000,"modelInfo":{"id":"cline-model","provider":"openai"}},` +
+		`{"id":"m3","role":"assistant","content":[{"type":"thinking","thinking":"private trace"},` +
+		`{"type":"text","text":"The answer."}],"ts":1780000002000}]}`
+	files := map[string]string{
+		sessionID + ".json":          metadata,
+		sessionID + ".messages.json": messages,
+	}
+	for name, contents := range files {
+		if err := os.WriteFile(filepath.Join(sessionDir, name), []byte(contents), 0o600); err != nil {
+			t.Fatalf("writing %s: %v", name, err)
+		}
 	}
 	cfg := fixtureConfig(t)
-	cfg.AgentDirs[parser.AgentVibe] = []string{root}
+	cfg.AgentDirs[parser.AgentCline] = []string{root}
 	conversation, err := NewSourceReader(cfg).Read(context.Background(),
-		Ref{Provider: "vibe", ID: transcriptPath})
+		Ref{Provider: "cline", ID: filepath.Join(sessionDir, sessionID+".json")})
 	if err != nil {
-		t.Fatalf("reading the Vibe transcript: %v", err)
+		t.Fatalf("reading the Cline session: %v", err)
 	}
-	if len(conversation.Messages) != 2 || conversation.Messages[1].Role != string(parser.RoleAssistant) {
-		t.Fatalf("the read answered %d message(s), want the transcript's two with the assistant second",
-			len(conversation.Messages))
+	if len(conversation.Messages) != 3 {
+		t.Fatalf("the read answered %d message(s), want the transcript's three", len(conversation.Messages))
 	}
-	literal := "[Thinking]\nDocumentation example\n[/Thinking]"
-	if got := dialogueText(conversation.Messages[1]); got != literal {
-		t.Errorf("dialogueText over the read's own record = %q, want the model's own words %q: the block's "+
-			"words are nowhere in the record's trace, so nothing shows them to be a rendering", got, literal)
+	// The reasoning-only record: its Content is nothing but the reader's rendering, so the record's
+	// dialogue is empty and the trace travels as its reasoning.
+	only := conversation.Messages[1]
+	if only.Thinking != "reasoning only" {
+		t.Errorf("the reasoning-only record's trace = %q, want the recorded trace", only.Thinking)
 	}
-	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if got := dialogueText(only); got != "" {
+		t.Errorf("dialogueText over the reader's reasoning-only record = %q, want no dialogue: the whole "+
+			"Content is the reader's rendering of the trace carried beside it", got)
+	}
+	// The mixed record: the rendering the reader put in front of the text is removed, the trace travels
+	// as the record's reasoning, and the text the record carries is what remains. The reader joined the
+	// block to the text with its own two feeds (internal/parser/cline.go:618), and the removal takes the
+	// one feed the rendering stood behind on each side -- the rule the shared rule's own arms pin -- so
+	// the other feed of that join stands in front of the text. What matters here is that the rendering's
+	// words are gone from the dialogue while the record's own text is there.
+	mixed := conversation.Messages[2]
+	if mixed.Thinking != "private trace" {
+		t.Errorf("the mixed record's trace = %q, want the recorded trace", mixed.Thinking)
+	}
+	if got, want := dialogueText(mixed), "\nThe answer."; got != want {
+		t.Errorf("dialogueText over the reader's mixed record = %q, want %q: the rendering is removed and "+
+			"the record's own text is what remains", got, want)
+	}
+	if strings.Contains(dialogueText(mixed), "private trace") {
+		t.Error("the reader's rendering of the trace was written as the record's dialogue")
+	}
+
+	// The archive read answers the same provenance from the stored row's agent label: the store holds
+	// what the reader produced, so its label is the reader's name, and a record read back from the
+	// archive converts the same way as the source read did.
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(cfg, archivePath)
 	if err != nil {
-		t.Fatalf("converting: %v", err)
+		t.Fatalf("building the ingestor: %v", err)
 	}
-	if !strings.Contains(string(rollout.Data), "Documentation example") {
-		t.Error("the rollout does not carry the record's literal block: its words were dropped as though " +
-			"they were a rendering of the trace recorded beside them")
+	ctx := context.Background()
+	if err := ingestor.IngestPaths(ctx, filepath.Join(sessionDir, sessionID+".json")); err != nil {
+		t.Fatalf("ingesting the Cline session: %v", err)
 	}
-	if loss := lossCount(t, rollout.Losses, "reasoning_text"); loss.Count != 1 {
-		t.Errorf("reasoning_text = %+v, want the record's trace counted once", loss)
+	archive, err := OpenArchive(ctx, archivePath)
+	if err != nil {
+		t.Fatalf("opening the archive: %v", err)
+	}
+	defer archive.Close()
+	fromArchive, err := archive.Read(ctx, Ref{Provider: "cline", ID: "cline:" + sessionID})
+	if err != nil {
+		t.Fatalf("reading the Cline session from the archive: %v", err)
+	}
+	if len(fromArchive.Messages) != 3 {
+		t.Fatalf("the archive read answered %d message(s), want the transcript's three",
+			len(fromArchive.Messages))
+	}
+	if got := dialogueText(fromArchive.Messages[1]); got != "" {
+		t.Errorf("dialogueText over the archived reasoning-only record = %q, want no dialogue", got)
+	}
+	if got, want := dialogueText(fromArchive.Messages[2]), "\nThe answer."; got != want {
+		t.Errorf("dialogueText over the archived mixed record = %q, want %q: the stored row carries the "+
+			"reader's own answer about its Content", got, want)
 	}
 }
 

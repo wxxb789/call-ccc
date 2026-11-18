@@ -1133,9 +1133,9 @@ func moreNames(more int) string {
 // projected nothing for a message whose Content renders something else (a persisted reasoning trace, a
 // tool call) has said that message has no dialogue to carry, and falling back to the rendering would
 // state words the source never recorded as spoken. A message whose source classified no projection has
-// nothing to duplicate when it carries no calls, so its Content is the text -- minus the reader's own
-// rendering of the message's persisted reasoning trace, which is not dialogue either
-// (dialogueFromContent).
+// nothing to duplicate when it carries no calls, so its Content is the text -- minus, where the reader
+// that wrote Content renders the message's persisted reasoning trace into it, that rendering, which is
+// not dialogue either (dialogueFromContent).
 func dialogueText(message Message) string {
 	if strings.TrimSpace(message.Dialogue) != "" || message.DialogueProjected {
 		return message.Dialogue
@@ -1147,23 +1147,37 @@ func dialogueText(message Message) string {
 }
 
 // dialogueFromContent is the dialogue a record carries in its own Content, for a record whose source
-// projected none.
+// projected none and whose reader renders the record's trace there (ContentRendersThinking).
 //
 // The readers that render a persisted trace into Content instead of projecting a dialogue (ZCode's
-// thinking parts, Cline's reasoning records, Copilot's reasoning blocks, the generic block reader) write
-// that trace as `[Thinking]…[/Thinking]` beside the record's own text, and the trace travels to the
-// target separately as the message's reasoning (or is counted where the target has no shape for it). A
-// rendering is removed from the dialogue the message's own trace stands behind -- wherever it stands,
-// because a reader that keeps the record's part order (ZCode's) renders the trace after the text it
-// followed as readily as before it -- and what remains is the record's own text.
+// thinking parts, Cline's and RooCode's reasoning records, legacy Kilo's; every one of them is named by
+// thinkingRenderingReaders) write that trace as `[Thinking]…[/Thinking]` beside the record's own text,
+// and the trace travels to the target separately as the message's reasoning (or is counted where the
+// target has no shape for it). A rendering is removed from the dialogue the message's own trace stands
+// behind -- wherever it stands, because a reader that keeps the record's part order (ZCode's) renders
+// the trace after the text it followed as readily as before it -- and what remains is the record's own
+// text.
 //
-// What is removed is only a block this build can *show* to be a rendering of this record's reasoning:
-// the block's own text is part of the message's trace. A record the read answered no trace for has no
+// Two things are established before a block is removed, and each of them alone keeps the block as the
+// record's own text. The reader renders the record's trace into Content: a reader that records Content
+// as the source wrote it -- Vibe's content and reasoning_content are independent fields
+// (internal/parser/vibe.go:353-371) -- carries a `[Thinking]…[/Thinking]` block only as text the model
+// itself wrote, whatever the record's trace holds, so such a record is never rewritten here. And the
+// block's own words are part of this record's trace: a record the read answered no trace for has no
 // rendering to recognise -- the trace that would hold the block's words is empty, so nothing matches --
-// and a `[Thinking]…[/Thinking]` block such a trace does not hold is text the record carries (a model
-// writing the markers itself), which a target must not drop. A record whose Content is nothing but the
-// rendering keeps the readers' own rule for that shape (thinkingRenderingOnly).
+// and a block such a trace does not hold is text the record carries, which a target must not drop. A
+// record whose Content is nothing but the rendering keeps the readers' own rule for that shape
+// (thinkingRenderingOnly).
+//
+// Bytes the scan keeps are kept byte for byte, and the bytes around a kept block stay one run with it:
+// only the feeds a *removed* rendering stood behind are dropped, so a marker block the record carries
+// keeps the text that followed it directly.
 func dialogueFromContent(message Message) string {
+	if !message.ContentRendersThinking {
+		// No reader provenance: Content is the source's own text, byte for byte, whatever the trace
+		// holds.
+		return message.Content
+	}
 	if thinkingRenderingOnly(message) {
 		return ""
 	}
@@ -1171,6 +1185,21 @@ func dialogueFromContent(message Message) string {
 	var pieces []string
 	rest := message.Content
 	dropped := false
+	// atPartStart reports whether the bytes about to be kept begin a part of their own: the one line
+	// feed the reader's own join put between that part and the part before it then stands in front of
+	// them -- it is the feed a removed rendering took with it. Bytes that follow a marker block the scan
+	// kept continue the run that block stands in, so nothing is put between them and the block's last
+	// byte.
+	atPartStart := false
+	appendRun := func(run string) {
+		if run == "" {
+			return
+		}
+		if atPartStart && len(pieces) > 0 {
+			run = "\n" + run
+		}
+		pieces = append(pieces, run)
+	}
 	for {
 		open := strings.Index(rest, thinkingRenderOpen)
 		if open < 0 {
@@ -1185,8 +1214,9 @@ func dialogueFromContent(message Message) string {
 			if closed {
 				end += len(inner) + len(thinkingRenderClose)
 			}
-			pieces = append(pieces, rest[:end])
+			appendRun(rest[:end])
 			rest = rest[end:]
+			atPartStart = false
 			continue
 		}
 		// A rendering of this record's own trace. It was one of the reader's own parts, joined to its
@@ -1194,22 +1224,21 @@ func dialogueFromContent(message Message) string {
 		// part goes with exactly one of those feeds on each side -- and no more. The feeds a neighbouring
 		// text part itself carries are that part's own recorded bytes: a blank line the source recorded is
 		// a paragraph break, and trimming every feed beside the rendering would collapse it. What stands
-		// between the neighbours afterwards is the one feed the reader's own join puts there (the join
-		// below), the same feed those parts would carry had the reader joined them directly.
+		// between the kept parts afterwards is the one feed the reader's own join puts there, the same
+		// feed those parts would carry had the reader joined them directly.
 		if head := strings.TrimSuffix(rest[:open], "\n"); head != "" {
-			pieces = append(pieces, head)
+			appendRun(head)
 		}
 		rest = strings.TrimPrefix(after, "\n")
+		atPartStart = true
 		dropped = true
 	}
 	if !dropped {
 		// Nothing was shown to be a rendering: the record's Content is the text, byte for byte.
 		return message.Content
 	}
-	if rest != "" {
-		pieces = append(pieces, rest)
-	}
-	return strings.Join(pieces, "\n")
+	appendRun(rest)
+	return strings.Join(pieces, "")
 }
 
 // thinkingRenderOpen and thinkingRenderClose are the readers' own markers around a rendered reasoning
@@ -1226,19 +1255,23 @@ const (
 // such a trace has one there. The shape is the readers' own rule for it
 // (internal/parser.IsThinkingOnlyContent, which RooCode's, Kilo legacy's and Cline's readers use to
 // recognise a reasoning-only record), and it is what makes Content a rendering rather than the message's
-// text: a record with no persisted trace has no rendering to recognise, and its Content is whatever the
-// provider recorded -- a target must not drop text it cannot show to be a rendering of the record's own
-// reasoning.
+// text.
 //
-// The block's own words must be the record's trace, exactly as they must for a block standing beside
-// other text (dialogueFromContent): a `[Thinking]…[/Thinking]` block whose words the record's trace does
-// not hold is text the record carries -- a model writing the markers itself, or a transcript that records
-// an answer and a reasoning trace independently (internal/parser's Vibe reader, which renders nothing) --
-// and dropping it would state that the agent said none of the words it recorded. The readers that render
-// a trace into Content without projecting dialogue at all (RooCode's and Kilo's `say=reasoning` records,
-// Cline's thinking messages) write the trace's own text between the markers, so their records keep the
-// rule, and a target that fell back to their Content would carry the trace twice -- once as the record's
-// own reasoning and once as words the source never recorded the agent as saying.
+// The provenance the whole-content shape needs is the caller's: dialogueFromContent asks this only for a
+// record whose reader renders the trace into Content (ContentRendersThinking), and it is the one place
+// that answers whether a rendering may be removed at all -- a reader that records Content as the source
+// wrote it carries a block only as text the model itself wrote. What this answers beside that is whether
+// the block's own words are the record's trace, the same test a block standing beside text must pass: a
+// `[Thinking]…[/Thinking]` block whose words the record's trace does not hold is text the record carries
+// -- a model writing the markers itself, or a transcript that records an answer and a reasoning trace
+// independently (internal/parser's Vibe reader, which renders nothing) -- and dropping it would state
+// that the agent said none of the words it recorded. A record the read answered no trace for has no
+// rendering to recognise either: the trace that would hold the block's words is empty, so nothing
+// matches. The readers that render a trace into Content without projecting dialogue at all (RooCode's
+// and Kilo's `say=reasoning` records, Cline's thinking messages) write the trace's own text between the
+// markers, so their records keep the rule, and a target that fell back to their Content would carry the
+// trace twice -- once as the record's own reasoning and once as words the source never recorded the
+// agent as saying.
 func thinkingRenderingOnly(message Message) bool {
 	trace := message.Thinking
 	if strings.TrimSpace(trace) == "" || !parser.IsThinkingOnlyContent(message.Content) {
