@@ -21,6 +21,10 @@ module imported by path, no subprocess and no tool on ``PATH``:
   environment (``replace_env``), so the database override it removes cannot be restored from this
   process's own environment underneath it -- asserted on the environment that reaches ``subprocess.run``,
   not on the dictionary the check built;
+* the printed invocation's spelling: the line is read the way a POSIX shell reads it, so it is built with
+  the quoting ``renderInvocation``/``shellQuote`` apply and driven under both path flavours
+  (``PATH_FLAVOURS``). A hand-spelled line without that quoting held only where ``str(Path(...))`` has no
+  backslash in it, which is what the ``windows-latest`` job alone measured;
 * the reading of the harness's own answers: a refusal that does not name the id it refused is not the
   control arm, a listing the harness failed to answer is not an empty listing, and a document the harness
   did not parse is not a document;
@@ -37,9 +41,10 @@ import importlib.util
 import io
 import json
 import os
+import shlex
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1]
@@ -103,6 +108,29 @@ def document(messages: int, session_id: str = SESSION, answer: str | None = None
     return {"info": {"id": session_id}, "messages": stored[:messages]}
 
 
+#: The path flavours a case drives the check with: this host's own, and Windows' answer on any host. The
+#: printed line is read the way a POSIX shell reads it, and a Windows-spelled path holds a backslash, which
+#: an unquoted word hands to the shell as an escape -- so the line is only readable because
+#: ``internal/ccc/continue.go``'s ``shellQuote`` quotes it, and a case that spelled the line by hand for
+#: one host alone held only on that host (the shape the ``windows-latest`` job failed on).
+PATH_FLAVOURS = (Path, PureWindowsPath)
+
+
+def invocation(workspace, environment: dict[str, str], arguments: list[str]) -> str:
+    """One printed invocation as ``internal/ccc/continue.go``'s renderer spells it.
+
+    ``renderInvocation`` starts with ``cd <shellQuote(workingDir)> &&``, then ``renderResumeCommand``
+    spells each assignment as its bare ``NAME=`` beside a quoted value -- the names sorted -- and every
+    argument quoted where a POSIX shell would act on it, which is what ``shlex.quote`` does. The cases
+    build the report's own ``resume_command`` with this, so the line they hand the check is one the shipped
+    renderer really prints rather than a hand-spelling that happens to read back on this host."""
+    pieces = [shlex.quote(NATIVE_COMMON.CD_WORD), shlex.quote(str(workspace)),
+              NATIVE_COMMON.OPERATOR_WORD]
+    pieces += [f"{name}={shlex.quote(value)}" for name, value in sorted(environment.items())]
+    pieces += [shlex.quote(word) for word in arguments]
+    return " ".join(pieces)
+
+
 class HarnessInvocationSpelling(unittest.TestCase):
     """``--standalone`` stands after the subcommand: the spelling the route's own invocation uses."""
 
@@ -147,53 +175,69 @@ class HarnessEnvironment(unittest.TestCase):
     store this run did not choose -- and the Go side, which genuinely removes the name, and the setup the
     check's own commands run against are then the same store. What these cases read is the environment
     that reaches ``subprocess.run``, not the dictionary the check built: the pre-fix shape merged that
-    dictionary onto this process's own environment, which restores the removed name."""
+    dictionary onto this process's own environment, which restores the removed name.
+
+    Each case drives both path flavours (``PATH_FLAVOURS``) and compares against ``str`` of the object the
+    check was handed: the check writes that object's own spelling, and a spelled-out ``/data`` holds only
+    on a host where a path written with a leading slash spells back the same -- not on Windows, where
+    ``str(Path("/data"))`` is ``\\data``, the answer the ``windows-latest`` job gave this pair."""
+
+    #: The data root handed to the check, as text: each case spells it with the path flavour it drives the
+    #: check with, so no separator is hard-coded for one host.
+    DATA_ROOT = "/data"
 
     def test_one_harness_command_removes_an_inherited_database_override(self) -> None:
-        captured: dict = {}
+        for flavour in PATH_FLAVOURS:
+            with self.subTest(flavour=flavour.__name__):
+                data_root = flavour(self.DATA_ROOT)
+                captured: dict = {}
 
-        def fake_subprocess_run(command, **kwargs):
-            captured["command"] = list(command)
-            captured["env"] = dict(kwargs.get("env") or {})
-            return completed(stdout="{}")
+                def fake_subprocess_run(command, **kwargs):
+                    captured["command"] = list(command)
+                    captured["env"] = dict(kwargs.get("env") or {})
+                    return completed(stdout="{}")
 
-        with mock.patch.dict(os.environ, {"OPENCODE_DB": "/tmp/caller-elsewhere.db"}), \
-             mock.patch.object(NATIVE_COMMON.subprocess, "run", side_effect=fake_subprocess_run):
-            NATIVE_CHECK.ask_opencode("opencode", ["session", "export", SESSION], Path("/data"))
-            # The removal is the child's: this process still carries the caller's own value.
-            self.assertEqual(os.environ.get("OPENCODE_DB"), "/tmp/caller-elsewhere.db")
-        self.assertIn("env", captured, "no harness command reached subprocess.run")
-        environment = captured["env"]
-        self.assertNotIn("OPENCODE_DB", environment,
-                         "an inherited database override reached the harness command")
-        self.assertEqual(environment.get(NATIVE_CHECK.OPENCODE_DATA_ROOT_ENV), "/data",
-                         "the check's own data root did not reach the harness command")
+                with mock.patch.dict(os.environ, {"OPENCODE_DB": "/tmp/caller-elsewhere.db"}), \
+                     mock.patch.object(NATIVE_COMMON.subprocess, "run", side_effect=fake_subprocess_run):
+                    NATIVE_CHECK.ask_opencode("opencode", ["session", "export", SESSION], data_root)
+                    # The removal is the child's: this process still carries the caller's own value.
+                    self.assertEqual(os.environ.get("OPENCODE_DB"), "/tmp/caller-elsewhere.db")
+                self.assertIn("env", captured, "no harness command reached subprocess.run")
+                environment = captured["env"]
+                self.assertNotIn("OPENCODE_DB", environment,
+                                 "an inherited database override reached the harness command")
+                self.assertEqual(environment.get(NATIVE_CHECK.OPENCODE_DATA_ROOT_ENV), str(data_root),
+                                 "the check's own data root did not reach the harness command")
 
     def test_the_resume_turn_removes_an_inherited_database_override(self) -> None:
-        captured: list[tuple[list[str], dict[str, str]]] = []
+        for flavour in PATH_FLAVOURS:
+            with self.subTest(flavour=flavour.__name__):
+                data_root = flavour(self.DATA_ROOT)
+                captured: list[tuple[list[str], dict[str, str]]] = []
 
-        def fake_subprocess_run(command, **kwargs):
-            captured.append((list(command), dict(kwargs.get("env") or {})))
-            return completed(stdout="{}")
+                def fake_subprocess_run(command, **kwargs):
+                    captured.append((list(command), dict(kwargs.get("env") or {})))
+                    return completed(stdout="{}")
 
-        with mock.patch.dict(os.environ, {"OPENCODE_DB": "/tmp/caller-elsewhere.db"}), \
-             mock.patch.object(NATIVE_COMMON.subprocess, "run", side_effect=fake_subprocess_run), \
-             mock.patch.object(NATIVE_CHECK, "export_document",
-                               side_effect=[(document(3), "ok", 0),
-                                            (document(6, answer=ANSWER), "ok", 0)]):
-            with recorded():
-                NATIVE_CHECK._run_turn(mock.Mock(resume_prompt="a turn", expect=ANSWER),
-                                       {"session_id": SESSION}, "opencode", Path("/data"),
-                                       Path("/workspace"))
-            # The removal is the child's: this process still carries the caller's own value.
-            self.assertEqual(os.environ.get("OPENCODE_DB"), "/tmp/caller-elsewhere.db")
-        turns = [(command, environment) for command, environment in captured
-                 if command[1:2] == ["run"]]
-        self.assertEqual(len(turns), 1, f"the turn command was not the one run: {captured}")
-        _, environment = turns[0]
-        self.assertNotIn("OPENCODE_DB", environment,
-                         "an inherited database override reached the resume turn")
-        self.assertEqual(environment.get(NATIVE_CHECK.OPENCODE_DATA_ROOT_ENV), "/data")
+                with mock.patch.dict(os.environ, {"OPENCODE_DB": "/tmp/caller-elsewhere.db"}), \
+                     mock.patch.object(NATIVE_COMMON.subprocess, "run",
+                                       side_effect=fake_subprocess_run), \
+                     mock.patch.object(NATIVE_CHECK, "export_document",
+                                       side_effect=[(document(3), "ok", 0),
+                                                    (document(6, answer=ANSWER), "ok", 0)]):
+                    with recorded():
+                        NATIVE_CHECK._run_turn(mock.Mock(resume_prompt="a turn", expect=ANSWER),
+                                               {"session_id": SESSION}, "opencode", data_root,
+                                               flavour("/workspace"))
+                    # The removal is the child's: this process still carries the caller's own value.
+                    self.assertEqual(os.environ.get("OPENCODE_DB"), "/tmp/caller-elsewhere.db")
+                turns = [(command, environment) for command, environment in captured
+                         if command[1:2] == ["run"]]
+                self.assertEqual(len(turns), 1, f"the turn command was not the one run: {captured}")
+                _, environment = turns[0]
+                self.assertNotIn("OPENCODE_DB", environment,
+                                 "an inherited database override reached the resume turn")
+                self.assertEqual(environment.get(NATIVE_CHECK.OPENCODE_DATA_ROOT_ENV), str(data_root))
 
 
 class PrintedInvocation(unittest.TestCase):
@@ -202,22 +246,27 @@ class PrintedInvocation(unittest.TestCase):
     pair. A line that names the root but not the store is another invocation: a caller's inherited
     ``OPENCODE_DB`` would decide which store it reads, and ``run --session <id>`` *creates* a session for
     an id the store does not hold (measured), so the pasted line could run in empty history under the
-    converted identity instead of refusing it."""
+    converted identity instead of refusing it.
 
-    DATA_ROOT = Path("/data")
-    STORE = Path("/data/opencode/opencode.db")
-    WORKSPACE = Path("/workspace")
+    Each case builds its line with ``invocation`` -- the quoting ``renderInvocation`` itself applies -- and
+    drives every path flavour in ``PATH_FLAVOURS``, so the Windows spelling is exercised on this host too:
+    the hand-spelling without that quoting read back as the invocation only where ``str(Path(...))`` holds
+    no backslash, which is the ``windows-latest`` job's answer and not this one's."""
 
-    def target(self, environment: dict | None = None, command: str | None = None) -> dict:
+    #: The paths the report's own two halves name, as text: each case spells them with its path flavour, so
+    #: no separator or drive letter is hard-coded for one host.
+    DATA_ROOT = "/data"
+    STORE = "/data/opencode/opencode.db"
+    WORKSPACE = "/workspace"
+
+    def target(self, flavour=Path, environment: dict | None = None) -> dict:
         # The report's own two halves: the argument vector it prints begins with the program word, and the
         # command is that vector beside the environment assignments the renderer sorts.
         arguments = ["opencode", "run", "--standalone", "--session", SESSION, "--", "hello"]
         if environment is None:
-            environment = {NATIVE_CHECK.OPENCODE_DATA_ROOT_ENV: str(self.DATA_ROOT),
-                           NATIVE_CHECK.OPENCODE_DB_ENV: str(self.STORE)}
-        if command is None:
-            assignments = " ".join(f"{name}={value}" for name, value in sorted(environment.items()))
-            command = f"cd {self.WORKSPACE} && {assignments} " + " ".join(arguments)
+            environment = {NATIVE_CHECK.OPENCODE_DATA_ROOT_ENV: str(flavour(self.DATA_ROOT)),
+                           NATIVE_CHECK.OPENCODE_DB_ENV: str(flavour(self.STORE))}
+        command = invocation(flavour(self.WORKSPACE), environment, arguments)
         return {
             "session_id": SESSION,
             "resume_command": command,
@@ -227,25 +276,35 @@ class PrintedInvocation(unittest.TestCase):
             "resume_environment": environment,
         }
 
-    def check(self, target: dict) -> dict[str, str]:
+    def check(self, target: dict, flavour=Path) -> dict[str, str]:
         with recorded() as records:
-            NATIVE_CHECK._check_invocation(target, self.WORKSPACE, self.DATA_ROOT, self.STORE)
+            NATIVE_CHECK._check_invocation(target, flavour(self.WORKSPACE), flavour(self.DATA_ROOT),
+                                           flavour(self.STORE))
             return {name: state for name, state, _ in records}
 
     def test_a_line_pinning_the_store_reads_as_the_invocation(self) -> None:
-        states = self.check(self.target())
-        self.assertEqual(states["the report names the environment the printed invocation sets"], "PASS")
-        self.assertEqual(
-            states["the printed resume_command reads as a POSIX shell line naming the session"], "PASS")
-        self.assertEqual(
-            states["the printed exec_resume_command reads as a POSIX shell line naming the session"], "PASS")
+        for flavour in PATH_FLAVOURS:
+            with self.subTest(flavour=flavour.__name__):
+                states = self.check(self.target(flavour), flavour)
+                self.assertEqual(
+                    states["the report names the environment the printed invocation sets"], "PASS")
+                self.assertEqual(
+                    states["the printed resume_command reads as a POSIX shell line naming the session"],
+                    "PASS")
+                self.assertEqual(
+                    states["the printed exec_resume_command reads as a POSIX shell line naming the session"],
+                    "PASS")
 
     def test_a_line_naming_only_the_root_is_not_the_invocation(self) -> None:
-        environment = {NATIVE_CHECK.OPENCODE_DATA_ROOT_ENV: str(self.DATA_ROOT)}
-        states = self.check(self.target(environment=environment))
-        self.assertEqual(states["the report names the environment the printed invocation sets"], "FAIL")
-        self.assertEqual(
-            states["the printed resume_command reads as a POSIX shell line naming the session"], "FAIL")
+        for flavour in PATH_FLAVOURS:
+            with self.subTest(flavour=flavour.__name__):
+                environment = {NATIVE_CHECK.OPENCODE_DATA_ROOT_ENV: str(flavour(self.DATA_ROOT))}
+                states = self.check(self.target(flavour, environment=environment), flavour)
+                self.assertEqual(
+                    states["the report names the environment the printed invocation sets"], "FAIL")
+                self.assertEqual(
+                    states["the printed resume_command reads as a POSIX shell line naming the session"],
+                    "FAIL")
 
 
 class ResumeStage(unittest.TestCase):
