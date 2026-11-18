@@ -35,6 +35,7 @@ owned	scripts/gate-required.txt
 owned	scripts/gate-targets.txt
 owned	scripts/gate.py
 owned	scripts/native_check_common.py
+owned	scripts/obligation-citations.py
 owned	scripts/omp-native-check.py
 owned	scripts/opencode-native-check.py
 owned	scripts/pi-native-check.py

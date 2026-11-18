@@ -294,12 +294,12 @@ class GateCase(GateTree, unittest.TestCase):
     def test_unrequired_steps_that_cannot_run_are_disclosed_not_failed(self) -> None:
         """Every non-PASS status, SKIP and N/A alike, is named in the verdict line.
 
-        A tree with no Go sources, no tests and no parity hook reaches SKIP on
-        six steps and N/A on the seventh. This is therefore the case that makes
-        a verdict naming only one of those two statuses fail: dropping SKIP from
-        the partial selection, naming only the first such step, or hiding the
-        whole line behind a plain ``GATE: PASS`` changes either an assertion
-        below or the verdict itself.
+        A tree with no Go sources, no tests and neither hook reaches SKIP on six
+        steps and N/A on the two whose scripts are absent. This is therefore the
+        case that makes a verdict naming only one of those two statuses fail:
+        dropping SKIP from the partial selection, naming only the first such
+        step, or hiding the whole line behind a plain ``GATE: PASS`` changes
+        either an assertion below or the verdict itself.
         """
         proc = self.gate()
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
@@ -310,12 +310,13 @@ class GateCase(GateTree, unittest.TestCase):
             ("test", "SKIP"),
             ("selftest", "SKIP"),
             ("parity", "N/A"),
+            ("citations", "N/A"),
             ("secrets", "SKIP"),
         ):
             self.assertEqual(self.step_line(proc.stdout, step)[0], status, proc.stdout)
         self.assertEqual(
             self.partial_steps(proc.stdout),
-            ["gofmt", "build", "vet", "test", "selftest", "parity", "secrets"],
+            ["gofmt", "build", "vet", "test", "selftest", "parity", "citations", "secrets"],
             proc.stdout,
         )
 
@@ -337,7 +338,7 @@ class GateCase(GateTree, unittest.TestCase):
         ]
         self.assertEqual(
             names,
-            ["gofmt", "build", "vet", "test", "selftest", "parity", "secrets"],
+            ["gofmt", "build", "vet", "test", "selftest", "parity", "citations", "secrets"],
             proc.stdout,
         )
         gate = load_shipped_gate()
@@ -461,7 +462,7 @@ class GateProbeCase(GateTree, unittest.TestCase):
         self.assertEqual(self.step_line(text, "gofmt")[0], "PASS", text)
         self.assertEqual(
             self.partial_steps(text),
-            ["build", "vet", "test", "selftest", "parity", "secrets"],
+            ["build", "vet", "test", "selftest", "parity", "citations", "secrets"],
             text,
         )
 

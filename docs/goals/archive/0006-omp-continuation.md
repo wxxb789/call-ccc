@@ -1,7 +1,7 @@
 # 0006 — Continue conversations into and out of Oh My Pi
 
-**Status:** Implemented on `feat/0006-omp-continuation`; awaiting operator acceptance  
-**Prerequisite:** [0005 — Continue conversations into and out of Pi](archive/0005-pi-continuation.md).
+**Status:** Accepted: merged onto `main` as `338df94`; archived  
+**Prerequisite:** [0005 — Continue conversations into and out of Pi](0005-pi-continuation.md).
 
 ## Intended advance
 

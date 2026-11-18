@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Every continuation record's comparison credits a run word for word, or not at all.
+"""An evidence record's §5 comparison credits a run's answer word for word, or not at all.
 
 A continuation evidence record's §5 maps each piece of source evidence to the target side -- the
 harness's own ``thread/read`` view, the file the conversion installed, and the resumed turn's own answer
@@ -35,11 +35,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
-#: Every continuation evidence record: one file per increment that reports a converted route, each of
-#: which may quote a recorded run's answer in its §5 comparison. The rule below is about the records, not
-#: about one of them, so a new increment's record is covered by writing it the way the others are
-#: (rather than by remembering to add its name here).
-DOCUMENTS = sorted((ROOT / "docs" / "evidence").glob("*continuation*.md"))
+#: Every evidence record: an increment's record may quote a recorded run's answer in its §5 comparison
+#: (the continuation records are the ones that report a converted route). The rule below is about the
+#: records, not about one of them, so a new increment's record is covered by writing it the way the
+#: others are (rather than by remembering to add its name here).
+DOCUMENTS = sorted((ROOT / "docs" / "evidence").glob("*.md"))
 
 #: The continuation records that report a converted route and the native turn that resumed it: each
 #: one's §5 credits the answer of a run its increment really made, which is the subject this case reads.
@@ -55,6 +55,12 @@ ROUTE_DOCUMENTS = (
     "0006-omp-continuation.md",
     "0007-opencode-target-continuation.md",
 )
+
+#: The harness increment's record: the first evidence record whose name is outside the ``*continuation*``
+#: glob this case used to read by. It makes no answer claim -- its §5 is a bulleted list -- so the rule
+#: reads it as passing, but it must be discovered all the same: a claim it ever makes is this case's to
+#: read, and a narrowed glob cannot retire that quietly.
+HARNESS_RECORD = "harness-structured-citation-gate.md"
 
 #: The line the harness prints above a turn's own output (``scripts/codex-native-check.py``, its
 #: ``record``/print pair for the resume stage). The block under it is that turn's answer, verbatim.
@@ -212,7 +218,7 @@ class ComparisonCreditsTheRecordedRun(unittest.TestCase):
     def test_every_shipped_comparison_only_quotes_its_recorded_run(self) -> None:
         self.assertTrue(
             DOCUMENTS,
-            f"no continuation evidence record under {ROOT / 'docs' / 'evidence'}: this case would "
+            f"no evidence record under {ROOT / 'docs' / 'evidence'}: this case would "
             f"agree with itself")
         # The named route records are the ones this reading must keep having a subject for, so a record
         # that stops being discovered (a rename, a lost glob) fails here instead of retiring the rule
@@ -223,6 +229,10 @@ class ComparisonCreditsTheRecordedRun(unittest.TestCase):
                 name, discovered,
                 f"{name} is a route record this case requires an answer claim from, but no such "
                 f"document was discovered (found: {sorted(discovered)})")
+        self.assertIn(
+            HARNESS_RECORD, discovered,
+            f"{HARNESS_RECORD} makes no answer claim and must still be discovered: this case reads "
+            f"every evidence record (found: {sorted(discovered)})")
         for document_path in DOCUMENTS:
             document = document_path.read_text(encoding="utf-8")
             found = comparison_violations(
