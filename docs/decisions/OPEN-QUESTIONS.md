@@ -2437,3 +2437,51 @@ supersede it with a newer one and say which it supersedes.
   "is it installed?" answering with a claim the run does not have.
 - **Settled by:** an operator who prefers the two-state vocabulary for a consumer already reading it, or a
   harness version that cannot leave this question unanswered.
+
+## Q-0007-08 — A reader's rendering of a record's own trace is removed from that record's text
+
+- **Status:** resolved (default taken; 0007's review round 8; a rule of the shared `dialogueText` every
+  target writer reads its text through, not of this route alone)
+- **Question:** the readers that render a persisted reasoning trace into `Content` instead of projecting a
+  dialogue (ZCode's thinking parts, Cline's reasoning records, Copilot's reasoning blocks and the generic
+  block reader) write it as `[Thinking]…[/Thinking]` *beside* the record's own text; only the shape where
+  the rendering is the whole `Content` was recognised (the round-7 rule, `thinkingRenderingOnly`). A record
+  carrying both therefore travelled with its trace twice — once as the record's own reasoning and once as
+  words the reader rendered into the dialogue. Should such a record's `Content` be carried whole (the
+  duplication), be dropped whole and counted, or have the rendering removed from it?
+- **Default taken:** the rendering is removed from the record's text, and only where the record's own trace
+  stands behind it: the block's own words must be part of the message's trace (so a record the read
+  answered no trace for, a block no trace of that record holds — a model writing the markers itself —, a
+  marker with no closer and an empty block keep their `Content` byte for byte), the removal happens where
+  the block stands (a reader that keeps the record's part order may render the trace *after* the text it
+  followed), and the line feeds that joined the rendering to its neighbours go with it. The alternative
+  arms each lose something this one keeps: carrying the `Content` whole presents the trace as dialogue the
+  source never recorded the agent as saying, and dropping it whole discards the record's own words, which
+  nothing shows to be reasoning.
+- **Reversal:** make the writer refuse such a record (or drop its `Content` and count it under a loss
+  category), which is stricter about provenance and loses the record's own text with it.
+- **Settled by:** a reader that renders a trace into `Content` in a shape where the block's own words are
+  not recoverable from the message's trace field, or an operator who prefers the strict arm.
+
+## Q-0007-09 — The native check removes, in a caller's store, only what it shows to be its own
+
+- **Status:** resolved (default taken; 0007's review round 8)
+- **Question:** `--target-home` points the OpenCode native check at a store the caller owns, and the check
+  plants a session of its own in it (a fixed id, a fabricated document) to measure that "nothing else
+  moved". Measured failure: an earlier run whose *planting import* committed and whose process then failed
+  or overran its deadline left that fixture behind, so every later run met `Session already exists` and
+  ended `RESULT: FAIL` — with the fixture still there. May the check remove what blocks it?
+- **Default taken:** only what the store's own document shows to be that check's own fixture, and only
+  after asking. The id the check plants is read through the harness's own reader first (the store's own
+  `Session not found: <id>` refusal, naming that id, is the only answer that makes it free — a store that
+  could not answer is not read as empty); a session the store holds whose document is the check's own
+  fabricated id, directory and message text is an earlier run's leftover and is removed through the
+  harness's own `session delete` (and shown gone through its own reader); a session holding anything else
+  is left exactly as found, with the run recording the refusal and stopping. The planting itself is
+  reconciled the way the route reconciles its own import — the harness's own acknowledgment line, kept
+  even when the import overran its deadline, then the harness's own reader — so an import whose process
+  failed after committing is still a publication this run removes again.
+- **Reversal:** refuse to touch a store that already holds the id, leaving the operator to remove the
+  leftover by hand (the state the measured failure produced, and the reason this default was taken).
+- **Settled by:** an operator who prefers a check that never deletes in a named store, or a harness whose
+  export cannot show which session a store holds.

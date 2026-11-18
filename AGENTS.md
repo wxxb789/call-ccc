@@ -59,6 +59,20 @@ with their exit codes and counts).
   converts again, and shows Codex's own loader opening the second session with its own view holding the
   appended turn while the first session's bytes did not move (`--repeat-resume-prompt` adds one real
   turn in the second session; each prompt flag runs one turn).
+- **A record's dialogue is the source's own, and a rendered reasoning trace is never it.** Every target
+  writer reads its message text through one shared rule (`dialogueText` → `dialogueFromContent`): the
+  source's own projection where it made one — an explicitly empty projection included — and, where it
+  projected none and the record carries no calls, the record's `Content` minus the reader's own rendering
+  of that record's persisted reasoning trace (`[Thinking]…[/Thinking]`, the block shape
+  `internal/parser.IsThinkingOnlyContent` recognises). A rendering is removed only where the record's own
+  trace stands behind the block's words, and wherever the reader put it — a reader that keeps the record's
+  part order (ZCode's) renders the trace after the text it followed as readily as before it — so a trace
+  the read answered nothing for and a block no trace of that record holds keep their `Content` byte for
+  byte, while a record whose `Content` is nothing but the rendering has no dialogue at all (the readers'
+  own rule for that shape). The trace travels to the target beside that dialogue as the record's reasoning,
+  or is counted where the target has no shape for it; a writer that fell back to the raw `Content` would
+  carry the trace twice — once as reasoning and once as words the source never recorded the agent as
+  saying.
 - **OpenCode is a target whose store only the harness writes.** A session is a row in
   `<XDG data home>/opencode/opencode.db`, not a file, so `--to opencode` installs **through the harness's
   own importer** (`opencode session import … --directory <the session's recorded directory> --standalone`)
@@ -87,7 +101,15 @@ with their exit codes and counts).
   stopped the import) is the next, and the report says `unresolved` where neither answers — a run may
   report the installation absent only when the store itself answered that the id does not resolve, because
   a caller who reads "nothing was published" and converts again leaves a second snapshot of one
-  conversation (measured: the harness commits the session and then exits).
+  conversation (measured: the harness commits the session and then exits). The route's native check keeps
+  that discipline over its own planting, in a caller's store as much as a scratch one: the id it plants is
+  read first, a session whose own document is that check's fabricated fixture is an earlier run's leftover
+  and is removed through the harness's own delete, a session holding anything else is left exactly as
+  found and the run stops there, and a planting whose import process failed or overran its deadline after
+  committing is reconciled the same way — acknowledgment, then the store's own reader — and removed again
+  as often as it is published, because a check that left its fixture behind would make every later run's
+  planting meet `Session already exists` (measured: the pre-fix check ended `RESULT: FAIL` there and the
+  fixture stayed).
 - **A conversion writes a fresh native identity and replaces nothing.** The install is exclusive, the
   source is never opened for writing, no credential or login store is copied, and a target data
   directory nobody named is an error rather than a directory invented here. Tests and demos use

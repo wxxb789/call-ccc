@@ -18,7 +18,14 @@ What it does:
    the caller's own configuration) or the caller's ``--target-home``;
 3. plants an unrelated session in it **through the harness's own importer** and reads that session's own
    document back, so "nothing else moved" is a measurement rather than a claim (a store can only be written
-   by the harness, which is this route's install rule as much as its check);
+   by the harness, which is this route's install rule as much as its check). A store that already holds the
+   id this run plants is read first: a session whose own document is this check's fixture is a leftover from
+   an earlier run (whose planting import committed and whose process then died before its cleanup) and is
+   removed through the harness's own delete, while a session under that id holding anything else is a
+   caller's own and is left exactly as it was found, with the run stopping there. The planting itself is
+   reconciled the way the route reconciles its own import -- the harness's acknowledgment, then the
+   harness's own reader -- so an import process that failed or overran its deadline after committing is a
+   publication this run removes again rather than a fixture left in a caller-named store;
 4. converts through the CLI (``ccc continue … --verify load --json``) and reads the conversion, the
    installation and the structural read-back out of the report rather than trusting them. The conversion
    level is ``load`` even when a turn was requested: the one real turn is this check's own (step 7), and
@@ -42,14 +49,15 @@ What it does:
    harness's own answer is printed under ``native_check_common.TURN_OUTPUT_MARKER``, and the growth is
    measured through the harness's own reader;
 8. re-digests the source tree and re-reads the planted session's document, so "nothing else moved" is
-   measured after the run as well as before it, and removes the planted session through the harness's own
-   ``session delete``.
+   measured after the run as well as before it, and removes the session this run published through the
+   harness's own ``session delete``.
 
 Every command this check runs goes through ``deadline_run``: a command that overruns its own bound is
 recorded as a failed check of its own and answered as a failed exit status, rather than raising out of the
-run. That is what keeps the cleanup (step 8) and the final ``RESULT`` line reachable on every path -- an
-uncaught ``TimeoutExpired`` would leave the planted session in a caller-named home, and its fixed id would
-make every later run's planting meet it.
+run, with the output it did print kept -- a slow import that printed its own acknowledgment of the session
+it committed before it hung is the shape the planting reconciliation reads. That is what keeps the cleanup
+(step 8) and the final ``RESULT`` line reachable on every path -- an uncaught ``TimeoutExpired`` would leave
+the publication in a caller-named home, and its fixed id would make every later run's planting meet it.
 
 Measured on this host against OpenCode 2.2.5 (``opencode --version`` prints ``opencode v2.2.5``): the data
 directory is ``$XDG_DATA_HOME/opencode`` and the store inside it is ``opencode.db`` (there is no variable
@@ -134,6 +142,13 @@ UNRELATED_DIRECTORY = Path(tempfile.gettempdir())
 #: answer must name it, because "the harness refused" alone is not evidence that it refused *that* id.
 UNKNOWN_SESSION = "ses_unknown_control_0000000000"
 
+#: The harness's own words for a session its importer published, and for an id its store does not hold
+#: (measured on 2.2.5: the import prints the first on stdout with exit 0, the export prints the second on
+#: stderr with exit 1). Both are read beside the exit status rather than instead of it: the harness commits
+#: a session and can still exit nonzero, and an import of an id the store holds exits 0 with neither line.
+IMPORT_ACKNOWLEDGMENT = "Imported session:"
+SESSION_NOT_FOUND = "Session not found:"
+
 #: The bound on one harness invocation: a local command that answers in about a second, given a deadline of
 #: its own so a harness that hangs is a failed check rather than a hung run.
 HARNESS_TIMEOUT = 300
@@ -181,19 +196,40 @@ def deadline_run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | 
 
     ``native_check_common.run`` answers a command that overruns its bound by raising
     ``subprocess.TimeoutExpired``; uncaught, that exception ends the run before its own cleanup and its
-    verdict -- the planted session would stay in a caller-named home (and its fixed id would then make
+    verdict -- the published session would stay in a caller-named home (and its fixed id would then make
     every later run's planting meet it), and no final ``RESULT`` line would be printed. Every command
     this check runs therefore goes through here: a command that does not answer inside its bound is
     recorded as a failed check of its own, naming the command and the bound, and answered as a completed
     process with exit status -1 whose stderr carries the same words -- so each caller's own check reports
-    the evidence it could not read, and the run still reaches the planted session's removal and its
-    verdict."""
+    the evidence it could not read, and the run still reaches the published session's removal and its
+    verdict.
+
+    What the command printed before it overran is kept (``captured_stream``): a slow import that answered
+    ``Imported session: <id>`` and then hung is exactly the case the route's own installer reconciles, and
+    the acknowledgment is what ``plant_unrelated`` reads -- dropping it would make the check read a
+    publication as an absence of one."""
     try:
         return run(cmd, cwd=cwd, env=env, timeout=timeout, replace_env=replace_env)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         words = f"timed out after {timeout}s: {bounded(' '.join(cmd), 300)}"
         record(f"{' '.join(cmd[:2])} answers within its {timeout}s bound", False, words)
-        return subprocess.CompletedProcess(cmd, -1, "", words)
+        captured = captured_stream(exc, "stderr")
+        if captured and not captured.endswith("\n"):
+            captured += "\n"
+        return subprocess.CompletedProcess(cmd, -1, captured_stream(exc, "stdout"), captured + words)
+
+
+def captured_stream(exc: subprocess.TimeoutExpired, name: str) -> str:
+    """One stream of a command that overran its deadline, as text.
+
+    ``subprocess`` buffers what a command's pipes carried while it runs and hands it to the exception as
+    the *bytes* it read, even where the runner asked for text (measured on this host's Python 3.15:
+    ``exc.stdout`` is ``b'...'`` for a ``text=True`` run), so both shapes are decoded here rather than
+    the timed-out command's own words being dropped with its deadline."""
+    value = getattr(exc, name, None)
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return value or ""
 
 
 def opencode_environment(data_root: Path) -> dict[str, str]:
@@ -280,29 +316,129 @@ def unrelated_document() -> dict:
     }
 
 
+def harness_line_names(answer: str, marker: str, session_id: str) -> bool:
+    """Whether one of a harness answer's own lines is its ``<marker> <id>`` line naming this id, read the way
+    the route's own installer reads those answers (``internal/ccc/opencode_install.go``'s
+    ``openCodeImportAnswer`` and ``openCodeRefusalNamesSession``): the words after the marker must be this
+    id and nothing else, so a diagnostic that merely mentions the id is not read as the harness's answer
+    about it -- measured: a timed-out command's own recorded stderr echoes its command line, which names the
+    session id it was asked about."""
+    for line in (answer or "").splitlines():
+        rest = line.strip()
+        if rest.startswith(marker) and rest[len(marker):].strip() == session_id:
+            return True
+    return False
+
+
+def unrelated_is_this_checks(document: dict | None) -> bool:
+    """Whether one document a store holds *is* this check's own fabricated unrelated fixture: the id it
+    plants, the directory that session records, and the one message text it writes. Nothing else writes
+    those three -- nothing converts the document, and no real session, credential or configuration is read
+    to build it -- so a store holding one holds a leftover from an earlier run of this check, while a
+    session under the same id with any other document is one this check must not touch."""
+    if not isinstance(document, dict):
+        return False
+    info = document.get("info") or {}
+    if info.get("id") != UNRELATED_SESSION:
+        return False
+    if (info.get("location") or {}).get("directory") != str(UNRELATED_DIRECTORY):
+        return False
+    planted = unrelated_document()["messages"][0]["text"]
+    return any((message.get("text") if isinstance(message, dict) else None) == planted
+               for message in (document.get("messages") or []))
+
+
+def clear_own_unrelated_leftover(opencode: str, data_root: Path) -> bool:
+    """Make the id this run plants free, and answer whether it now is.
+
+    The id and the document are fabricated, but an earlier run of this check can still have published the
+    session and died before its cleanup (the window ``plant_unrelated`` reconciles), and that leftover
+    would make every later run's planting meet ``Session already exists``. Such a leftover is recognised
+    by the document the store's own reader answers for it (``unrelated_is_this_checks``) and removed
+    through the harness's own delete. A session under that id that is *not* this check's own fixture is a
+    caller's own store and is left exactly as it was found: the run records the refusal and nothing here
+    removes it.
+
+    The id is free only when the harness's own reader answers that it holds nothing under it -- its own
+    ``Session not found: <id>`` line, naming *this* id. A store that could not answer at all is not a
+    store shown to be free: the import would publish into it, and the reconciliation below, reading a
+    failure against a store that was never shown to be free, could then call a session this run did not
+    publish its own and remove it."""
+    document, words, status = export_document(opencode, data_root, UNRELATED_SESSION)
+    if document is None and status != 0 and harness_line_names(words, SESSION_NOT_FOUND, UNRELATED_SESSION):
+        record("the id this run plants is free in the store", True, bounded(words, 200))
+        return True
+    if document is None:
+        record("the id this run plants is free in the store", False,
+               f"the harness's own reader could not answer whether it holds {UNRELATED_SESSION} "
+               f"(exit {status}; {bounded(words or 'no answer', 200)}), and a store that answered nothing "
+               f"is not a store shown to be free")
+        return False
+    if not unrelated_is_this_checks(document):
+        record("the id this run plants is free in the store", False,
+               f"the store already holds {UNRELATED_SESSION} and its own document is not this check's "
+               f"fixture, so this run may not remove it: {bounded(json.dumps(document), 300)}")
+        return False
+    completed = ask_opencode(opencode, ["session", "delete", UNRELATED_SESSION], data_root)
+    answer = (completed.stdout or "") + (completed.stderr or "")
+    after, after_words, after_status = export_document(opencode, data_root, UNRELATED_SESSION)
+    removed = (completed.returncode == 0 and f"Session {UNRELATED_SESSION} deleted" in answer
+               and after is None)
+    record("an earlier run's own unrelated fixture is removed before this run plants", removed,
+           bounded(answer if removed else
+                   f"{answer}; the harness's own reader answers exit {after_status}: "
+                   f"{after_words or 'nothing'}", 300))
+    return removed
+
+
 def plant_unrelated(opencode: str, data_root: Path, scratch: Path) -> tuple[bool, str]:
     """Plant the unrelated session **through the harness's own importer**, which is the only way a store is
     written here: the document is staged in the run's scratch tree and handed over exactly as the route's
-    own installer hands a converted document over."""
+    own installer hands a converted document over.
+
+    It answers whether **this run published** the session, which is not the same question as whether the
+    import process exited 0. Measured on 2.2.5, the harness commits the session and can still fail, or be
+    killed, before it answers -- the window ``InstallOpenCodeSession`` reconciles -- and a run that read
+    only the exit status would leave its own fixture in a caller-named store, where its fixed id makes
+    every later run's planting meet ``Session already exists``. The evidence is read in the route's own
+    order: the harness's own ``Imported session: <id>`` line in the captured output (kept even when the
+    import overran its deadline), then the harness's own reader, whose answered document means the store
+    holds the session. An acknowledgment the reader does not confirm, and a store that answers nothing,
+    are reported as unresolved rather than as either outcome."""
     staged = scratch / "unrelated-import.json"
     staged.write_text(json.dumps(unrelated_document()), encoding="utf-8")
     completed = ask_opencode(opencode, ["session", "import", str(staged), "--directory",
                                         str(UNRELATED_DIRECTORY)], data_root)
     answer = (completed.stdout or "") + (completed.stderr or "")
-    ok = completed.returncode == 0 and f"Imported session: {UNRELATED_SESSION}" in answer
-    return ok, bounded(answer, 300)
+    acknowledged = harness_line_names(answer, IMPORT_ACKNOWLEDGMENT, UNRELATED_SESSION)
+    if completed.returncode == 0 and acknowledged:
+        return True, bounded(answer, 300)
+    document, words, status = export_document(opencode, data_root, UNRELATED_SESSION)
+    if document is not None:
+        return True, bounded(
+            f"the import process exited {completed.returncode} and its own acknowledgment "
+            f"{'was' if acknowledged else 'was not'} printed, while the harness's own reader holds "
+            f"{UNRELATED_SESSION}: this run published it, and removes it again. {answer}", 300)
+    if acknowledged:
+        return False, bounded(
+            f"the harness's own acknowledgment names {UNRELATED_SESSION} but its own reader does not "
+            f"resolve it (exit {status}; {words or 'no answer'}): unresolved, and nothing here removes "
+            f"what it could not show is there. {answer}", 300)
+    return False, bounded(answer, 300)
 
 
-def remove_planted(opencode: str, data_root: Path, planted: bool) -> None:
-    """Remove the planted session through the harness's own `session delete`, and show that it is gone.
+def remove_planted(opencode: str, data_root: Path, published: bool) -> None:
+    """Remove the session **this run published** through the harness's own `session delete`, and show that
+    it is gone.
 
-    This runs on every path that planted one -- after the last check, and before the report removes the
+    This runs on every path that published one -- after the last check, and before the report removes the
     scratch tree the store lives in (measured: a delete after the store's directory is gone resolves a
     fresh empty store and answers "Session not found", which is not a removal) -- so a caller-named
     ``--target-home`` is left as it was found apart from the converted session this run installed. The
     removal is a check of its own: a fabricated session this harness leaves behind is a session the
-    caller's own listing would show."""
-    if not planted:
+    caller's own listing would show. A run that published nothing removes nothing, because the store's
+    other sessions are not this check's to delete."""
+    if not published:
         return
     completed = ask_opencode(opencode, ["session", "delete", UNRELATED_SESSION], data_root)
     answer = (completed.stdout or "") + (completed.stderr or "")
@@ -543,7 +679,10 @@ def main(argv: list[str] | None = None) -> int:
                              "check read the same store: the conversion is handed this argument's own "
                              "spelling and each side applies the rule once. A caller's own root is used "
                              "exactly as it is found: nothing is installed into it but the converted "
-                             "session, and the planted session this run adds is removed again")
+                             "session, and the unrelated session this run plants is removed again -- an "
+                             "id the store already holds is removed first only where its own document "
+                             "shows it to be an earlier run's leftover of this same check, and a session "
+                             "holding anything else stops the run untouched")
     parser.add_argument("--resume-prompt",
                         help="run one real turn in the installed session with this prompt")
     parser.add_argument("--expect", help="require the resume turn's answer to contain this text")
@@ -613,18 +752,21 @@ def main(argv: list[str] | None = None) -> int:
 
     parsed: dict = {}
     session_id = ""
+    published = False
 
     def stop() -> int:
-        """End the run on whatever state it reached: the planted session is removed through the harness's
-        own verb while the store still exists, and the report -- which removes the scratch tree -- comes
-        after."""
-        remove_planted(opencode, data_root, planted)
+        """End the run on whatever state it reached: the session this run published is removed through the
+        harness's own verb while the store still exists, and the report -- which removes the scratch tree --
+        comes after."""
+        remove_planted(opencode, data_root, published)
         return finish(args, scratch, parsed, session_id)
 
     source_root_before = tree_digest(source_root)
-    planted, planted_detail = plant_unrelated(opencode, data_root, scratch)
-    record("the unrelated session is planted through the harness's own importer", planted, planted_detail)
-    if not planted:
+    if not clear_own_unrelated_leftover(opencode, data_root):
+        return stop()
+    published, planted_detail = plant_unrelated(opencode, data_root, scratch)
+    record("the unrelated session is planted through the harness's own importer", published, planted_detail)
+    if not published:
         return stop()
     unrelated_before, unrelated_words, unrelated_status = export_document(opencode, data_root,
                                                                          UNRELATED_SESSION)

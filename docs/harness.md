@@ -447,6 +447,19 @@ says so.
   `session list --format json` from the session's own recorded directory (it must name the session) and
   from another (it must not), and `session delete` to remove the planted session — the run records that
   removal and that the id no longer resolves, because the store can only be written by the harness. The
+  planting itself is reconciled the way the route reconciles its own import, and a caller-named home is
+  read before anything is written into it: the id this run plants is first asked of the harness's own
+  reader, and a session the store already holds is removed only where that store's own document shows it to
+  be an earlier run's leftover of this same check (the check's fabricated id, directory and message text,
+  which nothing else writes) — a session holding anything else is left exactly as found and the run stops,
+  recording the refusal. An import whose process failed or overran its deadline after committing is a
+  publication, read in the route's own order (the harness's own `Imported session: <id>` line, kept even
+  when the command overran its deadline, then the harness's own reader, whose answered document means the
+  store holds it) and removed again by the same cleanup — so the check cannot leave its own fixture behind
+  in a store where its fixed id would make every later run's planting meet `Session already exists`
+  (measured: the pre-fix check ended `RESULT: FAIL` on such a store and left the fixture, while the fixed
+  one removes it, plants, converts and ends `RESULT: PASS`). An acknowledgment the reader does not confirm,
+  and a store that answers nothing, are recorded as unresolved rather than as either outcome. The
   conversion is verified at the **load** level even when a turn is requested, and a requested turn is run
   by this check itself — one `--resume-prompt` is one real turn, not two. The turn is the report's own
   **exec-form argument vector** (`exec_resume_arguments`), read against what the check knows on its own

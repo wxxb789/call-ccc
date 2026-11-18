@@ -1201,6 +1201,70 @@ func TestCodexRolloutKeepsAReasoningOnlyRecordOutOfTheDialogue(t *testing.T) {
 	}
 }
 
+// TestDialogueFromContentKeepsOnlyTheRecordsOwnText pins the shared dialogue rule at the seam every
+// writer reads its text through (dialogueText → dialogueFromContent), on the shape the readers produce
+// for a record that carries its own persisted trace *beside* its text: the reader renders the trace into
+// Content as `[Thinking]…[/Thinking]` and the trace travels to the target as the message's reasoning, so
+// the rendering is not dialogue. It is removed only where the message's own trace stands behind it and
+// only where it stands, because a reader that keeps the record's part order (ZCode's) renders the trace
+// after the text it followed, and a target must not drop text nothing shows to be reasoning.
+func TestDialogueFromContentKeepsOnlyTheRecordsOwnText(t *testing.T) {
+	const (
+		trace   = "Inspect the parser before answering."
+		spoken  = "The retry cap is four attempts."
+		foreign = "words the read answered no trace for"
+	)
+	rendering := func(text string) string {
+		return thinkingRenderOpen + "\n" + text + "\n" + thinkingRenderClose
+	}
+	cases := []struct {
+		name    string
+		message Message
+		want    string
+	}{
+		{"the readers' order: the rendering stands before the record's text",
+			Message{Role: "assistant", Thinking: trace, Content: rendering(trace) + "\n" + spoken}, spoken},
+		{"ZCode's part order: the rendering stands after the text it followed",
+			Message{Role: "assistant", Thinking: trace, Content: spoken + "\n" + rendering(trace)}, spoken},
+		{"one trace rendered as two blocks around the record's text",
+			Message{Role: "assistant", Thinking: "part one\n\npart two",
+				Content: rendering("part one") + "\n" + spoken + "\n" + rendering("part two")}, spoken},
+		{"a block the record's own trace does not hold is text the record carries",
+			Message{Role: "assistant", Thinking: trace, Content: rendering(foreign) + "\n" + spoken},
+			rendering(foreign) + "\n" + spoken},
+		{"a record the read answered no trace for keeps its Content",
+			Message{Role: "assistant", Content: rendering(foreign) + "\n" + spoken},
+			rendering(foreign) + "\n" + spoken},
+		{"nothing but the rendering is still no dialogue",
+			Message{Role: "assistant", Thinking: trace, Content: rendering(trace)}, ""},
+		{"a rendering the readers' own rule trims beside it is still no dialogue",
+			Message{Role: "assistant", Thinking: trace, Content: "  " + rendering(trace)}, ""},
+		{"a marker the record carries without its closer is text, not a rendering",
+			Message{Role: "assistant", Thinking: "the record says [Thinking] here",
+				Content: "the record says [Thinking] here"},
+			"the record says [Thinking] here"},
+		{"an empty block the record carries is text, not a rendering",
+			Message{Role: "assistant", Thinking: trace, Content: rendering("") + "\n" + spoken},
+			rendering("") + "\n" + spoken},
+		{"a projection is the dialogue even where the rendering stands beside it",
+			Message{Role: "assistant", Thinking: trace, DialogueProjected: true,
+				Content: rendering(trace) + "\n" + spoken}, ""},
+		{"a rendering with only whitespace beside it is still no dialogue (the readers' own rule)",
+			Message{Role: "assistant", Thinking: trace, Content: rendering(trace) + "\n   "}, ""},
+		{"a record carrying calls has no dialogue from its Content",
+			Message{Role: "assistant", Thinking: trace, Content: rendering(trace) + "\n" + spoken,
+				ToolCalls: []ToolCall{{ToolUseID: "toolu_1", Name: "Read"}}}, ""},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := dialogueText(testCase.message); got != testCase.want {
+				t.Errorf("dialogueText(Content %q, Thinking %q) = %q, want %q",
+					testCase.message.Content, testCase.message.Thinking, got, testCase.want)
+			}
+		})
+	}
+}
+
 // TestCodexRolloutDecodesEncodedContentExactlyOnce pins which representation ContentRaw holds: the
 // provider's own content field is JSON and is decoded once, while text a read has already decoded -- a
 // result event, an archive row -- is used exactly as it stands. A tool whose own output is literally the

@@ -1133,9 +1133,9 @@ func moreNames(more int) string {
 // projected nothing for a message whose Content renders something else (a persisted reasoning trace, a
 // tool call) has said that message has no dialogue to carry, and falling back to the rendering would
 // state words the source never recorded as spoken. A message whose source classified no projection has
-// nothing to duplicate when it carries no calls, so its Content is the text -- unless that Content is
-// the reader's own rendering of the message's persisted reasoning trace, which is not dialogue either
-// (thinkingRenderingOnly).
+// nothing to duplicate when it carries no calls, so its Content is the text -- minus the reader's own
+// rendering of the message's persisted reasoning trace, which is not dialogue either
+// (dialogueFromContent).
 func dialogueText(message Message) string {
 	if strings.TrimSpace(message.Dialogue) != "" || message.DialogueProjected {
 		return message.Dialogue
@@ -1143,11 +1143,78 @@ func dialogueText(message Message) string {
 	if len(message.ToolCalls) > 0 {
 		return ""
 	}
+	return dialogueFromContent(message)
+}
+
+// dialogueFromContent is the dialogue a record carries in its own Content, for a record whose source
+// projected none.
+//
+// The readers that render a persisted trace into Content instead of projecting a dialogue (ZCode's
+// thinking parts, Cline's reasoning records, Copilot's reasoning blocks, the generic block reader) write
+// that trace as `[Thinking]…[/Thinking]` beside the record's own text, and the trace travels to the
+// target separately as the message's reasoning (or is counted where the target has no shape for it). A
+// rendering is removed from the dialogue the message's own trace stands behind -- wherever it stands,
+// because a reader that keeps the record's part order (ZCode's) renders the trace after the text it
+// followed as readily as before it -- and what remains is the record's own text.
+//
+// What is removed is only a block this build can *show* to be a rendering of this record's reasoning:
+// the block's own text is part of the message's trace. A record the read answered no trace for has no
+// rendering to recognise -- the trace that would hold the block's words is empty, so nothing matches --
+// and a `[Thinking]…[/Thinking]` block such a trace does not hold is text the record carries (a model
+// writing the markers itself), which a target must not drop. A record whose Content is nothing but the
+// rendering keeps the readers' own rule for that shape (thinkingRenderingOnly).
+func dialogueFromContent(message Message) string {
 	if thinkingRenderingOnly(message) {
 		return ""
 	}
-	return message.Content
+	trace := message.Thinking
+	var pieces []string
+	rest := message.Content
+	dropped := false
+	for {
+		open := strings.Index(rest, thinkingRenderOpen)
+		if open < 0 {
+			break
+		}
+		inner, after, closed := strings.Cut(rest[open+len(thinkingRenderOpen):], thinkingRenderClose)
+		rendered := strings.TrimSpace(inner)
+		if !closed || rendered == "" || !strings.Contains(trace, rendered) {
+			// Not this record's trace: text the record carries, kept as it stands, and the scan goes on
+			// after it -- a block that *is* the trace can stand behind a marker that is not.
+			end := open + len(thinkingRenderOpen)
+			if closed {
+				end += len(inner) + len(thinkingRenderClose)
+			}
+			pieces = append(pieces, rest[:end])
+			rest = rest[end:]
+			continue
+		}
+		// A rendering of this record's own trace. It was one of the reader's own parts, joined to its
+		// neighbours by line feeds, so it goes with the feeds around it and the text it stood between
+		// reads as neighbours again (the join below is that one feed).
+		if head := strings.TrimRight(rest[:open], "\n"); head != "" {
+			pieces = append(pieces, head)
+		}
+		rest = strings.TrimLeft(after, "\n")
+		dropped = true
+	}
+	if !dropped {
+		// Nothing was shown to be a rendering: the record's Content is the text, byte for byte.
+		return message.Content
+	}
+	if rest != "" {
+		pieces = append(pieces, rest)
+	}
+	return strings.Join(pieces, "\n")
 }
+
+// thinkingRenderOpen and thinkingRenderClose are the readers' own markers around a rendered reasoning
+// trace: internal/parser's block reader and the providers that follow it write `[Thinking]\n<trace>
+// \n[/Thinking]`, and internal/parser.IsThinkingOnlyContent recognises the same two words.
+const (
+	thinkingRenderOpen  = "[Thinking]"
+	thinkingRenderClose = "[/Thinking]"
+)
 
 // thinkingRenderingOnly reports whether a message's Content is nothing but the reader's own rendering of
 // the message's persisted reasoning trace: the inherited readers write a trace they render (rather than

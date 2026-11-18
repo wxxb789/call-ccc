@@ -2,12 +2,16 @@ package ccc
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	_ "github.com/mattn/go-sqlite3"
 
 	"go.kenn.io/agentsview/internal/parser"
 )
@@ -427,6 +431,210 @@ func TestOpenCodeCarriesARooCodeReasoningOnlyRecordOnce(t *testing.T) {
 	parts := document.Messages[0].Content
 	if len(parts) != 1 || parts[0].Type != openCodePartText {
 		t.Errorf("the record's message holds %+v, want its text as the one text part", parts)
+	}
+}
+
+// zCodeMixedConversation writes one ZCode store -- the provider's own `<cli root>/db/db.sqlite` shape,
+// below a throw-away root -- and reads one session out of it through the inherited reader: the source
+// shape this route's dialogue rule is about. The assistant record's parts are the caller's own
+// provider-shaped `data` JSON, in the provider's own order, so a case can put the persisted trace before
+// the record's text, after it, or beside a text of the record's own that merely looks like a rendering.
+func zCodeMixedConversation(t *testing.T, assistantParts ...string) Conversation {
+	t.Helper()
+	const (
+		sessionID = "session-mixed-rendering"
+		at        = "2026-07-06T13:00:00Z"
+		answered  = "2026-07-06T13:00:03Z"
+	)
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "db"), 0o755); err != nil {
+		t.Fatalf("preparing the ZCode store directory: %v", err)
+	}
+	database, err := sql.Open("sqlite3", filepath.Join(root, "db", parser.ZCodeDBName))
+	if err != nil {
+		t.Fatalf("opening the ZCode store: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	// The provider's own tables, as its reader queries them (internal/parser's zcode.go).
+	if _, err := database.Exec(`
+		CREATE TABLE session (id TEXT PRIMARY KEY NOT NULL, project_id TEXT, workspace_id TEXT,
+			directory TEXT, title TEXT, time_created TEXT, time_updated TEXT);
+		CREATE TABLE model_usage (session_id TEXT NOT NULL, turn_id TEXT, provider_id TEXT, model_id TEXT,
+			status TEXT, input_tokens INTEGER, output_tokens INTEGER, reasoning_tokens INTEGER,
+			cache_creation_input_tokens INTEGER, cache_read_input_tokens INTEGER,
+			computed_total_tokens INTEGER, started_at TEXT, completed_at TEXT, duration_ms INTEGER,
+			tool_call_count INTEGER);
+		CREATE TABLE message (id TEXT PRIMARY KEY NOT NULL, session_id TEXT NOT NULL, time_created TEXT,
+			data TEXT);
+		CREATE TABLE part (id TEXT PRIMARY KEY NOT NULL, message_id TEXT NOT NULL, session_id TEXT NOT NULL,
+			time_created TEXT, data TEXT);
+	`); err != nil {
+		t.Fatalf("creating the ZCode store's tables: %v", err)
+	}
+	write := func(query string, args ...any) {
+		t.Helper()
+		if _, err := database.Exec(query, args...); err != nil {
+			t.Fatalf("writing the ZCode store: %v", err)
+		}
+	}
+	write(`INSERT INTO session (id, project_id, workspace_id, directory, title, time_created, time_updated)
+		VALUES (?, '', '', ?, ?, ?, ?)`, sessionID, "/tmp/ccc-opencode-zcode", "Mixed rendering", at,
+		answered)
+	write(`INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)`,
+		"msg-user", sessionID, at, `{"role":"user"}`)
+	write(`INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)`,
+		"part-user", "msg-user", sessionID, at, `{"type":"text","text":"Fix the login bug."}`)
+	write(`INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)`,
+		"msg-assistant", sessionID, answered, `{"role":"assistant"}`)
+	for index, part := range assistantParts {
+		write(`INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)`,
+			fmt.Sprintf("part-assistant-%02d", index), "msg-assistant", sessionID, answered, part)
+	}
+	cfg := fixtureConfig(t)
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentZCode: {root}}
+	conversation, err := NewSourceReader(cfg).Read(context.Background(),
+		Ref{Provider: string(parser.AgentZCode), ID: sessionID})
+	if err != nil {
+		t.Fatalf("reading the ZCode source: %v", err)
+	}
+	return conversation
+}
+
+// zCodeAssistantParts answers the parts of the one assistant message a converted document holds: the
+// cases below read the serialized document's own parts rather than the writer's intended items.
+func zCodeAssistantParts(t *testing.T, session OpenCodeSession) []openCodePart {
+	t.Helper()
+	var document openCodeDocument
+	if err := json.Unmarshal(session.Data, &document); err != nil {
+		t.Fatalf("the document does not parse: %v", err)
+	}
+	for _, message := range document.Messages {
+		if message.Type == openCodeMessageAssistant {
+			return message.Content
+		}
+	}
+	t.Fatalf("the document holds no assistant message: %s", session.Data)
+	return nil
+}
+
+// TestOpenCodeCarriesAZCodeMixedRenderingOnce pins the writer's dialogue rule for the inherited
+// mixed-rendering shape, through the inherited reader that produces it: a ZCode assistant record carrying
+// both a persisted thinking part and text has that trace rendered into Content as a `[Thinking]…[/Thinking]`
+// block *beside* the record's text, and projects no dialogue at all (internal/parser's ZCode reader, whose
+// own transcript test asserts this shape). The writer's Content fallback used to write the trace twice --
+// once as the message's `reasoning` part, the shape this target persists a trace in, and once inside a
+// `text` part holding the rendering, which presents persisted reasoning as words the agent said -- with
+// the round-trip comparison agreeing, because both sides derived from the same duplicated parts. What
+// this case reads is the serialized document's own parts, the trace's own loss category, and the store
+// read-back.
+func TestOpenCodeCarriesAZCodeMixedRenderingOnce(t *testing.T) {
+	const (
+		trace  = "I should inspect the auth flow."
+		answer = "I'll inspect the auth flow."
+	)
+	thinkingPart := `{"type":"thinking","thinking":` + jsonString(t, trace) + `}`
+	textPart := func(value string) string {
+		return `{"type":"text","text":` + jsonString(t, value) + `}`
+	}
+	rendered := openCodeReasoningOpen + trace + openCodeReasoningClose
+
+	conversation := zCodeMixedConversation(t, thinkingPart, textPart(answer))
+
+	// The shape is asserted on the read, not assumed: the record carries the trace, the source projected
+	// no dialogue for it, and its Content is the reader's own rendering followed by the record's text.
+	sawMixed := false
+	for _, message := range conversation.Messages {
+		if message.Thinking != trace {
+			continue
+		}
+		sawMixed = true
+		if message.DialogueProjected || message.Dialogue != "" {
+			t.Fatalf("the ZCode record's dialogue = %q (projected %v), want none: the shape this rule is "+
+				"about is a record the source answered no projection for", message.Dialogue,
+				message.DialogueProjected)
+		}
+		if want := rendered + "\n" + answer; message.Content != want {
+			t.Fatalf("the ZCode record's content = %q, want the reader's own rendering followed by the "+
+				"record's text (%q)", message.Content, want)
+		}
+	}
+	if !sawMixed {
+		t.Fatalf("the read holds no record carrying %q, so nothing here pins what a writer does with the "+
+			"shape this case is about", trace)
+	}
+
+	session, err := ConvertToOpenCodeSession(conversation, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	parts := zCodeAssistantParts(t, session)
+	if len(parts) != 2 || parts[0].Type != openCodePartReasoning || parts[0].Text != trace ||
+		parts[1].Type != openCodePartText || parts[1].Text != answer {
+		t.Fatalf("the record's message holds %+v, want the trace once as the reasoning part and the "+
+			"record's own text beside it", parts)
+	}
+	if strings.Contains(string(session.Data), openCodeReasoningOpen) {
+		t.Errorf("the document holds the reader's own `[Thinking]` rendering of the trace, which is not "+
+			"dialogue the source recorded: %s", session.Data)
+	}
+	openCodeRequireLoss(t, session, "reasoning_text", 1)
+	if loss := lossCount(t, session.Losses, "reasoning_text"); loss.Disposition != DispositionCarriedWithCaveat {
+		t.Errorf("reasoning_text = %+v, want the trace the reasoning part carries counted as carried", loss)
+	}
+	home := filepath.Join(t.TempDir(), openCodeDataDirName)
+	writeOpenCodeTestStore(t, openCodeDataDir(home), session)
+	verification, err := VerifyOpenCodeSessionStructure(context.Background(), openCodeDataDir(home),
+		session, fixtureConfig(t))
+	if err != nil {
+		t.Fatalf("reading the installed session back: %v", err)
+	}
+	if verification.State != VerificationStateVerified || verification.Detail != "" {
+		t.Errorf("structure = %+v, want the message read back as what was written (detail %q)",
+			verification, verification.Detail)
+	}
+
+	// The rendering is removed where it stands, not only where it leads: ZCode keeps the record's own part
+	// order, so a text part recorded before the thinking part renders the trace *after* the text, and the
+	// record's text is still the dialogue.
+	trailing := zCodeMixedConversation(t, textPart(answer), thinkingPart)
+	session, err = ConvertToOpenCodeSession(trailing, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting a record whose trace part follows its text: %v", err)
+	}
+	sawTrailing := false
+	for _, message := range trailing.Messages {
+		if message.Thinking != trace {
+			continue
+		}
+		sawTrailing = true
+		if want := answer + "\n" + rendered; message.Content != want {
+			t.Fatalf("the ZCode record's content = %q, want the record's text followed by the rendering "+
+				"(%q)", message.Content, want)
+		}
+	}
+	if !sawTrailing {
+		t.Fatalf("the read holds no record carrying %q in its trailing-part shape", trace)
+	}
+	parts = zCodeAssistantParts(t, session)
+	if len(parts) != 2 || parts[0].Type != openCodePartReasoning || parts[0].Text != trace ||
+		parts[1].Type != openCodePartText || parts[1].Text != answer {
+		t.Errorf("a record whose trace part follows its text holds %+v, want the trace once as the "+
+			"reasoning part and the record's own text beside it", parts)
+	}
+
+	// A `[Thinking]…[/Thinking]` block the record's own trace does not hold is text the record carries (a
+	// model writing the markers itself), and a target must not drop text nothing shows to be reasoning.
+	literal := "[Thinking]\nwords the record's trace does not hold\n[/Thinking]"
+	lookalike := zCodeMixedConversation(t, thinkingPart, textPart(literal))
+	session, err = ConvertToOpenCodeSession(lookalike, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting a record carrying the markers as its own text: %v", err)
+	}
+	parts = zCodeAssistantParts(t, session)
+	if len(parts) != 2 || parts[0].Type != openCodePartReasoning || parts[0].Text != trace ||
+		parts[1].Type != openCodePartText || parts[1].Text != literal {
+		t.Errorf("the record's message holds %+v, want the trace once and its own marker-bearing text "+
+			"kept as it stands", parts)
 	}
 }
 

@@ -386,6 +386,26 @@ question unable to answer; where neither answers, the run reports the installati
 convention — the path beside the error — so the report still carries the identity the session is resumed
 by.
 
+The eighth review round's fixes extend both halves of that sentence to the shapes a real reader produces
+and a real store holds. **The reasoning rendering is removed from a record's own text, not only from a
+record that is nothing but a rendering** (`dialogueFromContent`, the shared `dialogueText` every writer
+reads its text through): ZCode's reader renders a persisted thinking part *beside* the record's text (its
+own transcript case asserts `[Thinking]\n<trace>\n[/Thinking]\n<spoken>`), and the round-7 rule recognised
+only the whole-Content shape, so such a record's trace was written twice on every target — once as the
+record's reasoning and once inside the dialogue. The rendering is now removed where it stands (a reader
+that keeps the record's part order may put it after the text it followed), only where the record's *own*
+trace stands behind the block's words, and with the line feeds that joined it to its neighbours; a record
+whose trace is empty, a block no trace of that record holds, a marker with no closer, and an empty block
+keep their Content byte for byte, which is what makes the rule precision rather than a rewrite. **The
+native check reconciles its own planting, and never removes what it cannot show is its own**: a store the
+caller named is read for the id the check plants before anything is written (the store's own refusal,
+naming that id, is the only answer that makes it free), an earlier run's leftover is recognised by the
+store's own document — the check's fabricated id, directory and message text — and removed through the
+harness's own delete, a session holding anything else stops the run untouched, and an import whose process
+failed or overran its deadline after committing is read in the route's own order (its own acknowledgment
+line, kept with the deadline, then the harness's reader) so its fixture is removed again instead of
+staying to block every later run.
+
 ## 7. Gate, docs, bookkeeping
 
 - Gate: **no new step and no new required step.** New tests live in `internal/ccc` and `cmd/ccc`, which

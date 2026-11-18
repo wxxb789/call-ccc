@@ -513,6 +513,25 @@ class HarnessAnswers(unittest.TestCase):
     """What the harness's own answers mean: a refusal names its id, a failed listing is not an empty one,
     and a document the harness did not parse is no document."""
 
+    def test_the_harnesss_own_lines_are_read_whole(self) -> None:
+        """The readings mirror the route's own installer (``openCodeImportAnswer`` and
+        ``openCodeRefusalNamesSession``): the words after the harness's marker must be this id and nothing
+        else. A diagnostic that merely mentions the id -- measured: a timed-out command's recorded stderr
+        echoes its own command line, which names the session it was asked about -- is not the harness's
+        answer about it, and reading it as one would call a store free that nobody showed to be."""
+        wanted = NATIVE_CHECK.UNRELATED_SESSION
+        self.assertTrue(NATIVE_CHECK.harness_line_names(
+            f"Session not found: {wanted}\n", NATIVE_CHECK.SESSION_NOT_FOUND, wanted))
+        self.assertTrue(NATIVE_CHECK.harness_line_names(
+            f"  Imported session: {wanted}  \n", NATIVE_CHECK.IMPORT_ACKNOWLEDGMENT, wanted))
+        self.assertFalse(NATIVE_CHECK.harness_line_names(
+            f"timed out after 300s: opencode session export {wanted}\n",
+            NATIVE_CHECK.SESSION_NOT_FOUND, wanted))
+        self.assertFalse(NATIVE_CHECK.harness_line_names(
+            f"Session not found: {wanted}/sibling\n", NATIVE_CHECK.SESSION_NOT_FOUND, wanted))
+        self.assertFalse(NATIVE_CHECK.harness_line_names(
+            f"Session not found: {NATIVE_CHECK.UNKNOWN_SESSION}\n", NATIVE_CHECK.SESSION_NOT_FOUND, wanted))
+
     def test_export_answers_the_document_and_the_refusal(self) -> None:
         answered = completed(stdout=json.dumps(document(2)))
         with mock.patch.object(NATIVE_CHECK, "ask_opencode", return_value=answered):
@@ -586,9 +605,138 @@ class PlantedSession(unittest.TestCase):
             planted, detail = NATIVE_CHECK.plant_unrelated("opencode", Path("/data"), Path(scratch))
         self.assertTrue(planted, detail)
 
-    def test_nothing_is_recorded_when_nothing_was_planted(self) -> None:
+    def test_an_import_that_failed_after_committing_is_reconciled_as_a_publication(self) -> None:
+        """The window the route's own installer reconciles, in this check's own planting: measured on
+        2.2.5 the harness commits the session and can still fail or be killed before it answers, so a run
+        that read only the exit status would leave its own fixture in a caller-named store -- where its
+        fixed id makes every later run's planting meet ``Session already exists``. The acknowledgment the
+        timed-out import printed is its first answer; the harness's own reader is the next."""
+        deadline = completed(stdout=f"Imported session: {NATIVE_CHECK.UNRELATED_SESSION}\n",
+                             stderr=f"timed out after {NATIVE_CHECK.HARNESS_TIMEOUT}s: opencode session "
+                                    f"import …\n", returncode=-1)
+        document = completed(stdout=json.dumps(NATIVE_CHECK.unrelated_document()))
+        with tempfile.TemporaryDirectory() as scratch, \
+             mock.patch.object(NATIVE_CHECK, "ask_opencode", side_effect=[deadline, document]):
+            published, detail = NATIVE_CHECK.plant_unrelated("opencode", Path("/data"), Path(scratch))
+        self.assertTrue(published, detail)
+        self.assertIn(NATIVE_CHECK.UNRELATED_SESSION, detail)
+        self.assertIn("reader", detail, "the reconciliation does not say which answer decided it")
+
+    def test_an_import_that_failed_without_its_reader_confirming_is_unresolved(self) -> None:
+        """An acknowledgment the harness's own reader does not confirm is neither: the run must not call
+        it published (its cleanup would delete a session it cannot show is its own) and must not call the
+        store empty either."""
+        answered = completed(stdout=f"Imported session: {NATIVE_CHECK.UNRELATED_SESSION}\n", returncode=1)
+        refused = completed(stderr=f"Session not found: {NATIVE_CHECK.UNRELATED_SESSION}\n", returncode=1)
+        with tempfile.TemporaryDirectory() as scratch, \
+             mock.patch.object(NATIVE_CHECK, "ask_opencode", side_effect=[answered, refused]):
+            published, detail = NATIVE_CHECK.plant_unrelated("opencode", Path("/data"), Path(scratch))
+        self.assertFalse(published, detail)
+        self.assertIn("unresolved", detail)
+
+    def test_an_import_with_no_answer_at_all_is_not_a_publication(self) -> None:
+        answered = completed(stderr="the importer refused this planting\n", returncode=1)
+        refused = completed(stderr=f"Session not found: {NATIVE_CHECK.UNRELATED_SESSION}\n", returncode=1)
+        with tempfile.TemporaryDirectory() as scratch, \
+             mock.patch.object(NATIVE_CHECK, "ask_opencode", side_effect=[answered, refused]):
+            published, detail = NATIVE_CHECK.plant_unrelated("opencode", Path("/data"), Path(scratch))
+        self.assertFalse(published)
+        self.assertIn("refused", detail)
+
+    def test_a_store_holding_this_checks_own_leftover_has_it_removed_before_planting(self) -> None:
+        """An id planted by an earlier run whose cleanup never ran would block this one (``Session already
+        exists``). A store holding *this check's own fixture* under it -- recognised by the document its
+        own reader answers, which nothing else writes -- has it removed through the harness's own delete,
+        and only then is the id free to plant."""
+        verbs: list[list[str]] = []
+        present = {"session": True}
+
+        def fake_ask(opencode, verb, data_root, cwd=None, timeout=None):
+            verbs.append(list(verb))
+            if verb[1] == "export":
+                if present["session"]:
+                    return completed(stdout=json.dumps(NATIVE_CHECK.unrelated_document()))
+                return completed(stderr=f"Session not found: {verb[2]}\n", returncode=1)
+            if verb[1] == "delete":
+                present["session"] = False
+                return completed(stdout=f"Session {verb[2]} deleted\n")
+            raise AssertionError(f"unexpected harness verb {verb}")
+
+        with mock.patch.object(NATIVE_CHECK, "ask_opencode", side_effect=fake_ask):
+            with recorded() as results:
+                free = NATIVE_CHECK.clear_own_unrelated_leftover("opencode", Path("/data"))
+                states = [(name, state) for name, state, _ in results]
+        self.assertTrue(free)
+        self.assertIn(["session", "delete", NATIVE_CHECK.UNRELATED_SESSION], verbs)
+        self.assertEqual(states, [
+            ("an earlier run's own unrelated fixture is removed before this run plants", "PASS"),
+        ])
+
+    def test_a_foreign_session_under_that_id_is_left_alone(self) -> None:
+        """The id is fabricated, but a store is the caller's: a session under it whose own document is not
+        this check's fixture is never deleted, and the run says so instead."""
+        foreign = NATIVE_CHECK.unrelated_document()
+        foreign["messages"][0]["text"] = "a session this check did not write"
+        verbs: list[list[str]] = []
+
+        def fake_ask(opencode, verb, data_root, cwd=None, timeout=None):
+            verbs.append(list(verb))
+            if verb[1] == "export":
+                return completed(stdout=json.dumps(foreign))
+            raise AssertionError(f"unexpected harness verb {verb}")
+
+        with mock.patch.object(NATIVE_CHECK, "ask_opencode", side_effect=fake_ask):
+            with recorded() as results:
+                free = NATIVE_CHECK.clear_own_unrelated_leftover("opencode", Path("/data"))
+                states = [(name, state) for name, state, _ in results]
+        self.assertFalse(free)
+        self.assertEqual(verbs, [["session", "export", NATIVE_CHECK.UNRELATED_SESSION]])
+        self.assertEqual(states, [("the id this run plants is free in the store", "FAIL")])
+
+    def test_a_store_holding_nothing_under_that_id_is_free(self) -> None:
+        refused = completed(stderr=f"Session not found: {NATIVE_CHECK.UNRELATED_SESSION}\n", returncode=1)
+        with mock.patch.object(NATIVE_CHECK, "ask_opencode", return_value=refused):
+            with recorded() as results:
+                free = NATIVE_CHECK.clear_own_unrelated_leftover("opencode", Path("/data"))
+                states = [(name, state) for name, state, _ in results]
+        self.assertTrue(free)
+        self.assertEqual(states, [("the id this run plants is free in the store", "PASS")])
+
+    def test_a_store_that_could_not_answer_is_not_free(self) -> None:
+        """A probe that could not answer is not the store's own refusal: the id is not shown to be free,
+        so the run plants nothing into it -- which is also what keeps the reconciliation from calling a
+        session this run never published its own and deleting it."""
+        overran = completed(stderr=f"timed out after {NATIVE_CHECK.HARNESS_TIMEOUT}s: opencode session "
+                                   f"export {NATIVE_CHECK.UNRELATED_SESSION}\n", returncode=-1)
+        with mock.patch.object(NATIVE_CHECK, "ask_opencode", return_value=overran):
+            with recorded() as results:
+                free = NATIVE_CHECK.clear_own_unrelated_leftover("opencode", Path("/data"))
+                states = [(name, state) for name, state, _ in results]
+        self.assertFalse(free)
+        self.assertEqual(states, [("the id this run plants is free in the store", "FAIL")])
+
+    def test_a_leftover_the_reader_still_holds_is_not_read_as_removed(self) -> None:
+        """The removal is checked, not assumed: a delete that answered and a store that still holds the
+        session is a leftover that is still there, so the id is not free and this run plants nothing --
+        otherwise the import would meet ``Session already exists`` and the report would say the id was
+        cleared."""
+        def fake_ask(opencode, verb, data_root, cwd=None, timeout=None):
+            if verb[1] == "delete":
+                return completed(stdout=f"Session {verb[2]} deleted\n")
+            return completed(stdout=json.dumps(NATIVE_CHECK.unrelated_document()))
+
+        with mock.patch.object(NATIVE_CHECK, "ask_opencode", side_effect=fake_ask):
+            with recorded() as results:
+                free = NATIVE_CHECK.clear_own_unrelated_leftover("opencode", Path("/data"))
+                states = [(name, state) for name, state, _ in results]
+        self.assertFalse(free)
+        self.assertEqual(states, [
+            ("an earlier run's own unrelated fixture is removed before this run plants", "FAIL"),
+        ])
+
+    def test_nothing_is_recorded_when_nothing_was_published(self) -> None:
         with recorded() as results:
-            NATIVE_CHECK.remove_planted("opencode", Path("/data"), planted=False)
+            NATIVE_CHECK.remove_planted("opencode", Path("/data"), published=False)
             self.assertEqual(list(results), [])
 
     def test_the_removal_is_recorded_and_its_absence_is_not_a_pass(self) -> None:
@@ -596,7 +744,7 @@ class PlantedSession(unittest.TestCase):
         refused = completed(stderr=f"Session not found: {NATIVE_CHECK.UNRELATED_SESSION}\n", returncode=1)
         with mock.patch.object(NATIVE_CHECK, "ask_opencode", side_effect=[deleted, refused]):
             with recorded() as results:
-                NATIVE_CHECK.remove_planted("opencode", Path("/data"), planted=True)
+                NATIVE_CHECK.remove_planted("opencode", Path("/data"), published=True)
                 states = [(name, state) for name, state, _ in results]
         self.assertEqual(states, [
             ("the planted session is removed through the harness's own session delete", "PASS"),
@@ -607,7 +755,7 @@ class PlantedSession(unittest.TestCase):
         refused = completed(stderr=f"Session not found: {NATIVE_CHECK.UNRELATED_SESSION}\n", returncode=1)
         with mock.patch.object(NATIVE_CHECK, "ask_opencode", side_effect=[refused, refused]):
             with recorded() as results:
-                NATIVE_CHECK.remove_planted("opencode", Path("/data"), planted=True)
+                NATIVE_CHECK.remove_planted("opencode", Path("/data"), published=True)
                 states = {name: state for name, state, _ in results}
         self.assertEqual(states["the planted session is removed through the harness's own session delete"],
                          "FAIL")
@@ -768,6 +916,10 @@ class HarnessExecutable(unittest.TestCase):
 
         def fake_ask(opencode, verb, data_root, cwd=None, timeout=None):
             seen.append((opencode, cwd))
+            if verb[1] == "export":
+                # The store's own answer for the id this run is about to plant: free, so the run reaches
+                # its planting.
+                return completed(stderr=f"Session not found: {verb[2]}\n", returncode=1)
             # The planting is where this case stops: an import that failed leaves a run that reports its
             # own failure and reaches its verdict, which is all this case needs of the run.
             return completed(stderr="the importer refused this case's planting\n", returncode=1)
@@ -788,11 +940,13 @@ class HarnessExecutable(unittest.TestCase):
         printed = stdout.getvalue()
         self.assertIn("RESULT:", printed, f"the run printed no verdict: {printed[-400:]}")
         self.assertEqual(code, 1, printed)
-        # The version probe is the first command a run makes through the harness word, and the planting is
-        # the first stage handed one: neither carries the caller's relative spelling.
+        # The version probe is the first command a run makes through the harness word, and every stage
+        # this run hands one -- its own read of the id it plants, the planting, and the planting's
+        # reconciliation -- carries the resolved word, never the caller's relative spelling.
         self.assertEqual([command[0] for command in commands], [self.resolved()])
-        self.assertEqual(seen, [(self.resolved(), None)],
-                         "a stage ran the caller's relative spelling")
+        self.assertTrue(seen, "no stage ran through the harness word at all")
+        self.assertEqual({stage for stage, _ in seen}, {self.resolved()},
+                         f"a stage ran the caller's relative spelling: {seen}")
 
     def test_a_rooted_word_without_a_drive_is_resolved_by_the_hosts_own_rule(self) -> None:
         """A word the host does *not* call absolute is resolved rather than passed on.
@@ -1020,16 +1174,21 @@ class CommandDeadlines(unittest.TestCase):
                         f"than the run probed: {self.HARNESS!r}")
         session_id = "ses_installed000000000000000"
         verbs: list[list[str]] = []
-        planted = {"removed": False}
+        # The store's own model for this case's stub: the id this run plants is absent until its import
+        # publishes it, and absent again after the delete. Without the presence half, this run's own read
+        # of the id it is about to plant (the leftover probe) would be answered as if the store held it --
+        # which is exactly the state the probe exists to tell apart.
+        planted = {"present": False, "removed": False}
 
         def fake_ask(opencode, verb, data_root, cwd=None, timeout=None):
             verbs.append(list(verb))
             if verb[1] == "import":
+                planted["present"] = True
                 return completed(stdout=f"Imported session: {NATIVE_CHECK.UNRELATED_SESSION}\n")
             if verb[1] == "export":
                 wanted = verb[2]
                 if wanted == NATIVE_CHECK.UNRELATED_SESSION:
-                    if planted["removed"]:
+                    if not planted["present"]:
                         return completed(stderr=f"Session not found: {wanted}\n", returncode=1)
                     return completed(stdout=json.dumps(NATIVE_CHECK.unrelated_document()))
                 if wanted == session_id:
@@ -1038,6 +1197,7 @@ class CommandDeadlines(unittest.TestCase):
             if verb[1] == "list":
                 return completed(stdout="[]")
             if verb[1] == "delete":
+                planted["present"] = False
                 planted["removed"] = True
                 return completed(stdout=f"Session {verb[2]} deleted\n")
             raise AssertionError(f"unexpected harness verb {verb}")
@@ -1121,6 +1281,86 @@ class CommandDeadlines(unittest.TestCase):
                          "again and install into another store than the one this check reads")
         self.assertEqual(states["the report names the store the harness reads as the installed path"],
                          "PASS")
+
+    def test_a_timed_out_command_keeps_what_it_printed(self) -> None:
+        """The output a command did print survives its deadline. ``subprocess`` buffers what a command's
+        pipes carried and hands it to the exception as the *bytes* it read, even where the runner asked for
+        text (measured on this host's Python 3.15: ``exc.stdout`` is ``b'...'`` for a ``text=True`` run),
+        and a slow import that acknowledged the session it committed before it hung is exactly the shape
+        the planting reconciliation reads -- dropping it would make the check read a publication as an
+        absence of one."""
+        cmd = ["opencode", "session", "import", "unrelated-import.json"]
+        answered = f"Imported session: {NATIVE_CHECK.UNRELATED_SESSION}\n"
+        overran = subprocess.TimeoutExpired(cmd, NATIVE_CHECK.HARNESS_TIMEOUT,
+                                            output=answered.encode(), stderr=b"")
+        with mock.patch.object(NATIVE_CHECK, "run", side_effect=overran):
+            with recorded() as results:
+                answer = NATIVE_CHECK.deadline_run(cmd, timeout=NATIVE_CHECK.HARNESS_TIMEOUT)
+                snapshot = list(results)
+        self.assertIn(answered.strip(), answer.stdout,
+                      "the timed-out command's own acknowledgment was dropped with its deadline")
+        self.assertIn("timed out after", answer.stderr)
+        self.assertEqual([(name, state) for name, state, _ in snapshot],
+                         [("opencode session answers within its 300s bound", "FAIL")])
+
+    def test_a_planting_that_overran_its_deadline_after_committing_is_removed_again(self) -> None:
+        """The end-to-end shape of the planting reconciliation, through ``main``: an import that printed
+        its own acknowledgment and then overran its deadline leaves the session in the store (measured on
+        2.2.5, the harness commits the session and can still fail or be killed before it answers). The run
+        reads that as a publication -- the acknowledgment it kept beside the deadline is its first answer,
+        the harness's own reader the next -- and its cleanup removes the session through the harness's own
+        delete, so the fixed id does not stay behind to make every later run's planting meet ``Session
+        already exists``."""
+        verbs: list[list[str]] = []
+        store = {"unrelated": False}
+
+        def fake_ask(opencode, verb, data_root, cwd=None, timeout=None):
+            verbs.append(list(verb))
+            if verb[1] == "import":
+                store["unrelated"] = True
+                return completed(stdout=f"Imported session: {NATIVE_CHECK.UNRELATED_SESSION}\n",
+                                 stderr=f"timed out after {NATIVE_CHECK.HARNESS_TIMEOUT}s: opencode "
+                                        f"session import …\n", returncode=-1)
+            if verb[1] == "export":
+                if verb[2] == NATIVE_CHECK.UNRELATED_SESSION and store["unrelated"]:
+                    return completed(stdout=json.dumps(NATIVE_CHECK.unrelated_document()))
+                return completed(stderr=f"Session not found: {verb[2]}\n", returncode=1)
+            if verb[1] == "delete":
+                store["unrelated"] = False
+                return completed(stdout=f"Session {verb[2]} deleted\n")
+            raise AssertionError(f"unexpected harness verb {verb}")
+
+        def fake_run(command, cwd=None, env=None, timeout=None, replace_env=False):
+            if "--version" in command:
+                return completed(stdout="opencode v2.2.5")
+            # The build is the stage after the planting: a run that stops there is one whose planting was
+            # reconciled and whose cleanup this case reads.
+            return completed(stderr="this case runs no build\n", returncode=1)
+
+        def which(name):
+            return self.HARNESS if name == "opencode" else "/usr/local/bin/go"
+
+        with tempfile.TemporaryDirectory() as scratch, \
+             mock.patch.object(NATIVE_CHECK.shutil, "which", side_effect=which), \
+             mock.patch.object(NATIVE_CHECK, "BINARY",
+                               Path(scratch) / "bin" / "ccc-native-check-opencode"), \
+             mock.patch.object(NATIVE_CHECK, "ask_opencode", side_effect=fake_ask), \
+             mock.patch.object(NATIVE_CHECK, "run", side_effect=fake_run):
+            with recorded() as results:
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    code = NATIVE_CHECK.main(["--opencode", "opencode"])
+                states = {name: state for name, state, _ in results}
+        printed = stdout.getvalue()
+        self.assertIn("RESULT:", printed, f"the run printed no verdict: {printed[-600:]}")
+        self.assertEqual(states["the unrelated session is planted through the harness's own importer"],
+                         "PASS", printed)
+        self.assertIn(["session", "delete", NATIVE_CHECK.UNRELATED_SESSION], verbs,
+                      f"a planting whose process overran its deadline left its fixture in the store: {verbs}")
+        self.assertEqual(states["the planted session is removed through the harness's own session delete"],
+                         "PASS")
+        self.assertFalse(store["unrelated"], "the session this run published is still in the store")
+        self.assertEqual(code, 1, printed)
 
 
 if __name__ == "__main__":

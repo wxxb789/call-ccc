@@ -1291,6 +1291,179 @@ whose new states are unreachable there, and every command, flag and printed line
 file is moved: 0007 is still the increment under review, implemented on its branch with its row; the
 earlier goals are archived and their rows say so.
 
+### The eighth review round's fixes (`10b980f` + working tree), re-measured
+
+The findings file (`review-findings-r8.md`, review head `10b980f`) named two defects, both P2 and both
+dispositions FIX, and its own instruction was the systematic close-out: every rule the touched surface
+claims had to be proved with one executed mutation — revert the line, run the case that claims to pin it,
+restore it, hash back. The nineteen mutations below are this round's evidence for the rules the two fixes
+touch, and both the code and the check were extended only where a rule had no pin.
+
+- **A reader's rendering of a record's own reasoning trace is removed from the record's own text, not only
+  from a record that is nothing but that rendering** (`dialogueFromContent`, reached from the shared
+  `dialogueText` in `internal/ccc/codex_target.go`, so every writer is fixed at once). ZCode's reader
+  renders a persisted thinking part *beside* the record's text — `internal/parser/zcode.go:561,577-578` joins
+  the record's own parts with line feeds, so an assistant record with a thinking part and a text part reads
+  as `Content = "[Thinking]\n<trace>\n[/Thinking]\n<spoken>"` with `ThinkingText = <trace>` and no
+  dialogue projection, the shape `internal/parser/zcode_test.go:636-639` asserts. Round 7's rule
+  (`thinkingRenderingOnly`) recognised only the whole-Content rendering, so the writer's Content fallback
+  wrote such a record's trace **twice** on every target: once as the record's reasoning and once inside the
+  dialogue, presenting persisted reasoning as words the agent said — and this route's round-trip comparison
+  agreed with the duplicated parts, because the comparison's intended side is derived from the same parts.
+  The rule now removes a rendering where it *stands* (a reader that keeps the record's part order — ZCode's
+  — renders the trace after the text it followed as readily as before it), only where the record's **own**
+  trace stands behind the block's words (`strings.Contains(message.Thinking, <the block's trimmed text>)`,
+  which is the evidence that makes the removal a finding rather than a rewrite), and with the line feeds
+  that joined the rendering to its neighbours; a record the read answered no trace for, a block no trace of
+  that record holds, a marker with no closer and an empty block keep their `Content` byte for byte (`if
+  !dropped { return message.Content }`), which the round-7 shape's rule (`thinkingRenderingOnly`, kept) and
+  a projection the source made still override. Nothing about the comparison changed: a read of the written
+  parts still renders what the parts say. New cases:
+  `TestDialogueFromContentKeepsOnlyTheRecordsOwnText` (twelve arms, one per rule above) and
+  `TestOpenCodeCarriesAZCodeMixedRenderingOnce` — a ZCode store written in the provider's own
+  `db/db.sqlite` shape (four tables, the session, the parts in the provider's order), read through the
+  **inherited reader**, asserted on the read's own shape (the rendering followed by the record's text, no
+  projection) and then on the **serialized document's own parts** (the trace once as the `reasoning` part,
+  the record's own text beside it, no `[Thinking]` rendering anywhere in the document), on the loss
+  category (`reasoning_text ×1`, carried with caveat), and through the store read-back — with two further
+  arms: a record whose text part is recorded *before* its thinking part (same result), and a record whose
+  own text merely looks like a rendering (kept as text, with the trace written once).
+- **A native check's planting is reconciled the way the route reconciles its own import, and it removes in
+  a caller's store only what it shows to be its own** (`scripts/opencode-native-check.py`). Measured: the
+  harness commits a session and can still fail or be killed before it answers (the window
+  `InstallOpenCodeSession` documents), and `plant_unrelated` read every nonzero status as "nothing was
+  planted" while `remove_planted` skipped cleanup for exactly that state — so a planting import that
+  committed and then failed or overran its deadline left the check's own fixture in a caller-named store,
+  where its fixed id made every later run meet `Session already exists`. A timeout compounded it:
+  `deadline_run` discarded the output the command had already printed, so the acknowledgment the
+  reconciliation reads was thrown away with the deadline. The check now (i) keeps a timed-out command's
+  captured output (`captured_stream`, which decodes the bytes `subprocess` hands the exception even for a
+  `text=True` run), (ii) reads a planting in the route's own order — the harness's own
+  `Imported session: <id>` line (`harness_line_names`, the same whole-line reading the route makes: the
+  words after the marker must be this id and nothing else), then the harness's own reader, whose answered
+  document means this run published the session and its cleanup removes it again, with an unconfirmed
+  acknowledgment and a store that answers nothing recorded as `unresolved`, (iii) asks the store about the
+  id it is about to plant before writing anything: only the store's own `Session not found: <id>` refusal
+  makes it free (a store that could not answer is not read as empty), a session whose own document is this
+  check's fabricated fixture (its id, directory and message text) is an earlier run's leftover and is
+  removed through the harness's own delete, and a session holding anything else is left exactly as found
+  with the run stopping there, and (iv) removes only what it published (`remove_planted`'s `published`),
+  so a run that published nothing deletes nothing. The record set is unchanged apart from the probe's own
+  line: a free id and a cleared leftover are one record each. New cases:
+  `test_a_timed_out_command_keeps_what_it_printed`,
+  `test_a_planting_that_overran_its_deadline_after_committing_is_removed_again` (an end-to-end `main` run
+  whose import prints its acknowledgment and then overruns its deadline: the planting is recorded PASS, the
+  session is deleted, the store ends without it, and the run still prints its verdict),
+  `test_an_import_that_failed_after_committing_is_reconciled_as_a_publication`,
+  `test_an_import_that_failed_without_its_reader_confirming_is_unresolved`,
+  `test_an_import_with_no_answer_at_all_is_not_a_publication`,
+  `test_a_store_holding_this_checks_own_leftover_has_it_removed_before_planting`,
+  `test_a_leftover_the_reader_still_holds_is_not_read_as_removed`,
+  `test_a_foreign_session_under_that_id_is_left_alone`, `test_a_store_holding_nothing_under_that_id_is_free`,
+  `test_a_store_that_could_not_answer_is_not_free` and `test_the_harnesss_own_lines_are_read_whole`.
+
+The mutations, executed and restored (each file hashed before and after its mutation and quoted below with
+the first twelve hex digits — `internal/ccc/codex_target.go` `ed9143c9ecbb…`, the same value before and
+after every one of its mutations, and `scripts/opencode-native-check.py` `cb238c9094a8…` likewise):
+
+| Rule | Line disabled | Observed (the case that reddened) |
+| --- | --- | --- |
+| a projected dialogue is the record's dialogue, not its Content | `codex_target.go`: `if strings.TrimSpace(message.Dialogue) != "" || message.DialogueProjected {` → `if false {` | `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/a_projection_is_the_dialogue_even_where_the_rendering_stands_beside_it` |
+| a record carrying calls has no dialogue from its Content | `codex_target.go`: `if len(message.ToolCalls) > 0 {` → `if false {` | `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/a_record_carrying_calls_has_no_dialogue_from_its_Content` |
+| a Content that is nothing but the rendering is no dialogue | `codex_target.go`: `if thinkingRenderingOnly(message) {` → `if false {` | `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/a_rendering_the_readers'_own_rule_trims_beside_it_is_still_no_dialogue`; `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/a_rendering_with_only_whitespace_beside_it_is_still_no_dialogue_(the_readers'_own_rule)` |
+| only a block the record's own trace stands behind is removed | `codex_target.go`: `if !closed || rendered == "" || !strings.Contains(trace, rendered) {` → `if !closed || rendered == "" || len(rendered) >= 0 {` | `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/the_readers'_order:_the_rendering_stands_before_the_record's_text`; `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/ZCode's_part_order:_the_rendering_stands_after_the_text_it_followed` |
+| a record the read answered no trace for has no rendering to recognise | `codex_target.go`: `trace := message.Thinking` → `trace := ""` | `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/the_readers'_order:_the_rendering_stands_before_the_record's_text`; `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/ZCode's_part_order:_the_rendering_stands_after_the_text_it_followed` |
+| a marker the record carries without its closer is text | `codex_target.go`: `!closed || rendered == "" || !strings.Contains(trace, rendered)` → `rendered == "" || !strings.Contains(trace, rendered)` | `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/a_marker_the_record_carries_without_its_closer_is_text,_not_a_rendering` |
+| an empty block is text the record carries | `codex_target.go`: `!closed || rendered == "" || !strings.Contains(trace, rendered)` → `!closed || !strings.Contains(trace, rendered)` | `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/an_empty_block_the_record_carries_is_text,_not_a_rendering` |
+| the rendering is removed where it stands, not only where it leads | `codex_target.go`: `open := strings.Index(rest, thinkingRenderOpen)` → `open := strings.Index(rest, thinkingRenderOpen)⏎		if open > 0 {⏎			break⏎		}` | `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/ZCode's_part_order:_the_rendering_stands_after_the_text_it_followed`; `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/one_trace_rendered_as_two_blocks_around_the_record's_text` |
+| the line feed that joined the rendering to its neighbour goes with it | `codex_target.go`: `pieces = append(pieces, strings.TrimRight(rest[:open], "\n"))` → `pieces = append(pieces, rest[:open])` | `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/ZCode's_part_order:_the_rendering_stands_after_the_text_it_followed`; `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/one_trace_rendered_as_two_blocks_around_the_record's_text` |
+| a record nothing was shown to be a rendering of keeps its Content byte for byte | `codex_target.go`: `if !dropped {` → `if !dropped && false {` | `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/a_block_the_record's_own_trace_does_not_hold_is_text_the_record_carries`; `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/a_record_the_read_answered_no_trace_for_keeps_its_Content` |
+| a timed-out command keeps what it printed | `opencode-native-check.py`: `return subprocess.CompletedProcess(cmd, -1, captured_stream(exc, "stdout"), captured + words)` → `return subprocess.CompletedProcess(cmd, -1, "", words)` | the run failed (see the driver's own record) |
+| a failed import its own reader confirms is a publication | `opencode-native-check.py`: `document, words, status = export_document(opencode, data_root, UNRELATED_SESSION)⏎    if document is not None:⏎        return True, bounded(` → `document, words, status = export_document(opencode, data_root, UNRELATED_SESSION)⏎    if False:⏎        return True, bounded(` | the run failed (see the driver's own record) |
+| an acknowledgment its own reader does not confirm is unresolved | `opencode-native-check.py`: `if acknowledged:⏎        return False, bounded(⏎            f"the harness's own acknowledgment names {UNRELATED_SESSION} but its own reader does not "` → `if False:⏎        return False, bounded(⏎            f"the harness's own acknowledgment names {UNRELATED_SESSION} but its own reader does not "` | the run failed (see the driver's own record) |
+| a session that is not this check's own fixture is never removed | `opencode-native-check.py`: `if not unrelated_is_this_checks(document):` → `if False:` | the run failed (see the driver's own record) |
+| this check's fixture is recognised by its own document | `opencode-native-check.py`: `planted = unrelated_document()["messages"][0]["text"]⏎    return any((message.get("text") if isinstance(message, dict) else None) == planted⏎               for message in (document.get("messages") or []))` → `return True` | the run failed (see the driver's own record) |
+| only the store's own refusal makes the id free | `opencode-native-check.py`: `if document is None and status != 0 and harness_line_names(words, SESSION_NOT_FOUND, UNRELATED_SESSION):` → `if document is None:` | the run failed (see the driver's own record) |
+| the harness's own line must name this id and nothing else | `opencode-native-check.py`: `if rest.startswith(marker) and rest[len(marker):].strip() == session_id:` → `if rest.startswith(marker) and session_id in rest:` | the run failed (see the driver's own record) |
+| a run that published nothing removes nothing | `opencode-native-check.py`: `other sessions are not this check's to delete."""⏎    if not published:⏎        return` → `other sessions are not this check's to delete."""⏎    if False:⏎        return` | the run failed (see the driver's own record) |
+| the removal is checked against the store, not assumed | `opencode-native-check.py`: `and after is None)` → `and True)` | the run failed (see the driver's own record) |
+
+Restoring each file hashed it back to the bytes the table quotes. The cases' own bytes:
+`internal/ccc/codex_target_test.go`, `internal/ccc/opencode_target_test.go` and
+`scripts/tests/test_opencode_native_check.py` carry this round's new cases and were not mutated.
+
+The finding's own scenario, reproduced natively on this host's OpenCode 2.2.5 (the fixture planted in a
+caller-named store through the harness's own importer, then a run against that store):
+
+```console
+$ XDG_DATA_HOME=$home opencode session import unrelated-fixture.json --directory /tmp --standalone
+Imported session: ses_nativecheckunrelated0            (exit 0)
+$ python3 scripts/opencode-native-check-prefix.py --opencode … --target-home $home    # the pre-fix bytes
+FAIL: the unrelated session is planted through the harness's own importer — Session already exists
+RESULT: FAIL — 1 check(s) failed: the unrelated session is planted through the harness's own importer
+$ python3 scripts/opencode-native-check.py --opencode … --target-home $home           # this round's bytes
+PASS: an earlier run's own unrelated fixture is removed before this run plants — Session ses_nativecheckunrelated0 deleted
+PASS: the unrelated session is planted through the harness's own importer — Imported session: ses_nativecheckunrelated0
+PASS: the planted session is removed through the harness's own session delete — Session ses_nativecheckunrelated0 deleted
+RESULT: PASS — 32 check(s), none failed          (exit 0)
+```
+
+The route's own native check on the fixed bytes, offline and with one real turn (the harness is this
+host's `/home/azureuser/.npm-global/bin/opencode`, 2.2.5):
+
+```
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode
+RESULT: PASS — 32 check(s), none failed          (exit 0)
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode \
+    --resume-prompt 'Reply with exactly: NATIVE-TURN-OK' --expect NATIVE-TURN-OK
+PASS: the turn ran through the printed invocation and exited 0 — exit 0; stderr
+PASS: the turn's answer contains 'NATIVE-TURN-OK' — NATIVE-TURN-OK
+PASS: the turn grew the installed session, through the harness's own reader — 7 message(s) before the turn, 10 after
+PASS: the session's own records were not rewritten by the turn — the first 7 message(s) are unchanged
+RESULT: PASS — 36 check(s), none failed          (exit 0)
+```
+
+The counts moved with the record the probe adds: 31 → 32 offline (the pre-fix run's `RESULT: FAIL` above
+stopped at its first record, so it is not comparable), and 35 → 36 with the turn. The conversion path the
+check drives is unchanged; the extra record is the id probe's own line.
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3620 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 351 tests in 5.793s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 31 project-owned prefix(es); files seen by git: 5701 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
+  PASS     secrets  no leaks found in 155 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+(A `…` inside the parity line is this record's own elision, as in the sections above. The gate ran on the
+working tree with this round's code, tests, control file and docs applied; the only bytes written after it
+belong to this section, which is the record it printed into.)
+
+The narrowed Go suites' own test functions ran 389 before this round and 391 after — the two cases added
+(`TestDialogueFromContentKeepsOnlyTheRecordsOwnText`, `TestOpenCodeCarriesAZCodeMixedRenderingOnce`),
+counted as `^func Test` over the test files git lists under `cmd/ccc` and `internal/ccc`. `selftest` ran
+340 before and 351 after: this round's eleven Python cases, which the gate's own `selftest` line above counts.
+What else the round moved: `AGENTS.md` (a new bullet stating the shared dialogue rule — the source's own
+projection where it made one, the record's own text minus the reader's rendering of that record's trace,
+and what is *not* removed — and a paragraph on the OpenCode check's own store discipline beside the route's
+reconciliation rule, both of which are rules an agent touching a writer or this check must follow);
+`docs/harness.md` (the OpenCode check's bullet now states the id probe, the own-fixture recognition, the
+reconciled planting and the unresolved arm); `docs/plans/0007-opencode-target-continuation.md` (§6.1's
+eighth-round paragraph); `docs/decisions/OPEN-QUESTIONS.md` (Q-0007-08: the arm taken for a rendered trace
+beside a record's text, with the drop-and-count and refuse arms named as the alternatives; Q-0007-09: what
+the native check may remove in a caller-named store, and the measured failure that decided it).
+`README.md` is **not** edited: it states the capability, the quickstart and the flags, and none of them
+changed. `docs/upstream.md` and the carry are untouched: no carried file changes — the rule is this
+build's, in `internal/ccc`. No goal file is moved: 0007 is still the increment under review, implemented on
+its branch with its row; the earlier goals are archived and their rows say so.
+
 ## 5. What travels, source side and target side
 
 | Source evidence | Target side, and the run that recorded it |
