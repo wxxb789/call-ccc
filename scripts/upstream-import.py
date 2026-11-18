@@ -104,6 +104,7 @@ OWNED = (
     "scripts/gate-targets.txt",
     "scripts/gate.py",
     "scripts/native_check_common.py",
+    "scripts/obligation-citations.py",
     "scripts/omp-native-check.py",
     "scripts/tests/",
     "scripts/claude-native-check.py",

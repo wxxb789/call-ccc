@@ -1,0 +1,59 @@
+# Obligation citations — goal 0002 (Claude Code → Codex continuation).
+#
+# One row per obligation of docs/evidence/0002-obligation-matrix.md that a gate-runnable Go test
+# discharges: the rule id, the test that pins it, the package `go test` is handed, and the matrix
+# section the pair comes from. A row names the section's primary pin (the first `Pinned by` it lists);
+# the section lists the row's other pins and their executed mutations.
+#
+# scripts/obligation-citations.py is the arbiter: every row's cited test must exist in the named
+# package and run and pass, and the `citations` step is required — a tree that lost this file, or a
+# citation that went stale, fails the gate instead of passing partially. Columns: rule_id, test,
+# package, artifact. Tab-separated; `#` comments and blank lines are ignored; a rule id appears once.
+#
+# Deliberately not covered, with the reason:
+#   D4, F1 — the obligation's evidence is the *native* harness run (scripts/codex-native-check.py) and
+#            the python case beside it, not a gate test. A machine gate cannot re-run a native harness
+#            (the owner's option-1 choice, 2026-11-18), so that class keeps its prose record; making it
+#            machine-checked is the separate post-run-evidence-anchor follow-up.
+#   F4, F5 — the obligation is a rule of the *harness itself*, discharged by the python suite under
+#            scripts/tests/ that the `selftest` step runs. That suite is a gate step of its own; this
+#            file's citation form is one Go test function in a package scripts/gate-targets.txt covers,
+#            so these two ids have no row here.
+#
+rule_id	test	package	artifact
+A1	TestReadReportsAForkedPathAsAmbiguous	./internal/ccc	0002-obligation-matrix.md §A1
+A2	TestContinueFallsBackToTheArchiveWhenTheSourceIsGone	./internal/ccc	0002-obligation-matrix.md §A2
+A3	TestContinueReportsTheArchivesAmbiguityInsteadOfAbsence	./internal/ccc	0002-obligation-matrix.md §A3
+A4	TestCodexRolloutReportsTheSourceLinesItsReadCouldNotProduce	./internal/ccc	0002-obligation-matrix.md §A4
+A5	TestCodexRolloutDoesNotApplyASidechainCompactionBoundary	./internal/ccc	0002-obligation-matrix.md §A5
+A6	TestCodexRolloutCarriesACompactionBoundaryAndKeepsTheHistoryBeforeIt	./internal/ccc	0002-obligation-matrix.md §A6
+A7	TestSourceCheckSaysWhenThereWasNoFileToCompare	./internal/ccc	0002-obligation-matrix.md §A7
+B1	TestCodexRolloutCarriesAToolRoleMessageOnlyThroughItsResult	./internal/ccc	0002-obligation-matrix.md §B1
+B2	TestCodexRolloutKeepsAReasoningOnlyRecordOutOfTheDialogue	./internal/ccc	0002-obligation-matrix.md §B2
+B3	TestCodexRolloutPairsAnIdLessResultWithItsCall	./internal/ccc	0002-obligation-matrix.md §B3
+B4	TestCodexRolloutStampsRecordsInOneOrderedRun	./internal/ccc	0002-obligation-matrix.md §B4
+B5	TestCodexRolloutWritesAnArchiveSummaryOnlyForACallWithoutResults	./internal/ccc	0002-obligation-matrix.md §B5
+B6	TestCodexRolloutDecodesEncodedContentExactlyOnce	./internal/ccc	0002-obligation-matrix.md §B6
+B7	TestCodexRolloutReportsEveryCategoryItKnows	./internal/ccc	0002-obligation-matrix.md §B7
+B8	TestCodexRolloutWritesASystemRecordsToolEvidenceWithoutItsText	./internal/ccc	0002-obligation-matrix.md §B8
+B9	TestCodexRolloutKeepsTheDialogueProjection	./internal/ccc	0002-obligation-matrix.md §B9
+C1	TestStructureVerificationReadsTheInstalledPathItWasGiven	./internal/ccc	0002-obligation-matrix.md §C1
+C2	TestCodexRolloutWritesTheTargetsOwnViewRecordForEachMessage	./internal/ccc	0002-obligation-matrix.md §C2
+C3	TestCodexRoundTripCountsARecordOncePerWrittenMessage	./internal/ccc	0002-obligation-matrix.md §C3
+C4	TestStructureVerificationNamesWhatTheFileDoesNotHold	./internal/ccc	0002-obligation-matrix.md §C4
+C5	TestCodexRoundTripReportsAMessageTheFileOnlyHoldsAsNoMessage	./internal/ccc	0002-obligation-matrix.md §C5
+D1	TestCodexRolloutGeneratesAFreshIdentity	./internal/ccc	0002-obligation-matrix.md §D1
+D2	TestInstallCodexRolloutNeverReplacesASession	./internal/ccc	0002-obligation-matrix.md §D2
+D3	TestSourceCheckComparesTheFileBeforeAndAfter	./internal/ccc	0002-obligation-matrix.md §D3
+D5	TestContinueKeepsTheReportWhenTheSourceVanishesAfterTheInstall	./internal/ccc	0002-obligation-matrix.md §D5
+D6	TestContinueReportsAFailedVerificationAsAFailure	./cmd/ccc	0002-obligation-matrix.md §D6
+D7	TestContinueTargetHomeResolution	./internal/ccc	0002-obligation-matrix.md §D7
+D8	TestContinueDryRunWritesNothing	./internal/ccc	0002-obligation-matrix.md §D8
+E1	TestCodexLoadVerificationRequiresTheSessionsOwnRecord	./cmd/ccc	0002-obligation-matrix.md §E1
+E2	TestResumeVerificationRequiresTheTurnToAppendToTheSession	./cmd/ccc	0002-obligation-matrix.md §E2
+E3	TestRunCodexTurnResolvesARelativeExecutableBeforeChangingDirectory	./internal/ccc	0002-obligation-matrix.md §E3
+E4	TestProviderBindingIsTheTargetsOwnAnswer	./cmd/ccc	0002-obligation-matrix.md §E4
+E5	TestResumeVerificationCommandNamesTheHomeItRanAgainst	./internal/ccc	0002-obligation-matrix.md §E5
+E6	TestBoundedBufferKeepsTheFirstBytes	./internal/ccc	0002-obligation-matrix.md §E6
+F2	TestContinueJSONCarriesNoSourceContent	./cmd/ccc	0002-obligation-matrix.md §F2
+F3	TestFixturesCarryNoHostPathsOrSecrets	./internal/ccc	0002-obligation-matrix.md §F3

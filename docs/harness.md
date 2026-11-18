@@ -16,6 +16,7 @@ python3 scripts/gate.py     # must print GATE: PASS; CI runs this same file
 | `test` | `go test -count=1 <flags> <targets>` | the tests actually run and pass |
 | `selftest` | `python3 -m unittest discover -s scripts/tests` | the harness's own rules still hold |
 | `parity` | `scripts/upstream-parity.py` (required) | every carried AgentsView file still matches the pinned revision |
+| `citations` | `scripts/obligation-citations.py` (required) | every row of every `docs/evidence/*-citations.tsv` cites a Go test that runs and passes |
 | `secrets` | `gitleaks detect --no-git --source <scope>` when available | no credentials in the files this repository owns |
 
 `gofmt` is the one step that also has to answer in a tree without git: it takes `git ls-files '*.go'`
@@ -161,6 +162,58 @@ be *clean* at the pin, exactly as the importer requires: the dumps are attribute
 the dumps a pristine checkout produced; the ordinary test suite re-checks this tree against them
 offline. The increment's evidence record holds a run of it with its hashes.
 
+## `citations`: the obligation manifests
+
+`scripts/obligation-citations.py` answers whether a goal's acceptance surface still holds. A goal's
+obligations live in prose (`docs/evidence/<goal>-obligation-matrix.md`), and prose audited by a reader
+does not converge; beside it, every obligation a **gate-runnable Go test** discharges gets a row in
+`docs/evidence/<goal>-citations.tsv` (one row per rule id; columns `rule_id`, `test`, `package`,
+`artifact` — the schema and *which* obligations get a row are in `docs/conventions.md`), and this step
+runs the tests those rows cite. The step is **required** (`scripts/gate-required.txt`): the manifest is
+the acceptance surface, so a tree that lost it — or whose cited test stopped passing — fails the gate
+rather than passing partially.
+
+What it does, in order:
+
+1. **discovery** — `docs/evidence/*-citations.tsv`, sorted by file name; the order is pinned and
+   printed;
+2. **parse**, per file — the first non-comment line is the header and names exactly `rule_id`, `test`,
+   `package`, `artifact` in that order; every data row holds exactly four non-empty cells; no `rule_id`
+   repeats within a file. A violation fails the run naming the file and the line;
+3. **static checks**, per row — the `test` is a name `go test` would run at top level (`TestXxx`, `Xxx`
+   not a lowercase letter), the `package` is one package in the tree's own `./` spelling that
+   `scripts/gate-targets.txt` covers (a citation may not point outside what the gate itself tests), and
+   a `_test.go` under that package declares `func <test>(`. All three are answered **before any tool
+   runs**;
+4. **the run**, per package — one `go test -count=1 -v -run '^(<test>|<test>|…)$' <package>` with the
+   `scripts/gate-goflags.txt` flags the gate's own steps use, whose output must hold `--- PASS: <test>`
+   for every cited test. A cited test the run reports `--- SKIP`, `--- FAIL`, or never at all is a
+   failure naming the row. One invocation per *package*, never per row: the gate must not pay a compile
+   per citation. Names go over in bounded batches with the same bound `gofmt_batches` uses, so a
+   package whose cited set outgrows a process command line cannot make the step unstartable, and the
+   batches together are the whole set in the same order.
+
+Print and verdict: one line per file (`<relative path>: <n> row(s) verified`), the summary
+(`citations: <rows> row(s) across <files> file(s) verified`), and the verdict line, which is the last
+line the checker prints and carries the gate's own vocabulary — `citations: PASS`,
+`citations: FAIL — …`, `citations: SKIP — …`, `citations: BOUNDARY — …`. The step reads the status from
+that line (exactly one verdict line is required) and cross-checks a `PASS` against the script's exit
+code, so a run claiming a pass while exiting non-zero is a failure either way. Exit codes: `0` PASS,
+`1` FAIL, `2` SKIP, `3` BOUNDARY.
+
+Two answers are boundaries rather than failures, and neither is a pass: no `*-citations.tsv` anywhere is
+a `SKIP` naming that (required, so the gate rewrites it to a failure), and a host on which the Go steps
+cannot run — the Windows-without-a-C-compiler boundary, read from `scripts/gate.py`'s own `go_env()`
+rather than restated here — is that same `BOUNDARY`, not a crash. A Go toolchain missing anywhere else
+is the failure the Go steps already report (`go not found on PATH`).
+
+The step costs one `go test` per cited package, and nothing more: with `docs/evidence/0002-citations.tsv`
+in the tree (36 rows over `./cmd/ccc` and `./internal/ccc`), a run is two invocations — measured on the
+import host at 38.4 s with a cold build cache and 4.5 s immediately after a gate run, whose own `test`
+step compiles those packages first (the citations step only selects tests inside them).
+`scripts/tests/test_obligation_citations.py` pins every rule above with its own case, plus the wiring (a
+skipped step is a failure when it is required and a disclosed partial run when it is not).
+
 ## `secrets`: what it scans, and what it does not
 
 The scan reads the files this repository **owns** — the prefixes the carry manifest records as
@@ -181,13 +234,16 @@ says so.
   no FTS5 module, so a binary built here could not load an archive that has a full-text index, and
   the step would be quietly building a different product than upstream ships.
 - `scripts/gate-required.txt` — one step name per line. A step listed here must be `PASS`: `SKIP`,
-  `BOUNDARY`, `N/A` and `FAIL` all fail the gate, and so does an unknown step name. It lists `parity`
-  and `selftest`. The Go steps are deliberately *not* listed: on Windows without a C compiler they are
-  a disclosed platform boundary (below), not a failure.
+  `BOUNDARY`, `N/A` and `FAIL` all fail the gate, and so does an unknown step name. It lists `parity`,
+  `citations` and `selftest`. The Go steps are deliberately *not* listed: on Windows without a C compiler
+  they are a disclosed platform boundary (below), not a failure.
 - `scripts/upstream-parity.py` — the source-side parity check (above).
-- `scripts/tests/` — regression tests for the gate, the parity checker, the importer, the native check
-  and the continuation evidence's own claims (`test_evidence_claims.py`: a §5 comparison cell that
-  credits a recorded run's answer may only quote words that run's recorded output holds;
+- `scripts/obligation-citations.py` — the obligation manifests under `docs/evidence/` (above); run by
+  the `citations` step, and runnable on its own for a faster answer on one tree.
+- `scripts/tests/` — regression tests for the gate, the parity checker, the importer, the obligation
+  citations, the native checks and the continuation evidence's own claims (`test_evidence_claims.py`:
+  a §5 comparison cell that credits a recorded run's answer may only quote words that run's recorded
+  output holds;
   `test_gate_transcript_claims.py`: a record's quoted `parity` line is the gate's own rendering — its end
   is the checker's own — and the elision limit a record states is the gate's own call; and
   `test_codex_native_check.py`'s `RecordStatesTheChecksOwnOrder`: the record's claim about *when* the
