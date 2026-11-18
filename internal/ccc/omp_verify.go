@@ -355,14 +355,19 @@ var runOMPLoaderRPC = runOMPRPC
 // sentence, rather than as a check that quietly ran somewhere else and failed. A recording that names no
 // directory at all is not this case: the session's file is the check's, it was written by this build, and
 // the run uses the scratch data directory it was installed under.
+//
+// Trimming decides only whether a directory was named at all. The stat and the answer use the recorded
+// value unchanged, because a directory's own name may end in whitespace: trimming before the stat would
+// ask this host about a *different* directory than the session recorded, and a correctly installed session
+// would be reported as one whose directory this host does not have (the Pi check's rule, and its
+// whitespace-path case, are the same one).
 func ompLoaderCwd(scratch, sessionCwd string) (string, error) {
-	trimmed := strings.TrimSpace(sessionCwd)
-	if trimmed == "" {
+	if strings.TrimSpace(sessionCwd) == "" {
 		return scratch, nil
 	}
-	info, err := os.Stat(trimmed)
+	info, err := os.Stat(sessionCwd)
 	if err == nil && info.IsDir() {
-		return trimmed, nil
+		return sessionCwd, nil
 	}
 	return "", fmt.Errorf(
 		"the installed session records the working directory %s, which is not a directory on this host, "+
@@ -370,7 +375,7 @@ func ompLoaderCwd(scratch, sessionCwd string) (string, error) {
 			"18.18.7: `Error: Session \"<id>\" belongs to a directory that no longer exists (<dir>); run "+
 			"interactively to move it into the current project.`), so the native load was not verified "+
 			"here: the session is a conversion of a source that recorded that directory, and its load is "+
-			"verifiable on a host that has it", trimmed)
+			"verifiable on a host that has it", sessionCwd)
 }
 
 // ompSessionBinding answers the provider and model the converted file's own records name: the session's

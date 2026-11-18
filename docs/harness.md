@@ -392,12 +392,24 @@ says so.
   model entry writes) — is left out whole and named in the report,
   because OMP demands a literal key (measured: without one it refuses to start at all, and `$VAR`/`${VAR}`
   in `apiKey` is **not** expanded, which is where OMP differs from Pi's `models.json` and why the collision
-  policy is "the key's value is this run's own placeholder" rather than Pi's `$ENV` reference). With no
-  surviving provider the home names no model role, the conversion writes no binding, and the run reports
-  that as a named check instead of crashing — OMP's own measured behaviour for a home with no model. A home
-  the caller names with `--target-home` is never seeded and nothing is planted in it — the converted
-  session the conversion installs there is the file the run leaves, and a requested turn grows it — and the
-  run reports the role that home's own `config.yml` names beside its every-session digests.
+  policy is "the key's value is this run's own placeholder" rather than Pi's `$ENV` reference). Those
+  fields are read as YAML itself spells a key, not by a literal prefix — a quoted key (`"apiKey"`) and a
+  key with whitespace before its colon (`headers :`) are the same field to any YAML reader, and a key at
+  another casing (`Headers`) is rewritten or dropped too (the conservative read: a spelling some reader
+  might fold to the field must not pass unscrubbed, and dropping one the harness would ignore costs
+  nothing), so none of those spellings can carry a value past the replacement or the drop. A definition
+  holding a key form this run's reader cannot decode (YAML's explicit `? key`, a quoted key it cannot
+  unquote) is left out whole with that reason rather than copied with a key the seeder did not read. With
+  no surviving provider the home names no model role, the conversion writes no binding, and the run reports
+  that as a named check instead of crashing — OMP's own measured behaviour for a home with no model. A
+  home the caller names with `--target-home` is never seeded and nothing is planted in it — the
+  converted session the conversion installs there is the file the run leaves, and a requested turn grows it
+  — and the run reports both the role its own textual read finds in that home's `config.yml` and, when the
+  conversion's own probe answered, the model the harness's own `get_state` resolved for it (the answer that
+  decides the turn when the reading cannot follow the home's spelling) beside its every-session digests.
+  `--resume-prompt` is a request for one real turn: the run attempts it whenever any of the seed's role,
+  that reading and the harness's own answer names a model, and a requested turn the run could not attempt
+  is recorded as a **failed** check — never a pass and never a skip the verdict ignores.
   The `--direction omp-to-claude` half needs no OMP at all (its source is a committed OMP fixture read by
   the inherited reader and its native half is Claude Code's loader, driven the way 0003's check drives it);
   a host without the harness that direction needs ends as `RESULT: INCOMPLETE` (exit 2) naming it. The

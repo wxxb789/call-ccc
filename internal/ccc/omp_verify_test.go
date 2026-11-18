@@ -134,6 +134,26 @@ func TestOMPLoaderCwdRefusesARecordedDirectoryThisHostDoesNotHave(t *testing.T) 
 			t.Errorf("error = %q, want it to quote the harness's own refusal (%q)", err, want)
 		}
 	}
+
+	// A directory whose own name ends with a space: trimming the recorded value before the stat would ask
+	// this host about a *different* directory than the session recorded, so a correctly installed session
+	// would be reported as one whose directory this host does not have, and a run that did start would
+	// start from a directory the session never named. The writer, the installation directory, the session
+	// header and the printed resume command all keep that spelling, so the check that stats and runs in
+	// the recorded directory must keep it too. The directory is created here rather than assumed: a
+	// platform whose filesystem cannot hold the trailing space cannot express the case, and it says so
+	// instead of passing on a directory it did not create.
+	spaced := filepath.Join(t.TempDir(), "project ")
+	if err := os.Mkdir(spaced, 0o755); err != nil {
+		t.Skipf("this host cannot create a directory whose name ends with a space: %v", err)
+	}
+	if info, err := os.Stat(spaced); err != nil || !info.IsDir() {
+		t.Skipf("this host does not keep a directory name's trailing space (%v, %v)", info, err)
+	}
+	if cwd, err := ompLoaderCwd(scratch, spaced); err != nil || cwd != spaced {
+		t.Errorf("ompLoaderCwd(%q) = (%q, %v), want the recorded directory, trailing space and all",
+			spaced, cwd, err)
+	}
 }
 
 // TestOMPSessionBindingReadsTheBindingThenTheMessages pins where the load check reads the provider and

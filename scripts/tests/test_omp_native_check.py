@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Regression tests for the checks in scripts/omp-native-check.py that need no OMP binary.
 
-Five subjects, all driven in-process with the shipped module imported by path, no subprocess and no tool
+The subjects, all driven in-process with the shipped module imported by path, no subprocess and no tool
 on ``PATH``: the project directory OMP files a session under (``omp_project_dir``, the rule
 ``internal/ccc/omp_target.go`` computes and this harness re-derives), the seeding of the run's own data
-directory from the host's own OMP home (``seed_omp_home`` -- which providers survive and what their
-``apiKey`` becomes), the reading of a written session's own bytes (the assistant ``model``/``provider``
-pair OMP's request builder indexes, the fixed-width first line, and the roles the loader builds from the
-file's own ``parentId`` walk), the printed resume line read the way a POSIX shell reads it
-(``ReportedInvocationCases`` -- OMP's line names both the data directory and the session directory inside
-it), and the ``INCOMPLETE`` verdict a run reports when the OMP binary is not installed (``main`` driven
-with an absent binary).
+directory from the host's own OMP home (``seed_omp_home`` -- which providers survive, what their
+``apiKey`` becomes, and the key spellings the read must treat as the same field), the model role one
+home's ``config.yml`` names (``configured_default_role``, in both the block and the flow spelling), the
+answers that decide whether a requested real turn can run (``requested_turn_model`` and the failed check
+an unattempted turn records), the reading of a written session's own bytes (the assistant
+``model``/``provider`` pair OMP's request builder indexes, the fixed-width first line, and the roles the
+loader builds from the file's own ``parentId`` walk), the printed resume line read the way a POSIX shell
+reads it (``ReportedInvocationCases`` -- OMP's line names both the data directory and the session
+directory inside it), and the ``INCOMPLETE`` verdict a run reports when the OMP binary is not installed
+(``main`` driven with an absent binary).
 
 The spelling is the subject the whole route turns on, and it is **not** Pi's: measured on OMP 18.18.7, a
 working directory under the OS temporary directory spells ``-tmp`` + its relative path (that branch wins
@@ -24,7 +27,12 @@ The seeding cases are about a policy rather than a shape: OMP demands a literal 
 (measured: without one it refuses to start at all, and ``$VAR``/``${VAR}`` in ``apiKey`` is **not**
 expanded), so a run that wants a turn has to write *something*. What it writes is a placeholder it
 invents, for a **loopback** endpoint only, with the host's own credential-bearing values dropped -- and
-the case asserts the dropped values are not on disk, which is the property a future edit could break.
+the case asserts the dropped values are not on disk, which is the property a future edit could break. The
+policy is about the *field*, not about a prefix: a quoted key (``"apiKey"``) and a key spelled with
+whitespace before its colon (``apiKey :``) are the same field to any YAML reader, and a key at another
+casing (``ApiKey``) is treated the same way on purpose, so each of them must be replaced or dropped too,
+and a key form this seeder's reader cannot decode (YAML's explicit ``? key``, a quoted key it cannot
+unquote) leaves the whole definition out rather than copy a key the seeder did not read.
 
 Nothing here needs a model, a network, or the harness: the cases drive the shipped module in-process, the
 way ``scripts/tests/test_pi_native_check.py`` drives its script.
@@ -391,6 +399,222 @@ providers:
             # which the conversion reports rather than hiding (OMP's own measured behaviour).
             self.assertFalse((home / "models.yml").exists())
             self.assertNotIn("default", (home / "config.yml").read_text(encoding="utf-8"))
+
+    def test_quoted_and_spaced_key_spellings_name_the_same_fields(self):
+        # A key is read as YAML spells it, not by a literal prefix: a quoted key and a key spelled with
+        # whitespace before its colon are the same field to any YAML reader, and a key at another casing is
+        # treated as the field on purpose (the conservative read). A seeder that recognized only `apiKey:`
+        # would copy the quoted credential and the spaced header block -- values and all -- into the scratch
+        # home, the loader home and a --keep tree, which is exactly what the no-credential-copy contract
+        # forbids. The canonical spelling is in the same file, so the case also pins that the semantic read
+        # did not stop recognizing it.
+        double_secret = "sk-double-quoted-key-that-must-not-be-written"
+        single_secret = "sk-single-quoted-key-that-must-not-be-written"
+        spaced_secret = "sk-spaced-key-that-must-not-be-written"
+        canonical_secret = "sk-canonical-key-that-must-not-be-written"
+        quoted_header = "Bearer a-quoted-header-value-that-must-not-be-written"
+        spaced_header = "Bearer a-spaced-header-value-that-must-not-be-written"
+        with tempfile.TemporaryDirectory() as scratch:
+            host = Path(scratch) / "host"
+            home = Path(scratch) / "home"
+            host.mkdir()
+            home.mkdir()
+            (host / "models.yml").write_text(f"""\
+providers:
+  double-quoted-key:
+    "baseUrl": http://127.0.0.1:4141/v1
+    api: openai-responses
+    "apiKey": {double_secret}
+    "headers":
+      Authorization: {quoted_header}
+    models:
+    - id: double-model
+  single-quoted-key:
+    'baseUrl' : http://127.0.0.1:4142/v1
+    api: openai-responses
+    'apiKey' : {single_secret}
+    models:
+    - id: single-model
+  spaced-and-cased-key:
+    baseUrl : http://127.0.0.1:4143/v1
+    api: openai-responses
+    ApiKey: {spaced_secret}
+    HEADERS:
+      Authorization: {spaced_header}
+    models:
+    - id: spaced-model
+  canonical-key:
+    baseUrl: http://127.0.0.1:4144/v1
+    api: openai-responses
+    apiKey: {canonical_secret}
+    headers:
+      Authorization: {quoted_header}
+    models:
+    - id: canonical-model
+""", encoding="utf-8")
+            seeded, left_out, role = self.seed(home, host)
+            self.assertEqual(
+                seeded,
+                ["canonical-key", "double-quoted-key", "single-quoted-key", "spaced-and-cased-key"],
+                f"left out: {left_out}")
+            self.assertEqual(role, "double-quoted-key/double-model")
+            written = (home / "models.yml").read_text(encoding="utf-8")
+            for value in (double_secret, single_secret, spaced_secret, canonical_secret, quoted_header,
+                          spaced_header):
+                self.assertNotIn(value, written, "a credential value was written into a data directory")
+            self.assertNotIn("headers", written.lower())
+            self.assertEqual(written.count(NATIVE_CHECK.SANDBOX_KEY), 4,
+                             "every spelling of the field must keep the one-line placeholder")
+            for name in ("double-quoted-key", "single-quoted-key", "spaced-and-cased-key",
+                         "canonical-key"):
+                self.assertIn(name, written)
+            # The endpoint a quoted `baseUrl` names is read too: every provider above is loopback, so a
+            # reader that missed a quoted endpoint key would have left that provider out whole.
+            self.assertNotIn("canonical-key (it names no baseUrl)", left_out)
+
+    def test_a_key_form_the_reader_cannot_decode_is_refused_whole(self):
+        # YAML's explicit `? key` form and a quoted key whose escapes this seeder's reader cannot unquote
+        # are keys the harness's own YAML reader *can* read -- so a definition carrying either must not be
+        # copied at all: a copy would carry a key the seeder did not read, and a `headers`/`apiKey` spelled
+        # that way would reach the scratch home, the loader home and a --keep tree unscrubbed. The provider
+        # whose line opens with a quote that never closes on its own line is the same answer for the same
+        # reason. The canonical provider in the same file must still be seeded, so the refusal is about the
+        # definition that carries the form, not about the file.
+        explicit_secret = "Bearer an-explicit-key-header-that-must-not-be-written"
+        escaped_secret = "Bearer an-escaped-key-header-that-must-not-be-written"
+        split_secret = "Bearer a-split-key-header-that-must-not-be-written"
+        with tempfile.TemporaryDirectory() as scratch:
+            host = Path(scratch) / "host"
+            home = Path(scratch) / "home"
+            host.mkdir()
+            home.mkdir()
+            (host / "models.yml").write_text(f"""\
+providers:
+  explicit-key:
+    baseUrl: http://127.0.0.1:4141/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    ? headers
+    : {{Authorization: {explicit_secret}}}
+    models:
+    - id: explicit-model
+  escaped-key:
+    baseUrl: http://127.0.0.1:4142/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    "\\x68eaders": {{Authorization: {escaped_secret}}}
+    models:
+    - id: escaped-model
+  split-quoted-key:
+    baseUrl: http://127.0.0.1:4143/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    "head
+    ers": {{Authorization: {split_secret}}}
+    models:
+    - id: split-model
+  canonical-key:
+    baseUrl: http://127.0.0.1:4144/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    models:
+    - id: canonical-model
+""", encoding="utf-8")
+            seeded, left_out, role = self.seed(home, host)
+            self.assertEqual(seeded, ["canonical-key"], f"left out: {left_out}")
+            self.assertEqual(role, "canonical-key/canonical-model")
+            for name in ("explicit-key", "escaped-key", "split-quoted-key"):
+                self.assertTrue(any(reason.startswith(name) for reason in left_out),
+                                f"{name} is not named among {left_out}")
+            written = (home / "models.yml").read_text(encoding="utf-8")
+            for value in (explicit_secret, escaped_secret, split_secret):
+                self.assertNotIn(value, written, "a credential value was written into a data directory")
+            for name in ("explicit-key", "escaped-key", "split-quoted-key"):
+                self.assertNotIn(name, written, "a refused provider's definition was copied")
+            self.assertIn(f"apiKey: {NATIVE_CHECK.SANDBOX_KEY}", written)
+
+
+class DefaultRoleCases(unittest.TestCase):
+    """The role `configured_default_role` reads out of one home's own `config.yml`.
+
+    A caller's home is *read* to decide whether a real turn is possible, so a valid spelling this read
+    misses would say the home names no model while the harness resolves one: the harness answers
+    authoritatively (the report's own probe), but the reading must not be wrong about a spelling its own
+    YAML writer produces. The field names are read semantically like the seeder's, so a quoted key or
+    whitespace before a colon names the same field.
+    """
+
+    def role(self, text: str) -> str:
+        with tempfile.TemporaryDirectory() as scratch:
+            home = Path(scratch)
+            (home / "config.yml").write_text(text, encoding="utf-8")
+            return NATIVE_CHECK.configured_default_role(home)
+
+    def test_the_block_mapping_is_read(self):
+        self.assertEqual(self.role("modelRoles:\n  default: proxy/model\n"), "proxy/model")
+
+    def test_the_flow_mapping_is_read(self):
+        # The finding's own spelling: a home whose config.yml is one flow mapping resolves a model like
+        # any other, so the read must answer it rather than fall back to "the home names none".
+        self.assertEqual(self.role("modelRoles: {default: proxy/model}\n"), "proxy/model")
+
+    def test_a_flow_mapping_beside_other_roles_and_quoting_is_read(self):
+        self.assertEqual(
+            self.role('modelRoles: { smol: other/small, "default": "proxy/model" }\n'),
+            "proxy/model")
+
+    def test_quoted_and_spaced_keys_name_the_same_fields(self):
+        self.assertEqual(self.role('"modelRoles" :\n  "default" : proxy/model\n'), 'proxy/model')
+
+    def test_a_spelling_the_reader_cannot_follow_answers_nothing(self):
+        # Never a guess: an answer this read cannot make is "", and the harness's own get_state answer,
+        # which the conversion probes and reports, is what decides whether a turn can run.
+        self.assertEqual(self.role("modelRoles: [a, b]\n"), "")
+        self.assertEqual(self.role("modelRoles: {smol: other/small}\n"), "")
+        self.assertEqual(self.role('modelRoles: {default: "proxy/model}\n'), "")
+
+
+class RequestedTurnCases(unittest.TestCase):
+    """Whether a requested real turn can run, and what a run records when it cannot.
+
+    `--resume-prompt` is a request for one real turn through the harness: a run that answers it with a
+    verdict must have attempted the turn, and a turn that could not be attempted is a failed check, never
+    a pass. The model that decides it comes from three answers, and the harness's own get_state answer --
+    read out of the conversion's report, where the probe's detail names it -- outranks this run's textual
+    reading of a caller's home.
+    """
+
+    def test_the_harnesss_own_answer_outranks_an_unreadable_configuration(self):
+        target = {"model_provider": "proxy", "model": "model-one"}
+        self.assertEqual(NATIVE_CHECK.resolved_report_model(target), "proxy/model-one")
+        # The reader answered "" for this home (a spelling it could not follow): the turn must still run.
+        self.assertEqual(NATIVE_CHECK.requested_turn_model("", "", target), "proxy/model-one")
+
+    def test_a_half_answer_is_no_answer(self):
+        self.assertEqual(NATIVE_CHECK.resolved_report_model({"model_provider": "proxy"}), "")
+        self.assertEqual(NATIVE_CHECK.resolved_report_model({"model": "model-one"}), "")
+        self.assertEqual(NATIVE_CHECK.requested_turn_model("", "", {}), "")
+
+    def test_the_seeded_and_read_roles_are_answers_too(self):
+        self.assertEqual(NATIVE_CHECK.requested_turn_model("proxy/model-one", "", {}), "proxy/model-one")
+        self.assertEqual(NATIVE_CHECK.requested_turn_model("", "proxy/model-two", {}), "proxy/model-two")
+
+    def test_an_unattempted_turn_is_a_failed_check_not_a_pass(self):
+        saved = list(NATIVE_CHECK.RESULTS)
+        self.addCleanup(NATIVE_CHECK.RESULTS.__setitem__, slice(None), saved)
+        NATIVE_CHECK.RESULTS.clear()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            NATIVE_CHECK.record_unavailable_requested_turn("EXPECTED")
+        self.assertEqual([state for _, state, _ in NATIVE_CHECK.RESULTS], ["FAIL"],
+                         "an unattempted requested turn must not be recorded as a skip a verdict ignores")
+        self.assertIn("not attempted", output.getvalue())
+        self.assertIn("--expect 'EXPECTED' was left unchecked", output.getvalue())
+        verdict_output = io.StringIO()
+        with contextlib.redirect_stdout(verdict_output):
+            code = NATIVE_CHECK.verdict("")
+        self.assertEqual(code, 1, "a run with an unattempted requested turn must not exit 0")
+        self.assertIn("RESULT: FAIL", verdict_output.getvalue())
 
 
 class SessionBytesCases(unittest.TestCase):

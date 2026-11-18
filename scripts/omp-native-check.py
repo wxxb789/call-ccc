@@ -30,7 +30,11 @@ What it does, for the direction it is asked about:
    **printed** invocation's own words with the report's ``resume_environment`` itself, while for the
    Claude Code target the conversion CLI's own resume check (``--verify resume``) runs the turn the
    printed exec form spells and this run reads its state and the answer out of the report -- a requested
-   turn that does not verify fails the run either way;
+   turn that does not verify fails the run either way. Whether the OMP turn can run at all is decided by
+   the model the run's own data directory selects *and* by the harness's own ``get_state`` answer the
+   conversion probed, so a caller's home whose configuration this run's textual reader cannot follow
+   still drives a turn; a requested turn the run cannot attempt is recorded as a failed check, never a
+   pass and never an unremarked skip;
 7. re-digests the source tree, the planted session and every session the home held, so "nothing else
    moved" is a measurement rather than a claim.
 
@@ -38,11 +42,18 @@ The OMP data directory this run makes for itself is seeded from the host's own O
 (``$PI_CODING_AGENT_DIR``, else ``~/.omp/agent``) as a **source of provider definitions only**. Every
 provider whose ``baseUrl`` is loopback (``localhost``, ``127.0.0.1``, ``::1``) is copied with its ``api``,
 its model entries and its other non-credential fields, with the value of its ``apiKey`` replaced by a
-placeholder this run invents and any ``headers`` it carries dropped; a provider whose endpoint is not
-loopback, or any of whose endpoint-bearing lines carries a credential -- its own ``baseUrl``, or one a
-model entry writes, which is a level OMP's own writer uses (``_first_field``) -- is left out whole,
-because OMP demands a literal key and this run writes no credential into a file (measured: without a key
-it refuses to start at all, and ``$VAR``/``${VAR}`` in ``apiKey`` is **not** expanded).
+placeholder this run invents and any ``headers`` it carries dropped -- each of those read the way YAML
+itself spells a key rather than by a literal prefix, so a quoted key (``"apiKey"``) and a key with
+whitespace before its colon (``headers :``) cannot carry a value past the replacement, and a key at
+another casing is rewritten or dropped too (the conservative read: a value under a spelling some reader
+might fold to the field must not pass unscrubbed); a provider whose endpoint is not loopback, or any of
+whose endpoint-bearing lines carries a credential -- its own ``baseUrl``, or one a model entry writes,
+which is a level OMP's own writer uses (``_first_field``) -- is left out whole, because OMP demands a
+literal key and this run writes no credential into a file (measured: without a key it refuses to start at
+all, and ``$VAR``/``${VAR}`` in ``apiKey`` is **not** expanded). A definition holding a key form this
+run's reader cannot decode -- YAML's explicit ``? key``, a quoted key that does not close on its own line
+or whose escapes cannot be unquoted -- is left out whole too, with that reason in the run's own output,
+rather than copied with a key the seeder did not read.
 ``modelRoles.default`` is ``--model`` when the host's own home defines its provider (or
 ``--provider-base-url`` defined it), else that home's own configured default when its provider survived,
 else the first surviving provider's first model, else nothing (and the report says so, because a home
@@ -151,6 +162,13 @@ LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
 #: left out whole instead -- the policy `scripts/pi-native-check.py` applies to `baseUrl`.
 SEEDED_KEY_FIELD = "apiKey"
 SEEDED_DROPPED_FIELDS = ("headers",)
+
+#: The same names in the form a key is compared in. A key at another casing (`ApiKey`, `HEADERS`) is
+#: rewritten or dropped too, and that is deliberate rather than a claim about the harness's own reader:
+#: what a reader that folded a field's case would read as the field must not pass unscrubbed, and dropping
+#: or replacing a value the harness would have ignored costs nothing.
+_SEEDED_KEY_FIELD_LOWER = SEEDED_KEY_FIELD.lower()
+_SEEDED_DROPPED_FIELDS = tuple(field.lower() for field in SEEDED_DROPPED_FIELDS)
 
 #: The names the loader arm takes out of the environment before it starts the harness: the variables that
 #: can point a run at a model or carry model credentials. They mirror `internal/ccc/omp_verify.go`'s
@@ -281,6 +299,84 @@ def _scalar(text: str) -> str:
     return value
 
 
+class _UnseedableBlock(Exception):
+    """One provider definition holds a line this reader will not guess at, with the reason it names.
+
+    Raised for a key YAML itself could read and this seeder's textual reader cannot: YAML's explicit
+    ``? key`` form, or a quoted key that does not close on its own line or whose escapes this reader
+    cannot unquote. A definition carrying one is left out of the seed whole, with this reason in the run's
+    own output, because copying a key the seeder did not read is exactly how a credential-bearing
+    ``headers``/``apiKey`` spelling would reach the scratch home, the loader home and a ``--keep`` tree
+    unscrubbed.
+    """
+
+
+#: One quoted scalar as YAML opens it: the double-quoted form (JSON's own escapes) or the single-quoted
+#: one (where a doubled quote is the escaped quote). Used to read a quoted *key*; a token this pattern
+#: cannot close is refused rather than read.
+_QUOTED_SCALAR = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'(?:[^']|'')*'")
+
+
+def _mapping_entry(line: str) -> tuple[str, str, int] | None:
+    """One line that opens a YAML mapping entry as ``(key, value, colon)``: the key's own text, the text
+    after the colon that closes it, and that colon's index in `line`.
+
+    The seeder's credential policy rests on reading a key the way YAML itself spells it rather than by a
+    literal prefix: a key may be quoted (``"headers"``), whitespace may stand between it and its colon
+    (``headers :``), and each of those spellings is the same field to any YAML reader. Entries are read at
+    any depth and after a sequence marker, because ``headers`` and ``apiKey`` are fields a model entry may
+    carry as well (Pi, the sibling harness whose schema OMP shares, documents header values at every
+    level). A colon at the end of the line or before whitespace is what YAML itself ends a plain key at,
+    so the read follows the same rule -- and a ``key:value`` with no space is no entry at all, exactly as
+    YAML reads it (an implicit key of the whole scalar, not a field). Callers compare the returned key
+    case-insensitively, which is the conservative direction: a value under a case-variant spelling must not
+    pass unscrubbed.
+
+    Returns None for a line that opens no entry -- a value or content line, a comment, a sequence of plain
+    scalars -- and raises `_UnseedableBlock` for a line whose own start says it opens an entry in a form
+    this reader cannot decode.
+    """
+    offset = len(line) - len(line.lstrip(" \t"))
+    rest = line[offset:]
+    if rest[:1] == "-" and rest[1:2] in ("", " ", "\t"):
+        step = 1 if rest[1:2] == "" else 2
+        offset += step
+        rest = rest[step:]
+        leading = len(rest) - len(rest.lstrip(" \t"))
+        offset += leading
+        rest = rest[leading:]
+    if not rest or rest.startswith("#"):
+        return None
+    if rest[:1] == "?" and rest[1:2] in ("", " ", "\t"):
+        raise _UnseedableBlock(
+            "it spells a key with YAML's explicit `?` form, which this seeder's reader cannot follow")
+    if rest[:1] in "\"'":
+        token = _QUOTED_SCALAR.match(rest)
+        if token is None:
+            raise _UnseedableBlock(
+                "it opens a quoted key that does not close on its own line, so this seeder's reader "
+                "cannot tell a key from a value")
+        after = rest[token.end():]
+        separator = re.match(r"[ \t]*:", after)
+        if separator is None:
+            # A quoted scalar that opens no entry: a quoted value or block-scalar content line.
+            return None
+        quoted = token.group(0)
+        try:
+            key = json.loads(quoted) if quoted[0] == '"' else quoted[1:-1].replace("''", "'")
+        except json.JSONDecodeError:
+            raise _UnseedableBlock(
+                "it spells a quoted key with escapes this seeder's reader cannot decode")
+        return key, after[separator.end():], offset + token.end() + separator.end() - 1
+    for index, character in enumerate(rest):
+        if character == ":" and (index + 1 == len(rest) or rest[index + 1] in " \t"):
+            key = rest[:index].strip()
+            if not key:
+                return None
+            return key, rest[index + 1:], offset + index
+    return None
+
+
 def provider_blocks(text: str) -> dict[str, list[str]]:
     """The provider definitions inside one OMP ``models.yml``, keyed by name, as their own lines.
 
@@ -327,20 +423,24 @@ def provider_blocks(text: str) -> dict[str, list[str]]:
 
 
 def _first_field(lines: list[str], key: str) -> str:
-    """The value of the first `key:` line inside one provider block, or "".
+    """The value of the first `key` entry inside one provider block, or "".
 
     The *first* one is the provider's own: a definition writes its own fields before the model entries
-    that may carry the same key (``baseUrl`` is one OMP writes at both levels).
+    that may carry the same key (``baseUrl`` is one OMP writes at both levels). The key is read the way
+    every other key this seeder reads is read (`_mapping_entry`): quoted, spaced or at another casing,
+    it names the same field.
     """
+    wanted = key.strip().lower()
     for line in lines:
-        stripped = line.strip()
-        if stripped.startswith(f"{key}:"):
-            return _scalar(stripped[len(key) + 1:])
+        entry = _mapping_entry(line)
+        if entry is not None and entry[0].strip().lower() == wanted:
+            return _scalar(entry[1])
     return ""
 
 
 def _model_ids(lines: list[str]) -> list[str]:
-    """Every model id one provider block lists, in order."""
+    """Every model id one provider block lists, in order, read from the entries that open with a
+    sequence marker (`- id: …`, the shape OMP's own writer produces)."""
     ids: list[str] = []
     in_models = False
     models_indent = 0
@@ -349,16 +449,18 @@ def _model_ids(lines: list[str]) -> list[str]:
         if not stripped:
             continue
         indent = len(line) - len(line.lstrip(" "))
+        entry = _mapping_entry(line)
         if not in_models:
-            if stripped.rstrip(":") == "models":
+            if (entry is not None and entry[0].strip().lower() == "models"
+                    and not entry[1].strip()):
                 in_models = True
                 models_indent = indent
             continue
         if indent <= models_indent and not stripped.startswith("-"):
             break
-        match = re.match(r"^-\s+id:\s*(.+)$", stripped)
-        if match:
-            ids.append(_scalar(match.group(1)))
+        if (stripped.startswith("-") and entry is not None
+                and entry[0].strip().lower() == "id"):
+            ids.append(_scalar(entry[1]))
     return ids
 
 
@@ -380,19 +482,22 @@ def block_has_credential_endpoint(lines: list[str]) -> bool:
     rather than by a fixed set of paths: a model entry may write its own ``baseUrl`` (OMP's own writer
     does -- ``_first_field``), so a filter that looked only at the provider's own line would copy such a
     URL verbatim into the scratch home, the loader home and a ``--keep`` tree, and a credential hides in
-    an endpoint URL as userinfo, a query or a fragment (``credential_free_url``). The reason this run
-    records names the provider, never the line: the line is where the credential is.
+    an endpoint URL as userinfo, a query or a fragment (``credential_free_url``). The field name is read
+    the way every other key this seeder reads is read (`_mapping_entry`), so a quoted or spaced spelling
+    is the same field here too. The reason this run records names the provider, never the line: the line
+    is where the credential is.
     """
     for line in lines:
-        stripped = line.strip()
-        match = re.match(r"^(?:-\s+)?baseUrl\s*:\s*(.*)$", stripped)
-        if match and not credential_free_url(_scalar(match.group(1))):
+        entry = _mapping_entry(line)
+        if entry is None:
+            continue
+        if entry[0].strip().lower() == "baseurl" and not credential_free_url(_scalar(entry[1])):
             return True
     return False
 
 
 def _seed_block(lines: list[str], placeholder: str) -> list[str]:
-    """One provider block with apiKey's *value* replaced by the placeholder and every `headers` line and
+    """One provider block with apiKey's *value* replaced by the placeholder and every `headers` entry and
     its sub-block dropped. The field itself is never removed: OMP refuses to start without a key.
 
     The *whole* value is replaced, not only the line it opens with: a value may be a block scalar
@@ -400,6 +505,13 @@ def _seed_block(lines: list[str], placeholder: str) -> list[str]:
     and would otherwise be copied -- the credential among them -- into the scratch home, the loader home
     and a ``--keep`` tree. So the replacement also drops every line deeper than the field until the next
     line the block itself owns, exactly as a dropped ``headers`` sub-block is dropped.
+
+    Every key is read through `_mapping_entry` -- the same reader `_first_field` and
+    `block_has_credential_endpoint` use -- and compared case-insensitively, so a quoted key, a key spelled
+    with whitespace before its colon and a key at another casing cannot carry a value past this
+    replacement. A key form that reader cannot decode raises `_UnseedableBlock`, which `seed_omp_home`
+    turns into a named refusal: the definition is left out whole rather than copied with a key this run
+    did not read.
     """
     kept: list[str] = []
     drop_deeper_than: int | None = None
@@ -412,21 +524,24 @@ def _seed_block(lines: list[str], placeholder: str) -> list[str]:
             if not stripped or indent > drop_deeper_than:
                 continue
             drop_deeper_than = None
-        if any(stripped.startswith(f"{field}:") for field in SEEDED_DROPPED_FIELDS):
-            drop_deeper_than = indent
-            continue
-        if stripped.startswith(f"{SEEDED_KEY_FIELD}:"):
-            kept.append(" " * indent + f"{SEEDED_KEY_FIELD}: {placeholder}")
-            replaced = True
-            # Any line deeper than this field is a continuation of its value -- a block scalar's own
-            # lines, a folded or quoted scalar continued, a plain scalar's continuation -- never a field
-            # of the block, so dropping to the next line at this indent or shallower removes the original
-            # value whole.
-            drop_deeper_than = indent
-            continue
+        entry = _mapping_entry(line)
+        if entry is not None:
+            key, _value, colon = entry
+            name = key.strip().lower()
+            if name in _SEEDED_DROPPED_FIELDS:
+                drop_deeper_than = indent
+                continue
+            if name == _SEEDED_KEY_FIELD_LOWER:
+                kept.append(line[:colon + 1] + f" {placeholder}")
+                replaced = True
+                # Any line deeper than this field is a continuation of its value -- a block scalar's own
+                # lines, a folded or quoted scalar continued, a plain scalar's continuation -- never a field
+                # of the block, so dropping to the next line at this indent or shallower removes the original
+                # value whole.
+                drop_deeper_than = indent
+                continue
         kept.append(line)
-        if insert_at is None and any(stripped.startswith(f"{key}:")
-                                     for key in ("baseUrl", "api")):
+        if insert_at is None and entry is not None and entry[0].strip().lower() in ("baseurl", "api"):
             insert_at = len(kept)
     if not replaced:
         position = insert_at if insert_at is not None else 1
@@ -452,12 +567,49 @@ def _generated_block(name: str, base_url: str, model_id: str) -> list[str]:
     ]
 
 
+#: The `default` entry of a flow-mapping spelling of `modelRoles`: an entry after the opening brace or a
+#: comma, with the key quoted or bare. Its value is a scalar (a `provider/model` string), so the read
+#: below stops at the first comma or closing brace rather than parsing the flow syntax whole.
+_FLOW_DEFAULT = re.compile(r"(?:^|[,{]\s*)[\"']?default[\"']?\s*:")
+
+
+def _flow_role(text: str) -> str:
+    """The value of the `default` entry inside one flow-mapping spelling of `modelRoles`, or "".
+
+    `modelRoles: {default: provider/model}` is a spelling OMP's own YAML reader accepts and this run's
+    textual reader must read too: a home whose configuration is written that way resolves a model like
+    any other, so a reader that answered "" for it would say the home names none. A spelling this read
+    cannot follow answers "" -- never a guess -- and the harness's own `get_state` answer, which the
+    conversion probes and reports, is what decides a turn then.
+    """
+    match = _FLOW_DEFAULT.search(text)
+    if match is None:
+        return ""
+    rest = text[match.end():].lstrip()
+    if not rest:
+        return ""
+    if rest[:1] in "\"'":
+        token = _QUOTED_SCALAR.match(rest)
+        return _scalar(token.group(0)) if token is not None else ""
+    end = len(rest)
+    for index, character in enumerate(rest):
+        if character in ",}":
+            end = index
+            break
+    return _scalar(rest[:end])
+
+
 def configured_default_role(home: Path) -> str:
     """The `modelRoles.default` one OMP home's own `config.yml` names, or "".
 
     The read is textual and narrow on purpose: it answers only which model role a home selects, so a
     caller's home can be *read* to decide whether a real turn is possible without this run ever parsing
-    (or copying) the rest of their configuration.
+    (or copying) the rest of their configuration. Both spellings a home's own YAML writer produces are
+    read -- the block mapping (``modelRoles:`` then a deeper ``default:``) and the flow mapping
+    (``modelRoles: {default: provider/model}``) -- and the field names are read semantically like the
+    seeder's (`_mapping_entry`), so a quoted key or whitespace before a colon names the same field. A
+    spelling this reader cannot follow answers "" rather than a guess; the harness's own answer, which
+    the conversion reports, is what decides the turn in that case.
     """
     config = home / "config.yml"
     if not config.is_file():
@@ -473,15 +625,21 @@ def configured_default_role(home: Path) -> str:
         if not stripped or stripped.startswith("#"):
             continue
         indent = len(line) - len(line.lstrip(" "))
+        try:
+            entry = _mapping_entry(line)
+        except _UnseedableBlock:
+            return ""
         if not in_roles:
-            if stripped.rstrip(":") == "modelRoles":
+            if entry is not None and entry[0].strip().lower() == "modelroles":
+                if entry[1].strip():
+                    return _flow_role(entry[1])
                 in_roles = True
                 roles_indent = indent
             continue
         if indent <= roles_indent:
             break
-        if stripped.startswith("default:"):
-            return _scalar(stripped[len("default:"):])
+        if entry is not None and entry[0].strip().lower() == "default":
+            return _scalar(entry[1])
     return ""
 
 
@@ -490,11 +648,13 @@ def seed_omp_home(home: Path, host_home: Path, preferred_model: str, provider_ba
 
     Answers the seeded provider names, the ones left out with their reason, and the model role the
     seeded home selects ("" when no provider survived). Every seeded definition is the host's own with
-    one *value* replaced -- never a credential: a `headers` block is dropped whole, an `apiKey`'s value
+    one *value* replaced -- never a credential: a `headers` entry is dropped whole, an `apiKey`'s value
     is the placeholder this run invents, and a provider whose endpoint is not loopback, or any of whose
     endpoint-bearing lines carries a credential -- its own `baseUrl`, or one of its model entries', which
     is a level OMP writes (`_first_field`) -- is not copied at all, because OMP demands a literal key and
-    this run writes none into a file.
+    this run writes none into a file. A definition holding a key form this seeder's reader cannot decode
+    (`_UnseedableBlock`) is left out whole for the same reason: it is refused with the reason named,
+    never copied with a key the seeder did not read.
     """
     seeded: dict[str, list[str]] = {}
     left_out: list[str] = []
@@ -506,21 +666,28 @@ def seed_omp_home(home: Path, host_home: Path, preferred_model: str, provider_ba
         except OSError:
             text = ""
     for name, lines in provider_blocks(text).items():
-        base_url = _first_field(lines, "baseUrl")
-        if not base_url:
-            left_out.append(f"{name} (it names no baseUrl)")
+        try:
+            base_url = _first_field(lines, "baseUrl")
+            if not base_url:
+                left_out.append(f"{name} (it names no baseUrl)")
+                continue
+            if block_has_credential_endpoint(lines):
+                # Every endpoint in the definition, not only the provider's own first line: a model entry's
+                # `baseUrl` would otherwise be copied verbatim, because `_seed_block` rewrites key values and
+                # drops headers, not URLs.
+                left_out.append(f"{name} (an endpoint URL in its definition carries a credential)")
+                continue
+            if not loopback_url(base_url):
+                left_out.append(f"{name} (its endpoint {base_url} is not loopback: this run writes no "
+                                f"credential for a remote endpoint into a file)")
+                continue
+            seeded[name] = _seed_block(lines, SANDBOX_KEY)
+        except _UnseedableBlock as refusal:
+            # A line whose key this seeder's reader cannot decode leaves the whole definition out: copying
+            # it would mean copying a key the seeder did not read, which is how a credential-bearing
+            # spelling would pass unscrubbed. The reason is named in the run's own output.
+            left_out.append(f"{name} ({refusal})")
             continue
-        if block_has_credential_endpoint(lines):
-            # Every endpoint in the definition, not only the provider's own first line: a model entry's
-            # `baseUrl` would otherwise be copied verbatim, because `_seed_block` rewrites key values and
-            # drops headers, not URLs.
-            left_out.append(f"{name} (an endpoint URL in its definition carries a credential)")
-            continue
-        if not loopback_url(base_url):
-            left_out.append(f"{name} (its endpoint {base_url} is not loopback: this run writes no "
-                            f"credential for a remote endpoint into a file)")
-            continue
-        seeded[name] = _seed_block(lines, SANDBOX_KEY)
 
     caller_provider = preferred_model.partition("/")[0]
     if provider_base_url and caller_provider:
@@ -860,6 +1027,48 @@ def _record_unchanged_evidence(source_root: Path, source_root_before: dict[str, 
     record("every session the home already held is unchanged", not moved, "; ".join(moved[:3]))
 
 
+def resolved_report_model(target: dict) -> str:
+    """The model role the conversion's own probe read out of the harness's own answer, or "".
+
+    The conversion asks the target harness which model a new session of the home it installs into
+    resolves (``ProbeOMPModel``) and reports the answer on ``target_session``. A home whose own
+    configuration this run's textual reader cannot follow still answers there, and the harness's answer is
+    what the printed resume invocation runs under; the route writes both fields together, so an answer is
+    the pair.
+    """
+    provider = str(target.get("model_provider") or "").strip()
+    model = str(target.get("model") or "").strip()
+    return f"{provider}/{model}" if provider and model else ""
+
+
+def requested_turn_model(default_role: str, caller_role: str, target: dict) -> str:
+    """The model role a requested real turn can run under, or "" when there is none.
+
+    Three answers are tried, nearest the harness the turn runs against first: the role this run's own
+    seed wrote into the scratch home, the role its textual read found in a caller's home, and the
+    harness's own ``get_state`` answer the conversion probed and reported. The last outranks a reading: a
+    home whose ``config.yml`` spells its role in a way this run cannot follow is still a home the harness
+    resolves a model in, and this run's empty answer is not evidence that the harness has none.
+    """
+    for candidate in (default_role, caller_role, resolved_report_model(target)):
+        if candidate:
+            return candidate
+    return ""
+
+
+def record_unavailable_requested_turn(expect: str) -> None:
+    """The record a run makes when the turn the caller asked for could not be attempted.
+
+    A requested turn that was not run is a failed check, never a pass and never an unremarked skip: the
+    caller asked this run to verify one real turn through the harness, and a verdict that ignored the
+    omission would report a conversion whose turn was never tried as if it had been.
+    """
+    record("a real turn answered from the installed session and only appended", False,
+           "not attempted: this run's data directory selects no model role and the harness's own answer "
+           "names no model either, so the requested turn has no model to run under"
+           + (f"; --expect {expect!r} was left unchecked" if expect else ""))
+
+
 def _claude_to_omp(args: argparse.Namespace, repo: Path, scratch: Path, workspace: Path,
                    source_root: Path, destination: Path, recorded_cwd: str, source: Path) -> int:
     """Convert a Claude transcript into OMP and verify the installed session with OMP's own loader."""
@@ -899,8 +1108,9 @@ def _claude_to_omp(args: argparse.Namespace, repo: Path, scratch: Path, workspac
     print(f"workspace:   {workspace} -> OMP project dir {spelling}")
     print(f"target home: {home}")
     if named_home:
-        print(f"omp models:  the caller's home is not seeded: its own modelRoles.default is "
-              f"{caller_role or '(none)'}; the conversion installs the session into it")
+        print(f"omp models:  the caller's home is not seeded: this run reads its modelRoles.default as "
+              f"{caller_role or '(none)'}, and the harness's own answer is reported below; the conversion "
+              f"installs the session into it")
     else:
         print(f"omp models:  seeded provider(s) {', '.join(seeded) or '(none)'} from {host_omp_home()}"
               + (f"; left out: {'; '.join(left_out)}" if left_out else "")
@@ -911,13 +1121,13 @@ def _claude_to_omp(args: argparse.Namespace, repo: Path, scratch: Path, workspac
           f"can find what it installs")
     print()
 
-    if named_home:
-        record("the caller's home names a model role its loader can start from", bool(caller_role),
-               f"modelRoles.default: {caller_role}" if caller_role else
-               f"{home / 'config.yml'} names no modelRoles.default, so the harness answers no model for "
-               f"this home and the conversion writes no binding (its own measured behaviour)",
-               skipped=not caller_role)
-    else:
+    # The caller-home record is made after the conversion, where the harness's own answer is known: this
+    # run's textual read of the home's configuration is one answer, and the harness's get_state answer --
+    # which outranks it -- is the other. A record made before the conversion could only restate the
+    # reading, and a reading that missed a valid spelling would then say (with a skip) that the home names
+    # no model while the run's own turn runs under one. The seeded branch keeps its records here: what the
+    # seed wrote is known before anything runs.
+    if not named_home:
         host_home = host_omp_home()
         if seeded:
             seed_detail = (f"seeded {', '.join(seeded)}; modelRoles.default {default_role or '(none)'}; "
@@ -949,6 +1159,17 @@ def _claude_to_omp(args: argparse.Namespace, repo: Path, scratch: Path, workspac
         return read
     document, convert, target, verification, session_id, installed = read
 
+    if named_home:
+        resolved = resolved_report_model(target)
+        answered = resolved or caller_role
+        record("the caller's home names a model role its loader can start from", bool(answered),
+               f"the harness's own get_state answer resolved {resolved}" if resolved else
+               (f"this run reads modelRoles.default as {caller_role}" if caller_role else
+                f"{home / 'config.yml'} names no modelRoles.default this run can read and the harness "
+                f"answered no model for this home, so the conversion writes no binding (its own measured "
+                f"behaviour)"),
+               skipped=not answered)
+
     record("the installed session is filed under this run's own OMP spelling of the workspace",
            installed.parent == home / OMP_SESSIONS_SUBDIR / spelling,
            f"{installed.relative_to(home)}; this run's OMP spelling of {workspace} is {spelling}")
@@ -974,11 +1195,8 @@ def _claude_to_omp(args: argparse.Namespace, repo: Path, scratch: Path, workspac
     _check_omp_invocation(target, workspace, home, omp)
 
     if args.resume_prompt:
-        turn_available = bool(default_role) if not named_home else bool(caller_role)
-        if not turn_available:
-            record("a real turn answered from the installed session and only appended", False,
-                   "not attempted: this run's data directory selects no model role, so a turn has no "
-                   "model to run under", skipped=True)
+        if not requested_turn_model(default_role, caller_role, target):
+            record_unavailable_requested_turn(args.expect)
         else:
             _run_omp_turn(args, target, workspace, installed)
 
