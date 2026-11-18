@@ -1,0 +1,48 @@
+# Obligation citations — goal 0007 (OpenCode target continuation).
+#
+# One row per rule of this increment that a gate-runnable Go test discharges, in the three id spaces the
+# increment's rules come from:
+#   D1–D4   the goal's four `Done when` clauses, in order
+#           (docs/goals/0007-opencode-target-continuation.md);
+#   B1–B3   the goal's three `Bounds` clauses, in order;
+#   O1–O12  the rules of AGENTS.md §"OpenCode is a target whose store only the harness writes", in the
+#           paragraph's own order.
+#
+# scripts/obligation-citations.py is the arbiter: every row's cited test must exist in the named package
+# and run and pass, and the `citations` step is required — a tree that lost this file, or a citation that
+# went stale, fails the gate instead of passing partially. Columns: rule_id, test, package, artifact.
+# Tab-separated; `#` comments and blank lines are ignored; a rule id appears once.
+#
+# Deliberately not covered, with the reason (form-based: a row is one Go test in a package
+# scripts/gate-targets.txt covers, so a rule whose gate evidence is a python case the required `selftest`
+# step runs, or a native harness run, cannot hold one):
+#   O12 — the native check's planting and removal discipline (the id read before planting, only the
+#            check's own leftover removed through the harness's own `session delete`, a failed planting
+#            reconciled as the route reconciles one). Its evidence is the native run
+#            scripts/opencode-native-check.py and the python case
+#            scripts/tests/test_opencode_native_check.py the `selftest` step runs — a native harness run
+#            and a python case, not a Go test.
+# Two evidence halves belong to clauses whose rows hold their Go-test half; they are named here rather
+# than dropped: D1's native load/export/resume arm is that same native run, and D4's "source-side
+# AgentsView parity remains intact" is the gate's required `parity` step (scripts/upstream-parity.py),
+# while its "existing Claude-to-Codex route remains intact" half is a property of the accepted routes'
+# existing suites the gate's `test` step runs, not any single Go test.
+rule_id	test	package	artifact
+D1	TestContinueIntoOpenCodeConvertsInstallsAndReadsBack	./internal/ccc	0007-opencode-target-continuation.md §Done when 1
+D2	TestInstallOpenCodeSessionReconcilesAFailedImport	./internal/ccc	0007-opencode-target-continuation.md §Done when 2
+D3	TestConvertToOpenCodeSessionCarriesTheFixturesEvidence	./internal/ccc	0007-opencode-target-continuation.md §Done when 3
+D4	TestContinueToOpenCodeThroughTheCLI	./cmd/ccc	0007-opencode-target-continuation.md §Done when 4
+B1	TestInstallOpenCodeSessionAsksTheHarnesssOwnImporter	./internal/ccc	0007-opencode-target-continuation.md §Bounds 1
+B2	TestContinueIntoOpenCodeWithoutTheHarnessNamesTheBoundary	./internal/ccc	0007-opencode-target-continuation.md §Bounds 2
+B3	TestVerifyOpenCodeSessionStructureReadsTheStoreBack	./internal/ccc	0007-opencode-target-continuation.md §Bounds 3
+O1	TestInstallOpenCodeSessionAsksTheHarnesssOwnImporter	./internal/ccc	AGENTS.md §OpenCode — the importer-only install
+O2	TestConvertToOpenCodeSessionWritesTheHarnesssOwnDocumentShape	./internal/ccc	AGENTS.md §OpenCode — assistant time.completed
+O3	TestVerifyOpenCodeSessionStructureAcceptsTheImportersOwnReEncoding	./internal/ccc	AGENTS.md §OpenCode — tool state.input
+O4	TestOpenCodeWriterNeverLetsABindingGoUnnamed	./internal/ccc	AGENTS.md §OpenCode — assistant model member
+O5	TestOpenCodeToolPartsCarryTheResultsOwnRecordInstant	./internal/ccc	AGENTS.md §OpenCode — tool part completion instant
+O6	TestVerifyOpenCodeLoadAnswersOnlyForThisSession	./internal/ccc	AGENTS.md §OpenCode — load asks session export
+O7	TestOpenCodePreservesTheRecordedWorkingDirectory	./internal/ccc	AGENTS.md §OpenCode — the session's recorded directory
+O8	TestOpenCodeFactsAskTheHarnesssOwnAgentList	./internal/ccc	AGENTS.md §OpenCode — model binding asked of the harness
+O9	TestContinueIntoOpenCodeConvertsInstallsAndReadsBack	./internal/ccc	AGENTS.md §OpenCode — --standalone placement
+O10	TestOpenCodeResumePinsTheDatabaseItPrints	./internal/ccc	AGENTS.md §OpenCode — data root and OPENCODE_DB
+O11	TestInstallOpenCodeSessionReconcilesAFailedImport	./internal/ccc	AGENTS.md §OpenCode — a failed import reconciled
