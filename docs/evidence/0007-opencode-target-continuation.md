@@ -1717,6 +1717,125 @@ row; the earlier goals are archived and their rows say so. The tenth round also 
 (`internal/ccc/dialogue_provenance.go`, the table and its lookup) and no fixture: the Cline session the new
 case reads is written into the case's own temp root, not committed.
 
+### The eleventh review round's fixes (`48a3778` + working tree), re-measured
+
+The findings file (`review-findings-r11.md`, review head `48a3778`) named two defects, both P2 and both
+dispositions FIX, and its own instruction was again the systematic close-out: every rule the touched
+surface claims leaves the round with a machine-checked pin, one executed mutation per rule. The eight
+mutations below are this round's evidence; the one rule they showed unpinned was given a case of its own
+before the table was made.
+
+- **A block the trace's words stand behind is still not a rendering while the reader's own part shape does
+  not hold it** (`dialogueFromContent`, the new `renderingPart`). The readers that render a trace build the
+  block as one part of the record and join the parts with single line feeds (ZCode's
+  `strings.Join(texts, "\n")`; Cline joins its block to the text it heads with its own two feeds), so a
+  marker pair standing *inside* a part of the record's text is the model's own words -- and the round-9/10
+  rule, which removed every block whose words the trace held, deleted it: measured through the inherited
+  ZCode reader (a temp-root `db/db.sqlite` whose assistant record holds a thinking part and a text part
+  `Before[Thinking]…[/Thinking]After` carrying the same words), the pre-fix rule answered `Before\nAfter`
+  where the record's own text is the text part's bytes, and no target writer could notice, because the
+  items it builds are built after the deletion. A block is removed only where it opens at the content's
+  first byte or just after one feed and closes at its end or just before one (`renderingPart`) — and the
+  scan hands the test a suffix of the content, so a pair abutting a block the scan kept is inside that
+  part, its suffix's own start being a part start only where the content's was. The table of readers the
+  provenance is read from now states the requirement for every entry (`dialogue_provenance.go`). **A part
+  of the trace is rendered once** (`dialogueFromContent`): the words a removal accounts for are spent as it
+  is made, so a block holding words an earlier removal has already accounted for is not another rendering
+  of that part but the record's own text, kept as it stands and reported by nothing as carried.
+- **The OpenCode tool part's caveat counters are committed only where the part was written**
+  (`openCodeConverter.toolPart`). `empty_tool_inputs`'s own detail says an empty object "was written" in
+  the part's input member and `unresolved_tool_outputs`'s that "only results that were written are counted
+  here", and both were counted before the guards that omit a part: a call with no argument object whose
+  result carried a status word with no truthful state (`cancelled`) was reported as carrying a replacement
+  input while `carried.tool_calls` held no part for it, and a result the source's own parse answered as an
+  unresolved placeholder whose text held nothing was reported as carrying that text. Both counters now
+  stand past every omission guard, beside `generated_call_ids` (whose placement the Codex route already
+  pins with its own sentence: "a result this conversion does not write carries no output"), and the new
+  case drives the omitted and the written half of each counter in one conversion.
+
+The rules and their pins. The shared scan's rules are: the reader-provenance gate (a reader that records
+`Content` as written is never rewritten); the renderer's own part shape, each side separately (the opener
+stands just after the feed before it, or at the scan suffix's own part start, and the closer stands at the
+part's end); the block's words belonging to the record's own trace; the spent words (a part is rendered
+once); the readers' own whole-content rule (`thinkingRenderingOnly`); the one join feed per side of a
+removed rendering; and the kept bytes of a block nothing removed continuing one run. Each is reddened by
+its own mutation below; the cases that pin them are the shared table
+(`TestDialogueFromContentKeepsOnlyTheRecordsOwnText`, whose arms are named for the condition they drive),
+the inherited-reader cases, and the target case each rule's row names. The finding's own scenario is the
+new `TestDialogueKeepsALiteralMarkerBlockWhoseWordsTheTraceHolds`, which reads the shape through
+`NewSourceReader` and asserts the record's own text survives into the converted rollout.
+
+The mutations, executed and restored (each file hashed before and after its mutation and quoted with the
+first twelve hex digits — `codex_target.go` `e4d6b0f22afb…`, `opencode_target.go` `9cc5b4dce1f7…`; every
+one of them was back to the quoted bytes after its run):
+
+| Rule | Line disabled | Observed (the case that reddened) |
+| --- | --- | --- |
+| a record whose reader records `Content` as written is never rewritten | `codex_target.go` 1182: `if !message.ContentRendersThinking {` → `if false {` | table arms `a raw-content reader's matching block is the record's own text` and `… beside text is the record's own text too`; `TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader/the_trace_holds_the_block's_words_exactly` |
+| the rendering opens just after a part's own feed | `codex_target.go` 1285: `return content[open-1] == '\n'` → `return true` | table arm `a marker pair opening inside a text part is kept where the part ends with it` |
+| the rendering opens at the scan suffix's own part start | `codex_target.go` 1287: `return startsPart` → `return true` | table arm `a marker pair abutting a kept block's closer stands inside that part` |
+| the rendering closes at a part's own end | `codex_target.go` 1281: `if after != "" && after[0] != '\n' {` → `if false {` | table arm `a marker pair whose closer is not followed by a part feed is kept whole` |
+| the words a removal accounts for are spent | `codex_target.go` 1252: the update disabled | table arm `a block holding words the removals have already accounted for is the record's own text` |
+| a record whose `Content` is nothing but the rendering has no dialogue | `codex_target.go` 1187: `if thinkingRenderingOnly(message) {` → `if false {` | table arms `a rendering the readers' own rule trims beside it is still no dialogue` and `a rendering with only whitespace beside it is still no dialogue (the readers' own rule)` |
+| `empty_tool_inputs` follows the part | `opencode_target.go`: the post-guard count removed, the count standing before the status switch | `TestOpenCodeCaveatCountsFollowThePartThatWasWritten`: `empty_tool_inputs = 2, want 1` |
+| `unresolved_tool_outputs` follows the part | `opencode_target.go`: the post-guard count removed, the count standing before the empty-text guard | `TestOpenCodeCaveatCountsFollowThePartThatWasWritten`: `unresolved_tool_outputs = 3, want 1` |
+
+The table above also showed one *arm's* premise inconsistent with the rules it stands beside: the round-9
+arm `a carried marker block between two removed renderings keeps its own bytes` declared one trace
+occurrence for two renderings, and the spent-words rule refuses to delete a second block as a rendering of
+a part the reader wrote once. Its expectation is unchanged (`"A" + rendering("literal") + "B"`), and its
+trace now holds its words twice — the shape a reader with two such thinking parts produces — so the arm
+pins the kept bytes *and* the spending at once. Nothing was deleted or loosened for the new cases: the
+finding's own scenario gets its own ZCode case rather than an edit to an older one.
+
+The Go suites were re-run on the restored tree (`ok go.kenn.io/agentsview/cmd/ccc`, `ok
+go.kenn.io/agentsview/internal/ccc`, `ok go.kenn.io/agentsview/internal/ccc/parity` with `-tags fts5`), and
+the shared change was re-driven through the native checks this host can run, offline, because every route
+reads its dialogue through the helper the fix changes: `python3 scripts/pi-native-check.py` →
+`RESULT: PASS — 21 check(s), none failed`; `python3 scripts/omp-native-check.py` → `RESULT: PASS — 23
+check(s), none failed`; `python3 scripts/codex-native-check.py` → `26 check(s) passed, 0 failed, 2 skipped`
+(both skips are the real-turn stages, not attempted without their prompt flags). The OpenCode route's own
+check is not run on this host (`opencode: absent`), and its recorded numbers do not move with this fix: no
+recorded run's report held a non-zero `empty_tool_inputs` or `unresolved_tool_outputs`, and the shapes the
+scan's new conditions change are covered by the Go suite's own cases (the fixture-driven conversions'
+category maps are asserted in `continue_test.go` and the target suites, and all of them pass unchanged).
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3621 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 354 tests in 5.760s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 31 project-owned prefix(es); files seen by git: 5702 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 156 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+(The `… | ` at the parity line's front is what the run itself printed, and it is the only cut in the quoted
+line: the line copied here is the run's output whole, from its first byte to its last. The gate ran on this
+round's final working tree — this record included, the block's lines standing there as the previous run had
+printed them, and the two runs' step lines differing only in the selftest step's own duration (the parity
+line, the file counts and every verdict identical, measured by diffing the two runs' outputs) — and after
+the run the block was replaced by the run's own output, which is what stands above.)
+
+
+The narrowed Go suites' own test functions ran 393 before this round and 395 after — the two cases added
+(`TestDialogueKeepsALiteralMarkerBlockWhoseWordsTheTraceHolds`,
+`TestOpenCodeCaveatCountsFollowThePartThatWasWritten`), counted as `^func Test` over the test files git
+lists under `cmd/ccc` and `internal/ccc`; the shared table's new arms are cases of an existing function and
+are not counted. `selftest` ran 354, the count round 10's run ended with: this round changed no Python, no
+gate step and no target list. What else the round moved: `AGENTS.md` (the dialogue bullet now states the
+part shape and the spent words the removal requires, beside the provenance and the trace-words conditions
+it already carried); `docs/plans/0007-opencode-target-continuation.md` (§6.1's eleventh-round paragraph and
+§7's `AGENTS.md` bullet); and this record. `README.md`, `docs/harness.md`, `docs/upstream.md`,
+`docs/decisions/OPEN-QUESTIONS.md` and the carry are untouched: no carried file changes, no new file, no
+fixture, no new native check. No goal file is moved: 0007 is still the increment under review, implemented
+on its branch with its row; the earlier goals are archived and their rows say so.
+
 ## 5. What travels, source side and target side
 
 | Source evidence | Target side, and the run that recorded it |

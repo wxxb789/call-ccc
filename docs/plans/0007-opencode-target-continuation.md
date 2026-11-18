@@ -450,6 +450,29 @@ and the join put a feed between it and the bytes after it, so a record carrying
 `A[Thinking]literal[/Thinking]B` beside a real rendering came out with a line feed inserted before `B`; the
 kept bytes now continue one run, and only a *removed* rendering's own join feeds are dropped.
 
+The eleventh review round closes the removal's own class out: the load-bearing tests for every rule the
+shared scan and the target's caveat accounting state are pinned by executed mutations, recorded in the
+evidence record, and the two defects the round found are fixed. **A block whose words the trace holds is
+still not a rendering unless the reader's own part shape holds it** (`dialogueFromContent`; the new
+`renderingPart`): the readers that render a trace build the block as one of the record's parts, joined with
+single line feeds (ZCode joins its parts with `strings.Join(texts, "\n")`), so a marker pair standing
+*inside* a part of the record's text was written by the model even where its words occur in the trace —
+measured through the inherited ZCode reader (a text part `Before[Thinking]…[/Thinking]After` beside the
+thinking part the rendering comes from): the pre-fix scan removed both and answered `Before\nAfter`, while
+the fixed one keeps the text part's bytes, part for part. **A part of the trace is rendered once**
+(`dialogueFromContent`): the words each removal accounts for are spent as it is made, so a second
+block holding them is the record's own text — kept and reported as such — rather than deleted as another
+rendering of a part the reader wrote once. Each condition has its own case in the shared table (the
+opening side and the closer side of the part shape separately, the standing-inside-a-part shapes, and the
+already-accounted-for block), and the numbered rules' pins are the mutation table the evidence record
+holds. **The OpenCode tool part's caveat counters follow the part that was written**
+(`openCodeConverter.toolPart`): `empty_tool_inputs` (whose detail says an empty object "was written") and
+`unresolved_tool_outputs` (whose detail says "only results that were written are counted here") were
+committed before the guards that omit a part — a call with no argument object and a status word with no
+truthful state was reported as carrying a replacement input, and an unresolved placeholder whose result
+held no text as carrying its text — so both are committed past every omission guard, together with
+`generated_call_ids`, and a case drives the omitted and written halves of each counter in one conversion.
+
 ## 7. Gate, docs, bookkeeping
 
 - Gate: **no new step and no new required step.** New tests live in `internal/ccc` and `cmd/ccc`, which
@@ -460,7 +483,9 @@ kept bytes now continue one run, and only a *removed* rendering's own join feeds
   `XDG_DATA_HOME` spelling, the fresh identity the harness adopts, the content-neutral export the load
   level uses, the required document members); its dialogue bullet now states the provenance the
   rendering removal requires (`Message.ContentRendersThinking`, established by `dialogue_provenance.go`'s
-  `thinkingRenderingReaders`) beside the rule that a block's words must be the record's own trace.
+  `thinkingRenderingReaders`) beside the rule that a block's words must be the record's own trace, the
+  shape the renderer's own part join gives a rendering (`renderingPart`), and the spent words each removal
+  accounts for (a part of the trace is rendered once).
 - `docs/conventions.md`: the layout block gains the three files; the install rule gains OpenCode's
   data-directory rule and the importer; the fixture note records why 0007 adds no fixture directory.
 - `docs/harness.md`: the new script's entry and why it is not a step.

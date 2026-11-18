@@ -70,14 +70,20 @@ with their exit codes and counts).
   each listed reader's construction site in the carried reader is named there, a reader that also projects
   a dialogue is answered by its projection instead, and a reader that records `Content` as the source
   wrote it — Vibe's independent `content` and `reasoning_content` — carries a marker block only as the
-  model's own words, which nothing may drop) and where the record's own trace stands behind the block's
-  words, wherever the reader put it — a reader that keeps the record's part order (ZCode's) renders the
-  trace after the text it followed as readily as before it — so a trace the read answered nothing for and
-  a block no trace of that record holds keep their `Content` byte for byte, while a record whose `Content`
-  is nothing but a rendering of its own trace has no dialogue at all (the readers' own rule for that
-  shape). The trace travels to the target beside that dialogue as the record's reasoning, or is counted
-  where the target has no shape for it; a writer that fell back to the raw `Content` would carry the trace
-  twice — once as reasoning and once as words the source never recorded the agent as saying.
+  model's own words, which nothing may drop), where the record's own trace still holds the block's words,
+  and where the block stands as the reader's own whole part of `Content` — the readers join the parts they
+  render with feeds of their own, so a marker pair standing inside a part of the record's own text is the
+  model's own words too. A part of the trace is rendered once, and the words a removal accounts for are
+  spent as it is made: a block holding words an earlier removal has accounted for is the record's own text
+  as well. What stands: the words are the record's own wherever the reader put them — a reader that keeps
+  the record's part order (ZCode's) renders the trace after the text it followed as readily as before it —
+  so a trace the read answered nothing for, a block no trace of that record holds, a marker pair standing
+  inside a part the record wrote, and a block the trace's renderings have already accounted for keep their
+  `Content` byte for byte, while a record whose `Content` is nothing but a rendering of its own trace has
+  no dialogue at all (the readers' own rule for that shape). The trace travels to the target beside that
+  dialogue as the record's reasoning, or is counted where the target has no shape for it; a writer that
+  fell back to the raw `Content` would carry the trace twice — once as reasoning and once as words the
+  source never recorded the agent as saying.
 - **OpenCode is a target whose store only the harness writes.** A session is a row in
   `<XDG data home>/opencode/opencode.db`, not a file, so `--to opencode` installs **through the harness's
   own importer** (`opencode session import … --directory <the session's recorded directory> --standalone`)

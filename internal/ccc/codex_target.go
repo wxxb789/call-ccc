@@ -1158,16 +1158,22 @@ func dialogueText(message Message) string {
 // the trace after the text it followed as readily as before it -- and what remains is the record's own
 // text.
 //
-// Two things are established before a block is removed, and each of them alone keeps the block as the
-// record's own text. The reader renders the record's trace into Content: a reader that records Content
-// as the source wrote it -- Vibe's content and reasoning_content are independent fields
-// (internal/parser/vibe.go:353-371) -- carries a `[Thinking]…[/Thinking]` block only as text the model
-// itself wrote, whatever the record's trace holds, so such a record is never rewritten here. And the
-// block's own words are part of this record's trace: a record the read answered no trace for has no
-// rendering to recognise -- the trace that would hold the block's words is empty, so nothing matches --
-// and a block such a trace does not hold is text the record carries, which a target must not drop. A
-// record whose Content is nothing but the rendering keeps the readers' own rule for that shape
-// (thinkingRenderingOnly).
+// A block is removed only where it is positively established as the reader's own rendering of this
+// record's trace, and each test alone keeps the block as the record's own text. The reader renders the
+// record's trace into Content: a reader that records Content as the source wrote it -- Vibe's content
+// and reasoning_content are independent fields (internal/parser/vibe.go:353-371) -- carries a
+// `[Thinking]…[/Thinking]` block only as text the model itself wrote, whatever the record's trace
+// holds, so such a record is never rewritten here. The block stands as a whole part of Content, on the
+// renderer's own feeds (renderingPart): the readers that render a trace build the block as one of the
+// record's parts and join the parts with single line feeds, so a marker pair standing inside a part is
+// a pair the record's own text carries -- a model writing the markers itself -- and is kept as it
+// stands. And the block's own words are part of this record's trace: a record the read answered no
+// trace for has no rendering to recognise -- the trace that would hold the block's words is empty, so
+// nothing matches -- and a block such a trace does not hold is text the record carries, which a target
+// must not drop. The words a removal accounts for are spent as it is made (the reader renders each part
+// of the trace at most once), so a block holding words the trace's own renderings have already
+// accounted for is not another rendering of it and is kept too. A record whose Content is nothing but
+// the rendering keeps the readers' own rule for that shape (thinkingRenderingOnly).
 //
 // Bytes the scan keeps are kept byte for byte, and the bytes around a kept block stay one run with it:
 // only the feeds a *removed* rendering stood behind are dropped, so a marker block the record carries
@@ -1184,6 +1190,11 @@ func dialogueFromContent(message Message) string {
 	trace := message.Thinking
 	var pieces []string
 	rest := message.Content
+	// restStartsPart says whether rest's first byte begins a part of the record's own Content: true at
+	// the content's start and after a removed rendering's own feed, and false where the bytes continue
+	// the run a marker block the scan kept stands in -- a marker pair abutting that block's closer is
+	// inside that part, not a part of its own.
+	restStartsPart := true
 	dropped := false
 	// atPartStart reports whether the bytes about to be kept begin a part of their own: the one line
 	// feed the reader's own join put between that part and the part before it then stands in front of
@@ -1207,7 +1218,8 @@ func dialogueFromContent(message Message) string {
 		}
 		inner, after, closed := strings.Cut(rest[open+len(thinkingRenderOpen):], thinkingRenderClose)
 		rendered := strings.TrimSpace(inner)
-		if !closed || rendered == "" || !strings.Contains(trace, rendered) {
+		if !closed || rendered == "" || !strings.Contains(trace, rendered) ||
+			!renderingPart(rest, open, after, restStartsPart) {
 			// Not this record's trace: text the record carries, kept as it stands, and the scan goes on
 			// after it -- a block that *is* the trace can stand behind a marker that is not.
 			end := open + len(thinkingRenderOpen)
@@ -1217,6 +1229,7 @@ func dialogueFromContent(message Message) string {
 			appendRun(rest[:end])
 			rest = rest[end:]
 			atPartStart = false
+			restStartsPart = false
 			continue
 		}
 		// A rendering of this record's own trace. It was one of the reader's own parts, joined to its
@@ -1231,7 +1244,14 @@ func dialogueFromContent(message Message) string {
 		}
 		rest = strings.TrimPrefix(after, "\n")
 		atPartStart = true
+		restStartsPart = true
 		dropped = true
+		// The words this removal accounts for are spent: the reader renders each part of the record's
+		// trace once, so a later block holding them again is not another rendering of the same part -- it
+		// is text the record carries, and the test above keeps it.
+		if at := strings.Index(trace, rendered); at >= 0 {
+			trace = trace[:at] + trace[at+len(rendered):]
+		}
 	}
 	if !dropped {
 		// Nothing was shown to be a rendering: the record's Content is the text, byte for byte.
@@ -1239,6 +1259,32 @@ func dialogueFromContent(message Message) string {
 	}
 	appendRun(rest)
 	return strings.Join(pieces, "")
+}
+
+// renderingPart reports whether a `[Thinking]…[/Thinking]` block stands as a whole part of the content
+// it was found in: the readers that render a trace into Content build the block as one of the record's
+// own parts and join those parts with single line feeds (ZCode joins its parts with
+// `strings.Join(texts, "\n")`; Cline joins its block to the text it heads with its own two feeds), so a
+// rendering opens at the content's first byte or just after one feed, and its closer is followed by the
+// content's end or by a feed. A marker pair that does not stand that way was written inside a part of
+// the record's own text -- a model writing the markers itself, around words the record's trace happens
+// to hold too -- and is kept as the record's text, because the reader's own rendering of a part never
+// stands that way. What is not established here is left alone: a pair that could be either is kept, and
+// the trace travelling beside it beside the record's own words is a duplication a reader can see, while
+// dialogue deleted as though it were a rendering is text no later step can put back.
+//
+// content is the bytes the scan holds now, a suffix of the message's own Content, so startsPart says
+// whether its first byte begins a part there: an opening marker at the suffix's first byte begins a part
+// only where that byte did (the scan hands this a suffix whose start is the message's own, a removed
+// rendering's join feed, or a marker block it kept -- and bytes abutting that block are inside its part).
+func renderingPart(content string, open int, after string, startsPart bool) bool {
+	if after != "" && after[0] != '\n' {
+		return false
+	}
+	if open > 0 {
+		return content[open-1] == '\n'
+	}
+	return startsPart
 }
 
 // thinkingRenderOpen and thinkingRenderClose are the readers' own markers around a rendered reasoning

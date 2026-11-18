@@ -844,6 +844,69 @@ func TestOpenCodeToolPartsCarryOnlyWhatTheImporterAccepts(t *testing.T) {
 	}
 }
 
+// TestOpenCodeCaveatCountsFollowThePartThatWasWritten pins what the two caveat categories' own details
+// state -- `empty_tool_inputs` that an empty object "was written" in the part's input member, and
+// `unresolved_tool_outputs` that "only results that were written are counted here" -- by counting each
+// of them on the writing path and on the paths that omit the part. The conditions are combined as the
+// finding made them: a call with no argument object whose result's status word has no truthful state
+// (the part is left out and the status counted), and an unresolved placeholder whose result holds no
+// text at all (the part is left out for that). Counting either before its guard reported a part the
+// document does not hold (round 11's finding).
+func TestOpenCodeCaveatCountsFollowThePartThatWasWritten(t *testing.T) {
+	at := time.UnixMilli(1_700_000_000_000).UTC()
+	unresolved := func(id, status, content string) ToolResult {
+		return ToolResult{
+			ToolUseID: id, Status: status,
+			ContentRaw: content, ContentSize: len(content), PersistedOutputUnresolved: true,
+		}
+	}
+	conversation := openCodeTestConversation(
+		Message{Role: "assistant", Content: "[Read: x]", Timestamp: at,
+			ToolCalls: []ToolCall{
+				openCodeTestCall("call-noinput-cancelled", "Bash", ""),
+				openCodeTestCall("call-unresolved-cancelled", "Read", `{"file_path":"/a"}`),
+				openCodeTestCall("call-unresolved-empty", "Read", `{"file_path":"/b"}`),
+				openCodeTestCall("call-noinput-ok", "Read", ""),
+				openCodeTestCall("call-unresolved-ok", "Read", `{"file_path":"/c"}`),
+			}},
+		Message{Role: "user", Timestamp: at.Add(time.Second), ToolResults: []ToolResult{
+			openCodeTestResult("call-noinput-cancelled", "cancelled", `"Stop requested"`),
+			unresolved("call-unresolved-cancelled", "cancelled", `"the side file could not be read"`),
+			unresolved("call-unresolved-empty", "completed", ""),
+			openCodeTestResult("call-noinput-ok", "completed", `"ok"`),
+			unresolved("call-unresolved-ok", "completed", `"the side file could not be read"`),
+		}},
+	)
+	session, err := ConvertToOpenCodeSession(conversation, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	parts := openCodeToolParts(t, session)
+	for _, id := range []string{"call-noinput-cancelled", "call-unresolved-cancelled", "call-unresolved-empty"} {
+		if part, ok := parts[id]; ok {
+			t.Errorf("%s part = %+v, want no part: the call has no state here or holds no output text, "+
+				"so the caveat that names its input or its placeholder must not count it as carried", id, part)
+		}
+	}
+	for _, id := range []string{"call-noinput-ok", "call-unresolved-ok"} {
+		if _, ok := parts[id]; !ok {
+			t.Errorf("%s has no part, want the written part its caveat counts", id)
+		}
+	}
+	openCodeRequireLoss(t, session, "tool_result_statuses", 2)
+	openCodeRequireLoss(t, session, "empty_tool_results", 1)
+	openCodeRequireLoss(t, session, "empty_tool_inputs", 1)
+	openCodeRequireLoss(t, session, "unresolved_tool_outputs", 1)
+	if session.Carried.ToolCalls != 2 || session.Carried.ToolResults != 2 {
+		t.Errorf("carried = %+v, want the two calls whose parts were written", session.Carried)
+	}
+	for _, category := range []string{"empty_tool_inputs", "unresolved_tool_outputs"} {
+		if loss := lossCount(t, session.Losses, category); loss.Disposition != DispositionCarriedWithCaveat {
+			t.Errorf("%s = %+v, want the category still reported as carried-with-caveat", category, loss)
+		}
+	}
+}
+
 // openCodeToolParts indexes one converted document's tool parts by the id they carry, so a case can ask
 // what the pairing wrote without re-walking the document's messages itself.
 func openCodeToolParts(t *testing.T, session OpenCodeSession) map[string]openCodePart {

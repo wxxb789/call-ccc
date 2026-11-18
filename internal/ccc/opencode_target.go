@@ -921,9 +921,6 @@ func (c *openCodeConverter) toolPart(call *openCodeCall, floor int64) (openCodeP
 	}
 	text, blocks := resultText(*call.Result)
 	c.lossResultBlocks += blocks
-	if call.Result.PersistedOutputUnresolved {
-		c.lossUnresolved++
-	}
 	if strings.TrimSpace(text) == "" {
 		if text == "" {
 			c.lossEmptyResults++
@@ -933,9 +930,6 @@ func (c *openCodeConverter) toolPart(call *openCodeCall, floor int64) (openCodeP
 		return openCodePart{}, false, nil
 	}
 	input, ok := openCodeInputObject(call.Source.InputJSON)
-	if !ok {
-		c.lossEmptyInputs++
-	}
 	var state *openCodeToolState
 	switch status := strings.ToLower(strings.TrimSpace(call.Result.Status)); status {
 	case "errored", "error", "failed", "failure":
@@ -959,6 +953,16 @@ func (c *openCodeConverter) toolPart(call *openCodeCall, floor int64) (openCodeP
 		// left out and the result counted rather than presented as a completion or a failure.
 		c.lossStatuses++
 		return openCodePart{}, false, nil
+	}
+	// The carried-with-caveat categories are counted here, past every omission guard: a call a guard
+	// above left out carries no input and no result, and counting it as carried -- with the caveat that
+	// its recorded input was replaced by the empty object, or that the text travelled as the source's
+	// own unresolved placeholder -- would claim evidence the document does not hold.
+	if !ok {
+		c.lossEmptyInputs++
+	}
+	if call.Result.PersistedOutputUnresolved {
+		c.lossUnresolved++
 	}
 	if call.generatedID || call.inferredResultID {
 		c.lossGeneratedIDs++
