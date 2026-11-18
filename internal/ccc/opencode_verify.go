@@ -493,17 +493,6 @@ func openCodeGrowthDetail(before, after int, afterErr error) string {
 	return fmt.Sprintf(" (the harness's own reader read %d message(s) before the turn and %d after)", before, after)
 }
 
-// runOpenCodeHarnessTurn runs one harness invocation and returns its stdout and stderr separately, both
-// bounded. The command runs in the named working directory when it exists, because that is where the
-// printed invocation runs it (and a session whose recorded directory this host lacks is answered by the
-// harness's own refusal).
-func runOpenCodeHarnessTurn(
-	ctx context.Context, executable, cwd string, args []string, environment []string,
-	timeout time.Duration, stderr io.Writer,
-) (string, string, error) {
-	return runRouteTurn(ctx, executable, cwd, args, environment, timeout, stderr)
-}
-
 // firstNonEmptyText answers the first of its arguments that holds a non-blank text, so a failure reports
 // whichever stream the harness answered on and falls back to the error itself.
 func firstNonEmptyText(values ...string) string {
@@ -525,11 +514,13 @@ type openCodeHarnessRun func(
 
 // The seams the checks drive the harness through: what each check makes of the harness's own answer is
 // the rule under test, not which build of the harness a host happens to have installed. A case answers
-// the protocol itself and records the environment instead of the case needing the host's harness.
+// the protocol itself and records the environment instead of the case needing the host's harness. This
+// route runs every seam under the shared turn runner's own rule (route_shared.go): it adds no environment
+// of its own, so there is no route-local wrapper between the seams and it.
 var (
-	runOpenCodeTurn           openCodeHarnessRun = runOpenCodeHarnessTurn
-	runOpenCodeResumeTurn     openCodeHarnessRun = runOpenCodeHarnessTurn
-	runOpenCodeAgentsProbe    openCodeHarnessRun = runOpenCodeHarnessTurn
-	runOpenCodeImporter       openCodeHarnessRun = runOpenCodeHarnessTurn
+	runOpenCodeTurn           openCodeHarnessRun = runRouteTurn
+	runOpenCodeResumeTurn     openCodeHarnessRun = runRouteTurn
+	runOpenCodeAgentsProbe    openCodeHarnessRun = runRouteTurn
+	runOpenCodeImporter       openCodeHarnessRun = runRouteTurn
 	resolveOpenCodeExecutable                    = resolveTargetExecutable
 )

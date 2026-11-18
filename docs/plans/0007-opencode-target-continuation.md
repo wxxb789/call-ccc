@@ -86,9 +86,13 @@ Consequences taken as this increment's defaults:
   `{id, providerID, variant}` beside it), written into `info.model` (omitted, with its detail, when the
   harness answered none — a session with no binding resumes under the home's configured default,
   measured) and into every assistant record's `agent`. The *provider* a message's `model` states is the
-  same target-home answer (the read answers the source's model but no endpoint), the message's `id` is
-  the source's own model where the read answered one and the target home's model id where it did not —
-  both counted and described (`message_model_attribution`), never the source's provider.
+  same target-home answer where the harness was asked (the read answers the source's model but no
+  endpoint), the message's `id` is the source's own model where the read answered one and the target
+  home's model id where it did not, and the id is left empty where neither answered — the member is
+  required and its values need not be (measured: an empty id is imported, stored and exported as
+  written). Every record's attribution is counted and described (`message_model_attribution`, and
+  `target_model_id_attribution` for the records the read answered no model for), never the source's
+  provider.
 - **`info.projectID` is written as the empty string**, not a hash this build would have to invent: the
   importer requires the field and overwrites it with the project id its own rule computes for
   `--directory` (measured: the value in the document is ignored).
@@ -132,7 +136,7 @@ counted with the same shape (`Loss{Category, Count, Detail}`), and OpenCode-spec
 | `dialogueText`, `whitespace_only_dialogue`, `reasoning_text`, `generated_call_ids`, `coalesced_tool_call_projections`, `empty_tool_inputs`, `unpaired_tool_results`, `empty_tool_results`, `whitespace_only_tool_results`, `unrepresentable_result_blocks`, `tool_result_statuses`, `unresolved_tool_outputs`, `system_records`, `tool_role_messages`, `unclassified_role_messages`, `empty_assistant_messages`, `empty_user_messages`, `non_dialogue_content`, `sidechain_messages`, `pre_compaction_history`, `empty_compaction_summary`, `unresolved_source_parents` | the family's rules, unchanged in meaning (the source read's own projections, the pairing of results to calls, the empty-evidence counters) | one loss vocabulary for every route |
 | `unpaired_tool_calls` | a call the source recorded with no result at all: **left out** and counted | the importer accepts only `completed`/`error` tool states (measured); writing `pending` is refused, and inventing an error would fabricate a result |
 | `empty_tool_results` | a call whose recorded result text is empty: the call is **left out** and counted | a `completed` state needs a non-empty text (measured); the empty result is a projection, not an instruction to invent |
-| `message_model_attribution` | the provider on every assistant record is the **target home's own** answer, and the model id is the source's where the read answered one, else the target home's | the read answers the source's model but no endpoint; the field cannot be left empty |
+| `message_model_attribution` | the provider on every assistant record is the **target home's own** answer where the harness was asked, and the model id is the source's where the read answered one, else the target home's — and the empty id where neither answered (measured: the member is required, its values need not be), which the report's own detail names | the read answers the source's model but no endpoint; the member cannot be left out, and no model this build cannot name is invented for it |
 | `target_model_binding` | `info.model` written from the harness's own answer (or omitted, with its detail, when it answered none) | a turn runs under this binding; the source's model there would be a claim about the target's endpoint |
 | `target_agent` | every assistant record's `agent` is the target home's own primary agent id (written `build` when the harness answered none: its built-in default agent) | the field is required and the read answers no agent; naming the source's agent would name an agent the target does not have |
 | `usage_zeroed` | `info.cost`/`info.tokens` zeros | the conversation document holds no usage |
@@ -270,8 +274,12 @@ found by the structural read-back rather than by reading the harness:
 
 A third measurement is about the harness's *invocation* rather than its format: `--standalone` placed
 after a `--` terminator leaves the run on the managed background service (measured: the turn answered
-from a store the check's own session was not in), so every invocation this build runs — and the native
-check — names the flag immediately after its subcommand.
+from a store the check's own session was not in), so no invocation this build runs — and none the native
+check runs — leaves the flag past a `--` terminator. The check names it immediately after every
+subcommand; the build carries it last on the subcommands that take no terminator (`session import <file>
+--directory <dir> --standalone`, `session export <id> --standalone`, `debug agents --standalone`) and
+immediately after `run` on the resume turn, whose words follow the terminator (`run --standalone
+--session <id> -- <prompt>`).
 
 ## 7. Gate, docs, bookkeeping
 

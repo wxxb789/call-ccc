@@ -66,6 +66,19 @@ func openCodeRequireLoss(t *testing.T, session OpenCodeSession, category string,
 	}
 }
 
+// openCodeLossDetail answers one loss category's own sentence, which is where the report says what it did
+// with what the read could not answer.
+func openCodeLossDetail(t *testing.T, session OpenCodeSession, category string) string {
+	t.Helper()
+	for _, loss := range session.Losses {
+		if loss.Category == category {
+			return loss.Detail
+		}
+	}
+	t.Fatalf("the report names no %s category", category)
+	return ""
+}
+
 // TestConvertToOpenCodeSessionWritesTheHarnesssOwnDocumentShape pins the document against the harness's
 // measured import rules: the members it refuses to see missing are all there, the optional members this
 // build has nothing true for are absent, and every value the writer could not know is the empty or zero
@@ -494,8 +507,9 @@ func TestOpenCodeWriterNamesWhatItCannotCarry(t *testing.T) {
 
 // TestOpenCodeWriterNeverLetsABindingGoUnnamed pins the attribution rules' own words: the session's own
 // model binding comes from the harness's answer (and is absent, with its detail, when it was not asked),
-// the provider on every record is the target home's own answer, and the agent every record names is that
-// home's own too.
+// the provider on every record is the target home's own answer where it was asked, the agent every record
+// names is that home's own too, and the model id is left empty -- never invented -- where neither the read
+// nor the harness answered one.
 func TestOpenCodeWriterNeverLetsABindingGoUnnamed(t *testing.T) {
 	at := time.UnixMilli(1_700_000_000_000).UTC()
 	conversation := openCodeTestConversation(
@@ -527,8 +541,33 @@ func TestOpenCodeWriterNeverLetsABindingGoUnnamed(t *testing.T) {
 		t.Errorf("model = %+v, want the source's model id and no provider claimed", message.Model)
 	}
 	openCodeRequireLoss(t, session, "target_agent", 1)
+	// The category is reported with no binding written: openCodeRequireLoss fails when the category is
+	// missing, so this zero is the report naming it rather than a row that is absent.
 	openCodeRequireLoss(t, session, "target_model_binding", 0)
-	if count, ok := openCodeLossCount(session, "target_model_binding"); !ok || count != 0 {
-		t.Errorf("target_model_binding = %d (reported %v), want the category reported with no binding written", count, ok)
+
+	// The read answered no model and the harness was not asked either: the member is still written, with
+	// the empty id, and the report's own detail says so rather than naming a model this run cannot
+	// support. Measured on 2.2.5: the member is required and its values need not be -- an empty id is
+	// imported, stored and exported as written, and a document whose assistant message carries no model
+	// member at all is refused.
+	unnamed := openCodeTestConversation(
+		Message{Role: "assistant", Dialogue: "no model recorded", DialogueProjected: true,
+			Content: "no model recorded", Timestamp: at},
+	)
+	session, err = ConvertToOpenCodeSession(unnamed, unasked)
+	if err != nil {
+		t.Fatalf("converting with neither model answer: %v", err)
+	}
+	if err := json.Unmarshal(session.Data, &document); err != nil {
+		t.Fatalf("the document does not parse: %v", err)
+	}
+	message = document.Messages[0]
+	if message.Model == nil || message.Model.ID != "" || message.Model.ProviderID != "" {
+		t.Errorf("model = %+v, want the member written with the empty id: neither the read nor the "+
+			"harness answered a model", message.Model)
+	}
+	openCodeRequireLoss(t, session, "target_model_id_attribution", 1)
+	if detail := openCodeLossDetail(t, session, "target_model_id_attribution"); !strings.Contains(detail, "empty") {
+		t.Errorf("target_model_id_attribution detail = %q, want the empty id it wrote named", detail)
 	}
 }

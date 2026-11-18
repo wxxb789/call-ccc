@@ -241,7 +241,6 @@ type OpenCodeSession struct {
 	SessionID  string       `json:"session_id"`
 	CLIVersion string       `json:"cli_version"`
 	FileName   string       `json:"file_name"`
-	Directory  string       `json:"directory"`
 	Cwd        string       `json:"cwd,omitempty"`
 	StartedAt  time.Time    `json:"started_at,omitempty"`
 	Data       []byte       `json:"-"`
@@ -333,13 +332,13 @@ type openCodeConverter struct {
 	items    []TargetItem
 	carried  Carried
 
-	plan    []openCodePlan
-	calls   map[string]*openCodeCall
-	pending map[string]*openCodeCall
-	clock   openCodeClock
-
-	toolNameOrder []string
-	toolNames     map[string]struct{}
+	plan  []openCodePlan
+	calls map[string]*openCodeCall
+	clock openCodeClock
+	// ledger is the bookkeeping this family's writers share: the carried calls no result has answered
+	// yet, which an id-less result may be paired with, and every tool name in the order it was first
+	// written.
+	ledger
 
 	// Loss counters, one per category the report names (see losses()).
 	lossCoalesced        int
@@ -367,11 +366,10 @@ type openCodeConverter struct {
 	lossSyntheticCalls   int
 	lossPreBoundary      int
 	lossEmptySummaries   int
-	lossTargetModels     int
 	lossMessageModels    int
 	lossModelFromTarget  int
+	lossModelUnnamed     int
 	lossGeneratedAgent   int
-	lossUsage            int
 	lossCompactionReason int
 	lossCompletion       int
 	sawBoundary          bool
@@ -389,9 +387,6 @@ func (c *openCodeClock) next(at time.Time) int64 {
 	millis := at.UTC().UnixMilli()
 	if at.IsZero() || millis < c.last {
 		millis = c.last
-	}
-	if c.last == 0 {
-		c.last = millis
 	}
 	c.last = millis
 	return millis
@@ -413,9 +408,8 @@ func newOpenCodeConverter(
 		opts:      opts,
 		sessionID: sessionID,
 		cwd:       cwd,
-		pending:   map[string]*openCodeCall{},
 		calls:     map[string]*openCodeCall{},
-		toolNames: map[string]struct{}{},
+		ledger:    ledger{pendingCalls: map[string]struct{}{}},
 		plan:      make([]openCodePlan, len(conv.Messages)),
 	}
 	converter.clock.last = start.UnixMilli()
@@ -438,9 +432,11 @@ func newOpenCodeConverter(
 	return converter
 }
 
-// firstMessageTime answers the earliest recorded message instant, for the session's own start: the
+// firstMessageTime answers the first recorded message instant, for the session's own start: the
 // document's `info.time.created` should be a time the conversation holds rather than the wall clock the
-// conversion happened to run at.
+// conversion happened to run at. It is the first instant a record carries, not the earliest of them, and
+// the clock the message times go through raises a record whose own instant is out of order, so the
+// document's times never contradict its order.
 func firstMessageTime(messages []Message) time.Time {
 	for _, message := range messages {
 		if !message.Timestamp.IsZero() {
@@ -493,7 +489,7 @@ func (c *openCodeConverter) planToolEvidence() {
 			entry := &openCodeCall{ID: id, Source: call, At: message.Timestamp, generatedID: madeID}
 			c.plan[index].calls = append(c.plan[index].calls, entry)
 			c.calls[id] = entry
-			c.pending[id] = entry
+			c.ledger.pendingCalls[id] = struct{}{}
 		}
 		for _, result := range message.ToolResults {
 			id := strings.TrimSpace(result.ToolUseID)
@@ -506,7 +502,7 @@ func (c *openCodeConverter) planToolEvidence() {
 					c.lossUnpairedResults++
 					continue
 				}
-				id = sole.ID
+				id = sole
 				inferred = true
 			}
 			entry, ok := c.calls[id]
@@ -523,7 +519,7 @@ func (c *openCodeConverter) planToolEvidence() {
 			stored := result
 			entry.Result = &stored
 			entry.inferredResultID = inferred
-			delete(c.pending, id)
+			delete(c.ledger.pendingCalls, id)
 		}
 	}
 	// An archive read carries a call's outcome both as the result events the archive kept on the call
@@ -535,30 +531,13 @@ func (c *openCodeConverter) planToolEvidence() {
 			if entry.Result != nil {
 				continue
 			}
-			summary := strings.TrimSpace(entry.Source.ResultContent)
-			if summary == "" && entry.Source.ResultContentSize == 0 {
+			result, ok := derivedResultSummary(entry.Source, entry.ID)
+			if !ok {
 				continue
 			}
-			entry.Result = &ToolResult{
-				ToolUseID:      entry.ID,
-				ContentRaw:     entry.Source.ResultContent,
-				ContentSize:    entry.Source.ResultContentSize,
-				ContentDecoded: true,
-			}
+			entry.Result = &result
 		}
 	}
-}
-
-// solePendingCall answers the one call a result that recorded no id may belong to: exactly one carried
-// call with no result yet.
-func (c *openCodeConverter) solePendingCall() (*openCodeCall, bool) {
-	if len(c.pending) != 1 {
-		return nil, false
-	}
-	for _, entry := range c.pending {
-		return entry, true
-	}
-	return nil, false
 }
 
 // writeConversation walks the document once and writes every message it can express.
@@ -739,7 +718,7 @@ func (c *openCodeConverter) writeAssistantMessage(
 	c.lossCompletion++
 	c.carried.Messages++
 	c.carried.AssistantMessages++
-	if dialogue := c.renderedDialogue(parts); strings.TrimSpace(dialogue) != "" {
+	if dialogue := openCodePartsDialogue(parts); strings.TrimSpace(dialogue) != "" {
 		c.items = append(c.items, TargetItem{Kind: ItemAssistant, Text: dialogue})
 	}
 	return nil
@@ -830,7 +809,11 @@ func (c *openCodeConverter) toolPart(call *openCodeCall, at time.Time) (openCode
 	if call.generatedID || call.inferredResultID {
 		c.lossGeneratedIDs++
 	}
-	c.noteToolName(call.Source.Name)
+	// The vocabulary holds the calls' own names: a call that recorded none is not a name this report
+	// lists, so an empty one is not noted.
+	if name := strings.TrimSpace(call.Source.Name); name != "" {
+		c.noteToolName(name)
+	}
 	c.carried.ToolCalls++
 	c.carried.ToolResults++
 	c.items = append(c.items,
@@ -873,45 +856,39 @@ func (c *openCodeConverter) agent() string {
 	return openCodeDefaultAgent
 }
 
-// messageModel is the model reference one assistant message records: the source's own model id where
-// the read answered one (the words' provenance), the target home's model id where it answered none, and
-// the target home's own provider as the endpoint label -- the read answers no endpoint, and the member
-// cannot be left out. Both facts are counted (message_model_attribution).
+// messageModel is the model reference one assistant message records: the source's own model id where the
+// read answered one (the words' provenance), the target home's configured id where the read answered none
+// and the harness answered, and the target home's own provider as the endpoint label where the harness
+// was asked -- the read answers no endpoint, and the member cannot be left out.
+//
+// The member itself is required (measured on 2.2.5: the importer refuses a document whose assistant
+// message carries no model at all), but its values need not be: where neither the read nor the harness
+// answered a model, the id is written empty (measured: an empty id is imported, stored and exported as
+// written), and the report's own details name the absence rather than a value this run cannot support.
+// Every record's decision is counted (message_model_attribution); the records the read answered no model
+// for are split by outcome (target_model_id_attribution counts the ones the target home's id was written
+// for, and its detail names the ones left empty).
 func (c *openCodeConverter) messageModel(message Message) *openCodeModel {
 	provider := strings.TrimSpace(c.opts.Provider)
 	model := strings.TrimSpace(message.Model)
 	c.lossMessageModels++
 	if model == "" {
-		model = strings.TrimSpace(c.opts.Model)
-		c.lossModelFromTarget++
-	}
-	if model == "" {
-		// The read answered no model and the harness was not asked: the member is required, so the
-		// target's own default agent name is no help here -- the empty id is written and the report's
-		// detail says the document records no model.
-		model = openCodeDefaultAgent
+		if model = strings.TrimSpace(c.opts.Model); model != "" {
+			c.lossModelFromTarget++
+		} else {
+			c.lossModelUnnamed++
+		}
 	}
 	return &openCodeModel{ID: model, ProviderID: provider}
 }
 
-// noteToolName records one tool name in the order it is first written.
-func (c *openCodeConverter) noteToolName(name string) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return
-	}
-	if _, ok := c.toolNames[name]; ok {
-		return
-	}
-	c.toolNames[name] = struct{}{}
-	c.toolNameOrder = append(c.toolNameOrder, name)
-}
-
-// renderedDialogue answers one assistant message's dialogue in the shape a read of the installed session
-// shows it: the inherited readers join a message's text parts and its wrapped reasoning traces with line
-// feeds, so that is the text this route compares a read-back against (the route's own read-back rule,
-// spelled in opencode_install.go).
-func (c *openCodeConverter) renderedDialogue(parts []openCodePart) string {
+// openCodePartsDialogue answers one assistant message's dialogue in the shape a read of the installed
+// session shows it: the inherited readers join a message's text parts and its wrapped reasoning traces
+// with line feeds, so that is the text this route compares a read-back against (the route's own read-back
+// rule, spelled in opencode_install.go). The writer renders the parts it wrote with it and the document
+// check renders the bytes it read with it: one function, because a drift between two copies of the rule is
+// exactly the failure the check exists to catch.
+func openCodePartsDialogue(parts []openCodePart) string {
 	var texts []string
 	for _, part := range parts {
 		switch part.Type {
@@ -945,7 +922,6 @@ func (c *openCodeConverter) session() (OpenCodeSession, error) {
 		SessionID:  c.sessionID,
 		CLIVersion: c.opts.CLIVersion,
 		FileName:   c.sessionID + ".json",
-		Directory:  "",
 		Cwd:        c.cwd,
 		StartedAt:  time.UnixMilli(c.document.Info.Time.Created).UTC(),
 		Data:       data,
@@ -1042,8 +1018,10 @@ func (c *openCodeConverter) losses() []Loss {
 	bindingDetail := openCodeBindingDetail(c.opts.ProviderDetail)
 	modelDetail := "the source recorded no model on any message"
 	if c.lossMessageModels > 0 {
-		modelDetail = openCodeModelDetail()
+		modelDetail = openCodeModelDetail(c.lossModelFromTarget, c.lossModelUnnamed,
+			strings.TrimSpace(c.opts.Provider) != "")
 	}
+	modelIDDetail := openCodeModelIDDetail(c.lossModelFromTarget, c.lossModelUnnamed)
 	unreadableLinesDetail := malformedLinesLossDetail(c.conv.Fidelity)
 	summaryTranscriptDetail := summaryTranscriptLossDetail(c.conv.Fidelity)
 	needsRetryDetail := needsRetryLossDetail(c.conv.Fidelity)
@@ -1233,7 +1211,7 @@ func (c *openCodeConverter) losses() []Loss {
 		{
 			Category:    "target_model_binding",
 			Disposition: DispositionCarriedWithCaveat,
-			Count:       providerBindingCount(c.opts.Provider) * flagCount(c.sessionModel() != nil),
+			Count:       flagCount(c.sessionModel() != nil),
 			Detail:      bindingDetail,
 		},
 		{
@@ -1259,11 +1237,8 @@ func (c *openCodeConverter) losses() []Loss {
 		{
 			Category:    "target_model_id_attribution",
 			Disposition: DispositionCarriedWithCaveat,
-			Count:       c.lossModelFromTarget,
-			Detail: "the source read answered no model for these assistant records, and the harness " +
-				"requires a model reference on every one: the target home's own configured model id was " +
-				"written. The session's own binding (above) is what a resumed turn runs under, so this " +
-				"member is the record's provenance rather than the model that produced the words",
+			Count:       c.lossModelFromTarget + c.lossModelUnnamed,
+			Detail:      modelIDDetail,
 		},
 		{
 			Category:    "compaction_reason",
@@ -1352,15 +1327,53 @@ func openCodeBindingDetail(detail string) string {
 	return sentence + ". The harness's own answer: " + detail
 }
 
-// openCodeModelDetail words the message_model_attribution caveat: the endpoint label every converted
-// assistant record states is the target home's own configured provider, and the model id is the
-// source's where the read answered one.
-func openCodeModelDetail() string {
+// openCodeModelDetail words the message_model_attribution caveat from this run's own facts: the endpoint
+// label and the model id a converted assistant message states, where each value came from, and what is
+// written where neither the read nor the harness answered a model -- the sentence is built here because
+// this is where the answer and its absence are both in hand.
+func openCodeModelDetail(fromTarget, unnamed int, asked bool) string {
+	label := "the target home's own configured provider"
+	if !asked {
+		label = "the empty string, because the harness was not asked"
+	}
+	id := "the source's own model id where the read answered one, and the target home's own configured " +
+		"id where the read answered none"
+	switch {
+	case fromTarget > 0 && unnamed > 0:
+		id = fmt.Sprintf("the source's own model id where the read answered one, the target home's own "+
+			"configured id on %d record(s) the read answered none for, and the empty id on %d record(s) "+
+			"neither the read nor the harness answered a model for", fromTarget, unnamed)
+	case unnamed > 0:
+		id = "the source's own model id where the read answered one, and the empty id where neither the " +
+			"read nor the harness answered a model; no model this run cannot name is written"
+	}
 	return "the harness's model reference carries both a model id and a provider, and the read answers " +
-		"the source's model but no endpoint: every converted assistant message names the target home's " +
-		"own configured provider as the endpoint label and the source's own model id as the model, so " +
-		"the member records who said the words and which endpoint this build could name, not which " +
-		"endpoint served the source's turn"
+		"the source's model but no endpoint. A converted assistant message's endpoint label is " + label +
+		", and its model id is " + id + ": the member records who said the words and which endpoint this " +
+		"build could name, not which endpoint served the source's turn. The member itself is required and " +
+		"its values need not be: measured on 2.2.5, the importer keeps an empty id as written and refuses " +
+		"a document whose assistant message carries no model at all"
+}
+
+// openCodeModelIDDetail words the target_model_id_attribution caveat from this run's own facts: the
+// assistant records the read answered no model for, and what the member holds for each -- the target
+// home's configured id where the harness answered one, and the empty id where neither did, which the
+// detail says rather than leaving a value this run cannot support implied.
+func openCodeModelIDDetail(fromTarget, unnamed int) string {
+	written := "the target home's own configured model id was written"
+	switch {
+	case fromTarget > 0 && unnamed > 0:
+		written = fmt.Sprintf("the target home's own configured model id was written on %d of them, and "+
+			"the id is left empty on %d, which is what the member records where no model was answered at all",
+			fromTarget, unnamed)
+	case unnamed > 0:
+		written = "no model was answered for them, so the id is left empty rather than filled with a " +
+			"value this run cannot support"
+	}
+	return "the source read answered no model for these assistant records, and the harness's model " +
+		"reference must be present on every one: " + written + ". The session's own binding (above) is " +
+		"what a resumed turn runs under, so this member is the record's provenance rather than the model " +
+		"that produced the words"
 }
 
 // openCodeDocumentDialogue reads the dialogue a written document's own records hold, in the document's
@@ -1383,20 +1396,7 @@ func openCodeDocumentDialogue(data []byte) ([]string, error) {
 				keys = append(keys, dialogueKey(string(ItemUser), message.Text))
 			}
 		case openCodeMessageAssistant:
-			texts := make([]string, 0, len(message.Content))
-			for _, part := range message.Content {
-				switch part.Type {
-				case openCodePartText:
-					if part.Text != "" {
-						texts = append(texts, part.Text)
-					}
-				case openCodePartReasoning:
-					if part.Text != "" {
-						texts = append(texts, openCodeReasoningOpen+part.Text+openCodeReasoningClose)
-					}
-				}
-			}
-			if text := strings.Join(texts, "\n"); strings.TrimSpace(text) != "" {
+			if text := openCodePartsDialogue(message.Content); strings.TrimSpace(text) != "" {
 				keys = append(keys, dialogueKey(string(ItemAssistant), text))
 			}
 		}

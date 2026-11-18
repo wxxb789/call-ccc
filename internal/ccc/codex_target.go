@@ -554,19 +554,34 @@ func (b *codexRolloutBuilder) writeToolEvidence(message Message) {
 	// written above; the summary is written only when the call has no recorded result of its own,
 	// where it is the only evidence the read holds of that outcome.
 	for _, call := range message.ToolCalls {
-		if strings.TrimSpace(call.ResultContent) == "" && call.ResultContentSize == 0 {
+		result, ok := derivedResultSummary(call, call.ToolUseID)
+		if !ok {
 			continue
 		}
 		if callHasRecordedResult(message.ToolResults, call.ToolUseID) {
 			continue
 		}
-		b.toolResult(ToolResult{
-			ToolUseID:      call.ToolUseID,
-			ContentRaw:     call.ResultContent,
-			ContentSize:    call.ResultContentSize,
-			ContentDecoded: true,
-		}, message.Timestamp)
+		b.toolResult(result, message.Timestamp)
 	}
+}
+
+// derivedResultSummary answers the archive read's own summary of one call as the ToolResult a writer may
+// carry where the call has no recorded result of its own (callHasRecordedResult): the summary is a view
+// of the outcome only where there is no result to carry instead, and the boolean answers whether the read
+// holds a summary at all (neither text nor a size). toolUseID is the id the result is written under -- the
+// call's own recorded id, or the one a conversion minted for a call that recorded none. The guard and the
+// value are one function because every writer of this family applies them together; which of a record's
+// results is "recorded" stays each writer's own decision, made by the caller.
+func derivedResultSummary(call ToolCall, toolUseID string) (ToolResult, bool) {
+	if strings.TrimSpace(call.ResultContent) == "" && call.ResultContentSize == 0 {
+		return ToolResult{}, false
+	}
+	return ToolResult{
+		ToolUseID:      toolUseID,
+		ContentRaw:     call.ResultContent,
+		ContentSize:    call.ResultContentSize,
+		ContentDecoded: true,
+	}, true
 }
 
 // callHasRecordedResult reports whether the conversation already carries a recorded result for a call,

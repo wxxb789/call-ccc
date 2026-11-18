@@ -63,17 +63,20 @@ with their exit codes and counts).
   `<XDG data home>/opencode/opencode.db`, not a file, so `--to opencode` installs **through the harness's
   own importer** (`opencode session import … --directory <the session's recorded directory> --standalone`)
   and never writes SQL into that store: a host without the binary has no installation, and the report says
-  so instead of working around it. Two members that importer requires are rules a writer here must keep,
-  both measured on 2.2.5: an assistant message's `time.completed` (a message whose `time` carries
-  `created` alone is accepted and then **silently dropped** — no row, no export entry) and a tool part's
+  so instead of working around it. Three members the importer requires are rules a writer here must keep,
+  all measured on 2.2.5: an assistant message's `time.completed` (a message whose `time` carries
+  `created` alone is accepted and then **silently dropped** — no row, no export entry), a tool part's
   `state.input`, which the store holds re-encoded, so the structural comparison canonicalizes that one
-  member's JSON and compares every other member as recorded. The load level asks the harness's own
-  `session export`, never `run`: `run` *creates* a session for an id the store does not hold. The
-  directory a session is resolved from is the one its own document records, and the model binding it runs
-  under is the target home's own, asked of the harness (`debug agents`). Every OpenCode subcommand this
-  build prints or runs carries `--standalone`, and none leaves the flag past a `--` terminator, where it
-  hands the run to the managed service and that service answers from a store this run did not grow
-  (measured); the printed resume line names it immediately after its subcommand.
+  member's JSON and compares every other member as recorded, and an assistant message's `model` member,
+  which must be present although its values need not be: a record neither the source read nor the harness
+  answered a model for is written with the member's id empty — measured: an empty id is imported, stored
+  and exported as written — rather than a name this build cannot support. The load level asks the
+  harness's own `session export`, never `run`: `run` *creates* a session for an id the store does not
+  hold. The directory a session is resolved from is the one its own document records, and the model
+  binding it runs under is the target home's own, asked of the harness (`debug agents`). Every OpenCode
+  subcommand this build prints or runs carries `--standalone`, and none leaves the flag past a `--`
+  terminator, where it hands the run to the managed service and that service answers from a store this
+  run did not grow (measured); the printed resume line names it immediately after its subcommand.
 - **A conversion writes a fresh native identity and replaces nothing.** The install is exclusive, the
   source is never opened for writing, no credential or login store is copied, and a target data
   directory nobody named is an error rather than a directory invented here. Tests and demos use

@@ -585,18 +585,14 @@ func (b *claudeTranscriptBuilder) writeToolEvidence(message Message) {
 	// result at all is the only evidence the read holds of that outcome, and it is written.
 	for _, entry := range calls {
 		call := entry.call
-		if strings.TrimSpace(call.ResultContent) == "" && call.ResultContentSize == 0 {
+		result, ok := derivedResultSummary(call, call.ToolUseID)
+		if !ok {
 			continue
 		}
 		if callHasRecordedResult(message.ToolResults, call.ToolUseID) {
 			continue
 		}
-		block, ok := b.toolResult(ToolResult{
-			ToolUseID:      call.ToolUseID,
-			ContentRaw:     call.ResultContent,
-			ContentSize:    call.ResultContentSize,
-			ContentDecoded: true,
-		}, message.Timestamp)
+		block, ok := b.toolResult(result, message.Timestamp)
 		if ok {
 			pending = append(pending, block)
 		}

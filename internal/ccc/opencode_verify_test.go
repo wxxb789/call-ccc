@@ -309,9 +309,12 @@ func TestVerifyOpenCodeResumeMeasuresGrowthThroughTheHarnesssOwnReader(t *testin
 	}
 }
 
-// TestProbeOpenCodeVersionReadsTheHarnesssOwnLine pins the probe's own rule: the version is the one the
-// harness printed, and a missing binary is an answer rather than an error.
-func TestProbeOpenCodeVersionReadsTheHarnesssOwnLine(t *testing.T) {
+// TestProbeOpenCodeBinaryReportsAMissingBinaryAndParsesTheVersionLine pins the two rules this case can
+// drive without the host's harness: a missing binary is an answer rather than an error (the sibling
+// routes' probes answer it the same way), and the version pattern takes the version out of the line the
+// harness prints -- `opencode v2.2.5`, measured on the installed 2.2.5. The found-and-printed path itself
+// needs the host's harness and is not driven here, on this route or on the sibling routes.
+func TestProbeOpenCodeBinaryReportsAMissingBinaryAndParsesTheVersionLine(t *testing.T) {
 	probe := ProbeOpenCodeBinary(context.Background(), missingTargetBinary)
 	if probe.Found {
 		t.Errorf("probe = %+v, want a missing binary reported as not found", probe)

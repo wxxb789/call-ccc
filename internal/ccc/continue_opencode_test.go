@@ -86,20 +86,29 @@ func openCodeStoreRows(t *testing.T, storePath, sessionID string) string {
 	return string(encoded)
 }
 
-// stubOpenCodeImporterRunning runs the harness's own importer for the route: the exclusivity question is
+// openCodeImporterCalls is what stubOpenCodeImporter recorded: every invocation's own argument vector and
+// the data root its environment named, which is where the harness's own importer resolves its data
+// directory.
+type openCodeImporterCalls struct {
+	Invocations [][]string
+	Roots       []string
+}
+
+// stubOpenCodeImporter answers the harness's own importer for the route: the exclusivity question is
 // answered with the harness's own refusal, and the import stages the document the route handed over into
 // the store -- the same document, read from the file the route wrote and written through the fixture
 // writer, so the structure check reads back what the route actually staged. The store it writes into is
 // the one the environment names, exactly as the harness's own importer resolves its data directory, so
 // the same stub answers an installed run and the dry run's throw-away copy.
-func stubOpenCodeImporterRunning(t *testing.T) *[][]string {
+func stubOpenCodeImporter(t *testing.T) *openCodeImporterCalls {
 	t.Helper()
-	var invocations [][]string
+	calls := &openCodeImporterCalls{}
 	stubOpenCodeExecutable(t, func(string) (string, error) { return "/stub/opencode", nil })
 	stubOpenCodeRun(t, &runOpenCodeImporter, func(
 		_ context.Context, _ string, _ string, argv []string, env []string, _ time.Duration, _ io.Writer,
 	) (string, string, error) {
-		invocations = append(invocations, argv)
+		calls.Invocations = append(calls.Invocations, argv)
+		calls.Roots = append(calls.Roots, openCodeDataRootOf(env))
 		if len(argv) > 1 && argv[0] == "session" && argv[1] == "import" {
 			data, err := os.ReadFile(argv[2])
 			if err != nil {
@@ -118,7 +127,7 @@ func stubOpenCodeImporterRunning(t *testing.T) *[][]string {
 		}
 		return "", "Session not found: " + argv[2] + "\n", errors.New("exit status 1")
 	})
-	return &invocations
+	return calls
 }
 
 // openCodeDataRootOf answers the data root an invocation's own environment names, which is where the
@@ -142,7 +151,7 @@ func TestContinueIntoOpenCodeConvertsInstallsAndReadsBack(t *testing.T) {
 		claudeFixtureRef.ID+".jsonl"))
 	sourceBefore := hashFile(t, sourcePath)
 	home, unrelatedBefore := openCodeTargetHome(t)
-	invocations := stubOpenCodeImporterRunning(t)
+	calls := stubOpenCodeImporter(t)
 
 	result, err := Continue(context.Background(), ContinueOptions{
 		Ref:          claudeFixtureRef,
@@ -255,9 +264,9 @@ func TestContinueIntoOpenCodeConvertsInstallsAndReadsBack(t *testing.T) {
 		t.Errorf("resume command = %q, want it to change into the session's recorded directory",
 			result.TargetSession.ResumeCommand)
 	}
-	if len(*invocations) != 2 {
+	if len(calls.Invocations) != 2 {
 		t.Errorf("the importer was run %d time(s) as %q, want the exclusivity question and one import",
-			len(*invocations), *invocations)
+			len(calls.Invocations), calls.Invocations)
 	}
 	if result.Verification.Structure.Method != structureMethodOpenCode {
 		t.Errorf("structure method = %q, want the OpenCode reader's own sentence",
@@ -290,33 +299,13 @@ func queryOpenCodeInt(t *testing.T, storePath, query string, into *int) error {
 func TestContinueIntoOpenCodeDryRunAsksNothingAndInstallsNothing(t *testing.T) {
 	home := filepath.Join(t.TempDir(), openCodeDataDirName)
 	agents := 0
-	var roots []string
-	stubOpenCodeExecutable(t, func(string) (string, error) { return "/stub/opencode", nil })
 	stubOpenCodeRun(t, &runOpenCodeAgentsProbe, func(
 		_ context.Context, _ string, _ string, _ []string, _ []string, _ time.Duration, _ io.Writer,
 	) (string, string, error) {
 		agents++
 		return `[{"id":"build","mode":"primary","hidden":false,"model":{"id":"m","providerID":"p"}}]`, "", nil
 	})
-	stubOpenCodeRun(t, &runOpenCodeImporter, func(
-		_ context.Context, _ string, _ string, argv []string, env []string, _ time.Duration, _ io.Writer,
-	) (string, string, error) {
-		roots = append(roots, openCodeDataRootOf(env))
-		if len(argv) > 1 && argv[0] == "session" && argv[1] == "import" {
-			data, err := os.ReadFile(argv[2])
-			if err != nil {
-				return "", "", err
-			}
-			var document openCodeDocument
-			if err := json.Unmarshal(data, &document); err != nil {
-				return "", "", err
-			}
-			writeOpenCodeTestStore(t, filepath.Join(openCodeDataRootOf(env), openCodeDataDirName),
-				OpenCodeSession{Data: data})
-			return "Imported session: " + document.Info.ID + "\n", "", nil
-		}
-		return "", "Session not found: " + argv[2] + "\n", errors.New("exit status 1")
-	})
+	calls := stubOpenCodeImporter(t)
 	result, err := Continue(context.Background(), ContinueOptions{
 		Ref:          claudeFixtureRef,
 		Target:       TargetOpenCode,
@@ -336,7 +325,7 @@ func TestContinueIntoOpenCodeDryRunAsksNothingAndInstallsNothing(t *testing.T) {
 	if _, err := os.Stat(openCodeStorePath(home)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the dry run left a store in the caller's data directory (%s)", openCodeStorePath(home))
 	}
-	for _, root := range roots {
+	for _, root := range calls.Roots {
 		if root == openCodeDataRoot(home) || root == "" {
 			t.Errorf("the dry run's own importer ran against %q, want a throw-away root", root)
 		}

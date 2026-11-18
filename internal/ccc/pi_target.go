@@ -1014,18 +1014,14 @@ func (b *piSessionBuilder) writeToolEvidence(message Message, calls []piProjecte
 	}
 	for _, entry := range calls {
 		call := entry.call
-		if strings.TrimSpace(call.ResultContent) == "" && call.ResultContentSize == 0 {
+		result, ok := derivedResultSummary(call, call.ToolUseID)
+		if !ok {
 			continue
 		}
 		if callHasRecordedResult(message.ToolResults, call.ToolUseID) {
 			continue
 		}
-		b.writeToolResult(ToolResult{
-			ToolUseID:      call.ToolUseID,
-			ContentRaw:     call.ResultContent,
-			ContentSize:    call.ResultContentSize,
-			ContentDecoded: true,
-		}, message.Timestamp, toolResultCarrierRecord(message))
+		b.writeToolResult(result, message.Timestamp, toolResultCarrierRecord(message))
 	}
 }
 

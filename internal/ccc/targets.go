@@ -130,14 +130,13 @@ type targetInvocation struct {
 	WorkingDir    string
 }
 
-// targetInstallInput is everything one target's installation is given: the directory to install into,
-// the executable the run probed, and the deadline and debug channel an installation that is the
+// targetInstallInput is everything one target's installation is given: the directory to install into, the
+// executable the installation runs, and the deadline and debug channel an installation that is the
 // harness's own command needs. Every target's Install receives all of it, and the routes that publish a
 // file of their own read only Home.
 type targetInstallInput struct {
 	Home   string
 	Binary string
-	Probe  harnessProbe
 	// Timeout bounds the harness's own command, where the installation runs one.
 	Timeout time.Duration
 	Stderr  io.Writer
@@ -837,8 +836,9 @@ func openCodeRoute() targetRoute {
 			}
 			return []string{"this was a dry run, so the target harness was not started and the agent " +
 				"and model its home resolves for a new session of it were not asked: the written " +
-				"document records no session model binding and the built-in default agent's name on its " +
-				"assistant records. An installed run asks the harness and records its own answer"}
+				"document records no session model binding, the built-in default agent's name on its " +
+				"assistant records, and the empty model id on the records the source read recorded no " +
+				"model for. An installed run asks the harness and records its own answer"}
 		},
 		Convert: func(conv Conversation, in targetConvertInput) (convertedTarget, error) {
 			session, err := ConvertToOpenCodeSession(conv, OpenCodeTargetOptions{
@@ -855,9 +855,10 @@ func openCodeRoute() targetRoute {
 				return convertedTarget{}, err
 			}
 			return convertedTarget{
-				ID:        session.SessionID,
-				FileName:  session.FileName,
-				Directory: session.Directory,
+				ID:       session.SessionID,
+				FileName: session.FileName,
+				// This route files nothing inside a session root: the harness's own store is the
+				// artifact, and the session's recorded directory travels as Cwd.
 				Cwd:       session.Cwd,
 				StartedAt: session.StartedAt,
 				Data:      session.Data,

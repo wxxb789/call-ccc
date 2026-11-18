@@ -548,7 +548,6 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 		if _, _, err := route.Install(ctx, session, targetInstallInput{
 			Home:    scratch,
 			Binary:  probe.Binary,
-			Probe:   probe,
 			Timeout: opts.Timeout,
 			Stderr:  opts.Stderr,
 		}); err != nil {
@@ -611,7 +610,6 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 	path, mechanism, err := route.Install(ctx, session, targetInstallInput{
 		Home:    home,
 		Binary:  probe.Binary,
-		Probe:   probe,
 		Timeout: opts.Timeout,
 		Stderr:  opts.Stderr,
 	})

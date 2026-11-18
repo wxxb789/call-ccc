@@ -79,7 +79,7 @@ func stubOpenCode(args []string) int {
 			return 2
 		}
 	case "run":
-		return stubOpenCodeRun(args[1:])
+		return stubOpenCodeTurn(args[1:])
 	default:
 		fmt.Fprintln(os.Stderr, "the stub harness does not implement "+args[0])
 		return 2
@@ -163,10 +163,10 @@ func stubOpenCodeExport(args []string) int {
 	return 0
 }
 
-// stubOpenCodeRun answers one non-interactive turn: the session grows by the prompt and an answer, and the
+// stubOpenCodeTurn answers one non-interactive turn: the session grows by the prompt and an answer, and the
 // turn prints the answer the way the harness prints one. A session the stub does not hold is refused here
 // (the stub, unlike the real harness, does not create one).
-func stubOpenCodeRun(args []string) int {
+func stubOpenCodeTurn(args []string) int {
 	sessionID, prompt := "", ""
 	for index, argument := range args {
 		if argument == "--session" && index+1 < len(args) {

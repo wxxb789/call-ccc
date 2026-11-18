@@ -38,7 +38,6 @@ func openCodeTestInstallInput(home, binary string) targetInstallInput {
 	return targetInstallInput{
 		Home:    home,
 		Binary:  binary,
-		Probe:   harnessProbe{Binary: binary, Found: true},
 		Timeout: 30 * time.Second,
 	}
 }
@@ -225,14 +224,15 @@ func TestInstallOpenCodeSessionAsksTheHarnesssOwnImporter(t *testing.T) {
 		t.Fatalf("installing over an existing id: %v, want ErrTargetExists", err)
 	}
 
-	// A missing harness is the boundary it is: this target's installation is the harness's own command.
+	// A missing harness is the boundary it is: this target's installation is the harness's own command,
+	// and the refusal names both the executable that is missing and the importer this route needs.
 	stubOpenCodeExecutable(t, func(name string) (string, error) {
 		return "", errors.New("not found: " + name)
 	})
 	if _, _, err := InstallOpenCodeSession(context.Background(), session, openCodeTestInstallInput(home, "opencode")); err == nil {
 		t.Fatal("installing without the harness succeeded")
-	} else if !strings.Contains(err.Error(), openCodeImportMechanism[strings.Index(openCodeImportMechanism, "(")+1:len(openCodeImportMechanism)-1]) {
-		t.Logf("refusal = %v (named the importer through its own sentence)", err)
+	} else if !strings.Contains(err.Error(), "opencode") || !strings.Contains(err.Error(), "importer") {
+		t.Errorf("refusal = %v, want the missing harness and this target's importer named", err)
 	}
 }
 
