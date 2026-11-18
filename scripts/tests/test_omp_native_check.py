@@ -502,7 +502,7 @@ providers:
     baseUrl: http://127.0.0.1:4142/v1
     api: openai-responses
     apiKey: {LOOPBACK_SECRET}
-    "\\x68eaders": {{Authorization: {escaped_secret}}}
+    "\\x68eaders": Bearer {escaped_secret}
     models:
     - id: escaped-model
   split-quoted-key:
@@ -510,7 +510,7 @@ providers:
     api: openai-responses
     apiKey: {LOOPBACK_SECRET}
     "head
-    ers": {{Authorization: {split_secret}}}
+    ers": Bearer {split_secret}
     models:
     - id: split-model
   canonical-key:
@@ -526,10 +526,251 @@ providers:
             for name in ("explicit-key", "escaped-key", "split-quoted-key"):
                 self.assertTrue(any(reason.startswith(name) for reason in left_out),
                                 f"{name} is not named among {left_out}")
+            # The explicit-key definition's own reason must name YAML's `?` form: its second line (`: …`)
+            # is itself a form this reader refuses, so a run whose reader stopped recognizing `?` would
+            # still leave the definition out -- while telling the operator about the wrong line.
+            self.assertTrue(any("explicit `?` form" in reason for reason in left_out),
+                            f"the explicit-key refusal should name YAML's `?` form: {left_out}")
             written = (home / "models.yml").read_text(encoding="utf-8")
             for value in (explicit_secret, escaped_secret, split_secret):
                 self.assertNotIn(value, written, "a credential value was written into a data directory")
             for name in ("explicit-key", "escaped-key", "split-quoted-key"):
+                self.assertNotIn(name, written, "a refused provider's definition was copied")
+            self.assertIn(f"apiKey: {NATIVE_CHECK.SANDBOX_KEY}", written)
+
+    def test_a_flow_spelled_entry_is_refused_before_anything_is_copied(self):
+        # YAML reads `- {id: demo, baseUrl: …}` as one model entry carrying both fields (checked against
+        # a YAML reader), so a textual seeder that walked the line as a plain `id:` entry would never
+        # examine the nested `baseUrl` and would copy the line verbatim -- a credential-bearing endpoint
+        # going into the scratch home, the loader home and a --keep tree. The definition is refused whole
+        # with the reason in the run's own output; the provider written the block way in the same file is
+        # still seeded, so the refusal is about the spelling and not about the file.
+        flow_secret = "sk-flow-spelled-endpoint-that-must-not-be-written"
+        with tempfile.TemporaryDirectory() as scratch:
+            host = Path(scratch) / "host"
+            home = Path(scratch) / "home"
+            host.mkdir()
+            home.mkdir()
+            (host / "models.yml").write_text(f"""\
+providers:
+  flow-spelled-endpoint:
+    baseUrl: http://127.0.0.1:4141/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    models:
+    - {{id: demo, baseUrl: "http://127.0.0.1:4142/v1?api_key={flow_secret}"}}
+  block-spelled-endpoint:
+    baseUrl: http://127.0.0.1:4143/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    models:
+    - id: block-model
+""", encoding="utf-8")
+            seeded, left_out, role = self.seed(home, host)
+            self.assertEqual(seeded, ["block-spelled-endpoint"], f"left out: {left_out}")
+            self.assertEqual(role, "block-spelled-endpoint/block-model")
+            self.assertTrue(any(reason.startswith("flow-spelled-endpoint") for reason in left_out),
+                            f"the flow-spelled provider is not named among {left_out}")
+            written = (home / "models.yml").read_text(encoding="utf-8")
+            self.assertNotIn(flow_secret, written, "a credential value was written into a data directory")
+            self.assertNotIn("flow-spelled-endpoint", written,
+                             "a refused provider's definition was copied")
+            self.assertIn(f"apiKey: {NATIVE_CHECK.SANDBOX_KEY}", written)
+
+    def test_a_quoted_endpoint_is_decoded_before_the_credential_check(self):
+        # A double-quoted scalar's escapes are YAML's, not decoration: `\u003f` is `?` to the harness's
+        # own reader, so a filter that only removed the quotes would see no query delimiter in the raw
+        # value while the harness reads a credential-bearing endpoint -- and would copy it. Both levels
+        # are covered, the provider's own `baseUrl` and one a model entry writes. The accepting direction
+        # is pinned in the same file: a host spelled `"http\u003a//127.0.0.1:4141/v1"` is loopback only
+        # once its escapes are decoded, so a reader that never decoded would leave that provider out.
+        escaped_provider_secret = "sk-escaped-provider-query-that-must-not-be-written"
+        escaped_model_secret = "sk-escaped-model-endpoint-that-must-not-be-written"
+        with tempfile.TemporaryDirectory() as scratch:
+            host = Path(scratch) / "host"
+            home = Path(scratch) / "home"
+            host.mkdir()
+            home.mkdir()
+            (host / "models.yml").write_text(f"""\
+providers:
+  escaped-provider-endpoint:
+    baseUrl: "http://127.0.0.1:4141/v1\\u003fapi_key={escaped_provider_secret}"
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    models:
+    - id: escaped-provider-model
+  escaped-model-endpoint:
+    baseUrl: http://127.0.0.1:4142/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    models:
+    - id: escaped-model
+      baseUrl: "http://127.0.0.1:4143/v1\\u003fapi_key={escaped_model_secret}"
+  decoded-endpoint:
+    baseUrl: "http\\u003a//127.0.0.1:4144/v1"
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    models:
+    - id: decoded-model
+""", encoding="utf-8")
+            seeded, left_out, role = self.seed(home, host)
+            self.assertEqual(seeded, ["decoded-endpoint"], f"left out: {left_out}")
+            self.assertEqual(role, "decoded-endpoint/decoded-model")
+            for name in ("escaped-provider-endpoint", "escaped-model-endpoint"):
+                self.assertTrue(any(reason.startswith(name) for reason in left_out),
+                                f"{name} is not named among {left_out}")
+            written = (home / "models.yml").read_text(encoding="utf-8")
+            for value in (escaped_provider_secret, escaped_model_secret):
+                self.assertNotIn(value, written, "a credential value was written into a data directory")
+            self.assertNotIn("escaped", written.lower(),
+                             "a refused provider's definition was copied")
+            self.assertIn(f"apiKey: {NATIVE_CHECK.SANDBOX_KEY}", written)
+
+    def test_a_key_form_the_reader_mangles_is_refused_whole(self):
+        # A key can be spelled so this textual reader reads a *different* key -- and YAML's own reader
+        # reads the field the filter must scrub: an anchor or a tag on the key node (`&a apiKey:`,
+        # `!!str headers:`), which YAML reads as `apiKey`/`headers` (checked against a YAML reader), and
+        # a nested sequence marker in front of it (`- - apiKey:`), which this reader would read as the
+        # key `- apiKey` and keep, credential and all. A line whose entry opens with no key at all (`: …`)
+        # is the fourth spelling: the YAML reader this round checked refuses the document carrying it
+        # (`did not find expected key`), and this seeder's reader will not name the line, so the
+        # definition is refused rather than copied unread. Each definition is refused whole; the canonical
+        # provider beside them is still seeded.
+        anchored_secret = "sk-anchored-key-that-must-not-be-written"
+        tagged_secret = "Bearer a-tagged-header-that-must-not-be-written"
+        empty_key_secret = "sk-empty-key-that-must-not-be-written"
+        nested_secret = "sk-nested-marker-key-that-must-not-be-written"
+        with tempfile.TemporaryDirectory() as scratch:
+            host = Path(scratch) / "host"
+            home = Path(scratch) / "home"
+            host.mkdir()
+            home.mkdir()
+            (host / "models.yml").write_text(f"""\
+providers:
+  anchored-key:
+    baseUrl: http://127.0.0.1:4141/v1
+    &a apiKey: {anchored_secret}
+    models:
+    - id: anchored-model
+  tagged-header-key:
+    baseUrl: http://127.0.0.1:4142/v1
+    !!str headers:
+      Authorization: {tagged_secret}
+    models:
+    - id: tagged-model
+  empty-key:
+    baseUrl: http://127.0.0.1:4143/v1
+    : {{headers: {empty_key_secret}}}
+    models:
+    - id: empty-key-model
+  nested-marker-key:
+    baseUrl: http://127.0.0.1:4144/v1
+    models:
+    - - apiKey: {nested_secret}
+  canonical-endpoint:
+    baseUrl: http://127.0.0.1:4145/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    models:
+    - id: canonical-model
+""", encoding="utf-8")
+            seeded, left_out, role = self.seed(home, host)
+            self.assertEqual(seeded, ["canonical-endpoint"], f"left out: {left_out}")
+            self.assertEqual(role, "canonical-endpoint/canonical-model")
+            for name in ("anchored-key", "tagged-header-key", "empty-key", "nested-marker-key"):
+                self.assertTrue(any(reason.startswith(name) for reason in left_out),
+                                f"{name} is not named among {left_out}")
+            written = (home / "models.yml").read_text(encoding="utf-8")
+            for value in (anchored_secret, tagged_secret, empty_key_secret, nested_secret):
+                self.assertNotIn(value, written, "a credential value was written into a data directory")
+            for name in ("anchored-key", "tagged-header-key", "nested-marker-key"):
+                self.assertNotIn(name, written, "a refused provider's definition was copied")
+            self.assertIn(f"apiKey: {NATIVE_CHECK.SANDBOX_KEY}", written)
+
+    def test_a_value_form_the_reader_cannot_follow_is_refused_whole(self):
+        # The value side of the same class: a block scalar's content lines and a flow collection's own
+        # keys are fields to YAML's reader (`baseUrl` among them) that this textual reader never walks; a
+        # double-quoted value that continues onto the next line can carry a credential on a line this
+        # reader does not read as an entry (checked against a YAML reader: the continued value decodes to
+        # `…/v1?api_key=…`, while its first line holds no `?` for the raw check to see); a quoted value
+        # with an escape JSON does not know is a value it cannot decode; and content after a quoted
+        # value's closing quote is a shape it does not read either. Each may carry a credential the filter
+        # never read, so each definition is refused whole before anything is copied; the canonical
+        # provider in the same file is still seeded.
+        block_secret = "sk-block-scalar-endpoint-that-must-not-be-written"
+        flow_value_secret = "sk-flow-value-endpoint-that-must-not-be-written"
+        continued_secret = "sk-continued-quote-endpoint-that-must-not-be-written"
+        undecodable_secret = "sk-undecodable-quoted-value-that-must-not-be-written"
+        alias_secret = "sk-aliased-endpoint-that-must-not-be-written"
+        with tempfile.TemporaryDirectory() as scratch:
+            host = Path(scratch) / "host"
+            home = Path(scratch) / "home"
+            host.mkdir()
+            home.mkdir()
+            (host / "models.yml").write_text(f"""\
+providers:
+  block-scalar-endpoint:
+    baseUrl: http://127.0.0.1:4141/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    models:
+    - id: block-scalar-model
+      baseUrl: |-
+        http://127.0.0.1:4142/v1?api_key={block_secret}
+  flow-value-endpoint:
+    baseUrl: http://127.0.0.1:4143/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    models: [{{id: flow-value-model, baseUrl: "http://127.0.0.1:4144/v1?api_key={flow_value_secret}"}}]
+  continued-quote-endpoint:
+    baseUrl: http://127.0.0.1:4145/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    models:
+    - id: continued-quote-model
+      baseUrl: "http://127.0.0.1:4146/v1\\
+        ?api_key={continued_secret}"
+  undecodable-quoted-value:
+    baseUrl: http://127.0.0.1:4147/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    models:
+    - id: undecodable-model
+      name: "a-\\x41-value-{undecodable_secret}"
+  trailing-content-endpoint:
+    baseUrl: "http://127.0.0.1:4148/v1" # a comment after the closing quote
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    models:
+    - id: trailing-model
+  aliased-endpoint:
+    baseUrl: http://127.0.0.1:4149/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    x-upstream: &u https://user:{alias_secret}@api.example.com/v1
+    models:
+    - id: aliased-model
+      baseUrl: *u
+  canonical-endpoint:
+    baseUrl: http://127.0.0.1:4150/v1
+    api: openai-responses
+    apiKey: {LOOPBACK_SECRET}
+    models:
+    - id: canonical-model
+""", encoding="utf-8")
+            seeded, left_out, role = self.seed(home, host)
+            self.assertEqual(seeded, ["canonical-endpoint"], f"left out: {left_out}")
+            self.assertEqual(role, "canonical-endpoint/canonical-model")
+            for name in ("block-scalar-endpoint", "flow-value-endpoint", "continued-quote-endpoint",
+                         "undecodable-quoted-value", "trailing-content-endpoint", "aliased-endpoint"):
+                self.assertTrue(any(reason.startswith(name) for reason in left_out),
+                                f"{name} is not named among {left_out}")
+            written = (home / "models.yml").read_text(encoding="utf-8")
+            for value in (block_secret, flow_value_secret, continued_secret, undecodable_secret,
+                          alias_secret):
+                self.assertNotIn(value, written, "a credential value was written into a data directory")
+            for name in ("block-scalar-endpoint", "flow-value-endpoint", "continued-quote-endpoint",
+                         "undecodable-quoted-value", "trailing-content-endpoint", "aliased-endpoint"):
                 self.assertNotIn(name, written, "a refused provider's definition was copied")
             self.assertIn(f"apiKey: {NATIVE_CHECK.SANDBOX_KEY}", written)
 
@@ -562,6 +803,13 @@ class DefaultRoleCases(unittest.TestCase):
         self.assertEqual(
             self.role('modelRoles: { smol: other/small, "default": "proxy/model" }\n'),
             "proxy/model")
+
+    def test_a_single_quoted_role_is_decoded_the_way_yaml_reads_it(self):
+        # YAML's only escape inside a single-quoted scalar is a doubled quote, so `''` *is* one quote to
+        # the harness's own reader; a read that kept the two characters would answer a role no home
+        # defines. The double-quoted spelling beside it decodes JSON's escapes for the same reason.
+        self.assertEqual(self.role("modelRoles:\n  default: 'proxy/model''s'\n"), "proxy/model's")
+        self.assertEqual(self.role('modelRoles:\n  default: "proxy/model\\u0027s"\n'), "proxy/model's")
 
     def test_quoted_and_spaced_keys_name_the_same_fields(self):
         self.assertEqual(self.role('"modelRoles" :\n  "default" : proxy/model\n'), 'proxy/model')

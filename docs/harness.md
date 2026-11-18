@@ -397,15 +397,22 @@ says so.
   key with whitespace before its colon (`headers :`) are the same field to any YAML reader, and a key at
   another casing (`Headers`) is rewritten or dropped too (the conservative read: a spelling some reader
   might fold to the field must not pass unscrubbed, and dropping one the harness would ignore costs
-  nothing), so none of those spellings can carry a value past the replacement or the drop. A definition
-  holding a key form this run's reader cannot decode (YAML's explicit `? key`, a quoted key it cannot
-  unquote) is left out whole with that reason rather than copied with a key the seeder did not read. With
-  no surviving provider the home names no model role, the conversion writes no binding, and the run reports
-  that as a named check instead of crashing — OMP's own measured behaviour for a home with no model. A
-  home the caller names with `--target-home` is never seeded and nothing is planted in it — the
-  converted session the conversion installs there is the file the run leaves, and a requested turn grows it
-  — and the run reports both the role its own textual read finds in that home's `config.yml` and, when the
-  conversion's own probe answered, the model the harness's own `get_state` resolved for it (the answer that
+  nothing), so none of those spellings can carry a value past the replacement or the drop, and a quoted
+  value's escapes are decoded the way YAML reads them before any check sees the value (`"…\u003f…"` is the
+  `?` the credential check must find, and a quoted value whose escapes this run's reader cannot decode is
+  refused rather than guessed at). A definition holding a form this run's reader cannot follow is left out
+  whole with that reason rather than copied unread, because each such form can spell fields the filter
+  never read: YAML's explicit `? key`, a quoted key it cannot unquote, an entry — or a value of a field the
+  block keeps — spelled in flow form (`- {id: …, baseUrl: …}`, `models: [{…}]`), a value under a tag,
+  anchor or alias, a block scalar (whose content lines this reader does not read as fields), a nested
+  sequence, an empty key, a quoted value that does not close on its line, and content after a quoted
+  value's closing quote. With no surviving provider the home names no model role, the conversion writes no
+  binding, and the run reports that as a named check instead of crashing — OMP's own measured behaviour for
+  a home with no model. A home the caller names with `--target-home` is never seeded and nothing is
+  planted in it — the converted session the conversion installs there is the file the run leaves, and a
+  requested turn grows it — and the run reports both the role its own textual read finds in that home's
+  `config.yml` and, when the conversion's own probe answered, the model the harness's own `get_state`
+  resolved for it (the answer that
   decides the turn when the reading cannot follow the home's spelling) beside its every-session digests.
   `--resume-prompt` is a request for one real turn: the run attempts it whenever any of the seed's role,
   that reading and the harness's own answer names a model, and a requested turn the run could not attempt

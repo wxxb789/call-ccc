@@ -430,6 +430,120 @@ is copied; the probe asks the harness the printed command resumes; a substituted
 gate step, command, read order or agent rule. No goal file is moved: 0006 is still the increment under
 review.
 
+### The third review round
+
+The findings file for this review round (head `ef31bea89aab692b88ad6308809e15de22a4e95b`) named one P1
+defect: **the seeder could copy a credential-bearing endpoint the credential filter never read**, in two
+spellings, and asked for the class rather than the spellings -- "decode supported YAML values before
+checking them and reject unsupported mapping/value forms before copying any provider block". The two named
+spellings were executed on the pre-fix tree before any edit (the review had inspected them statically and
+said so): `seed_omp_home` seeded the definition and wrote the credential-bearing line into the scratch
+`models.yml` -- the file the loader arm copies again and a `--keep` tree retains -- for
+
+- a model entry in flow form, `- {id: demo, baseUrl: "http://…/v1?api_key=…"}`: the textual reader read the
+  line as an entry whose key is `{id`, so `block_has_credential_endpoint` never examined the nested
+  `baseUrl` and `_seed_block` kept the line; and
+- a double-quoted endpoint whose query delimiter is a YAML escape,
+  `baseUrl: "http://127.0.0.1:4141/v1\u003fapi_key=…"`: `_scalar` removed the quotes without decoding them,
+  so the raw value held no literal `?` for `credential_free_url` to find while the harness's own reader
+  reads one.
+
+The class was then enumerated against a YAML reader's own answers (`go.yaml.in/yaml/v3`, driven from `/tmp`,
+outside this repository), each additional spelling executed against the pre-fix tree, and each shown to copy
+its credential before the fix: a key under a tag, anchor or alias (`&a apiKey: …`, `!!str headers: …` --
+YAML reads the field bare), a model-level `baseUrl: *u` whose anchor's credential-bearing URL sits under
+another key (copied, because a line whose key is not `baseUrl` is not scanned as an endpoint), a block
+scalar endpoint (`baseUrl: |-` plus a content line holding `?api_key=…` -- a content line is not an entry
+this reader recognizes), a nested sequence marker (`- - apiKey: …` reads as the key `- apiKey`), a quoted
+value continued onto the next line (its first line holds no `?`; YAML folds the value into the
+credential-bearing URL), an empty key, and content after a quoted value's closing quote.
+
+What changed (`scripts/omp-native-check.py`):
+
+- `_scalar` now **decodes** a quoted value the way the harness's reader reads it before any check sees it:
+  JSON's escape set for a double-quoted scalar (`\u003f` is the `?` the credential check must find; an
+  escape outside the set is refused, never guessed at) and `''` for a single-quoted one; a quoted value
+  that does not close on its line, or that carries content after its closing quote, is refused. A value
+  that opens any other node form -- a flow collection, a tag/anchor/alias, a block scalar, a nested block
+  structure -- is refused too: each can spell fields of its own.
+- `_mapping_entry` refuses a line whose own start opens a flow collection (`- {id: …}`), a node property
+  (`&a apiKey:`), a nested sequence (`- - apiKey:`), an empty key (`: …`), or a quoted key it cannot
+  decode (the rules for YAML's explicit `?` form and a quoted key that does not close are unchanged).
+- `_seed_block` reads every value of a field the block keeps (`_require_readable_value`) before copying it;
+  the two names whose whole value it replaces or drops are not read that way, because no part of either is
+  copied.
+- Each refusal reaches the run's own output through the existing `_UnseedableBlock` path, so the report
+  names the provider and the form it could not read.
+
+Five new cases in `scripts/tests/test_omp_native_check.py` pin these rules -- `SeedCases
+.test_a_flow_spelled_entry_is_refused_before_anything_is_copied`,
+`.test_a_quoted_endpoint_is_decoded_before_the_credential_check`,
+`.test_a_key_form_the_reader_mangles_is_refused_whole`,
+`.test_a_value_form_the_reader_cannot_follow_is_refused_whole` and `DefaultRoleCases
+.test_a_single_quoted_role_is_decoded_the_way_yaml_reads_it` -- and two round-2 fixtures whose key rules a
+later value rule could mask now carry their credential as a plain value, so each rule reddens on its own
+when reverted.
+
+The rules this surface claims, each proved by one executed mutation (the line reverted, the pinning case
+run, the bytes restored -- `scripts/omp-native-check.py` sha256
+`815832c8e2123d6aac56c5d2c39ff02fd4f5b7397386f61489050c58813c7e06` after every restore; no mutation
+survived its case; the `(new)` rows are this round's rules, the others the seeder's pre-existing ones):
+
+| Rule | Line disabled | Observed |
+| --- | --- | --- |
+| a flow-spelled entry is refused (new) | the `{[` branch of `_mapping_entry` | `test_a_flow_spelled_entry…` FAIL -- `Lists differ: ['block-spelled-endpoint', 'flow-spelled-endpoint'] != ['block-spelled-endpoint']` |
+| a key under a tag/anchor/alias is refused (new) | the `&*!` branch of `_mapping_entry` | `test_a_key_form_the_reader_mangles…` FAIL -- `Lists differ: ['anchored-key', 'canonical-endpoint', 'tagged-header-key'] != ['canonical-endpoint']` |
+| a nested sequence marker is refused (new) | the nested-`-` branch of `_mapping_entry` | same case FAIL -- `Lists differ: ['canonical-endpoint', 'nested-marker-key'] != ['canonical-endpoint']` |
+| an empty key is refused (new) | the empty-key branch of `_mapping_entry` | same case FAIL -- `Lists differ: ['canonical-endpoint', 'empty-key'] != ['canonical-endpoint']` |
+| a quoted value's escapes are decoded (new) | `json.loads` replaced by the old quote-strip | `test_a_quoted_endpoint_is_decoded…` FAIL -- `Lists differ: ['escaped-model-endpoint', 'escaped-provider-endpoint'] != ['decoded-endpoint']` |
+| a quoted value's undecodable escapes are refused (new) | `except json.JSONDecodeError` falling back to the raw text | `test_a_value_form_the_reader_cannot_follow…` FAIL -- `Lists differ: ['canonical-endpoint', 'undecodable-quoted-value'] != ['canonical-endpoint']` |
+| a quoted value that does not close on its line is refused (new) | the `token is None` branch returning the raw text | same case FAIL -- `Lists differ: ['canonical-endpoint', 'continued-quote-endpoint'] != ['canonical-endpoint']` |
+| content after a quoted value's closing quote is refused (new) | the trailing-content branch | same case FAIL -- `Lists differ: ['canonical-endpoint', 'trailing-content-endpoint'] != ['canonical-endpoint']` |
+| a non-scalar value form is refused (new) | the value-form branch of `_scalar` | same case FAIL -- `Lists differ: ['aliased-endpoint', 'block-scalar-endpoint…'] != ['canonical-endpoint']` |
+| every value a block keeps is read before copying (new) | the `_require_readable_value(value)` call | same case FAIL -- `Lists differ: ['canonical-endpoint', 'flow-value-endpoint', 'undecodable-quoted-value'] != ['canonical-endpoint']` |
+| a single-quoted value's doubled quote is decoded (new) | the `''` -> `'` fold | `test_a_single_quoted_role…` FAIL -- `"proxy/model''s" != "proxy/model's"` |
+| an `apiKey` value is replaced by the placeholder | the replacement branch of `_seed_block` | `test_only_a_loopback_provider_survives…` FAIL -- `'sk-loopback-value-that-must-not-be-written' unexpectedly found in` the written `models.yml` |
+| every `headers` entry is dropped whole | the drop branch of `_seed_block` | `test_quoted_and_spaced_key_spellings…` FAIL -- `'Bearer a-quoted-header-value-that-must-not-be-written' unexpectedly found in` the written `models.yml`, under a kept `"headers":` line |
+| a host provider whose endpoint is not loopback is never seeded | the `loopback_url(base_url)` branch | `test_only_a_loopback_provider_survives…` FAIL -- `Lists differ: ['loopback-proxy', 'remote-endpoint'] != ['loopback-proxy']` |
+| `--provider-base-url` must be credential-free and loopback | both branches of the caller-provider check | `test_a_non_loopback_endpoint_is_never_defined…` FAIL -- `'litellm' unexpectedly found in ['litellm', 'loopback-proxy']` |
+| an endpoint URL carrying a credential is refused whole | the `block_has_credential_endpoint` branch | `test_a_model_level_endpoint_with_a_credential…` FAIL -- `Lists differ: ['model-level-endpoint'] != []` |
+| keys are compared case-insensitively | `key.strip().lower()` -> `key.strip()` | `test_quoted_and_spaced_key_spellings…` FAIL -- `'sk-double-quoted-key-that-must-not-be-written' unexpectedly found in` the written `models.yml`, under a kept `"apiKey":` line |
+| YAML's explicit `?` key form is refused, and said so | the explicit-`?` branch of `_mapping_entry` | `test_a_key_form_the_reader_cannot_decode…` FAIL -- `False is not true : the explicit-key refusal should name YAML's '?' form: ["explicit-key (it opens a mapping entry with an empty key…)"]` |
+| a multiline `apiKey` value is removed whole | the drop after the field's replacement | `test_a_multiline_key_value_is_removed_whole` FAIL -- `'sk-block-scalar-value-that-must-not-be-written' unexpectedly found in` the written `models.yml`, under `apiKey: ccc-native-check` |
+| a quoted key whose escapes cannot be decoded is refused | the key-decode `except json.JSONDecodeError` falling back to the raw text | `test_a_key_form_the_reader_cannot_decode…` FAIL -- `Lists differ: ['canonical-key', 'escaped-key'] != ['canonical-key']` |
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3611 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 285 tests in 5.941s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 30 project-owned prefix(es); files seen by git: 5688 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 141 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The OMP native check was re-run on the same tree (`python3 scripts/omp-native-check.py`, no
+`--resume-prompt`, so no model turn): `RESULT: PASS — 23 check(s), none failed` (exit 0). Its seeded line is
+unchanged from §2 -- `seeded provider(s) ghc-proxy, ghc-proxy-chat from /home/azureuser/.omp/agent; left out:
+tencent-litellm (its endpoint … is not loopback…); apiKey values replaced by 'ccc-native-check', headers
+dropped, modelRoles.default ghc-proxy/gpt-5.6-sol` -- which is also the measurement that this host's own
+home (block-style lists, plain scalars) still seeds through the stricter reader; the harness's own loader
+verified the installed session (`sessionId "01a1ec2a-7e98-777b-96cc-ed5be4ffc281"`, `messageCount 3`, the
+loader's list `['compactionSummary', 'user', 'assistant']`) beside the unknown-id control arm, and every
+digest check around it passed.
+
+Bookkeeping: no carried file changed (the fix touches an owned script, its tests and docs only), so
+`docs/upstream.md`, `scripts/upstream-manifest.txt` and the parity step's inputs are untouched; `AGENTS.md`
+is not edited (no layout, gate step, command, read order or agent rule changes -- the seeder's refusal rule
+is stated in `docs/harness.md` and the script's own docstrings, where it already lived); no owner-only
+question arose, so `docs/decisions/OPEN-QUESTIONS.md` gains no entry; no goal file is moved (0006 is still
+the increment under review).
+
 The counts the increment is pinned by:
 
 | Number | Where it comes from |
@@ -440,7 +554,7 @@ The counts the increment is pinned by:
 | `entries {'compaction': 1, 'message': 7, 'model_change': 1, 'role:assistant': 4, 'role:toolResult': 1, 'role:user': 2, 'session': 1, 'title': 1}` | the installed OMP file's own bytes (§2) |
 | `messageCount 3` with `['compactionSummary', 'user', 'assistant']` | OMP's own loader's answers, twice (§1, §2), against a file holding seven message entries — the loader builds context from the walk the file's own `parentId` values make, so the pre-compaction records are not in it |
 | `session 3625 -> 7176 bytes` / `3595 to 7097 bytes` | the two real turns: the session grew and its pre-existing bytes stayed a prefix (§1, §2) |
-| `269` | the harness's own cases (`python3 -m unittest discover -s scripts/tests`), up from 251: `scripts/tests/test_omp_native_check.py` holds the 18 new ones — its 16 at implementation, the fix round's model-level credential case and the review round's multiline-key case — and the gate's own `selftest` step ran the same suite (`Ran 269 tests in 5.993s (rc=0)`) |
+| `285` | the harness's own cases (`python3 -m unittest discover -s scripts/tests`), up from `267` at implementation: `scripts/tests/test_omp_native_check.py` holds 34 of them — 16 at implementation, the fix round's model-level credential case, the review round's eleven (that round's own counts row and console kept `269`, the count of its earlier state; measured on its tree, `ef31bea`, the suite is `280`), and this round's five — and the gate's own `selftest` step ran the same suite (`Ran 285 tests in 5.941s (rc=0)`) |
 
 Documentation and bookkeeping this increment carries: `AGENTS.md` (the route list, the writer/installer/
 verifier files, the OMP native harness, and the OMP rules — its own project spelling, the 256-byte title
