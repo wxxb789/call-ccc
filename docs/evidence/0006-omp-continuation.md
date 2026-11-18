@@ -589,12 +589,59 @@ left out: tencent-litellm (its endpoint … is not loopback…)`, `modelRoles.de
 the load check verified, and the harness's own loader answering `messageCount 3` beside the unknown-id
 control arm.
 
-Bookkeeping for round 4: no carried file changed (an owned script, its tests and docs), so
+bookkeeping for round 4: no carried file changed (an owned script, its tests and docs), so
 `docs/upstream.md`, `scripts/upstream-manifest.txt` and the parity step's inputs are untouched; `AGENTS.md`
 is not edited (no layout, gate step, command, read order or agent rule changes -- the refusal rule lives in
 `docs/harness.md` and the script's docstrings); no owner-only question arose, so
 `docs/decisions/OPEN-QUESTIONS.md` gains no entry; no goal file is moved (0006 is still the increment under
 review); the gate's own steps and counts are in the table below.
+
+### The fifth review round
+
+Round 5's finding was a model-attribution hole on the writer's carried-call path
+(`internal/ccc/pi_target.go`): `writeMessage`'s whitespace branch sends an assistant record whose dialogue
+is whitespace alone to `writeCarriedCalls`, and that function built its entry's model from
+`entryModel(Message{})` -- discarding the record -- so an OMP conversion stated the target home's
+configured id on a record whose own model the read had answered (counting it as a substitution), while the
+Pi route omitted the member entirely. The entry now states `entryModel(message)`, the answer
+`writeAssistantMessage` already states: the model the read answered for the record whose calls these are,
+with the family's fallback only where it answered none. The function's own doc and the
+`synthesized_tool_call_messages` detail now name the shapes this path actually serves -- the record's
+*role* having no target message was the old claim, which the whitespace branch and the user-with-calls path
+both contradict -- and the report's line for that count names the whitespace-only dialogue among the
+records it comes from. `TestOMPSessionKeepsTheSourcesModelOnAWhitespaceOnlyCallRecord` pins the two model
+arms on two whitespace-only records (one with a model, one without) in both families' files, beside the
+call-travel, no-dialogue and count/detail assertions on the same entries.
+
+The mutations that name the rules this round's case pins (each disabled once, the case watched fail,
+`internal/ccc/pi_target.go` restored byte for byte; sha256
+`3655d6a3bd3b20566fa9bef0ee46f12cbd42da3a3632dfb1f4c62db58ba6106b` and `internal/ccc/omp_target_test.go`
+sha256 `726889eb50a2ddf0a173a57b6b1279d43db54ffbc6f3532cc9f8a8c3e20e2a9f` after the restores):
+
+| Rule | Line disabled | Observed |
+| --- | --- | --- |
+| the entry states the model the read answered for its record | `b.entryModel(message)` reverted to the reviewed `b.entryModel(Message{})` | `TestOMPSessionKeepsTheSourcesModelOnAWhitespaceOnlyCallRecord` FAIL -- `assistant models = 0 carried from the source, 2 supplied by the target home; want one of each`, and the Pi file holds `0 model member(s)` where the source recorded one |
+| the family's fallback stands in only where the read answered none | the model field replaced by `b.shape.assistantModelFallback` unconditionally | the same case FAIL -- `assistant models = 0 carried from the source, 2 supplied by the target home`, `message_model_attribution count = 0, want 2`, and the Pi file holds `0 model member(s)` |
+| the entry carries the record's calls | the call-block loop emptied (the entry written with no blocks) | the same case FAIL -- `the converted session does not carry the call the whitespace-only record made`, the file's entries printed |
+| the entry holds no dialogue | the record's own dialogue written as a leading text block | the same case FAIL -- `line 4's assistant record holds the record's dialogue text "  \n  "` (and line 5's `"\n"`) |
+
+Beside the pins, a throwaway harness (not committed) converted all ten committed fixtures with both
+writers and compared each converted file with the writer's random identities held fixed (the session id
+and every entry id are fresh per conversion, so the raw bytes differ between any two runs): every fixture's
+digest under the fixed writer equals its digest with the changed line reverted to HEAD's, and every
+conversion reports `synthesized_tool_call_messages` = 0 -- the changed line is not reached by any committed
+fixture, so the recorded runs' own numbers stand. The OMP native check was re-run on the host's own home as
+well (`python3 scripts/omp-native-check.py`, exit 0, `RESULT: PASS — 23 check(s), none failed`), its
+conversion line and installed-file shape the ones §2 records (`carried 6 message(s), 1 call(s), 1
+result(s); loss categories named: 31`; `entries {'compaction': 1, 'message': 7, 'model_change': 1,
+'role:assistant': 4, 'role:toolResult': 1, 'role:user': 2, 'session': 1, 'title': 1}`; `4 assistant
+message(s), 0 without the pair`; `messageCount 3`).
+
+`python3 scripts/gate.py` was re-run on this round's tree and printed `GATE: PASS` (exit 0), its steps
+reporting the same verdicts as §6's block above (`gofmt 3611 file(s)`, `build`/`vet` rc=0, `test` `3
+package(s) ok`, `selftest Ran 287 tests`, `parity` carried 5553 files identical, `secrets` no leaks in 141
+files); this round adds one Go case (`internal/ccc` 298 -> 299 test functions by `go test -list`; none
+removed) and no Python case, so every recorded number below and above is unchanged.
 
 The counts the increment is pinned by:
 
@@ -606,10 +653,11 @@ The counts the increment is pinned by:
 | `entries {'compaction': 1, 'message': 7, 'model_change': 1, 'role:assistant': 4, 'role:toolResult': 1, 'role:user': 2, 'session': 1, 'title': 1}` | the installed OMP file's own bytes (§2) |
 | `messageCount 3` with `['compactionSummary', 'user', 'assistant']` | OMP's own loader's answers, twice (§1, §2), against a file holding seven message entries — the loader builds context from the walk the file's own `parentId` values make, so the pre-compaction records are not in it |
 | `session 3625 -> 7176 bytes` / `3595 to 7097 bytes` | the two real turns: the session grew and its pre-existing bytes stayed a prefix (§1, §2) |
-| `287` | the harness's own cases (`python3 -m unittest discover -s scripts/tests`), up from `267` at implementation: `scripts/tests/test_omp_native_check.py` holds 36 of them — 16 at implementation, the fix round's model-level credential case, the review round's eleven (that round's own counts row and console kept `269`, the count of its earlier state; measured on its tree, `ef31bea`, the suite is `280`), the third round's five, and the fourth round's two (the continuation and keyless-provider cases; measured per round on the branch, that file holds `17`, `18`, `29`, `34` methods at `12be17c`/`d3e91ff`/`ef31bea`/`a4acf53`) — and the gate's own `selftest` step ran the same suite (`Ran 287 tests in 5.933s (rc=0)`) |
+| `287` | the harness's own cases (`python3 -m unittest discover -s scripts/tests`), up from `267` at implementation: `scripts/tests/test_omp_native_check.py` holds 36 of them — 16 at implementation, the fix round's model-level credential case, the review round's eleven (that round's own counts row and console kept `269`, the count of its earlier state; measured on its tree, `ef31bea`, the suite is `280`), the third round's five, and the fourth round's two (the continuation and keyless-provider cases; measured per round on the branch, that file holds `17`, `18`, `29`, `34` methods at `12be17c`/`d3e91ff`/`ef31bea`/`a4acf53`) — and the gate's own `selftest` step ran the same suite (`Ran 287 tests in 5.933s (rc=0)`; the fifth round adds a Go case and no Python case) |
 | `23 check(s), none failed` (exit 0) | the OMP native check re-run on the host's own home, once per later review round (§6); no `--resume-prompt`, so the two turn checks do not run |
 | `RESULT: FAIL — 5 check(s) failed: … every assistant record carries a non-empty model and provider, the load check verified the installed session natively, …` (exit 1) | the fourth round's no-provider measurement (§6): the failure a host with no provider this check can use must see instead of a pass |
 | `11 caught` | the fourth round's mutation check: each seeder rule the round touched, reverted once and its pinning case watched fail, script restored byte for byte (`sha256 d304c451…` before and after) |
+| `4 caught` | the fifth round's mutation check: the four rules its new case pins -- the entry states the read's model, the fallback only where it answered none, the calls travel, the entry holds no dialogue -- each disabled once and the case watched fail, `internal/ccc/pi_target.go` restored byte for byte (`sha256 3655d6a3…` after the restores) |
 
 Documentation and bookkeeping this increment carries: `AGENTS.md` (the route list, the writer/installer/
 verifier files, the OMP native harness, and the OMP rules — its own project spelling, the 256-byte title

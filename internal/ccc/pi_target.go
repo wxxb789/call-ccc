@@ -961,12 +961,16 @@ func (b *piSessionBuilder) writeCompaction(message Message) {
 	b.items = append(b.items, TargetItem{Kind: ItemCompactionBoundary, Text: message.Content})
 }
 
-// writeCarriedCalls writes the calls one message carries when that message's own role has no entry in
-// the target to hold them: a record the provider flagged as system-injected, or one written with a role
-// this build does not classify, whose text is omitted but whose calls and results are real recorded
-// evidence. Pi records a call as a block of the assistant message that made it, so the calls are written
-// in an entry of their own; the entry holds no dialogue, because the source recorded the words on a
-// record whose role this target has no message for, and the count says the entry is this conversion's.
+// writeCarriedCalls writes the calls one message carries when this conversion writes no message entry
+// of that record's own that can carry them: a record the provider flagged as system-injected, one
+// written with a role this build writes no message for (a native tool row, a system or unclassified
+// role, or a user record whose own entry is text alone), or an assistant record whose dialogue is
+// whitespace alone (writeMessage's whitespace branch). Pi records a call as a block of the assistant
+// message that made it, so the calls are written in an entry of their own; the entry holds no dialogue,
+// because the words the source recorded on the record are the part this conversion does not write, and
+// the count says the entry is this conversion's. Its model is the read's own answer for that record,
+// stated the same way writeAssistantMessage states it through entryModel: the source's where the read
+// answered one, and the family's configured fallback only where it answered none.
 func (b *piSessionBuilder) writeCarriedCalls(message Message) {
 	calls := b.distinctCalls(message)
 	if len(calls) == 0 {
@@ -983,7 +987,7 @@ func (b *piSessionBuilder) writeCarriedCalls(message Message) {
 		message: &piMessage{
 			Role:       piRoleAssistant,
 			Content:    blocks,
-			Model:      b.entryModel(Message{}),
+			Model:      b.entryModel(message),
 			Provider:   b.shape.assistantProvider,
 			Usage:      b.usageFor(),
 			StopReason: piStopToolUse,
@@ -1210,10 +1214,12 @@ func (b *piSessionBuilder) losses() []Loss {
 			Disposition: DispositionCarriedWithCaveat,
 			Count:       b.lossCarriedCallEntries,
 			Detail: "these entries are this conversion's: the source recorded the calls on a record " +
-				"whose role (a provider's system record, a native tool row) has no Pi message to hold " +
-				"them, and Pi records a call as a block of the assistant message that made it. The entry " +
-				"carries the recorded call blocks and their results and no dialogue, because the " +
-				"source's own words were recorded on a record whose text this conversion omits",
+				"this conversion writes no message entry of its own for -- a provider's system " +
+				"record, a role the format has no message for, a user record whose calls its text " +
+				"entry cannot hold, or an assistant record whose dialogue is whitespace alone -- and " +
+				"Pi records a call as a block of the assistant message that made it, so the calls are " +
+				"written in an entry of their own. The entry carries the recorded call blocks and " +
+				"their results and no dialogue",
 		},
 		{
 			Category:    "unclassified_role_messages",

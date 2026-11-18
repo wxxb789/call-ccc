@@ -276,6 +276,119 @@ func TestOMPSessionExplainsTheModelsItSuppliedForEveryRecord(t *testing.T) {
 	t.Error("the report carries no message_model_attribution entry")
 }
 
+// TestOMPSessionKeepsTheSourcesModelOnAWhitespaceOnlyCallRecord pins the model a carried-call entry
+// states, on the shape that reaches it from an assistant record: the dialogue is whitespace, so the
+// record's calls travel in an entry of their own -- and the model that entry states follows entryModel's
+// own rule there too: the model the read answered for the record, and only where the read answered none
+// the target home's configured id (never a substitution beside a record's own model). The Pi arm of the
+// same writer is pinned beside it, because that format leaves the member out: losing the model there
+// drops it from the file with no fallback hiding it.
+func TestOMPSessionKeepsTheSourcesModelOnAWhitespaceOnlyCallRecord(t *testing.T) {
+	at := func(second int) time.Time { return time.Date(2026, 5, 5, 10, 0, second, 0, time.UTC) }
+	newConversation := func() Conversation {
+		return Conversation{
+			Source: SourceIdentity{Provider: "claude", SessionID: "source-session", Cwd: "/work/project"},
+			Messages: []Message{
+				{Ordinal: 0, Role: string(parser.RoleUser), Content: "Check the retry policy.",
+					Dialogue: "Check the retry policy.", SourceUUID: "u1", Timestamp: at(0)},
+				// A whitespace-only dialogue beside a call and a model: writeMessage's whitespace branch
+				// drops the whitespace and writes the calls, and the model is the read's own answer for
+				// this record rather than something for the family's fallback to fill in.
+				{Ordinal: 1, Role: string(parser.RoleAssistant), DialogueProjected: true,
+					Dialogue: "  \n  ", Model: "claude-sonnet-4-5",
+					SourceUUID: "a1", SourceParentUUID: "u1", Timestamp: at(1),
+					ToolCalls: []ToolCall{{ToolUseID: "toolu_1", Name: "Read",
+						InputJSON: `{"file_path":"/work/project/policy.go"}`}}},
+				// The same shape with no model: this is the record the family's fallback rule is for, and
+				// the two arms have to be told apart on this path as they are on writeAssistantMessage's.
+				{Ordinal: 2, Role: string(parser.RoleAssistant), DialogueProjected: true,
+					Dialogue: "\n", SourceUUID: "a2", SourceParentUUID: "a1", Timestamp: at(2),
+					ToolCalls: []ToolCall{{ToolUseID: "toolu_2", Name: "Read",
+						InputJSON: `{"file_path":"/work/project/go.mod"}`}}},
+			},
+			Fidelity: Fidelity{ReadFrom: "source"},
+		}
+	}
+	session, err := ConvertToOMPSession(newConversation(), ompFixtureTargetOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	for _, callID := range []string{"toolu_1", "toolu_2"} {
+		if !strings.Contains(string(session.Data), callID) {
+			t.Errorf("the converted session does not carry the call the whitespace-only record made:\n%s",
+				session.Data)
+		}
+	}
+	assistants := 0
+	travelled, supplied := 0, 0
+	for index, entry := range ompEntries(t, session.Data) {
+		if entry.Type != piEntryMessage || entry.Role != piRoleAssistant {
+			continue
+		}
+		assistants++
+		if entry.Text != "" {
+			t.Errorf("line %d's assistant record holds the record's dialogue text %q: the whitespace is "+
+				"the part this conversion drops", index, entry.Text)
+		}
+		switch entry.Model {
+		case "claude-sonnet-4-5":
+			travelled++
+		case "home-model":
+			supplied++
+		default:
+			t.Errorf("line %d's assistant record states model %q, want the model the source's own record "+
+				"recorded or, for the record that recorded none, the target home's own configured id",
+				index, entry.Model)
+		}
+	}
+	if assistants != 2 {
+		t.Fatalf("the converted session holds %d assistant record(s), want the one entry each of the "+
+			"source's two whitespace-only records projects to", assistants)
+	}
+	if travelled != 1 || supplied != 1 {
+		t.Errorf("assistant models = %d carried from the source, %d supplied by the target home; want one "+
+			"of each: only the record the read answered no model for may carry the home's configured id",
+			travelled, supplied)
+	}
+	found := false
+	for _, loss := range session.Losses {
+		if loss.Category != "message_model_attribution" {
+			continue
+		}
+		found = true
+		if loss.Count != 2 {
+			t.Errorf("message_model_attribution count = %d, want 2: the one model that travelled and the "+
+				"one the target home supplied", loss.Count)
+		}
+	}
+	if !found {
+		t.Error("the report carries no message_model_attribution entry")
+	}
+	// The entries these two records project to are this conversion's, and the report's line for that
+	// count has to name the whitespace-only shape among the records it comes from: it is the shape whose
+	// dialogue this conversion drops rather than a role the format has no message for.
+	if synthesized := lossCount(t, session.Losses, "synthesized_tool_call_messages"); synthesized.Count != 2 ||
+		!strings.Contains(synthesized.Detail, "whitespace alone") {
+		t.Errorf("synthesized_tool_call_messages = %+v, want the two whitespace-only records' call entries "+
+			"counted and the detail naming the whitespace-only dialogue among their records", synthesized)
+	}
+
+	// The same records through Pi's own format, where a lost model is not substituted but omitted: the
+	// one model member the file may hold is the source's own.
+	piSession, err := ConvertToPiSession(newConversation(), PiTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting to Pi: %v", err)
+	}
+	if got := strings.Count(string(piSession.Data), `"model":`); got != 1 {
+		t.Errorf("the converted Pi session holds %d model member(s), want exactly the one the source's own "+
+			"record recorded:\n%s", got, piSession.Data)
+	}
+	if !strings.Contains(string(piSession.Data), `"model":"claude-sonnet-4-5"`) {
+		t.Errorf("the converted Pi session does not carry the model the whitespace-only record's own "+
+			"message recorded:\n%s", piSession.Data)
+	}
+}
+
 // TestOMPSessionWithoutTheHomesAnswerRecordsNoBinding pins the dry-run shape and the report that goes with
 // it: the harness is not started, so no session model binding is written and no endpoint label is stated
 // on the assistant records -- and both facts are named in the report rather than left to be inferred from
