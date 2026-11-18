@@ -18,7 +18,9 @@ Rules (``docs/conventions.md`` states the schema, ``docs/harness.md`` the gate s
   Go test name that a ``_test.go`` under that package declares, and the test must **run and pass** —
   one ``go test -count=1 -v -run '^(…|…)$' <package>`` per package (the same ``scripts/gate-goflags.txt``
   flags the gate's own steps use), whose output must hold ``--- PASS: <test>`` for every cited test. A
-  cited test that is absent, that fails or that the run reports ``--- SKIP`` is a failure naming the row;
+  cited test that is absent, that fails or that the run reports ``--- SKIP`` is a failure naming the row,
+  and a package whose cited names would outgrow a process command line goes over in bounded batches by
+  the gate's own ``gofmt_batches`` rule;
 - print: one line per file (``<relative path>: <n> row(s) verified``), the summary
   (``citations: <rows> row(s) across <files> file(s) verified``) and the verdict line
   (``citations: PASS``, ``citations: FAIL — …``, ``citations: SKIP — …``, ``citations: BOUNDARY — …``),
@@ -28,9 +30,12 @@ Exit codes: ``0`` PASS, ``1`` FAIL, ``2`` SKIP, ``3`` BOUNDARY.
 
 ``SKIP`` means no manifest was found anywhere: the manifest *is* an increment's acceptance surface, so
 the ``citations`` step is required (``scripts/gate-required.txt``) and the gate rewrites that SKIP to a
-failure — a tree that lost its acceptance surface must not read as passing. ``BOUNDARY`` is the gate's
-own platform boundary, read from ``scripts/gate.py``'s ``go_env()`` rather than restated here: on
-Windows without a C compiler the Go steps cannot run, and neither can this one.
+failure — a tree that lost its acceptance surface must not read as passing. The knobs, the batching rule
+and the host boundary are read through ``scripts/gate.py``'s own module (``gate_module()``) rather than
+restated here, with this checker's tree handed to it; a tree whose ``scripts/gate.py`` cannot be loaded
+is a ``FAIL`` naming that, because nothing could then be read the way the gate reads it. ``BOUNDARY`` is
+that module's own platform boundary (``go_env()``): on Windows without a C compiler the Go steps cannot
+run, and neither can this one.
 
 The static half — the identifier, the package and the ``_test.go`` declaration — runs before any tool:
 a violation there is answered without invoking ``go`` at all.
@@ -58,12 +63,6 @@ COLUMNS = ("rule_id", "test", "package", "artifact")
 MANIFEST_DIR = Path("docs") / "evidence"
 MANIFEST_GLOB = "*-citations.tsv"
 
-#: How many characters of cited-test names one ``go test -run`` may carry: the bound
-#: ``scripts/gate.py``'s ``gofmt_batches`` uses for its file list, for the same reason (Windows refuses
-#: a process command line past 32 767 characters). A package's cited tests are one invocation unless
-#: the alternation alone would outgrow this.
-BATCH_CHARS = 8000
-
 #: One Go command's deadline: the gate's own default, so a stalled run is a result rather than a hang.
 GO_TIMEOUT = 1800
 
@@ -71,16 +70,14 @@ GO_TIMEOUT = 1800
 #: them all.
 VIOLATIONS_PRINTED = 40
 
-#: A Go identifier, and a name ``go test`` runs at top level: ``Test`` then a character that is not a
-#: lowercase letter (``testing/match.go``'s own ``isTest``).
+#: A Go identifier's shape, ASCII-only on purpose. A disclosed limit: ``TestΔ`` is a name ``go test``
+#: runs and this checker refuses (``testing``'s own ``isTest`` reads runes, not a byte range); the
+#: refusal fails safe — it cannot let a bad citation through — and no row of the seed manifest hits it.
 GO_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 #: The package column: one package in the tree's own ``./`` spelling (``./internal/ccc``), which is what
 #: ``go test`` is handed — not a pattern, not a module path.
 PACKAGE_SHAPE = re.compile(r"^\./[A-Za-z0-9_.][A-Za-z0-9_./-]*$")
-
-#: The verdict line's own spelling (the gate reads its status from this vocabulary, in these words).
-VERDICT = re.compile(r"^citations: (PASS|FAIL|SKIP|BOUNDARY|N/A)(?: — .*)?$")
 
 
 class Citation(NamedTuple):
@@ -94,11 +91,14 @@ class Citation(NamedTuple):
 
 
 def run(cmd: list[str], env: dict[str, str] | None = None, timeout: int = GO_TIMEOUT):
-    """Run one command in the tree under test, answering the shapes the gate's own ``run()`` does.
+    """Run one command in the tree under test.
 
-    A tool that could not be started is a result, not a crash (``rc=127`` for a missing binary, ``126``
+    The launch-failure answers are the gate's own ``run()``'s (``rc=127`` for a missing binary, ``126``
     for any other launch failure, the command named in the detail because Windows' own message does not
-    hold it), and one that outran its deadline is ``rc=124``.
+    hold it). The deadline arm is this checker's own, and the difference is deliberate: a stalled
+    ``go test`` is ``rc=124`` here — answered as ``did not pass`` — where the gate's ``run()`` lets the
+    platform's ``TimeoutExpired`` through. A case in ``scripts/tests/test_obligation_citations.py``
+    pins that answer.
     """
     merged = os.environ.copy()
     merged.update(env or {})
@@ -119,39 +119,29 @@ def run(cmd: list[str], env: dict[str, str] | None = None, timeout: int = GO_TIM
         )
 
 
-def read_list(path: Path) -> list[str]:
-    """One entry per line, ``#`` comments and blanks dropped (the shape ``gate.py`` reads knobs with)."""
-    if not path.exists():
-        return []
-    items: list[str] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.split("#", 1)[0].strip()
-        if line:
-            items.append(line)
-    return items
+_GATE = None
 
 
-def go_flags() -> list[str]:
-    """``scripts/gate-goflags.txt`` folded into one flag per token (the gate's own ``go_flags()`` rule).
+def gate_module():
+    """``scripts/gate.py`` — the sibling whose readers, batching rule and host boundary this uses.
 
-    The knob file holds one flag per line (``-tags fts5``), and the two tokens are two arguments to
-    ``go test``: handing the line over whole would ask the tool for a flag named ``-tags fts5``.
+    The knobs (``read_list``, ``go_flags``), the batching rule (``gofmt_batches``) and the host boundary
+    (``go_env()``) come from that module's own helpers rather than from copies here, so the two cannot
+    drift apart: a knob the gate reads is the knob this checker reads, and a Windows host without a C
+    compiler is the same disclosed boundary for this step as for the Go steps it excuses. Its helpers
+    resolve their tree through its module-level ``ROOT``, and this checker's tree is its own (a case
+    re-points it), so the root is handed over before any helper is used. Imported once per process;
+    ``main()`` reports a load that fails instead of crashing on it.
     """
-    return [token for line in read_list(ROOT / "scripts" / "gate-goflags.txt") for token in line.split()]
-
-
-def load_gate():
-    """Import ``scripts/gate.py`` — the sibling that runs this checker.
-
-    The host boundary and the Go environment come from that module's own ``go_env()`` rather than from a
-    copy here, so the two cannot drift apart: a Windows host without a C compiler is the same disclosed
-    boundary for this step as for the Go steps it excuses.
-    """
-    path = Path(__file__).resolve().parent / "gate.py"
-    spec = importlib.util.spec_from_file_location("ccc_citation_gate", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    global _GATE
+    if _GATE is None:
+        path = Path(__file__).resolve().parent / "gate.py"
+        spec = importlib.util.spec_from_file_location("ccc_citation_gate", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _GATE = module
+    _GATE.ROOT = ROOT
+    return _GATE
 
 
 def manifests() -> list[Path]:
@@ -215,7 +205,8 @@ def parse_manifest(path: Path) -> tuple[list[Citation], list[str]]:
 
 
 def legal_test_name(name: str) -> bool:
-    """Whether ``go test`` would run a top-level function of that name (``testing``'s own rule)."""
+    """Whether ``go test`` would run a top-level function of that name (``testing``'s own rule:
+    ``Test`` then a character that is not a lowercase letter — ``match.go``'s ``isTest``)."""
     if not GO_IDENTIFIER.match(name) or not name.startswith("Test"):
         return False
     rest = name[len("Test"):]
@@ -302,28 +293,6 @@ def static_problems(files: list[tuple[str, list[Citation]]], patterns: list[str]
     return problems
 
 
-def batches(names: list[str], limit: int = BATCH_CHARS) -> list[list[str]]:
-    """Split cited test names into ``go test -run`` invocations that fit a process command line.
-
-    The rule ``gate.py``'s ``gofmt_batches`` applies to its file list: the batches together are the whole
-    list, in the same order, and a name longer than the bound is a batch of its own rather than a
-    dropped one.
-    """
-    groups: list[list[str]] = []
-    group: list[str] = []
-    used = 0
-    for name in names:
-        cost = len(name) + 1  # the separator the alternation spends between names
-        if group and used + cost > limit:
-            groups.append(group)
-            group, used = [], 0
-        group.append(name)
-        used += cost
-    if group:
-        groups.append(group)
-    return groups
-
-
 def go_test_command(package: str, names: list[str], flags: list[str]) -> list[str]:
     """One ``go test`` invocation for one package's cited tests (never one invocation per row)."""
     return ["go", "test", "-count=1", "-v", *flags, "-run", "^(" + "|".join(names) + ")$", package]
@@ -380,29 +349,29 @@ def main() -> int:
         files.append((relative(path), rows))
         violations.extend(problems)
     verified = {name: 0 for name, _rows in files}
-    patterns = read_list(ROOT / "scripts" / "gate-targets.txt") or ["./..."]
-    if not violations:
-        violations.extend(static_problems(files, patterns))
-    if violations:
-        return report(files, verified, violations, FAIL, f"{len(violations)} violation(s)")
-
     try:
-        env, boundary = load_gate().go_env()
-    except Exception as exc:  # the boundary's own home could not be read: that is the answer
+        gate = gate_module()
+    except Exception as exc:  # the sibling's own home could not be read: that is the answer
         return report(
             files,
             verified,
-            [f"scripts/gate.py, whose `go_env()` this checker reads its host boundary from, could not be "
+            [f"scripts/gate.py, whose readers and `go_env()` this checker delegates to, could not be "
              f"loaded: {exc!r}"],
             FAIL,
             "1 violation(s)",
         )
+    patterns = gate.read_list("gate-targets.txt") or ["./..."]
+    if not violations:
+        violations.extend(static_problems(files, patterns))
+    if violations:
+        return report(files, verified, violations, FAIL, f"{len(violations)} violation(s)")
+    env, boundary = gate.go_env()
     if boundary:
         return report(files, verified, [], BOUNDARY, boundary)
     if not shutil.which("go"):
         return report(files, verified, [], FAIL, "go not found on PATH")
 
-    flags = go_flags()
+    flags = gate.go_flags()
     entries = [(name, row) for name, rows in files for row in rows]
     order: list[str] = []
     for _name, row in entries:
@@ -414,7 +383,9 @@ def main() -> int:
             if row.package == package and row.test not in names:
                 names.append(row.test)
         unverified: dict[str, str] = {}
-        for group in batches(names):
+        # The gate's own batching rule: unless the alternation alone would outgrow a process command
+        # line, a package's cited tests are one invocation.
+        for group in gate.gofmt_batches(names):
             proc = run(go_test_command(package, group, flags), env=env)
             passed, others = outcomes((proc.stdout or "") + (proc.stderr or ""))
             for name in group:

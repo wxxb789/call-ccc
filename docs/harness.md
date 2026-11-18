@@ -241,7 +241,7 @@ says so.
 - `scripts/obligation-citations.py` — the obligation manifests under `docs/evidence/` (above); run by
   the `citations` step, and runnable on its own for a faster answer on one tree.
 - `scripts/tests/` — regression tests for the gate, the parity checker, the importer, the obligation
-  citations, the native checks and the continuation evidence's own claims (`test_evidence_claims.py`:
+  citations, the native checks and the evidence records' own claims (`test_evidence_claims.py`:
   a §5 comparison cell that credits a recorded run's answer may only quote words that run's recorded
   output holds;
   `test_gate_transcript_claims.py`: a record's quoted `parity` line is the gate's own rendering — its end

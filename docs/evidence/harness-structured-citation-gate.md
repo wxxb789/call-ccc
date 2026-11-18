@@ -6,15 +6,15 @@ Branch `chore/structured-obligation-citations`, off `origin/main` (`338df94`); t
 worktree for operator verification — nothing was committed, pushed or opened as a pull request.
 
 What it adds: `scripts/obligation-citations.py` (the checker), the **required** `citations` gate step
-(`scripts/gate.py`, `scripts/gate-required.txt`), `scripts/tests/test_obligation_citations.py` (16
+gate (`scripts/gate.py`, `scripts/gate-required.txt`), `scripts/tests/test_obligation_citations.py` (21
 cases), the seed manifest `docs/evidence/0002-citations.tsv` (36 rows), and the docs that state the
 schema and the step (`docs/conventions.md`, `docs/harness.md`, `AGENTS.md`).
 
 ## 1. The gate, on the delivered bytes
 
-`python3 scripts/gate.py` → `GATE: PASS`, exit `0` (35.1 s; the `selftest` step's own time moves between
-runs — `6.801s` here and `7.526s` on the same tree a minute earlier — the count and the exit status are
-the stable part):
+`python3 scripts/gate.py` → `GATE: PASS`, exit `0` (about 38 s on this tree; the `selftest` step's own
+time moves between runs — `7.4s` on the applied suite's own run and `8.548s` here, minutes apart — the
+count and the exit status are the stable part):
 
 ```
 gate: <repo>
@@ -23,16 +23,23 @@ gate: go=<go 1.27.4> targets=./cmd/ccc/... ./internal/ccc/...
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 306 tests in 6.801s (rc=0)
+  PASS     selftest Ran 311 tests in 8.548s (rc=0)
   PASS     parity   <the line quoted as fragments below>
   PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified
-  PASS     secrets  no leaks found in 147 file(s) this repository owns (the carried upstream tree is
-                    covered by the parity step, not by this scan)
+  PASS     secrets  no leaks found in 148 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
 
-The `parity` step's line is the gate's own 800-character rendering of the checker's stdout (its leading
-`…` is that rendering's cut), so it is quoted here as the fragments it holds rather than as one line:
+The `secrets` step's count is the files this repository owns — every file under an owned prefix of the
+carry manifest, ignored scratch included, because that is what the step stages for the scan. This
+worktree held ten `scripts/tests/__pycache__` entries when the run above printed `148`; the same tree
+with that scratch removed counts `138`, and a re-run prints `138` plus however many ignored files an
+owned prefix happens to hold. The number is a scope statement, not a claim about tracked files.
+
+The `parity` step's line is the gate's own elision — the gate's 800-character rendering of the checker's
+stdout (`tail(proc.stdout, 800)` with ` | ` where line feeds stood), so its leading `…` is the elision's
+cut and its end is the checker's own — and it is quoted here as the fragments it holds rather than as one
+line:
 `reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584`, `carried: 5553 file(s) identical to the
 pinned revision (compared through git's own object store)`, `deviations: 27 upstream path(s) declared (1
 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared`,
@@ -83,14 +90,20 @@ The failure names the file and the line, and the step's own name is the reason t
 
 `scripts/tests/test_obligation_citations.py` pins every rule of the plan's §3, its boundaries and the
 gate wiring. Each case was shown to fail on its rule broken by a temporary pattern-addressed edit to the
-shipped checker or the shipped gate, run once with the named case, and restored afterwards from a copy
-taken before the edit — every restore compared byte-for-byte (`sha256sum -c`; checker `0c7cd18e…`, gate
-`1472fb51…`, both unmodified at the end of the run). Every command below is
-`python3 -m unittest scripts.tests.test_obligation_citations.<Case>.<case>` and exited `1`.
+shipped checker, the shipped gate or (for the record's own row) the record, run once with the named
+case, and restored afterwards from a copy taken before the edit — every restore compared byte-for-byte
+(`sha256sum -c`). The rows down to `test_the_gate_rewrites_a_skipped_citations_step_when_it_is_required`
+were recorded against the increment's pre-apply checker (`0c7cd18e…`) and gate (`1472fb51…`); the eight
+rows after them were recorded by the apply pass on the applied checker (`49e88616…`) and the unchanged
+gate — they are the simplify report's findings 6–11 and the two discovery-guard rows, and the four
+earlier rows whose mutation anchor moved with the delegation (the three `batches` rows and the `go_flags`
+row) were re-run there too rather than left as text about code that moved. Every command below is
+`python3 -m unittest <module>.<Case>.<case>` — `scripts.tests.test_obligation_citations` unless the row
+names another module — and exited `1`.
 
 | case | rule it pins | mutation | observed |
 | --- | --- | --- | --- |
-| `…CitationsCase.test_a_well_formed_manifest_verifies_every_row` | the test runs (positive control) | checker: `for group in batches(names):` → `for group in []:` | `AssertionError: 0 != 1` — no invocation recorded while the verdict still read PASS |
+| `…CitationsCase.test_a_well_formed_manifest_verifies_every_row` | the test runs (positive control) | checker: `for group in gate.gofmt_batches(names):` → `for group in []:` | `AssertionError: 0 != 1` — no invocation recorded while the verdict still read PASS |
 | the same case | the printed per-file line | checker: `print(f"{name}: {n} row(s) verified")` → `print(f"{name}: verified")` | `AssertionError: Lists differ: [] != ['docs/evidence/0002-citations.tsv: 2 row(s) verified']` |
 | the same case (its second half) | one test cited twice is requested once and verifies both rows | checker: `row.test not in names` dropped from the per-package name list | `AssertionError: '^(TestAlpha\|TestAlpha)$' != '^(TestAlpha)$'` |
 | `test_a_header_that_is_not_the_four_columns_fails` | the header names exactly the four columns, in order | checker: the header comparison → `if False:` | `AssertionError: 0 != 1` for the missing and the renamed header (both verified), the reordered one beside them |
@@ -104,17 +117,26 @@ taken before the edit — every restore compared byte-for-byte (`sha256sum -c`; 
 | `test_a_cited_test_that_does_not_pass_fails` | `--- PASS` is required; `--- FAIL`/`--- SKIP`/none are failures | checker: `if name in passed:` → `if True:` | `AssertionError: 0 != 1 : …: 2 row(s) verified` (the failing run was reported as a pass) |
 | `test_no_manifest_anywhere_is_a_skip_naming_where_it_looked` | no manifest → SKIP | checker: the `if not found:` branch → `if False:` | `AssertionError: 0 != 2 : citations: 0 row(s) across 0 file(s) verified` (an empty run read as a pass) |
 | `test_the_manifests_are_discovered_and_printed_in_sorted_order` | discovery order is the file-name order | checker: `sorted(…, key=name)` → `reverse=True` | `AssertionError: Lists differ: ['…b-second…', '…a-first…'] != ['…a-first…', '…b-second…']` |
-| `test_one_invocation_per_package_hands_every_cited_test_to_it` | one invocation per package, the knobs' flags | checker: `for group in batches(names):` → `for group in [[name] for name in names]:` | `AssertionError: Lists differ:` one three-row invocation `!=` three one-test invocations |
-| the same case | the flags come from `gate-goflags.txt` | checker: `go_flags()` → `return []` | `AssertionError: Lists differ:` the argv holds no `-tags fts5` |
-| `test_the_run_is_split_only_when_the_alternation_would_outgrow_the_bound` | the command line stays inside the bound | checker: `for group in batches(names):` → `for group in [names]:` | `AssertionError: 1 not greater than 1 : …: 300 row(s) verified` (one invocation for 300 names) |
+| `test_one_invocation_per_package_hands_every_cited_test_to_it` | one invocation per package, the knobs' flags | checker: `for group in gate.gofmt_batches(names):` → `for group in [[name] for name in names]:` | `AssertionError: Lists differ:` one three-row invocation `!=` three one-test invocations |
+| the same case | the flags come from `gate-goflags.txt` | gate: `go_flags()` → `return []` | `AssertionError: Lists differ:` the argv holds no `-tags fts5` |
+| `test_the_run_is_split_only_when_the_alternation_would_outgrow_the_bound` | the command line stays inside the bound | checker: `for group in gate.gofmt_batches(names):` → `for group in [names]:` | `AssertionError: 1 not greater than 1 : …: 300 row(s) verified` (one invocation for 300 names) |
 | `test_the_missing_go_toolchain_is_a_failure_and_the_windows_answer_is_the_boundary` | no `go` is a failure | checker: the missing-tool branch → `if False:` | `AssertionError: 0 != 1` (the run proceeded and verified) |
 | the same case | the host boundary is the gate's `go_env()` answer | checker: the boundary branch → `if boundary and False:` | `AssertionError: 1 != 3` (FAIL where the boundary answers BOUNDARY) |
 | `…GateWiringCase.test_the_gate_step_reads_the_verdict_line_the_checker_printed` | the status comes from the verdict line | gate: `status = verdicts[0]…` → `status = PASS` | `AssertionError: 'FAIL' != 'SKIP'` and `'FAIL' != 'BOUNDARY'` |
 | `test_the_gate_discloses_a_skipped_citations_step_in_a_partial_verdict` | an unrequired SKIP stays a disclosed partial run | gate: the `status in (SKIP, BOUNDARY)` branch → `if False:` | `AssertionError: 1 != 0` (the gate refused a tree it should have disclosed) |
 | `test_the_gate_rewrites_a_skipped_citations_step_when_it_is_required` | a required step that skipped fails the gate | gate: `apply_required`'s rewrite → `if False:` | `AssertionError: 0 != 1` (a tree with no manifest passed) |
+| `…CitationsCase.test_a_run_that_exited_without_a_verdict_is_reported_by_its_rc` | a run that exited without a verdict is reported by its rc, after the per-test lines | checker: `elif proc.returncode != 0:` → `elif False:` | `AssertionError: '…exited rc=1' not found in '…go test printed no `--- PASS:` line for it…'` (the rc arm removed, the fallback answered) |
+| `…CitationsCase.test_a_run_that_outran_its_deadline_is_a_result_not_a_crash` | a stalled `go test` is `rc=124`, not an exception | checker: `except subprocess.TimeoutExpired as expired:` → `except ZeroDivisionError:` | `subprocess.TimeoutExpired: Command '[…]' timed out after 0.2 seconds` (the arm removed, the platform's exception reached the case) |
+| `…CitationsCase.test_the_printed_violations_are_bounded_and_the_verdict_counts_them_all` | the printed violations stop at `VIOLATIONS_PRINTED`; the verdict counts every one | checker: `violations[:VIOLATIONS_PRINTED]` → `violations` | `AssertionError: 41 != 40` (41 violation lines printed) |
+| `…CitationsCase.test_a_tree_whose_gate_cannot_be_loaded_fails_naming_it` | a tree without `scripts/gate.py` is a FAIL naming the sibling | checker: the `try`/`except` around `gate_module()` → the bare call | `FileNotFoundError: [Errno 2] No such file or directory: '…/scripts/gate.py'` |
+| `…CitationsCase.test_a_name_longer_than_the_bound_is_a_batch_of_its_own_rather_than_dropped` | a name longer than the bound is a batch of its own, never a dropped one | gate: `batch.append(path)` → guarded by `if batch or len(path) <= limit:` | `AssertionError: 1 != 2` (both names went over in one invocation) |
+| `…GateWiringCase.test_the_gate_step_reads_the_verdict_line_the_checker_printed` | the PASS detail is the per-file lines, the `citations: `-prefixed ones filtered out | gate: the `not line.startswith("citations: ")` filter dropped | `AssertionError: '…verified \| citations: 1 row(s) across 1 file(s) verified \| citations: PASS' != '…verified'` |
+| `…GateTranscriptElisionClaims.test_every_rule_record_quotes_the_gate_s_own_rendering` | the harness increment's record states the rule and is read by this case | record: the phrase "the gate's own elision" dropped from §1 | `AssertionError: 'harness-structured-citation-gate.md' not found in {'0004-repeatable-continuation-handoffs.md'}` |
+| `…ComparisonCreditsTheRecordedRun.test_every_shipped_comparison_only_quotes_its_recorded_run` | the harness increment's record is discovered by the widened `*.md` glob | test: `glob("*.md")` → `glob("*continuation*.md")` | `AssertionError: 'harness-structured-citation-gate.md' not found in {'0002-claude-to-codex-continuation.md', …}` |
 
-No mutation survived; the digest check after every restore is the one stated above, and the case module
-was re-run whole on the restored bytes (`Ran 16 tests … OK`).
+No mutation survived; the digest check after every restore is the one stated above — the applied checker's
+digest is `49e88616…`, the gate's the same `1472fb51…` — and the case module was re-run whole on the
+restored bytes (`Ran 21 tests … OK`).
 
 ## 4. The seed manifest
 
@@ -162,4 +184,4 @@ every earlier increment that added a script (0006 added the same pair for `scrip
 
 Nothing else on §7's list changed: `scripts/upstream-parity.py`, the workflow files, every carried file,
 the Go targets and flags, and every existing assertion and evidence row are the bytes they were (the
-`selftest` step's 290 cases before this increment all still pass, as part of the 306 in §1).
+`selftest` step's 290 cases before this increment all still pass, as part of the 311 in §1).

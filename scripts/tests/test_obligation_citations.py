@@ -5,9 +5,11 @@ A manifest under ``docs/evidence/`` is an increment's acceptance surface, and th
 required, so the checker's own rules need tests like the gate's: a header that is not the four columns,
 a row with a missing or an extra cell, a rule cited twice, a test no ``_test.go`` declares, a name
 ``go test`` would not run, a package the gate does not test, a cited test that fails, skips or is not
-reported at all, and a tree whose manifest is gone all have to come back as the verdict the contract
-names — and the positive control proves the reading is live rather than vacuous (it asserts the row
-count the run verified, so a checker that verified nothing cannot pass it).
+reported at all, a run that exited non-zero with no verdict line, a run that outran its deadline, a
+cited name longer than the batch bound, a flood of violations past the printed bound, a tree whose
+manifest is gone, and a tree whose ``scripts/gate.py`` cannot be loaded all have to come back as the
+verdict the contract names — and the positive control proves the reading is live rather than vacuous (it
+asserts the row count the run verified, so a checker that verified nothing cannot pass it).
 
 Every case drives the shipped checker in-process with ``ROOT`` pointed at a throw-away tree and the
 checker's runner seam (``run``) answering the ``go test`` invocation, so no case depends on a Go
@@ -36,7 +38,6 @@ from pathlib import Path
 from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1]
-REPO_ROOT = SCRIPTS.parent
 CHECKER = SCRIPTS / "obligation-citations.py"
 GATE = SCRIPTS / "gate.py"
 
@@ -364,6 +365,80 @@ class CitationsCase(CitationsTree):
         self.assertEqual(rc, 1, text)
         self.assertIn("go test printed no `--- PASS:` line for it", text)
 
+    def test_a_run_that_exited_without_a_verdict_is_reported_by_its_rc(self) -> None:
+        """A package that does not build prints no per-test line: the run's own rc is the message.
+
+        The rc arm is the last fallback, so a run that failed *and* printed a per-test line reports
+        that line instead — the second half pins the precedence beside the first.
+        """
+        self.declare("TestAlpha")
+        self.manifest([self.row("A1", "TestAlpha")])
+
+        rc, text, _commands = self.drive(
+            answer=lambda cmd: tool_result(cmd, 1, "", "build failed\n")
+        )
+        self.assertEqual(rc, 1, text)
+        self.assertIn(
+            "rule A1: test TestAlpha in ./internal/ccc did not pass — "
+            "the `go test` run for it exited rc=1",
+            text,
+        )
+
+        def failing_but_reported(cmd):
+            return tool_result(cmd, 1, "--- FAIL: TestAlpha (0.00s)\n", "")
+
+        rc, text, _commands = self.drive(answer=failing_but_reported)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("did not pass — go test reported `--- FAIL: TestAlpha`", text)
+        self.assertNotIn("exited rc=", text)
+
+    def test_a_run_that_outran_its_deadline_is_a_result_not_a_crash(self) -> None:
+        """A stalled ``go test`` answers ``rc=124`` with its deadline named, rather than raising.
+
+        This arm is this checker's own — the gate's ``run()`` lets ``TimeoutExpired`` through — and it
+        is what turns a `go test` that never answers into a citation's own ``did not pass`` instead of
+        a traceback with no verdict at all. Both the platform's own raising (a real child outliving a
+        short deadline) and the raise shape itself are driven here.
+        """
+        checker = load_checker()
+        checker.ROOT = self.root
+
+        stalling = [sys.executable, "-c", "import time; time.sleep(30)"]
+        proc = checker.run(stalling, timeout=0.2)
+        self.assertEqual(proc.returncode, 124, proc.stderr)
+        self.assertEqual(proc.stdout, "")
+        self.assertIn(sys.executable, proc.stderr)
+        self.assertIn("no answer within 0.2 s", proc.stderr)
+
+        # The platform's shape: the exception carries the output captured so far, and the answer
+        # passes it on rather than dropping it.
+        with mock.patch.object(
+            checker.subprocess, "run",
+            side_effect=subprocess.TimeoutExpired(["go", "test"], 7, output="ok  \t./internal/ccc\n"),
+        ):
+            proc = checker.run(["go", "test"], timeout=7)
+        self.assertEqual(proc.returncode, 124, proc.stderr)
+        self.assertEqual(proc.stdout, "ok  \t./internal/ccc\n")
+        self.assertEqual(proc.stderr, "go: no answer within 7 s\n")
+
+    def test_the_printed_violations_are_bounded_and_the_verdict_counts_them_all(self) -> None:
+        """A flood of violations prints the bound and names how many it held back.
+
+        The bound is ``VIOLATIONS_PRINTED`` (the gofmt step's own), and the verdict's count is the
+        whole number — so a printout that stops at the bound still tells a reader the size of the
+        run's answer.
+        """
+        bound = load_checker().VIOLATIONS_PRINTED
+        names = [f"TestCitedObligationNumber{index:04d}" for index in range(bound + 1)]
+        self.manifest([self.row(f"A{index:04d}", name) for index, name in enumerate(names)])
+        rc, text, commands = self.drive()
+        self.assertEqual(rc, 1, text)
+        printed = [line for line in text.splitlines() if line.startswith("  docs/evidence/")]
+        self.assertEqual(len(printed), bound, text)
+        self.assertIn(f"  … and {len(names) - bound} more", text)
+        self.assertEqual(self.verdict(text), f"citations: FAIL — {len(names)} violation(s)", text)
+        self.assertEqual(commands, [], text)
+
     def test_no_manifest_anywhere_is_a_skip_naming_where_it_looked(self) -> None:
         self.write("docs/evidence/0002-obligation-matrix.md", "prose evidence, no citation rows\n")
         rc, text, commands = self.drive()
@@ -430,7 +505,7 @@ class CitationsCase(CitationsTree):
         names = [f"TestCitedObligationNumber{index:04d}" for index in range(300)]
         self.declare(*names)
         self.manifest([self.row(f"A{index:04d}", name) for index, name in enumerate(names)])
-        bound = load_checker().BATCH_CHARS
+        bound = load_gate().GOFMT_BATCH_CHARS
         rc, text, commands = self.drive()
         self.assertEqual(rc, 0, text)
         self.assertGreater(len(commands), 1, text)
@@ -439,6 +514,25 @@ class CitationsCase(CitationsTree):
         for cmd in commands:
             alternation = cmd[cmd.index("-run") + 1]
             self.assertLessEqual(len(alternation) - len("^()"), bound, cmd[:1])
+
+    def test_a_name_longer_than_the_bound_is_a_batch_of_its_own_rather_than_dropped(self) -> None:
+        """One name past the bound cannot be split, so it goes alone: nothing is dropped.
+
+        This is the gate's own ``gofmt_batches`` clause, and it is what keeps an over-long cited name
+        from being left out of every batch — a row verified by a run that never asked for it.
+        """
+        bound = load_gate().GOFMT_BATCH_CHARS
+        long_name = "Test" + "A" * bound
+        self.declare(long_name, "TestAlpha")
+        self.manifest([self.row("A1", long_name), self.row("B2", "TestAlpha")])
+        rc, text, commands = self.drive()
+        self.assertEqual(rc, 0, text)
+        self.assertEqual(len(commands), 2, text)
+        self.assertEqual(requested(commands[0]), [long_name], text)
+        self.assertEqual(requested(commands[1]), ["TestAlpha"], text)
+        self.assertEqual(
+            [name for cmd in commands for name in requested(cmd)], [long_name, "TestAlpha"], text
+        )
 
     def test_the_missing_go_toolchain_is_a_failure_and_the_windows_answer_is_the_boundary(self) -> None:
         """The host answer is the gate's own: no ``go`` fails, Windows without a compiler is BOUNDARY."""
@@ -464,6 +558,29 @@ class CitationsCase(CitationsTree):
         self.assertEqual(self.status_of(text), "BOUNDARY", text)
         self.assertIn("C compiler", text)
         self.assertEqual(commands, [], text)
+
+    def test_a_tree_whose_gate_cannot_be_loaded_fails_naming_it(self) -> None:
+        """Without ``scripts/gate.py`` nothing can be read the way the gate reads it: a named FAIL.
+
+        The checker's knob readers, batching rule and host boundary are the gate module's, so a tree
+        that holds a copied checker but no gate is the shape where the load fails — and the answer is
+        a FAIL naming the sibling, not a crash with no verdict line at all.
+        """
+        self.declare("TestAlpha")
+        self.manifest([self.row("A1", "TestAlpha")])
+        self.install_checker()
+        checker = load_module(
+            self.root / "scripts" / "obligation-citations.py", "copied_obligation_citations"
+        )
+        checker.ROOT = self.root
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"PATH": str(self.stub_bin)}), redirect_stdout(out):
+            rc = checker.main()
+        text = out.getvalue()
+        self.assertEqual(rc, 1, text)
+        self.assertEqual(self.status_of(text), "FAIL", text)
+        self.assertIn("scripts/gate.py", text)
+        self.assertIn("could not be loaded", text)
 
 
 class GateWiringCase(CitationsTree):
@@ -514,7 +631,8 @@ class GateWiringCase(CitationsTree):
         self.assertIn("citations", verdict[0])
 
     def test_the_gate_step_reads_the_verdict_line_the_checker_printed(self) -> None:
-        """Every status maps to the gate's own, and a run that printed no single verdict fails."""
+        """Every status maps to the gate's own, the PASS detail is the per-file lines alone, and a
+        run that printed no single verdict fails."""
         self.install_checker()
         gate = load_gate()
         gate.ROOT = self.root
@@ -534,6 +652,22 @@ class GateWiringCase(CitationsTree):
                 ):
                     status, detail = gate.step_citations()
                 self.assertEqual(status, expected, f"{detail}\n{stdout}")
+
+        # The PASS detail is the per-file lines, and only those: the `citations: `-prefixed lines
+        # (the summary and the verdict) are the checker's own accounting. This string is
+        # consumer-visible -- the increment's record quotes it -- so it is asserted, not implied.
+        stdout = (
+            "docs/evidence/0002-citations.tsv: 1 row(s) verified\n"
+            "citations: 1 row(s) across 1 file(s) verified\n"
+            "citations: PASS\n"
+        )
+        with mock.patch.object(
+            gate, "run",
+            side_effect=lambda cmd, env=None, timeout=1800: tool_result(cmd, 0, stdout),
+        ):
+            status, detail = gate.step_citations()
+        self.assertEqual(status, "PASS", stdout)
+        self.assertEqual(detail, "docs/evidence/0002-citations.tsv: 1 row(s) verified", stdout)
 
 
 if __name__ == "__main__":
