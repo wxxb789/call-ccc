@@ -1,7 +1,9 @@
 package ccc
 
 import (
+	"bytes"
 	"context"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
@@ -862,6 +864,36 @@ func runRouteTurn(
 	ctx context.Context, executable, cwd string, args []string, environment []string,
 	timeout time.Duration, stderr io.Writer,
 ) (string, string, error) {
+	answer := newBoundedBuffer(harnessOutputMax)
+	diagnostics, err := runHarnessInvocation(ctx, executable, cwd, args, environment, timeout, stderr, answer)
+	return answer.String(), diagnostics, err
+}
+
+// runRouteDocument runs one non-interactive harness invocation whose stdout is a *protocol document*
+// rather than a turn's answer, and returns it whole. The command, its working directory, its environment,
+// its deadline and its bounded diagnostics are a turn's; what is not applied is the turn-output bound:
+// a session export is a document, and an excerpt of one is not an answer to a check that must read the
+// session it names (the same rule the Pi-family load reader applies to its own protocol answers, which it
+// reads incrementally). The bytes are the harness's own, so a caller that has to report the harness's
+// words for a failed run -- a refusal naming the id it could not resolve is the expected answer to the
+// load check's control arm -- still holds them; the caller walks them and keeps only what it asks about.
+func runRouteDocument(
+	ctx context.Context, executable, cwd string, args []string, environment []string,
+	timeout time.Duration, stderr io.Writer,
+) (string, string, error) {
+	answer := new(bytes.Buffer)
+	diagnostics, err := runHarnessInvocation(ctx, executable, cwd, args, environment, timeout, stderr, answer)
+	return answer.String(), diagnostics, err
+}
+
+// runHarnessInvocation is the process plumbing a route turn and a route document share: the deadline, the
+// working directory the harness's own lookup resolves through, the environment, the bounded diagnostics
+// channel, and stdout into the caller's own buffer -- the one thing the two callers differ in, because a
+// turn's answer is bounded and a protocol document is not.
+func runHarnessInvocation(
+	ctx context.Context, executable, cwd string, args []string, environment []string,
+	timeout time.Duration, stderr io.Writer, answer io.Writer,
+) (string, error) {
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	command := exec.CommandContext(runCtx, executable, args...)
@@ -873,7 +905,6 @@ func runRouteTurn(
 		}
 	}
 	command.Env = environment
-	answer := newBoundedBuffer(harnessOutputMax)
 	diagnostics := newBoundedBuffer(harnessDiagnosticsMax)
 	command.Stdout = answer
 	if stderr != nil {
@@ -883,9 +914,43 @@ func runRouteTurn(
 	}
 	err := command.Run()
 	if runCtx.Err() != nil && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-		return answer.String(), diagnostics.String(), fmt.Errorf("timed out after %s", timeout)
+		return diagnostics.String(), fmt.Errorf("timed out after %s", timeout)
 	}
-	return answer.String(), diagnostics.String(), err
+	return diagnostics.String(), err
+}
+
+// skipJSONValue consumes one JSON value token by token, holding no more than the token in hand: a
+// container is walked by depth and every scalar is read and dropped. It is what keeps an unnamed member's
+// value -- a message's content, an event's payload -- from being held as one value, which is what both
+// encoding/json's Decoder.Decode and jsontext's own SkipValue do with it (SkipValue validates the skipped
+// bytes and keeps them in the decoder's buffer until the value ends: measured at twice the value's size
+// over a 16 MiB member). The Pi-family load reader and the OpenCode export reader both walk their
+// harness's own protocol answers with it, for the same reason: an answer carrying a whole conversation is
+// read for the fields the check asks about, not held whole.
+func skipJSONValue(dec *jsontext.Decoder) error {
+	token, err := dec.ReadToken()
+	if err != nil {
+		return err
+	}
+	switch token.Kind() {
+	case '{', '[':
+	default:
+		return nil
+	}
+	depth := 1
+	for depth > 0 {
+		token, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		switch token.Kind() {
+		case '{', '[':
+			depth++
+		case '}', ']':
+			depth--
+		}
+	}
+	return nil
 }
 
 // resolveRouteHome answers the data directory a route's conversion installs into: the caller's explicit

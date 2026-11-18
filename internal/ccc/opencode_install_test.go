@@ -336,6 +336,53 @@ func TestVerifyOpenCodeSessionStructureReadsTheStoreBack(t *testing.T) {
 	}
 }
 
+// TestVerifyOpenCodeSessionStructureFailsWhenTheStoreDroppedARow pins the check's evidence rule for this
+// route: a written message is resolved against the *store's* own dialogue as the inherited reader reads
+// it back, never against the document the importer was handed -- those bytes are the conversion's intent.
+// The harness's own importer silently drops an assistant message whose `time` carries `created` alone
+// (measured), so a store that no longer holds a written message must fail verification as the difference
+// it is, not be excused as a projection of the reader's with the document standing in as evidence.
+func TestVerifyOpenCodeSessionStructureFailsWhenTheStoreDroppedARow(t *testing.T) {
+	at := time.UnixMilli(1_700_000_000_000).UTC()
+	conversation := openCodeTestConversation(
+		Message{Role: "user", Content: "hello", Dialogue: "hello", DialogueProjected: true, Timestamp: at},
+		// The dialogue-only assistant message the measured silent drop leaves no row for.
+		Message{Role: "assistant", Content: "hi", Dialogue: "hi", DialogueProjected: true,
+			Model: "source-model", Timestamp: at.Add(time.Second)},
+	)
+	session, err := ConvertToOpenCodeSession(conversation, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	home := filepath.Join(t.TempDir(), openCodeDataDirName)
+	writeOpenCodeTestStore(t, openCodeDataDir(home), session)
+	database, err := sql.Open("sqlite3", openCodeStorePath(home))
+	if err != nil {
+		t.Fatalf("opening the store: %v", err)
+	}
+	defer database.Close()
+	id, _ := openCodeStoreMessage(t, database, openCodeMessageAssistant)
+	if _, err := database.Exec(`DELETE FROM session_message WHERE id = ?`, id); err != nil {
+		t.Fatalf("dropping the store's row: %v", err)
+	}
+	verification, err := VerifyOpenCodeSessionStructure(context.Background(), openCodeDataDir(home),
+		session, fixtureConfig(t))
+	if err != nil {
+		t.Fatalf("reading the dropped session back: %v", err)
+	}
+	if verification.State == VerificationStateVerified {
+		t.Fatalf("structure = %+v, want a store that no longer holds a written message reported as a "+
+			"difference", verification)
+	}
+	if verification.NotReadBackVerbatim != 0 {
+		t.Errorf("not_read_back_verbatim = %d, want 0: the message is not in the store, so the reader made "+
+			"no projection of it", verification.NotReadBackVerbatim)
+	}
+	if !strings.Contains(verification.Detail, "dialogue") {
+		t.Errorf("detail = %q, want it to name the dialogue the store does not hold", verification.Detail)
+	}
+}
+
 // TestVerifyOpenCodeSessionStructureAcceptsTheImportersOwnReEncoding pins the comparison's rule for a tool
 // part's `state.input`, the one member the harness re-encodes: measured on 2.2.5, the store keeps the JSON
 // value and the key order the document recorded while dropping the recorded whitespace, so the source's

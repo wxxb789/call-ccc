@@ -448,14 +448,18 @@ says so.
   requested turn runs the **printed** invocation's own words (`run --standalone --session <id> -- <prompt>`,
   the flag immediately after its subcommand: a flag left on the managed service's side of the `--`
   terminator answers from a store this run did not grow, measured) with the report's `resume_environment`
-  and working directory, prints the harness's own words under `TURN_OUTPUT_MARKER`, and measures the
+  (the data root and the store's own database file pinned beside it -- a shell line can set a variable but
+  cannot remove an inherited `OPENCODE_DB`, and the pin is what makes the pasted command read this run's
+  store) and working directory, prints the harness's own words under `TURN_OUTPUT_MARKER`, and measures the
   growth through the harness's own reader (before/after `session export`: a turn appends its own records,
   3 per turn measured). The script builds `ccc` into `bin/ccc-native-check-opencode` (`.gitignore` covers
   `bin/`), takes `--opencode`/`--source`/`--target-home`/`--resume-prompt`/`--expect`/`--keep`/`--json`,
   and prints each check's own state.
 - `scripts/native_check_common.py` — the mechanism the native checks share, so none keeps its own
   copy of it: the file digests (`sha256`, `tree_digest`), the check recorder (`record`, `RESULTS`), the
-  subprocess runner (`run`), the POSIX-shell reading of a rendered command (`shell_words`,
+  subprocess runner (`run`, which a check can hand a command's *whole* environment instead of an overlay
+  of this process's, so a name the check's own dictionary removed cannot be restored underneath it), the
+  POSIX-shell reading of a rendered command (`shell_words`,
   `unquoted_text` and the character set a shell acts on), the JSONL record-shape test the checks report
   through (a line may be blank or one JSON **object**; anything else — unparseable, or a value that is not
   an object — is that check's FAIL with the line's number), the two strings the record's own rules

@@ -245,15 +245,25 @@ func TestContinueIntoOpenCodeConvertsInstallsAndReadsBack(t *testing.T) {
 			"installed here)", detail, missingTargetBinary)
 	}
 
-	// The invocation: the harness's own non-interactive resume, the data root the harness reads, and the
+	// The invocation: the harness's own non-interactive resume, the data root the harness reads, the
+	// database inside it pinned (a caller's inherited OPENCODE_DB cannot send the pasted line to another
+	// store, where `run --session` would create a session instead of resolving this one), and the
 	// session's own recorded directory -- and the importer was handed exactly one staged document.
 	if result.TargetSession.ResumeEnvironment[openCodeDataRootEnv] != openCodeDataRoot(home) {
 		t.Errorf("resume environment = %v, want the data root the harness reads named",
 			result.TargetSession.ResumeEnvironment)
 	}
+	if result.TargetSession.ResumeEnvironment[openCodeDBEnv] != openCodeStorePath(home) {
+		t.Errorf("resume environment = %v, want the store's own database pinned",
+			result.TargetSession.ResumeEnvironment)
+	}
 	if !strings.Contains(result.TargetSession.ResumeCommand,
 		openCodeDataRootEnv+"="+shellQuote(openCodeDataRoot(home))) {
 		t.Errorf("resume command = %q, want the data root named", result.TargetSession.ResumeCommand)
+	}
+	if !strings.Contains(result.TargetSession.ResumeCommand,
+		openCodeDBEnv+"="+shellQuote(openCodeStorePath(home))) {
+		t.Errorf("resume command = %q, want the store's own database pinned", result.TargetSession.ResumeCommand)
 	}
 	if !strings.Contains(result.TargetSession.ResumeCommand,
 		"run --standalone --session "+result.TargetSession.SessionID) {
@@ -282,6 +292,43 @@ func TestContinueIntoOpenCodeConvertsInstallsAndReadsBack(t *testing.T) {
 	if result.Verification.Load.State == VerificationStateVerified {
 		t.Errorf("load = %+v, want it not verified: %s is not installed here",
 			result.Verification.Load, missingTargetBinary)
+	}
+}
+
+// TestContinueIntoOpenCodeCoalescesOneCallsPerFileProjections reproduces the source shape a multi-file
+// patch produces: the inherited Codex reader projects one `apply_patch` call into one call per file it
+// names, every projection sharing the call's own id and input. OpenCode's tool part carries one id and one
+// input (and its outcome beside them), so the call is written once and the per-file attribution of the
+// second projection is what has no field here: the report names those projections rather than leaving the
+// collapse undisclosed.
+func TestContinueIntoOpenCodeCoalescesOneCallsPerFileProjections(t *testing.T) {
+	sourcePath := fixturePath(t, filepath.Join("codex", "2026", "05", "06",
+		"rollout-2026-05-06T10-30-00-"+codexPatchFixtureRef.ID+".jsonl"))
+	sourceBefore := hashFile(t, sourcePath)
+	home, _ := openCodeTargetHome(t)
+	stubOpenCodeImporter(t)
+
+	result, err := Continue(context.Background(), ContinueOptions{
+		Ref: codexPatchFixtureRef, Target: TargetOpenCode, Config: fixtureConfig(t),
+		TargetHome: home, TargetBinary: missingTargetBinary,
+	})
+	if err != nil {
+		t.Fatalf("continuing: %v", err)
+	}
+	carried := result.Conversion.Carried
+	if carried.ToolCalls != 1 || carried.ToolResults != 1 {
+		t.Errorf("carried = %+v, want the patch's one call and the one result that answered it", carried)
+	}
+	loss := lossCount(t, result.Conversion.Losses, "coalesced_tool_call_projections")
+	if loss.Count != 1 || loss.Disposition != DispositionCarriedWithCaveat {
+		t.Errorf("coalesced_tool_call_projections = %+v, want the one projection written as the call it "+
+			"is a projection of counted as carried with a caveat", loss)
+	}
+	if !strings.Contains(loss.Detail, "per file") {
+		t.Errorf("the category's reason does not name the shape it counts: %q", loss.Detail)
+	}
+	if digest := hashFile(t, sourcePath); digest != sourceBefore {
+		t.Error("the conversion changed the source session")
 	}
 }
 

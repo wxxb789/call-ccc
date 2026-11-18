@@ -529,7 +529,7 @@ func piModelVisibleRoles(data []byte) []string {
 //
 // The walk is jsontext's own decoder (encoding/json/jsontext), driven token by token, the way this
 // repository reads a streamed JSON document (internal/remotesync/manifest_decode.go): a member this check
-// does not name is consumed with piSkipValue, so no value the answer carries -- a message's content, a
+// does not name is consumed with skipJSONValue, so no value the answer carries -- a message's content, a
 // session event's payload -- is ever materialised whole, and the memory this read needs is one JSON token
 // in hand rather than the answer itself. (encoding/json's Decoder.Decode buffers the entire value it is
 // given before it unmarshals -- measured -- which is what made an earlier revision's "scanned past"
@@ -596,7 +596,7 @@ func piReadResponse(dec *jsontext.Decoder) (piRPCResponse, error) {
 				return response, err
 			}
 		default:
-			if err := piSkipValue(dec); err != nil {
+			if err := skipJSONValue(dec); err != nil {
 				return response, err
 			}
 		}
@@ -644,7 +644,7 @@ func piReadResponseData(dec *jsontext.Decoder, data *piRPCResponseData) error {
 				return err
 			}
 		default:
-			if err := piSkipValue(dec); err != nil {
+			if err := skipJSONValue(dec); err != nil {
 				return err
 			}
 		}
@@ -685,7 +685,7 @@ func piReadModelIdentity(dec *jsontext.Decoder, model *piModelIdentity) error {
 				return err
 			}
 		default:
-			if err := piSkipValue(dec); err != nil {
+			if err := skipJSONValue(dec); err != nil {
 				return err
 			}
 		}
@@ -737,7 +737,7 @@ func piReadMessageRole(dec *jsontext.Decoder) (piRPCResponseMessage, error) {
 			return message, err
 		}
 		if name.String() != "role" {
-			if err := piSkipValue(dec); err != nil {
+			if err := skipJSONValue(dec); err != nil {
 				return message, err
 			}
 			continue
@@ -748,38 +748,6 @@ func piReadMessageRole(dec *jsontext.Decoder) (piRPCResponseMessage, error) {
 	}
 	_, err = dec.ReadToken() // the message object's closing brace
 	return message, err
-}
-
-// piSkipValue consumes one JSON value token by token, holding no more than the token in hand: a container
-// is walked by depth and every scalar is read and dropped. It is what keeps an unnamed member's value --
-// a message's content, an event's payload -- from being held as one value, which is what both
-// encoding/json's Decoder.Decode and jsontext's own SkipValue do with it (SkipValue validates the skipped
-// bytes and keeps them in the decoder's buffer until the value ends: measured at twice the value's size
-// over a 16 MiB member).
-func piSkipValue(dec *jsontext.Decoder) error {
-	token, err := dec.ReadToken()
-	if err != nil {
-		return err
-	}
-	switch token.Kind() {
-	case '{', '[':
-	default:
-		return nil
-	}
-	depth := 1
-	for depth > 0 {
-		token, err := dec.ReadToken()
-		if err != nil {
-			return err
-		}
-		switch token.Kind() {
-		case '{', '[':
-			depth++
-		case '}', ']':
-			depth--
-		}
-	}
-	return nil
 }
 
 // piStringMember reads one member's string value.

@@ -174,7 +174,7 @@ func TestConvertToOpenCodeSessionWritesTheHarnesssOwnDocumentShape(t *testing.T)
 				}
 			}
 		case openCodeMessageCompaction:
-			if message.Summary == "" || message.Status != openCodeCompactionStatus || message.Reason != openCodeCompactionReason {
+			if message.Summary == nil || message.Status != openCodeCompactionStatus || message.Reason != openCodeCompactionReason {
 				t.Errorf("message %d compaction = %+v, want the harness's own three required members", index, message)
 			}
 		default:
@@ -449,6 +449,125 @@ func TestOpenCodeFlatTargetOmitsABranchAndCountsIt(t *testing.T) {
 	}
 	openCodeRequireLoss(t, session, "unresolved_source_parents", 1)
 	openCodeRequireLoss(t, session, "inactive_branch_records", 0)
+}
+
+// TestOpenCodePlansNoEvidenceFromARecordItWillNotWrite pins the two passes' own consistency: the plan
+// pairs every result with its call before the walk decides which records travel, so a record the source's
+// own relations place off the conversation's line -- or a subagent's own record -- must contribute no
+// outcome to an active call. A result the walk omits is omitted; pairing it anyway revives
+// abandoned-branch evidence as the active call's own answer while the report counts the record as not
+// carried.
+func TestOpenCodePlansNoEvidenceFromARecordItWillNotWrite(t *testing.T) {
+	at := time.UnixMilli(1_700_000_000_000).UTC()
+	call := openCodeTestCall("call-1", "Read", `{"file_path":"internal/retry/policy.go"}`)
+	result := openCodeTestResult("call-1", "completed", `"the recorded output"`)
+	conversation := openCodeTestConversation(
+		Message{Role: "user", Dialogue: "first", DialogueProjected: true, Content: "first",
+			SourceUUID: "rec-1", Timestamp: at},
+		Message{Role: "assistant", Dialogue: "calling", DialogueProjected: true, Content: "calling",
+			SourceUUID: "rec-2", SourceParentUUID: "rec-1", Timestamp: at.Add(time.Second),
+			ToolCalls: []ToolCall{call}},
+		// The result's record is the call's own child, and so is the final record: the source's relations
+		// make the two siblings, and the walk follows the final record's line past the result.
+		Message{Role: "user", SourceUUID: "rec-3", SourceParentUUID: "rec-2",
+			Timestamp: at.Add(2 * time.Second), ToolResults: []ToolResult{result}},
+		Message{Role: "assistant", Dialogue: "final", DialogueProjected: true, Content: "final",
+			SourceUUID: "rec-4", SourceParentUUID: "rec-2", Timestamp: at.Add(3 * time.Second)},
+	)
+	session, err := ConvertToOpenCodeSession(conversation, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	openCodeRequireLoss(t, session, "inactive_branch_records", 1)
+	// The active call has no recorded outcome on the line the walk follows: its part is left out and
+	// named, and the omitted record's result is not written in the state that means "this call answered".
+	openCodeRequireLoss(t, session, "unpaired_tool_calls", 1)
+	openCodeRequireLoss(t, session, "unpaired_tool_results", 0)
+	openCodeRequireNoToolPart(t, session)
+
+	// A subagent's own record is not written either: a result recorded on it is not the active call's
+	// outcome, whatever the call's own record is.
+	subagent := openCodeTestConversation(
+		Message{Role: "assistant", Dialogue: "calling", DialogueProjected: true, Content: "calling",
+			Timestamp: at, ToolCalls: []ToolCall{call}},
+		Message{Role: "user", IsSidechain: true, Timestamp: at.Add(time.Second),
+			ToolResults: []ToolResult{result}},
+	)
+	session, err = ConvertToOpenCodeSession(subagent, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting the subagent's record: %v", err)
+	}
+	openCodeRequireLoss(t, session, "sidechain_messages", 1)
+	openCodeRequireLoss(t, session, "unpaired_tool_calls", 1)
+	openCodeRequireNoToolPart(t, session)
+}
+
+// openCodeRequireNoToolPart fails when one document message holds a tool part, for the cases whose rule
+// is that no evidence may have travelled from a record the walk does not write.
+func openCodeRequireNoToolPart(t *testing.T, session OpenCodeSession) {
+	t.Helper()
+	var document openCodeDocument
+	if err := json.Unmarshal(session.Data, &document); err != nil {
+		t.Fatalf("the document does not parse: %v", err)
+	}
+	for _, message := range document.Messages {
+		for _, part := range message.Content {
+			if part.Type == openCodePartTool {
+				t.Errorf("the document holds a tool part for call %q: its evidence came from a record the "+
+					"walk does not write", part.ID)
+			}
+		}
+	}
+}
+
+// TestOpenCodeCompactionSummaryMemberIsPresentWhenEmpty pins the one member the importer requires on a
+// compaction message and accepts empty in it: a boundary whose summary holds no text is written with
+// `"summary": ""` (the inherited Pi reader can hand over exactly that shape), and the member stays absent
+// on every other message type, which is the shape the harness's own export prints.
+func TestOpenCodeCompactionSummaryMemberIsPresentWhenEmpty(t *testing.T) {
+	at := time.UnixMilli(1_700_000_000_000).UTC()
+	conversation := openCodeTestConversation(
+		Message{Role: "user", Dialogue: "hello", DialogueProjected: true, Content: "hello", Timestamp: at},
+		Message{Role: "assistant", IsSystem: true, IsCompactBoundary: true, Content: "", Timestamp: at},
+	)
+	session, err := ConvertToOpenCodeSession(conversation, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	openCodeRequireLoss(t, session, "empty_compaction_summary", 1)
+	var document struct {
+		Messages []map[string]json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(session.Data, &document); err != nil {
+		t.Fatalf("the document does not parse: %v", err)
+	}
+	compactions := 0
+	for index, message := range document.Messages {
+		var kind string
+		if err := json.Unmarshal(message["type"], &kind); err != nil {
+			t.Fatalf("message %d holds no readable type: %v", index, err)
+		}
+		summary, present := message["summary"]
+		switch kind {
+		case openCodeMessageCompaction:
+			compactions++
+			if !present {
+				t.Errorf("the compaction message holds no summary member: the importer requires it")
+			} else if string(summary) != `""` {
+				t.Errorf("the compaction message's summary = %s, want the source's own empty summary "+
+					"written as an empty string", summary)
+			}
+		default:
+			if present {
+				t.Errorf("a %s message holds a summary member (%s), want the member absent on every "+
+					"message type that does not use it", kind, summary)
+			}
+		}
+	}
+	if compactions != 1 {
+		t.Errorf("the document holds %d compaction message(s), want the one boundary this case converts",
+			compactions)
+	}
 }
 
 // TestOpenCodeWriterNamesWhatItCannotCarry pins the categories whose rules only this target has, and the

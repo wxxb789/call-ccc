@@ -13,7 +13,14 @@ module imported by path, no subprocess and no tool on ``PATH``:
   "succeeded" while the installed session did not grow;
 * the resume stage's own rule: one real turn is a *resumed session* only when the harness's own reader
   reads the store differently afterwards (a turn appends its own records), and the answer printed under
-  ``native_check_common.TURN_OUTPUT_MARKER`` is the harness's own bytes, not a summary of them;
+  ``native_check_common.TURN_OUTPUT_MARKER`` is the harness's own bytes, not a summary of them. The
+  ``--expect`` text is optional: without it the harness's own printed answer is what the appended
+  assistant evidence must hold, so a successful turn is verified rather than failed for a flag nobody
+  passed;
+* the environment every harness command is run with: the check's own dictionary *is* the command's whole
+  environment (``replace_env``), so the database override it removes cannot be restored from this
+  process's own environment underneath it -- asserted on the environment that reaches ``subprocess.run``,
+  not on the dictionary the check built;
 * the reading of the harness's own answers: a refusal that does not name the id it refused is not the
   control arm, a listing the harness failed to answer is not an empty listing, and a document the harness
   did not parse is not a document;
@@ -25,9 +32,11 @@ module imported by path, no subprocess and no tool on ``PATH``:
 from __future__ import annotations
 
 import contextlib
+import importlib
 import importlib.util
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -46,6 +55,11 @@ def load_native_check():
 
 
 NATIVE_CHECK = load_native_check()
+
+#: The shared runner the check calls. The environment cases read the environment that reaches its own
+#: ``subprocess.run`` rather than the dictionary the check built: an overlay restores a removed name from
+#: this process's environment, which is exactly the shape those cases exist for.
+NATIVE_COMMON = importlib.import_module("native_check_common")
 
 #: One session id, one unrelated id and one answer, as the cases spell them.
 SESSION = "ses_installed000000000000000"
@@ -106,7 +120,7 @@ class HarnessInvocationSpelling(unittest.TestCase):
         ``--`` is the prompt's, and a turn whose records a service holds elsewhere is not this run's."""
         calls: list[list[str]] = []
 
-        def fake_run(command, cwd=None, env=None, timeout=None):
+        def fake_run(command, cwd=None, env=None, timeout=None, replace_env=False):
             calls.append(list(command))
             return completed(stdout=ANSWER)
 
@@ -127,12 +141,120 @@ class HarnessInvocationSpelling(unittest.TestCase):
         self.assertEqual(turn[-1], "say hello")
 
 
+class HarnessEnvironment(unittest.TestCase):
+    """Every harness command this check runs gets the check's own complete environment: the data root
+    named and the database override removed, so an inherited ``OPENCODE_DB`` cannot send the command to a
+    store this run did not choose -- and the Go side, which genuinely removes the name, and the setup the
+    check's own commands run against are then the same store. What these cases read is the environment
+    that reaches ``subprocess.run``, not the dictionary the check built: the pre-fix shape merged that
+    dictionary onto this process's own environment, which restores the removed name."""
+
+    def test_one_harness_command_removes_an_inherited_database_override(self) -> None:
+        captured: dict = {}
+
+        def fake_subprocess_run(command, **kwargs):
+            captured["command"] = list(command)
+            captured["env"] = dict(kwargs.get("env") or {})
+            return completed(stdout="{}")
+
+        with mock.patch.dict(os.environ, {"OPENCODE_DB": "/tmp/caller-elsewhere.db"}), \
+             mock.patch.object(NATIVE_COMMON.subprocess, "run", side_effect=fake_subprocess_run):
+            NATIVE_CHECK.ask_opencode("opencode", ["session", "export", SESSION], Path("/data"))
+            # The removal is the child's: this process still carries the caller's own value.
+            self.assertEqual(os.environ.get("OPENCODE_DB"), "/tmp/caller-elsewhere.db")
+        self.assertIn("env", captured, "no harness command reached subprocess.run")
+        environment = captured["env"]
+        self.assertNotIn("OPENCODE_DB", environment,
+                         "an inherited database override reached the harness command")
+        self.assertEqual(environment.get(NATIVE_CHECK.OPENCODE_DATA_ROOT_ENV), "/data",
+                         "the check's own data root did not reach the harness command")
+
+    def test_the_resume_turn_removes_an_inherited_database_override(self) -> None:
+        captured: list[tuple[list[str], dict[str, str]]] = []
+
+        def fake_subprocess_run(command, **kwargs):
+            captured.append((list(command), dict(kwargs.get("env") or {})))
+            return completed(stdout="{}")
+
+        with mock.patch.dict(os.environ, {"OPENCODE_DB": "/tmp/caller-elsewhere.db"}), \
+             mock.patch.object(NATIVE_COMMON.subprocess, "run", side_effect=fake_subprocess_run), \
+             mock.patch.object(NATIVE_CHECK, "export_document",
+                               side_effect=[(document(3), "ok", 0),
+                                            (document(6, answer=ANSWER), "ok", 0)]):
+            with recorded():
+                NATIVE_CHECK._run_turn(mock.Mock(resume_prompt="a turn", expect=ANSWER),
+                                       {"session_id": SESSION}, "opencode", Path("/data"),
+                                       Path("/workspace"))
+            # The removal is the child's: this process still carries the caller's own value.
+            self.assertEqual(os.environ.get("OPENCODE_DB"), "/tmp/caller-elsewhere.db")
+        turns = [(command, environment) for command, environment in captured
+                 if command[1:2] == ["run"]]
+        self.assertEqual(len(turns), 1, f"the turn command was not the one run: {captured}")
+        _, environment = turns[0]
+        self.assertNotIn("OPENCODE_DB", environment,
+                         "an inherited database override reached the resume turn")
+        self.assertEqual(environment.get(NATIVE_CHECK.OPENCODE_DATA_ROOT_ENV), "/data")
+
+
+class PrintedInvocation(unittest.TestCase):
+    """The printed line is read the way a POSIX shell reads it: the ``cd``, the data root, the store's own
+    database pinned beside it, then the arguments -- and the reported ``resume_environment`` is the same
+    pair. A line that names the root but not the store is another invocation: a caller's inherited
+    ``OPENCODE_DB`` would decide which store it reads, and ``run --session <id>`` *creates* a session for
+    an id the store does not hold (measured), so the pasted line could run in empty history under the
+    converted identity instead of refusing it."""
+
+    DATA_ROOT = Path("/data")
+    STORE = Path("/data/opencode/opencode.db")
+    WORKSPACE = Path("/workspace")
+
+    def target(self, environment: dict | None = None, command: str | None = None) -> dict:
+        # The report's own two halves: the argument vector it prints begins with the program word, and the
+        # command is that vector beside the environment assignments the renderer sorts.
+        arguments = ["opencode", "run", "--standalone", "--session", SESSION, "--", "hello"]
+        if environment is None:
+            environment = {NATIVE_CHECK.OPENCODE_DATA_ROOT_ENV: str(self.DATA_ROOT),
+                           NATIVE_CHECK.OPENCODE_DB_ENV: str(self.STORE)}
+        if command is None:
+            assignments = " ".join(f"{name}={value}" for name, value in sorted(environment.items()))
+            command = f"cd {self.WORKSPACE} && {assignments} " + " ".join(arguments)
+        return {
+            "session_id": SESSION,
+            "resume_command": command,
+            "resume_arguments": arguments,
+            "exec_resume_command": command,
+            "exec_resume_arguments": arguments,
+            "resume_environment": environment,
+        }
+
+    def check(self, target: dict) -> dict[str, str]:
+        with recorded() as records:
+            NATIVE_CHECK._check_invocation(target, self.WORKSPACE, self.DATA_ROOT, self.STORE)
+            return {name: state for name, state, _ in records}
+
+    def test_a_line_pinning_the_store_reads_as_the_invocation(self) -> None:
+        states = self.check(self.target())
+        self.assertEqual(states["the report names the environment the printed invocation sets"], "PASS")
+        self.assertEqual(
+            states["the printed resume_command reads as a POSIX shell line naming the session"], "PASS")
+        self.assertEqual(
+            states["the printed exec_resume_command reads as a POSIX shell line naming the session"], "PASS")
+
+    def test_a_line_naming_only_the_root_is_not_the_invocation(self) -> None:
+        environment = {NATIVE_CHECK.OPENCODE_DATA_ROOT_ENV: str(self.DATA_ROOT)}
+        states = self.check(self.target(environment=environment))
+        self.assertEqual(states["the report names the environment the printed invocation sets"], "FAIL")
+        self.assertEqual(
+            states["the printed resume_command reads as a POSIX shell line naming the session"], "FAIL")
+
+
 class ResumeStage(unittest.TestCase):
     """One real turn is a resumed session only when the harness's own reader reads the store differently
     afterwards, and the answer printed is the harness's own."""
 
-    def drive(self, before: dict, after: dict, stdout: str = ANSWER) -> list[tuple[str, str, str]]:
-        args = mock.Mock(resume_prompt="a turn", expect=ANSWER)
+    def drive(self, before: dict, after: dict, stdout: str = ANSWER,
+              expect: str | None = ANSWER) -> list[tuple[str, str, str]]:
+        args = mock.Mock(resume_prompt="a turn", expect=expect)
         target = {"session_id": SESSION}
         with mock.patch.object(NATIVE_CHECK, "run", return_value=completed(stdout=stdout)), \
              mock.patch.object(NATIVE_CHECK, "export_document",
@@ -150,6 +272,24 @@ class ResumeStage(unittest.TestCase):
         self.assertEqual(states["the session's own records were not rewritten by the turn"], "PASS")
         self.assertEqual(states["the turn's own answer is in the session the harness reads"], "PASS")
         self.assertIn(f"the turn's answer contains '{ANSWER}'", states)
+
+    def test_a_turn_without_expected_text_is_verified_by_its_own_answer(self) -> None:
+        """``--expect`` is optional: without it the needle is the harness's own printed answer, so a turn
+        that answered and appended its records is a resumed session rather than a failure for a flag the
+        caller did not pass."""
+        results = self.drive(document(3), document(6, answer=ANSWER), expect=None)
+        states = {name: state for name, state, _ in results}
+        self.assertEqual(states["the turn ran through the printed invocation and exited 0"], "PASS")
+        self.assertEqual(states["the turn's own answer is in the session the harness reads"], "PASS")
+        self.assertNotIn(f"the turn's answer contains '{ANSWER}'", states,
+                         "a run without --expect recorded an expected-substring check")
+
+    def test_a_turn_whose_answer_is_not_in_the_session_is_not_a_resumed_session(self) -> None:
+        results = self.drive(document(3), document(6, answer="some other words"), expect=None)
+        states = {name: state for name, state, _ in results}
+        self.assertEqual(states["the turn ran through the printed invocation and exited 0"], "PASS")
+        self.assertEqual(states["the turn's own answer is in the session the harness reads"], "FAIL",
+                         "the printed answer was not compared with the appended assistant evidence")
 
     def test_a_turn_that_left_the_store_reading_the_same_is_not_a_resumed_session(self) -> None:
         results = self.drive(document(3), document(3))

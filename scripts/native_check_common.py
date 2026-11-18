@@ -282,11 +282,22 @@ def bounded_block(text: str, lines_max: int, chars_max: int) -> list[str]:
 
 
 def run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = None,
-        timeout: int = 600) -> subprocess.CompletedProcess:
-    merged = os.environ.copy()
-    merged.setdefault("CGO_ENABLED", "1")
-    if env:
-        merged.update(env)
+        timeout: int = 600, replace_env: bool = False) -> subprocess.CompletedProcess:
+    """Run one command and answer its completed process.
+
+    The environment is this process's own with `env` overlaid, and `CGO_ENABLED` defaulted for the Go
+    builds; `replace_env` says `env` *is* the command's whole environment instead, which is what a check
+    whose environment removes a variable needs: an overlay can only add or change names, so a variable
+    absent from the dictionary a caller built is restored underneath it from this process's own
+    environment -- the shape that let an inherited `OPENCODE_DB` reach the OpenCode check's harness
+    commands although the dictionary it passed had removed the name."""
+    if replace_env:
+        merged = dict(env or {})
+    else:
+        merged = os.environ.copy()
+        merged.setdefault("CGO_ENABLED", "1")
+        if env:
+            merged.update(env)
     return subprocess.run(cmd, cwd=cwd, env=merged, capture_output=True, text=True, timeout=timeout)
 
 
@@ -331,23 +342,27 @@ def print_answer(output: str) -> None:
     print()
 
 
-def spelled_as_invocation(command: str, home_env: str) -> bool:
+def spelled_as_invocation(command: str, home_env: str, also: dict[str, str] | None = None) -> bool:
     """Whether the line's own spelling makes a shell read it as `<cd> <dir> && NAME=<home> <words>`.
 
     `unquoted_text` keeps the characters a shell reads *without* quoting, so the line's structure is read
-    off it: the opening `cd` word, then `&&` as an operator word of its own, then the assignment's own
-    `<home_env>=` prefix, with no other unquoted character a shell would act on. Three spellings are
-    refused, and each is a different command than the line looks like: a quoted assignment
-    (`… && 'NAME=…' …` is a *program* by that name to a shell, so nothing sets the variable and the
-    harness opens the caller's own data directory); a character a shell acts on left unquoted inside the
-    value (`NAME=a;b` sets the variable to `a` and runs `b`); and an operator glued to a word
-    (`cd /a&&b …` is a directory named `/a&&b` to a shell, not a change followed by an assignment) --
-    which the whitespace test below answers, because a `&&` a shell reads as its operator is a word of
-    its own and therefore has whitespace on both sides. The Pi and OMP checks read their lines through
-    this one implementation, so a fix to the rule is not a fix to one of those routes and a silent drift
-    for the other; the Claude and Codex checks keep readings of their own
-    (`claude-native-check.spelled_as_invocation`, `codex-native-check.reads_as_assignment`), which apply
-    the same rule to their own lines and their own variables.
+    off it: the opening `cd` word, then `&&` as an operator word of its own, then an assignment's own
+    `NAME=` prefix, with no other unquoted character a shell would act on. The assignment the line opens
+    with is `home_env`, or -- for a route whose printed line sets more than one variable -- any name in
+    `also` (the OpenCode route pins the database file beside the data root, and its line opens with the
+    database's own name because the renderer sorts the names); which one leads, and every value, is the
+    word-vector comparison's business (`reported_invocation`). Three spellings are refused, and each is a
+    different command than the line looks like: a quoted assignment (`… && 'NAME=…' …` is a *program* by
+    that name to a shell, so nothing sets the variable and the harness opens the caller's own data
+    directory); a character a shell acts on left unquoted inside the value (`NAME=a;b` sets the variable
+    to `a` and runs `b`); and an operator glued to a word (`cd /a&&b …` is a directory named `/a&&b` to a
+    shell, not a change followed by an assignment) -- which the whitespace test below answers, because a
+    `&&` a shell reads as its operator is a word of its own and therefore has whitespace on both sides.
+    The Pi, OMP and OpenCode checks read their lines through this one implementation, so a fix to the rule
+    is not a fix to one of those routes and a silent drift for the others; the Claude and Codex checks
+    keep readings of their own (`claude-native-check.spelled_as_invocation`,
+    `codex-native-check.reads_as_assignment`), which apply the same rule to their own lines and their own
+    variables.
     """
     text = unquoted_text(command)
     if text is None:
@@ -357,31 +372,41 @@ def spelled_as_invocation(command: str, home_env: str) -> bool:
         return False
     if head.split()[:1] != [CD_WORD] or not head[-1:].isspace() or not tail[:1].isspace():
         return False
-    if not tail.lstrip().startswith(f"{home_env}="):
+    assignments = [home_env, *(also or {})]
+    leading = tail.lstrip().split(maxsplit=1)[:1]
+    if not leading or not any(leading[0].startswith(name + "=") for name in assignments):
         return False
     forbidden = set(SHELL_SYNTAX_CHARACTERS)
     return not (set(head) | set(tail)) & forbidden
 
 
 def reported_invocation(command: str, workspace, home, home_env: str, arguments: list[str],
-                        session_dir_env: str | None = None, session_dir: str = "") -> bool:
+                        session_dir_env: str | None = None, session_dir: str = "",
+                        also: dict[str, str] | None = None) -> bool:
     """Whether `command` is the invocation as a POSIX shell reads it: the `cd`, the environment
     assignments, then `arguments`.
 
     The whole word vector is compared, exactly as every sibling harness's `reported_invocation` does: any
     `cd <anything>` beside any assignments beside any session id reads back as the right *shape* and is
     still another invocation, so a substring or a shape test would accept a line that resumes somewhere
-    else. The spelling is read too (`spelled_as_invocation`), which is why both halves decide this rule.
-    A route whose printed line names the sessions directory directly passes that directory in
-    `session_dir`, with `session_dir_env` naming its variable: it is compared against the directory the
-    check itself looked the session up in, not against a spelling computed twice. A route whose sessions
-    tree is its own spelling computes that tree in its own wrapper and passes the result here.
+    else. The environment assignments are compared in the order the routes' own renderer writes them (its
+    names sorted), and `also` names any further variables the line sets: the OpenCode route pins the
+    database file beside the data root, so its line carries two assignments and both are compared. The
+    spelling is read too (`spelled_as_invocation`, which `also` reaches for the same reason), which is why
+    both halves decide this rule. A route whose printed line names the sessions directory directly passes
+    that directory in `session_dir`, with `session_dir_env` naming its variable: it is compared against
+    the directory the check itself looked the session up in, not against a spelling computed twice. A
+    route whose sessions tree is its own spelling computes that tree in its own wrapper and passes the
+    result here.
     """
-    words = [f"{home_env}={home}"]
+    environment = {home_env: str(home)}
     if session_dir_env:
-        words.append(f"{session_dir_env}={session_dir}")
+        environment[session_dir_env] = str(session_dir)
+    if also:
+        environment.update(also)
+    words = [f"{name}={environment[name]}" for name in sorted(environment)]
     return (shell_words(command) == [CD_WORD, str(workspace), OPERATOR_WORD, *words, *arguments]
-            and spelled_as_invocation(command, home_env))
+            and spelled_as_invocation(command, home_env, also))
 
 
 def session_records(text: str) -> list[dict]:

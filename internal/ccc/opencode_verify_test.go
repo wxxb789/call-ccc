@@ -16,15 +16,20 @@ import (
 // openCodeExportAnswer builds the harness's own document answer for one session id with n messages, the
 // shape its `session export` prints.
 func openCodeExportAnswer(sessionID, directory string, messages int) string {
-	document := openCodeExportDocument{}
-	document.Info.ID = sessionID
-	document.Info.Location.Directory = directory
+	stored := make([]json.RawMessage, 0, messages)
 	for index := range messages {
-		document.Messages = append(document.Messages, json.RawMessage(
+		stored = append(stored, json.RawMessage(
 			fmt.Sprintf(`{"id":"msg_%d","type":"user","time":{"created":%d},"text":"turn %d","files":[]}`,
 				index, 1_700_000_000_000+index, index)))
 	}
-	encoded, _ := json.Marshal(document)
+	encoded, _ := json.Marshal(map[string]any{
+		"info": map[string]any{
+			"id":       sessionID,
+			"projects": []string{"the route's own document holds members this check does not ask about"},
+			"location": map[string]any{"directory": directory},
+		},
+		"messages": stored,
+	})
 	return string(encoded)
 }
 
@@ -130,7 +135,7 @@ func TestVerifyOpenCodeLoadAnswersOnlyForThisSession(t *testing.T) {
 	home := filepath.Join(t.TempDir(), openCodeDataDirName)
 	stubOpenCodeExecutable(t, func(string) (string, error) { return "/stub/opencode", nil })
 	var environment []string
-	stubOpenCodeRun(t, &runOpenCodeTurn, func(
+	stubOpenCodeRun(t, &runOpenCodeExportDocument, func(
 		_ context.Context, _ string, _ string, argv []string, env []string, _ time.Duration, _ io.Writer,
 	) (string, string, error) {
 		environment = env
@@ -170,7 +175,7 @@ func TestVerifyOpenCodeLoadAnswersOnlyForThisSession(t *testing.T) {
 	}
 
 	// A control arm that answers a session is not a contrast: the check cannot be about this session.
-	stubOpenCodeRun(t, &runOpenCodeTurn, func(
+	stubOpenCodeRun(t, &runOpenCodeExportDocument, func(
 		_ context.Context, _ string, _ string, argv []string, _ []string, _ time.Duration, _ io.Writer,
 	) (string, string, error) {
 		return openCodeExportAnswer(strings.TrimSpace(argv[2]), session.Cwd, 1), "", nil
@@ -183,7 +188,7 @@ func TestVerifyOpenCodeLoadAnswersOnlyForThisSession(t *testing.T) {
 	}
 
 	// An answer about another session is not an answer about this one.
-	stubOpenCodeRun(t, &runOpenCodeTurn, func(
+	stubOpenCodeRun(t, &runOpenCodeExportDocument, func(
 		_ context.Context, _ string, _ string, argv []string, _ []string, _ time.Duration, _ io.Writer,
 	) (string, string, error) {
 		if strings.TrimSpace(argv[2]) == session.SessionID {
@@ -228,7 +233,7 @@ func TestVerifyOpenCodeResumeMeasuresGrowthThroughTheHarnesssOwnReader(t *testin
 	}
 	both := func(fn openCodeHarnessRun) {
 		stubOpenCodeRun(t, &runOpenCodeResumeTurn, fn)
-		stubOpenCodeRun(t, &runOpenCodeTurn, fn)
+		stubOpenCodeRun(t, &runOpenCodeExportDocument, fn)
 	}
 	both(answer)
 	verification := VerifyOpenCodeResume(context.Background(), targetVerificationInput{
@@ -306,6 +311,168 @@ func TestVerifyOpenCodeResumeMeasuresGrowthThroughTheHarnesssOwnReader(t *testin
 	})
 	if verification.State == VerificationStateVerified || !strings.Contains(verification.Detail, "prompt") {
 		t.Errorf("resume = %+v, want the missing prompt named", verification)
+	}
+}
+
+// TestOpenCodeResumePinsTheDatabaseItPrints pins the printed environment's own rule: the resume line and
+// the resume check both name the data root and the database file inside it, so a caller's inherited
+// OPENCODE_DB cannot send the pasted command to another store -- where, measured on 2.2.5, `run --session
+// <id>` *creates* a session for the id instead of resolving the installed one. The environment that
+// reaches the harness is asserted, not only the dictionary the report renders: what a caller pastes is
+// what was verified.
+func TestOpenCodeResumePinsTheDatabaseItPrints(t *testing.T) {
+	session := openCodeTestConversion(t)
+	home := filepath.Join(t.TempDir(), openCodeDataDirName)
+	t.Setenv(openCodeDBEnv, "/tmp/caller-elsewhere.db")
+	stubOpenCodeExecutable(t, func(string) (string, error) { return "/stub/opencode", nil })
+	var environment []string
+	exports := 0
+	answer := func(
+		_ context.Context, _ string, _ string, argv []string, env []string, _ time.Duration, _ io.Writer,
+	) (string, string, error) {
+		environment = env
+		if argv[0] == "session" {
+			exports++
+			return openCodeExportAnswer(session.SessionID, session.Cwd, 6+exports), "", nil
+		}
+		return `{"type":"text","text":"answered"}`, "", nil
+	}
+	stubOpenCodeRun(t, &runOpenCodeResumeTurn, answer)
+	stubOpenCodeRun(t, &runOpenCodeExportDocument, answer)
+	verification := VerifyOpenCodeResume(context.Background(), targetVerificationInput{
+		Home: home, Binary: "opencode", SessionID: session.SessionID, Cwd: session.Cwd,
+		Prompt: "a turn", Timeout: 30 * time.Second,
+	})
+	if verification.State != VerificationStateVerified {
+		t.Fatalf("resume = %+v, want the turn verified", verification)
+	}
+	got := map[string]string{}
+	for _, entry := range environment {
+		name, value, _ := strings.Cut(entry, "=")
+		got[strings.ToUpper(name)] = value
+	}
+	if got[openCodeDBEnv] != openCodeStorePath(home) {
+		t.Errorf("%s = %q, want this home's own store %q: the caller's inherited override would send the "+
+			"turn to another database", openCodeDBEnv, got[openCodeDBEnv], openCodeStorePath(home))
+	}
+	if got[openCodeDataRootEnv] != openCodeDataRoot(home) {
+		t.Errorf("%s = %q, want the home's data root %q", openCodeDataRootEnv,
+			got[openCodeDataRootEnv], openCodeDataRoot(home))
+	}
+	// The printed line names the same pair, so the environment the harness was run with is the one the
+	// report prints.
+	pin := openCodeDBEnv + "=" + shellQuote(openCodeStorePath(home))
+	if !strings.Contains(verification.Command, pin) {
+		t.Errorf("command = %q, want it to pin the store this way: %s", verification.Command, pin)
+	}
+}
+
+// openCodeExportStubEnv makes a child of this test binary answer one session export, so the arm's own
+// runner and walk are exercised without the host's harness -- the way the Codex and Pi turn cases start
+// their stub.
+const openCodeExportStubEnv = "CCC_TEST_STUB_OPENCODE_EXPORT"
+
+// The stub's document: the session's own id and directory, and enough messages that the document is
+// larger than the turn-output excerpt bound by a wide margin while no single message is.
+const (
+	openCodeExportStubAnswer   = "one session export larger than the excerpt bound"
+	openCodeExportStubID       = "ses_exportstub000000000000"
+	openCodeExportStubDir      = "/tmp/ccc-export-stub"
+	openCodeExportStubMessages = 512
+	openCodeExportStubBlock    = 4 << 10
+)
+
+// openCodeExportStubHarness prints the stub's document on stdout: one JSON object, the harness's own
+// shape, with members the check does not ask about beside the ones it does.
+func openCodeExportStubHarness(t *testing.T) {
+	t.Helper()
+	var document strings.Builder
+	document.WriteString(`{"info":{"id":"` + openCodeExportStubID + `","location":{"directory":"` +
+		openCodeExportStubDir + `"},"tokens":{"input":1,"output":2},"cost":0}`)
+	document.WriteString(`,"messages":[`)
+	for index := range openCodeExportStubMessages {
+		if index > 0 {
+			document.WriteByte(',')
+		}
+		document.WriteString(fmt.Sprintf(`{"id":"msg_%d","type":"user","text":"`, index))
+		document.WriteString(strings.Repeat("x", openCodeExportStubBlock))
+		document.WriteString(`"}`)
+	}
+	document.WriteString(`]}`)
+	if document.Len() <= harnessOutputMax {
+		t.Fatalf("the stub's document holds %d byte(s), want more than the %d-byte excerpt bound: the case "+
+			"is about an export no excerpt could hold", document.Len(), harnessOutputMax)
+	}
+	fmt.Fprintln(os.Stdout, document.String())
+}
+
+// TestOpenCodeExportCarriesADocumentLargerThanTheExcerptBound pins the export arm's own rule: this route's
+// load level and its resume level's growth measurement both read the session through the harness's own
+// export, and a session whose document is larger than the turn-output bound must be read whole -- a
+// truncated document is not an answer, and a check that read one would report a successful native load as
+// unverified. The real runner and the real walk are exercised (this test binary is the stub harness), so
+// the pipe, the read and the token walk are the production path; the count the walk answers is the whole
+// document's own.
+func TestOpenCodeExportCarriesADocumentLargerThanTheExcerptBound(t *testing.T) {
+	if os.Getenv(openCodeExportStubEnv) != "" {
+		openCodeExportStubHarness(t)
+		// The harness answers one document and nothing else: the test framework's own summary line is not
+		// the harness's output, and this route's walk refuses content after the document it asked for.
+		os.Exit(0)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolving the test binary: %v", err)
+	}
+	t.Setenv(openCodeExportStubEnv, openCodeExportStubAnswer)
+	// The runner is driven with the stub's own argument vector -- the test binary is the harness, so the
+	// production command line is not what selects the arm here -- and the walk reads exactly what the
+	// child printed: the pipe, the read and the token walk are the production path.
+	arguments := []string{"-test.run=^TestOpenCodeExportCarriesADocumentLargerThanTheExcerptBound$"}
+	output, _, err := runRouteDocument(context.Background(), executable, "", arguments, os.Environ(),
+		2*time.Minute, nil)
+	if err != nil {
+		t.Fatalf("running the stub harness: %v", err)
+	}
+	if len(output) <= harnessOutputMax {
+		t.Fatalf("the stub answered %d byte(s), want more than the %d-byte excerpt bound: the case is "+
+			"about an export no excerpt could hold", len(output), harnessOutputMax)
+	}
+	summary, err := readOpenCodeExportDocument(output)
+	if err != nil {
+		t.Fatalf("reading the export: %v", err)
+	}
+	if summary.SessionID != openCodeExportStubID || summary.Directory != openCodeExportStubDir ||
+		summary.Messages != openCodeExportStubMessages {
+		t.Errorf("summary = %+v, want the stub document's own id, directory and %d message(s): an excerpt "+
+			"of the document cannot answer these", summary, openCodeExportStubMessages)
+	}
+}
+
+// TestOpenCodeExportReaderKeepsOnlyWhatItAsksAbout pins the walk's own reading rule: the members the
+// checks ask about are answered, a member they do not ask about is consumed as it arrives, and a value
+// that is not the document this route reads is refused rather than read as one -- an empty answer, a JSON
+// value that is not an object, a message list that is not an array, and an object with no session id.
+func TestOpenCodeExportReaderKeepsOnlyWhatItAsksAbout(t *testing.T) {
+	summary, err := readOpenCodeExportDocument(`{"info":{"id":"ses_x","location":{"directory":"/d",` +
+		`"extra":{"deep":[1,2,{"a":"b"}]}},"usage":{"input":1}},"parts_unasked":[1,2,3],` +
+		`"messages":[{"id":"m1","content":[{"type":"text","text":"hi"}]},{"id":"m2"}]}`)
+	if err != nil {
+		t.Fatalf("reading a document with unasked members: %v", err)
+	}
+	if summary.SessionID != "ses_x" || summary.Directory != "/d" || summary.Messages != 2 {
+		t.Errorf("summary = %+v, want the document's own id, directory and message count", summary)
+	}
+	for _, answer := range []string{
+		"",
+		"[1,2,3]",
+		`{"info":{"id":"ses_x"},"messages":{"not":"an array"}}`,
+		`{"info":{"location":{"directory":"/d"}},"messages":[]}`,
+		`{"info":{"id":"ses_x"},"messages":[]} and then the caller's own words`,
+	} {
+		if _, err := readOpenCodeExportDocument(answer); err == nil {
+			t.Errorf("readOpenCodeExportDocument(%q) answered no error, want the shape refusal it is", answer)
+		}
 	}
 }
 

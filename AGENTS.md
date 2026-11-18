@@ -77,7 +77,11 @@ with their exit codes and counts).
   binding it runs under is the target home's own, asked of the harness (`debug agents`). Every OpenCode
   subcommand this build prints or runs carries `--standalone`, and none leaves the flag past a `--`
   terminator, where it hands the run to the managed service and that service answers from a store this
-  run did not grow (measured); the printed resume line names it immediately after its subcommand.
+  run did not grow (measured); the printed resume line names it immediately after its subcommand. The
+  printed resume line and the resume check name the data root and, beside it, the store's own database
+  file (`OPENCODE_DB`): a line a shell reads can set a variable but cannot remove one, and a caller's
+  inherited override would otherwise send the pasted command to another store, where `run --session <id>`
+  *creates* a session for an id the store does not hold (measured).
 - **A conversion writes a fresh native identity and replaces nothing.** The install is exclusive, the
   source is never opened for writing, no credential or login store is copied, and a target data
   directory nobody named is an error rather than a directory invented here. Tests and demos use

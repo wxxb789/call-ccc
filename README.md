@@ -30,8 +30,10 @@ cd <session working directory> && PI_CODING_AGENT_DIR=<installed home> pi --sess
 # and the Oh My Pi one, whose printed line names both its data directory and the directory holding the file:
 cd <session working directory> && PI_CODING_AGENT_DIR=<installed home> \
   PI_CODING_AGENT_SESSION_DIR=<installed home>/sessions/<project dir> omp --resume <new session id>
-# and the OpenCode one, which reads its store from the data root the line names:
-cd <session working directory> && XDG_DATA_HOME=<installed data root> \
+# and the OpenCode one, whose printed line names the data root it reads and pins the store's own
+# database inside it (a printed line can set a variable, never remove an inherited one):
+cd <session working directory> && \
+  OPENCODE_DB=<installed data root>/opencode/opencode.db XDG_DATA_HOME=<installed data root> \
   opencode run --standalone --session <new session id>
 ```
 
@@ -76,14 +78,17 @@ or
 continued from it (`--verify resume --resume-prompt TEXT`). It prints the target's own session id and
 the command that resumes it — the data directory it installed into (`CODEX_HOME=…`, or for the harnesses
 whose resume line also changes into the session's working directory `CLAUDE_CONFIG_DIR=…` /
-`PI_CODING_AGENT_DIR=…`, the OpenCode data root (`XDG_DATA_HOME=…`), and for Oh My Pi the directory
+`PI_CODING_AGENT_DIR=…`, the OpenCode data root together with the store's own database file inside it
+(`XDG_DATA_HOME=… OPENCODE_DB=…`), and for Oh My Pi the directory
 holding the session's file named beside that
 (`PI_CODING_AGENT_SESSION_DIR=…`):
 `cd <cwd> && CLAUDE_CONFIG_DIR=<home> claude --resume <id>`,
 `cd <cwd> && PI_CODING_AGENT_DIR=<home> pi --session <id>`,
 `cd <cwd> && PI_CODING_AGENT_DIR=<home> PI_CODING_AGENT_SESSION_DIR=<home>/sessions/<project dir> omp --resume <id>`,
-`cd <cwd> && XDG_DATA_HOME=<data root> opencode run --standalone --session <id>`) plus the harness and the session id,
-so the pasted command opens the home holding the session rather than the caller's default one — and
+`cd <cwd> && OPENCODE_DB=<data root>/opencode/opencode.db XDG_DATA_HOME=<data root> opencode run --standalone --session <id>`) plus the harness and the session id,
+so the pasted command opens the home holding the session rather than the caller's default one — even
+where the caller's own environment already names another store, because the printed line names the
+variables a shell can set (a printed line cannot remove an inherited one) — and
 `--json` reports all of it as one object, the argument vector and environment included. `--dry-run`
 converts and verifies without writing anything, `--target-home DIR` keeps a demo or a test away from a
 real Codex or Claude Code home, and `--target-binary PATH` names the harness executable when it is not

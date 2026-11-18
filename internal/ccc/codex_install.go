@@ -299,18 +299,11 @@ func (reader roundTripReader) readDialogue(message Message) string {
 // target's own reader classifies away.
 func readRoundTripEvidence(readBack Conversation, reader roundTripReader) roundTripEvidence {
 	var evidence roundTripEvidence
+	evidence.dialogue = readBackDialogueKeys(readBack, reader)
 	for _, message := range readBack.Messages {
 		if message.IsCompactBoundary {
 			evidence.boundaries = append(evidence.boundaries, roundTripBoundaryKey(message.Content))
 			continue
-		}
-		if reader.classifiesAway(message) {
-			continue
-		}
-		if text := reader.readDialogue(message); strings.TrimSpace(text) != "" {
-			if kind, ok := reader.kindOf(message); ok {
-				evidence.dialogue = append(evidence.dialogue, dialogueKey(string(kind), text))
-			}
 		}
 		for _, call := range message.ToolCalls {
 			evidence.calls = append(evidence.calls, roundTripCallKey(call.ToolUseID, call.Name, call.InputJSON))
@@ -321,6 +314,27 @@ func readRoundTripEvidence(readBack Conversation, reader roundTripReader) roundT
 		}
 	}
 	return evidence
+}
+
+// readBackDialogueKeys answers one read-back's dialogue keys, in the read-back's own order, under one
+// reader's rules: a boundary is compared as its own kind rather than as dialogue, a record the reader
+// classifies away carries no dialogue, and what one message's dialogue is comes from the route's own
+// reader rule. Two callers ask this question -- the walk's read side, and a target whose artifact only
+// its harness can write, whose installed dialogue records therefore are the read-back's own -- so the rule
+// lives here and both answer it the same way.
+func readBackDialogueKeys(readBack Conversation, reader roundTripReader) []string {
+	var keys []string
+	for _, message := range readBack.Messages {
+		if message.IsCompactBoundary || reader.classifiesAway(message) {
+			continue
+		}
+		if text := reader.readDialogue(message); strings.TrimSpace(text) != "" {
+			if kind, ok := reader.kindOf(message); ok {
+				keys = append(keys, dialogueKey(string(kind), text))
+			}
+		}
+	}
+	return keys
 }
 
 // compareCodexRoundTrip names every way the file's read-back differs from the target document, through

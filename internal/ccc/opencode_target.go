@@ -174,7 +174,9 @@ type openCodeTimeSpan struct {
 // openCodeMessage is one message, in the harness's own per-type shape: a `user` message carries `text`
 // (and `files`); an `assistant` message carries `agent`, `model` and `content`; a `compaction` message
 // carries `summary`, `status` and `reason`. The optional members are absent on the types that do not use
-// them, which is the shape the harness's own export prints.
+// them, which is the shape the harness's own export prints. `summary` is a pointer because the importer
+// requires the member on a compaction message and accepts an empty string in it (measured), so the
+// writer must be able to write `"summary": ""` where no other message type writes the member at all.
 type openCodeMessage struct {
 	ID      string           `json:"id"`
 	Time    openCodeTimeSpan `json:"time"`
@@ -185,7 +187,7 @@ type openCodeMessage struct {
 	Model   *openCodeModel   `json:"model,omitempty"`
 	Content []openCodePart   `json:"content,omitempty"`
 	Finish  string           `json:"finish,omitempty"`
-	Summary string           `json:"summary,omitempty"`
+	Summary *string          `json:"summary,omitempty"`
 	Status  string           `json:"status,omitempty"`
 	Reason  string           `json:"reason,omitempty"`
 }
@@ -463,16 +465,23 @@ func (c *openCodeConverter) sessionModel() *openCodeModel {
 }
 
 // convert runs the two passes: the tool-evidence plan (which pairs every result with its call, because
-// a tool part carries a call and its outcome together), then the message walk.
+// a tool part carries a call and its outcome together), then the message walk. Both passes ask the same
+// question about the source's own relations -- which records are on the line the conversation reached --
+// so it is answered once here: a record the walk does not write must contribute no tool evidence either,
+// or its outcome would travel as if the call it answers were on the active line.
 func (c *openCodeConverter) convert() error {
-	c.planToolEvidence()
-	if err := c.writeConversation(); err != nil {
-		return err
-	}
-	return nil
+	inactive, unresolved := inactiveSourceRecords(c.conv.Messages, c.conv.Source.Provider)
+	c.lossUnresolvedParent = unresolved
+	c.planToolEvidence(inactive)
+	return c.writeConversation(inactive)
 }
 
 // planToolEvidence walks the document once to pair every recorded result with the call it answers.
+// inactive says which records the source's own relations place off the conversation's line; those
+// records, and a subagent's own records, are not planned at all: the walk writes no message for them, so
+// a result they carry is not the outcome of a call the document carries, and pairing it would revive
+// omitted evidence as the active call's own answer. A call planned here is still dropped at write time
+// when its result turns out to have no shape this target can express.
 //
 // A result with no recorded id is paired with the sole call that has no result yet, exactly as the
 // family's writers do (with two or more calls outstanding the result could belong to any of them, and
@@ -480,8 +489,11 @@ func (c *openCodeConverter) convert() error {
 // invented call. A call whose recorded input this build cannot write as an object is still carried (an
 // empty object is written for it, counted); what a *result* turns out to be decides at write time
 // whether the call has a shape here at all.
-func (c *openCodeConverter) planToolEvidence() {
+func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 	for index, message := range c.conv.Messages {
+		if inactive[index] || message.IsSidechain {
+			continue
+		}
 		calls := distinctCalls(message, func(_ int, call ToolCall) ToolCall { return call }, &c.lossCoalesced)
 		for _, call := range calls {
 			id := strings.TrimSpace(call.ToolUseID)
@@ -544,7 +556,9 @@ func (c *openCodeConverter) planToolEvidence() {
 	}
 }
 
-// writeConversation walks the document once and writes every message it can express.
+// writeConversation walks the document once and writes every message it can express. inactive is the
+// answer convert() took once for both passes, so the plan's evidence and this walk agree on which
+// records the conversation's own line holds.
 //
 // A record the source's own relations place off the line its conversation reached is not written: this
 // target's message list has no parent relation to hang a record off, and an assistant or user message
@@ -552,9 +566,7 @@ func (c *openCodeConverter) planToolEvidence() {
 // travel here as recorded history without being revived as an active turn. It is omitted and counted
 // (inactive_branch_records). The walk's own answer about the places it chose travels with it
 // (unresolved_source_parents), as on the other flat target.
-func (c *openCodeConverter) writeConversation() error {
-	inactive, unresolved := inactiveSourceRecords(c.conv.Messages, c.conv.Source.Provider)
-	c.lossUnresolvedParent = unresolved
+func (c *openCodeConverter) writeConversation(inactive []bool) error {
 	for index, message := range c.conv.Messages {
 		if inactive[index] {
 			c.lossInactiveBranch++
@@ -752,11 +764,15 @@ func (c *openCodeConverter) writeCompaction(message Message) error {
 	c.lossPreBoundary = c.carried.Messages
 	c.sawBoundary = true
 	c.lossCompactionReason++
+	// The member is written even when the summary is empty: the importer requires it on a compaction
+	// message (measured), and an empty summary still marks the boundary. A pointer is what keeps it
+	// absent on every other message type while an empty string stays present here.
+	summary := message.Content
 	c.document.Messages = append(c.document.Messages, openCodeMessage{
 		ID:      id,
 		Time:    openCodeTimeSpan{Created: c.clock.next(message.Timestamp)},
 		Type:    openCodeMessageCompaction,
-		Summary: message.Content,
+		Summary: &summary,
 		Status:  openCodeCompactionStatus,
 		Reason:  openCodeCompactionReason,
 	})
@@ -1200,6 +1216,16 @@ func (c *openCodeConverter) losses() []Loss {
 				"own position",
 		},
 		{
+			Category:    "coalesced_tool_call_projections",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       c.lossCoalesced,
+			Detail: "the source read recorded these calls once for every file they touched (the " +
+				"inherited Codex reader projects one apply_patch into one call per file, every " +
+				"projection sharing the call's id and its input); OpenCode's tool part carries one id " +
+				"and one input, so the call is written once and what has no field is the per-file " +
+				"attribution of a second projection",
+		},
+		{
 			Category:    "tool_name_vocabulary",
 			Disposition: DispositionCarriedWithCaveat,
 			Count:       len(c.toolNameOrder),
@@ -1379,32 +1405,17 @@ func openCodeModelIDDetail(fromTarget, unnamed int) string {
 		"that produced the words"
 }
 
-// openCodeDocumentDialogue reads the dialogue a written document's own records hold, in the document's
-// own order, for the round-trip comparison: every user message's text, and for an assistant message the
-// rendering its text and reasoning parts produce under a read (the inherited readers join them).
-//
-// The question is this narrow on purpose, and it is asked of the document's own bytes rather than of the
-// writer's in-memory items, so a document whose part order or text differs from what the writer meant to
-// write cannot verify against its own intent.
-func openCodeDocumentDialogue(data []byte) ([]string, error) {
+// openCodeDocumentShape answers whether one conversion's own document bytes are the shape this writer
+// writes: the comparison's precondition, not its evidence. The store's own rows are what the structure
+// check reads (the document the importer consumed is the conversion's intent), and a caller that hands
+// this check bytes this writer does not write gets that answer instead of a comparison of the store
+// against items that do not belong to those bytes.
+func openCodeDocumentShape(data []byte) error {
 	var document openCodeDocument
 	if err := json.Unmarshal(data, &document); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrOpenCodeDocumentShape, err)
+		return fmt.Errorf("%w: %v", ErrOpenCodeDocumentShape, err)
 	}
-	var keys []string
-	for _, message := range document.Messages {
-		switch message.Type {
-		case openCodeMessageUser:
-			if message.Text != "" {
-				keys = append(keys, dialogueKey(string(ItemUser), message.Text))
-			}
-		case openCodeMessageAssistant:
-			if text := openCodePartsDialogue(message.Content); strings.TrimSpace(text) != "" {
-				keys = append(keys, dialogueKey(string(ItemAssistant), text))
-			}
-		}
-	}
-	return keys, nil
+	return nil
 }
 
 // ErrOpenCodeDocumentShape reports a document whose own bytes are not the shape this writer writes,

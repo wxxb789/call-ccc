@@ -3,6 +3,7 @@ package ccc
 import (
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
@@ -235,33 +236,191 @@ func openCodeFacts(ctx context.Context, in targetFactsInput) targetFacts {
 	return facts
 }
 
-// openCodeExportDocument is the part of the harness's own session document this route reads: the
-// session's identity, its recorded directory and its messages.
-type openCodeExportDocument struct {
-	Info struct {
-		ID       string `json:"id"`
-		Location struct {
-			Directory string `json:"directory"`
-		} `json:"location"`
-	} `json:"info"`
-	Messages []json.RawMessage `json:"messages"`
+// openCodeExportSummary is what this route asks the harness's own session document about: the session's
+// identity, the directory the harness files it under, and how many messages the document holds. Nothing
+// else is read. An export answers a whole conversation, and the checks ask a count rather than the
+// conversation, so the document is walked as the harness wrote it (readOpenCodeExportDocument), with
+// every message consumed token by token and nothing of it held.
+type openCodeExportSummary struct {
+	SessionID string
+	Directory string
+	Messages  int
 }
 
-// openCodeExport asks the harness's own reader about one session and answers its document.
+// openCodeExport asks the harness's own reader about one session and answers the fields this route asks
+// about. The invocation is read as a protocol document rather than a turn's excerpt: measured on 2.2.5,
+// `session export` prints the session's own document, which can be larger than any diagnostic bound, and
+// a truncated document is not an answer about anything.
 func openCodeExport(
 	ctx context.Context, executable, sessionID string, environment []string, timeout time.Duration,
 	stderr io.Writer,
-) (string, error) {
+) (openCodeExportSummary, error) {
 	arguments := []string{"session", "export", sessionID, "--standalone"}
-	output, diagnostics, err := runOpenCodeTurn(ctx, executable, "", arguments, environment, timeout, stderr)
+	output, diagnostics, err := runOpenCodeExportDocument(ctx, executable, "", arguments, environment,
+		timeout, stderr)
 	if err != nil {
 		reason := strings.TrimSpace(output)
 		if reason == "" {
 			reason = strings.TrimSpace(diagnostics)
 		}
-		return output, fmt.Errorf("%s: %w", summariseText(reason, 300), err)
+		return openCodeExportSummary{}, fmt.Errorf("%s: %w", summariseText(reason, 300), err)
 	}
-	return output, nil
+	return readOpenCodeExportDocument(output)
+}
+
+// readOpenCodeExportDocument reads the fields the checks ask about out of the harness's own document as
+// the harness wrote it. The document is walked token by token -- the walk is the one the Pi-family load
+// reader uses for a whole-conversation answer (readPiResponses): a message this route does not ask about
+// is consumed as it arrives rather than materialised, so a session larger than any diagnostic bound is
+// read the same way as a small one, and only the session's id, its recorded directory and the number of
+// messages it holds are kept.
+func readOpenCodeExportDocument(output string) (openCodeExportSummary, error) {
+	var summary openCodeExportSummary
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return summary, errors.New("it answered nothing")
+	}
+	decoder := jsontext.NewDecoder(strings.NewReader(trimmed))
+	token, err := decoder.ReadToken()
+	if err != nil {
+		return summary, err
+	}
+	if token.Kind() != '{' {
+		return summary, fmt.Errorf("it answered a JSON %v, want a document object", token.Kind())
+	}
+	for decoder.PeekKind() != '}' {
+		name, err := decoder.ReadToken()
+		if err != nil {
+			return summary, err
+		}
+		switch name.String() {
+		case "info":
+			if err := readOpenCodeExportInfo(decoder, &summary); err != nil {
+				return summary, err
+			}
+		case "messages":
+			count, err := readOpenCodeExportMessageCount(decoder)
+			if err != nil {
+				return summary, err
+			}
+			summary.Messages = count
+		default:
+			if err := skipJSONValue(decoder); err != nil {
+				return summary, err
+			}
+		}
+	}
+	if _, err := decoder.ReadToken(); err != nil { // the document object's closing brace
+		return summary, err
+	}
+	// The harness answers one document: anything after it is not the session this check asked about, so
+	// trailing content is refused rather than ignored (a caller's own words must not read as the
+	// harness's document).
+	if _, err := decoder.ReadToken(); !errors.Is(err, io.EOF) {
+		return summary, errors.New("its answer holds more than one JSON value")
+	}
+	if strings.TrimSpace(summary.SessionID) == "" {
+		return summary, errors.New("its document names no session id")
+	}
+	return summary, nil
+}
+
+// readOpenCodeExportInfo reads the document's `info` object for the two members this route asks about:
+// the session's own id and the directory the harness files it under. Every other member the harness's
+// own document carries (its usage, its model binding, its times) is consumed as it arrives.
+func readOpenCodeExportInfo(dec *jsontext.Decoder, summary *openCodeExportSummary) error {
+	token, err := dec.ReadToken()
+	if err != nil {
+		return err
+	}
+	if token.Kind() != '{' {
+		return fmt.Errorf("the document's info is a JSON %v, want an object", token.Kind())
+	}
+	for dec.PeekKind() != '}' {
+		name, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		switch name.String() {
+		case "id":
+			value, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			if value.Kind() != '"' {
+				return fmt.Errorf("the document's info.id is a JSON %v, want a string", value.Kind())
+			}
+			summary.SessionID = value.String()
+		case "location":
+			if err := readOpenCodeExportLocation(dec, summary); err != nil {
+				return err
+			}
+		default:
+			if err := skipJSONValue(dec); err != nil {
+				return err
+			}
+		}
+	}
+	_, err = dec.ReadToken() // the info object's closing brace
+	return err
+}
+
+// readOpenCodeExportLocation reads the harness's own `info.location` object for the one member this route
+// asks about: the directory the session is filed under.
+func readOpenCodeExportLocation(dec *jsontext.Decoder, summary *openCodeExportSummary) error {
+	token, err := dec.ReadToken()
+	if err != nil {
+		return err
+	}
+	if token.Kind() != '{' {
+		return fmt.Errorf("the document's info.location is a JSON %v, want an object", token.Kind())
+	}
+	for dec.PeekKind() != '}' {
+		name, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if name.String() != "directory" {
+			if err := skipJSONValue(dec); err != nil {
+				return err
+			}
+			continue
+		}
+		value, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if value.Kind() != '"' {
+			return fmt.Errorf("the document's info.location.directory is a JSON %v, want a string",
+				value.Kind())
+		}
+		summary.Directory = value.String()
+	}
+	_, err = dec.ReadToken() // the location object's closing brace
+	return err
+}
+
+// readOpenCodeExportMessageCount counts the document's messages without holding any of them: the array is
+// walked entry by entry, and each entry is consumed as a value of its own.
+func readOpenCodeExportMessageCount(dec *jsontext.Decoder) (int, error) {
+	token, err := dec.ReadToken()
+	if err != nil {
+		return 0, err
+	}
+	if token.Kind() != '[' {
+		return 0, fmt.Errorf("the document's messages is a JSON %v, want an array", token.Kind())
+	}
+	count := 0
+	for dec.PeekKind() != ']' {
+		if err := skipJSONValue(dec); err != nil {
+			return 0, err
+		}
+		count++
+	}
+	if _, err := dec.ReadToken(); err != nil { // the message array's closing bracket
+		return 0, err
+	}
+	return count, nil
 }
 
 // VerifyOpenCodeLoad asks the target harness's own reader to resolve the installed session and answer
@@ -313,59 +472,36 @@ func VerifyOpenCodeLoad(ctx context.Context, in targetVerificationInput) LoadVer
 		verification.Detail = "the harness's own reader did not resolve the installed session: " + err.Error()
 		return verification
 	}
-	document, err := openCodeReadExport(output)
-	if err != nil {
-		verification.Detail = "the harness's own reader answered a document this build could not read: " +
-			err.Error() + " (" + summariseText(output, 200) + ")"
-		return verification
-	}
-	if document.Info.ID != in.SessionID {
+	if output.SessionID != in.SessionID {
 		verification.Detail = fmt.Sprintf("the harness's own reader answered about %s, not about the "+
-			"installed session %s", document.Info.ID, in.SessionID)
+			"installed session %s", output.SessionID, in.SessionID)
 		return verification
 	}
 	// The control arm's refusal is the answer this check requires, so its own diagnostic line is
-	// discarded: the contrast is read from the returned text and the error, and forwarding the line would
-	// print an expected refusal beside a verified run's output.
-	control, controlErr := openCodeExport(ctx, path, openCodeUnknownSessionID, environment, timeout, io.Discard)
+	// discarded: the contrast is read from the returned error, which carries the harness's words for the
+	// failed run, and forwarding the line would print an expected refusal beside a verified run's output.
+	_, controlErr := openCodeExport(ctx, path, openCodeUnknownSessionID, environment, timeout, io.Discard)
 	if controlErr == nil {
-		verification.Detail = fmt.Sprintf("the same command with an unknown session id answered a "+
-			"session, so its answer is not shown to be about the installed one: %s",
-			summariseText(control, 200))
+		verification.Detail = "the same command with an unknown session id answered a " +
+			"session, so its answer is not shown to be about the installed one"
 		return verification
 	}
-	if !strings.Contains(control, openCodeUnknownSessionID) && !strings.Contains(controlErr.Error(), openCodeUnknownSessionID) {
+	if !strings.Contains(controlErr.Error(), openCodeUnknownSessionID) {
 		verification.Detail = fmt.Sprintf("the same command with an unknown session id refused it "+
 			"without naming the id, so the contrast could not be read as this check's control: %s",
 			summariseText(controlErr.Error(), 300))
 		return verification
 	}
 	verification.State = VerificationStateVerified
-	verification.SessionID = document.Info.ID
+	verification.SessionID = output.SessionID
 	verification.Path = openCodeStorePath(in.Home)
-	verification.Cwd = document.Info.Location.Directory
+	verification.Cwd = output.Directory
 	verification.Detail = fmt.Sprintf("the harness's own reader resolved the installed session and "+
 		"answered with its own id and %d message(s); the same command with an unknown session id "+
 		"refused it, naming %s. The check ran with a scratch configuration and state directory and "+
 		"without the credential names the harness could read, and it billed no model turn",
-		len(document.Messages), openCodeUnknownSessionID)
+		output.Messages, openCodeUnknownSessionID)
 	return verification
-}
-
-// openCodeReadExport reads the harness's own document, or reports the shape it answered instead.
-func openCodeReadExport(output string) (openCodeExportDocument, error) {
-	var document openCodeExportDocument
-	trimmed := strings.TrimSpace(output)
-	if trimmed == "" {
-		return document, errors.New("it answered nothing")
-	}
-	if err := json.Unmarshal([]byte(trimmed), &document); err != nil {
-		return document, err
-	}
-	if strings.TrimSpace(document.Info.ID) == "" {
-		return document, errors.New("its document names no session id")
-	}
-	return document, nil
 }
 
 // openCodeResumeArguments is the non-interactive resume invocation: the session's id, the option
@@ -376,10 +512,21 @@ func openCodeResumeArguments(sessionID, prompt string) []string {
 }
 
 // openCodeResumeEnvironment is the environment both the printed resume line and the resume check run the
-// harness with: the data root the session's store lives under. It is the caller's own configuration and
-// credentials otherwise -- a real turn needs a model, and this check never supplies one of its own.
+// harness with: the data root the session's store lives under, and the store's own database file pinned
+// in the override variable. It is the caller's own configuration and credentials otherwise -- a real turn
+// needs a model, and this check never supplies one of its own. Both names have their own reason: the data
+// root is what moves the harness's whole data directory (`opencode debug paths data` answers
+// `$XDG_DATA_HOME/opencode`), and the database is pinned because a printed line can name a value but
+// cannot express the removal the route's own commands apply -- an inherited `OPENCODE_DB` would otherwise
+// send the pasted line to another store, where `run --session <id>` *creates* a session for the id
+// (measured) instead of resolving the installed one. Measured on 2.2.5: the value is a path, and
+// `debug paths db` answers exactly the file it names while `session export` resolves the session there
+// and refuses it in another store.
 func openCodeResumeEnvironment(home string) map[string]string {
-	return map[string]string{openCodeDataRootEnv: openCodeDataRoot(home)}
+	return map[string]string{
+		openCodeDataRootEnv: openCodeDataRoot(home),
+		openCodeDBEnv:       openCodeStorePath(home),
+	}
 }
 
 // VerifyOpenCodeResume runs one real turn in the installed session and reports what the harness did.
@@ -410,7 +557,13 @@ func VerifyOpenCodeResume(ctx context.Context, in targetVerificationInput) Resum
 	if timeout <= 0 {
 		timeout = openCodeResumeTimeout
 	}
-	environment := openCodeEnvironment(in.Home, nil)
+	// The check runs the environment the report prints, so the invocation a caller pastes is the one that
+	// was verified: the data root is set, and the store's own database is pinned where the caller's
+	// override would otherwise decide which database the command reads (openCodeResumeEnvironment says
+	// why the printed line names a value rather than removing one).
+	environment := openCodeEnvironment(in.Home, map[string]string{
+		openCodeDBEnv: openCodeStorePath(in.Home),
+	})
 	arguments := openCodeResumeArguments(in.SessionID, in.Prompt)
 	verification.Command = renderInvocation(append([]string{path}, arguments...),
 		openCodeResumeEnvironment(in.Home), in.Cwd)
@@ -472,18 +625,14 @@ func openCodeMessageCount(
 	ctx context.Context, executable, sessionID string, environment []string, timeout time.Duration,
 	stderr io.Writer,
 ) (int, error) {
-	output, err := openCodeExport(ctx, executable, sessionID, environment, timeout, stderr)
+	summary, err := openCodeExport(ctx, executable, sessionID, environment, timeout, stderr)
 	if err != nil {
 		return 0, err
 	}
-	document, err := openCodeReadExport(output)
-	if err != nil {
-		return 0, err
+	if summary.SessionID != sessionID {
+		return 0, fmt.Errorf("the harness's own reader answered about %s, not %s", summary.SessionID, sessionID)
 	}
-	if document.Info.ID != sessionID {
-		return 0, fmt.Errorf("the harness's own reader answered about %s, not %s", document.Info.ID, sessionID)
-	}
-	return len(document.Messages), nil
+	return summary.Messages, nil
 }
 
 // openCodeGrowthDetail words the growth one turn produced, in the harness's own terms: the message count
@@ -519,9 +668,13 @@ type openCodeHarnessRun func(
 // the rule under test, not which build of the harness a host happens to have installed. A case answers
 // the protocol itself and records the environment instead of the case needing the host's harness. This
 // route runs every seam under the shared turn runner's own rule (route_shared.go): it adds no environment
-// of its own, so there is no route-local wrapper between the seams and it.
+// of its own, so there is no route-local wrapper between the seams and it. The export seam is the
+// exception by name only: it runs the shared document runner, whose stdout is the harness's whole
+// answer rather than a turn's excerpt, because a session export is a document this route reads a session
+// out of (openCodeExport).
 var (
 	runOpenCodeTurn           openCodeHarnessRun = runRouteTurn
+	runOpenCodeExportDocument openCodeHarnessRun = runRouteDocument
 	runOpenCodeResumeTurn     openCodeHarnessRun = runRouteTurn
 	runOpenCodeAgentsProbe    openCodeHarnessRun = runRouteTurn
 	runOpenCodeImporter       openCodeHarnessRun = runRouteTurn

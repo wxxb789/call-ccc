@@ -35,6 +35,12 @@ import (
 // *parent*. It is what every command this route runs and prints sets.
 const openCodeDataRootEnv = "XDG_DATA_HOME"
 
+// openCodeDBEnv is the variable that overrides the database file alone. Every command this route runs
+// has it removed from the caller's environment -- an inherited value would point the harness at another
+// store -- and the printed resume line and the resume check name this home's own store in it instead,
+// because a printed shell line can name a value but cannot express a removal.
+const openCodeDBEnv = "OPENCODE_DB"
+
 // openCodeImportMechanism is the mechanism the installation report names.
 const openCodeImportMechanism = "the target harness's own session importer (opencode session import)"
 
@@ -108,9 +114,12 @@ func openCodeStoreRef(dataDir, sessionID string) string {
 // openCodeEnvironment builds the environment every OpenCode command this route runs is given: the
 // caller's own, with the data-root variable set to this home's root, the database override removed (it
 // would point the harness at another store), and -- for the checks -- a scratch configuration and state
-// directory and the credential names they must not read. Nothing else is copied or rewritten.
+// directory and the credential names they must not read. Nothing else is copied or rewritten. A caller
+// that needs this home's own store named in the override (the resume check, so it runs the environment
+// the report prints) passes it in set: the removal filters the caller's value, and the set member is
+// this run's own.
 func openCodeEnvironment(home string, set map[string]string, denied ...string) []string {
-	blocked := append([]string{"OPENCODE_DB"}, denied...)
+	blocked := append([]string{openCodeDBEnv}, denied...)
 	return childEnvironment(openCodeDataRoot(home), openCodeDataRootEnv, blocked, set)
 }
 
@@ -278,11 +287,25 @@ func VerifyOpenCodeSessionStructure(
 // against the reader's rendering would report every carried reasoning trace as a difference. The reader
 // also keeps a system record (a compaction row included) as its own classification, which the route
 // classifies away the way the family's routes do; a compaction row is compared as the boundary it is.
+//
+// What the walk resolves written messages against is the store's own dialogue -- the read-back's
+// messages, under the route's own reader rules -- and not the document the importer was handed. Those
+// bytes are the conversion's *intent*, not evidence about what the store holds, and this route's reader
+// projects none of the records this writer writes (its records are the user's and the assistant's own
+// messages, and the boundary row is compared as the boundary it is), so the store's own dialogue records
+// are exactly the dialogue the read-back shows: a written message the store no longer holds fails
+// verification as the difference it is, rather than being excused as a reading the reader projected away.
+// The harness's own importer can drop a row silently (measured: an assistant message whose `time` carries
+// `created` alone is accepted and then absent from the store), and the read-back is the only side that can
+// show it.
+//
+// The document's own bytes are still read once, for the shape refusal this check owns: a caller that
+// hands it bytes this writer does not write gets that answer rather than a comparison of the store
+// against items that do not belong to those bytes.
 func compareOpenCodeRoundTrip(
 	session OpenCodeSession, readBack Conversation, installed []byte,
 ) roundTripComparison {
-	keys, err := openCodeDocumentDialogue(installed)
-	if err != nil {
+	if err := openCodeDocumentShape(installed); err != nil {
 		return roundTripComparison{differences: []string{err.Error()}}
 	}
 	// A tool part's `state.input` is the one member the harness re-encodes: measured on 2.2.5, a
@@ -299,8 +322,9 @@ func compareOpenCodeRoundTrip(
 		}
 		items = append(items, item)
 	}
-	return compareRoundTrip(items, canonicalOpenCodeReadBack(readBack), openCodeRoundTripReader(),
-		newDialogueRecords(keys))
+	reader := openCodeRoundTripReader()
+	return compareRoundTrip(items, canonicalOpenCodeReadBack(readBack), reader,
+		newDialogueRecords(readBackDialogueKeys(readBack, reader)))
 }
 
 // canonicalOpenCodeReadBack re-spells a read-back's tool calls through canonicalJSONValue, for the same

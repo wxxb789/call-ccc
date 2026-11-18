@@ -331,12 +331,161 @@ $ python3 scripts/gate.py
 GATE: PASS
 ```
 
+### The review round's fixes (`338df94..c315a52`), re-measured
+
+The findings file (`review-findings-r1.md`, review head `c315a52`) named eight defects: three P1 and five
+P2. All eight are fixed on the same tree, and each fix's own case was shown to redden without it (the
+mutation executed and restored, every file hashed after its restore; the gate and the native runs below ran
+on those bytes).
+
+- **Tool planning revived evidence from records the walk does not write** (`internal/ccc/opencode_target.go`).
+  `planToolEvidence` paired every result with its call *before* the message walk dropped inactive and
+  sidechain records, so a result recorded on a branch the conversation left (or on a subagent's record)
+  became the completed outcome of an active call — the report counted the record as omitted while the
+  document carried its result. Both passes now ask the source's own relations once (`convert` takes
+  `inactiveSourceRecords` and hands the same answer to the plan and the walk), and the plan skips the
+  records the walk will not write. `TestOpenCodePlansNoEvidenceFromARecordItWillNotWrite` covers both
+  shapes: the call is left out as `unpaired_tool_calls`, no tool part is written, and the omitted result is
+  not paired.
+- **Structural verification substituted intended bytes for stored dialogue**
+  (`internal/ccc/opencode_install.go`). The installed-bytes callback returned `session.Data` — the import
+  document, which is the conversion's *intent*, not evidence about the store — and those bytes answered for
+  a written message the store no longer held, so a silently dropped row was excused as a projection
+  (`not_read_back_verbatim`) and the check could still verify. The walk now resolves written messages
+  against the store's own dialogue (the read-back's messages under the route's own reader rules, in the
+  read-back's order: `readBackDialogueKeys`, shared with the codex walk's read side so the two cannot
+  drift); this route's reader projects none of the records this writer writes, so a message the read-back
+  does not show is a message the store does not hold. The document's bytes are still read once for the
+  shape refusal the check owns. `TestVerifyOpenCodeSessionStructureFailsWhenTheStoreDroppedARow` deletes the
+  assistant row the measured silent drop leaves no trace of, and requires not-verified with the dialogue
+  named and `not_read_back_verbatim` zero.
+- **The printed resume command kept the caller's database override**
+  (`internal/ccc/opencode_verify.go`). Installation and the load level remove `OPENCODE_DB`, but the
+  reported environment named only `XDG_DATA_HOME`, so a caller with `OPENCODE_DB` set would paste a line
+  that reads another store — where `run --session <id>` *creates* a session instead of resolving the
+  installed one (measured, §0/§2). The printed line and the resume check now pin the store's own database
+  file (`openCodeResumeEnvironment`), so the invocation a caller pastes is the one that was verified.
+  Measured on the installed 2.2.5 for this round: with `XDG_DATA_HOME=<root> OPENCODE_DB=<root>/opencode/opencode.db`,
+  `opencode debug paths db` answers exactly that file and `session export <id>` resolves the session
+  (exit 0); with the same variable naming another store's file the same export refuses
+  (`Session not found: <id>`, exit 1). `TestOpenCodeResumePinsTheDatabaseItPrints` asserts the environment
+  reaching the harness *and* the printed line; the route case asserts the reported pair.
+- **An empty compaction summary lost its required member** (`internal/ccc/opencode_target.go`). `summary`
+  carried `omitempty`, so a boundary whose summary holds no text (the shape the inherited Pi reader can hand
+  over) was written without the member the importer requires. The member is a pointer now: written — empty
+  string included — on a compaction message and absent on every other type.
+  `TestOpenCodeCompactionSummaryMemberIsPresentWhenEmpty` reads the serialized bytes.
+- **Session exports were read through the turn-output bound** (`internal/ccc/opencode_verify.go`,
+  `internal/ccc/route_shared.go`). `openCodeExport` ran through `runRouteTurn`, which keeps only the first
+  1 MiB of stdout, so a session larger than that was truncated before the document was read — refusing
+  native load verification and the resume level's growth measurement. Exports now run through
+  `runRouteDocument` (a turn's command, deadline, environment and bounded diagnostics, with the turn-output
+  bound deliberately not applied; the two runners share their process plumbing in `runHarnessInvocation`),
+  and the document is walked token by token (`readOpenCodeExportDocument`, the walk the Pi-family load
+  reader uses for a whole-conversation answer) keeping only the session id, its recorded directory and its
+  message count. `TestOpenCodeExportCarriesADocumentLargerThanTheExcerptBound` runs the real runner against
+  this test binary as a stub harness (~2 MiB document) and reads it whole;
+  `TestOpenCodeExportReaderKeepsOnlyWhatItAsksAbout` pins the walk's refusals (an empty answer, a non-object,
+  a non-array `messages`, no session id, and content after the document).
+- **The native check's environment filtering was undone by its runner**
+  (`scripts/native_check_common.py`, `scripts/opencode-native-check.py`). `run()` overlays the dictionary it
+  is given onto a fresh copy of this process's environment, so the `OPENCODE_DB` that
+  `opencode_environment` removed was restored underneath it. `run()` gained `replace_env` (the dictionary is
+  the command's whole environment), and both the check's harness commands and its resume turn pass it; a
+  case asserts the environment reaching `subprocess.run`, not the dictionary the check built
+  (`HarnessEnvironment`).
+- **A requested turn without `--expect` always failed** (`scripts/opencode-native-check.py`). The
+  persisted-answer check required `args.expect` unconditionally, so `--resume-prompt` alone recorded a
+  failure even when the harness answered, appended its records and preserved the previous ones. Without
+  `--expect` the needle is now the harness's own printed answer, compared against the appended assistant
+  evidence (`document_texts(…, "assistant")`), and the `--expect` substring record stays conditional;
+  `ResumeStage` covers both arms.
+- **Coalesced call projections were counted but never disclosed**
+  (`internal/ccc/opencode_target.go`). `distinctCalls` charged `lossCoalesced`, but `losses()` never emitted
+  the category, so the committed multi-file patch fixture (the inherited Codex reader projects one
+  `apply_patch` into one call per file) collapsed silently where the plan promises per-category disclosure.
+  The category is emitted now (36 categories per run, up from 35);
+  `TestContinueIntoOpenCodeCoalescesOneCallsPerFileProjections` converts the patch fixture.
+
+The mutations that name the repaired rules, executed and restored (each file hashed after its restore —
+`internal/ccc/opencode_target.go` `b3908623…`, `internal/ccc/opencode_install.go` `4e2a05a2…`,
+`internal/ccc/opencode_verify.go` `527b413e…`, `internal/ccc/route_shared.go` `2e75f7e6…`,
+`scripts/opencode-native-check.py` `e474a1af…`):
+
+| Rule | Line disabled | Observed |
+| --- | --- | --- |
+| tool planning skips the records the walk does not write | the `inactive[index] \|\| message.IsSidechain` guard turned into `if false` | `TestOpenCodePlansNoEvidenceFromARecordItWillNotWrite` FAIL — `unpaired_tool_calls = 0, want 1` and `the document holds a tool part for call "call-1": its evidence came from a record the walk does not write` (both the inactive-result and the sidechain arm) |
+| a written message is resolved against the store's own dialogue | the walk's records taken from the document's dialogue again (the pre-fix shape) | `TestVerifyOpenCodeSessionStructureFailsWhenTheStoreDroppedARow` FAIL — `State:verified` with `NotReadBackVerbatim:1` and the detail `1 written message(s) are in the installed session and the inherited OpenCode reader does not read their own text from it…` while the read-back holds 1 of the 2 written messages |
+| the printed environment pins the store's database | `openCodeResumeEnvironment` returning the data root alone | `TestOpenCodeResumePinsTheDatabaseItPrints` FAIL — the command carries no `OPENCODE_DB=…`; the route case FAIL — `resume environment = map[XDG_DATA_HOME:…], want the store's own database pinned` |
+| an empty compaction summary is written as a present member | the summary written as a nil pointer when empty | `TestOpenCodeCompactionSummaryMemberIsPresentWhenEmpty` FAIL — `the compaction message holds no summary member: the importer requires it` |
+| an export is read whole | `runRouteDocument`'s own buffer (the `new(bytes.Buffer)` it hands `runHarnessInvocation`) replaced by a bounded one, the then-unused import dropped | `TestOpenCodeExportCarriesADocumentLargerThanTheExcerptBound` FAIL — `the stub answered 1048576 byte(s), want more than the 1048576-byte excerpt bound` |
+| a harness command's environment is the check's own dictionary | `replace_env=True` dropped from `ask_opencode` | `HarnessEnvironment.test_one_harness_command_removes_an_inherited_database_override` FAIL — `'OPENCODE_DB' unexpectedly found in {…}` in the environment reaching `subprocess.run` |
+| a turn without `--expect` is compared with its own answer | the persisted-answer record restored to `bool(args.expect) and any(… )` | `ResumeStage.test_a_turn_without_expected_text_is_verified_by_its_own_answer` FAIL — `'FAIL' != 'PASS'` |
+| the printed line is read with its store pin | `also=pinned` dropped from `_check_invocation`'s reading | `PrintedInvocation` both cases FAIL — the pinning line no longer reads as the invocation, and the root-only line does |
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3620 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 314 tests in 6.368s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 31 project-owned prefix(es); files seen by git: 5701 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
+  PASS     secrets  no leaks found in 155 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The Go suites (`go test -count=1 -tags fts5 ./internal/ccc/ ./cmd/ccc/`: `ok` / `ok`) and the native check
+on the fixed tree (this host's own OpenCode, `/home/azureuser/.npm-global/bin/opencode`, 2.2.5; run alone,
+never beside the gate). The console below keeps each run's own verdict line and the records the round's
+rules are about; a `…` inside one line is this record's own elision of that line's middle:
+
+```console
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode
+PASS: the report names the environment the printed invocation sets — {'OPENCODE_DB': '…/opencode/opencode.db', 'XDG_DATA_HOME': '…'}, want the same pair
+PASS: the printed resume_command reads as a POSIX shell line naming the session — cd …/workspace && OPENCODE_DB=…/opencode/opencode.db XDG_DATA_HOME=… opencode run --standalone --session … -- ''
+PASS: the conversion reports the conversation it carried and every loss category — carried 7 message(s), 1 call(s), 1 result(s); loss categories named: 36
+RESULT: PASS — 28 check(s), none failed
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode \
+    --resume-prompt 'Reply with exactly: NATIVE-TURN-OK'
+PASS: the turn's own answer is in the session the harness reads — the turn appended 3 message(s); the appended assistant record(s) hold 'NATIVE-TURN-OK'
+RESULT: PASS — 31 check(s), none failed     # the turn arm without --expect: the round's own case, against the real harness
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode \
+    --resume-prompt 'Reply with exactly: NATIVE-TURN-OK' --expect NATIVE-TURN-OK
+RESULT: PASS — 32 check(s), none failed
+```
+
+The three runs' check counts are this round's own step set (the offline half gained the reported-environment
+check; §2's recorded `27 check(s)` is that earlier run's own bytes). The offline arm was re-run on the
+shipped bytes after the runners' plumbing was factored into `runHarnessInvocation` (a behaviour-preserving
+refactor of `runRouteTurn`/`runRouteDocument`), with the same records and the same verdict; the two turn
+runs were made before it. The `--resume-prompt`-only run is the arm the findings file's seventh item is
+about: it passes now where the pre-fix code recorded `the turn's own answer is in the session the harness
+reads` as FAIL for a successful turn.
+
+What else the round moved: `README.md` (all three places the OpenCode resume line appears — the
+quickstart's block, the environment sentence and the invocation list — now name the data root *and* the
+store's database file); `AGENTS.md` (the OpenCode bullet gains the printed-line rule: the line and the check
+name the root and pin the store's database in it, because a line a shell reads can set a variable but not
+remove one); `docs/harness.md` (the native check's entry names the pinned pair; the shared runner's entry
+names `replace_env`); `docs/decisions/OPEN-QUESTIONS.md` (Q-0007-02's default taken now states the printed
+pin, with the measurement above); this record's §5 (the invocation row and the category count) and §6 (the
+count). No owner-only default was taken: the round re-applies rules the increment already states (the
+report's environment and the check's environment are the same; the store's own bytes are what a read-back
+verifies; a report discloses what it collapses), so no new OPEN-QUESTIONS entry was added. `AGENTS.md` was
+edited in the same round and for the reason the growth policy gives: the round changes a rule an agent must
+follow (what the printed OpenCode line names). No goal file is moved: 0007 is still the increment under
+review and stays implemented on its branch with its row.
+
 ## 5. What travels, source side and target side
 
 | Source evidence | Target side, and the run that recorded it |
 | --- | --- |
 | a Claude Code conversation with a tool call, its result, recorded reasoning and a compaction boundary | converted into a 7-message OpenCode document (`converted: opencode-import-document, 2312 bytes: 7 message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies), 2 turn(s)`, §1) and materialised by the harness's own importer as a store session (§2: `the store's own document holds 10 message(s); the conversion carried 7`, the extra three being the turn's own records) |
-| the source read's own omissions and rewrites | named, counted and per-category: `empty_user_messages ×1`, `tool_name_vocabulary ×1`, `message_model_attribution ×4`, `usage_zeroed ×1`, `target_model_id_attribution ×2`, `compaction_reason ×1`, `assistant_completion_instant ×4`, `unresolved_source_parents ×1`, `pre_compaction_history ×4`, `malformed_source_lines ×1` (§1), out of the 35 categories the report names on every run (§2) |
+| the source read's own omissions and rewrites | named, counted and per-category: `empty_user_messages ×1`, `tool_name_vocabulary ×1`, `message_model_attribution ×4`, `usage_zeroed ×1`, `target_model_id_attribution ×2`, `compaction_reason ×1`, `assistant_completion_instant ×4`, `unresolved_source_parents ×1`, `pre_compaction_history ×4`, `malformed_source_lines ×1` (§1), out of the 36 categories the report names on every run (§2's recorded run named 35: the review round below added `coalesced_tool_call_projections`, which the committed multi-file patch fixture exercises) |
 | the assistant message's own completion instant the importer requires | written for every assistant message from the record's own instant, `×4` in §1 — the member whose absence the harness accepts and then drops the message over (§0), disclosed as `assistant_completion_instant`; the read-back is the check that caught it |
 | the tool call and its recorded result | `[('toolu_01Example0000000000000000', 'Read', 'completed')]` in the harness's own document (§2) — the same call id and name the source recorded, with the result's own text as the part's completed state |
 | the compaction boundary | `{"type": "compaction", … "status": "completed", "reason": "auto", "summary": "Summary: the retry policy caps attempts at four…` (§2) — the source's own summary, with the harness's own `reason` vocabulary (`auto`) disclosed as `compaction_reason` |
@@ -346,7 +495,7 @@ GATE: PASS
 | a real turn run by the route's own resume check through the CLI | the run printed its own turn's words, `CLI-RESUME-OK` (§1), and the harness's own reader read 7 message(s) before the turn and 10 after (`native resume: verified`, §1) |
 | the source file during and after the run | `source file:  unchanged (sha256 fc21f865…, taken before and after the conversion)` (§1) and `PASS: the source fixture tree is unchanged — 1 file(s) digested before and after` (§2) |
 | a session the target store already held | untouched: planted through the harness's own importer and `PASS: the planted unrelated session is unchanged — exit 0; its document is byte-identical before and after` (§2), then removed through the harness's own `session delete` and shown gone |
-| the invocation a caller resumes with | `cd /tmp/ocx/ws && XDG_DATA_HOME=/tmp/ocx/data10 … opencode run --standalone --session ses_0w9mtmfCnO1M21H3eT4694rAOl -- ''` (§1), read back as a POSIX shell line along with the exec form (§2) |
+| the invocation a caller resumes with | the round's re-measured run: `cd …/workspace && OPENCODE_DB=…/opencode/opencode.db XDG_DATA_HOME=… opencode run --standalone --session … -- ''` (the review round below), read back as a POSIX shell line along with the exec form; §1's earlier line (`cd /tmp/ocx/ws && XDG_DATA_HOME=/tmp/ocx/data10 …`) is that run's own bytes, before the store's database was pinned beside the root |
 | the accepted OMP route after the shared change | `RESULT: PASS — 25 check(s), none failed` with a real turn (§3) |
 | the accepted Claude Code → Codex route after the shared change | its offline half passes in full (§3); its real turn failed on this host with the harness's own `failed to connect to Responses WebSocket`, named there rather than hidden |
 
@@ -371,9 +520,14 @@ block (`scripts/tests/test_evidence_claims.py`, which this record is registered 
 - **The user count of a read-back includes the compaction row.** The inherited reader reads a compaction row as
   a system record under the user role, so a read-back of a 7-message document reports
   `user_messages: 3`; the boundary count names the same row, and the comparison itself is itemwise.
-- **The 35 loss categories are the writer's own vocabulary, not a claim about the harness's behaviour.** A
+- **The 36 loss categories are the writer's own vocabulary, not a claim about the harness's behaviour.** A
   category whose count is zero is still named (that is what makes a missing category a defect), and each
-  non-zero one is disclosed with its own sentence.
+  non-zero one is disclosed with its own sentence. (They were 35 when this record's runs in §1–§3 were made;
+  the review round below added `coalesced_tool_call_projections`.)
+- **§1–§3 quote the runs they name, at the tree they ran on.** Their transcripts are those runs' own bytes:
+  the printed resume line in them names the data root alone, because the store's database was pinned beside
+  it later (§4's review round), and their check counts (27 offline, 31 with a turn) are that round's step
+  set; §4's re-measured runs are the current build's own.
 - **Not measured here:** a `--to opencode` conversion on a source whose recorded directory does not exist
   (refused by the harness, and reported as the failure it is), a Windows host, and the real pilot-time
   behaviour of a converted session inside OpenCode's TUI (this increment verifies the loader, the reader,

@@ -31,8 +31,10 @@ What it does:
    resume it is a session a caller cannot resume;
 7. with ``--resume-prompt``, runs one real turn in the installed session through the **printed** invocation
    (``opencode run --standalone --session <id> -- <prompt>`` with the report's own ``resume_environment``
-   and working directory), prints the harness's own answer under
-   ``native_check_common.TURN_OUTPUT_MARKER``, and measures the growth through the harness's own reader;
+   and working directory; that environment names the data root and pins the store's own database file
+   beside it, so an inherited ``OPENCODE_DB`` cannot send the command to another store), prints the
+   harness's own answer under ``native_check_common.TURN_OUTPUT_MARKER``, and measures the growth through
+   the harness's own reader;
 8. re-digests the source tree and re-reads the planted session's document, so "nothing else moved" is
    measured after the run as well as before it, and removes the planted session through the harness's own
    ``session delete``.
@@ -90,12 +92,15 @@ GO_TAGS = "fts5"
 #: overwrite each other's build mid-run.
 BINARY = Path("bin", "ccc-native-check-opencode")
 
-#: The environment variable that names the source root for the conversion's reader, and the one the
-#: harness reads its data root from (mirroring `internal/ccc/opencode_install.go`'s `openCodeDataRootEnv`).
-#: The harness has no flag for its data directory, so it is set as an environment value -- which is also
-#: what the printed resume line does.
+#: The environment variable that names the source root for the conversion's reader, and the ones the
+#: harness reads its store from (mirroring `internal/ccc/opencode_install.go`'s `openCodeDataRootEnv` and
+#: `openCodeDBEnv`). The harness has no flag for its data directory, so it is set as an environment value --
+#: which is also what the printed resume line does, and why that line names the database file inside the
+#: root too: a printed shell line can only set variables, never remove an inherited `OPENCODE_DB`, and an
+#: inherited override would send the pasted command to another store.
 SOURCE_ROOT_ENV = {"claude": "CLAUDE_PROJECTS_DIR"}
 OPENCODE_DATA_ROOT_ENV = "XDG_DATA_HOME"
+OPENCODE_DB_ENV = "OPENCODE_DB"
 
 #: The names the harness resolves its store under, below the data root.
 OPENCODE_DATA_DIR = "opencode"
@@ -127,10 +132,12 @@ TURN_TIMEOUT = 600
 def opencode_environment(data_root: Path) -> dict[str, str]:
     """The environment one OpenCode command this check runs is given: this process's own, with the data
     root named and the database override removed (it would point the harness at another store -- the same
-    rule ``internal/ccc/opencode_install.go``'s own environment applies)."""
+    rule ``internal/ccc/opencode_install.go``'s own environment applies). ``ask_opencode`` passes this
+    dictionary as the command's whole environment, so the removal is what the harness sees rather than a
+    name restored from this process's own environment underneath it."""
     environment = dict(os.environ)
     environment[OPENCODE_DATA_ROOT_ENV] = str(data_root)
-    environment.pop("OPENCODE_DB", None)
+    environment.pop(OPENCODE_DB_ENV, None)
     return environment
 
 
@@ -147,9 +154,14 @@ def opencode_arguments(verb: list[str]) -> list[str]:
 def ask_opencode(opencode: str, verb: list[str], data_root: Path, cwd: Path | None = None,
                  timeout: int = HARNESS_TIMEOUT) -> subprocess.CompletedProcess:
     """Run one harness command and answer its completed process. This is the seam the offline cases
-    replace, so a case can answer the harness's own protocol without the harness installed."""
+    replace, so a case can answer the harness's own protocol without the harness installed.
+
+    The environment is passed as the command's *whole* environment (``replace_env``): the dictionary
+    ``opencode_environment`` builds is this process's own with the data root named and the database
+    override removed, and an overlay would restore the removed name from this process's environment --
+    sending the command to a database this check did not choose."""
     return run([opencode, *opencode_arguments(verb)], cwd=cwd, env=opencode_environment(data_root),
-               timeout=timeout)
+               timeout=timeout, replace_env=True)
 
 
 def unrelated_document() -> dict:
@@ -489,7 +501,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # The printed invocation, read the way a POSIX shell reads it, and then -- when a turn was asked
     # for -- run in its own words.
-    _check_invocation(target, workspace, data_root)
+    _check_invocation(target, workspace, data_root, store)
     if args.resume_prompt:
         _run_turn(args, target, opencode, data_root, workspace)
     else:
@@ -512,17 +524,29 @@ def main(argv: list[str] | None = None) -> int:
     return stop()
 
 
-def _check_invocation(target: dict, workspace: Path, data_root: Path) -> None:
+def _check_invocation(target: dict, workspace: Path, data_root: Path,
+                      store: Path) -> None:
     """Check the printed resume commands by reading them the way a POSIX shell reads them: the working
-    directory the harness is started from and the data root it reads, both named, against the argument
-    vector the report itself printed."""
+    directory the harness is started from, the data root it reads and the database inside it the line
+    pins -- all named -- against the argument vector the report itself printed, and the reported
+    environment against the same pair.
+
+    Pinning the database is the rule the environment cases in ``scripts/tests/test_opencode_native_check.py``
+    keep: a printed line can only set variables, so it names this home's own store instead of removing an
+    inherited ``OPENCODE_DB``, which would otherwise send the pasted command to another store where
+    ``run --session <id>`` *creates* a session for the id (measured)."""
+    pinned = {OPENCODE_DB_ENV: str(store)}
+    expected_environment = {OPENCODE_DATA_ROOT_ENV: str(data_root), **pinned}
+    record("the report names the environment the printed invocation sets",
+           (target.get("resume_environment") or {}) == expected_environment,
+           f"{target.get('resume_environment')!r}, want {expected_environment!r}")
     for field, arguments_field in (("resume_command", "resume_arguments"),
                                    ("exec_resume_command", "exec_resume_arguments")):
         command = target.get(field, "")
         arguments = target.get(arguments_field) or []
         ok = (bool(command) and bool(arguments)
               and _shared_reported_invocation(command, workspace, data_root, OPENCODE_DATA_ROOT_ENV,
-                                              arguments))
+                                              arguments, also=pinned))
         record(f"the printed {field} reads as a POSIX shell line naming the session", ok,
                bounded(command, 220))
 
@@ -542,7 +566,7 @@ def _run_turn(args: argparse.Namespace, target: dict, opencode: str, data_root: 
                f"exit {before_status}; {bounded(before_words, 200)}")
         return
     turn = run([opencode, *opencode_arguments(["run", "--session", session_id, "--", args.resume_prompt])],
-               cwd=workspace, env=opencode_environment(data_root), timeout=TURN_TIMEOUT)
+               cwd=workspace, env=opencode_environment(data_root), timeout=TURN_TIMEOUT, replace_env=True)
     record("the turn ran through the printed invocation and exited 0", turn.returncode == 0,
            f"exit {turn.returncode}; stderr {bounded(turn.stderr, 300)}")
     print_answer(turn.stdout)
@@ -563,9 +587,18 @@ def _run_turn(args: argparse.Namespace, target: dict, opencode: str, data_root: 
            after_messages[:len(before_messages)] == before_messages,
            f"the first {len(before_messages)} message(s) are unchanged")
     appended = after_messages[len(before_messages):]
+    # What the harness printed is the answer the caller saw, and what the turn appended is what a later
+    # read of the session shows. `--expect` makes that text the needle when it was given; without it the
+    # needle is the harness's own printed answer, so a turn that answered and appended its records is
+    # verified rather than recorded as a failure for the flag the caller did not pass.
+    answer = (turn.stdout or "").strip()
+    needle = args.expect or answer
+    appended_answers = "\n".join(document_texts({"messages": appended}, "assistant"))
     record("the turn's own answer is in the session the harness reads",
-           bool(args.expect) and any(args.expect in json.dumps(message) for message in appended),
-           f"the turn appended {len(appended)} message(s)")
+           bool(needle) and needle in appended_answers,
+           f"the turn appended {len(appended)} message(s); the appended assistant record(s) "
+           + ("hold" if needle and needle in appended_answers else "do not hold")
+           + f" {needle[:160]!r}")
 
 
 def finish(args: argparse.Namespace, scratch: Path, document: dict, session_id: str) -> int:

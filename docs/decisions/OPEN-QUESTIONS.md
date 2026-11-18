@@ -2329,10 +2329,14 @@ supersede it with a newer one and say which it supersedes.
 - **Default taken:** both spellings are accepted and resolved to the same directory. `ResolveOpenCodeHome`
   treats a value whose base name is `opencode` as the data directory itself (and names its parent as the
   data root) and any other value as the data root; the report, the `XDG_DATA_HOME` every command this
-  route runs is given, and the store path all agree, `OPENCODE_DB` is removed from the child environment
-  (it would point the harness at another store), and a caller's own `XDG_DATA_HOME` is the fallback when
-  no flag is given. A demo therefore cannot silently split the store the report names from the store the
-  harness reads.
+  route runs is given, and the store path all agree; `OPENCODE_DB` is removed from the child environment
+  (it would point the harness at another store), and the printed resume line and the resume check pin this
+  home's own store in it instead -- a shell line can set a variable but cannot remove one, so a caller's
+  inherited override is answered by naming the database beside the root (measured: `debug paths db`
+  answers the pinned file, `session export` resolves the session there, and the same export against
+  another store refuses it, where `run --session <id>` would *create* the session) -- and a caller's own
+  `XDG_DATA_HOME` is the fallback when no flag is given. A demo therefore cannot silently split the store
+  the report names from the store the harness reads.
 - **Reversal:** accept only one spelling (the data root), which would make a caller who names
   `…/opencode` install into a sibling directory.
 - **Settled by:** nothing owner-only.
