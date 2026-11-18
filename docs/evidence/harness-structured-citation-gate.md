@@ -240,4 +240,4 @@ row set to `Accepted: merged onto \`main\` as \`338df94\``, and the `Contract:` 
 pair `338df94` itself rewrote for 0005.
 
 Every other evidence row and disclosed limit is untouched, and the `selftest` step's 290 cases from before
-this increment all still pass, as part of the 316 in §1.
+this increment all still pass, as part of the 320 in §1.
