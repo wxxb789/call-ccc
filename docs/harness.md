@@ -449,10 +449,15 @@ says so.
   removal and that the id no longer resolves, because the store can only be written by the harness. The
   planting itself is reconciled the way the route reconciles its own import, and a caller-named home is
   read before anything is written into it: the id this run plants is first asked of the harness's own
-  reader, and a session the store already holds is removed only where that store's own document shows it to
-  be an earlier run's leftover of this same check (the check's fabricated id, directory and message text,
-  which nothing else writes) — a session holding anything else is left exactly as found and the run stops,
-  recording the refusal. An import whose process failed or overran its deadline after committing is a
+  reader, and a session the store already holds is removed only where that store's own document **is** the
+  check's own fixture — compared member for member, with only the two members the harness's own importer
+  rewrites normalized away (`info.projectID`, recomputed from the session's recorded directory, and
+  `info.time.updated`, the import's own instant; measured on 2.2.5) — which nothing else writes. A session
+  holding anything else is left exactly as found and the run stops, recording the refusal: a caller's own
+  session, and equally a leftover a caller has since continued, holds records the check never wrote
+  (measured: the pre-fix recognition — the id, the directory and any message text — authorised deleting a
+  continued leftover's whole history, while the fixed one leaves the session resolving with its caller's
+  turn and reports the refusal). An import whose process failed or overran its deadline after committing is a
   publication, read in the route's own order (the harness's own `Imported session: <id>` line, kept even
   when the command overran its deadline, then the harness's own reader, whose answered document means the
   store holds it) and removed again by the same cleanup — so the check cannot leave its own fixture behind

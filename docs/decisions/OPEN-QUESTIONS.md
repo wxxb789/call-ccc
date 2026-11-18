@@ -2474,11 +2474,17 @@ supersede it with a newer one and say which it supersedes.
 - **Default taken:** only what the store's own document shows to be that check's own fixture, and only
   after asking. The id the check plants is read through the harness's own reader first (the store's own
   `Session not found: <id>` refusal, naming that id, is the only answer that makes it free — a store that
-  could not answer is not read as empty); a session the store holds whose document is the check's own
-  fabricated id, directory and message text is an earlier run's leftover and is removed through the
-  harness's own `session delete` (and shown gone through its own reader); a session holding anything else
-  is left exactly as found, with the run recording the refusal and stopping. The planting itself is
-  reconciled the way the route reconciles its own import — the harness's own acknowledgment line, kept
+  could not answer is not read as empty); a session the store holds whose *whole* document is the check's
+  own fixture — compared member for member, with only the two members the harness's own importer is
+  measured to rewrite (`info.projectID`, recomputed from the session's recorded directory, and
+  `info.time.updated`, the import's own instant) normalized away — is an earlier run's leftover and is
+  removed through the harness's own `session delete` (and shown gone through its own reader); a session
+  holding anything else is left exactly as found, with the run recording the refusal and stopping. (Round 9
+  narrowed the recognition to the whole document: the earlier rule — the id, the recorded directory and a
+  matching message text — authorised deleting a leftover a caller had since continued, and the measured
+  pre-fix run deleted one, while the fixed one leaves that session resolving with the caller's own turn and
+  reports the refusal.) The planting itself is reconciled the way the route reconciles its own import —
+  the harness's own acknowledgment line, kept
   even when the import overran its deadline, then the harness's own reader — so an import whose process
   failed after committing is still a publication this run removes again.
 - **Reversal:** refuse to touch a store that already holds the id, leaving the operator to remove the

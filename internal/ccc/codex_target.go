@@ -1190,12 +1190,16 @@ func dialogueFromContent(message Message) string {
 			continue
 		}
 		// A rendering of this record's own trace. It was one of the reader's own parts, joined to its
-		// neighbours by line feeds, so it goes with the feeds around it and the text it stood between
-		// reads as neighbours again (the join below is that one feed).
-		if head := strings.TrimRight(rest[:open], "\n"); head != "" {
+		// neighbours by one line feed on each side (the readers' own `strings.Join(parts, "\n")`), so the
+		// part goes with exactly one of those feeds on each side -- and no more. The feeds a neighbouring
+		// text part itself carries are that part's own recorded bytes: a blank line the source recorded is
+		// a paragraph break, and trimming every feed beside the rendering would collapse it. What stands
+		// between the neighbours afterwards is the one feed the reader's own join puts there (the join
+		// below), the same feed those parts would carry had the reader joined them directly.
+		if head := strings.TrimSuffix(rest[:open], "\n"); head != "" {
 			pieces = append(pieces, head)
 		}
-		rest = strings.TrimLeft(after, "\n")
+		rest = strings.TrimPrefix(after, "\n")
 		dropped = true
 	}
 	if !dropped {
@@ -1224,12 +1228,36 @@ const (
 // recognise a reasoning-only record), and it is what makes Content a rendering rather than the message's
 // text: a record with no persisted trace has no rendering to recognise, and its Content is whatever the
 // provider recorded -- a target must not drop text it cannot show to be a rendering of the record's own
-// reasoning. Reasoning-only records are produced by the readers that render a trace into Content without
-// projecting dialogue at all (RooCode's and Kilo's `say=reasoning` records, Cline's thinking messages),
-// and a target that fell back to that Content would carry the trace twice -- once as the record's own
-// reasoning and once as words the source never recorded the agent as saying.
+// reasoning.
+//
+// The block's own words must be the record's trace, exactly as they must for a block standing beside
+// other text (dialogueFromContent): a `[Thinking]…[/Thinking]` block whose words the record's trace does
+// not hold is text the record carries -- a model writing the markers itself, or a transcript that records
+// an answer and a reasoning trace independently (internal/parser's Vibe reader, which renders nothing) --
+// and dropping it would state that the agent said none of the words it recorded. The readers that render
+// a trace into Content without projecting dialogue at all (RooCode's and Kilo's `say=reasoning` records,
+// Cline's thinking messages) write the trace's own text between the markers, so their records keep the
+// rule, and a target that fell back to their Content would carry the trace twice -- once as the record's
+// own reasoning and once as words the source never recorded the agent as saying.
 func thinkingRenderingOnly(message Message) bool {
-	return strings.TrimSpace(message.Thinking) != "" && parser.IsThinkingOnlyContent(message.Content)
+	trace := message.Thinking
+	if strings.TrimSpace(trace) == "" || !parser.IsThinkingOnlyContent(message.Content) {
+		return false
+	}
+	inner, closed := thinkingRenderingWords(message.Content)
+	return closed && strings.Contains(trace, strings.TrimSpace(inner))
+}
+
+// thinkingRenderingWords answers the words one `[Thinking]…[/Thinking]` block carries between its markers,
+// for a content whose shape parser.IsThinkingOnlyContent has already established: the leading whitespace
+// and the markers' own surroundings are the readers' rendering of the block, not the trace's words.
+func thinkingRenderingWords(content string) (string, bool) {
+	rest := strings.TrimSpace(content)
+	if !strings.HasPrefix(rest, thinkingRenderOpen) {
+		return "", false
+	}
+	inner, _, closed := strings.Cut(rest[len(thinkingRenderOpen):], thinkingRenderClose)
+	return inner, closed
 }
 
 // resultText is the text a tool result contributes to the target, plus the number of blocks its content

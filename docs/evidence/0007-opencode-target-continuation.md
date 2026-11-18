@@ -1464,6 +1464,158 @@ changed. `docs/upstream.md` and the carry are untouched: no carried file changes
 build's, in `internal/ccc`. No goal file is moved: 0007 is still the increment under review, implemented on
 its branch with its row; the earlier goals are archived and their rows say so.
 
+### The ninth review round's fixes (`e273a0b` + working tree), re-measured
+
+The findings file (`review-findings-r9.md`, review head `e273a0b`) named three defects — one P1 and two P2,
+all dispositions FIX — and its own instruction was again the systematic close-out: enumerate every rule the
+touched surface claims, prove each with one executed mutation, and pin in this round any rule that survived
+its mutation. The eight mutations below are this round's evidence for the rules the three fixes touch; the
+code, the check and the cases were extended only where a rule had no pin.
+
+- **The native check recognises its own leftover by the whole document** (`unrelated_is_this_checks` +
+  `without_importer_metadata`, `scripts/opencode-native-check.py`). The eighth round's predicate accepted
+  *any* document holding the planted text under the planted id and directory, so a leftover a caller had
+  since **continued** — the session the rule exists to leave alone — authorised
+  `clear_own_unrelated_leftover` to delete the caller's history with it. Measured on this host's OpenCode
+  2.2.5 (transcript below): with the fixture planted and one real turn run in it (`CONTINUED-OK`), the
+  pre-fix predicate answered the id free and `session delete` removed the 4-message session
+  (`Session not found` afterwards), while the fixed one leaves it resolving with the caller's own turn and
+  records the refusal. The recognition is now the complete fixture document, compared member for member,
+  with only the two members the harness's own importer is measured to rewrite normalized on both sides:
+  `info.projectID` (recomputed from the session's recorded directory — the planted `""` comes back as the
+  directory's own project hash) and `info.time.updated` (the import's own instant). Measured here by
+  importing the fixture and reading it back through the harness's own reader: `projectID
+  "470c8549ef01a2a9d3c85b22965766cefc874134"` and `time.updated 1794990087265`, where the document planted
+  `""` and `1760000000000`. New cases: `test_a_leftover_the_importer_rewrote_is_still_recognised`,
+  `test_a_leftover_a_caller_continued_is_left_alone` and
+  `test_a_leftover_whose_recorded_record_changed_is_left_alone`.
+- **The reasoning-only shortcut verifies trace membership like the beside-the-text removal does**
+  (`thinkingRenderingOnly`, `internal/ccc/codex_target.go`, reached from the shared `dialogueText`, so every
+  writer is fixed at once). The round-7/8 shortcut fired on the shape alone (`IsThinkingOnlyContent` plus a
+  non-empty trace), so a record that carries a `[Thinking]…[/Thinking]` block as its *own* content while a
+  trace stands beside it lost that text: the measured shape is internal/parser's Vibe reader
+  (`convertVibeMessage`), which records a message's `content` and `reasoning_content` independently and
+  renders nothing into either, so a Vibe record whose content is the block and whose trace is
+  `"private trace"` had its dialogue dropped as a rendering it demonstrably is not (its words are nowhere in
+  the trace). The shortcut now requires the block's words to be part of the record's trace, exactly as the
+  beside-the-text rule always did; a block the trace does not hold stays the record's dialogue while the
+  trace travels as its reasoning (counted on this target, where no shape carries it). New case
+  `TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader` (a Vibe transcript written to a
+  temp provider root, read through `NewSourceReader`, converted to a Codex rollout) plus the table arm
+  `a reasoning-only block the record's trace does not hold is the record's own text`.
+- **Removing a rendering no longer takes the record's own line feeds with it** (`dialogueFromContent`).
+  The removal stripped *every* adjacent line feed and rejoined with one, so a ZCode record whose text parts
+  are `"First paragraph.\n\n"` and `"Second paragraph."` around a thinking part — the reader joins its parts
+  with `strings.Join(parts, "\n")` (`internal/parser/zcode.go:561,577`) — came out
+  `"First paragraph.\nSecond paragraph."`, collapsing a recorded blank line (a Markdown paragraph break)
+  into a single feed. The removal now takes exactly the one feed the reader's own join put on each side of
+  the rendering, so the feeds a neighbouring text part records survive and the neighbours come out joined as
+  the reader joins neighbours. New arms: `the blank line the record recorded before the rendering survives
+  the removal` and `… after the rendering survives too`.
+
+The mutations, executed and restored (each file hashed before and after its mutation and quoted below with
+the first twelve hex digits — `internal/ccc/codex_target.go` `4a9378dbc3b7…`, the same value before and
+after every one of its mutations, and `scripts/opencode-native-check.py` `9efa3392811b…` likewise while the
+mutations ran; its module docstring's wrap was edited after the table was written, which moved the file to
+`82d24621131e…` with no code line changed):
+
+| Rule | Line disabled | Observed (the case that reddened) |
+| --- | --- | --- |
+| the reasoning-only shortcut's block must be this record's trace | `codex_target.go`: `return closed && strings.Contains(trace, strings.TrimSpace(inner))` → `return closed && strings.Contains(trace, strings.TrimSpace(inner)) \|\| true` | `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/a_reasoning-only_block_the_record's_trace_does_not_hold_is_the_record's_own_text`; `TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader` |
+| only the reader's own join feed goes with the rendering | `codex_target.go`: `strings.TrimSuffix(rest[:open], "\n")` → `strings.TrimRight(rest[:open], "\n")` and `strings.TrimPrefix(after, "\n")` → `strings.TrimLeft(after, "\n")` | the two `… blank line …` arms |
+| the one feed between neighbours is the reader's own join | `codex_target.go`: `strings.TrimSuffix(rest[:open], "\n")` → `rest[:open]` and `strings.TrimPrefix(after, "\n")` → `after` | five arms (readers' order, ZCode's part order, two blocks around the text, both blank-line arms) |
+| a record nothing was shown to be a rendering of keeps its Content byte for byte | `codex_target.go`: `if !dropped {` → `if !dropped && false {` | four arms (block not held, no trace answered, marker without closer, empty block) |
+| a store's session is this check's fixture only as a whole document | `opencode-native-check.py`: `return without_importer_metadata(document) == without_importer_metadata(unrelated_document())` → `return True` | `test_a_foreign_session_under_that_id_is_left_alone`; `test_a_leftover_a_caller_continued_is_left_alone`; `test_a_leftover_whose_recorded_record_changed_is_left_alone` |
+| the importer's recomputed `projectID` is normalized | `opencode-native-check.py`: `info.pop("projectID", None)` → `info.get("projectID")` | `test_a_leftover_the_importer_rewrote_is_still_recognised` |
+| the importer's rewritten `time.updated` is normalized | `opencode-native-check.py`: `recorded_time.pop("updated", None)` → `recorded_time.get("updated")` | `test_a_leftover_the_importer_rewrote_is_still_recognised` |
+| a session is not this check's fixture by any single member of it (the pre-fix predicate) | `opencode-native-check.py`: the whole-document comparison → the id/directory/any-message-text predicate | `test_a_leftover_a_caller_continued_is_left_alone`; `test_a_leftover_whose_recorded_record_changed_is_left_alone` — and natively in the transcript below |
+
+Restoring each file hashed it back to the bytes the table quotes; the suites were re-run afterwards (the Go
+program under test: `ok go.kenn.io/agentsview/internal/ccc`; the check's own cases: `Ran 63 tests … OK`).
+
+The finding's own scenario, reproduced natively on this host's OpenCode 2.2.5 — the fixture planted in a
+caller-named store through the harness's own importer, **continued by one real turn**, then read by both the
+fixed check and the pre-fix predicate. The staging step and the pre-fix step are throw-away Python drivers
+outside the repository (the second is the shipped script's bytes with only the recognition replaced, as
+round 8's prefix run was):
+
+```console
+$ home=/tmp/p1-r9-home; rm -rf $home; mkdir -p $home
+$ python3 - <<'PY'   # the shipped module's own fixture, staged and planted through the harness's own importer
+…  published, detail = m.plant_unrelated(OPENCODE, Path(home), Path(home)); print(detail)
+PY
+Imported session: ses_nativecheckunrelated0
+$ XDG_DATA_HOME=$home opencode run --standalone --session ses_nativecheckunrelated0 -- 'Reply with exactly: CONTINUED-OK'
+
+> build · deepseek-v4.1-flash-fast
+CONTINUED-OK                                                  (exit 0)
+$ XDG_DATA_HOME=$home opencode session export ses_nativecheckunrelated0 --standalone | python3 -c '…len(doc["messages"])…'
+4 message(s)
+$ python3 scripts/opencode-native-check.py --opencode … --target-home $home
+FAIL: the id this run plants is free in the store — the store already holds ses_nativecheckunrelated0 and its own document is not this check's fixture, so this run may not remove it: {"info": {"id": "ses_nativecheckunrelated0", "projectID": "470c8549ef01a2a9d3c85b22965766cefc874134", "cost": 0.0009946999999999998, "tokens": {"input": 8415, "output": 13, "reasoning": 783, "cache": {"read": 7360, "write": 0}}, "outcome": "succeeded", "time": {"created": 1760000000000, "updated": 1 …[the rest of this output was dropped]
+RESULT: FAIL — 1 check(s) failed: the id this run plants is free in the store          (exit 1)
+$ python3 - <<'PY'   # the pre-fix recognition (id, directory, any message text) on the same store
+…  print("pre-fix predicate answered free =", m.clear_own_unrelated_leftover(OPENCODE, Path(home)))
+PY
+pre-fix predicate answered free = True
+PASS: an earlier run's own unrelated fixture is removed before this run plants — Session ses_nativecheckunrelated0 deleted
+$ XDG_DATA_HOME=$home opencode session export ses_nativecheckunrelated0 --standalone
+Session not found: ses_nativecheckunrelated0                        (exit 1)
+```
+
+The route's own native check on the fixed bytes, offline (the harness is this host's
+`/home/azureuser/.npm-global/bin/opencode`, 2.2.5):
+
+```console
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode
+PASS: the id this run plants is free in the store — Session not found: ses_nativecheckunrelated0
+PASS: the unrelated session is planted through the harness's own importer — Imported session: ses_nativecheckunrelated0
+…
+PASS: the planted unrelated session is unchanged — exit 0; its document is byte-identical before and after
+PASS: the planted session is removed through the harness's own session delete — Session ses_nativecheckunrelated0 deleted
+PASS: the removed session no longer resolves — exit 1; Session not found: ses_nativecheckunrelated0
+RESULT: PASS — 32 check(s), none failed          (exit 0)
+```
+
+(The bare `…` line is this record's own elision of the run's intervening records; the run printed all 32 and
+none failed — the same count round 8's run ended with, because the rule changed which documents the leftover
+step accepts, not how many records the check makes.)
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3620 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 354 tests in 5.778s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 31 project-owned prefix(es); files seen by git: 5701 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 155 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+(The `… | ` at the parity line's front is what the run itself printed; the line above is quoted whole from
+its output, and its body is that run's own rendering end to end. The gate ran on this round's final working
+tree — this record included — and after it only this block, repeating its output, and this sentence were
+written.)
+
+The narrowed Go suites' own test functions ran 391 before this round and 392 after — the one case added
+(`TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader`), counted as `^func Test` over the
+test files git lists under `cmd/ccc` and `internal/ccc`. `selftest` ran 351 before and 354 after: this
+round's three Python cases in `scripts/tests/test_opencode_native_check.py`. What else the round moved:
+`AGENTS.md` (the dialogue bullet's closing clause now says a record whose `Content` is nothing but a
+rendering **of its own trace** has no dialogue — the wording the round-7/8 shortcut was read to justify; the
+rule is unchanged, but the sentence as it stood described the defect); `docs/harness.md` (the OpenCode
+check's bullet states the whole-document recognition, the two normalized members the importer rewrites, and
+the measured pre-fix deletion of a continued leftover); `docs/decisions/OPEN-QUESTIONS.md` (Q-0007-09's
+default-taken text narrowed to the whole document with the round's measurement); and
+`docs/plans/0007-opencode-target-continuation.md` (§6.1's ninth-round paragraph). `README.md`,
+`docs/upstream.md` and the carry are untouched: no carried file changes. No goal file is moved: 0007 is
+still the increment under review, implemented on its branch with its row; the earlier goals are archived
+and their rows say so.
+
 ## 5. What travels, source side and target side
 
 | Source evidence | Target side, and the run that recorded it |
@@ -1516,6 +1668,15 @@ block (`scripts/tests/test_evidence_claims.py`, which this record is registered 
   it later (§4's review round), and their check counts (27 offline, 31 with a turn) are that round's step
   set; §4's re-measured runs are the current build's own (the fourth round's: the same 31 offline, 35 with a
   turn, on the step set the second round measured).
+- **This record's older gate transcripts quote the `parity` line as a display showed it.** The gate blocks
+  in §4 (the increment's own run, and every review round up to the eighth) copied that line from a
+  768-character display cut: each keeps the run's leading `… | ` and ends with a `…` the round added, and
+  the fifth round's quote elided the line's middle with a `…` it named below its block. They are the
+  record's own excerpts, not each run's rendering end to end — the bytes each run printed after the cut are
+  not observable from here any more, so they are not reconstructed — and the record does not otherwise
+  claim them as whole. The two whole renderings it holds are §4's first gate run and the ninth round's, both
+  816-character bodies (the checker's 800 kept characters plus the separator each kept line feed adds)
+  ending at the stored-bytes file the checker names.
 - **Not measured here:** a `--to opencode` conversion on a source whose recorded directory does not exist
   (refused by the harness, and reported as the failure it is), a Windows host, and the real pilot-time
   behaviour of a converted session inside OpenCode's TUI (this increment verifies the loader, the reader,

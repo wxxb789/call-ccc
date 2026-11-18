@@ -19,13 +19,15 @@ What it does:
 3. plants an unrelated session in it **through the harness's own importer** and reads that session's own
    document back, so "nothing else moved" is a measurement rather than a claim (a store can only be written
    by the harness, which is this route's install rule as much as its check). A store that already holds the
-   id this run plants is read first: a session whose own document is this check's fixture is a leftover from
-   an earlier run (whose planting import committed and whose process then died before its cleanup) and is
-   removed through the harness's own delete, while a session under that id holding anything else is a
-   caller's own and is left exactly as it was found, with the run stopping there. The planting itself is
-   reconciled the way the route reconciles its own import -- the harness's acknowledgment, then the
-   harness's own reader -- so an import process that failed or overran its deadline after committing is a
-   publication this run removes again rather than a fixture left in a caller-named store;
+   id this run plants is read first: a session whose whole own document is this check's fixture -- compared
+   member for member, with only the two members the importer rewrites normalized -- is a leftover from an
+   earlier run (whose planting import committed and whose process then died before its cleanup) and is
+   removed through the harness's own delete, while a session under that id holding anything else (a
+   caller's own, or a leftover some caller has continued) is left exactly as it was found, with the run
+   stopping there. The planting itself is reconciled the way the route reconciles its own import -- the
+   harness's acknowledgment, then the harness's own reader -- so an import process that failed or overran
+   its deadline after committing is a publication this run removes again rather than a fixture left in a
+   caller-named store;
 4. converts through the CLI (``ccc continue … --verify load --json``) and reads the conversion, the
    installation and the structural read-back out of the report rather than trusting them. The conversion
    level is ``load`` even when a turn was requested: the one real turn is this check's own (step 7), and
@@ -77,6 +79,7 @@ and why the control arm asks about an id nothing installed.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import shutil
@@ -331,21 +334,41 @@ def harness_line_names(answer: str, marker: str, session_id: str) -> bool:
 
 
 def unrelated_is_this_checks(document: dict | None) -> bool:
-    """Whether one document a store holds *is* this check's own fabricated unrelated fixture: the id it
-    plants, the directory that session records, and the one message text it writes. Nothing else writes
-    those three -- nothing converts the document, and no real session, credential or configuration is read
-    to build it -- so a store holding one holds a leftover from an earlier run of this check, while a
-    session under the same id with any other document is one this check must not touch."""
+    """Whether one document a store holds *is* this check's own fabricated unrelated fixture: the complete
+    fixture document, compared member for member with only the members the harness's own importer is
+    measured to rewrite normalized away (``without_importer_metadata``), rather than by any single member
+    of it. The id, the directory the session records and the one message text the fixture writes are all
+    covered by the comparison, and so is every other member -- a session that has received a record the
+    fixture does not hold, or one whose recorded payload differs, is a session something else has written
+    to (a caller who continued a leftover before rerunning this check) and is left exactly as found.
+    Nothing else writes this document -- nothing converts it, and no real session, credential or
+    configuration is read to build it -- so a store holding exactly it holds a leftover from an earlier run
+    of this check, whose planting import committed and whose process then died before its cleanup."""
     if not isinstance(document, dict):
         return False
-    info = document.get("info") or {}
-    if info.get("id") != UNRELATED_SESSION:
-        return False
-    if (info.get("location") or {}).get("directory") != str(UNRELATED_DIRECTORY):
-        return False
-    planted = unrelated_document()["messages"][0]["text"]
-    return any((message.get("text") if isinstance(message, dict) else None) == planted
-               for message in (document.get("messages") or []))
+    return without_importer_metadata(document) == without_importer_metadata(unrelated_document())
+
+
+def without_importer_metadata(document: dict) -> dict:
+    """One exported document with the members the harness's own importer controls normalized away, so the
+    rest can be compared member for member against the planted fixture.
+
+    Measured on 2.2.5 (planting ``unrelated_document()`` through the harness's own importer and reading it
+    back through ``session export``): the importer recomputes ``info.projectID`` from the session's
+    recorded directory -- the planted ``""`` comes back as the directory's own project hash -- and rewrites
+    ``info.time.updated`` with the import's own instant. Every other member, down into each message, comes
+    back exactly as it was written. Those two are normalized because a comparison that kept them would
+    never recognise even this check's own leftover; nothing else is, because anything else a document
+    gained, lost or changed is a change some other writer made, and a session another writer has touched is
+    not this check's to delete."""
+    normalized = copy.deepcopy(document)
+    info = normalized.get("info")
+    if isinstance(info, dict):
+        info.pop("projectID", None)
+        recorded_time = info.get("time")
+        if isinstance(recorded_time, dict):
+            recorded_time.pop("updated", None)
+    return normalized
 
 
 def clear_own_unrelated_leftover(opencode: str, data_root: Path) -> bool:
@@ -354,10 +377,12 @@ def clear_own_unrelated_leftover(opencode: str, data_root: Path) -> bool:
     The id and the document are fabricated, but an earlier run of this check can still have published the
     session and died before its cleanup (the window ``plant_unrelated`` reconciles), and that leftover
     would make every later run's planting meet ``Session already exists``. Such a leftover is recognised
-    by the document the store's own reader answers for it (``unrelated_is_this_checks``) and removed
-    through the harness's own delete. A session under that id that is *not* this check's own fixture is a
-    caller's own store and is left exactly as it was found: the run records the refusal and nothing here
-    removes it.
+    by the *whole* document the store's own reader answers for it -- the fixture member for member, with
+    only the members the harness's own importer rewrites normalized (``unrelated_is_this_checks``) -- and
+    removed through the harness's own delete. A session under that id holding anything else is not this
+    check's to touch and is left exactly as it was found: a caller's own session, or a leftover a caller
+    has since continued, holds records this check never wrote, and the run records the refusal while
+    nothing here removes it.
 
     The id is free only when the harness's own reader answers that it holds nothing under it -- its own
     ``Session not found: <id>`` line, naming *this* id. A store that could not answer at all is not a

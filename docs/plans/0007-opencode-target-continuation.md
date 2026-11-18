@@ -406,6 +406,28 @@ failed or overran its deadline after committing is read in the route's own order
 line, kept with the deadline, then the harness's reader) so its fixture is removed again instead of
 staying to block every later run.
 
+The ninth review round's fixes tighten both rules the eighth round wrote, because each was still loose by
+one step. **The native check recognises its own leftover by the whole document, not by a member of it**
+(`unrelated_is_this_checks`): the eighth round's predicate accepted any document holding the planted text
+under the planted id and directory, so a leftover a caller had since **continued** — the very session the
+check exists to leave alone — authorised `session delete` over the caller's own history. Measured natively
+on 2.2.5: with the fixture planted and one turn run in it (the harness's own `run --session`, which
+appends even when its model call fails), the pre-fix predicate answered the id free and deleted the
+4-message session (`Session not found` afterwards), while the fixed one leaves it resolving with the
+caller's turn and records the refusal. The comparison is now the complete fixture, member for member, with
+only the two members the harness's own importer is measured to rewrite normalized away
+(`without_importer_metadata`): `info.projectID`, recomputed from the session's recorded directory (the
+planted `""` comes back as the directory's project hash), and `info.time.updated`, rewritten with the
+import's own instant. **The rendering removal keeps the record's own bytes** (`thinkingRenderingOnly`,
+`dialogueFromContent`): (a) the reasoning-only shortcut now requires the block's words to belong to the
+record's own trace, exactly as the beside-the-text removal always did, so a `[Thinking]…[/Thinking]` block
+a record carries as its own content — internal/parser's Vibe reader records content and
+`reasoning_content` independently and renders nothing, and a model can write the markers itself — stays
+the record's dialogue while the trace travels as its reasoning; and (b) the removal strips only the one
+line feed the reader's own join put on each side of the rendering, so the feeds a neighbouring text part
+records survive (ZCode joins its parts with `strings.Join(parts, "\n")`, and a recorded blank line is a
+paragraph break), and the parts come out joined as the reader joins neighbours.
+
 ## 7. Gate, docs, bookkeeping
 
 - Gate: **no new step and no new required step.** New tests live in `internal/ccc` and `cmd/ccc`, which

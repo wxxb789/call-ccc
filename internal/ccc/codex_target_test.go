@@ -1,7 +1,10 @@
 package ccc
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -1207,7 +1210,11 @@ func TestCodexRolloutKeepsAReasoningOnlyRecordOutOfTheDialogue(t *testing.T) {
 // Content as `[Thinking]…[/Thinking]` and the trace travels to the target as the message's reasoning, so
 // the rendering is not dialogue. It is removed only where the message's own trace stands behind it and
 // only where it stands, because a reader that keeps the record's part order (ZCode's) renders the trace
-// after the text it followed, and a target must not drop text nothing shows to be reasoning.
+// after the text it followed, and a target must not drop text nothing shows to be reasoning. Of the line
+// feeds around a removed rendering, only the one feed the reader's own join put on each side goes with
+// it: a feed a neighbouring text part records is that part's own bytes (ZCode joins its parts with
+// `strings.Join(parts, "\n")`), so a recorded blank line -- a paragraph break -- survives the removal,
+// and the parts the rendering stood between come out joined as the reader joins neighbours.
 func TestDialogueFromContentKeepsOnlyTheRecordsOwnText(t *testing.T) {
 	const (
 		trace   = "Inspect the parser before answering."
@@ -1232,6 +1239,17 @@ func TestDialogueFromContentKeepsOnlyTheRecordsOwnText(t *testing.T) {
 		{"a block the record's own trace does not hold is text the record carries",
 			Message{Role: "assistant", Thinking: trace, Content: rendering(foreign) + "\n" + spoken},
 			rendering(foreign) + "\n" + spoken},
+		{"a reasoning-only block the record's trace does not hold is the record's own text",
+			Message{Role: "assistant", Thinking: trace, Content: rendering(foreign)},
+			rendering(foreign)},
+		{"the blank line the record recorded before the rendering survives the removal",
+			Message{Role: "assistant", Thinking: trace,
+				Content: "First paragraph.\n\n" + "\n" + rendering(trace) + "\n" + "Second paragraph."},
+			"First paragraph.\n\n\nSecond paragraph."},
+		{"the blank line the record recorded after the rendering survives too",
+			Message{Role: "assistant", Thinking: trace,
+				Content: "First paragraph." + "\n" + rendering(trace) + "\n\n" + "Second paragraph."},
+			"First paragraph.\n\nSecond paragraph."},
 		{"a record the read answered no trace for keeps its Content",
 			Message{Role: "assistant", Content: rendering(foreign) + "\n" + spoken},
 			rendering(foreign) + "\n" + spoken},
@@ -1262,6 +1280,59 @@ func TestDialogueFromContentKeepsOnlyTheRecordsOwnText(t *testing.T) {
 					testCase.message.Content, testCase.message.Thinking, got, testCase.want)
 			}
 		})
+	}
+}
+
+// TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader pins the reasoning-only shortcut
+// (thinkingRenderingOnly) through a reader that renders nothing: internal/parser's Vibe reader records a
+// message's own content and its reasoning_content independently -- Content is the recorded text, Thinking
+// the recorded trace, no dialogue projection and no rendering of either into the other
+// (internal/parser/vibe.go's convertVibeMessage) -- so a record whose content *is* a `[Thinking]…[/Thinking]`
+// block is the model's own words, and the shortcut must not drop them just because a trace happens to
+// stand beside them. The trace still travels as the record's reasoning (counted here: the Codex target has
+// no shape for a plaintext trace), so nothing is lost; the words the source recorded are what the target
+// must not state the agent never said.
+func TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader(t *testing.T) {
+	root := t.TempDir()
+	sessionDir := filepath.Join(root, "session_20260613_123456_00000000-0000-4000-8000-000000000001")
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatalf("creating the session directory: %v", err)
+	}
+	transcript := strings.Join([]string{
+		`{"role":"user","content":"Ask about the docs.","message_id":"m1"}`,
+		`{"role":"assistant","content":"[Thinking]\nDocumentation example\n[/Thinking]",` +
+			`"reasoning_content":"private trace","message_id":"m2","model":"vibe-model"}`,
+	}, "\n") + "\n"
+	transcriptPath := filepath.Join(sessionDir, "messages.jsonl")
+	if err := os.WriteFile(transcriptPath, []byte(transcript), 0o600); err != nil {
+		t.Fatalf("writing the transcript: %v", err)
+	}
+	cfg := fixtureConfig(t)
+	cfg.AgentDirs[parser.AgentVibe] = []string{root}
+	conversation, err := NewSourceReader(cfg).Read(context.Background(),
+		Ref{Provider: "vibe", ID: transcriptPath})
+	if err != nil {
+		t.Fatalf("reading the Vibe transcript: %v", err)
+	}
+	if len(conversation.Messages) != 2 || conversation.Messages[1].Role != string(parser.RoleAssistant) {
+		t.Fatalf("the read answered %d message(s), want the transcript's two with the assistant second",
+			len(conversation.Messages))
+	}
+	literal := "[Thinking]\nDocumentation example\n[/Thinking]"
+	if got := dialogueText(conversation.Messages[1]); got != literal {
+		t.Errorf("dialogueText over the read's own record = %q, want the model's own words %q: the block's "+
+			"words are nowhere in the record's trace, so nothing shows them to be a rendering", got, literal)
+	}
+	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if !strings.Contains(string(rollout.Data), "Documentation example") {
+		t.Error("the rollout does not carry the record's literal block: its words were dropped as though " +
+			"they were a rendering of the trace recorded beside them")
+	}
+	if loss := lossCount(t, rollout.Losses, "reasoning_text"); loss.Count != 1 {
+		t.Errorf("reasoning_text = %+v, want the record's trace counted once", loss)
 	}
 }
 

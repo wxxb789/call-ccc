@@ -30,7 +30,11 @@ module imported by path, no subprocess and no tool on ``PATH``:
   did not parse is not a document;
 * the planted session: the document carries the members the harness's own importer was measured to
   require, ``already exists`` is not a planting, and the removal is recorded as its own check -- only when
-  this run planted something.
+  this run planted something;
+* the leftover recognition: a store's session is this check's own only when its *whole* document matches
+  the planted fixture, apart from the two members the importer rewrites (``info.projectID`` and
+  ``info.time.updated``). A session a caller has continued, or whose recorded payload was changed, holds
+  records this check never wrote and is never deleted -- the case this rule exists for.
 """
 
 from __future__ import annotations
@@ -683,6 +687,91 @@ class PlantedSession(unittest.TestCase):
             verbs.append(list(verb))
             if verb[1] == "export":
                 return completed(stdout=json.dumps(foreign))
+            raise AssertionError(f"unexpected harness verb {verb}")
+
+        with mock.patch.object(NATIVE_CHECK, "ask_opencode", side_effect=fake_ask):
+            with recorded() as results:
+                free = NATIVE_CHECK.clear_own_unrelated_leftover("opencode", Path("/data"))
+                states = [(name, state) for name, state, _ in results]
+        self.assertFalse(free)
+        self.assertEqual(verbs, [["session", "export", NATIVE_CHECK.UNRELATED_SESSION]])
+        self.assertEqual(states, [("the id this run plants is free in the store", "FAIL")])
+
+    def test_a_leftover_the_importer_rewrote_is_still_recognised(self) -> None:
+        """The store's own export of this check's fixture is not byte-identical to the planted document:
+        the harness's importer recomputes ``info.projectID`` from the session's directory and rewrites
+        ``info.time.updated`` with the import's own instant (measured on 2.2.5). Those two members are
+        normalized on both sides, so the leftover is still recognised and removed -- a comparison that
+        demanded the planted bytes would leave this check's own fixture blocking every later run."""
+        verbs: list[list[str]] = []
+        present = {"session": True}
+        rewritten = NATIVE_CHECK.unrelated_document()
+        rewritten["info"]["projectID"] = "470c8549ef01a2a9d3c85b22965766cefc874134"
+        rewritten["info"]["time"]["updated"] = 1794990087265
+
+        def fake_ask(opencode, verb, data_root, cwd=None, timeout=None):
+            verbs.append(list(verb))
+            if verb[1] == "export":
+                if present["session"]:
+                    return completed(stdout=json.dumps(rewritten))
+                return completed(stderr=f"Session not found: {verb[2]}\n", returncode=1)
+            if verb[1] == "delete":
+                present["session"] = False
+                return completed(stdout=f"Session {verb[2]} deleted\n")
+            raise AssertionError(f"unexpected harness verb {verb}")
+
+        with mock.patch.object(NATIVE_CHECK, "ask_opencode", side_effect=fake_ask):
+            with recorded() as results:
+                free = NATIVE_CHECK.clear_own_unrelated_leftover("opencode", Path("/data"))
+                states = [(name, state) for name, state, _ in results]
+        self.assertTrue(free)
+        self.assertIn(["session", "delete", NATIVE_CHECK.UNRELATED_SESSION], verbs)
+        self.assertEqual(states, [
+            ("an earlier run's own unrelated fixture is removed before this run plants", "PASS"),
+        ])
+
+    def test_a_leftover_a_caller_continued_is_left_alone(self) -> None:
+        """A leftover that has received the caller's own history since -- a turn appended by a run in that
+        session -- holds records this check never wrote. Recognising the fixture by any single member of it
+        would delete that history with it, so the recognition is the whole document, and the continued
+        session is left exactly as found: no delete is attempted."""
+        continued = NATIVE_CHECK.unrelated_document()
+        continued["messages"].append({
+            "id": "msg_continued_0000000000000",
+            "type": "assistant",
+            "time": {"created": 1760000001000, "completed": 1760000002000},
+            "agent": "build",
+            "model": {"id": "m", "providerID": "p"},
+            "content": [{"type": "text", "text": "the caller's own turn"}],
+        })
+        verbs: list[list[str]] = []
+
+        def fake_ask(opencode, verb, data_root, cwd=None, timeout=None):
+            verbs.append(list(verb))
+            if verb[1] == "export":
+                return completed(stdout=json.dumps(continued))
+            raise AssertionError(f"unexpected harness verb {verb}")
+
+        with mock.patch.object(NATIVE_CHECK, "ask_opencode", side_effect=fake_ask):
+            with recorded() as results:
+                free = NATIVE_CHECK.clear_own_unrelated_leftover("opencode", Path("/data"))
+                states = [(name, state) for name, state, _ in results]
+        self.assertFalse(free)
+        self.assertEqual(verbs, [["session", "export", NATIVE_CHECK.UNRELATED_SESSION]])
+        self.assertEqual(states, [("the id this run plants is free in the store", "FAIL")])
+
+    def test_a_leftover_whose_recorded_record_changed_is_left_alone(self) -> None:
+        """A leftover whose recorded message was rewritten -- its ``files`` member moved, say -- is not the
+        document this check planted, and the id and the original text alone must not authorise deleting
+        it."""
+        modified = NATIVE_CHECK.unrelated_document()
+        modified["messages"][0]["files"] = ["/tmp/a-file-the-fixture-never-recorded"]
+        verbs: list[list[str]] = []
+
+        def fake_ask(opencode, verb, data_root, cwd=None, timeout=None):
+            verbs.append(list(verb))
+            if verb[1] == "export":
+                return completed(stdout=json.dumps(modified))
             raise AssertionError(f"unexpected harness verb {verb}")
 
         with mock.patch.object(NATIVE_CHECK, "ask_opencode", side_effect=fake_ask):
