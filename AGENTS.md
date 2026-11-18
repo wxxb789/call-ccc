@@ -81,7 +81,13 @@ with their exit codes and counts).
   printed resume line and the resume check name the data root and, beside it, the store's own database
   file (`OPENCODE_DB`): a line a shell reads can set a variable but cannot remove one, and a caller's
   inherited override would otherwise send the pasted command to another store, where `run --session <id>`
-  *creates* a session for an id the store does not hold (measured).
+  *creates* a session for an id the store does not hold (measured). An import whose process fails is
+  **reconciled, never read as an absence**: the harness's own `Imported session: <id>` line in the
+  captured output is its answer, the harness's own reader (`session export`, asked past the deadline that
+  stopped the import) is the next, and the report says `unresolved` where neither answers — a run may
+  report the installation absent only when the store itself answered that the id does not resolve, because
+  a caller who reads "nothing was published" and converts again leaves a second snapshot of one
+  conversation (measured: the harness commits the session and then exits).
 - **A conversion writes a fresh native identity and replaces nothing.** The install is exclusive, the
   source is never opened for writing, no credential or login store is copied, and a target data
   directory nobody named is an error rather than a directory invented here. Tests and demos use

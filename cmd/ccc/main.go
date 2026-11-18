@@ -626,15 +626,27 @@ func writeContinuation(out io.Writer, result ccc.ContinueResult) {
 	// dry run, or a run that stopped before publication — still generated an identity. Printing that
 	// identity the way an installed one is printed would offer a session no harness can open.
 	published := result.Installation.State == ccc.InstallationStateInstalled
-	proposed := ""
-	if !published {
-		proposed = " (proposed; nothing was installed)"
+	proposed := " (proposed; nothing was installed)"
+	switch result.Installation.State {
+	case ccc.InstallationStateInstalled:
+		proposed = ""
+	case ccc.InstallationStateUnresolved:
+		// The run could not establish whether the session was published (the harness's own importer
+		// failed after it may have committed, and its reader could not answer either). The marker says
+		// exactly that rather than "nothing was installed", which is the one claim the report does not
+		// have: a reader who assumes nothing was published may convert again and leave a second snapshot.
+		proposed = " (proposed; installation unresolved)"
 	}
 	switch {
 	case result.Conversion.DryRun:
 		fmt.Fprintf(out, "  installation: dry run, nothing written to %s\n", result.TargetSession.Home)
 	case published:
 		fmt.Fprintf(out, "  installed:    %s [%s]\n", result.Installation.Path, result.Installation.Mechanism)
+	case result.Installation.State == ccc.InstallationStateUnresolved:
+		// The report's own third state, spelled the way the JSON spells it: the run observed neither a
+		// publication nor its absence, so the line must not claim either.
+		fmt.Fprintf(out, "  installed:    %s (whether the store under %s holds this session could not be "+
+			"established)\n", ccc.InstallationStateUnresolved, result.TargetSession.Home)
 	default:
 		// The report's own state, spelled the way the JSON spells it: a run that stopped before
 		// publishing answers "is it installed?" with not-installed, not with an empty path that reads

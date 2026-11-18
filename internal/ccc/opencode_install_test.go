@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -278,31 +279,245 @@ func TestInstallOpenCodeSessionAsksTheHarnesssOwnImporter(t *testing.T) {
 // import the harness refuses (measured: a missing recorded directory answers
 // `LocationNotFoundError: Location not found: <dir>` and exits 1) must carry the harness's own words in
 // the returned error -- a core API caller that left ContinueOptions.Stderr unset has nowhere else to read
-// them -- while the process error stays wrapped for errors.Is/As.
+// them -- while the process error stays wrapped for errors.Is/As. The refusal is also the case that must
+// *stay* a refusal: the reconciliation asks the harness's own reader, it answers that the id does not
+// resolve, and no publication is claimed.
 func TestInstallOpenCodeSessionKeepsTheImportersOwnRefusal(t *testing.T) {
 	session := openCodeTestConversion(t)
 	home := filepath.Join(t.TempDir(), openCodeDataDirName)
 	stubOpenCodeExecutable(t, func(string) (string, error) { return "/stub/opencode", nil })
 	refusalErr := errors.New("exit status 1")
 	const refusedText = "LocationNotFoundError: Location not found: /gone"
+	exports := 0
 	stubOpenCodeRun(t, &runOpenCodeImporter, func(
 		_ context.Context, _ string, _ string, argv []string, _ []string, _ time.Duration, _ io.Writer,
 	) (string, string, error) {
 		if len(argv) > 1 && argv[1] == "import" {
 			return "", refusedText + "\n", refusalErr
 		}
+		exports++
 		return "", "Session not found: " + session.SessionID + "\n", refusalErr
 	})
-	if _, _, err := InstallOpenCodeSession(context.Background(), session,
-		openCodeTestInstallInput(home, "opencode")); err == nil {
+	path, _, err := InstallOpenCodeSession(context.Background(), session,
+		openCodeTestInstallInput(home, "opencode"))
+	if err == nil {
 		t.Fatal("a refused import was reported as an install")
-	} else {
-		if !strings.Contains(err.Error(), refusedText) {
-			t.Errorf("refusal = %v, want the harness's own refusal preserved", err)
-		}
-		if !errors.Is(err, refusalErr) {
-			t.Errorf("refusal = %v, want the process error still wrapped", err)
-		}
+	}
+	if !strings.Contains(err.Error(), refusedText) {
+		t.Errorf("refusal = %v, want the harness's own refusal preserved", err)
+	}
+	if !errors.Is(err, refusalErr) {
+		t.Errorf("refusal = %v, want the process error still wrapped", err)
+	}
+	if errors.Is(err, ErrInstallationUnresolved) {
+		t.Errorf("refusal = %v, want the store's own answer read as an answer: it refused this id", err)
+	}
+	if path != "" {
+		t.Errorf("path = %q, want none: the harness's own reader answered that the store does not hold it", path)
+	}
+	// The refusal is the harness's answer, so the question was asked once beside the import: a store the
+	// reader could not answer about is a different outcome (the unresolved case below).
+	if exports != 2 {
+		t.Errorf("exports = %d, want the exclusivity question and the one reconciliation question", exports)
+	}
+}
+
+// TestInstallOpenCodeSessionReconcilesAFailedImport pins what a failed importer process means for this
+// route. Measured on 2.2.5, the harness's own importer commits the session and then exits, so a deadline
+// or a cancellation between those two moments leaves the session in the store while this run observed
+// only a process error -- and a run that reported that as "nothing was published" would have its caller
+// convert the same conversation again, leaving a second snapshot of it in the store with no record that
+// either happened. Each arm is the evidence its own scenario leaves, and the path the installer returns
+// is what the report answers "installed?" from (continue.go):
+//
+//   - the harness's own `Imported session: <id>` line was captured before the process failed: its own
+//     acknowledgment is the answer, and the published identity travels beside the error;
+//   - no acknowledgment, and the harness's own reader now resolves the id this conversion minted: the
+//     store holds the session, so the path travels beside the error;
+//   - no acknowledgment, and the reader answers its own `Session not found: <id>`: nothing was published,
+//     which is the one refusal this installer may report as an absence;
+//   - no acknowledgment and no answer from the reader: the outcome is not established, and the error
+//     carries ErrInstallationUnresolved so the report can say `unresolved` rather than `not-installed`.
+//
+// The reconciliation also has to survive the failure that made it necessary: the caller's own deadline
+// (or cancellation) is what stopped the import, so the arm whose context is already dead is the one that
+// pins the question being asked anyway -- and the stub honours the context it is handed, exactly as the
+// route's own runner does (`runHarnessInvocation`), so an unanswered question cannot pass by the stub
+// ignoring the deadline it was given.
+func TestInstallOpenCodeSessionReconcilesAFailedImport(t *testing.T) {
+	session := openCodeTestConversion(t)
+	home := filepath.Join(t.TempDir(), openCodeDataDirName)
+	stubOpenCodeExecutable(t, func(string) (string, error) { return "/stub/opencode", nil })
+	importFailure := errors.New("timed out after 30s")
+	document := `{"info":{"id":"` + session.SessionID + `"},"messages":[]}`
+
+	arms := []struct {
+		name        string
+		cancelled   bool
+		imported    func() (string, string, error)
+		probe       func() (string, string, error)
+		wantPath    bool
+		wantExports int
+		unresolved  bool
+		wantError   []string
+	}{
+		{
+			name: "acknowledged and then failed",
+			imported: func() (string, string, error) {
+				return "Imported session: " + session.SessionID + "\n", "", importFailure
+			},
+			probe: func() (string, string, error) {
+				// Never reached: the harness's own acknowledgment is already the answer.
+				return "", "", errors.New("the reconciliation asked although the output answered")
+			},
+			wantPath:    true,
+			wantExports: 1,
+			wantError:   []string{"Imported session: " + session.SessionID},
+		},
+		{
+			name: "the store holds it though nothing was acknowledged",
+			imported: func() (string, string, error) {
+				return "", "", importFailure
+			},
+			probe:       func() (string, string, error) { return document, "", nil },
+			wantPath:    true,
+			wantExports: 2,
+			wantError:   []string{"the store now holds the session"},
+		},
+		{
+			name:      "the caller's own deadline stopped the import and the store still answers",
+			cancelled: true,
+			imported: func() (string, string, error) {
+				return "", "", context.Canceled
+			},
+			probe:       func() (string, string, error) { return document, "", nil },
+			wantPath:    true,
+			wantExports: 2,
+			wantError:   []string{"the store now holds the session"},
+		},
+		{
+			name: "the reader answers that the store does not hold it",
+			imported: func() (string, string, error) {
+				return "", "LocationNotFoundError: Location not found: /gone\n", importFailure
+			},
+			probe: func() (string, string, error) {
+				return "", "Session not found: " + session.SessionID + "\n", errors.New("exit status 1")
+			},
+			wantExports: 2,
+			wantError:   []string{"LocationNotFoundError"},
+		},
+		{
+			name: "nothing answers whether it was published",
+			imported: func() (string, string, error) {
+				return "", "", importFailure
+			},
+			probe: func() (string, string, error) {
+				return "", "", errors.New("unable to open database file")
+			},
+			unresolved:  true,
+			wantExports: 2,
+			wantError:   []string{"unable to open database file"},
+		},
+	}
+	for _, arm := range arms {
+		t.Run(arm.name, func(t *testing.T) {
+			exports, imports := 0, 0
+			stubOpenCodeRun(t, &runOpenCodeImporter, func(
+				ctx context.Context, _ string, _ string, argv []string, _ []string, _ time.Duration,
+				_ io.Writer,
+			) (string, string, error) {
+				// The invocation is counted before the deadline is applied: the count is what the route
+				// asked of the harness, not what the harness could answer, and the cancelled arm is the
+				// one whose questions the caller's own context stops.
+				if len(argv) > 1 && argv[1] == "import" {
+					imports++
+					if err := ctx.Err(); err != nil {
+						return "", "", err
+					}
+					return arm.imported()
+				}
+				if len(argv) != 4 || argv[0] != "session" || argv[1] != "export" || argv[2] != session.SessionID {
+					return "", "", fmt.Errorf("unexpected invocation %q", argv)
+				}
+				exports++
+				// The route's own runner fails an invocation whose context is done, so the stub does too:
+				// an arm that passed without the reconciliation's own context would not be pinning it.
+				if err := ctx.Err(); err != nil {
+					return "", "", err
+				}
+				if exports == 1 {
+					// The exclusivity question, asked before anything is staged: the id does not resolve.
+					return "", "Session not found: " + session.SessionID + "\n", errors.New("exit status 1")
+				}
+				return arm.probe()
+			})
+			ctx := context.Background()
+			if arm.cancelled {
+				stopped, cancel := context.WithCancel(ctx)
+				cancel()
+				ctx = stopped
+			}
+			path, mechanism, err := InstallOpenCodeSession(ctx, session,
+				openCodeTestInstallInput(home, "opencode"))
+			if err == nil {
+				t.Fatal("a failed importer process was reported as an install with no failure")
+			}
+			if errors.Is(err, ErrInstallationUnresolved) != arm.unresolved {
+				t.Errorf("err = %v, want the unresolved outcome %v", err, arm.unresolved)
+			}
+			if want := openCodeStorePath(home); (path == want) != arm.wantPath {
+				t.Errorf("path = %q, want the store's own path %v (%q)", path, arm.wantPath, want)
+			}
+			if arm.wantPath && !strings.Contains(mechanism, "opencode session import") {
+				t.Errorf("mechanism = %q, want the harness's own importer named beside the failure", mechanism)
+			}
+			for _, want := range arm.wantError {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("err = %v, want it to carry %q", err, want)
+				}
+			}
+			if imports != 1 {
+				t.Errorf("imports = %d, want the one the arm's importer answered", imports)
+			}
+			// The question is asked once per failed import, and it is asked even where the caller's own
+			// context is already done -- that is what keeps the report from asserting an absence nobody
+			// observed. An answered acknowledgment is the one case that needs no question asked.
+			if exports != arm.wantExports {
+				t.Errorf("exports = %d, want %d: the exclusivity question%s", exports, arm.wantExports,
+					" and the reconciliation question a failed import that acknowledged nothing is asked")
+			}
+		})
+	}
+}
+
+// TestOpenCodeRefusalNamesSession pins what counts as the harness's own answer that its store does not
+// hold one session: the `Session not found: <id>` line naming *that* id. The reconciliation reads the
+// absence only from this answer, so anything else -- a refusal about another session, a diagnostic that
+// merely mentions the id, an empty answer -- is not read as this store's answer about this id and leaves
+// the outcome unresolved rather than claimed absent.
+func TestOpenCodeRefusalNamesSession(t *testing.T) {
+	const id = "ses_01J0000000000000000000000"
+	for _, testCase := range []struct {
+		name   string
+		answer string
+		want   bool
+	}{
+		{name: "the harness's own refusal", answer: "Session not found: " + id + "\n", want: true},
+		{name: "the refusal beside other diagnostics",
+			answer: "warning: a config file was ignored\nSession not found: " + id, want: true},
+		{name: "a refusal about another session",
+			answer: "Session not found: ses_other00000000000000000000\n"},
+		{name: "a failure that mentions the id without refusing it",
+			answer: "Error: unable to open database file (session " + id + ")"},
+		{name: "a refusal naming no session", answer: "Session not found: \n"},
+		{name: "no answer at all", answer: ""},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := openCodeRefusalNamesSession(testCase.answer, id); got != testCase.want {
+				t.Errorf("openCodeRefusalNamesSession(%q, %q) = %v, want %v", testCase.answer, id, got,
+					testCase.want)
+			}
+		})
 	}
 }
 

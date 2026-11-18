@@ -481,6 +481,113 @@ func TestContinueIntoOpenCodeWithoutTheHarnessNamesTheBoundary(t *testing.T) {
 	}
 }
 
+// TestContinueIntoOpenCodeReportsAPublicationItsProcessFailed is the route's own half of the installer's
+// reconciliation. Measured on 2.2.5, the harness's own importer commits the session and then exits, so a
+// deadline or a cancellation in between leaves the store holding the session while the run observed only
+// a process error -- and a run that answered "not installed" would have its caller convert the same
+// conversation again, publishing a second snapshot of it with nothing recording either. The published
+// arm is that shape end to end: the importer materialises the store from the document it was handed and
+// then fails, the harness's own reader answers that the id resolves, and the report carries the
+// installation and the identity beside the failure -- with every check the failure kept from running
+// saying so rather than reading as a pass. The unanswered arm is the outcome no evidence settles: the
+// report's third state, `unresolved`, never a `not-installed` nobody observed.
+func TestContinueIntoOpenCodeReportsAPublicationItsProcessFailed(t *testing.T) {
+	for _, arm := range []struct {
+		name       string
+		answered   bool
+		wantParts  string
+		unresolved bool
+	}{
+		{name: "published and then failed", answered: true, wantParts: "the store now holds the session"},
+		{name: "nothing answers whether it was published", answered: false, unresolved: true,
+			wantParts: "could not answer whether it holds this session"},
+	} {
+		t.Run(arm.name, func(t *testing.T) {
+			home := filepath.Join(t.TempDir(), openCodeDataDirName)
+			importFailure := errors.New("timed out after 30s")
+			exports := 0
+			stubOpenCodeExecutable(t, func(string) (string, error) { return "/stub/opencode", nil })
+			stubOpenCodeRun(t, &runOpenCodeImporter, func(
+				_ context.Context, _ string, _ string, argv []string, env []string, _ time.Duration,
+				_ io.Writer,
+			) (string, string, error) {
+				if len(argv) > 1 && argv[1] == "import" {
+					// The document the route staged is committed to the store through the fixture writer --
+					// what the harness's own importer does -- and then the process fails, which is the
+					// shape this case is about.
+					data, err := os.ReadFile(argv[2])
+					if err != nil {
+						return "", "", err
+					}
+					writeOpenCodeTestStore(t, filepath.Join(openCodeDataRootOf(env), openCodeDataDirName),
+						OpenCodeSession{Data: data})
+					return "", "", importFailure
+				}
+				exports++
+				if exports == 1 {
+					// The exclusivity question, asked before anything is staged.
+					return "", "Session not found: " + argv[2] + "\n", errors.New("exit status 1")
+				}
+				if !arm.answered {
+					return "", "", errors.New("unable to open database file")
+				}
+				return `{"info":{"id":"` + argv[2] + `"},"messages":[]}`, "", nil
+			})
+
+			result, err := Continue(context.Background(), ContinueOptions{
+				Ref:          claudeFixtureRef,
+				Target:       TargetOpenCode,
+				Config:       fixtureConfig(t),
+				TargetHome:   home,
+				TargetBinary: missingTargetBinary,
+				Verify:       VerifyLoad,
+			})
+			if err == nil {
+				t.Fatal("a run whose importer process failed reported success")
+			}
+			if !strings.Contains(err.Error(), arm.wantParts) {
+				t.Errorf("err = %v, want it to carry %q", err, arm.wantParts)
+			}
+			if errors.Is(err, ErrInstallationUnresolved) != arm.unresolved {
+				t.Errorf("err = %v, want the unresolved outcome %v", err, arm.unresolved)
+			}
+			if arm.unresolved {
+				if result.Installation.State != InstallationStateUnresolved ||
+					result.Installation.Path != "" || result.TargetSession.Path != "" {
+					t.Errorf("installation = %+v (path %q), want unresolved with no path",
+						result.Installation, result.TargetSession.Path)
+				}
+				return
+			}
+			if result.Installation.State != InstallationStateInstalled ||
+				result.Installation.Path != openCodeStorePath(home) || !result.Installation.Created {
+				t.Errorf("installation = %+v, want the published session reported as installed",
+					result.Installation)
+			}
+			if result.TargetSession.Path != openCodeStorePath(home) {
+				t.Errorf("target session path = %q, want the store the session was installed into",
+					result.TargetSession.Path)
+			}
+			// The failure cost the run its checks: each says the run stopped rather than reading as a pass,
+			// and the report says so in its own channel as well.
+			if result.Verification.Structure.State != VerificationStateNotVerified ||
+				!strings.Contains(result.Verification.Structure.Detail, importFailure.Error()) {
+				t.Errorf("structure = %+v, want the failure named as why it did not run",
+					result.Verification.Structure)
+			}
+			if !slices.ContainsFunc(result.Warnings, func(warning string) bool {
+				return strings.Contains(warning, importFailure.Error())
+			}) {
+				t.Errorf("warnings = %q, want the failure named", result.Warnings)
+			}
+			if result.Installation.SourceCheckState != SourceCheckNotVerified {
+				t.Errorf("source check = %q, want the comparison the failure kept from running reported as "+
+					"unverified", result.Installation.SourceCheckState)
+			}
+		})
+	}
+}
+
 // TestOpenCodeRouteIsRegistered pins what the route table answers: the OpenCode target is one this build
 // writes, its route names the harness's own binary and data directory, and an unknown target's refusal
 // lists it.

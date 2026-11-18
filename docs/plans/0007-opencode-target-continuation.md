@@ -366,6 +366,26 @@ own directory, so one program now does the probing, the planting, the reading an
 that means different programs in the two directories is refused by the report's vector reading, which
 names both words.
 
+The seventh review round's fixes close the two remaining ways this route could state something untrue: one
+about a source shape it reads, one about the installation it publishes. **A record whose Content is the
+reader's own rendering of its persisted reasoning trace has no dialogue** (`thinkingRenderingOnly`,
+`dialogueText`): RooCode's, Kilo legacy's and Cline's readers render a trace into Content without
+projecting dialogue at all (internal/parser's own rule for the shape, `IsThinkingOnlyContent`), so the
+writer's Content fallback wrote the trace twice on this target — once as the `reasoning` part the format
+persists a trace in and once as a `text` part holding the rendering — presenting persisted reasoning as
+words the agent said. The rule is applied only where the record actually carries a trace, so text nothing
+shows to be a rendering of reasoning is not dropped, and the read-back rule is unchanged (the intended
+dialogue is still the rendering the inherited reader makes of the parts). **A failed importer process is
+reconciled, never read as an absence** (`InstallOpenCodeSession`): measured, the harness's own importer
+commits the session and then exits, so a deadline or a cancellation in between leaves the store holding
+the session while the run sees only a process error. The harness's own acknowledgment line in the captured
+output is the first answer; the harness's own reader (`session export`) the second, asked with a context
+that outlives the deadline that stopped the import because that deadline is exactly what would make the
+question unable to answer; where neither answers, the run reports the installation block's third state,
+`unresolved`, rather than a `not-installed` nobody observed. The published answer keeps the installer's own
+convention — the path beside the error — so the report still carries the identity the session is resumed
+by.
+
 ## 7. Gate, docs, bookkeeping
 
 - Gate: **no new step and no new required step.** New tests live in `internal/ccc` and `cmd/ccc`, which

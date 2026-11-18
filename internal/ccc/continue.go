@@ -30,11 +30,27 @@ const (
 // Conversion and installation states, which a caller reads apart: the conversion is what the target
 // document holds, and the installation is whether the session is where the target harness keeps its
 // sessions. The verification states live with their verifications (codex_verify.go).
+//
+// The installation has three answers, not two: whether the session is installed, is not, or -- where the
+// installation is another process's write -- could not be established. The third is the answer a run
+// owes when the target harness's own importer failed after it may have committed (a deadline, a
+// cancellation) and the harness's own reader could not say either way; reporting that as
+// InstallationStateNotInstalled would assert an absence nobody observed, and reporting it as
+// InstallationStateInstalled would assert a publication nobody observed. It is reported by the installer
+// through ErrInstallationUnresolved (see opencode_install.go, the route whose installation is the
+// harness's own importer).
 const (
 	ConversionStateConverted      = "converted"
 	InstallationStateInstalled    = "installed"
 	InstallationStateNotInstalled = "not-installed"
+	InstallationStateUnresolved   = "unresolved"
 )
+
+// ErrInstallationUnresolved reports an installation whose outcome the run could not establish: the
+// installer ran, it did not observe its own success, and the evidence that could resolve the question
+// answered nothing. It exists so the report can say `unresolved` instead of `not-installed`, which is a
+// claim about the target's store that such a run has no basis for.
+var ErrInstallationUnresolved = errors.New("the installation's outcome could not be established")
 
 // Source-file comparison results: what the source session's own bytes were shown to be after the
 // conversion. There are three answers, not two -- the file was shown to be its same bytes, the file
@@ -631,7 +647,14 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 	}
 	if err != nil {
 		// Nothing was published, or a published session's own failure: either way the report answers
-		// "installed?" from the path above, and this error is what the run failed on.
+		// "installed?" from the path above, and this error is what the run failed on. An installer that
+		// could not establish its own outcome says so through ErrInstallationUnresolved: the report then
+		// answers `unresolved` rather than `not-installed`, because the run observed neither a
+		// publication nor its absence. A path alongside that error is an answer of its own -- the path is
+		// the session the installer published -- so the state is unresolved only where no path came back.
+		if errors.Is(err, ErrInstallationUnresolved) && path == "" {
+			result.Installation.State = InstallationStateUnresolved
+		}
 		return reportAfterFailure(result, verification, level, err)
 	}
 	sourceState, sourceDetail, err := sourceCheckAfter(conversation, readFrom, sourceDigest)

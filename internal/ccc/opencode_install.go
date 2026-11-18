@@ -159,6 +159,14 @@ func openCodeTimeout(timeout time.Duration) time.Duration {
 // and the harness's own answer to the import must be `Imported session: <id>` with this document's id --
 // an `already exists` answer is a failure rather than a success, because this run did not install it and
 // another session's bytes are not this conversion's to claim.
+//
+// A process failure is reconciled rather than read as an absence: the harness's own acknowledgment line
+// in the captured output is its answer that the store holds this session, and -- where the process failed
+// without acknowledging anything -- the harness's own reader is asked whether this conversion's id
+// resolves now. The path is then returned beside the error (the convention every installer here follows,
+// continue.go), so the report answers "installed?" from what was observed; where neither the
+// acknowledgment nor the reader answers, the returned error carries ErrInstallationUnresolved and the
+// report says `unresolved`, never `not-installed`.
 func InstallOpenCodeSession(
 	ctx context.Context, session OpenCodeSession, in targetInstallInput,
 ) (string, string, error) {
@@ -197,12 +205,51 @@ func InstallOpenCodeSession(
 	output, diagnostics, err := runOpenCodeImporter(ctx, path, "", arguments, environment,
 		openCodeTimeout(in.Timeout), in.Stderr)
 	if err != nil {
-		// The harness's own words travel beside the process error: a refusal is what a caller can act on
-		// (measured: a missing recorded directory answers `LocationNotFoundError: Location not found:
-		// <dir>` and exits 1), and a core API caller that left ContinueOptions.Stderr unset has nowhere
-		// else to read them. The excerpt's bound is the exit-zero path's own sentence rule.
-		return "", "", fmt.Errorf("the harness's own importer could not be run: %w: %s",
-			err, openCodeAnswerSentence(output+diagnostics))
+		// A failed process is not by itself an answer about the store. Measured: the harness's own
+		// importer commits the session and then exits, so a deadline or a cancellation between the two
+		// leaves the session published while this run sees only a process error -- and reporting that as
+		// "not installed" would tell the caller nothing was published about a store that holds the
+		// session, whose next conversion would publish a second, undisclosed snapshot of one
+		// conversation. Which of the two happened is asked, in the order the evidence is available.
+		answered := output + diagnostics
+		if _, ok := openCodeImportAnswer(answered, session.SessionID); ok {
+			// The harness's own acknowledgment is already in the captured output: it answered
+			// `Imported session: <id>` for this document, so the store holds it whatever happened to the
+			// process afterwards. The path is returned beside the error, which is what lets the report
+			// keep the identity the published session is resumed by (continue.go) instead of calling the
+			// installation absent.
+			return openCodeStorePath(home), openCodeImportMechanism, fmt.Errorf(
+				"the harness's own importer answered `Imported session: %s` and then failed: %w: %s",
+				session.SessionID, err, openCodeAnswerSentence(answered))
+		}
+		switch outcome, answer := openCodeReconcileImport(ctx, path, session.SessionID, environment,
+			openCodeTimeout(in.Timeout)); outcome {
+		case openCodeReconciledInstalled:
+			// The harness's own reader now resolves the id this conversion minted, which it did not
+			// before the import was staged: the store holds the session this run handed over, so the
+			// installation is reported with the failure beside it.
+			return openCodeStorePath(home), openCodeImportMechanism, fmt.Errorf(
+				"the harness's own importer failed and the store now holds the session it was handed, so "+
+					"the import was published: %w: %s (%s)", err, openCodeAnswerSentence(answered), answer)
+		case openCodeReconciledAbsent:
+			// The harness's own reader answered that this id does not resolve, and the same reader
+			// answered the same way before the import was staged: nothing was published. The harness's
+			// own words travel beside the process error here, as on every other refusal: a refusal is
+			// what a caller can act on (measured: a missing recorded directory answers
+			// `LocationNotFoundError: Location not found: <dir>` and exits 1), and a core API caller
+			// that left ContinueOptions.Stderr unset has nowhere else to read them. The excerpt's bound
+			// is the exit-zero path's own sentence rule.
+			return "", "", fmt.Errorf("the harness's own importer could not be run: %w: %s",
+				err, openCodeAnswerSentence(answered))
+		default:
+			// Neither the acknowledgment nor the reader answered: the run has no basis for either
+			// answer, so it hands back the third one (continue.go's InstallationStateUnresolved)
+			// instead of asserting an absence nobody observed.
+			return "", "", fmt.Errorf(
+				"%w: the harness's own importer failed (%s) and the store could not answer whether it "+
+					"holds this session (%s): %w", ErrInstallationUnresolved,
+				openCodeAnswerSentence(answered), answer, err)
+		}
 	}
 	if _, ok := openCodeImportAnswer(output+diagnostics, session.SessionID); !ok {
 		return "", "", fmt.Errorf("the harness's own importer did not accept the document: %s",
@@ -229,6 +276,60 @@ func openCodeSessionExists(
 		return "", false
 	}
 	return summariseText(output+diagnostics, 200), true
+}
+
+// openCodeReconciliation is what the harness's own reader answered about the session id a failed import
+// minted: that the store holds it, that it does not, or nothing that answers the question.
+type openCodeReconciliation int
+
+const (
+	// openCodeReconciledInstalled is an answered export: the id resolves, and -- the id having been shown
+	// not to resolve before the import was staged, and having been minted by this run -- the session the
+	// reader answered about is the one this import handed over.
+	openCodeReconciledInstalled openCodeReconciliation = iota
+	// openCodeReconciledAbsent is the harness's own refusal naming this id: the store does not hold it.
+	openCodeReconciledAbsent
+	// openCodeReconciledUnanswered is neither: the question itself could not be answered (a store the
+	// harness could not open, a deadline), so the store's content is unknown rather than absent.
+	openCodeReconciledUnanswered
+)
+
+// openCodeReconcileImport asks the harness's own reader whether the session id a failed import minted
+// resolves in the store, and answers which of the three answers it gave. It is a question asked of the
+// harness, so it is bounded like every other one, and it is asked with a context that outlives the
+// caller's own deadline: the deadline (or cancellation) that stopped the import is exactly what would
+// make this question unable to answer, and an unanswered question is what makes the run report an
+// installation it could not establish rather than one it observed to be absent. What the question can
+// never do is publish anything: `session export` is measured to change none of a session's own records.
+func openCodeReconcileImport(
+	ctx context.Context, binary, sessionID string, environment []string, timeout time.Duration,
+) (openCodeReconciliation, string) {
+	arguments := []string{"session", "export", sessionID, "--standalone"}
+	output, diagnostics, err := runOpenCodeImporter(context.WithoutCancel(ctx), binary, "", arguments,
+		environment, timeout, io.Discard)
+	answer := strings.TrimSpace(output + "\n" + diagnostics)
+	if err == nil {
+		return openCodeReconciledInstalled, summariseText(answer, 200)
+	}
+	if openCodeRefusalNamesSession(answer, sessionID) {
+		return openCodeReconciledAbsent, summariseText(answer, 200)
+	}
+	return openCodeReconciledUnanswered, summariseText(firstNonEmptyText(answer, err.Error()), 200)
+}
+
+// openCodeRefusalNamesSession answers whether the harness's own words are its refusal to resolve one
+// session: the `Session not found: <id>` line it answers on stderr with exit 1 for an id its store does
+// not hold (measured on 2.2.5, and the same answer the load check's unknown-id control arm requires).
+// The id is compared with the one asked about, so a refusal about another session -- or a failure whose
+// diagnostic line merely mentions one -- is not read as this store's answer about this id.
+func openCodeRefusalNamesSession(answer, sessionID string) bool {
+	for _, line := range strings.Split(answer, "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "Session not found:")
+		if ok && strings.TrimSpace(rest) == sessionID {
+			return true
+		}
+	}
+	return false
 }
 
 // openCodeImportAnswer answers whether the importer's own output is the answer for this document: the

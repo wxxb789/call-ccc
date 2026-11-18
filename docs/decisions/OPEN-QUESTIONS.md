@@ -2390,3 +2390,50 @@ supersede it with a newer one and say which it supersedes.
 - **Reversal:** compare the raw spelling, which would report every real conversion as a difference over a
   member the harness itself normalizes.
 - **Settled by:** a harness version that stores the input's original spelling.
+
+## Q-0007-06 — A failed importer process is reconciled through the harness's own reader
+
+- **Status:** resolved (default taken; 0007's review round 7)
+- **Question:** this route's installation is another process's write (Q-0007-01), and — measured on 2.2.5
+  — the harness's own importer commits the session and then exits, so a deadline or a cancellation between
+  those two moments leaves the store holding the session while this run observed only a process error.
+  Should a failed process answer "installed?" with the only thing the run saw — a failure — and report
+  nothing published?
+- **Default taken:** no, and three answers are kept apart. The harness's own `Imported session: <id>` line
+  in the captured output is its answer that the store holds this session; where the process failed without
+  acknowledging anything, the harness's own reader is asked (`session export <id> --standalone`, the
+  interface Q-0007-03 already reads this store through, measured to change none of a session's own
+  records); and where neither answers — an answered refusal being its own answer that the id does not
+  resolve — the run reports Q-0007-07's third state. The question is asked with a context that **outlives
+  the caller's own deadline** (`context.WithoutCancel` plus the route's own question deadline): the
+  deadline that stopped the import is exactly what would make the question unable to answer, and asking it
+  is a bounded, read-only act, where not asking it is what would leave the report asserting an absence
+  nobody observed. A published answer keeps the installer's own convention — the path beside the error
+  (`continue.go`) — so the report still carries the identity the session is resumed by.
+- **Reversal:** read every process failure as "nothing was published". The cost is the one the goal's own
+  clause names: a caller who acts on that line and converts the same conversation again leaves a second
+  snapshot of one conversation in the store, with nothing recording either attempt.
+- **Settled by:** a harness version whose importer answers only after committing (then the process error
+  itself would be the absence), or an operator who prefers the cheapest report over a reconciled one.
+
+## Q-0007-07 — The installation block has a third state, `unresolved`
+
+- **Status:** resolved (default taken; 0007's review round 7; amends Q-0002-15's two-state vocabulary and
+  its `(proposed; nothing was installed)` marker)
+- **Question:** `installation.state` has carried `installed`/`not-installed` since 0002 (Q-0002-15), and the
+  human block renders everything that is not `installed` as `not-installed (nothing was published under
+  <home>)` with the identity lines marked `(proposed; nothing was installed)`. A run whose installer cannot
+  establish whether it published anything (Q-0007-06's unanswered case) has neither answer. Should the
+  third answer be a wire value of its own, or should such a run borrow `not-installed`'s words?
+- **Default taken:** a wire value of its own: `installation.state` is `unresolved`, the human block prints
+  `installed:    unresolved (whether the store under <home> holds this session could not be established)`,
+  and the three identity lines are marked `(proposed; installation unresolved)`. The other fields are
+  unchanged, the run still exits failure and still carries the failure in its error, detail and warnings,
+  and an installer that handed back a published path reports `installed` however its process ended — the
+  path is the answer. Borrowing `not-installed`'s words would put an absence nobody observed in the one
+  line a reader scans for that question.
+- **Reversal:** fold the state into `not-installed` and carry the difference in `installation.detail`
+  alone: the same information for a reader of the detail, at the cost of the one line a reader scans for
+  "is it installed?" answering with a claim the run does not have.
+- **Settled by:** an operator who prefers the two-state vocabulary for a consumer already reading it, or a
+  harness version that cannot leave this question unanswered.

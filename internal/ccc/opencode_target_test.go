@@ -1,10 +1,15 @@
 package ccc
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"go.kenn.io/agentsview/internal/parser"
 )
 
 // openCodeTargetTestOptions is a conversion configured as the route configures one: a fresh identity,
@@ -276,6 +281,153 @@ func TestConvertToOpenCodeSessionCarriesTheFixturesEvidence(t *testing.T) {
 	// without it the harness accepts the document and drops the message), and the report names that the
 	// source answered no span for it.
 	openCodeRequireLoss(t, session, "assistant_completion_instant", carried.AssistantMessages)
+}
+
+// rooCodeReasoningOnlyConversation writes one RooCode task directory -- the provider's own
+// `tasks/<task>/history_item.json` plus `ui_messages.json` shape, below a throw-away root -- and reads it
+// through the inherited reader: the source shape this route's dialogue rule exists for. The task holds
+// the provider's own `say=reasoning` record (the trace in the record's text field, which the reader
+// renders into Content and answers as ThinkingText with no dialogue projection at all) between a user
+// turn and an answer.
+func rooCodeReasoningOnlyConversation(t *testing.T, trace string) Conversation {
+	t.Helper()
+	const (
+		taskID      = "task-reasoning-only"
+		startMillis = 1777886100000
+	)
+	root := t.TempDir()
+	taskDir := filepath.Join(root, "tasks", taskID)
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		t.Fatalf("preparing the RooCode task directory: %v", err)
+	}
+	history := `{"apiConfigName":"anthropic/claude-sonnet-4-5","id":"` + taskID + `","task":"Check the ` +
+		`retry policy","ts":1777886100000,"workspace":"/tmp/ccc-opencode-roocode"}`
+	messages := `[{"say":"text","text":"Check the retry policy.","ts":1777886100000,"type":"say"},` +
+		`{"say":"reasoning","text":` + jsonString(t, trace) + `,"ts":1777886101000,"type":"say"},` +
+		`{"say":"text","text":"The cap is four attempts.","ts":1777886102000,"type":"say"}]`
+	for name, content := range map[string]string{
+		"history_item.json": history,
+		"ui_messages.json":  messages,
+	} {
+		if err := os.WriteFile(filepath.Join(taskDir, name), []byte(content), 0o600); err != nil {
+			t.Fatalf("writing %s: %v", name, err)
+		}
+	}
+	cfg := fixtureConfig(t)
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentRooCode: {root}}
+	conversation, err := NewSourceReader(cfg).Read(context.Background(),
+		Ref{Provider: string(parser.AgentRooCode), ID: taskID})
+	if err != nil {
+		t.Fatalf("reading the RooCode source: %v", err)
+	}
+	return conversation
+}
+
+// TestOpenCodeCarriesARooCodeReasoningOnlyRecordOnce pins the writer's dialogue rule for the inherited
+// source shape the rule exists for. RooCode's reader answers a `say=reasoning` record as an assistant
+// message whose Content is the rendering of the record's own persisted trace and whose dialogue is not
+// projected at all, so the writer's Content fallback used to write that trace twice -- once as the
+// message's `reasoning` part (the shape OpenCode persists a trace in) and once as a `text` part holding
+// the reader's `[Thinking]…[/Thinking]` rendering, which presents persisted reasoning as words the agent
+// said. What this case reads is the serialized document's own parts: the trace once, in the part the
+// format keeps a trace in, with no text part carrying the rendering; the report counting the trace as
+// carried because it is; and the store read-back verifying the message through the inherited reader's own
+// rendering of that single part.
+func TestOpenCodeCarriesARooCodeReasoningOnlyRecordOnce(t *testing.T) {
+	const trace = "Inspect the parser before answering."
+	conversation := rooCodeReasoningOnlyConversation(t, trace)
+
+	// The shape is asserted on the read, not assumed: the record carries the trace, the source projected
+	// no dialogue for it, and its Content is the reader's own rendering of that trace.
+	sawReasoningOnly := false
+	for _, message := range conversation.Messages {
+		if message.Thinking != trace {
+			continue
+		}
+		sawReasoningOnly = true
+		if message.DialogueProjected || message.Dialogue != "" {
+			t.Fatalf("the RooCode record's dialogue = %q (projected %v), want none: the shape this rule is "+
+				"about is a record the source answered no projection for", message.Dialogue,
+				message.DialogueProjected)
+		}
+		if message.Content != openCodeReasoningOpen+trace+openCodeReasoningClose {
+			t.Fatalf("the RooCode record's content = %q, want the reader's rendering %q of its own trace",
+				message.Content, openCodeReasoningOpen+trace+openCodeReasoningClose)
+		}
+	}
+	if !sawReasoningOnly {
+		t.Fatalf("the read holds no record carrying %q, so nothing here pins what a writer does with the "+
+			"shape this case is about", trace)
+	}
+
+	session, err := ConvertToOpenCodeSession(conversation, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	var document openCodeDocument
+	if err := json.Unmarshal(session.Data, &document); err != nil {
+		t.Fatalf("the document does not parse: %v", err)
+	}
+	reasoningPart := -1
+	for index, message := range document.Messages {
+		if len(message.Content) > 0 && message.Content[0].Type == openCodePartReasoning {
+			reasoningPart = index
+		}
+	}
+	if reasoningPart < 0 {
+		t.Fatalf("the document holds no reasoning part for the record's trace: %s", session.Data)
+	}
+	if parts := document.Messages[reasoningPart].Content; len(parts) != 1 ||
+		parts[0].Type != openCodePartReasoning || parts[0].Text != trace {
+		t.Errorf("the record's message holds %+v, want the trace once as the one reasoning part", parts)
+	}
+	if strings.Contains(string(session.Data), openCodeReasoningOpen) {
+		t.Errorf("the document holds the reader's own `[Thinking]` rendering of the trace, which is not "+
+			"dialogue the source recorded: %s", session.Data)
+	}
+	openCodeRequireLoss(t, session, "reasoning_text", 1)
+	loss := lossCount(t, session.Losses, "reasoning_text")
+	if loss.Disposition != DispositionCarriedWithCaveat {
+		t.Errorf("reasoning_text = %+v, want the trace the reasoning part carries counted as carried", loss)
+	}
+
+	// The read-back rule holds for the single part as it does for any other message: the comparison's
+	// intended dialogue is the rendering the inherited reader makes of the parts, so a store holding the
+	// message verifies with no difference.
+	home := filepath.Join(t.TempDir(), openCodeDataDirName)
+	writeOpenCodeTestStore(t, openCodeDataDir(home), session)
+	verification, err := VerifyOpenCodeSessionStructure(context.Background(), openCodeDataDir(home),
+		session, fixtureConfig(t))
+	if err != nil {
+		t.Fatalf("reading the installed session back: %v", err)
+	}
+	if verification.State != VerificationStateVerified || verification.Detail != "" {
+		t.Errorf("structure = %+v, want the single-part message read back as what was written "+
+			"(detail %q)", verification, verification.Detail)
+	}
+
+	// The rule recognises a *rendering of the record's own trace*, and the record's trace is what makes it
+	// one: the same words on a record the read answered no trace for are the record's own text, and a
+	// target must not drop text it cannot show to be a rendering of reasoning. (The writer's own double of
+	// the shape: a reader that renders a trace without filling the trace field -- the inherited OpenCode
+	// reader is one -- leaves Content as the message's text, which is a source-side matter of its own.)
+	unrendered := openCodeTestConversation(Message{Role: "assistant", Timestamp: time.UnixMilli(1_700_000_000_000).UTC(),
+		Content: openCodeReasoningOpen + "words the read answered no trace for" + openCodeReasoningClose})
+	session, err = ConvertToOpenCodeSession(unrendered, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting a record with no persisted trace: %v", err)
+	}
+	if !strings.Contains(string(session.Data), "words the read answered no trace for") {
+		t.Errorf("the document dropped a record's own text, which nothing shows to be the rendering of a "+
+			"trace: %s", session.Data)
+	}
+	if err := json.Unmarshal(session.Data, &document); err != nil {
+		t.Fatalf("the document does not parse: %v", err)
+	}
+	parts := document.Messages[0].Content
+	if len(parts) != 1 || parts[0].Type != openCodePartText {
+		t.Errorf("the record's message holds %+v, want its text as the one text part", parts)
+	}
 }
 
 // TestOpenCodeDialogueItemsAreTheReadersOwnRendering pins the route's comparison spelling: a message's
@@ -1137,7 +1289,12 @@ func TestOpenCodeWriterNamesWhatItCannotCarry(t *testing.T) {
 	conversation := openCodeTestConversation(
 		Message{Role: "user", Dialogue: "hello", DialogueProjected: true, Content: "hello", Timestamp: at},
 		Message{Role: "assistant", Dialogue: "   ", DialogueProjected: true, Content: "   ", Timestamp: at},
-		Message{Role: "assistant", Thinking: "only a trace", Content: "[Thinking]\nonly a trace", Timestamp: at},
+		// The reasoning-only shape a rendering reader produces (RooCode's, Kilo's, Cline's): the trace in
+		// a `[Thinking]…[/Thinking]` block with nothing else, no dialogue projection. Its words are not
+		// dialogue, so the writer carries the trace once -- as the reasoning part -- and this case's own
+		// count below is what the record contributes either way.
+		Message{Role: "assistant", Thinking: "only a trace",
+			Content: "[Thinking]\nonly a trace\n[/Thinking]", Timestamp: at},
 		Message{Role: "tool", Content: "tool output", Timestamp: at},
 		Message{Role: "assistant", IsSidechain: true, Dialogue: "subagent", DialogueProjected: true,
 			Content: "subagent", Timestamp: at},

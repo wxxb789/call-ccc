@@ -1152,6 +1152,145 @@ conformance to a rule that file already states (a case must hold on every platfo
 docs name). No goal file is moved: 0007 is still the increment on its branch, awaiting acceptance. No new
 OPEN-QUESTIONS entry: the repair spells a test's own word, so no owner-only default was taken.
 
+### The seventh review round's fixes (`3bd4f60` + working tree), re-measured
+
+The findings file (`review-findings-r7.md`, review head `3bd4f60`) named two defects, both P2 and both
+dispositions FIX: one about a source shape this route's writer receives, one about the statement a failed
+installation makes. Round 7's own instruction was a systematic close-out — every rule the touched surface
+claims had to be proved with one executed mutation (revert, run the case that claims to pin it, restore,
+hash back) — so the twelve mutations below are this round's evidence, not a static argument.
+
+- **A record whose Content is the reader's own rendering of its persisted reasoning trace is not dialogue**
+  (`thinkingRenderingOnly`, `dialogueText` in `internal/ccc/codex_target.go`, the shared rule every writer
+  reads dialogue through). RooCode's and Kilo legacy's readers (`internal/parser/roocode.go:489`,
+  `kilo_legacy.go:915`, and Cline's at `cline.go:602`) render a `say=reasoning` record as an assistant
+  message with `Content = "[Thinking]\n<trace>\n[/Thinking]"` and `ThinkingText = <trace>`, and project no
+  dialogue at all — the shape the readers themselves recognise through `parser.IsThinkingOnlyContent`
+  (`roocode.go:1428`, used at `roocode.go:1044`, `kilo_legacy.go:1318`, `cline.go:1172`). The writer's
+  Content fallback therefore wrote such a record's trace **twice** on this target: once as the `reasoning`
+  part the format persists a trace in and once as a `text` part holding the rendering — persisted reasoning
+  presented as words the agent said, with the round-trip comparison agreeing because both sides derived
+  from the same duplicated parts. The rule is applied only where the record actually carries a trace, so a
+  record the read answered no trace for keeps its Content (nothing shows those words to be a rendering);
+  the read-back rule is unchanged, because the intended dialogue was and is the rendering the inherited
+  reader makes of the parts. New case:
+  `TestOpenCodeCarriesARooCodeReasoningOnlyRecordOnce`, driven by a RooCode task directory written in the
+  provider's own shape, read through the inherited reader, and asserted on the **serialized document's own
+  parts** (exactly one `reasoning` part holding the trace, no `[Thinking]` rendering anywhere in the
+  document), on the loss category (`reasoning_text ×1`, carried with caveat), and through the store
+  read-back. `TestOpenCodeWriterNamesWhatItCannotCarry`'s hand-built reasoning-only record now carries the
+  reader's actual rendering (`[Thinking]\nonly a trace\n[/Thinking]`) instead of a truncated one, so the
+  case's shape is the shape the rule is about.
+- **A failed importer process is reconciled, never read as an absence** (`InstallOpenCodeSession`,
+  `internal/ccc/opencode_install.go`). Measured on 2.2.5, the harness's own importer **commits the session
+  and then exits**, so a deadline or a cancellation between those two moments leaves the store holding the
+  session while the run saw only a process error — and the old unconditional failure branch returned an
+  empty path, so `continueWith` kept `not-installed` and the human block asserted "nothing was published
+  under <home>" about a store that holds the session; the next conversion of one conversation would then
+  publish a second snapshot with nothing recording either. The failure branch now asks the evidence in
+  order: the harness's own `Imported session: <id>` line already in the captured output (`openCodeImportAnswer`)
+  is its answer that the store holds the session; otherwise the harness's own reader is asked
+  (`openCodeReconcileImport` → `session export <id> --standalone`, the interface Q-0007-03 already reads
+  this store through), whose answered export means published, whose own `Session not found: <id>` line
+  (compared with *this* id) means absent, and whose inability to answer means unknown. A published outcome
+  returns the store's path beside the error — the convention `continue.go` already documents for an
+  installer that reports a failure after publishing — so the report carries the identity the session is
+  resumed by; the unknown outcome returns `ErrInstallationUnresolved`, and `continueWith` sets the
+  installation block's third state, **`unresolved`** (`InstallationStateUnresolved`), which the human block
+  renders as `installed:    unresolved (whether the store under <home> holds this session could not be
+  established)` and marks on every identity line as `(proposed; installation unresolved)` — never
+  `not-installed`, whose words are the claim this run does not have. The reconciliation question is asked
+  with a context that outlives the caller's own deadline (`context.WithoutCancel` plus the route's own
+  question deadline): the deadline that stopped the import is exactly what would make the question unable
+  to answer, and the question is bounded and read-only (`session export` is measured to change none of a
+  session's own records). New cases: `TestInstallOpenCodeSessionReconcilesAFailedImport` (five arms: the
+  acknowledgment, the reader's answer, the caller-cancelled context, the refusal, and no answer at all),
+  `TestInstallOpenCodeSessionKeepsTheImportersOwnRefusal` (now also pinning that a refusal stays a
+  refusal), `TestOpenCodeRefusalNamesSession` (what counts as the harness's own absence answer),
+  `TestContinueIntoOpenCodeReportsAPublicationItsProcessFailed` (the route's own report in both
+  outcomes), and `TestContinueHumanOutputReportsAnUnresolvedInstallation` (the block and the JSON).
+
+The mutations, executed and restored (each file hashed before and after its mutation and quoted below with
+the first twelve hex digits — the round's own proof that the tree that ran the gate is the tree these
+rules are in):
+
+| Rule | Line disabled | Observed (the case that reddened) |
+| --- | --- | --- |
+| a message whose Content renders its own trace has no dialogue | `codex_target.go` `if thinkingRenderingOnly(message)` → `if false` | `TestOpenCodeCarriesARooCodeReasoningOnlyRecordOnce` FAIL — `the record's message holds [{Type:reasoning …} {Type:text …}]`, and the document holds the `[Thinking]` rendering |
+| the rendering is recognised only for a record that carries a trace | `thinkingRenderingOnly`'s `strings.TrimSpace(message.Thinking) != "" &&` dropped | the same case FAIL at its second half — `the document dropped a record's own text, which nothing shows to be the rendering of a trace` |
+| the importer's own acknowledgment decides before the reader is asked | `if _, ok := openCodeImportAnswer(answered, session.SessionID); ok` → `… ok && false` | `TestInstallOpenCodeSessionReconcilesAFailedImport` FAIL — `path = "", want the store's own path true`, `err … could not be established`, `exports = 2, want 1` |
+| an answered export means the store holds the session | `return openCodeReconciledInstalled, …` → `return openCodeReconciledAbsent, …` | the same case FAIL — `path = ""`, `err = … could not be run: timed out after 30s: it answered nothing`, want `the store now holds the session` |
+| a refusal is the store's own answer that the id is absent | `if ok && strings.TrimSpace(rest) == sessionID` → `… && false` | `TestInstallOpenCodeSessionKeepsTheImportersOwnRefusal` FAIL — `refusal = the installation's outcome could not be established: … could not answer whether it holds this session` |
+| the refusal is read only when it names *this* id | the same comparison → `strings.TrimSpace(rest) == strings.TrimSpace(rest)` | `TestOpenCodeRefusalNamesSession` FAIL — `a refusal about another session` and `a refusal naming no session` both `= true, want false` |
+| the reconciliation asks the harness's own reader, not another interface | `{"session", "export", sessionID, "--standalone"}` → `{"session", "list"}` in `openCodeReconcileImport` | `TestInstallOpenCodeSessionReconcilesAFailedImport` FAIL — `exports = 1, want 2`, `path = ""` |
+| every OpenCode command this route runs carries `--standalone` | the same vector with `--standalone` dropped | the same case FAIL — `exports = 1, want 2`, `path = ""` |
+| the reconciliation question outlives the deadline that stopped the import | `context.WithoutCancel(ctx)` → `ctx` | the same case FAIL at its cancelled arm — `err … could not answer whether it holds this session (context canceled): context canceled` |
+| the unresolved outcome reaches the report as its own state | `continue.go` `errors.Is(err, ErrInstallationUnresolved) && path == ""` → `… && false` | `TestContinueIntoOpenCodeReportsAPublicationItsProcessFailed` FAIL — `installation = {State:not-installed …}, want unresolved with no path` |
+| the human block renders the unresolved state instead of claiming nothing was published | `cmd/ccc/main.go` `case result.Installation.State == ccc.InstallationStateUnresolved:` → `case false:` | `TestContinueHumanOutputReportsAnUnresolvedInstallation` FAIL — `the human block is missing "installed:    unresolved (whether the store under … holds this session could not be established)"`, `the block claims nothing was published` |
+| the identity lines say the installation is unresolved rather than absent | the marker's `case ccc.InstallationStateUnresolved:` arm removed | the same case FAIL — missing `… (proposed; installation unresolved)`, `identity lines marked with the unresolved outcome = 0, want 3` |
+
+Restoring each file hashed it back to the bytes the table quotes (the mutations driver printed
+`e71016a707e3…` for `codex_target.go`, `2298fcc2677e…` for `opencode_install.go`, `99ba84c07b43…` for
+`continue.go`, `182beb3ee45f…` for `cmd/ccc/main.go` and the same value before and after every mutation).
+The cases' own bytes: `internal/ccc/opencode_target_test.go` `469343a650fe…`,
+`internal/ccc/opencode_install_test.go` `aa193b56754f…`, `internal/ccc/continue_opencode_test.go`
+`2e4742e66644…`, `cmd/ccc/main_test.go` `219e79c56f87…`.
+
+The runs on the fixed bytes. The route's own native check, offline and with one real turn (the harness is
+this host's `/home/azureuser/.npm-global/bin/opencode`, 2.2.5):
+
+```
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode
+RESULT: PASS — 31 check(s), none failed          (exit 0)
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode \
+    --resume-prompt 'Reply with exactly: NATIVE-TURN-OK' --expect NATIVE-TURN-OK
+PASS: the turn ran through the printed invocation and exited 0 — exit 0; stderr
+PASS: the turn's answer contains 'NATIVE-TURN-OK' — NATIVE-TURN-OK
+PASS: the turn grew the installed session, through the harness's own reader — 7 message(s) before the turn, 10 after
+PASS: the session's own records were not rewritten by the turn — the first 7 message(s) are unchanged
+RESULT: PASS — 35 check(s), none failed          (exit 0)
+```
+
+The counts are where §2/§4 already measured them (31 offline with one named `SKIP`, 35 with the turn): the
+fixed bytes change no step set, and the conversion path the check drives is the one this round did not
+change (the reconciliation is a failure-path rule, and the writer change is reached only by a source shape
+the check's Claude fixture does not hold — which is why that shape has its own case above).
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3620 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 340 tests in 8.192s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 31 project-owned prefix(es); files seen by git: 5701 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
+  PASS     secrets  no leaks found in 146 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+(A `…` inside the parity line is this record's own elision, as in the sections above. The gate ran on the
+working tree with this round's code, tests and docs applied; the only bytes written after it belong to this
+section, which is the record it printed into.)
+
+The narrowed Go suites' own test functions ran 384 before this round and 389 after — the five cases added
+(`TestOpenCodeCarriesARooCodeReasoningOnlyRecordOnce`, `TestInstallOpenCodeSessionReconcilesAFailedImport`,
+`TestOpenCodeRefusalNamesSession`, `TestContinueIntoOpenCodeReportsAPublicationItsProcessFailed`,
+`TestContinueHumanOutputReportsAnUnresolvedInstallation`), counted as `^func Test` over the test files git
+lists under `cmd/ccc` and `internal/ccc`. `selftest` is unchanged at 340, because this round adds no Python
+case: the two defects are Go-side rules, and the gate's `test` step is what runs them. What else
+the round moved: `AGENTS.md` (the OpenCode bullet now states the reconciliation rule and the
+`unresolved` state), `docs/decisions/OPEN-QUESTIONS.md` (Q-0007-06 and Q-0007-07: the reconciled failure
+and the third installation state, the latter amending Q-0002-15's two-state vocabulary and its proposed
+marker) and `docs/plans/0007-opencode-target-continuation.md` (§6.1's seventh-round paragraph).
+`docs/harness.md` and `README.md` are **not** edited: they state what the native check verifies and how a
+caller invokes the route, and neither is changed by this round — the check drives a successful conversion
+whose new states are unreachable there, and every command, flag and printed line is what it was. No goal
+file is moved: 0007 is still the increment under review, implemented on its branch with its row; the
+earlier goals are archived and their rows say so.
+
 ## 5. What travels, source side and target side
 
 | Source evidence | Target side, and the run that recorded it |

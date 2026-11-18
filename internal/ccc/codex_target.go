@@ -1133,7 +1133,9 @@ func moreNames(more int) string {
 // projected nothing for a message whose Content renders something else (a persisted reasoning trace, a
 // tool call) has said that message has no dialogue to carry, and falling back to the rendering would
 // state words the source never recorded as spoken. A message whose source classified no projection has
-// nothing to duplicate when it carries no calls, so its Content is the text.
+// nothing to duplicate when it carries no calls, so its Content is the text -- unless that Content is
+// the reader's own rendering of the message's persisted reasoning trace, which is not dialogue either
+// (thinkingRenderingOnly).
 func dialogueText(message Message) string {
 	if strings.TrimSpace(message.Dialogue) != "" || message.DialogueProjected {
 		return message.Dialogue
@@ -1141,7 +1143,26 @@ func dialogueText(message Message) string {
 	if len(message.ToolCalls) > 0 {
 		return ""
 	}
+	if thinkingRenderingOnly(message) {
+		return ""
+	}
 	return message.Content
+}
+
+// thinkingRenderingOnly reports whether a message's Content is nothing but the reader's own rendering of
+// the message's persisted reasoning trace: the inherited readers write a trace they render (rather than
+// project away) as a `[Thinking]…[/Thinking]` block with nothing beside it, and a record that carries
+// such a trace has one there. The shape is the readers' own rule for it
+// (internal/parser.IsThinkingOnlyContent, which RooCode's, Kilo legacy's and Cline's readers use to
+// recognise a reasoning-only record), and it is what makes Content a rendering rather than the message's
+// text: a record with no persisted trace has no rendering to recognise, and its Content is whatever the
+// provider recorded -- a target must not drop text it cannot show to be a rendering of the record's own
+// reasoning. Reasoning-only records are produced by the readers that render a trace into Content without
+// projecting dialogue at all (RooCode's and Kilo's `say=reasoning` records, Cline's thinking messages),
+// and a target that fell back to that Content would carry the trace twice -- once as the record's own
+// reasoning and once as words the source never recorded the agent as saying.
+func thinkingRenderingOnly(message Message) bool {
+	return strings.TrimSpace(message.Thinking) != "" && parser.IsThinkingOnlyContent(message.Content)
 }
 
 // resultText is the text a tool result contributes to the target, plus the number of blocks its content
