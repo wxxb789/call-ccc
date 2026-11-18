@@ -219,6 +219,14 @@ type sourceTree struct {
 	// projectedParents says the read may answer a projection: projectedParentProvider of the source's own
 	// provider. A read whose answers are exact keeps the narrower reading below, which invents nothing.
 	projectedParents bool
+	// preambleEntryID is the entry a family writes before the conversation: a record of its own format
+	// that is not a source record and that the source's own first record hangs off. OMP's session model
+	// binding is one (measured: a session whose binding entry nothing chains to is not restored, so the
+	// entry has to stand on the walk the target's loader makes from its leaf), and Pi has none. It is a
+	// place, not a record: nothing is registered for it, no source relation is counted through it, and
+	// lastEntryID therefore stays nil until a source record is written -- which is what keeps every
+	// per-record count the same on a target whose format has no preamble.
+	preambleEntryID *string
 	// lastEntryID is the entry written last and lastOrigin what it stands for; pending is what the
 	// entries written next stand for.
 	lastEntryID *string
@@ -293,7 +301,32 @@ func (t *sourceTree) entryParent() *string {
 	if t.pending.parentID != nil {
 		return t.pending.parentID
 	}
-	return t.lastEntryID
+	return t.priorEntry()
+}
+
+// preamble registers the entry a family wrote before the conversation (preambleEntryID) as the place
+// the source's own first record hangs off, so the record's entry is reachable on the walk the target's
+// loader makes from the file's last entry. The entry itself is written by the family, not here: this
+// records only where it stands, and nothing about it is counted as a source relation.
+func (t *sourceTree) preamble(entryID string) {
+	id := strings.TrimSpace(entryID)
+	if id == "" {
+		return
+	}
+	t.preambleEntryID = &id
+}
+
+// priorEntry answers the entry a record's first entry follows when the source's own relation resolves
+// none: the entry written last, else the family's own preamble entry. The second case is a document
+// whose first record has no relation of its own -- on a family whose format carries a record before the
+// conversation, the first record's entry follows that record, and the alternative (a null parent) would
+// leave the preamble off the walk the target's own loader makes, which on OMP is a session whose model
+// binding is never restored (measured).
+func (t *sourceTree) priorEntry() *string {
+	if t.lastEntryID != nil {
+		return t.lastEntryID
+	}
+	return t.preambleEntryID
 }
 
 // wrote records one written entry: it is the entry the record being walked stands for -- the last of
@@ -355,7 +388,7 @@ func (t *sourceTree) wrote(id string) {
 func (t *sourceTree) parentFor(parent string) *string {
 	parent = strings.TrimSpace(parent)
 	if parent == "" {
-		return t.lastEntryID
+		return t.priorEntry()
 	}
 	if id, ok := t.toolResultEntry[parent]; ok {
 		t.unresolved++
@@ -365,7 +398,7 @@ func (t *sourceTree) parentFor(parent string) *string {
 		return &id
 	}
 	t.unresolved++
-	return t.lastEntryID
+	return t.priorEntry()
 }
 
 // writtenAncestor answers the place the nearest record a walk from sourceID stands for, and whether it

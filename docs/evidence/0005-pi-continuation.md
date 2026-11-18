@@ -1,6 +1,6 @@
 # Evidence — 0005 Continue conversations into and out of Pi
 
-Contract: [`docs/goals/0005-pi-continuation.md`](../goals/0005-pi-continuation.md).
+Contract: [`docs/goals/archive/0005-pi-continuation.md`](../goals/archive/0005-pi-continuation.md).
 Plan: [`docs/plans/0005-pi-continuation.md`](../plans/0005-pi-continuation.md).
 Route evidence this increment stands beside:
 [`0002-claude-to-codex-continuation.md`](0002-claude-to-codex-continuation.md) and

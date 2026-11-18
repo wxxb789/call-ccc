@@ -462,10 +462,12 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 	}
 
 	session, err := route.Convert(conversation, targetConvertInput{
-		CLIVersion:   facts.CLIVersion,
-		Provider:     facts.ModelProvider,
-		Now:          opts.Now,
-		MaxToolNames: opts.MaxToolNames,
+		CLIVersion:     facts.CLIVersion,
+		Provider:       facts.ModelProvider,
+		Model:          facts.Model,
+		ProviderDetail: facts.ProviderDetail,
+		Now:            opts.Now,
+		MaxToolNames:   opts.MaxToolNames,
 	})
 	if err != nil {
 		return ContinueResult{}, err
@@ -743,6 +745,21 @@ const (
 	structureReaderCodex  = "Codex"
 	structureReaderClaude = "Claude Code"
 	structureReaderPi     = "Pi"
+	structureReaderOMP    = "Oh My Pi"
+
+	// The OMP route's own sentences. Its format is the Pi family's, but its harness is a different
+	// program with its own loader flags and its own data directory, so a reader sees which harness
+	// answered rather than a family label.
+	structureMethodOMP       = "the inherited AgentsView OMP reader over the installed session"
+	structureMethodOMPDryRun = "the inherited AgentsView OMP reader over a throw-away copy (dry run)"
+	// The OMP load check drives the harness's own RPC loader against a throw-away copy in a scratch data
+	// directory that defines a credential-free provider, and asks the same question about an unknown id
+	// beside it: see omp_verify.go.
+	loadMethodOMP = "the target harness's own loader (omp --mode rpc, get_state/get_messages, in a " +
+		"scratch data directory whose provider needs no credential, plus an unknown-id control)"
+
+	resumeMethodOMP = "one turn in the installed session through the target harness's non-interactive " +
+		"resume (omp -p --resume)"
 )
 
 // hasAnswer reports whether a check carries an answer of its own: it verified, or it came back

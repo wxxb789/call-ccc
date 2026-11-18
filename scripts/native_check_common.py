@@ -1,6 +1,7 @@
 """The mechanisms the native-check harnesses share.
 
-``scripts/claude-native-check.py``, ``scripts/codex-native-check.py`` and ``scripts/pi-native-check.py``
+``scripts/claude-native-check.py``, ``scripts/codex-native-check.py``, ``scripts/pi-native-check.py`` and
+``scripts/omp-native-check.py``
 verify their routes the same way: each digests the trees it must not change, records one named check at a
 time, runs a command with this process's environment, and reads a rendered invocation back the way a POSIX
 shell reads it. The Claude and Pi harnesses also drive a **copy** of the fixture whose recorded working
@@ -16,10 +17,12 @@ list every script reports into.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
 import shlex
+import shutil
 import subprocess
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -285,3 +288,201 @@ def run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = No
     if env:
         merged.update(env)
     return subprocess.run(cmd, cwd=cwd, env=merged, capture_output=True, text=True, timeout=timeout)
+
+
+# --- the mechanisms the native checks share beyond the reader's fixtures -----------------------------
+
+#: The words a rendered invocation begins with and the operator between them: the directory change, and
+#: the `&&` a shell reads as its own operator. They mirror `internal/ccc/continue.go`'s `renderInvocation`.
+CD_WORD = "cd"
+OPERATOR_WORD = "&&"
+
+
+def rpc_answer(stdout: str, command: str) -> dict | None:
+    """The last response record for one command out of an RPC run's stdout, or None."""
+    answer: dict | None = None
+    for line in stdout.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("{"):
+            continue
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if parsed.get("type") == "response" and parsed.get("command") == command:
+            answer = parsed
+    return answer
+
+
+def bounded(text: str, limit: int) -> str:
+    """`text` stripped and cut to `limit`, marked where the tail was dropped."""
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + " …[the rest of this output was dropped]"
+
+
+def print_answer(output: str) -> None:
+    """Print one turn's answer under `TURN_OUTPUT_MARKER`, one indented line at a time, bounded on both
+    axes -- the reporting half of the answer contract `TURN_OUTPUT_MARKER` names."""
+    print(TURN_OUTPUT_MARKER)
+    for line in bounded_block(output, REPORT_BLOCK_LINES_MAX, REPORT_BLOCK_CHARS_MAX):
+        print("    " + line)
+    print()
+
+
+def spelled_as_invocation(command: str, home_env: str) -> bool:
+    """Whether the line's own spelling makes a shell read it as `<cd> <dir> && NAME=<home> <words>`.
+
+    `unquoted_text` keeps the characters a shell reads *without* quoting, so the line's structure is read
+    off it: the opening `cd` word, then `&&` as an operator word of its own, then the assignment's own
+    `<home_env>=` prefix, with no other unquoted character a shell would act on. Three spellings are
+    refused, and each is a different command than the line looks like: a quoted assignment
+    (`… && 'NAME=…' …` is a *program* by that name to a shell, so nothing sets the variable and the
+    harness opens the caller's own data directory); a character a shell acts on left unquoted inside the
+    value (`NAME=a;b` sets the variable to `a` and runs `b`); and an operator glued to a word
+    (`cd /a&&b …` is a directory named `/a&&b` to a shell, not a change followed by an assignment) --
+    which the whitespace test below answers, because a `&&` a shell reads as its operator is a word of
+    its own and therefore has whitespace on both sides. The Pi and OMP checks read their lines through
+    this one implementation, so a fix to the rule is not a fix to one of those routes and a silent drift
+    for the other; the Claude and Codex checks keep readings of their own
+    (`claude-native-check.spelled_as_invocation`, `codex-native-check.reads_as_assignment`), which apply
+    the same rule to their own lines and their own variables.
+    """
+    text = unquoted_text(command)
+    if text is None:
+        return False
+    head, operator, tail = text.partition(OPERATOR_WORD)
+    if operator == "" or OPERATOR_WORD in tail:
+        return False
+    if head.split()[:1] != [CD_WORD] or not head[-1:].isspace() or not tail[:1].isspace():
+        return False
+    if not tail.lstrip().startswith(f"{home_env}="):
+        return False
+    forbidden = set(SHELL_SYNTAX_CHARACTERS)
+    return not (set(head) | set(tail)) & forbidden
+
+
+def reported_invocation(command: str, workspace, home, home_env: str, arguments: list[str],
+                        session_dir_env: str | None = None, session_dir: str = "") -> bool:
+    """Whether `command` is the invocation as a POSIX shell reads it: the `cd`, the environment
+    assignments, then `arguments`.
+
+    The whole word vector is compared, exactly as every sibling harness's `reported_invocation` does: any
+    `cd <anything>` beside any assignments beside any session id reads back as the right *shape* and is
+    still another invocation, so a substring or a shape test would accept a line that resumes somewhere
+    else. The spelling is read too (`spelled_as_invocation`), which is why both halves decide this rule.
+    A route whose printed line names the sessions directory directly passes that directory in
+    `session_dir`, with `session_dir_env` naming its variable: it is compared against the directory the
+    check itself looked the session up in, not against a spelling computed twice. A route whose sessions
+    tree is its own spelling computes that tree in its own wrapper and passes the result here.
+    """
+    words = [f"{home_env}={home}"]
+    if session_dir_env:
+        words.append(f"{session_dir_env}={session_dir}")
+    return (shell_words(command) == [CD_WORD, str(workspace), OPERATOR_WORD, *words, *arguments]
+            and spelled_as_invocation(command, home_env))
+
+
+def session_records(text: str) -> list[dict]:
+    """Every line of one session file that is one JSON object, in the file's own order."""
+    records: list[dict] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            entry = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict):
+            records.append(entry)
+    return records
+
+
+def session_id_from_header(session: Path) -> str:
+    """The session id one session file's own header line records, or "" when it holds none.
+
+    The identity is read from the `session` record's own `id` field (through `session_records`, so a line
+    that is not one JSON object is skipped), and never inferred from the file's name: the name's stem
+    carries a timestamp as well, so two files recording the *same* session id under different timestamps
+    read back as two different names.
+    """
+    for entry in session_records(session.read_text(encoding="utf-8")):
+        if entry.get("type") == "session":
+            return str(entry.get("id", ""))
+    return ""
+
+
+def home_holds_id(home: Path, session_id: str, exclude: Path | None = None) -> bool:
+    """Whether any session file below `home`, other than `exclude`, records `session_id` in its header.
+
+    The ids are read from each file's own header (`session_id_from_header`) rather than from its name, so
+    a conversion that reused an id the home already held under another timestamp is caught instead of
+    passing on a differing file name. `exclude` is the file a run just installed, whose header holds the
+    same id by construction.
+    """
+    if not session_id:
+        return False
+    for path in home.rglob("*.jsonl"):
+        if exclude is not None and path == exclude:
+            continue
+        if session_id_from_header(path) == session_id:
+            return True
+    return False
+
+
+def installed_counts(session: Path) -> dict[str, int]:
+    """What one installed session file holds, from its own bytes: entries by record type, and the roles
+    of its message entries. A `message` entry whose own `message` value is not an object counts under the
+    empty role, the same reading the loader makes of a record it cannot index."""
+    counts: dict[str, int] = {}
+    roles: dict[str, int] = {}
+    for entry in session_records(session.read_text(encoding="utf-8")):
+        kind = entry.get("type", "")
+        counts[kind] = counts.get(kind, 0) + 1
+        if kind == "message":
+            message = entry.get("message")
+            role = message.get("role", "") if isinstance(message, dict) else ""
+            roles[role] = roles.get(role, 0) + 1
+    counts.update({f"role:{role}": value for role, value in roles.items()})
+    return counts
+
+
+def session_tree(home, subdir: str, project_dir: str) -> str:
+    """The directory one session is filed in and looked up through, below a data directory: the project
+    directory under the sessions root `subdir`.
+
+    It mirrors `filepath.Join` on the Go side: the separator is spelled the way the paths are -- a
+    Windows-shaped data directory (backslashes, no forward slashes) joins with ``\\`` and every other
+    spelling joins with ``/``. The sessions root and the project directory are each route's own spelling,
+    so a route wraps this with its own subdir constant and its own project-directory rule.
+    """
+    home_text = str(home)
+    separator = "\\" if "\\" in home_text and "/" not in home_text else "/"
+    return separator.join([home_text.rstrip("/\\"), subdir, project_dir])
+
+
+def report(args: argparse.Namespace, scratch: Path, document: dict, extra: dict | None = None) -> None:
+    """The end of a run's report, shared by the native checks: say what became of the scratch tree and,
+    when it was asked for, print the machine-readable summary.
+
+    `extra` carries any additional keys a route's payload holds; it is inserted after `target_session`
+    and before `conversion`, so each route's own key order is preserved -- a route with none passes
+    nothing.
+    """
+    if args.keep:
+        print(f"scratch kept at {scratch}")
+    else:
+        shutil.rmtree(scratch, ignore_errors=True)
+        print(f"scratch removed ({scratch})")
+    if args.json:
+        target = document.get("target_session") or {}
+        payload = {
+            "direction": args.direction,
+            "checks": [{"name": name, "state": state, "detail": detail} for name, state, detail in RESULTS],
+            "target_session": target.get("session_id", ""),
+        }
+        payload.update(extra or {})
+        payload["conversion"] = (document.get("conversion") or {}).get("state", "")
+        print(json.dumps(payload, indent=2))

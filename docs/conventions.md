@@ -25,8 +25,9 @@ cmd/ccc/            the standalone CLI; no continuation-core types leak into it
 internal/ccc/       continuation core: conversation document, readers, archive access,
                     target writers and the route table (targets.go, codex_target.go,
                     codex_install.go, codex_verify.go, claude_target.go, claude_install.go,
-                    claude_verify.go, pi_target.go, pi_install.go, pi_verify.go, continue.go),
-                    and the install/verify/probe machinery the three routes share (route_shared.go)
+                    claude_verify.go, pi_target.go, pi_install.go, pi_verify.go, omp_target.go,
+                    omp_install.go, omp_verify.go, continue.go),
+                    and the install/verify/probe machinery the routes share (route_shared.go)
 internal/ccc/parity the canonical dump and the oracle a pristine checkout runs too
 internal/ccc/testdata/fixtures  committed native-shaped sessions, written by internal/ccc/fixturegen
 internal/ccc/testdata/growth    committed fragments a run appends to a *copy* of one fixture, so one
@@ -38,8 +39,9 @@ docs/evidence/      one evidence record per increment: real commands, exit codes
 docs/upstream.md    the carried AgentsView pin, its declared deviations and the update procedure
 docs/decisions/     append-only record of decisions taken and defaults chosen
 scripts/            harness entry points (gate, knobs, carry importer, parity, comparison,
-                    codex-native-check, claude-native-check and pi-native-check: the
-                    target-side native verifications, deliberately not gate steps)
+                    codex-native-check, claude-native-check, pi-native-check and
+                    omp-native-check: the target-side native verifications, deliberately not gate
+                    steps)
 ```
 
 Inherited AgentsView packages keep their upstream paths and stay where upstream put them. The carry is
@@ -138,11 +140,39 @@ gate runs as a required step.
   session's own recorded directory and against a **copy** of the converted bytes: measured on Pi 1.5.2,
   an RPC run appends its own records (a `thinking_level_change` among them) to the session it opens, so
   driving the loader against the installed file would alter what the conversion published.
+  **Oh My Pi is the third such target, with a rule of its own on each half.** Its loader resolves a
+  session by id from any directory, but refuses a session whose *recorded* working directory it cannot
+  find (`Error: Session "<id>" belongs to a directory that no longer exists (…)`), so the load check runs
+  from that directory when this host has it and reports the harness's own refusal when it does not. The
+  directory it files sessions under is its own spelling of the working directory — `-tmp…` for a
+  directory under the temporary tree, `-…` for one under the home, and Pi's `--…--` form only for a path
+  outside both (measured against 18.18.7's own `getDefaultSessionDirPath`) — and it *moves* a session it
+  finds under Pi's spelling into that directory itself, so the installer asks `OMPProjectDir` rather than
+  reusing Pi's. Its printed line names the data directory and the directory that holds the session's file
+  (`PI_CODING_AGENT_DIR`, `PI_CODING_AGENT_SESSION_DIR`): that variable names a directory of session
+  files directly (naming the `sessions` root above a session's project directory answers that no such
+  session is installed), and naming it is what keeps a caller's leftover value from hiding the session the
+  pasted line was verified against. A load writes into the session it opens (measured: it appends a
+  `custom` `session_exit` record), so its check drives a copy too, in a scratch data directory that
+  declares its own provider definition for the converted file's own records without a credential of the
+  caller's — `auth: none` in the Go verifier's scratch home (`internal/ccc/omp_verify.go`), the
+  placeholder `apiKey` value `ccc-native-check` in the native check's loader data directory — a home with
+  no model refuses to start the harness at all, and this way a load needs no credential. Every value such
+  a home's own YAML spells (its provider's name, a model's id and name, `modelRoles.default`) is written
+  as a **quoted** scalar rather than left to YAML's implicit typing: the ids are the target home's own
+  configuration answers, so a provider or model spelled `123`, `null` or `2026-11-18` is ordinary, and a
+  bare spelling would reach the harness as a number, a null or a timestamp — measured, the harness refuses
+  such a session (`SessionModelRestoreError`).
 - **Fixtures are sanitized native shapes.** Small, version-identified, committed fixtures — one
-  provider directory per source (`fixtures/claude/`, `fixtures/codex/`, `fixtures/pi/`) — with no real
+  provider directory per source (`fixtures/claude/`, `fixtures/codex/`, `fixtures/pi/`,
+  `fixtures/omp/`) — with no real
   personal session content, no secrets and no absolute host paths in committed evidence; a fixture that
   must be driven by a harness whose lookup is path-scoped is copied into the run's own scratch tree with
-  its recorded working directory rewritten mechanically, never edited in place.
+  its recorded working directory rewritten mechanically, never edited in place. An Oh My Pi fixture sits
+  one project directory below its provider root, because that provider's own discovery requires that
+  level for this agent (measured: a file at the root is not discovered for `omp`, while the Pi provider
+  accepts one there); the directory name is the absolute `--…--` spelling, the one branch of OMP's own
+  rule that does not depend on the machine the generator runs on.
 - **Comments and docs state what the code does, not what it was meant to do.** A comment or test name
   claiming a rule the code no longer implements is a correctness defect.
 - **A test pins the rule it names, on every platform and every Python 3 these docs name.** An

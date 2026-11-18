@@ -36,16 +36,22 @@ with their exit codes and counts).
   source recorded — on that route too, where the count is the line walk's own accounting of the places it
   chose, not only of the records it left out.
 - **A target writer's claim is shown through the target harness's own loader.** Call `ccc continue …
-  --to codex`, `--to claude` or `--to pi` converts, installs and reports **converted / installed /
+  --to codex`, `--to claude`, `--to pi` or `--to omp` converts, installs and reports **converted / installed /
   natively resumable** as three separate states; "resumable" is only ever `verification.load` or
   `verification.resume` coming back `verified`, and every one of a conversion's omissions or narrowing
   is named in `conversion.losses[]`. The native half needs the target harness installed and, for a real
   turn, model access, so it is **not** a gate step: `scripts/codex-native-check.py`,
-  `scripts/claude-native-check.py` and `scripts/pi-native-check.py` re-derive it and report each check's
+  `scripts/claude-native-check.py`, `scripts/pi-native-check.py` and `scripts/omp-native-check.py`
+  re-derive it and report each check's
   own verdict (the gate keeps deciding the offline half — round-trip through the inherited reader,
   install rules, reported losses, CLI shape). A check whose target harness is absent exits 2 naming the
-  harness it needs — the Pi check ends its run with `RESULT: INCOMPLETE` and the reason, the Codex and
-  Claude checks print the reason on stderr — so a partial run is never quoted as a pass. The Codex check also runs the repeat scenario goal 0004 added: it converts a *copy* of the
+  harness it needs — the Pi and OMP checks end their run with `RESULT: INCOMPLETE` and the reason, the
+  Codex and Claude checks print the reason on stderr — so a partial run is never quoted as a pass. The Pi and OMP
+  checks drive their harness's own RPC loader against a **throw-away copy** of the converted bytes
+  (measured on both: a load writes records of its own into the session it opens) and read the harness's
+  own `get_state`/`get_messages` answers beside an unknown-id control arm; the OMP check's scratch data
+  directory carries this run's own provider definition for the load (its `apiKey` value a placeholder this
+  run writes) so a load needs no credential of the caller's. The Codex check also runs the repeat scenario goal 0004 added: it converts a *copy* of the
   fixture, loads it, appends the committed `internal/ccc/testdata/growth/` fragment to the copy,
   converts again, and shows Codex's own loader opening the second session with its own view holding the
   appended turn while the first session's bytes did not move (`--repeat-resume-prompt` adds one real
@@ -64,7 +70,17 @@ with their exit codes and counts).
   the read's session-level harness label in the endpoint's place was measured wrong) and the report names
   that as the attribution it cannot answer — and its printed resume command names no provider or model,
   because the source's provider label is a source-side name the target home need not define and a flagged
-  model can leave the target unable to open the session at all.
+  model can leave the target unable to open the session at all. An Oh My Pi session **requires** a model binding its loader can
+  resolve (`SessionModelRestoreError` otherwise), so `--to omp` records the target home's own configured
+  `<provider>/<model>`, asked of the harness — never the source's — and every converted assistant record
+  states a non-empty `model` beside a non-empty `provider`, because the harness's request builder reads
+  both on every assistant record and fails to build the next request when either is missing: the model is
+  the source's own where the read answered one and the target home's configured id where it did not, the
+  provider is the harness's own answer, and a run that asked the harness nothing (a dry run, a missing
+  binary) writes no provider — and no model for a record the read answered none for — with the report
+  naming every such absence. The file opens with the harness's own fixed-width (256-byte) title-slot
+  line, written with an empty title, which is the shape its own writer starts from and the line it
+  rewrites in place when it titles a session.
 - **A conversion is a snapshot of the source at one boundary, and repeating it is the same operation.**
   The source is read again and written as *another* fresh target session; nothing ever merges later
   source history into an existing target session, and nothing rewrites the source. Every conversion's
@@ -90,19 +106,27 @@ with their exit codes and counts).
 ## How to work here
 
 - The continuation core and its per-harness target writers live in `internal/ccc` — the route table
-  `targets.go`, the install/verify/probe machinery the three routes share (`route_shared.go`), and the
+  `targets.go`, the install/verify/probe machinery the routes share (`route_shared.go`), and the
   writers/installers/verifiers `codex_target.go`, `codex_install.go`,
   `codex_verify.go`, `claude_target.go`, `claude_install.go`, `claude_verify.go`, `pi_target.go`,
-  `pi_install.go`, `pi_verify.go`; its committed
+  `pi_install.go`, `pi_verify.go`, `omp_target.go`, `omp_install.go`,
+  `omp_verify.go` (the last three are the Pi family's second format, whose shared writer is Pi's own
+  parameterized by `piFamilyShape`); its committed
   native-shaped fixtures are `internal/ccc/testdata/fixtures/` and the growth fragments a run appends to
   a *copy* of one (`internal/ccc/testdata/growth/`, written by the same `internal/ccc/fixturegen` and
   pinned against it) are what makes one source session grow; `cmd/ccc` adds
   argument handling and presentation only, and a target-side native harness
-  (`scripts/codex-native-check.py`, `scripts/claude-native-check.py`, `scripts/pi-native-check.py`) is
+  (`scripts/codex-native-check.py`, `scripts/claude-native-check.py`, `scripts/pi-native-check.py`,
+  `scripts/omp-native-check.py`) is
   registered in `docs/harness.md`, re-runnable, and deliberately not a gate step. A target whose own
   loader resolves a session id through the process's working directory — Claude Code, and Pi — is
   installed under the project spelling of the source read's recorded working directory, and a source that
-  recorded none is refused (`ErrNoTargetCwd`) rather than installed where no lookup finds it. The source's
+  recorded none is refused (`ErrNoTargetCwd`) rather than installed where no lookup finds it. Oh My Pi
+  files a session under the project directory **its own** spelling computes, which is not Pi's for a
+  working directory under the home or the temporary directory (it shortens those to `-…` and `-tmp…` and
+  keeps Pi's `--…--` form only for a path outside both), and it moves a session it finds under Pi's
+  spelling into its own directory itself — so the installer asks OMP's rule (`OMPProjectDir`), and a
+  conversion's reported path is where the file stays. The source's
   own relation is reproduced as the read answered it, with the one step the read itself projects: a record
   the Pi-family readers answer as hanging off the message that made a call is chained through the tool
   result standing between them, and counted (`unresolved_source_parents`) where the projection cannot
@@ -125,8 +149,8 @@ with their exit codes and counts).
   conversation (an unknown kind is not assumed to be outside it). Where no source file stands behind the
   read — an archive row, a file that moved while it was read — the entry is not established, and that is
   stated in the run's warnings instead of being presented as the read's own answer. A
-  Pi invocation the report prints and the check runs names the sessions tree inside the data directory
-  explicitly (`PI_CODING_AGENT_SESSION_DIR`), so the printed line, the verified lookup and the
+  Pi or Oh My Pi invocation the report prints and the check runs names the sessions tree inside the data
+  directory explicitly (`PI_CODING_AGENT_SESSION_DIR`), so the printed line, the verified lookup and the
   installation agree even when the caller's shell, or the home's own `settings.json`, names another tree.
 - Gate: `python3 scripts/gate.py`, which must print `GATE: PASS`; it runs `parity` and `selftest` as
   required steps, and its Go steps are narrowed to `./cmd/ccc/... ./internal/ccc/...` with the measured

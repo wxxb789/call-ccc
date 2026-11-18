@@ -10,8 +10,8 @@ The normal feedback window is approximately 12 hours of agent work. If a goal pr
 | [0002](archive/0002-claude-to-codex-continuation.md) | Claude Code history continues in Codex | 0001 | Accepted: merged onto `main` as `8e1c502`; archived |
 | [0003](archive/0003-codex-to-claude-continuation.md) | Codex history continues in Claude Code | 0002 | Accepted: merged onto `main` as `18d50b2`; archived |
 | [0004](archive/0004-repeatable-evolving-session-handoffs.md) | Repeat conversion as a source session grows | 0002 | Accepted: merged onto `main` as `8a8265a`; archived |
-| [0005](0005-pi-continuation.md) | Native two-way Pi continuation | 0003 | Implemented on `feat/0005-pi-continuation`; awaiting operator acceptance |
-| [0006](0006-omp-continuation.md) | Native two-way Oh My Pi continuation | 0005 | Ready |
+| [0005](archive/0005-pi-continuation.md) | Native two-way Pi continuation | 0003 | Accepted: merged onto `main` as `731dd1d`; archived |
+| [0006](0006-omp-continuation.md) | Native two-way Oh My Pi continuation | 0005 | Implemented on `feat/0006-omp-continuation`; awaiting operator acceptance |
 | [0007](0007-opencode-target-continuation.md) | Continue existing conversations in OpenCode | 0002 | Ready; may run separately |
 | [0008](0008-opencode-source-continuation.md) | Continue OpenCode history in other agents | 0007 and 0003 | Ready |
 | [0009](0009-selective-context.md) | Select which source history travels | 0003 | Provisional |

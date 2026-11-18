@@ -29,8 +29,9 @@ key taken from the environment through a ``$NAME`` reference; a selected provide
 itself carries a credential (URL userinfo, a query) is not copied at all, because its address cannot be
 scrubbed without sending the harness somewhere the host did not name, and the report names it. Nothing
 in a credential store is read, copied or written. A home the caller names with ``--target-home`` is used
-exactly as it is found: this harness writes nothing into one, so a configuration (and the credential
-references in it) the caller put there is not replaced by the seed above. A host with no provider
+exactly as it is found: nothing is seeded into it, so a configuration (and the credential references in
+it) the caller put there is not replaced by the seed above -- the converted session this run installs
+there is the only file it leaves, and a requested turn grows that. A host with no provider
 configured for the chosen model is reported as a named skip with that reason, not as a pass.
 """
 
@@ -48,21 +49,27 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from native_check_common import (  # noqa: E402
+    CD_WORD,
+    OPERATOR_WORD,
     PROMPT_PLACEHOLDER,
-    REPORT_BLOCK_CHARS_MAX,
-    REPORT_BLOCK_LINES_MAX,
     RESULTS,
-    SHELL_SYNTAX_CHARACTERS,
-    TURN_OUTPUT_MARKER,
-    bounded_block,
+    bounded,
     credential_free_url,
+    home_holds_id,
+    installed_counts,
+    print_answer,
     record,
+    report,
+    reported_invocation as _shared_reported_invocation,
     rewrite_source_cwd,
+    rpc_answer,
     run,
+    session_id_from_header,
+    session_tree,
     sha256,
     shell_words,
+    spelled_as_invocation,
     tree_digest,
-    unquoted_text,
 )
 
 #: Where this repository keeps its committed native-shaped fixtures, and the provider directories under
@@ -115,11 +122,6 @@ UNRELATED_SESSION = "00000000-0000-4000-8000-0000000000ff"
 #: so the project directory Pi derives from it is a single readable name.
 WORKSPACE = "workspace"
 
-#: The words a rendered invocation begins with and the operator between them: the directory change, and
-#: the `&&` a shell reads as its own operator. They mirror `internal/ccc/continue.go`'s `renderInvocation`.
-CD_WORD = "cd"
-OPERATOR_WORD = "&&"
-
 
 def pi_project_dir(cwd: str) -> str:
     """The directory Pi files one working directory's sessions under: the leading separator removed,
@@ -136,12 +138,9 @@ def pi_session_tree(home, workspace) -> str:
     """The sessions tree one working directory's session is installed into and looked up in, below a data
     directory: its own project directory under the default `sessions` root. It mirrors the Go side
     (``internal/ccc/pi_verify.go``'s ``piSessionTree``, which joins the same three names with
-    ``filepath.Join``): the separator is spelled the way the paths are -- a Windows-shaped data directory
-    (backslashes, no forward slashes) joins with ``\\``, as Go's ``filepath.Join`` does there, and every
-    other spelling joins with ``/``."""
-    home_text = str(home)
-    separator = "\\" if "\\" in home_text and "/" not in home_text else "/"
-    return separator.join([home_text.rstrip("/\\"), PI_SESSION_SUBDIR, pi_project_dir(str(workspace))])
+    ``filepath.Join``): the join mechanism (including the Windows-shaped separator rule) is
+    `session_tree`, and the project directory is Pi's own spelling (``pi_project_dir``)."""
+    return session_tree(home, PI_SESSION_SUBDIR, pi_project_dir(str(workspace)))
 
 
 def pi_session_file_name(timestamp: str, session_id: str) -> str:
@@ -302,24 +301,8 @@ def first_user_text(session: Path) -> str:
 
 def installed_entry_counts(session: Path) -> dict[str, int]:
     """What one installed Pi session file holds, from its own bytes: entries by record type, and the
-    message roles."""
-    counts: dict[str, int] = {}
-    roles: dict[str, int] = {}
-    for line in session.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            entry = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        kind = entry.get("type", "")
-        counts[kind] = counts.get(kind, 0) + 1
-        if kind == "message":
-            role = (entry.get("message") or {}).get("role", "")
-            roles[role] = roles.get(role, 0) + 1
-    counts.update({f"role:{role}": value for role, value in roles.items()})
-    return counts
+    message roles. The body is the sibling harnesses' shared `installed_counts`."""
+    return installed_counts(session)
 
 
 def assistant_messages_without_usage(session: Path) -> tuple[int, int]:
@@ -351,45 +334,6 @@ def assistant_messages_without_usage(session: Path) -> tuple[int, int]:
         if not isinstance(message.get("usage"), dict):
             without += 1
     return assistants, without
-
-
-def session_id_from_header(session: Path) -> str:
-    """The session id one Pi session file's own header line records, or "" when it holds none.
-
-    A Pi session file is named ``<timestamp>_<id>.jsonl`` and its first record is the `session` entry
-    whose `id` field is the identity the harness's own writer gave it. The identity is read from that
-    record, never inferred from the file's name: the name's stem carries the timestamp as well, so two
-    files recording the *same* session id under different timestamps read back as two different names.
-    """
-    for line in session.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            entry = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        if entry.get("type") == "session":
-            return str(entry.get("id", ""))
-    return ""
-
-
-def home_holds_id(home: Path, session_id: str, exclude: Path | None = None) -> bool:
-    """Whether any session file below `home`, other than `exclude`, records `session_id` in its header.
-
-    The ids are read from each file's own header (`session_id_from_header`) rather than from its name, so
-    a conversion that reused an id the home already held under another timestamp is caught instead of
-    passing on a differing file name. `exclude` is the file this run just installed, whose header holds
-    the same id by construction.
-    """
-    if not session_id:
-        return False
-    for path in home.rglob("*.jsonl"):
-        if exclude is not None and path == exclude:
-            continue
-        if session_id_from_header(path) == session_id:
-            return True
-    return False
 
 
 def pi_tool_names(session: Path) -> list[str]:
@@ -440,22 +384,6 @@ def ask_pi_loader(pi: str, home: Path, cwd: Path, session_id: str, timeout: int 
         input=commands, cwd=str(cwd), env=environment, capture_output=True, text=True, timeout=timeout,
     )
     return completed.stdout, completed.stderr
-
-
-def rpc_answer(stdout: str, command: str) -> dict | None:
-    """The last response record for one command out of an RPC run's stdout, or None."""
-    answer: dict | None = None
-    for line in stdout.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("{"):
-            continue
-        try:
-            parsed = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        if parsed.get("type") == "response" and parsed.get("command") == command:
-            answer = parsed
-    return answer
 
 
 def model_visible_roles(session: Path) -> list[str]:
@@ -515,20 +443,6 @@ def model_visible_roles(session: Path) -> list[str]:
         message = entry.get("message")
         roles.append(message.get("role", "") if isinstance(message, dict) else "")
     return roles
-
-
-def bounded(text: str, limit: int) -> str:
-    text = (text or "").strip()
-    if len(text) <= limit:
-        return text
-    return text[:limit] + " …[the rest of this output was dropped]"
-
-
-def print_answer(output: str) -> None:
-    print(TURN_OUTPUT_MARKER)
-    for line in bounded_block(output, REPORT_BLOCK_LINES_MAX, REPORT_BLOCK_CHARS_MAX):
-        print("    " + line)
-    print()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -628,17 +542,17 @@ def main(argv: list[str] | None = None) -> int:
                       if refused else ""),
                    skipped=True)
     elif target_provider == TARGET_PROVIDER:
-        # A home the caller named is the caller's data directory and this harness writes nothing into it:
-        # seeding `models.json` there would replace provider definitions and credential references the
-        # caller put in it, and the comparisons this run makes cover session files only, so the loss
-        # would be invisible. What a real turn needs is a provider the home already defines, and that is
-        # what the check below reports.
+        # A home the caller named is the caller's data directory and the seed does not touch it: seeding
+        # `models.json` there would replace provider definitions and credential references the caller put
+        # in it, and the comparisons this run makes cover session files only, so the loss would be
+        # invisible. What a real turn needs is a provider the home already defines, and that is what the
+        # check below reports.
         configured_providers = sorted(host_pi_providers(home))
         record("a Pi provider is configured for the chosen model", bool(configured_providers),
                f"the caller's home already names {len(configured_providers)} provider(s): "
                f"{', '.join(configured_providers)}" if configured_providers else
                f"the caller's home {home} names no provider in its models.json, and this run does not "
-               f"write one there: a home the caller named is never written to, so a turn "
+               f"write one there: a home the caller named is not seeded, so a turn "
                f"(--resume-prompt) needs a provider that home already defines",
                skipped=not configured_providers)
 
@@ -690,7 +604,8 @@ def main(argv: list[str] | None = None) -> int:
               + "; every credential field dropped, keys resolved from the environment")
     elif target_provider == TARGET_PROVIDER:
         print(f"pi models:   the caller's home names {len(configured_providers)} provider(s); nothing was "
-              f"seeded into it (a home the caller named is never written to)")
+              f"seeded into it (a home the caller named is not seeded; the installed session is the file "
+              f"this run leaves there)")
     print(f"the source fixture's recorded working directory ({recorded_cwd or 'none recorded'}) is rewritten "
           f"to the workspace, so the session belongs to a path this run owns and the target's own lookup "
           f"can find what it installs")
@@ -910,34 +825,6 @@ def _check_pi_loader(pi: str, home: Path, workspace: Path, session_id: str, inst
            sha256(installed) == before)
 
 
-def spelled_as_invocation(command: str, home_env: str) -> bool:
-    """Whether the line's own spelling makes a shell read it as `<cd> <dir> && NAME=<home> <words>`.
-
-    `unquoted_text` keeps the characters a shell reads *without* quoting, so the line's structure is read
-    off it: the opening `cd` word, then `&&` as an operator word of its own, then the assignment's own
-    `<home_env>=` prefix, with no other unquoted character a shell would act on. The same three spellings
-    the sibling ``scripts/claude-native-check.py``'s `spelled_as_invocation` refuses are refused here: a
-    quoted assignment (`… && 'NAME=…' …` is a *program* by that name to a shell, so nothing sets the
-    variable and the harness opens the caller's own data directory); a character a shell acts on left
-    unquoted inside the value (`NAME=a;b` sets the variable to `a` and runs `b`); and an operator glued to
-    a word (`cd /a&&b …` is a directory named `/a&&b` to a shell, not a change followed by an assignment)
-    -- which the whitespace test below answers, because a `&&` a shell reads as its operator is a word of
-    its own and therefore has whitespace on both sides.
-    """
-    text = unquoted_text(command)
-    if text is None:
-        return False
-    head, operator, tail = text.partition(OPERATOR_WORD)
-    if operator == "" or OPERATOR_WORD in tail:
-        return False
-    if head.split()[:1] != [CD_WORD] or not head[-1:].isspace() or not tail[:1].isspace():
-        return False
-    if not tail.lstrip().startswith(f"{home_env}="):
-        return False
-    forbidden = set(SHELL_SYNTAX_CHARACTERS)
-    return not (set(head) | set(tail)) & forbidden
-
-
 def reported_invocation(command: str, workspace, home, home_env: str, arguments: list[str],
                         session_dir_env: str | None = None) -> bool:
     """Whether `command` is the invocation as a POSIX shell reads it: the `cd`, the environment
@@ -948,20 +835,15 @@ def reported_invocation(command: str, workspace, home, home_env: str, arguments:
     agent directory from the environment alone -- it has no flag for either -- so a pasted line that names
     neither resumes nothing, or resumes the caller's own session, rather than the one this run installed.
     Pi also reads the sessions tree from ``session_dir_env`` ahead of the agent directory's own default,
-    so the route names that tree explicitly (``pi_session_tree``, the project directory the installer
+    so this wrapper names that tree explicitly (``pi_session_tree``, the project directory the installer
     filed the session under); a leftover setting of the caller's would otherwise send the line looking in
-    another tree. The full word vector is compared, exactly as the sibling
-    ``scripts/claude-native-check.py``'s ``reported_invocation`` does: any `cd <anything>` beside any
-    assignments beside any session id reads back as the right *shape* and is still another invocation, so
-    a substring or a shape test would accept a line that resumes somewhere else. The words alone do not
-    answer it either (``spelled_as_invocation`` reads the spelling too), which is why both halves decide
-    this rule.
+    another tree. The body it wraps is the sibling harnesses' shared
+    `native_check_common.reported_invocation`, which compares the full word vector and reads the spelling
+    too (``spelled_as_invocation``).
     """
-    words = [f"{home_env}={home}"]
-    if session_dir_env:
-        words.append(f"{session_dir_env}={pi_session_tree(home, workspace)}")
-    return (shell_words(command) == [CD_WORD, str(workspace), OPERATOR_WORD, *words, *arguments]
-            and spelled_as_invocation(command, home_env))
+    session_dir = pi_session_tree(home, workspace) if session_dir_env else ""
+    return _shared_reported_invocation(command, workspace, home, home_env, arguments,
+                                       session_dir_env, session_dir)
 
 
 def _check_invocation(target: dict, target_provider: str, workspace, home) -> None:
@@ -982,18 +864,9 @@ def _check_invocation(target: dict, target_provider: str, workspace, home) -> No
 
 
 def _report(args: argparse.Namespace, scratch: Path, document: dict) -> None:
-    if args.keep:
-        print(f"scratch kept at {scratch}")
-    else:
-        shutil.rmtree(scratch, ignore_errors=True)
-        print(f"scratch removed ({scratch})")
-    if args.json:
-        print(json.dumps({
-            "direction": args.direction,
-            "checks": [{"name": name, "state": state, "detail": detail} for name, state, detail in RESULTS],
-            "target_session": (document.get("target_session") or {}).get("session_id", ""),
-            "conversion": (document.get("conversion") or {}).get("state", ""),
-        }, indent=2))
+    """The body is the sibling harnesses' shared `native_check_common.report`; Pi's own payload carries
+    no extra key."""
+    report(args, scratch, document)
 
 
 if __name__ == "__main__":

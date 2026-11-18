@@ -45,6 +45,18 @@ var (
 	// returned to. The inherited reader skips that entry, so the last record *it* answers is the abandoned
 	// branch's own turn -- the shape a conversion must refuse rather than resume.
 	piBranchSwitchFixtureRef = Ref{Provider: "pi", ID: "01a1c337-6d1e-7f84-9b2c-4e5f6a7b8c90"}
+	// ompFixtureRef is the Oh My Pi session: the family's ordinary conversation under OMP's own records --
+	// the rewritable title slot line, the harness's `custom` notices, and the `runtime` metadata every
+	// entry it writes carries. Its own fact is the retry cap, the same one the Pi fixture records.
+	ompFixtureRef = Ref{Provider: "omp", ID: "01a1c338-9e4f-7c21-8f3d-2b6a05e1d7a4"}
+	// ompHistoryFixtureRef is the second OMP session: a compaction boundary whose summary stands in for the
+	// turns before it, a branch the conversation left -- and, on the leaf path, the harness's own
+	// `custom` notice, a record kind the read does not carry and the harness's own documentation places
+	// outside the model context. A conversion must account for it rather than refuse the session.
+	ompHistoryFixtureRef = Ref{Provider: "omp", ID: "01a1c339-1d7a-7b02-9c44-5e8f2a3b6d10"}
+	// ompBranchFixtureRef is the third OMP session: the file a `/tree` branch switch leaves behind, in the
+	// same shape as the Pi branch fixture.
+	ompBranchFixtureRef = Ref{Provider: "omp", ID: "01a1c33a-6b2e-7a91-8d17-4c0f93e5b28a"}
 )
 
 // fixtureRoot is the directory the committed sanitized fixtures live in; each provider subdirectory
@@ -127,6 +139,7 @@ func fixtureConfig(t *testing.T) config.Config {
 		parser.AgentClaude: {filepath.Join(root, "claude")},
 		parser.AgentCodex:  {filepath.Join(root, "codex")},
 		parser.AgentPi:     {filepath.Join(root, "pi")},
+		parser.AgentOMP:    {filepath.Join(root, "omp")},
 	}
 	cfg.DisabledAgents = nil
 	return cfg

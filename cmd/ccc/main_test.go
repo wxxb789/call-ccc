@@ -99,6 +99,7 @@ func isolatedEnvironment(t *testing.T) (dataDir string) {
 	t.Setenv("CLAUDE_PROJECTS_DIR", filepath.Join(root, "claude"))
 	t.Setenv("CODEX_SESSIONS_DIR", filepath.Join(root, "codex"))
 	t.Setenv("PI_DIR", filepath.Join(root, "pi"))
+	t.Setenv("OMP_DIR", filepath.Join(root, "omp"))
 	return dataDir
 }
 

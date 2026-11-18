@@ -2170,3 +2170,131 @@ supersede it with a newer one and say which it supersedes.
   second source parser), or leave the omission uncounted and rely on the loss table's other categories
   (would present a dropped record as a carried conversation).
 - **Settled by:** nothing owner-only.
+
+## Q-0006-01 — The Oh My Pi title slot is written empty and counted
+
+- **Status:** resolved (default taken; 0006's implementation)
+- **Question:** every session Oh My Pi writes begins with a fixed-width first line — measured on 18.18.7, a
+  256-byte `{"type":"title",…}` record including its line feed, which the harness rewrites in place when it
+  titles a session, and `SESSION_TITLE_SLOT_BYTES` in its own bundle names the width. A conversion has no
+  title of the source's to carry: OMP's title is the harness's own generated session name, and the source
+  (a Claude Code transcript, a Codex rollout, a Pi session) holds no such field — its first prompt is not
+  the harness's title. Should the converted file carry a title slot at all, and if so with what in it?
+- **Default taken:** written, with an empty title, and counted as the `title_slot_written` caveat in
+  `conversion.losses[]`. The slot is the shape the harness's own writer starts from (a file without one
+  still loads, measured, but one the harness extends keeps the width it found), and an empty title is the
+  one value that claims nothing about the source: writing the source's first prompt would present it as
+  the harness's own generated name.
+- **Reversal:** omit the line and rely on the harness's own migration of a slot-less file (measured to
+  load), or write a title derived from the source (a claim the read cannot support).
+- **Settled by:** nothing owner-only.
+
+## Q-0006-02 — Every converted assistant record states the target home's own provider beside the source's model
+
+- **Status:** resolved (default taken; 0006's implementation)
+- **Question:** OMP's request builder reads a `model` **and** a `provider` off every assistant record, and
+  measured on 18.18.7, dropping either from one record of an otherwise loadable session makes the next turn
+  fail while building its request (`undefined is not an object (evaluating 'e.length')`) — while a foreign
+  provider label is inert once the session's own binding resolves. The inherited read answers the model each
+  source message recorded (and no endpoint: the session-level provider names the harness that wrote the
+  words). What does a converted record state in that field?
+- **Default taken:** the *target home's* own configured provider, asked of the harness itself, on every
+  converted assistant record, with the source's model beside it and the pair counted as the
+  `message_model_attribution` caveat. This is the same policy the Codex route applies to its provider
+  (Q-0002-21's line: the target's own configured endpoint where the harness was asked), extended to the
+  per-record field OMP requires; the report states which answer it carries
+  (`target_model_binding`'s detail names the harness's own answer, or the reason there is none — a dry
+  run, a harness that is missing, or a harness that answered nothing).
+- **Reversal:** write no provider and let the next turn fail (measured), or write the source's provider
+  label (a source-side name the target home need not define, and false as the endpoint that served the
+  record).
+- **Settled by:** nothing owner-only.
+
+## Q-0006-03 — The converted session's model binding is the harness's own answer, not the source's
+
+- **Status:** resolved (default taken; 0006's implementation)
+- **Question:** OMP restores a session's model from its `model_change` record, whose `model` is one
+  `<provider>/<id>` string that must resolve in the home, else from the session's own recorded message
+  pairs — and a pair the home cannot resolve is refused (`SessionModelRestoreError: Could not restore model
+  <provider>/<id>`, exit 1). A converted session that records the source's model therefore opens only in a
+  home that defines that exact provider and model. What should the binding be?
+- **Default taken:** the target home's own configured `<provider>/<model>`, asked of the harness (`ompFacts`
+  → `OMPModelProbe`, the same seam the Codex route asks its provider through), written as the
+  `model_change` record the first source record hangs off; omitted when the harness answered none. The
+  source's own model travels on each assistant record instead (Q-0006-02), so the history still says which
+  model wrote it. This differs from both siblings deliberately: Codex records its provider and no model,
+  Pi binds nothing at all.
+- **Reversal:** bind the source's model and refuse the route wherever the home does not define it (measured
+  to make the route unusable for the common case), or bind nothing and accept the harness's own default
+  (a session whose records name a model it then does not use, and no disclosure of the substitution).
+- **Settled by:** nothing owner-only.
+
+## Q-0006-04 — A recorded working directory this host does not have is answered by the load check, not by refusing the conversion
+
+- **Status:** resolved (default taken; 0006's implementation)
+- **Question:** OMP resolves a session id from any process's working directory (it scans its own sessions
+  tree by id), but measured on 18.18.7 it refuses one whose *recorded* working directory it cannot find
+  (`Error: Session "<id>" belongs to a directory that no longer exists (<dir>); run interactively to move
+  it into the current project.`) — and its format holds one directory field, the one its loader resolves
+  the session by (taken from the file, not from a project-directory spelling), so unlike the Codex route,
+  whose `session_meta` carries a directory no target lookup needs, there is no second field a conversion
+  could fill. A source read whose
+  recorded working directory does not exist on the machine running the conversion is therefore a session
+  this host can file but this host's harness will not open. Should the conversion refuse it?
+- **Default taken:** the conversion is written and installed — the recorded directory is the *source's* own
+  fact and is written unchanged (its spelling is OMP's own rule for that path) — and the claim stops at the
+  load verification: `--verify load` (the default) reports `not-verified` with the harness's own refusal
+  sentence and the run exits non-zero, so no run reports such a session as natively resumable. Measured on
+  this host: a Claude Code fixture whose recorded directory is `/home/user/code/example-api` converts,
+  installs under `sessions/--home-user-code-example-api--/` (the one branch of OMP's spelling that does not
+  depend on the machine), and the load line names that directory and the harness's sentence. This is what
+  every sibling route does with a host-specific limitation — the check is where the claim stops — and a host
+  that has the directory verifies the same file.
+- **Reversal:** refuse the conversion outright when this host lacks the recorded directory (a conversion
+  that would verify on the operator's own machine is refused because a *check* host cannot drive it), or
+  rewrite the recorded directory to the caller's own (writing a false record of where the conversation
+  happened, and one the harness's own `--resume` would then report as moved).
+- **Settled by:** nothing owner-only.
+
+## Q-0006-05 — The printed resume line names the sessions tree inside the data directory
+
+- **Status:** resolved (default taken; 0006's implementation)
+- **Question:** OMP resolves a session's id through `PI_CODING_AGENT_SESSION_DIR` when it is set, and
+  measured on 18.18.7 that variable names the directory that holds session **files directly**: the
+  session's own project directory under `<home>/sessions` resolves the id, while the `sessions` root
+  above it answers `Error: Session "<id>" not found.`, and a caller's leftover value (a Pi user's
+  `settings.json`/environment, most obviously) sends the lookup to a tree this session is not in. The
+  data directory alone resolves an id too (OMP scans its own sessions tree by id), so does the printed
+  line have to name the sessions tree as well, and which spelling?
+- **Default taken:** both halves are named explicitly — `PI_CODING_AGENT_DIR` and
+  `PI_CODING_AGENT_SESSION_DIR=<home>/sessions/<the project directory the installer filed the session
+  under>` — by the printed `resume`/`non-interactive resume` lines and by both checks that drive the
+  route (the Go resume check and the native check's printed-invocation case). The directory named is the
+  one that holds the file directly, not the `sessions` root above it: measured, the root answers "not
+  found", and naming the right tree is also what keeps a caller's leftover setting from hiding the
+  session. This is the same shape the Pi route's printed line takes (its `PI_CODING_AGENT_SESSION_DIR`
+  names the sessions tree too, `docs/conventions.md`'s install rule), and the reason the evidence
+  record's §0 table carries the measurement.
+- **Reversal:** name the data directory alone and rely on OMP's own scan (measured to resolve an id, but
+  a caller's leftover `PI_CODING_AGENT_SESSION_DIR` then overrides the lookup), or name the `sessions`
+  root (measured to answer that no such session is installed).
+- **Settled by:** nothing owner-only.
+
+## Q-0006-06 — The alias directories OMP's own writer links beside the canonical one are not written
+
+- **Status:** resolved (default taken; 0006's implementation)
+- **Question:** an OMP home's project directory is not the only name OMP's own writer leaves behind for a
+  session — it also links alias directories beside the canonical one (`shadowedHomeDirName`,
+  `hashedDirName`, for a working directory whose name is ambiguous or long). Should a conversion create
+  them too, so every name the harness's own writer produces exists?
+- **Default taken:** not written. The aliases are lookup aliases for a directory the harness itself
+  derived, and the canonical directory is what the harness's own lookup reads: measured on 18.18.7, a
+  session filed in the canonical project directory resolves by id with no alias present, and the install
+  is exclusive — a conversion creates exactly one file and invents no second directory it cannot attest
+  (`OMPProjectDir` computes one spelling; `shadowedHomeDirName`/`hashedDirName` are not part of the
+  measured rule). The path a conversion reports is therefore the file's own directory, and the report's
+  install line names the mechanism.
+- **Reversal:** write the aliases too, if a harness version is measured to need one of them for a
+  session's own lookup (the file would then be linked under names this build derived rather than
+  measured).
+- **Settled by:** nothing owner-only.

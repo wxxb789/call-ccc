@@ -17,11 +17,12 @@ const (
 	TargetCodex  = "codex"
 	TargetClaude = "claude"
 	TargetPi     = "pi"
+	TargetOMP    = "omp"
 )
 
 // Targets names every target harness this build writes, in the order a caller lists them.
 func Targets() []string {
-	return []string{TargetCodex, TargetClaude, TargetPi}
+	return []string{TargetCodex, TargetClaude, TargetPi, TargetOMP}
 }
 
 // harnessProbe is what a target harness's own binary answered about itself: where it is, whether it is
@@ -78,12 +79,20 @@ type targetFacts struct {
 	Model            string
 }
 
-// targetConvertInput is what one target's writer is configured with.
+// targetConvertInput is what one target's writer is configured with: the version the document is written
+// as, and the endpoints the target's own harness answered for itself -- Provider is the provider label a
+// new session of it would run under (a Codex `model_provider` key, OMP's configured provider), and Model
+// is the model id that answer names, for a format that records one.
 type targetConvertInput struct {
-	CLIVersion   string
-	Provider     string
-	Now          time.Time
-	MaxToolNames int
+	CLIVersion string
+	Provider   string
+	Model      string
+	// ProviderDetail is what the target's own harness answered about that endpoint (or why it was not
+	// asked), so a writer whose format records the binding can state the answer rather than leaving its
+	// presence or absence to be read off a count.
+	ProviderDetail string
+	Now            time.Time
+	MaxToolNames   int
 }
 
 // targetInvocationInput names the harness the printed resume commands must name, and carries the probe
@@ -179,6 +188,8 @@ func targetRouteFor(target string) (targetRoute, error) {
 		return claudeRoute(), nil
 	case TargetPi:
 		return piRoute(), nil
+	case TargetOMP:
+		return ompRoute(), nil
 	default:
 		return targetRoute{}, fmt.Errorf("%w: %q (this build writes %s)",
 			ErrUnsupportedTarget, target, strings.Join(Targets(), ", "))
@@ -465,7 +476,7 @@ func piRoute() targetRoute {
 		HomeEnv:       piHomeEnv,
 		BinaryDefault: PiBinaryDefault,
 		PinVersion:    PiFormatVersion,
-		FormatLimits:  piFormatLimits(),
+		FormatLimits:  piFormatLimits(piFamilyShape{}),
 		ResolveHome:   ResolvePiHome,
 		Probe:         ProbePiBinary,
 		Facts:         piFacts,
@@ -603,3 +614,172 @@ func piFacts(_ context.Context, in targetFactsInput) targetFacts {
 // caller's own Pi configuration offers — which is what the `model_provider_binding` format limit and the
 // `message_model_attribution` caveat state, while the conversation itself carries the source's model on
 // every assistant entry it was recorded with.
+
+// ompRoute is the route increment 0006 adds: an OMP session JSONL file -- the Pi family's own tree, with
+// the records OMP's format adds (a rewritable title slot line, and a session-level model binding the
+// harness restores the session's model from) -- installed under the project directory *OMP's* own
+// discovery derives from the session's working directory, verified through OMP's own RPC loader (no model
+// turn) and one real turn through the reported invocation.
+func ompRoute() targetRoute {
+	return targetRoute{
+		Name:          TargetOMP,
+		Format:        OMPTargetFormat,
+		HomeEnv:       ompHomeEnv,
+		BinaryDefault: OMPBinaryDefault,
+		PinVersion:    OMPFormatVersion,
+		FormatLimits:  ompFormatLimits(),
+		ResolveHome:   ResolveOMPHome,
+		Probe:         ProbeOMPBinary,
+		Facts:         ompFacts,
+		// A dry run never starts the harness, and this format needs its answer: the session's own model
+		// binding and the endpoint label on every assistant record are what the harness restores a session
+		// from and what its request builder reads. A run that installs asks, and records its own answer.
+		DryRunWarnings: func(facts targetFacts, probe harnessProbe) []string {
+			if !probe.Found {
+				return nil
+			}
+			return []string{"this was a dry run, so the target harness was not started and the model its " +
+				"data directory resolves for a new session of it was not asked: the written copy records " +
+				"no session model binding and no endpoint label on its assistant records. An installed run " +
+				"asks the harness and records its own answer, which is what this format needs for its " +
+				"loader to open the session again"}
+		},
+		Convert: func(conv Conversation, in targetConvertInput) (convertedTarget, error) {
+			session, err := ConvertToOMPSession(conv, OMPTargetOptions{
+				CLIVersion:     in.CLIVersion,
+				Now:            in.Now,
+				MaxToolNames:   in.MaxToolNames,
+				Provider:       in.Provider,
+				Model:          in.Model,
+				ProviderDetail: in.ProviderDetail,
+			})
+			if err != nil {
+				return convertedTarget{}, err
+			}
+			return convertedTarget{
+				ID:        session.SessionID,
+				FileName:  session.FileName,
+				Directory: session.Directory,
+				Cwd:       session.Cwd,
+				StartedAt: session.StartedAt,
+				Data:      session.Data,
+				Carried:   session.Carried,
+				Losses:    session.Losses,
+				Raw:       session,
+			}, nil
+		},
+		Install: func(session convertedTarget, home string) (string, string, error) {
+			return InstallOMPSession(session.Raw.(PiSession), home)
+		},
+		StructureRoot: func(home string) string { return filepath.Join(home, ompSessionsSubdir) },
+		ReadBack: func(ctx context.Context, root string, session convertedTarget, cfg config.Config) (StructureVerification, error) {
+			return VerifyOMPSessionStructure(ctx, root, session.Raw.(PiSession), cfg)
+		},
+		Load: func(ctx context.Context, in targetVerificationInput) LoadVerification {
+			return VerifyOMPLoad(ctx, OMPLoadOptions{
+				Binary:    in.Binary,
+				SessionID: in.SessionID,
+				Cwd:       in.Cwd,
+				Directory: in.Directory,
+				FileName:  in.FileName,
+				Data:      in.Data,
+				Installed: in.Path,
+				Timeout:   in.Timeout,
+				Stderr:    in.Stderr,
+			})
+		},
+		Resume: func(ctx context.Context, in targetVerificationInput) ResumeVerification {
+			// The turn is the invocation's own words, run through the same environment and working
+			// directory the printed line names, so the check exercises what the report prints.
+			return VerifyOMPResume(ctx, OMPResumeOptions{
+				Home:        in.Home,
+				Binary:      in.Binary,
+				SessionID:   in.SessionID,
+				ProjectDir:  in.Directory,
+				Cwd:         in.Cwd,
+				SessionPath: in.Path,
+				Prompt:      in.Prompt,
+				Timeout:     in.Timeout,
+				Stderr:      in.Stderr,
+			})
+		},
+		Invocation: func(session convertedTarget, in targetInvocationInput) targetInvocation {
+			// This invocation changes into the session's working directory, so its words are the program
+			// this run probed and verified (invocationBinary): a bare name re-searched by a shell from
+			// there can find a different program.
+			binary := invocationBinary(in.Binary, in.Probe)
+			// The interactive line names the session and nothing else; the exec form is
+			// ompResumeArguments, the invocation VerifyOMPResume runs -- print mode included, so a pasted
+			// line runs the turn rather than opening the harness's picker or TUI.
+			arguments := []string{binary, "--resume", session.ID}
+			execArguments := append([]string{binary},
+				ompResumeArguments(session.ID, resumePromptPlaceholder)...)
+			return targetInvocation{
+				Arguments:     arguments,
+				ExecArguments: execArguments,
+				// The environment is the check's own (ompResumeEnvironment): the data directory and the
+				// directory inside it that holds this session's file, so a caller's leftover
+				// PI_CODING_AGENT_SESSION_DIR cannot send the pasted line looking in another tree than
+				// the one the check verified.
+				Environment: ompResumeEnvironment(in.Home, session.Directory),
+				// The session belongs to its recorded directory, and the printed line continues the work
+				// there: measured, this harness resolves a session by id from any directory, so a caller
+				// who runs it elsewhere still finds the session rather than forking one.
+				WorkingDir: session.Cwd,
+			}
+		},
+		Fields: func(session convertedTarget, facts targetFacts) targetFacts {
+			// The session's records state the target home's own model and endpoint, so the report states
+			// them as that: `model_provider` is the provider a new session of this harness runs under (the
+			// value asked of it, and the label every converted assistant record carries), and `model` is
+			// that answer's model id. Both are the harness's answer rather than the source's, and the
+			// provider detail is what it said.
+			target := session.Raw.(PiSession)
+			facts.CLIVersion = target.CLIVersion
+			return facts
+		},
+		StructureMethod:       structureMethodOMP,
+		StructureMethodDryRun: structureMethodOMPDryRun,
+		LoadMethod:            loadMethodOMP,
+		ResumeMethod:          resumeMethodOMP,
+		StructureReader:       structureReaderOMP,
+	}
+}
+
+// ompFacts records which version the session's records are written as -- the probed one when the installed
+// binary answered, else the pinned version this writer's format was verified against -- and asks the
+// harness itself which model a new session of it would run under.
+//
+// The model is not a convenience: OMP's loader restores a session's model from the record this route
+// writes, and refuses a session whose recorded model the target home cannot resolve (measured), so the
+// answer is what makes a converted session openable there. It is asked of the harness rather than read out
+// of its configuration file (ProbeOMPModel), and a dry run does not ask it at all -- starting the harness
+// against a caller's data directory is exactly the sort of write a preview must not perform.
+func ompFacts(ctx context.Context, in targetFactsInput) targetFacts {
+	facts := targetFacts{CLIVersion: OMPFormatVersion, CLIVersionSource: "writer-pin"}
+	if in.Probe.Version != "" {
+		facts.CLIVersion = in.Probe.Version
+		facts.CLIVersionSource = "probe"
+	}
+	probe := OMPModelProbe{}
+	switch {
+	case in.DryRun:
+		probe.Detail = "a dry run does not start the target harness against its data directory, so the " +
+			"model that home resolves for a new session of it was not asked and none is recorded"
+	case in.Probe.Found:
+		probe = ProbeOMPModel(ctx, in.Home, in.Probe.Binary, in.Timeout, in.Stderr)
+	default:
+		// The harness could not be located at all: the reason the probe carries is the same answer this
+		// step does not have, and the report must state it rather than an unexplained absence.
+		probe.Detail = in.Probe.Detail + ", so the model that home resolves for a new session of it was " +
+			"not asked and none is recorded"
+	}
+	facts.ModelProvider = probe.Provider
+	facts.Model = probe.Model
+	facts.ProviderDetail = probe.Detail
+	facts.ProviderSource = "unrecorded"
+	if probe.Found {
+		facts.ProviderSource = probe.Source
+	}
+	return facts
+}

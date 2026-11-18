@@ -1020,7 +1020,7 @@ class MissingPiEndsInIncomplete(NativeCheckDriver):
 
 
 class TheRunsOwnHomeIsSeededAndACallersIsNot(NativeCheckDriver):
-    """The scratch home a run makes is seeded; a home the caller names is only read.
+    """The scratch home a run makes is seeded; a home the caller names is not.
 
     Seeding is what lets a real turn reach a model: the provider definitions are the host's own, with
     every credential-bearing field dropped and the key left as an ``$ENV`` reference. Writing that
@@ -1070,7 +1070,7 @@ class TheRunsOwnHomeIsSeededAndACallersIsNot(NativeCheckDriver):
         self.assertIn("carrying a credential", state[1], state[1])
         self.assertIn("probe", state[1], state[1])
 
-    def test_a_callers_home_is_never_written_to(self) -> None:
+    def test_a_callers_home_is_never_seeded(self) -> None:
         _, results, printed, captured = self.drive("claude-to-pi", write_installed=False,
                                                    host_models=self.HOST_PROVIDERS)
         self.assertFalse(captured.get("home_models"),
@@ -1081,7 +1081,7 @@ class TheRunsOwnHomeIsSeededAndACallersIsNot(NativeCheckDriver):
         state = results.get("a Pi provider is configured for the chosen model")
         self.assertIsNotNone(state, f"no provider check was recorded: {results}")
         self.assertEqual(state[0], "SKIP", results)
-        self.assertIn("a home the caller named is never written to", state[1], state[1])
+        self.assertIn("a home the caller named is not seeded", state[1], state[1])
 
 
 class LoaderCopyCarriesNoCredentials(unittest.TestCase):
