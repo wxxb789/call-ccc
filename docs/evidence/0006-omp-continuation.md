@@ -309,6 +309,58 @@ printed invocation, the turn's answer contains 'OMP-NATIVE-CHECK-PROBE'` (exit 1
 recording a skip, and this host cannot answer the turn (`Not logged in · Please run /login`, §7), so a
 requested turn that does not verify fails the run instead of leaving it a pass.
 
+### The CI repair round
+
+The hosted `gate (windows-latest)` job went red on this branch's head (`f0322e3`, run `44203425094`):
+`FAIL     selftest REQUIRED but was FAIL: scripts/tests -> rc=1`, `FAILED (failures=4)` — the two rows of
+`scripts/tests/test_omp_native_check.py`'s `ProjectDirCases` that name a whole resolved path
+(`omp_project_dir('/srv/work/project', …)` answered `--D--srv-work-project--` where the table pinned
+`--srv-work-project--`) and, as their consequence, `test_gate.py`'s two nested-run cases (the child run
+they assert green ended with the same two failures and exit 1; a failing case in this suite therefore
+fails the gate twice on that host, by design).
+
+The cause was the table's own spelling, not the rule: `omp_project_dir` resolves the working directory
+(`os.path.abspath`) and each base inside `omp_within` the same way, so on a platform whose rooted paths
+carry a volume the CI's own process answers (Windows, `GetFullPathName`) a base left as `/tmp` has no
+relative spelling to the resolved path at all and the absolute branch spells the drive as part of its
+name. The table's bases, its working directories and the outside row's expectation are now the host's own
+resolved spellings (`abs_host_path` and `outside_spelling`, mirroring the Go twin's `absHostPath` and its
+`outsideWant`), so the three branches are reachable and the outside row pins the spelling that host's rule
+actually produces; the shortened rows' expectations are unchanged words. Nothing shipped changed
+(`scripts/omp-native-check.py` is byte-identical to the fix round's), and the suite's case count stays
+`268` — the same 17 cases in that file, three of them with host-shaped rows.
+
+The mutation that names the repaired rule, executed and restored (the file hashed before and after; the
+restore matched `305a903f…`): `abs_host_path` made to answer its argument unchanged, i.e. the pre-fix
+shape the hosted job ran —
+
+| Rule | Line disabled | Observed |
+| --- | --- | --- |
+| the case table is the host's own resolution of the rule's inputs (`scripts/tests/test_omp_native_check.py`) | `abs_host_path` returns `path` | under a host whose `os.path` is `ntpath` with a drive for a rooted path (`GetFullPathName`'s own answer: `abspath('/srv/work/project')` = `D:\srv\work\project`), `test_the_three_branches [a directory outside both]` FAIL — `--D--srv-work-project-- != --srv-work-project--` — and `test_the_spelling_is_not_pis_where_it_differs` FAIL: the two failures the hosted job reported, reproduced in-process |
+| the outside row pins the drive colon on the platform that has one | `outside_spelling`'s replacement drops `:` (`re.sub(r"[/\\]", …)`) | same two cases FAIL under that host; on this host both pass, because a POSIX literal carries no colon to spell — the colon's own row is the host-independent `omp_separator_spelling` case, which fails here too |
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3611 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 268 tests in 6.065s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 30 project-owned prefix(es); files seen by git: 5688 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 141 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+Every other number this record pins is unchanged by the round, which is the expected outcome of a repair
+confined to one case table: the native checks do not read it, and no converted byte, count, loss category
+or loader answer depends on it. `AGENTS.md` is not edited: the round changes no layout, gate step,
+command, read order or agent rule — the rule it repairs is the one `AGENTS.md` and `docs/conventions.md`
+already state (no case may hold only on the host or `PATH` it happens to run on). No goal file is moved:
+0006 is still the increment under review.
+
 The counts the increment is pinned by:
 
 | Number | Where it comes from |
@@ -354,3 +406,9 @@ slot, the required per-assistant `model`+`provider`, the session binding being t
 - **A generated filename is not compatibility** (the goal's own `Stop and report`): every "resumable"
   claim above is `verification.load` or `verification.resume` coming back `verified`, from the harness's
   own loader and, for the two OMP turns, the harness's own printed answer.
+- **The repaired table's Windows answer is pinned by construction here, not by a run on Windows.** This
+  host is POSIX, so the repair round re-ran the file against a host whose `os.path` is `ntpath` with a
+  drive for a rooted path (`GetFullPathName`'s own answer) — a throw-away harness outside the tree, never
+  committed — and read the same two failures the hosted job reported out of the pre-fix table and no
+  failure out of the repaired one. The hosted `windows-latest` job is the real Windows host; its next run
+  on that tree is what closes the round.

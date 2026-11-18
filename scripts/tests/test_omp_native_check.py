@@ -36,6 +36,8 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -54,6 +56,31 @@ LOOPBACK = "loopback-proxy"
 REMOTE = "remote-endpoint"
 
 TITLE_SLOT_BYTES = 256
+
+
+def abs_host_path(path: str) -> str:
+    """One spelled path resolved the way the rule resolves a working directory: ``os.path.abspath``.
+
+    The rule resolves the working directory (and, inside ``omp_within``, each base) before it compares
+    them, so a base or a case left as a POSIX literal pins the wrong answer on a platform whose rooted
+    paths carry a volume (Windows): a base spelled ``/tmp`` there has no relative spelling to the
+    resolved path at all, both shortened branches become unreachable, and the absolute branch of the
+    literal spells a name that host's rule never produces (its own drive letter is part of the spelling).
+    On this host ``os.path.abspath`` is the identity of the literals below, which keeps this table the
+    same cases its Go twin pins (``internal/ccc/omp_target_test.go``, ``absHostPath``).
+    """
+    return os.path.abspath(path)
+
+
+def outside_spelling(path: str) -> str:
+    """The ``--…--`` branch's own spelling of an absolute path: its leading separators removed, every
+    separator and drive colon spelled ``-``, wrapped in ``--`` on both sides. Which is Pi's spelling too:
+    that branch is the one case where the two harnesses agree.
+
+    Spelled here rather than through the shipped ``omp_separator_spelling``, so the expectation is the
+    rule's own words rather than the code under test's.
+    """
+    return "--" + re.sub(r"[/\\:]", "-", path.lstrip("/\\")) + "--"
 
 
 def load_native_check():
@@ -90,35 +117,47 @@ def title_slot_line(entry_text: str) -> str:
 class ProjectDirCases(unittest.TestCase):
     """The directory OMP files a session under, which is the rule the installer asks."""
 
-    #: ``(cwd, want)``, the same cases ``internal/ccc/omp_target_test.go`` pins.
+    #: The base directories, and the one working directory outside both, resolved the way the rule
+    #: resolves a working directory (``abs_host_path``). The bases have to be the host's own spellings
+    #: for the temporary and home branches to be reachable on every platform, and the outside case's
+    #: expectation depends on the whole resolved path, so its own path does too.
+    HOME = abs_host_path("/home/example")
+    TMP = abs_host_path("/tmp")
+    OUTSIDE = abs_host_path("/srv/work/project")
+
+    #: ``(cwd, want)``, the same cases ``internal/ccc/omp_target_test.go`` pins. Only the outside row's
+    #: expectation depends on the whole path: the two shortened branches strip their base, so their
+    #: spellings are the same words on every host.
     CASES = (
-        ("a directory under the temporary directory", "/tmp/work/project", "-tmp-work-project"),
-        ("the temporary directory itself", "/tmp", "-tmp"),
-        ("a directory under the home directory", "/home/example/repos/call-ccc", "-repos-call-ccc"),
-        ("the home directory itself", "/home/example", "-"),
+        ("a directory under the temporary directory",
+         abs_host_path("/tmp/work/project"), "-tmp-work-project"),
+        ("the temporary directory itself", TMP, "-tmp"),
+        ("a directory under the home directory",
+         abs_host_path("/home/example/repos/call-ccc"), "-repos-call-ccc"),
+        ("the home directory itself", HOME, "-"),
         ("a directory under both, where the temporary one wins",
-         "/tmp/home-example/work", "-tmp-home-example-work"),
-        ("a directory outside both", "/srv/work/project", "--srv-work-project--"),
+         abs_host_path("/tmp/home-example/work"), "-tmp-home-example-work"),
+        ("a directory outside both", OUTSIDE, outside_spelling(OUTSIDE)),
     )
 
     def test_the_three_branches(self):
         for name, cwd, want in self.CASES:
             with self.subTest(name):
                 self.assertEqual(
-                    NATIVE_CHECK.omp_project_dir(cwd, home="/home/example", tmp="/tmp"), want,
+                    NATIVE_CHECK.omp_project_dir(cwd, home=self.HOME, tmp=self.TMP), want,
                     f"omp_project_dir({cwd!r})")
 
     def test_the_spelling_is_not_pis_where_it_differs(self):
         # For a working directory under the home or the temporary directory the two harnesses spell it
         # differently, and OMP moves a session it finds under Pi's spelling into its own directory.
-        under_home = NATIVE_CHECK.omp_project_dir("/home/example/repos/call-ccc",
-                                                  home="/home/example", tmp="/tmp")
+        under_home_path = abs_host_path("/home/example/repos/call-ccc")
+        under_home = NATIVE_CHECK.omp_project_dir(under_home_path, home=self.HOME, tmp=self.TMP)
         self.assertEqual(under_home, "-repos-call-ccc")
-        self.assertNotEqual(under_home, "--home-example-repos-call-ccc--")
+        self.assertNotEqual(under_home, outside_spelling(under_home_path))
         # A path outside both is the one branch the two harnesses share, and Pi's spelling there is
         # `--<path with separators replaced>--`.
-        outside = NATIVE_CHECK.omp_project_dir("/srv/work/project", home="/home/example", tmp="/tmp")
-        self.assertEqual(outside, "--srv-work-project--")
+        outside = NATIVE_CHECK.omp_project_dir(self.OUTSIDE, home=self.HOME, tmp=self.TMP)
+        self.assertEqual(outside, outside_spelling(self.OUTSIDE))
 
     def test_a_windows_shaped_path_keeps_its_drive_colon_spelled(self):
         # The harness's own spelling replaces every separator *and* a drive colon (`ompSeparatorSpelling`),
