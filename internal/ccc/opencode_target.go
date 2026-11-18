@@ -313,6 +313,12 @@ type openCodeCall struct {
 	Source ToolCall
 	At     time.Time
 	Result *ToolResult
+	// ResultAt is the instant of the record the carried result was recorded on: the tool part's own
+	// `completed` member is that instant, not the call's (a result recorded half a second after its call
+	// says the call took half a second, and writing the call's instant twice would state a zero-length
+	// call the source did not record). It is the call's own instant where the result came from the
+	// archive's derived summary, which is stored on the call row and has no record of its own.
+	ResultAt time.Time
 	// inferredResultID says the result was paired through a generated call id (a result that recorded
 	// none), which is what the generated_call_ids caveat counts beside the calls themselves.
 	inferredResultID bool
@@ -362,6 +368,7 @@ type openCodeConverter struct {
 	lossUnpairedCalls    int
 	lossUnpairedResults  int
 	lossRepeatedResults  int
+	lossNonterminal      int
 	lossEmptyResults     int
 	lossWhitespaceRes    int
 	lossResultBlocks     int
@@ -489,6 +496,11 @@ func (c *openCodeConverter) convert() error {
 // invented call. A call whose recorded input this build cannot write as an object is still carried (an
 // empty object is written for it, counted); what a *result* turns out to be decides at write time
 // whether the call has a shape here at all.
+//
+// A result event the read records as progress rather than an outcome is never the carried result: the
+// terminal event the same call recorded is what the part states, and a call whose read holds only
+// progress has no outcome here (counted as unpaired_tool_calls). Both shapes are counted separately
+// (nonterminal_tool_events), so a progress event is never presented as the call's outcome.
 func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 	for index, message := range c.conv.Messages {
 		if inactive[index] || message.IsSidechain {
@@ -508,6 +520,17 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 			c.ledger.pendingCalls[id] = struct{}{}
 		}
 		for _, result := range message.ToolResults {
+			if !openCodeResultStatesAnOutcome(result.Status) {
+				// The read records a call's progress as events of the call's own as well as its outcome
+				// (internal/parser/termination.go's rule reads the same events: a Codex subagent's
+				// `running` notification keeps the call pending until a notification with another status
+				// arrives). The harness's tool states are `completed` and `error`, so a progress event is
+				// no outcome this target may write -- and it must not consume the call's pending slot
+				// either, or the terminal event that follows would read as a repeat of an outcome that
+				// was never recorded.
+				c.lossNonterminal++
+				continue
+			}
 			id := strings.TrimSpace(result.ToolUseID)
 			inferred := false
 			if id == "" {
@@ -527,13 +550,14 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 				continue
 			}
 			if entry.Result != nil {
-				// The target's tool part holds one state per call, so a second result for the same call
-				// has no place; the first is the recorded outcome.
+				// The target's tool part holds one state per call, so a second outcome for the same call
+				// has no place; the first recorded outcome is the one carried.
 				c.lossRepeatedResults++
 				continue
 			}
 			stored := result
 			entry.Result = &stored
+			entry.ResultAt = message.Timestamp
 			entry.inferredResultID = inferred
 			delete(c.ledger.pendingCalls, id)
 		}
@@ -552,7 +576,29 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 				continue
 			}
 			entry.Result = &result
+			// The summary is stored on the call's own row, not on a result record: the call's instant is
+			// the only one the read holds for it, and it keeps the part's own span zero-length rather than
+			// inventing a completion time nobody recorded.
+			entry.ResultAt = entry.At
 		}
+	}
+}
+
+// openCodeResultStatesAnOutcome answers whether one recorded result event states an outcome this target
+// can hold, as opposed to the progress a read streams while a call is still executing. The words are the
+// inherited readers' own: internal/parser/termination.go treats any status other than `running` as the
+// call being resolved (a Codex subagent's pending notification stream), the RooCode/Kilo chunk readers
+// record streamed chunks as `running` and flip the last one to the aggregate's own final status, and
+// Copilot's and OpenCode's own call events spell the same state `started`/`pending`/`streaming`
+// (internal/parser/copilot.go, internal/parser/opencode_v2.go). Anything else -- `completed`, `errored`,
+// a provider's own word, or no status at all -- is a recorded outcome, which the writer's own status rule
+// then reads (tool_result_statuses).
+func openCodeResultStatesAnOutcome(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "running", "pending", "streaming", "started", "in_progress":
+		return false
+	default:
+		return true
 	}
 }
 
@@ -677,6 +723,13 @@ func (c *openCodeConverter) writeUserMessage(text string, at time.Time) error {
 func (c *openCodeConverter) writeAssistantMessage(
 	message Message, text string, calls []*openCodeCall, synthesized bool,
 ) error {
+	// The record's own instant is taken before its parts' own: the message precedes the parts it carries
+	// in the document's own order, so its `created` member is taken first -- taken last, the later instant
+	// of the record a result was recorded on would become the message's own time. A record that turns out
+	// to carry nothing releases the reservation below, so a message the document does not hold cannot
+	// raise a later record's floor.
+	reserved := c.clock.last
+	created := c.clock.next(message.Timestamp)
 	parts := make([]openCodePart, 0, len(calls)+2)
 	whitespaceDialogue := false
 	if trace := message.Thinking; strings.TrimSpace(trace) != "" {
@@ -690,7 +743,7 @@ func (c *openCodeConverter) writeAssistantMessage(
 		parts = append(parts, openCodePart{Type: openCodePartText, Text: text})
 	}
 	for _, call := range calls {
-		part, ok, err := c.toolPart(call, message.Timestamp)
+		part, ok, err := c.toolPart(call)
 		if err != nil {
 			return err
 		}
@@ -699,6 +752,7 @@ func (c *openCodeConverter) writeAssistantMessage(
 		}
 	}
 	if len(parts) == 0 {
+		c.clock.last = reserved
 		if synthesized || whitespaceDialogue {
 			// The calls it was made for all turned out to have no shape here, or the record's only
 			// dialogue was whitespace: the count that names it is already spent, and an empty record is
@@ -718,7 +772,6 @@ func (c *openCodeConverter) writeAssistantMessage(
 	// is what caught it). The source's read answers one instant per record, not a span, so the value
 	// written is that instant: the record reads as a zero-length turn rather than as a duration nobody
 	// recorded, and the report names the choice (assistant_completion_instant).
-	created := c.clock.next(message.Timestamp)
 	span := openCodeTimeSpan{Created: created, Completed: created}
 	c.document.Messages = append(c.document.Messages, openCodeMessage{
 		ID:      id,
@@ -785,11 +838,12 @@ func (c *openCodeConverter) writeCompaction(message Message) error {
 // toolPart writes one call's tool part from the result paired to it, or answers that the call has no
 // shape here.
 //
-// The state must carry the recorded input object (an empty object is written where none was recorded,
-// counted), a non-empty result text for `completed`, and a type and message for `error`; the importer
-// accepts no other state (measured: `pending` and `running` are refused), and a call whose result holds
-// no text at all is left out and counted rather than written with an invented outcome.
-func (c *openCodeConverter) toolPart(call *openCodeCall, at time.Time) (openCodePart, bool, error) {
+// The state must carry the input object the part's `input` member was written with (an empty object
+// where the source recorded none, or recorded one this target cannot write, counted), a non-empty result
+// text for `completed`, and a type and message for `error`; the importer accepts no other state
+// (measured: `pending` and `running` are refused), and a call whose result holds no text at all is left
+// out and counted rather than written with an invented outcome.
+func (c *openCodeConverter) toolPart(call *openCodeCall) (openCodePart, bool, error) {
 	if call.Result == nil {
 		// The source recorded the call and no result: the target has no state for a call that has not
 		// finished, so the call is left out and counted.
@@ -836,16 +890,22 @@ func (c *openCodeConverter) toolPart(call *openCodeCall, at time.Time) (openCode
 	}
 	c.carried.ToolCalls++
 	c.carried.ToolResults++
+	// The item carries the input the part's own `input` member was written with, not the source's
+	// spelling of it: a value this target could not write as an object was replaced by the empty object
+	// (counted above), and the round-trip walk compares what the store holds against what was written.
+	// The source's own input is still the thing the run accounts for, which is what the empty_tool_inputs
+	// caveat states.
 	c.items = append(c.items,
-		TargetItem{Kind: ItemToolCall, CallID: call.ID, ToolName: call.Source.Name, InputJSON: call.Source.InputJSON},
+		TargetItem{Kind: ItemToolCall, CallID: call.ID, ToolName: call.Source.Name, InputJSON: string(input)},
 		TargetItem{Kind: ItemToolResult, CallID: call.ID, Text: text},
 	)
-	// The part's own time is required by the importer: the call's recorded instant when there is one,
-	// and the result's own instant for `completed` (the message the result was recorded on, whose
-	// timestamp the caller passed), both through the clock so a source whose messages are unordered
+	// The part's own time is required by the importer: the call's recorded instant for `created`, and
+	// the instant of the record the carried result was recorded on for `completed` (the plan keeps the
+	// pairing, so this is the result's own record -- or the call's own instant where the result came from
+	// the archive's derived summary). Both go through the clock, so a source whose messages are unordered
 	// cannot write a part whose end precedes its start.
 	created := c.clock.next(call.At)
-	completed := c.clock.next(at)
+	completed := c.clock.next(call.ResultAt)
 	return openCodePart{
 		Type:  openCodePartTool,
 		ID:    call.ID,
@@ -1135,10 +1195,12 @@ func (c *openCodeConverter) losses() []Loss {
 			Category:    "unpaired_tool_calls",
 			Disposition: DispositionOmitted,
 			Count:       c.lossUnpairedCalls,
-			Detail: "the source recorded these calls with no result at all; the harness's importer " +
-				"accepts only a completed or failed tool state (measured: `pending` and `running` are " +
-				"refused), so a call that has not finished has no shape here and is left out. Writing " +
-				"it with an invented error or an empty output would fabricate an outcome",
+			Detail: "the source recorded these calls with no outcome: either no result at all, or only " +
+				"progress events whose text says the call is still working (the events themselves are " +
+				"counted as nonterminal_tool_events). The harness's importer accepts only a completed or " +
+				"failed tool state (measured: `pending` and `running` are refused), so a call that has not " +
+				"finished has no shape here and is left out. Writing it with an invented error or an empty " +
+				"output would fabricate an outcome",
 		},
 		{
 			Category:    "unpaired_tool_results",
@@ -1151,9 +1213,22 @@ func (c *openCodeConverter) losses() []Loss {
 			Category:    "repeated_tool_results",
 			Disposition: DispositionOmitted,
 			Count:       c.lossRepeatedResults,
-			Detail: "the source recorded more than one result for one call; the harness's tool part holds " +
-				"one state per call, so the first recorded result is the one carried and the extra " +
-				"records are named here rather than merged into a state the source never recorded",
+			Detail: "the source recorded more than one outcome for one call; the harness's tool part holds " +
+				"one state per call, so the first recorded outcome is the one carried and the extra " +
+				"outcomes are named here rather than merged into a state the source never recorded",
+		},
+		{
+			Category:    "nonterminal_tool_events",
+			Disposition: DispositionOmitted,
+			Count:       c.lossNonterminal,
+			Detail: "the read records a call's progress as events of its own beside the call's outcome " +
+				"(the shape the inherited termination rule reads: a Codex subagent's `running` " +
+				"notification streams in while its call is still executing, and the RooCode/Kilo chunk " +
+				"readers record streamed chunks the same way). The harness's tool states are `completed` " +
+				"and `error`, so a progress event's text is not written: doing so would state an outcome " +
+				"the source had not recorded when it wrote those words. The terminal result the same call " +
+				"recorded is what the part carries, and a call whose read holds only progress has no " +
+				"outcome here (counted as unpaired_tool_calls)",
 		},
 		{
 			Category:    "empty_tool_results",

@@ -444,17 +444,24 @@ says so.
   the same command for an id nothing installed as the control arm (it must refuse, naming the id),
   `session list --format json` from the session's own recorded directory (it must name the session) and
   from another (it must not), and `session delete` to remove the planted session — the run records that
-  removal and that the id no longer resolves, because the store can only be written by the harness. A
-  requested turn runs the **printed** invocation's own words (`run --standalone --session <id> -- <prompt>`,
-  the flag immediately after its subcommand: a flag left on the managed service's side of the `--`
-  terminator answers from a store this run did not grow, measured) with the report's `resume_environment`
-  (the data root and the store's own database file pinned beside it -- a shell line can set a variable but
-  cannot remove an inherited `OPENCODE_DB`, and the pin is what makes the pasted command read this run's
-  store) and working directory, prints the harness's own words under `TURN_OUTPUT_MARKER`, and measures the
-  growth through the harness's own reader (before/after `session export`: a turn appends its own records,
-  3 per turn measured). The script builds `ccc` into `bin/ccc-native-check-opencode` (`.gitignore` covers
-  `bin/`), takes `--opencode`/`--source`/`--target-home`/`--resume-prompt`/`--expect`/`--keep`/`--json`,
-  and prints each check's own state.
+  removal and that the id no longer resolves, because the store can only be written by the harness. The
+  conversion is verified at the **load** level even when a turn is requested, and a requested turn is run
+  by this check itself — one `--resume-prompt` is one real turn, not two. The turn is the report's own
+  **exec-form argument vector** (`exec_resume_arguments`), read against what the check knows on its own
+  (the harness this run probed, this conversion's session, the `--standalone` flag immediately after its
+  subcommand: a flag left on the managed service's side of the `--` terminator answers from a store this
+  run did not grow, measured) before it runs: the prompt substituted for the vector's placeholder, from
+  the report's working directory and under the report's `resume_environment` (the data root and the
+  store's own database file pinned beside it -- a shell line can set a variable but cannot remove an
+  inherited `OPENCODE_DB`, and the pin is what makes the pasted command read this run's store). A vector
+  that only agreed with the report's own words is recorded as a failure and nothing is run. The harness's
+  own answer is printed under `TURN_OUTPUT_MARKER`, and the growth is measured through the harness's own
+  reader (before/after `session export`: a turn appends its own records, 3 per turn measured). A named
+  `--target-home` whose own name is `opencode` is read through the harness's own rule first (it is the
+  data directory itself, and its parent becomes the root), so the conversion and the check are pointed at
+  one store. The script builds `ccc` into `bin/ccc-native-check-opencode` (`.gitignore` covers `bin/`),
+  takes `--opencode`/`--source`/`--target-home`/`--resume-prompt`/`--expect`/`--keep`/`--json`, and prints
+  each check's own state.
 - `scripts/native_check_common.py` — the mechanism the native checks share, so none keeps its own
   copy of it: the file digests (`sha256`, `tree_digest`), the check recorder (`record`, `RESULTS`), the
   subprocess runner (`run`, which a check can hand a command's *whole* environment instead of an overlay

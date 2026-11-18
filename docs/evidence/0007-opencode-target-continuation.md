@@ -404,7 +404,8 @@ on those bytes).
   (`internal/ccc/opencode_target.go`). `distinctCalls` charged `lossCoalesced`, but `losses()` never emitted
   the category, so the committed multi-file patch fixture (the inherited Codex reader projects one
   `apply_patch` into one call per file) collapsed silently where the plan promises per-category disclosure.
-  The category is emitted now (36 categories per run, up from 35);
+  The category is emitted now (36 categories per run, up from 35 — that round's own count; the second
+  review round's `nonterminal_tool_events` takes it to 37, below);
   `TestContinueIntoOpenCodeCoalescesOneCallsPerFileProjections` converts the patch fixture.
 
 The mutations that name the repaired rules, executed and restored (each file hashed after its restore —
@@ -480,12 +481,154 @@ edited in the same round and for the reason the growth policy gives: the round c
 follow (what the printed OpenCode line names). No goal file is moved: 0007 is still the increment under
 review and stays implemented on its branch with its row.
 
+### The second review round's fixes (`37366ff` + working tree), re-measured
+
+The findings file (`review-findings-r2.md`, review head `37366ff`) named seven defects: one P1 and six P2.
+All seven are fixed on the working tree, each fix's own case was shown to redden without it (the mutation
+executed and restored, every file hashed after its restore — `internal/ccc/opencode_target.go`
+`f98c1a14…`, `scripts/opencode-native-check.py` `98f0d5f8…`), and the gate and the native runs below ran
+on the fixed bytes.
+
+The writer (`internal/ccc/opencode_target.go`):
+
+- **A progress event is not a call's outcome.** The pair selection took the first result event a call
+  recorded, whatever its status, and the writer spelled any non-error word under `completed` — so the
+  inherited Codex subagent shape (a `running` notification, then the completion:
+  `internal/parser/codex_parser_test.go`'s "running subagent notification does not suppress later
+  completion") carried "Still working" as a finished outcome and dropped "Finished successfully" as a
+  repeat. `openCodeResultStatesAnOutcome` now reads the inherited readers' own progress vocabulary
+  (`running`, `pending`, `streaming`, `started`, `in_progress`: `internal/parser/termination.go` keeps a
+  `running`-only call pending, and the RooCode/Kilo, Copilot and OpenCode readers spell the same state),
+  the plan pairs only an outcome, and every progress event is counted as `nonterminal_tool_events` (the
+  vocabulary grows to 37 categories per run). A call whose read holds only progress has no outcome here:
+  no part is written and the call is counted as `unpaired_tool_calls` (its detail now names both shapes).
+  `TestOpenCodeCarriesATerminalOutcomeRatherThanProgress` drives both arms.
+- **The tool-call item the round-trip walk compares is the input actually written.** The item kept the
+  source's own `InputJSON`, but the state's `input` member is the object written for it — the empty object
+  where the recorded value is not one (`empty_tool_inputs`). The inherited raw-text Codex
+  `custom_tool_call` shape the finding named, and the absent-input shape beside it, therefore failed the
+  structural comparison against a store that held exactly the disclosed conversion; the item now carries
+  what the part holds (`string(input)`), and the omission stays disclosed by the caveat. The existing tool
+  case pins the item's own member for an object, an absent input and the raw-text patch.
+- **A tool part's `completed` is the result record's own instant.** The part was written while the call's
+  message was walked, so both members took the call's instant; the plan now keeps the result record's
+  instant too (`openCodeCall.ResultAt`, the call's own where the result came from the archive's derived
+  summary) and the part's `completed` is that instant. The committed Claude fixture records its call at
+  `09:15:06.000Z` and its result at `09:15:06.500Z`; the fixture case pins the pair, and the message's own
+  instant is still handed out before its parts' (a record the document does not hold releases the clock
+  reservation, so it cannot raise a later record's floor).
+
+The native check (`scripts/opencode-native-check.py`, its cases in
+`scripts/tests/test_opencode_native_check.py`):
+
+- **One `--resume-prompt` is one turn.** The conversion was asked for `--verify resume --resume-prompt`
+  *and* the check ran its own turn, so one request ran and billed two. The conversion is now asked for
+  `--verify load` (the harness's own `session export`, measured to write no records) and the check's own
+  turn is the only one — measured below: the conversion leaves the store at 7 messages and the turn grows
+  it to 10, where §2's pre-fix transcript recorded the conversion at 7→10 and the check's turn at 10→13.
+  The store's message count is now required to equal the conversion's own at that read.
+- **The turn is the report's own invocation.** `_run_turn` reconstructed
+  `opencode run --session <id> -- <prompt>` from its own knowledge while `_check_invocation` only compared
+  each rendered command with the report's own vector, so a consistently wrong pair passed. The check now
+  reads the report's two vectors against what it knows on its own (`_read_turn_vector`: the harness this
+  run probed, this conversion's session id, `--standalone` immediately after the subcommand, the
+  terminator and that form's own prompt word — the empty prompt in the plain form, the placeholder in the
+  exec form) and records the reading of each; the turn runs the exec-form vector with the prompt
+  substituted and the report's `resume_environment` applied (checked to be this run's own root and store),
+  and a vector that breaks a rule is a FAIL with nothing run.
+- **A target root named `opencode` no longer splits the stores.** The harness's own rule makes a directory
+  whose own name is `opencode` the data directory itself (`internal/ccc/opencode_install.go`'s
+  `openCodeDataRoot`: its parent is the root), but the check appended `opencode` unconditionally, so
+  `--target-home scratch/opencode` planted and exported from `scratch/opencode/opencode/opencode.db`
+  while the conversion installed into `scratch/opencode/opencode.db`. `opencode_data_root_of` applies the
+  route's rule to the named directory before either the CLI command or the check's own environment is
+  built, and the run says which root a normalized name resolved to.
+- **The offline half accepts a home that resolves no model.** The report check required a nonempty
+  `model`/`model_provider` on every run, so a supported offline run against a home whose `debug agents`
+  answers `model: null` ended FAIL although the writer, the importer, the harness's own reader and the
+  load level all work without a binding. The version and the binding are now recorded separately
+  (`record_model_binding`): offline, a complete pair or the report's own `model_provider_detail` saying
+  why the harness resolved none both pass; a requested turn still needs the pair, because that is what
+  the harness would run the turn under.
+
+The mutations that name the repaired rules, executed and restored (each file hashed after its restore):
+
+| Rule | Line disabled | Observed |
+| --- | --- | --- |
+| a result event's status decides whether it is an outcome | `openCodeResultStatesAnOutcome`'s progress list emptied (every status an outcome) | `TestOpenCodeCarriesATerminalOutcomeRatherThanProgress` FAIL — `the progress event's text was written into the document…`, `nonterminal_tool_events = 0, want 1`, `repeated_tool_results = 1, want 0`, and the progress-only arm's `the document holds a tool part for call "call_pending"` |
+| the tool-call item carries the input written | the item's `InputJSON` restored to `call.Source.InputJSON` | `TestOpenCodeToolPartsCarryOnlyWhatTheImporterAccepts` FAIL — `call-noinput item input = "", want "{}"` and `call-rawinput item input = "*** Begin Patch\n*** End Patch", want "{}"` |
+| a tool part's `completed` is the result record's instant | `completed` taken from `call.At` again | `TestConvertToOpenCodeSessionCarriesTheFixturesEvidence` FAIL — `completed 1777886106000, want 1777886106500` (the fixture's 500 ms) and the tool case's `call-ok completed = 1700000000000, want 1700000001000` |
+| the reported vectors are read against this run's own harness and session | `_read_turn_vector` accepting any non-empty vector | `HarnessInvocationSpelling.test_a_turn_whose_reported_invocation_is_not_this_turns_never_runs` FAIL — a turn ran for a vector naming another session; `PrintedInvocation.test_a_pair_agreeing_with_itself_but_naming_another_session_is_not_this_turn` FAIL on all three arms (another session, no `--standalone`, the wrong prompt word) |
+| a named data directory is read through the harness's own rule | `opencode_data_root_of` returning its argument | `DataRootRule` both cases FAIL (each path flavour) — `PureWindowsPath('/data/opencode/opencode/opencode.db') != PureWindowsPath('/data/opencode/opencode.db')` |
+| the offline half accepts the harness's own no-model answer | the model record requiring a binding on both arms | `ModelBinding.test_an_offline_run_accepts_the_harnesss_own_no_model_answer` FAIL — `'FAIL' != 'PASS'` |
+
+The one-turn fix is measured rather than mutated: the runs below are its evidence (7 → 10, one turn).
+
+```
+$ go test -count=1 -tags fts5 ./internal/ccc/ ./cmd/ccc/...
+ok  	go.kenn.io/agentsview/internal/ccc
+ok  	go.kenn.io/agentsview/cmd/ccc
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode
+PASS: the conversion reports the conversation it carried and every loss category — carried 7 message(s), 1 call(s), 1 result(s); loss categories named: 37
+PASS: the report names the model a turn would run under, or says why the harness resolved none — model tencent-litellm/deepseek-v4.1-flash-fast (the harness's own debug agents answer); the harness's own answer: the harness resolved `tencent-litellm/deepseek-v4.1-flash-fast` for its primary agent `build`
+PASS: the harness's own reader holds every message the conversion wrote — the store's own document holds 7 message(s); the conversion carried 7
+PASS: the report's resume_arguments names the harness this run probed, this session and the empty prompt — /home/azureuser/.npm-global/bin/opencode run --standalone --session ses_Sb7K8qmD6gfjk6xxe4cSqXvRjj --
+PASS: the report's exec_resume_arguments names the harness this run probed, this session and the '<prompt>' placeholder — /home/azureuser/.npm-global/bin/opencode run --standalone --session ses_Sb7K8qmD6gfjk6xxe4cSqXvRjj -- <prompt>
+SKIP: a real turn was requested (--resume-prompt) — not requested: this run verifies the offline half (the importer, the harness's own reader and listing, the printed invocation) and runs no model turn
+RESULT: PASS — 31 check(s), none failed
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode \
+    --resume-prompt 'Reply with exactly: NATIVE-TURN-OK' --expect NATIVE-TURN-OK
+PASS: the report's exec_resume_arguments names the harness this run probed, this session and the '<prompt>' placeholder — /home/azureuser/.npm-global/bin/opencode run --standalone --session ses_bIhCTpKh0wX51Uu3v9kWmRAc7q -- <prompt>
+PASS: the turn ran through the printed invocation and exited 0 — exit 0; stderr 
+the turn's own output (the target's answer, as the harness printed it):
+    NATIVE-TURN-OK
+PASS: the turn's answer contains 'NATIVE-TURN-OK' — NATIVE-TURN-OK
+PASS: the turn grew the installed session, through the harness's own reader — 7 message(s) before the turn, 10 after
+PASS: the session's own records were not rewritten by the turn — the first 7 message(s) are unchanged
+PASS: the turn's own answer is in the session the harness reads — the turn appended 3 message(s); the appended assistant record(s) hold 'NATIVE-TURN-OK'
+RESULT: PASS — 35 check(s), none failed
+```
+
+(The session ids in the two runs' vector lines are their own, minted per run; `stderr ` with nothing
+after it is the run's own — the expected refusals of the exclusivity probe and the control arm are
+discarded, as §4's earlier round fixed.) The offline arm's check count is 31 (one of them the named
+`SKIP`), the turn arm's 35: the four extra records are the turn's own stage plus the two vector readings,
+where §2's recorded run had 27/31 (the earlier step set). The gate on the fixed bytes,
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3620 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 323 tests in 5.915s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 31 project-owned prefix(es); files seen by git: 5701 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
+  PASS     secrets  no leaks found in 155 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+`selftest` ran 314 tests before the round and 323 after (the round's nine cases: two for the data-root
+rule, five for the model binding, and the two vector readings' cases). What else the round moved:
+`docs/harness.md` (the check's entry now states the load-level conversion, the validated exec-form vector,
+the one-turn rule and the `--target-home` normalization) and `docs/plans/0007-opencode-target-continuation.md`
+(the affected mapping rows, the two loss rows and §6's evidence row and measurements). `AGENTS.md` is
+**not** edited: the round changes no repository layout, gate step, command, read order or rule an agent
+must follow — the rules that file states about this route (the store-only installation, the three required
+members, `--standalone`'s position, `session export` for the load level, the printed line's data root and
+store pin) all still hold, and the writer's own category vocabulary is not enumerated there. No goal file
+is moved: 0007 is still the increment under review. No new OPEN-QUESTIONS entry: the round re-applies
+rules the increment already states (a progress event is not an outcome; the comparison asks about what was
+written; one requested turn is one turn; the route's own directory rule), and the progress-word list is
+the inherited readers' own, disclosed in the code and the plan's row.
+
 ## 5. What travels, source side and target side
 
 | Source evidence | Target side, and the run that recorded it |
 | --- | --- |
 | a Claude Code conversation with a tool call, its result, recorded reasoning and a compaction boundary | converted into a 7-message OpenCode document (`converted: opencode-import-document, 2312 bytes: 7 message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies), 2 turn(s)`, §1) and materialised by the harness's own importer as a store session (§2: `the store's own document holds 10 message(s); the conversion carried 7`, the extra three being the turn's own records) |
-| the source read's own omissions and rewrites | named, counted and per-category: `empty_user_messages ×1`, `tool_name_vocabulary ×1`, `message_model_attribution ×4`, `usage_zeroed ×1`, `target_model_id_attribution ×2`, `compaction_reason ×1`, `assistant_completion_instant ×4`, `unresolved_source_parents ×1`, `pre_compaction_history ×4`, `malformed_source_lines ×1` (§1), out of the 36 categories the report names on every run (§2's recorded run named 35: the review round below added `coalesced_tool_call_projections`, which the committed multi-file patch fixture exercises) |
+| the source read's own omissions and rewrites | named, counted and per-category: `empty_user_messages ×1`, `tool_name_vocabulary ×1`, `message_model_attribution ×4`, `usage_zeroed ×1`, `target_model_id_attribution ×2`, `compaction_reason ×1`, `assistant_completion_instant ×4`, `unresolved_source_parents ×1`, `pre_compaction_history ×4`, `malformed_source_lines ×1` (§1), out of the 37 categories the report names on every run (§2's recorded run named 35: the first review round added `coalesced_tool_call_projections`, which the committed multi-file patch fixture exercises, and the second added `nonterminal_tool_events`, §4) |
 | the assistant message's own completion instant the importer requires | written for every assistant message from the record's own instant, `×4` in §1 — the member whose absence the harness accepts and then drops the message over (§0), disclosed as `assistant_completion_instant`; the read-back is the check that caught it |
 | the tool call and its recorded result | `[('toolu_01Example0000000000000000', 'Read', 'completed')]` in the harness's own document (§2) — the same call id and name the source recorded, with the result's own text as the part's completed state |
 | the compaction boundary | `{"type": "compaction", … "status": "completed", "reason": "auto", "summary": "Summary: the retry policy caps attempts at four…` (§2) — the source's own summary, with the harness's own `reason` vocabulary (`auto`) disclosed as `compaction_reason` |
@@ -520,10 +663,11 @@ block (`scripts/tests/test_evidence_claims.py`, which this record is registered 
 - **The user count of a read-back includes the compaction row.** The inherited reader reads a compaction row as
   a system record under the user role, so a read-back of a 7-message document reports
   `user_messages: 3`; the boundary count names the same row, and the comparison itself is itemwise.
-- **The 36 loss categories are the writer's own vocabulary, not a claim about the harness's behaviour.** A
+- **The 37 loss categories are the writer's own vocabulary, not a claim about the harness's behaviour.** A
   category whose count is zero is still named (that is what makes a missing category a defect), and each
-  non-zero one is disclosed with its own sentence. (They were 35 when this record's runs in §1–§3 were made;
-  the review round below added `coalesced_tool_call_projections`.)
+  non-zero one is disclosed with its own sentence. (They were 35 when this record's runs in §1–§3 were
+  made; the first review round added `coalesced_tool_call_projections` and the second added
+  `nonterminal_tool_events`.)
 - **§1–§3 quote the runs they name, at the tree they ran on.** Their transcripts are those runs' own bytes:
   the printed resume line in them names the data root alone, because the store's database was pinned beside
   it later (§4's review round), and their check counts (27 offline, 31 with a turn) are that round's step

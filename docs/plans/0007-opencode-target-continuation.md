@@ -121,9 +121,9 @@ writer emits `{info, messages}` in that order):
 | each **assistant** message | an assistant message's dialogue, reasoning and calls | `{id, time:{created,completed}, type:"assistant", agent, model, content:[…]}` |
 | — dialogue | the message's dialogue projection | one `{type:"text", text}` block |
 | — reasoning | the message's persisted reasoning trace | one `{type:"reasoning", text}` block (no `native`: the read answers no provider-native payload) |
-| — tool call with a recorded, non-empty result | the call and its paired result | one `{type:"tool", id, name, state, time:{created,completed}}` block with `state.status` `"completed"` (`input` = the recorded input object, `content:[{type:"text", text:<the result text>}]`) or `"error"` (`error:{type:"tool.execution", message:<the result text>}`) |
+| — tool call with a recorded, non-empty **outcome** | the call and its paired terminal result | one `{type:"tool", id, name, state, time:{created,completed}}` block with `state.status` `"completed"` (`input` = the object written for the call's own input, `content:[{type:"text", text:<the result text>}]`) or `"error"` (`error:{type:"tool.execution", message:<the result text>}`). A result event whose status is progress rather than an outcome (the inherited readers' `running`/`pending`/`streaming`/`started`/`in_progress`: a Codex subagent notification streams in while its call executes) is **not** an outcome: the terminal event the same call recorded is what the part carries (counted as `nonterminal_tool_events`), and a call whose read holds only progress has no outcome here (counted as `unpaired_tool_calls`) |
 | a compaction boundary | a record the source marked as a boundary | `{id, type:"compaction", time, status:"completed", reason:"auto", summary}` |
-| timestamps | the recorded timestamps | message `time.created`; a message's `time.completed` and a tool result's `time.completed` are the result's own recorded instant (the message's, where the result answered none) |
+| timestamps | the recorded timestamps | a message's `time.created` is its own record's instant; a message's `time.completed` is that same instant (a zero-length turn: the read answers one instant per record, `assistant_completion_instant`); a tool part's `time.created` is the call's record instant and its `time.completed` the instant of the record the carried result was recorded on (the call's own, where the result came from the archive's derived summary), both through the clock |
 | the document's message order | the read's own order | the order the conversation document holds (the importer assigns `seq` from it) |
 
 ### 2.3 Mapping rules, category by category
@@ -134,7 +134,8 @@ counted with the same shape (`Loss{Category, Count, Detail}`), and OpenCode-spec
 | Category | Rule | Why |
 | --- | --- | --- |
 | `dialogueText`, `whitespace_only_dialogue`, `reasoning_text`, `generated_call_ids`, `coalesced_tool_call_projections`, `empty_tool_inputs`, `unpaired_tool_results`, `empty_tool_results`, `whitespace_only_tool_results`, `unrepresentable_result_blocks`, `tool_result_statuses`, `unresolved_tool_outputs`, `system_records`, `tool_role_messages`, `unclassified_role_messages`, `empty_assistant_messages`, `empty_user_messages`, `non_dialogue_content`, `sidechain_messages`, `pre_compaction_history`, `empty_compaction_summary`, `unresolved_source_parents` | the family's rules, unchanged in meaning (the source read's own projections, the pairing of results to calls, the empty-evidence counters) | one loss vocabulary for every route |
-| `unpaired_tool_calls` | a call the source recorded with no result at all: **left out** and counted | the importer accepts only `completed`/`error` tool states (measured); writing `pending` is refused, and inventing an error would fabricate a result |
+| `unpaired_tool_calls` | a call the source recorded with no outcome — no result at all, or only progress events: **left out** and counted | the importer accepts only `completed`/`error` tool states (measured); writing `pending` is refused, and inventing an error would fabricate a result |
+| `nonterminal_tool_events` | a result event the read records as progress (`running`/`pending`/`streaming`/`started`/`in_progress`): **not written**; the terminal event the same call recorded is what the part carries, and a call with only progress is counted as `unpaired_tool_calls` | the harness's tool states are `completed` and `error`; writing a progress event's text under `completed` would state an outcome the source had not recorded when it wrote those words (measured source shape: a Codex subagent's `running` notification followed by its completion) |
 | `empty_tool_results` | a call whose recorded result text is empty: the call is **left out** and counted | a `completed` state needs a non-empty text (measured); the empty result is a projection, not an instruction to invent |
 | `message_model_attribution` | the provider on every assistant record is the **target home's own** answer where the harness was asked, and the model id is the source's where the read answered one, else the target home's — and the empty id where neither answered (measured: the member is required, its values need not be), which the report's own detail names | the read answers the source's model but no endpoint; the member cannot be left out, and no model this build cannot name is invented for it |
 | `target_model_binding` | `info.model` written from the harness's own answer (or omitted, with its detail, when it answered none) | a turn runs under this binding; the source's model there would be a claim about the target's endpoint |
@@ -245,7 +246,7 @@ cd <cwd> && XDG_DATA_HOME=<data root> opencode run --standalone --session <id> -
 
 | `Done when` clause | Artifact |
 | --- | --- |
-| a representative Claude-origin conversation becomes a newly identifiable OpenCode session, verified by a native load/export/resume path | `scripts/opencode-native-check.py` (default direction `claude-to-opencode`): the CLI's `ccc continue claude:<fixture> --to opencode --target-home <scratch> --json` report, the harness's own `session export` answering with the installed session's id and its messages, `session list` from the session's own directory showing it, and — with `--resume-prompt` — one real turn whose answer and whose session growth (message count through the harness's own export) the record quotes |
+| a representative Claude-origin conversation becomes a newly identifiable OpenCode session, verified by a native load/export/resume path | `scripts/opencode-native-check.py` (default direction `claude-to-opencode`): the CLI's `ccc continue claude:<fixture> --to opencode --target-home <scratch> --verify load --json` report, the harness's own `session export` answering with the installed session's id and its messages, `session list` from the session's own directory showing it, and — with `--resume-prompt` — one real turn (the check's own, run through the report's exec-form vector, read against the harness the check probed and the session the conversion installed; the conversion itself verifies at `load` and runs no turn, so one request is one turn) whose answer and whose session growth (message count through the harness's own export) the record quotes |
 | import without clobbering another session or modifying the source; a failed/partial import is truthful and recoverable | the native check's planted unrelated session (digested before/after), the source tree's digests, the import-probe cases in `internal/ccc/opencode_install_test.go` (an existing id refuses; an "already exists" answer is not-installed; a failed import reports the harness's own words), and §0's measured "a refused import leaves the store unchanged" |
 | the target preserves the supported dialogue and tool evidence; omissions are disclosed with source-related evidence | the route's writer tests over the committed Claude fixture (dialogue, reasoning, calls/results, boundary), the structure read-back through the inherited OpenCode reader, the native check's comparison of the harness's own export against what the conversion reported, and every run's counted losses |
 | the Claude-to-Codex route and source-side parity remain intact; the ordinary command and JSON output describe OpenCode target support and its version limitations | the existing suites unchanged (Codex/Claude/Pi/OMP route tests, `continue_growth_test.go`), `parity` on an unchanged carry, `cmd/ccc`'s help/report tests, and the gate's transcript in the evidence record |
@@ -283,6 +284,20 @@ subcommand; the build carries it last on the subcommands that take no terminator
 --directory <dir> --standalone`, `session export <id> --standalone`, `debug agents --standalone`) and
 immediately after `run` on the resume turn, whose words follow the terminator (`run --standalone
 --session <id> -- <prompt>`).
+
+Two further measurements were added by the review round's fixes (`338df94..37366ff`): a result event the
+read records as progress is not the call's outcome — the terminal event the same call recorded is what
+the part carries (the source shape is the inherited Codex reader's subagent notification stream:
+`running`, then `completed`), and a call whose read holds only progress has no outcome here — and the
+values the round-trip comparison asks about are the ones actually written: a tool part's `completed` is
+the instant of the record the carried result was recorded on, and a tool-call item carries the object the
+part's `input` member holds (the empty object where the source's value is not one), with the source's own
+input still counted as `empty_tool_inputs`. The native check now runs
+the **report's own** exec-form vector for its turn — read against the harness it probed, the session it
+installed, the flag's position and the placeholder — instead of reconstructing the words, and the
+conversion is asked for `--verify load`, so one `--resume-prompt` is one real turn. Its named
+`--target-home` is read through the harness's own rule first (a directory whose own name is `opencode` is
+the data directory itself), so the conversion and the check read one store.
 
 ## 7. Gate, docs, bookkeeping
 

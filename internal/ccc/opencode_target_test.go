@@ -247,6 +247,31 @@ func TestConvertToOpenCodeSessionCarriesTheFixturesEvidence(t *testing.T) {
 	openCodeRequireLoss(t, session, "unpaired_tool_calls", 0)
 	openCodeRequireLoss(t, session, "empty_tool_results", 0)
 	openCodeRequireLoss(t, session, "reasoning_text", 0)
+	// The fixture's tool part carries the two records' own instants: the call's record at 09:15:06.000Z
+	// and the result's at 09:15:06.500Z, which the committed bytes record half a second apart. A part
+	// whose `completed` was the call's own instant would state a call the source did not record.
+	var document openCodeDocument
+	if err := json.Unmarshal(session.Data, &document); err != nil {
+		t.Fatalf("the document does not parse: %v", err)
+	}
+	callAt := time.Date(2026, 5, 4, 9, 15, 6, 0, time.UTC)
+	toolParts := 0
+	for _, message := range document.Messages {
+		for _, part := range message.Content {
+			if part.Type != openCodePartTool {
+				continue
+			}
+			toolParts++
+			if part.Time == nil || part.Time.Created != callAt.UnixMilli() ||
+				part.Time.Completed != callAt.Add(500*time.Millisecond).UnixMilli() {
+				t.Errorf("the fixture's tool part time = %+v, want created %d and completed %d",
+					part.Time, callAt.UnixMilli(), callAt.Add(500*time.Millisecond).UnixMilli())
+			}
+		}
+	}
+	if toolParts != 1 {
+		t.Errorf("the document holds %d tool part(s), want the fixture's one call", toolParts)
+	}
 	// Every assistant message written carries the completion instant the importer requires (measured:
 	// without it the harness accepts the document and drops the message), and the report names that the
 	// source answered no span for it.
@@ -329,6 +354,11 @@ func TestOpenCodeToolPartsCarryOnlyWhatTheImporterAccepts(t *testing.T) {
 				openCodeTestCall("call-noinput", "Read", ""),
 				openCodeTestCall("call-repeated", "Read", `{"file_path":"/z"}`),
 				openCodeTestCall("call-blocks", "Read", `{"file_path":"/w"}`),
+				// The raw-text input shape the inherited Codex reader passes through unchanged for a
+				// `custom_tool_call` (internal/parser's extractCodexInputJSON): not an object, so the
+				// importer's required `input` member is written as the empty object and the replacement
+				// is what the report names.
+				openCodeTestCall("call-rawinput", "apply_patch", "*** Begin Patch\n*** End Patch"),
 			},
 		},
 		Message{Role: "user", Timestamp: at.Add(time.Second), ToolResults: []ToolResult{
@@ -339,6 +369,7 @@ func TestOpenCodeToolPartsCarryOnlyWhatTheImporterAccepts(t *testing.T) {
 			openCodeTestResult("call-repeated", "completed", `"first"`),
 			openCodeTestResult("call-repeated", "completed", `"second"`),
 			openCodeTestResult("call-blocks", "completed", `[{"type":"text","text":"shown"},{"type":"image","source":{"data":"AAAA"}}]`),
+			openCodeTestResult("call-rawinput", "completed", `"applied"`),
 			openCodeTestResult("call-nowhere", "completed", `"orphan"`),
 		}},
 	)
@@ -366,6 +397,16 @@ func TestOpenCodeToolPartsCarryOnlyWhatTheImporterAccepts(t *testing.T) {
 	if ok.Time == nil || ok.Time.Created == 0 || ok.Time.Completed == 0 {
 		t.Errorf("call-ok time = %+v, want the required created/completed pair", ok.Time)
 	}
+	// The pair's own instants are the records they were recorded on: the call's own message for
+	// `created`, and the message the result travelled on for `completed` -- a call written with its own
+	// instant twice would state a zero-length call the source did not record.
+	if ok.Time.Created != at.UnixMilli() {
+		t.Errorf("call-ok created = %d, want the call record's own instant %d", ok.Time.Created, at.UnixMilli())
+	}
+	if ok.Time.Completed != at.Add(time.Second).UnixMilli() {
+		t.Errorf("call-ok completed = %d, want the result record's own instant %d",
+			ok.Time.Completed, at.Add(time.Second).UnixMilli())
+	}
 	failed := parts["call-failed"]
 	if failed.State == nil || failed.State.Status != openCodeToolError || failed.State.Error == nil ||
 		failed.State.Error.Type != openCodeToolErrorType || failed.State.Error.Message != "permission denied" {
@@ -388,6 +429,33 @@ func TestOpenCodeToolPartsCarryOnlyWhatTheImporterAccepts(t *testing.T) {
 	if noinput.State == nil || string(noinput.State.Input) != "{}" {
 		t.Errorf("call-noinput state = %+v, want the empty object the importer requires", noinput.State)
 	}
+	rawinput := parts["call-rawinput"]
+	if rawinput.State == nil || string(rawinput.State.Input) != "{}" {
+		t.Errorf("call-rawinput state = %+v, want the empty object the importer requires for an input "+
+			"that is not one", rawinput.State)
+	}
+	// The round-trip walk compares the store against what was written, so the call's item carries the
+	// input the part's own member holds -- the empty object where the recorded value is not one, the
+	// source's own value (the store keeps the value and re-encodes the spelling) otherwise. The source's
+	// own input is still what the run accounts for, which is the empty_tool_inputs caveat's own count.
+	items := map[string]TargetItem{}
+	for _, item := range session.Items {
+		if item.Kind == ItemToolCall {
+			items[item.CallID] = item
+		}
+	}
+	for callID, want := range map[string]string{
+		"call-ok":       `{"file_path":"/x"}`,
+		"call-noinput":  "{}",
+		"call-rawinput": "{}",
+	} {
+		if item, present := items[callID]; !present {
+			t.Errorf("no tool-call item for %s", callID)
+		} else if item.InputJSON != want {
+			t.Errorf("%s item input = %q, want %q: the item carries what the part holds",
+				callID, item.InputJSON, want)
+		}
+	}
 	blocks := parts["call-blocks"]
 	if blocks.State == nil || len(blocks.State.Content) != 1 || blocks.State.Content[0].Text != "shown" {
 		t.Errorf("call-blocks = %+v, want the text channel's own text", blocks)
@@ -395,12 +463,13 @@ func TestOpenCodeToolPartsCarryOnlyWhatTheImporterAccepts(t *testing.T) {
 	openCodeRequireLoss(t, session, "unpaired_tool_calls", 1)
 	openCodeRequireLoss(t, session, "empty_tool_results", 1)
 	openCodeRequireLoss(t, session, "repeated_tool_results", 1)
+	openCodeRequireLoss(t, session, "nonterminal_tool_events", 0)
 	openCodeRequireLoss(t, session, "unpaired_tool_results", 1)
-	openCodeRequireLoss(t, session, "empty_tool_inputs", 1)
+	openCodeRequireLoss(t, session, "empty_tool_inputs", 2)
 	openCodeRequireLoss(t, session, "tool_result_statuses", 0)
 	openCodeRequireLoss(t, session, "unrepresentable_result_blocks", 1)
-	if session.Carried.ToolCalls != 5 || session.Carried.ToolResults != 5 {
-		t.Errorf("carried = %+v, want the five calls whose parts were written", session.Carried)
+	if session.Carried.ToolCalls != 6 || session.Carried.ToolResults != 6 {
+		t.Errorf("carried = %+v, want the six calls whose parts were written", session.Carried)
 	}
 }
 
@@ -449,6 +518,77 @@ func TestOpenCodeFlatTargetOmitsABranchAndCountsIt(t *testing.T) {
 	}
 	openCodeRequireLoss(t, session, "unresolved_source_parents", 1)
 	openCodeRequireLoss(t, session, "inactive_branch_records", 0)
+}
+
+// TestOpenCodeCarriesATerminalOutcomeRatherThanProgress pins the rule the plan's own selection follows:
+// a call whose read records a progress event and then its outcome carries the outcome -- the terminal
+// event the source recorded is what the part states, and the progress text is not written as a completed
+// outcome the source never recorded. The shape is the inherited Codex reader's own: a subagent
+// notification stream (`running` while the call executes, then `completed`), whose two events live on the
+// call's own record (internal/parser/codex_parser_test.go's "running subagent notification does not
+// suppress later completion").
+func TestOpenCodeCarriesATerminalOutcomeRatherThanProgress(t *testing.T) {
+	at := time.UnixMilli(1_700_000_000_000).UTC()
+	conversation := openCodeTestConversation(
+		Message{Role: "user", Dialogue: "run a child agent", DialogueProjected: true,
+			Content: "run a child agent", Timestamp: at},
+		Message{Role: "assistant", Dialogue: "spawning", DialogueProjected: true, Content: "spawning",
+			Timestamp: at.Add(time.Second),
+			ToolCalls: []ToolCall{openCodeTestCall("call_spawn", "spawn_agent", `{"agent_type":"awaiter"}`)},
+			ToolResults: []ToolResult{
+				openCodeTestResult("call_spawn", "running", "Still working"),
+				openCodeTestResult("call_spawn", "completed", "Finished successfully"),
+			}},
+	)
+	session, err := ConvertToOpenCodeSession(conversation, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	if strings.Contains(string(session.Data), "Still working") {
+		t.Error("the progress event's text was written into the document: a call's outcome is the " +
+			"terminal event the source recorded, not the progress it streamed while executing")
+	}
+	var document openCodeDocument
+	if err := json.Unmarshal(session.Data, &document); err != nil {
+		t.Fatalf("the document does not parse: %v", err)
+	}
+	var spawn openCodePart
+	for _, message := range document.Messages {
+		for _, part := range message.Content {
+			if part.Type == openCodePartTool && part.ID == "call_spawn" {
+				spawn = part
+			}
+		}
+	}
+	if spawn.State == nil || spawn.State.Status != openCodeToolCompleted || len(spawn.State.Content) != 1 ||
+		spawn.State.Content[0].Text != "Finished successfully" {
+		t.Errorf("call_spawn part = %+v, want the terminal event's own text under `completed`", spawn)
+	}
+	openCodeRequireLoss(t, session, "nonterminal_tool_events", 1)
+	openCodeRequireLoss(t, session, "repeated_tool_results", 0)
+	openCodeRequireLoss(t, session, "tool_result_statuses", 0)
+	openCodeRequireLoss(t, session, "unpaired_tool_calls", 0)
+
+	// A call whose read holds only progress has no outcome here: no part is written for it (the harness's
+	// states have no word for a call that is still executing), the progress event is counted, and the call
+	// itself is counted as having no outcome rather than written with the progress text under `completed`.
+	progressOnly := openCodeTestConversation(
+		Message{Role: "assistant", Dialogue: "spawning", DialogueProjected: true, Content: "spawning",
+			Timestamp:   at,
+			ToolCalls:   []ToolCall{openCodeTestCall("call_pending", "spawn_agent", `{"agent_type":"awaiter"}`)},
+			ToolResults: []ToolResult{openCodeTestResult("call_pending", "running", "Still working")}},
+	)
+	session, err = ConvertToOpenCodeSession(progressOnly, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting a call with only progress: %v", err)
+	}
+	if strings.Contains(string(session.Data), "Still working") {
+		t.Error("a progress-only event's text was written as the call's outcome")
+	}
+	openCodeRequireLoss(t, session, "nonterminal_tool_events", 1)
+	openCodeRequireLoss(t, session, "unpaired_tool_calls", 1)
+	openCodeRequireLoss(t, session, "repeated_tool_results", 0)
+	openCodeRequireNoToolPart(t, session)
 }
 
 // TestOpenCodePlansNoEvidenceFromARecordItWillNotWrite pins the two passes' own consistency: the plan

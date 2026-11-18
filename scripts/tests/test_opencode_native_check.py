@@ -108,12 +108,40 @@ def document(messages: int, session_id: str = SESSION, answer: str | None = None
     return {"info": {"id": session_id}, "messages": stored[:messages]}
 
 
+#: The harness path the report's own invocations name, as the cases hand it to the conversion: one
+#: absolute word, so the program word of a report's vector and the harness this check probed are the same
+#: word (the shipped check reads them with ``Path``, so a case can drive either flavour).
+OPENCODE = "/usr/local/bin/opencode"
+
 #: The path flavours a case drives the check with: this host's own, and Windows' answer on any host. The
 #: printed line is read the way a POSIX shell reads it, and a Windows-spelled path holds a backslash, which
 #: an unquoted word hands to the shell as an escape -- so the line is only readable because
 #: ``internal/ccc/continue.go``'s ``shellQuote`` quotes it, and a case that spelled the line by hand for
 #: one host alone held only on that host (the shape the ``windows-latest`` job failed on).
 PATH_FLAVOURS = (Path, PureWindowsPath)
+
+#: One report target as the shipped checks read it: the two argument vectors the route prints (the plain
+#: form with the empty prompt, the exec form with the placeholder), and the environment the printed line
+#: sets -- this run's own data root and the store's own database pinned beside it. A case overrides one
+#: member to drive the rule it is about.
+def turn_target(flavour=Path, session_id: str = SESSION, *, host: str = OPENCODE,
+                data_root: str = "/data", store: str = "/data/opencode/opencode.db") -> dict:
+    environment = {NATIVE_CHECK.OPENCODE_DATA_ROOT_ENV: str(flavour(data_root)),
+                   NATIVE_CHECK.OPENCODE_DB_ENV: str(flavour(store))}
+    return {
+        "session_id": session_id,
+        "resume_arguments": [host, "run", "--standalone", "--session", session_id, "--", ""],
+        "exec_resume_arguments": [host, "run", "--standalone", "--session", session_id, "--",
+                                  NATIVE_CHECK.PROMPT_PLACEHOLDER],
+        "resume_environment": environment,
+    }
+
+
+def vector_check(arguments_field: str, prompt_name: str) -> str:
+    """The record name the shipped check's own vector reading produces for one form, so a case asserts on
+    the record rather than on a copy of its wording."""
+    return (f"the report's {arguments_field} names the harness this run probed, this session and "
+            f"{prompt_name}")
 
 
 def invocation(workspace, environment: dict[str, str], arguments: list[str]) -> str:
@@ -144,8 +172,10 @@ class HarnessInvocationSpelling(unittest.TestCase):
                          ["debug", "--standalone", "agents"])
 
     def test_the_turn_does_not_carry_the_flag_past_the_terminator(self) -> None:
-        """The defect this rule exists for, driven through the turn the resume stage runs: the flag after
-        ``--`` is the prompt's, and a turn whose records a service holds elsewhere is not this run's."""
+        """The defect this rule exists for, driven through the turn the resume stage runs: the turn is
+        the report's own exec-form vector with the prompt substituted for its placeholder, the flag stands
+        on the subcommand's own side of the ``--`` terminator, and the vector named the session this
+        check's own reader resolved."""
         calls: list[list[str]] = []
 
         def fake_run(command, cwd=None, env=None, timeout=None, replace_env=False):
@@ -153,38 +183,64 @@ class HarnessInvocationSpelling(unittest.TestCase):
             return completed(stdout=ANSWER)
 
         args = mock.Mock(resume_prompt="say hello", expect=None)
-        target = {"session_id": SESSION}
+        target = turn_target()
         with mock.patch.object(NATIVE_CHECK, "run", side_effect=fake_run), \
              mock.patch.object(NATIVE_CHECK, "export_document",
                                side_effect=[(document(3), "ok", 0),
                                             (document(6, answer=ANSWER), "ok", 0)]):
             with recorded():
-                NATIVE_CHECK._run_turn(args, target, "opencode", Path("/data"), Path("/workspace"))
+                NATIVE_CHECK._run_turn(args, target, OPENCODE, Path("/data"),
+                                       Path("/data/opencode/opencode.db"), Path("/workspace"))
         self.assertEqual(len(calls), 1)
         turn = calls[0]
-        self.assertIn("--standalone", turn)
+        self.assertEqual(turn, [OPENCODE, "run", "--standalone", "--session", SESSION, "--", "say hello"],
+                         "the turn is not the reported invocation with the prompt substituted")
         self.assertLess(turn.index("--standalone"), turn.index("--"),
                         f"the flag is on the prompt's side of the terminator: {turn}")
         self.assertLess(turn.index("--standalone"), turn.index("--session"))
-        self.assertEqual(turn[-1], "say hello")
+
+    def test_a_turn_whose_reported_invocation_is_not_this_turns_never_runs(self) -> None:
+        """A report whose exec vector names another session is not this conversion's turn: the check
+        records the failure and runs nothing, instead of running a corrected command of its own."""
+        calls: list[list[str]] = []
+
+        def fake_run(command, cwd=None, env=None, timeout=None, replace_env=False):
+            calls.append(list(command))
+            return completed(stdout=ANSWER)
+
+        target = turn_target(session_id=UNKNOWN)
+        target["session_id"] = SESSION
+        with mock.patch.object(NATIVE_CHECK, "run", side_effect=fake_run):
+            with recorded() as results:
+                NATIVE_CHECK._run_turn(mock.Mock(resume_prompt="a turn", expect=None), target, OPENCODE,
+                                       Path("/data"), Path("/data/opencode/opencode.db"),
+                                       Path("/workspace"))
+                states = {name: state for name, state, _ in results}
+        self.assertEqual(calls, [], "a turn ran although the reported invocation named another session")
+        self.assertEqual(states["the turn ran through the printed invocation and exited 0"], "FAIL")
 
 
 class HarnessEnvironment(unittest.TestCase):
     """Every harness command this check runs gets the check's own complete environment: the data root
-    named and the database override removed, so an inherited ``OPENCODE_DB`` cannot send the command to a
-    store this run did not choose -- and the Go side, which genuinely removes the name, and the setup the
-    check's own commands run against are then the same store. What these cases read is the environment
-    that reaches ``subprocess.run``, not the dictionary the check built: the pre-fix shape merged that
-    dictionary onto this process's own environment, which restores the removed name.
+    named and (for the setup commands) the database override removed, so an inherited ``OPENCODE_DB``
+    cannot send the command to a store this run did not choose -- and the Go side, which genuinely removes
+    the name there, and the setup the check's own commands run against are then the same store. The resume
+    turn is the exception, and only in shape: it runs the environment the *report* names, which pins the
+    store's own database file (a printed line can set a variable but not remove one), so this check's
+    case asserts the reported pin reaches the child over the caller's inherited value. What these cases
+    read is the environment that reaches ``subprocess.run``, not the dictionary the check built: the
+    pre-fix shape merged that dictionary onto this process's own environment, which restores the removed
+    name.
 
     Each case drives both path flavours (``PATH_FLAVOURS``) and compares against ``str`` of the object the
     check was handed: the check writes that object's own spelling, and a spelled-out ``/data`` holds only
     on a host where a path written with a leading slash spells back the same -- not on Windows, where
     ``str(Path("/data"))`` is ``\\data``, the answer the ``windows-latest`` job gave this pair."""
 
-    #: The data root handed to the check, as text: each case spells it with the path flavour it drives the
-    #: check with, so no separator is hard-coded for one host.
+    #: The data root and store handed to the check, as text: each case spells them with the path flavour it
+    #: drives the check with, so no separator is hard-coded for one host.
     DATA_ROOT = "/data"
+    STORE = "/data/opencode/opencode.db"
 
     def test_one_harness_command_removes_an_inherited_database_override(self) -> None:
         for flavour in PATH_FLAVOURS:
@@ -209,34 +265,31 @@ class HarnessEnvironment(unittest.TestCase):
                 self.assertEqual(environment.get(NATIVE_CHECK.OPENCODE_DATA_ROOT_ENV), str(data_root),
                                  "the check's own data root did not reach the harness command")
 
-    def test_the_resume_turn_removes_an_inherited_database_override(self) -> None:
+    def test_the_resume_turn_runs_the_reported_store_over_an_inherited_override(self) -> None:
         for flavour in PATH_FLAVOURS:
             with self.subTest(flavour=flavour.__name__):
-                data_root = flavour(self.DATA_ROOT)
-                captured: list[tuple[list[str], dict[str, str]]] = []
+                data_root, store = flavour(self.DATA_ROOT), flavour(self.STORE)
+                captured: list[dict[str, str]] = []
 
                 def fake_subprocess_run(command, **kwargs):
-                    captured.append((list(command), dict(kwargs.get("env") or {})))
+                    captured.append(dict(kwargs.get("env") or {}))
                     return completed(stdout="{}")
 
+                target = turn_target(flavour)
                 with mock.patch.dict(os.environ, {"OPENCODE_DB": "/tmp/caller-elsewhere.db"}), \
-                     mock.patch.object(NATIVE_COMMON.subprocess, "run",
-                                       side_effect=fake_subprocess_run), \
+                     mock.patch.object(NATIVE_COMMON.subprocess, "run", side_effect=fake_subprocess_run), \
                      mock.patch.object(NATIVE_CHECK, "export_document",
                                        side_effect=[(document(3), "ok", 0),
                                                     (document(6, answer=ANSWER), "ok", 0)]):
                     with recorded():
                         NATIVE_CHECK._run_turn(mock.Mock(resume_prompt="a turn", expect=ANSWER),
-                                               {"session_id": SESSION}, "opencode", data_root,
-                                               flavour("/workspace"))
-                    # The removal is the child's: this process still carries the caller's own value.
+                                               target, OPENCODE, data_root, store, flavour("/workspace"))
+                    # The override is the child's to drop: this process still carries the caller's own value.
                     self.assertEqual(os.environ.get("OPENCODE_DB"), "/tmp/caller-elsewhere.db")
-                turns = [(command, environment) for command, environment in captured
-                         if command[1:2] == ["run"]]
-                self.assertEqual(len(turns), 1, f"the turn command was not the one run: {captured}")
-                _, environment = turns[0]
-                self.assertNotIn("OPENCODE_DB", environment,
-                                 "an inherited database override reached the resume turn")
+                self.assertEqual(len(captured), 1, "the turn did not reach subprocess.run")
+                environment = captured[0]
+                self.assertEqual(environment.get(NATIVE_CHECK.OPENCODE_DB_ENV), str(store),
+                                 "the turn did not run the store the report pinned")
                 self.assertEqual(environment.get(NATIVE_CHECK.OPENCODE_DATA_ROOT_ENV), str(data_root))
 
 
@@ -260,26 +313,21 @@ class PrintedInvocation(unittest.TestCase):
     WORKSPACE = "/workspace"
 
     def target(self, flavour=Path, environment: dict | None = None) -> dict:
-        # The report's own two halves: the argument vector it prints begins with the program word, and the
-        # command is that vector beside the environment assignments the renderer sorts.
-        arguments = ["opencode", "run", "--standalone", "--session", SESSION, "--", "hello"]
-        if environment is None:
-            environment = {NATIVE_CHECK.OPENCODE_DATA_ROOT_ENV: str(flavour(self.DATA_ROOT)),
-                           NATIVE_CHECK.OPENCODE_DB_ENV: str(flavour(self.STORE))}
-        command = invocation(flavour(self.WORKSPACE), environment, arguments)
-        return {
-            "session_id": SESSION,
-            "resume_command": command,
-            "resume_arguments": arguments,
-            "exec_resume_command": command,
-            "exec_resume_arguments": arguments,
-            "resume_environment": environment,
-        }
+        # The report's own two halves: each argument vector the report prints begins with the program
+        # word, and each command is that vector beside the environment assignments the renderer sorts.
+        target = turn_target(flavour)
+        if environment is not None:
+            target["resume_environment"] = environment
+        for field, arguments_field in (("resume_command", "resume_arguments"),
+                                       ("exec_resume_command", "exec_resume_arguments")):
+            target[field] = invocation(flavour(self.WORKSPACE), target["resume_environment"],
+                                       target[arguments_field])
+        return target
 
     def check(self, target: dict, flavour=Path) -> dict[str, str]:
         with recorded() as records:
-            NATIVE_CHECK._check_invocation(target, flavour(self.WORKSPACE), flavour(self.DATA_ROOT),
-                                           flavour(self.STORE))
+            NATIVE_CHECK._check_invocation(target, OPENCODE, flavour(self.WORKSPACE),
+                                           flavour(self.DATA_ROOT), flavour(self.STORE))
             return {name: state for name, state, _ in records}
 
     def test_a_line_pinning_the_store_reads_as_the_invocation(self) -> None:
@@ -294,6 +342,10 @@ class PrintedInvocation(unittest.TestCase):
                 self.assertEqual(
                     states["the printed exec_resume_command reads as a POSIX shell line naming the session"],
                     "PASS")
+                self.assertEqual(states[vector_check("resume_arguments", "the empty prompt")], "PASS")
+                self.assertEqual(
+                    states[vector_check("exec_resume_arguments", f"the {NATIVE_CHECK.PROMPT_PLACEHOLDER!r} placeholder")],
+                    "PASS")
 
     def test_a_line_naming_only_the_root_is_not_the_invocation(self) -> None:
         for flavour in PATH_FLAVOURS:
@@ -306,6 +358,43 @@ class PrintedInvocation(unittest.TestCase):
                     states["the printed resume_command reads as a POSIX shell line naming the session"],
                     "FAIL")
 
+    def test_a_pair_agreeing_with_itself_but_naming_another_session_is_not_this_turn(self) -> None:
+        """The rule the review round's fifth finding is about: the line checks compare each rendered
+        command with the report's own vector, so a consistently wrong pair -- another session, no
+        ``--standalone``, the wrong prompt word -- can agree with itself. The vectors are read against this
+        check's own harness and this conversion's session, so those pairs fail on the vector's own record
+        while the line records still pass."""
+        cases = (
+            ("another session", lambda target: target.update({
+                "resume_arguments": [OPENCODE, "run", "--standalone", "--session", UNKNOWN, "--", ""],
+                "exec_resume_arguments": [OPENCODE, "run", "--standalone", "--session", UNKNOWN, "--",
+                                          NATIVE_CHECK.PROMPT_PLACEHOLDER]})),
+            ("no --standalone", lambda target: target.update({
+                "resume_arguments": [OPENCODE, "run", "--session", SESSION, "--", ""],
+                "exec_resume_arguments": [OPENCODE, "run", "--session", SESSION, "--",
+                                          NATIVE_CHECK.PROMPT_PLACEHOLDER]})),
+            ("the wrong prompt word", lambda target: target.update({
+                "resume_arguments": [OPENCODE, "run", "--standalone", "--session", SESSION, "--", "hello"],
+                "exec_resume_arguments": [OPENCODE, "run", "--standalone", "--session", SESSION, "--",
+                                          "hello"]})),
+        )
+        for name, mutate in cases:
+            with self.subTest(case=name):
+                target = self.target(Path)
+                mutate(target)
+                for field, arguments_field in (("resume_command", "resume_arguments"),
+                                               ("exec_resume_command", "exec_resume_arguments")):
+                    target[field] = invocation(Path(self.WORKSPACE), target["resume_environment"],
+                                               target[arguments_field])
+                states = self.check(target, Path)
+                # The line and the vector agree word for word; what fails is the vector's own reading.
+                self.assertEqual(
+                    states["the printed exec_resume_command reads as a POSIX shell line naming the session"],
+                    "PASS")
+                self.assertEqual(states[vector_check("exec_resume_arguments",
+                                                     f"the {NATIVE_CHECK.PROMPT_PLACEHOLDER!r} placeholder")],
+                                 "FAIL")
+
 
 class ResumeStage(unittest.TestCase):
     """One real turn is a resumed session only when the harness's own reader reads the store differently
@@ -314,12 +403,13 @@ class ResumeStage(unittest.TestCase):
     def drive(self, before: dict, after: dict, stdout: str = ANSWER,
               expect: str | None = ANSWER) -> list[tuple[str, str, str]]:
         args = mock.Mock(resume_prompt="a turn", expect=expect)
-        target = {"session_id": SESSION}
+        target = turn_target()
         with mock.patch.object(NATIVE_CHECK, "run", return_value=completed(stdout=stdout)), \
              mock.patch.object(NATIVE_CHECK, "export_document",
                                side_effect=[(before, "ok", 0), (after, "ok", 0)]):
             with recorded() as results:
-                NATIVE_CHECK._run_turn(args, target, "opencode", Path("/data"), Path("/workspace"))
+                NATIVE_CHECK._run_turn(args, target, OPENCODE, Path("/data"),
+                                       Path("/data/opencode/opencode.db"), Path("/workspace"))
                 return list(results)
 
     def test_a_grown_session_is_a_resumed_session(self) -> None:
@@ -482,6 +572,79 @@ class PlantedSession(unittest.TestCase):
                 states = {name: state for name, state, _ in results}
         self.assertEqual(states["the planted session is removed through the harness's own session delete"],
                          "FAIL")
+
+
+class DataRootRule(unittest.TestCase):
+    """A target root whose own name is ``opencode`` is the data directory itself: the harness's own rule
+    (mirrored from ``internal/ccc/opencode_install.go``'s ``openCodeDataRoot``) makes its parent the
+    environment root, so the check's harness commands, the conversion's ``--target-home`` and the store
+    this run reads are one directory -- not ``<argument>/opencode`` beside ``<argument>``."""
+
+    def test_a_directory_named_opencode_is_the_data_directory_itself(self) -> None:
+        for flavour in PATH_FLAVOURS:
+            with self.subTest(flavour=flavour.__name__):
+                named = flavour("/data") / NATIVE_CHECK.OPENCODE_DATA_DIR
+                self.assertEqual(NATIVE_CHECK.opencode_data_root_of(named), flavour("/data"),
+                                 "a named data directory did not resolve to its parent root")
+                self.assertEqual(NATIVE_CHECK.opencode_data_root_of(flavour("/data")), flavour("/data"),
+                                 "a named root was rewritten")
+
+    def test_the_store_either_spelling_computes_is_the_same_file(self) -> None:
+        for flavour in PATH_FLAVOURS:
+            with self.subTest(flavour=flavour.__name__):
+                named_directory = flavour("/data") / NATIVE_CHECK.OPENCODE_DATA_DIR
+                root = NATIVE_CHECK.opencode_data_root_of(named_directory)
+                store = root / NATIVE_CHECK.OPENCODE_DATA_DIR / NATIVE_CHECK.OPENCODE_STORE
+                self.assertEqual(store, named_directory / NATIVE_CHECK.OPENCODE_STORE)
+
+
+class ModelBinding(unittest.TestCase):
+    """The offline half accepts a home that resolves no model -- the report's own ``model_provider_detail``
+    is its statement of that answer -- while a requested turn needs a usable binding, exactly as the
+    fourth measured case has it: a primary agent with ``model: null`` is a home the importer, the reader
+    and the load level all work under, and an offline run must not end FAIL for it."""
+
+    VERSION = "the report names the harness's own version"
+    MODEL = "the report names the model a turn would run under, or says why the harness resolved none"
+
+    def states(self, target: dict, turn_requested: bool = False) -> dict[str, str]:
+        with recorded() as results:
+            NATIVE_CHECK.record_model_binding(target, turn_requested)
+            return {name: state for name, state, _ in results}
+
+    def test_an_offline_run_accepts_the_harnesss_own_no_model_answer(self) -> None:
+        target = {
+            "cli_version": "2.2.5", "cli_version_source": "probe",
+            "model_provider_source": "the harness's own debug agents answer",
+            "model_provider_detail": "the harness's own agent listing names `build` as its primary agent "
+                                     "and resolves no model for it, so this home names no model a new "
+                                     "session of it would run under",
+        }
+        states = self.states(target)
+        self.assertEqual(states[self.VERSION], "PASS")
+        self.assertEqual(states[self.MODEL], "PASS")
+
+    def test_an_offline_absence_without_the_harnesss_words_is_not_accepted(self) -> None:
+        """A report that names no model and no reason has lost the answer it was supposed to carry."""
+        states = self.states({"cli_version": "2.2.5"})
+        self.assertEqual(states[self.MODEL], "FAIL")
+
+    def test_a_requested_turn_needs_a_usable_binding(self) -> None:
+        target = {"cli_version": "2.2.5",
+                  "model_provider_detail": "… resolves no model for it"}
+        self.assertEqual(self.states(target, turn_requested=True)[self.MODEL], "FAIL")
+
+    def test_a_named_binding_passes_the_offline_and_the_turn_arm(self) -> None:
+        target = {"cli_version": "2.2.5", "model": "target-model", "model_provider": "target-provider",
+                  "model_provider_source": "the harness's own debug agents answer"}
+        for turn_requested in (False, True):
+            with self.subTest(turn_requested=turn_requested):
+                self.assertEqual(self.states(target, turn_requested)[self.MODEL], "PASS")
+
+    def test_a_missing_version_is_recorded_apart_from_the_model(self) -> None:
+        states = self.states({"model": "m", "model_provider": "p"})
+        self.assertEqual(states[self.VERSION], "FAIL")
+        self.assertEqual(states[self.MODEL], "PASS")
 
 
 class MissingHarness(unittest.TestCase):

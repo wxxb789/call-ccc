@@ -19,8 +19,10 @@ What it does:
 3. plants an unrelated session in it **through the harness's own importer** and reads that session's own
    document back, so "nothing else moved" is a measurement rather than a claim (a store can only be written
    by the harness, which is this route's install rule as much as its check);
-4. converts through the CLI (``ccc continue … --json``) and reads the conversion, the installation and the
-   structural read-back out of the report rather than trusting them;
+4. converts through the CLI (``ccc continue … --verify load --json``) and reads the conversion, the
+   installation and the structural read-back out of the report rather than trusting them. The conversion
+   level is ``load`` even when a turn was requested: the one real turn is this check's own (step 7), and
+   asking the CLI's resume verification as well would run and bill two turns for one ``--resume-prompt``;
 5. asks the harness's **own reader** about the installed session (``opencode session export <id>``) and
    compares its answer with the report and the source's own evidence -- the source's first prompt, the tool
    call with its recorded result, the compaction boundary -- with an unknown-id control arm: the same
@@ -29,12 +31,14 @@ What it does:
    session's own recorded directory**, where it must name the installed session, and from a directory that
    is not that one, where it must not: a session the harness does not resolve from where the report says to
    resume it is a session a caller cannot resume;
-7. with ``--resume-prompt``, runs one real turn in the installed session through the **printed** invocation
-   (``opencode run --standalone --session <id> -- <prompt>`` with the report's own ``resume_environment``
-   and working directory; that environment names the data root and pins the store's own database file
-   beside it, so an inherited ``OPENCODE_DB`` cannot send the command to another store), prints the
-   harness's own answer under ``native_check_common.TURN_OUTPUT_MARKER``, and measures the growth through
-   the harness's own reader;
+7. with ``--resume-prompt``, runs one real turn in the installed session through the report's **own**
+   invocation: the exec-form argument vector it printed, validated against this run's own harness and this
+   conversion's session (the ``--standalone`` flag on the subcommand's own side of the ``--`` terminator),
+   with the prompt substituted for its placeholder, and run from the session's own recorded directory under
+   the report's own ``resume_environment`` (that environment names the data root and pins the store's own
+   database file beside it, so an inherited ``OPENCODE_DB`` cannot send the command to another store). The
+   harness's own answer is printed under ``native_check_common.TURN_OUTPUT_MARKER``, and the growth is
+   measured through the harness's own reader;
 8. re-digests the source tree and re-reads the planted session's document, so "nothing else moved" is
    measured after the run as well as before it, and removes the planted session through the harness's own
    ``session delete``.
@@ -68,6 +72,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from native_check_common import (  # noqa: E402
+    PROMPT_PLACEHOLDER,
     RESULTS,
     bounded,
     print_answer,
@@ -139,6 +144,19 @@ def opencode_environment(data_root: Path) -> dict[str, str]:
     environment[OPENCODE_DATA_ROOT_ENV] = str(data_root)
     environment.pop(OPENCODE_DB_ENV, None)
     return environment
+
+
+def opencode_data_root_of(target: Path) -> Path:
+    """The environment root the harness's own rule computes for one directory a caller named, mirroring
+    ``internal/ccc/opencode_install.go``'s ``openCodeDataRoot``: a directory whose own name is the data
+    directory's name (``opencode``) *is* the data directory, so the root that ``$XDG_DATA_HOME`` must name
+    for ``$XDG_DATA_HOME/opencode`` to be that directory is its parent. Any other directory is the root
+    itself. The conversion and this check are then pointed at the same store either way: without the rule,
+    ``--target-home scratch/opencode`` would plant and export sessions from
+    ``scratch/opencode/opencode/opencode.db`` while the conversion installed into
+    ``scratch/opencode/opencode.db``, and a successful conversion would be checked against the wrong
+    database."""
+    return target.parent if target.name == OPENCODE_DATA_DIR else target
 
 
 def opencode_arguments(verb: list[str]) -> list[str]:
@@ -309,9 +327,12 @@ def main(argv: list[str] | None = None) -> int:
                         help=f"the source session to convert (default: the committed {SOURCE_SESSION} "
                              f"Claude fixture)")
     parser.add_argument("--target-home", type=Path,
-                        help="the harness's data root (default: a scratch one). A caller's own root is used "
-                             "exactly as it is found: nothing is installed into it but the converted "
-                             "session, and the planted session this run adds is removed again")
+                        help="the harness's data root (default: a scratch one). A directory whose own name "
+                             "is `opencode` is the data directory itself -- the rule the route itself "
+                             "applies, whose parent then becomes the root -- so the conversion and this "
+                             "check read the same store. A caller's own root is used exactly as it is "
+                             "found: nothing is installed into it but the converted session, and the "
+                             "planted session this run adds is removed again")
     parser.add_argument("--resume-prompt",
                         help="run one real turn in the installed session with this prompt")
     parser.add_argument("--expect", help="require the resume turn's answer to contain this text")
@@ -348,9 +369,16 @@ def main(argv: list[str] | None = None) -> int:
     recorded_cwd = rewrite_source_cwd(source, destination, str(workspace))
 
     named_home = args.target_home is not None
-    data_root = args.target_home.resolve() if args.target_home else scratch / "opencode-data"
+    # A named directory is read through the harness's own rule first (opencode_data_root_of): a directory
+    # whose own name is `opencode` is the data directory itself, and the root that both this check's
+    # environment and the conversion's --target-home must name for the harness to read that directory is
+    # its parent. Without the normalization the check's store and the conversion's would be two files.
+    data_root = (opencode_data_root_of(args.target_home.resolve())
+                 if args.target_home else scratch / "opencode-data")
+    data_dir = data_root / OPENCODE_DATA_DIR
+    store = data_dir / OPENCODE_STORE
     data_root.mkdir(parents=True, exist_ok=True)
-    store = data_root / OPENCODE_DATA_DIR / OPENCODE_STORE
+    data_dir.mkdir(parents=True, exist_ok=True)
 
     version = run([opencode, "--version"]).stdout.strip()
     print(f"repo:        {repo}")
@@ -360,7 +388,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"workspace:   {workspace}")
     print(f"data root:   {data_root}"
           + ("" if named_home else " (a scratch one this run made)")
-          + f"; the harness's own data directory is {data_root / OPENCODE_DATA_DIR}, its store {store.name}")
+          + (f"; the named directory resolves to it through the harness's own rule, because its own name "
+             f"is {OPENCODE_DATA_DIR}" if named_home and data_root != args.target_home.resolve() else "")
+          + f"; the harness's own data directory is {data_dir}, its store {store.name}")
     print(f"the source fixture's recorded working directory ({recorded_cwd or 'none recorded'}) is rewritten "
           f"to the workspace: the harness's own importer refuses a session whose directory does not exist "
           f"(measured: LocationNotFoundError)")
@@ -397,10 +427,14 @@ def main(argv: list[str] | None = None) -> int:
         return stop()
     record("ccc builds with the flags upstream ships", True)
 
+    # The conversion is verified at the load level even when a turn was requested: with --resume-prompt
+    # this check runs that one real turn itself, below, through the invocation the report printed -- so
+    # asking the CLI's own resume verification as well would run and bill a second turn for one request
+    # (the shape the round's reading measured: the conversion grew the session 7 -> 10 and the check's own
+    # turn grew it 10 -> 13). The load level bills nothing and writes no records.
     command = [str(repo / BINARY), "continue", f"{SOURCE_PROVIDER}:{source_session}", "--to",
-               TARGET_PROVIDER, "--target-home", str(data_root), "--target-binary", opencode, "--json"]
-    if args.resume_prompt:
-        command += ["--verify", "resume", "--resume-prompt", args.resume_prompt]
+               TARGET_PROVIDER, "--target-home", str(data_root), "--target-binary", opencode,
+               "--verify", "load", "--json"]
     convert = run(command, cwd=repo, env={SOURCE_ROOT_ENV[SOURCE_PROVIDER]: str(source_root)})
     try:
         document = json.loads(convert.stdout)
@@ -433,13 +467,7 @@ def main(argv: list[str] | None = None) -> int:
     load = verification.get("load") or {}
     record("the route's own load check verified the installed session natively",
            load.get("state") == "verified", bounded(load.get("detail") or "", 400))
-    record("the report names the harness's own version and the model a new session of it would run "
-           "under",
-           bool(target.get("cli_version")) and bool(target.get("model"))
-           and bool(target.get("model_provider")),
-           f"cli_version {target.get('cli_version')} ({target.get('cli_version_source')}), model "
-           f"{target.get('model_provider')}/{target.get('model')} "
-           f"({target.get('model_provider_source')})")
+    record_model_binding(target, bool(args.resume_prompt))
 
     session_id = target.get("session_id") or ""
     record("the installed session has the identity the report names", bool(session_id), session_id)
@@ -463,14 +491,15 @@ def main(argv: list[str] | None = None) -> int:
                f"{len(exported.get('messages') or [])} message(s)")
         stored = len(exported.get("messages") or [])
         expected = carried.get("messages", 0)
-        # A requested turn (--resume-prompt) runs inside the conversion too: the CLI's own resume check
-        # drives one real turn, which appends records to the session it opens. So the store holds the
-        # conversion's own messages *and* whatever that turn appended -- never fewer, and exactly the
-        # conversion's own when no turn was asked for.
+        # The conversion itself ran no turn: its verification level is load (the harness's own
+        # `session export`, measured to write no records), and any real turn this run makes is run by this
+        # check afterwards, through the printed invocation. So the store holds exactly the conversion's
+        # own messages at this point, and the export above was taken before that turn.
         record("the harness's own reader holds every message the conversion wrote",
-               bool(expected) and stored >= expected and (bool(args.resume_prompt) or stored == expected),
-               f"the store's own document holds {stored} message(s); the conversion carried {expected}"
-               + (", and the conversion's own resume check ran one turn in it" if args.resume_prompt else ""))
+               bool(expected) and stored == expected,
+               f"the store's own document holds {stored} message(s); the conversion carried {expected}" +
+               (" (the conversion ran no turn; this check's own turn, if requested, comes after this read)"
+                if args.resume_prompt else ""))
         user_texts = document_texts(exported, "user")
         record("the installed session holds the source's own first prompt",
                bool(user_texts) and user_texts[0].strip().startswith("Summarize the retry policy"),
@@ -499,11 +528,11 @@ def main(argv: list[str] | None = None) -> int:
            f"{len(elsewhere)} session(s) listed from {UNRELATED_DIRECTORY}"
            if elsewhere is not None else bounded(elsewhere_words, 200))
 
-    # The printed invocation, read the way a POSIX shell reads it, and then -- when a turn was asked
-    # for -- run in its own words.
-    _check_invocation(target, workspace, data_root, store)
+    # The printed invocation, read the way a POSIX shell reads it and checked against this run's own
+    # harness and session, and then -- when a turn was asked for -- run in its own words.
+    _check_invocation(target, opencode, workspace, data_root, store)
     if args.resume_prompt:
-        _run_turn(args, target, opencode, data_root, workspace)
+        _run_turn(args, target, opencode, data_root, store, workspace)
     else:
         record("a real turn was requested (--resume-prompt)", False,
                "not requested: this run verifies the offline half (the importer, the harness's own "
@@ -524,12 +553,109 @@ def main(argv: list[str] | None = None) -> int:
     return stop()
 
 
-def _check_invocation(target: dict, workspace: Path, data_root: Path,
+def record_model_binding(target: dict, turn_requested: bool) -> None:
+    """Record what the report answers about the harness's own version and the model a turn would run
+    under.
+
+    A real turn runs under the home's own resolved binding, so one needs a complete pair; the offline
+    half does not. Measured: a home that configures no model answers `debug agents` with its primary agent
+    carrying `model: null`, the writer omits `info.model`, and the importer, the harness's own reader and
+    the load level all work without one -- a supported run whose store holds every message. The report
+    names that absence in `model_provider_detail` (with `model_provider_source` naming where the answer,
+    or its absence, came from), so an offline run accepts it instead of ending FAIL for a configuration
+    the harness itself answers with."""
+    model = str(target.get("model") or "")
+    provider = str(target.get("model_provider") or "")
+    detail = str(target.get("model_provider_detail") or "")
+    binding = bool(model) and bool(provider)
+    record("the report names the harness's own version", bool(target.get("cli_version")),
+           f"cli_version {target.get('cli_version')} ({target.get('cli_version_source')})")
+    record("the report names the model a turn would run under, or says why the harness resolved none",
+           binding or (not turn_requested and bool(detail)),
+           f"model {provider or '(none recorded)'}/{model or '(none recorded)'} "
+           f"({target.get('model_provider_source') or 'no source named'})"
+           + (f"; the harness's own answer: {detail}" if detail else "")
+           + ("" if binding or not turn_requested
+              else " — a real turn was requested, so the home must resolve a model to run it under"))
+
+
+def _read_turn_vector(target: dict, opencode: str, arguments_field: str,
+                      prompt_word: str) -> tuple[list[str], str]:
+    """One reported argument vector read against what this check knows on its own, rather than against
+    the report's other fields: the harness this run probed and handed to the conversion, this
+    conversion's own session id, the ``--standalone`` flag on the subcommand's own side of the ``--``
+    terminator (past it, the harness reads it as part of the prompt and answers from the managed service,
+    measured), the terminator itself, and the single prompt word behind it (the placeholder in the exec
+    form, the empty prompt in the plain one).
+
+    It answers the vector and the first rule it breaks ("" when it holds). A vector that only agreed with
+    the report's own words could name another session, another binary or no terminator at all while the
+    printed-line checks compared it with nothing but itself."""
+    session_id = str(target.get("session_id") or "")
+    words = [str(word) for word in (target.get(arguments_field) or [])]
+    if not words:
+        return [], f"the report printed no {arguments_field}"
+    if Path(words[0]) != Path(opencode):
+        return [], f"its program word is {words[0]!r}, not the harness this run probed ({opencode})"
+    if words[1:2] != ["run"]:
+        return [], f"its subcommand is {words[1:2]!r}, not the turn subcommand `run`"
+    rest = words[2:]
+    if rest[:1] != ["--standalone"]:
+        return [], ("`--standalone` does not stand immediately after the subcommand: without it the turn "
+                    "answers from the managed service, and a flag past the `--` terminator is read as part "
+                    "of the prompt (measured)")
+    if "--" not in rest:
+        return [], "it carries no `--` terminator between its options and the prompt"
+    terminator = rest.index("--")
+    options = rest[:terminator]
+    if "--session" not in options:
+        return [], "it names no `--session`: the turn would create a session instead of resuming one"
+    session_at = options.index("--session")
+    named = options[session_at + 1] if session_at + 1 < len(options) else None
+    if named != session_id:
+        return [], f"its `--session` names {named!r}, not this conversion's own session {session_id!r}"
+    prompt = rest[terminator + 1:]
+    if prompt != [prompt_word]:
+        return [], (f"its prompt side is {prompt!r}, not the single {prompt_word!r} word this check "
+                    "expects behind the terminator")
+    return words, ""
+
+
+def reported_turn(target: dict, opencode: str) -> tuple[list[str], str]:
+    """The exec-form invocation the report printed, as the turn this check runs: validated by
+    ``_read_turn_vector`` and answered with its prompt placeholder still in it, for the caller to
+    substitute the prompt into."""
+    return _read_turn_vector(target, opencode, "exec_resume_arguments", PROMPT_PLACEHOLDER)
+
+
+def turn_environment(target: dict, data_root: Path, store: Path) -> tuple[dict[str, str], str]:
+    """The environment the turn runs with: this process's own, with every name the report's own
+    invocation sets set to the report's value -- after checking that the pair is this run's own data root
+    and store. A report that named another store would send the turn somewhere this check does not read,
+    and ``run --session <id>`` *creates* a session for an id the store does not hold (measured)."""
+    reported = target.get("resume_environment") or {}
+    if not isinstance(reported, dict):
+        return {}, f"the report's resume_environment is {reported!r}, not an object of names"
+    reported = {str(name): str(value) for name, value in reported.items()}
+    expected = {OPENCODE_DATA_ROOT_ENV: str(data_root), OPENCODE_DB_ENV: str(store)}
+    if reported != expected:
+        return {}, f"the report names the environment {reported!r}, not this run's own {expected!r}"
+    environment = dict(os.environ)
+    environment.update(expected)
+    return environment, ""
+
+
+def _check_invocation(target: dict, opencode: str, workspace: Path, data_root: Path,
                       store: Path) -> None:
     """Check the printed resume commands by reading them the way a POSIX shell reads them: the working
     directory the harness is started from, the data root it reads and the database inside it the line
     pins -- all named -- against the argument vector the report itself printed, and the reported
     environment against the same pair.
+
+    Each of the report's two vectors is also read against what this check knows on its own
+    (``_read_turn_vector``), so a consistently wrong pair cannot pass by agreeing with itself: the line
+    must name the harness this run probed and this conversion's session, run it standalone on the
+    subcommand's own side of the terminator, and carry that form's own prompt word.
 
     Pinning the database is the rule the environment cases in ``scripts/tests/test_opencode_native_check.py``
     keep: a printed line can only set variables, so it names this home's own store instead of removing an
@@ -540,8 +666,10 @@ def _check_invocation(target: dict, workspace: Path, data_root: Path,
     record("the report names the environment the printed invocation sets",
            (target.get("resume_environment") or {}) == expected_environment,
            f"{target.get('resume_environment')!r}, want {expected_environment!r}")
-    for field, arguments_field in (("resume_command", "resume_arguments"),
-                                   ("exec_resume_command", "exec_resume_arguments")):
+    forms = (("resume_command", "resume_arguments", "", "the empty prompt"),
+             ("exec_resume_command", "exec_resume_arguments", PROMPT_PLACEHOLDER,
+              f"the {PROMPT_PLACEHOLDER!r} placeholder"))
+    for field, arguments_field, prompt_word, prompt_name in forms:
         command = target.get(field, "")
         arguments = target.get(arguments_field) or []
         ok = (bool(command) and bool(arguments)
@@ -549,24 +677,41 @@ def _check_invocation(target: dict, workspace: Path, data_root: Path,
                                               arguments, also=pinned))
         record(f"the printed {field} reads as a POSIX shell line naming the session", ok,
                bounded(command, 220))
+        vector, problem = _read_turn_vector(target, opencode, arguments_field, prompt_word)
+        record(f"the report's {arguments_field} names the harness this run probed, this session and "
+               f"{prompt_name}",
+               bool(vector) and not problem,
+               problem or bounded(" ".join(vector), 220))
 
 
-def _run_turn(args: argparse.Namespace, target: dict, opencode: str, data_root: Path,
+def _run_turn(args: argparse.Namespace, target: dict, opencode: str, data_root: Path, store: Path,
               workspace: Path) -> None:
-    """Run one real turn in the installed session through the printed invocation's own words.
+    """Run one real turn in the installed session through the invocation the report printed.
 
-    The turn is what proves the session is one a caller can resume: the harness answers from the installed
+    The turn is the reported exec-form vector -- validated against this run's own harness and this
+    conversion's session, and with the prompt substituted for its placeholder -- run from this run's own
+    workspace under the environment the report names (checked to be this run's own data root and store).
+    It is what proves the session is one a caller can resume: the harness answers from the installed
     history and appends its own records to it. The growth is measured through the harness's own reader,
     before and after, and the answer is printed under the shared marker -- an answer from a session the
     harness's own reader does not read differently is not a resumed session."""
+    arguments, problem = reported_turn(target, opencode)
+    if problem:
+        record("the turn ran through the printed invocation and exited 0", False,
+               f"the report's own invocation is not the turn this check runs: {problem}")
+        return
+    environment, problem = turn_environment(target, data_root, store)
+    if problem:
+        record("the turn ran through the printed invocation and exited 0", False, problem)
+        return
     session_id = target.get("session_id", "")
     before, before_words, before_status = export_document(opencode, data_root, session_id, cwd=workspace)
     if before is None:
         record("the installed session reads back before the turn", False,
                f"exit {before_status}; {bounded(before_words, 200)}")
         return
-    turn = run([opencode, *opencode_arguments(["run", "--session", session_id, "--", args.resume_prompt])],
-               cwd=workspace, env=opencode_environment(data_root), timeout=TURN_TIMEOUT, replace_env=True)
+    turn = run([*arguments[:-1], args.resume_prompt], cwd=workspace, env=environment,
+               timeout=TURN_TIMEOUT, replace_env=True)
     record("the turn ran through the printed invocation and exited 0", turn.returncode == 0,
            f"exit {turn.returncode}; stderr {bounded(turn.stderr, 300)}")
     print_answer(turn.stdout)
