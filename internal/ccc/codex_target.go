@@ -1287,15 +1287,17 @@ func thinkingRenderingCandidates(content string) []thinkingRenderingCandidate {
 // block's words open the trace; the bytes between two taken blocks are the separator the reader joined
 // its parts with.
 //
-// The separator is not assumed. The readers join their parts with feeds of their own -- ZCode, Crush,
-// Goose and Muse with a blank line, Kimi and Evener with a single feed (Evener trims the joined trace
-// too, which can only leave a reading uncounted as well), and the readers that render one part per
-// record (Cline, Codebuff, DeepSeek TUI, Forge, legacy Kilo, RooCode, Tau) join nothing -- and a guess
-// at the wrong one could only be wrong in the direction that takes text: a reading this enumeration does
-// not count is a reading whose blocks are all kept. What the enumeration does assume is that a taken
-// block's words are a byte run of the trace at the place the reading puts them, which is what the
-// readers' own rendering establishes: they write the part's text verbatim between the marker feeds (the
-// trim above is the only slack, and it only loses matches).
+// The separator is what the readers write between two of their parts -- one feed, or a blank line's two
+// (thinkingRenderingSeparator) -- and the readings below count a block only where the bytes before it are
+// that separator. A reading that counted anything else would be accounting for the trace by reading the
+// trace's own text as though it were the join between parts, and the removal would delete the record's
+// own words (round 14's finding: a trace whose own text holds a closer let a pair of blocks cover the
+// trace while skipping the trace's own bytes). A reading this enumeration does not count is a reading
+// whose blocks are all kept, so the separator rule can only keep text: a part whose own text carries
+// edge feeds beside the join loses its reading, not its bytes. What the enumeration does assume is that
+// a taken block's words are a byte run of the trace at the place the reading puts them, which is what
+// the readers' own rendering establishes: they write the part's text verbatim between the marker feeds
+// (the trim above is the only slack, and it only loses matches).
 type renderingReadingState struct {
 	index    int
 	position int
@@ -1371,12 +1373,16 @@ func (s *renderingCoveringSearch) canAccountFor(state renderingReadingState) boo
 }
 
 // place answers where the candidate at state.index would stand in the trace if a reading took it: at the
-// trace's own first byte while no block has been taken yet, and at the earliest of the bytes after
-// position otherwise. The earliest occurrence is where a reading the readers can produce puts the block:
-// the words carry no edge whitespace and the separators the readers write are feeds or nothing at all, so
-// the words cannot stand inside the separator bytes between the previous block's placement and this one's.
-// A later occurrence stands behind bytes that would have to be a separator able to hold the words, which
-// is not a separator a reader writes.
+// trace's own first byte while no block has been taken yet, and at the first byte after the separator the
+// reader wrote after the previous block otherwise. The reader renders each part of the trace verbatim, in
+// the record's own part order, and joins the parts with a separator of its own (one feed, or a blank
+// line's two: thinkingRenderingSeparator), so the bytes between two taken blocks' words are exactly that
+// separator and cannot be anything else. A candidate whose words stand behind other bytes is not one the
+// reader rendered there: taking it would account for the trace by presenting the trace's own text as the
+// join between parts, and the removal would delete recorded dialogue the trace does not hold as a
+// rendering (round 14's finding: a trace whose own text holds a closer let a pair of blocks cover the
+// trace while skipping the trace's own bytes). The earliest occurrence's gap is the one checked; a later
+// occurrence's gap contains that one's bytes, so it cannot be a separator either.
 func (s *renderingCoveringSearch) place(state renderingReadingState) (int, bool) {
 	words := s.candidates[state.index].words
 	if !state.started {
@@ -1389,7 +1395,26 @@ func (s *renderingCoveringSearch) place(state renderingReadingState) (int, bool)
 	if at < 0 {
 		return 0, false
 	}
+	if !thinkingRenderingSeparator(s.trace[state.position : state.position+at]) {
+		return 0, false
+	}
 	return state.position + at, true
+}
+
+// thinkingRenderingSeparator reports whether gap is a separator the rendering readers write between two
+// parts of a record's persisted trace. The readers that render a part per block join their parts with
+// feeds of their own: ZCode, Crush, Goose, Muse, DeepSeek TUI and Tau with a blank line
+// (`strings.Join(parts, "\n\n")`), and Kimi and Evener with a single feed (`strings.Join(parts, "\n")`,
+// Evener trimming the joined trace's own edges, which cannot put bytes between two parts). The readers
+// that render one block for the record's whole trace (Cline, Codebuff, Forge, legacy Kilo, RooCode)
+// join no two parts at all. Anything else is not a separator this build is shown the readers to write:
+// a longer run of feeds (a part's own edge bytes beside the join, which the trimmed words leave out) or
+// bytes that are not feeds at all -- the trace's own text -- and a block standing behind it keeps its
+// place as the record's own text rather than being taken as that reader's rendering. A rendering left
+// standing is a duplication a reader can see; dialogue deleted as though it were a rendering is text
+// the source recorded that no later step can put back.
+func thinkingRenderingSeparator(gap string) bool {
+	return gap == "\n" || gap == "\n\n"
 }
 
 // read walks the readings that reach their end: every branch it takes is one canAccountFor has already

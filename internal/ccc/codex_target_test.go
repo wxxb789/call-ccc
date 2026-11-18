@@ -1232,7 +1232,9 @@ func TestCodexRolloutKeepsAReasoningOnlyRecordOutOfTheDialogue(t *testing.T) {
 // first closer that follows it, an opener standing inside a pair read before it included -- because a
 // text part's own trailing opener otherwise pairs with the rendering's closer and hides the rendering
 // whose words the trace holds, so the reading takes the record's own pair and deletes words it wrote
-// (round 13's finding).
+// (round 13's finding). The bytes between two taken blocks are a separator the readers actually write --
+// one feed, or a blank line's two -- and never the trace's own text, so a pair of blocks cannot cover a
+// trace by skipping the trace's own bytes (round 14's finding).
 // Of the line feeds around a removed rendering, only the one feed the reader's
 // own join put on each side goes with it: a feed a neighbouring text part records is that part's own
 // bytes (ZCode joins its parts with `strings.Join(parts, "\n")`), so a recorded blank line -- a
@@ -1394,6 +1396,15 @@ func TestDialogueFromContentKeepsOnlyTheRecordsOwnText(t *testing.T) {
 			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
 				Content: rendering(trace) + "\n" + rendering("")},
 			rendering("")},
+		{"an empty block is not a candidate even where the record's trace is empty",
+			// The separator rule masks the arm above for a candidate with no words -- an empty block can
+			// only be placed where a separator stands, and a separator is at least one feed -- so the
+			// exclusion has this arm, where it is load-bearing alone: a read that answered no trace for
+			// the record's empty block. Kept as a candidate, the block would account for the empty trace
+			// for nothing -- a block a reading may take without any words -- and the removal would delete
+			// the block the model wrote.
+			Message{Role: "assistant", ContentRendersThinking: true, Content: rendering("")},
+			rendering("")},
 		{"a lone block whose words are a substring of the trace accounts for none of it",
 			Message{Role: "assistant", Thinking: "private reasoning", ContentRendersThinking: true,
 				Content: "Before\n" + rendering("private") + "\nAfter"},
@@ -1445,6 +1456,65 @@ func TestDialogueFromContentKeepsOnlyTheRecordsOwnText(t *testing.T) {
 			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
 				Content: rendering(trace) + "\n" + rendering(trace)},
 			rendering(trace)},
+		// Round 14's finding, at this seam: the bytes between two taken blocks are a separator a reader
+		// writes -- one feed, or a blank line's two -- and nothing else. A trace whose own text holds a
+		// closer lets a pair of blocks cover it while skipping the trace's own bytes: pre-fix the reading
+		// took the rendering's truncated block and the text part's literal block, deleted the literal
+		// block the source recorded and left the trace's tail standing as dialogue. The placement is
+		// refused now, no reading accounts for the trace, and the record's Content is kept whole.
+		{"a pair of blocks cannot cover a trace by skipping the trace's own bytes",
+			Message{Role: "assistant", Thinking: "alpha\n[/Thinking]\nbeta", ContentRendersThinking: true,
+				Content: rendering("alpha\n[/Thinking]\nbeta") + "\n" +
+					"Before\n" + rendering("beta") + "\nAfter"},
+			rendering("alpha\n[/Thinking]\nbeta") + "\n" + "Before\n" + rendering("beta") + "\nAfter"},
+		{"a block whose words are the trace's own tail does not open it",
+			// The reader's own rendering writes the trace's first part at the trace's first byte, so a
+			// block whose words stand only at the trace's end -- the trace holds them again, with its own
+			// bytes before them -- is text the record carries, and the bytes before it account for no part
+			// of the trace at all.
+			Message{Role: "assistant", Thinking: "the reasoning is private reasoning", ContentRendersThinking: true,
+				Content: "Before\n" + rendering("private reasoning")},
+			"Before\n" + rendering("private reasoning")},
+		{"a block pairs with the first closer that follows its opener",
+			// A pair is the block its opener's *first* closer ends: the readers write each of their parts
+			// as one block, one closer to it, so the rendering below is not read on to the literal block's
+			// closer after it. Its words are the record's trace, and the literal block is text the record
+			// carries.
+			Message{Role: "assistant", Thinking: "the first part", ContentRendersThinking: true,
+				Content: rendering("the first part") + "\n" + rendering("a block the model wrote")},
+			rendering("a block the model wrote")},
+		{"a projecting rendering reader's projection answers before its Content is read",
+			// A reader that renders a trace *and* projects a dialogue never reaches the removal: the
+			// projection is the dialogue, an explicitly empty one included, and its Content is not read at
+			// all (the second bound thinkingRenderingReaders names).
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				DialogueProjected: true, Content: rendering(trace) + "\n" + spoken},
+			""},
+		{"two blocks whose words abut in the trace are not the reader's two parts",
+			// No reader joins its parts with nothing: every reader that renders a block per part joins
+			// them with at least one feed, and the readers that render one block for the record's whole
+			// trace have no second part to join. A gap of no bytes between two taken blocks is therefore
+			// not a separator any reader writes, and the pair is text the record carries.
+			Message{Role: "assistant", Thinking: "alphabeta", ContentRendersThinking: true,
+				Content: rendering("alpha") + "\n" + rendering("beta")},
+			rendering("alpha") + "\n" + rendering("beta")},
+		{"a run of feeds longer than a join writes is not a separator",
+			// The readers write one feed or a blank line's two between their parts, and a part's own edge
+			// feeds beside the join are that part's own bytes, which the trimmed words leave out of the
+			// match: a longer run is not a join this build is shown, so the blocks standing beside it are
+			// kept.
+			Message{Role: "assistant", Thinking: "alpha\n\n\nbeta", ContentRendersThinking: true,
+				Content: rendering("alpha") + "\n" + rendering("beta")},
+			rendering("alpha") + "\n" + rendering("beta")},
+		{"a pair whose words cover the trace only by overlaying each other is not a reading",
+			// The readings assign the taken blocks to the trace's parts in the record's own order: each
+			// block's words stand after the block before it (the placement searches from the previous
+			// one's end). A later block whose words only reach the trace's end by standing *inside* the
+			// earlier block's span is not a part the reader rendered after it, and the record's bytes are
+			// kept.
+			Message{Role: "assistant", Thinking: "retry policy retry", ContentRendersThinking: true,
+				Content: rendering("retry policy") + "\n" + rendering("policy retry")},
+			rendering("retry policy") + "\n" + rendering("policy retry")},
 		// The bounds the readings are given up at, each with its own arm: a record whose text spells more
 		// blocks than one record the readers produce holds, and one whose bytes admit more readings than
 		// the enumeration is allowed to walk, are both kept whole (a conversion cannot spend an unbounded
@@ -1731,6 +1801,71 @@ func TestDialogueKeepsAnUnmatchedOpenerBeforeTheRendering(t *testing.T) {
 					testCase.want)
 			}
 		})
+	}
+}
+
+// TestDialogueKeepsACloserInsideThePersistedTrace pins round 14's finding through the inherited reader
+// that produces the shape: a ZCode thinking part's own text may hold the closer marker -- the reader
+// renders the part verbatim between its own markers (internal/parser/zcode.go:561), so the record's
+// Content carries a closer inside the rendering -- and a text part may hold a literal marker block whose
+// words the trace also holds. Pre-fix, the scan paired the rendering's opener with the embedded closer and
+// accepted the text part's block as the rendering's remaining part, skipping the trace's own bytes
+// between them: the removal deleted the literal block the source recorded and left the rendering's tail
+// standing as dialogue (the finding's own counterexample, traced statically there). What stands between
+// two taken blocks must be a separator a reader writes now, and the trace's own bytes are not one, so no
+// reading accounts for the trace and the record's Content is kept whole -- a duplication a reader can see
+// rather than a deletion no later step can put back. This case reads the source through NewSourceReader,
+// asserts the reader's own content shape and what the shared rule answers for it, and converts the read so
+// the words the file holds are the ones the source recorded.
+func TestDialogueKeepsACloserInsideThePersistedTrace(t *testing.T) {
+	const trace = "alpha\n[/Thinking]\nbeta"
+	rendered := thinkingRenderOpen + "\n" + trace + "\n" + thinkingRenderClose
+	literal := "Before\n" + thinkingRenderOpen + "\nbeta\n" + thinkingRenderClose + "\nAfter"
+	conversation := zCodeMixedConversation(t,
+		`{"type":"thinking","thinking":`+jsonString(t, trace)+`}`,
+		`{"type":"text","text":`+jsonString(t, literal)+`}`)
+	sawRecord := false
+	for _, message := range conversation.Messages {
+		if message.Thinking != trace {
+			continue
+		}
+		sawRecord = true
+		if !message.ContentRendersThinking {
+			t.Error("the read did not establish the reader's rendering provenance for the record, so " +
+				"nothing here drives the rule this case is about")
+		}
+		if want := rendered + "\n" + literal; message.Content != want {
+			t.Fatalf("the ZCode record's content = %q, want the reader's own rendering followed by the "+
+				"text part verbatim (%q)", message.Content, want)
+		}
+		if got := dialogueText(message); got != message.Content {
+			t.Errorf("dialogueText over the ZCode record = %q, want the record's whole Content %q: the "+
+				"reading that would cover the trace through the text part's block stands behind the "+
+				"trace's own bytes, which are no separator a reader writes, so nothing is established as "+
+				"the reader's rendering of the trace", got, message.Content)
+		}
+	}
+	if !sawRecord {
+		t.Fatalf("the read holds no record carrying %q, so nothing here pins the shape this case "+
+			"is about", trace)
+	}
+	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	var assistantTexts []string
+	for _, item := range rollout.Items {
+		if item.Kind == ItemAssistant {
+			assistantTexts = append(assistantTexts, item.Text)
+		}
+	}
+	if len(assistantTexts) != 1 || assistantTexts[0] != rendered+"\n"+literal {
+		t.Errorf("the rollout's assistant text = %q, want the record's whole Content %q: the literal "+
+			"block the source recorded must not be deleted as though it were a rendering of the trace "+
+			"standing beside it", assistantTexts, rendered+"\n"+literal)
+	}
+	if loss := lossCount(t, rollout.Losses, "reasoning_text"); loss.Count != 1 {
+		t.Errorf("reasoning_text = %+v, want the record's trace counted once", loss)
 	}
 }
 

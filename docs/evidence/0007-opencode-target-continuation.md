@@ -2095,6 +2095,119 @@ the last of them: the two findings were closed by the code and the record alone,
 for the owner. `selftest` ran the count below. No goal file is moved: 0007 is still the increment under
 review, implemented on its branch with its row, and the earlier goals are archived and their rows say so.
 
+### The fourteenth review round's fixes (`51275f5` + working tree), re-measured
+
+The findings file (`artifacts/pr9/review-14/report.md`, review head `51275f5`) named one defect, P2 and
+disposition FIX, and its instruction was the systematic close-out one round early: this is the second defect
+of the same class in the same helper (round 13 removed recorded text through an unmatched opener; this round
+through an unvalidated gap), so every rule the removal algorithm claims leaves the round with its own case
+and its own executed mutation. The sweep executed 27 mutations and restored each byte-identically; two of
+them decided nothing in their first form and were re-formed and executed again (29 runs in all).
+`internal/ccc/codex_target.go`'s sha256 was
+`bc6181f7ccf0128bd7e5757cf78edde90da19440b99e9d587153afa75dfe6702` when the sweep backed the file up and the
+same when it restored it, after every run.
+
+**The finding's counterexample, executed.** The new tests were written first and run against the tree the
+review head left (the sweep's `gap-unvalidated` row re-enacts the pre-fix placement: the new separator check
+removed, nothing else):
+
+```console
+$ go test -tags fts5 -count=1 -run 'TestDialogueFromContentKeepsOnlyTheRecordsOwnText|TestDialogueKeepsACloserInsideThePersistedTrace' ./internal/ccc/
+        codex_target_test.go:1538: dialogueText(Content "[Thinking]\nalpha\n[/Thinking]\nbeta\n[/Thinking]\nBefore\n[Thinking]\nbeta\n[/Thinking]\nAfter", Thinking "alpha\n[/Thinking]\nbeta") = "beta\n[/Thinking]\nBefore\nAfter", want "[Thinking]\nalpha\n[/Thinking]\nbeta\n[/Thinking]\nBefore\n[Thinking]\nbeta\n[/Thinking]\nAfter"
+        codex_target_test.go:1842: dialogueText over the ZCode record = "beta\n[/Thinking]\nBefore\nAfter", want the record's whole Content "[Thinking]\nalpha\n[/Thinking]\nbeta\n[/Thinking]\nBefore\n[Thinking]\nbeta\n[/Thinking]\nAfter": the reading that would cover the trace through the text part's block stands behind the trace's own bytes, which are no separator a reader writes, so nothing is established as the reader's rendering of the trace
+        codex_target_test.go:1863: the rollout's assistant text = ["beta\n[/Thinking]\nBefore\nAfter"], want the record's whole Content "[Thinking]\nalpha\n[/Thinking]\nbeta\n[/Thinking]\nBefore\n[Thinking]\nbeta\n[/Thinking]\nAfter": the literal block the source recorded must not be deleted as though it were a rendering of the trace standing beside it
+```
+
+The second and third lines are the finding's own counterexample read through the inherited ZCode reader (the
+thinking part whose text is `alpha\n[/Thinking]\nbeta`, rendered verbatim between the reader's own markers,
+beside the text part's literal block `Before\n[Thinking]\nbeta\n[/Thinking]\nAfter`): the pre-fix removal
+deleted the literal block the source recorded and left the rendering's tail standing as dialogue, and the
+rollout carried the same bytes.
+
+- **The bytes between two taken blocks are a separator the reader writes, and never the trace's own text.**
+  Round 12's readings enumerated what stands *before* a taken block but took the earliest occurrence at or
+  after the previous block's end for granted, so a pair of blocks could cover the trace while reading the
+  trace's own bytes as the join between two of its parts. `place` now refuses a placement whose gap is not
+  one of the separators the readers actually write (`thinkingRenderingSeparator`): one feed, or a blank
+  line's two — the readers that render a part per block join their parts with exactly those (ZCode, Crush,
+  Goose, Muse, DeepSeek TUI and Tau with `strings.Join(parts, "\n\n")`; Kimi and Evener with
+  `strings.Join(parts, "\n")`), and the readers that render one block for the record's whole trace (Cline,
+  Codebuff, Forge, legacy Kilo, RooCode) join no two parts at all — and the earliest occurrence's gap is the
+  one checked, because a later occurrence's gap contains that one's bytes. No reading accounts for the trace
+  then (the reading that skipped the trace's own bytes is not one the readers could have produced), so the
+  record's `Content` is kept whole: a duplication a reader can see rather than a deletion no later step can
+  put back. The narrowing is one-directional by construction: a part whose own edge feeds stand beside the
+  join loses its reading, not its bytes. Pins: the table arm `a pair of blocks cannot cover a trace by
+  skipping the trace's own bytes` and `TestDialogueKeepsACloserInsideThePersistedTrace` (the reader-driven
+  counterexample above), beside the separator's own boundary arms below.
+
+| the rule | the mutation (made, run, restored) | the pin that reddened |
+| --- | --- | --- |
+| the bytes between two taken blocks are a separator the readers write (the finding) | `place`: the separator check dropped (the pre-fix placement) | arm `a pair of blocks cannot cover a trace by skipping the trace's own bytes`; `TestDialogueKeepsACloserInsideThePersistedTrace` |
+| an abutting pair is not two of a reader's parts (a gap of no bytes) | `thinkingRenderingSeparator`: an empty gap accepted | arm `two blocks whose words abut in the trace are not the reader's two parts` |
+| a run of feeds longer than a join writes is not a separator | `thinkingRenderingSeparator`: any non-empty run of feeds accepted | arm `a run of feeds longer than a join writes is not a separator` |
+| the first taken block's words open the trace at its own first byte | `place`: the first block placed where its words occur (`strings.Index`, the occurrence's own index) | six arms, `a block whose words are the trace's own tail does not open it` the first (the mutation's first form, returning the trace's own first byte, stayed green; only the corrected shape places the block where its words stand); `TestDialogueKeepsACloserInsideThePersistedTrace` also failed |
+| the placements are in the record's own order (each block after the previous one's end) | `place`: a later block may stand before the previous block's end (`strings.Index(s.trace, words)`) | four arms, among them `a pair whose words cover the trace only by overlaying each other is not a reading`, `two identical blocks: every reading leaves the same bytes` and the round-12 arm; `TestDialogueKeepsANewlineDelimitedLiteralPairWhoseWordsTheTraceHolds` also failed |
+| a reading closes the trace at its own last byte | `canAccountFor`: `state.position == len(s.trace)` dropped | ten arms, among them `a lone block whose words are a substring of the trace accounts for none of it`, `a lone block that accounts for one part of a two-part trace is kept too` and `a feed-delimited literal pair whose words are a substring of the trace is kept`; `TestDialogueKeepsACloserInsideThePersistedTrace` and `TestDialogueKeepsANewlineDelimitedLiteralPairWhoseWordsTheTraceHolds` also failed |
+| each opener pairs with the first closer that follows it | `thinkingRenderingCandidates`: the *last* closer that follows | ten arms, among them `a block pairs with the first closer that follows its opener` and the round-12 arm `a feed-delimited literal pair whose words are a substring of the trace is kept`; `TestDialogueKeepsALiteralMarkerBlockWhoseWordsTheTraceHolds`, `TestDialogueKeepsAnUnmatchedOpenerBeforeTheRendering` and `TestOpenCodeCarriesAZCodeMixedRenderingOnce` also failed |
+| every opener is read, even one inside a pair read before it (round 13) | `thinkingRenderingCandidates`: the scan resumes past the pair it read | `TestDialogueKeepsAnUnmatchedOpenerBeforeTheRendering` (both arms); arms `a text part ending with an opener before the rendering leaves the bytes whole`, `an opener the text part ends with is read on to the rendering's closer` |
+| an opener with no closer is not a block (round 13) | `thinkingRenderingCandidates`: the no-closer branch appends a block ending at the content's end | arm `an opener the record never closes keeps the bytes that follow it` |
+| an empty block is not a candidate (round 13) | `thinkingRenderingCandidates`: `words != ""` dropped | arm `an empty block is not a candidate even where the record's trace is empty` (added this round: the separator rule masks the round-13 arm's shape, so the exclusion has an arm where it is load-bearing alone) |
+| a pair's closer is the content's end or is followed by one feed (round 11) | `renderingPart`: the closer-side check dropped | arm `a marker pair whose closer is not followed by a part feed is kept whole` |
+| a pair's opener is the content's first byte or stands after one feed (round 11) | `renderingPart`: the opener-side check dropped | arms `a marker pair opening inside a text part is kept where the part ends with it`, `a marker pair abutting a kept block's closer stands inside that part` |
+| where the readings disagree, nothing is removed (round 12) | `record`: the conflict mark dropped | arms `a text part quoting the whole trace beside its rendering leaves the bytes whole`, `a text part ending with an opener before the rendering leaves the bytes whole`; `TestDialogueKeepsAnUnmatchedOpenerBeforeTheRendering` |
+| a block no trace of the record accounts for keeps its place (no trace included) | `dialogueFromContent`: every candidate removed without consulting the trace | twenty-one arms, among them `a block the record's own trace does not hold is text the record carries`, `a reasoning-only block the record's own trace does not hold is the record's own text` and `a record the read answered no trace for keeps its Content`; four inherited-reader cases also failed |
+| no reader provenance: `Content` is the source's own text, byte for byte | `dialogueFromContent`: the `ContentRendersThinking` gate dropped | arms `a raw-content reader's matching block is the record's own text` and `a raw-content reader's matching block beside text is the record's own text too`; `TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader` |
+| the reasoning-only rule asks the block's words to *be* the trace, whole (round 9) | `thinkingRenderingOnly`: `words == trace` → `strings.Contains(trace, words)` | arm `a whole-content block holding a substring of the trace is the record's own text` |
+| a record carrying calls has no dialogue from its `Content` | `dialogueText`: the `ToolCalls` gate dropped | arm `a record carrying calls has no dialogue from its Content`; `TestCodexRolloutKeepsTheDialogueProjection` |
+| the projection answers, an explicitly empty one included, before `Content` is read | `dialogueText`: `\|\| message.DialogueProjected` dropped | arm `a projecting rendering reader's projection answers before its Content is read`; arm `a projection is the dialogue even where the rendering stands beside it`; `TestCodexRolloutKeepsAReasoningOnlyRecordOutOfTheDialogue` |
+| the rendering is removed at all (the trace travels beside the dialogue, not in it) | `dialogueFromContent`: the removal never attempted (raw `Content` always) | seventeen arms, among them `the readers' order: the rendering stands before the record's text` and `ZCode's part order: the rendering stands after the text it followed`; five inherited-reader cases also failed |
+| only the one feed before a taken block goes with it (round 9) | `renderingRemoval`: the before-feed check dropped | twelve arms, among them `the blank line the record recorded before the rendering survives the removal`; three inherited-reader cases also failed |
+| only the one feed after a taken block goes with it (round 9) | `renderingRemoval`: the after-feed check dropped | ten arms, among them `the readers' order: the rendering stands before the record's text` and `a carried marker block keeps the bytes that followed it`; three inherited-reader cases also failed |
+| kept runs come out joined as the reader joins neighbours | `renderingRemoval`: the join dropped | arms `the blank line the record recorded before the rendering survives the removal` and `the blank line the record recorded after the rendering survives too` |
+| a record spelling more blocks than the candidate limit is kept whole | `dialogueFromContent`: `thinkingRenderingCandidateLimit` dropped | arm `a record spelling more blocks than the readings will read is kept whole` |
+| a record whose bytes admit more readings than the walk is kept whole | `record`: `thinkingRenderingCoveringLimit` dropped | arm `a record whose bytes admit more readings than the enumeration walks is kept whole` |
+| *(equivalence, not a rule)* the closer search's resume point | `thinkingRenderingCandidates`: the earlier opener's closer never re-found | green on the whole dialogue suite: the resume bounds the walk and decides no answer |
+| *(equivalence, not a rule)* the empty-trace short-circuit | `thinkingRenderingOnly`: the `strings.TrimSpace(trace) == ""` guard dropped | green: the non-empty-words test and the whole-trace equality already answer it |
+| *(equivalence, not a rule)* the walk's memo | `canAccountFor`: `s.known[state] = accounted` dropped | green (round 13's own row, re-run on this tree) |
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3621 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 384 tests in 10.268s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5708 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 18 row(s) verified
+  PASS     secrets  no leaks found in 162 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The block is from a run on this round's code and tests, before this section existed (the block was filled
+from that run's captured stdout). Further runs of the same gate on this record's tree reprinted every step
+line and every count — the runs' stdout differs only in the `selftest` line's duration (`10.268s`, then
+`9.100s`, `9.144s`, `9.327s`) — and every run exits 0; the record's later edits are its own prose, outside
+what any step reads (§5's table and the rule records' `parity` lines are what the `selftest` cases read).
+
+The narrowed Go suites' own test functions ran 398 before this round and 399 after — the one case added,
+`TestDialogueKeepsACloserInsideThePersistedTrace`, counted as `^func Test` over the test files git lists
+under `cmd/ccc` and `internal/ccc`; the shared table's eight new arms are cases of an existing function and
+are not counted. `selftest` ran its own count (`Ran 384 tests`, rc=0), the same as before the round: this
+round adds Go cases only and no `scripts/tests/` case changed. What else the round moved: `AGENTS.md` (the
+dialogue bullet's reading now states the bytes between two taken blocks — the separator the readers write,
+and never the trace's own text), `docs/plans/0007-opencode-target-continuation.md` (§6.1's twelfth-round
+separator clause now says the gap is checked rather than unassumed, §6.1's fourteenth-round paragraph, and
+§7's `AGENTS.md` bullet), `internal/ccc/codex_target.go` and `internal/ccc/codex_target_test.go`, and this
+record. The Python half, the gate, the carried tree, `README.md`, `docs/harness.md`, `docs/upstream.md` and
+`docs/decisions/OPEN-QUESTIONS.md` are untouched, and the round took no owner-only default to disclose in
+the last of them: the finding was closed by the code and the record alone. No goal file is moved: 0007 is
+still the increment under review, implemented on its branch with its row, and the earlier goals are archived
+and their rows say so.
+
 ## 5. What travels, source side and target side
 
 | Source evidence | Target side, and the run that recorded it |

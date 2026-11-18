@@ -484,10 +484,13 @@ some of `Content`'s candidate blocks, in order, to the trace's own parts — its
 open the trace, its last close it, and the bytes between two taken blocks are the separator the reader
 joined its parts with, which the readings do not assume (the readers join with a blank line, a single
 feed, or nothing at all, and a guess at the wrong separator could only be a reading left uncounted, whose
-blocks are all kept) — and the dialogue is a reading's only where *every* reading that accounts for the
-whole trace leaves the same bytes. `renderingPart` becomes the blocks' *candidacy* (a pair standing
-inside a run of the record's text, or abutting a kept block, cannot be a rendering at all); round 11's
-spending rule survives as the readings' consequence (two identical renderings each answer the same bytes;
+blocks are all kept; the fourteenth round's finding showed the gap must be *checked* against what the
+readers write rather than left to the earliest occurrence, so `place` now refuses a placement behind
+anything but one feed or a blank line's two) — and the dialogue is a reading's only where *every* reading
+that accounts for the whole trace leaves the same bytes. `renderingPart` becomes the blocks' *candidacy*
+(a pair standing inside a run of the record's text, or abutting a kept block, cannot be a rendering at all);
+round 11's spending rule survives as the readings' consequence (two identical renderings each answer the
+same bytes;
 the shared table's arm for it is renamed to say so and its expectation is unchanged), and the readers'
 whole-content rule now asks the block's words to *be* the trace, whole, rather than a substring of it.
 **A tool part's `completed` is the result's own record's instant where the read answers one**
@@ -521,6 +524,36 @@ the removal's and the gates above them (the table is in the evidence record): tw
 first mutation — an opener with no closer read to the content's end, and an empty block taken as a
 candidate — and each got its own arm in this round, where its mutation reddens.
 
+The fourteenth review round's finding is the readings' own overlap with their trace: the twelfth round left
+the separator between two taken blocks *unassumed* ("a guess at the wrong separator could only be a reading
+left uncounted"), so a placement was accepted wherever its words occurred at or after the previous block's
+end, whatever stood between them — and a trace whose own text holds a closer then let a pair of blocks cover
+it by skipping the trace's own bytes. The round's own ZCode counterexample: a thinking part whose text is
+`alpha\n[/Thinking]\nbeta` (the reader renders it verbatim between its own markers, so the embedded closer
+is inside the rendering) beside a text part holding the literal block
+`Before\n[Thinking]\nbeta\n[/Thinking]\nAfter`; pre-fix the scan paired the rendering's opener with the
+embedded closer and read the text part's block as the rendering's remaining part, so the removal deleted
+the literal block the source recorded and left the trace's tail as dialogue (`dialogueText` answered
+`beta\n[/Thinking]\nBefore\nAfter`). **The bytes between two taken blocks are the separator the reader
+writes between those parts — one feed, or a blank line's two — and never the trace's own text**
+(`thinkingRenderingSeparator`, checked by `place`): the set is the readers' own joins (ZCode, Crush, Goose,
+Muse, DeepSeek TUI and Tau join with a blank line, Kimi and Evener with one feed, and the readers that
+render one block for the record's whole trace join no two parts at all), a block standing behind anything
+else is not a placement at all, and no reading accounts for the trace then, so the record's `Content` is
+kept whole — a duplication a reader can see rather than a deletion no later step can put back. The
+narrowing is one-directional by construction: a part whose own edge feeds stand beside the join loses its
+reading, not its bytes. The round also closed the surface out with one mutation per rule it claims (the
+table is in the evidence record): rules that had no reddening case each got their own arm — the separator
+itself, the first taken block's words opening the trace at its own first byte, each pair's first closer, a
+blocking projection answered before a rendering reader's `Content`, the separator's own boundaries (no gap
+at all, a run longer than a join writes), the placements' record order, and the empty-words exclusion where
+it is load-bearing alone (an empty block with an empty trace to account for) — and three claims turned out
+to decide no answer (the closer search's resume point, the empty-trace short-circuit, the walk's memo),
+which the table records as equivalences. Two mutations were re-formed before they could decide anything:
+the first-block placement's first shape returned the trace's own first byte whatever the occurrence's
+place, and the empty-words mutation's first shape is now masked by the separator rule, so the former was
+corrected to place a block where its words stand and the latter given the empty-trace arm above.
+
 ## 7. Gate, docs, bookkeeping
 
 - Gate: **no new step and no new required step.** New tests live in `internal/ccc` and `cmd/ccc`, which
@@ -538,7 +571,10 @@ candidate — and each got its own arm in this round, where its mutation reddens
   whole-content rule asking the block's words to be the trace, whole), and what stands where the readings
   disagree (the block keeps its place as the model's own words) — and, from the thirteenth round, the
   blocks the readings weigh: every opener, each paired with the first closer that follows it, because a
-  text part's own trailing opener otherwise spans the rendering whose words the trace holds.
+  text part's own trailing opener otherwise spans the rendering whose words the trace holds — and, from the
+  fourteenth round, the separator between two taken blocks: the one feed or blank line's two the reader
+  wrote between its parts, and never the trace's own text, so a pair of blocks cannot cover the trace by
+  skipping the trace's own bytes.
 - `docs/conventions.md`: the layout block gains the three files; the install rule gains OpenCode's
   data-directory rule and the importer; the fixture note records why 0007 adds no fixture directory.
 - `docs/harness.md`: the new script's entry and why it is not a step.
