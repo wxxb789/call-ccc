@@ -342,22 +342,27 @@ def print_answer(output: str) -> None:
     print()
 
 
-def spelled_as_invocation(command: str, home_env: str, also: dict[str, str] | None = None) -> bool:
+def spelled_as_invocation(command: str, home_env: str, also: dict[str, str] | None = None,
+                          session_dir_env: str | None = None) -> bool:
     """Whether the line's own spelling makes a shell read it as `<cd> <dir> && NAME=<home> <words>`.
 
     `unquoted_text` keeps the characters a shell reads *without* quoting, so the line's structure is read
-    off it: the opening `cd` word, then `&&` as an operator word of its own, then an assignment's own
-    `NAME=` prefix, with no other unquoted character a shell would act on. The assignment the line opens
-    with is `home_env`, or -- for a route whose printed line sets more than one variable -- any name in
-    `also` (the OpenCode route pins the database file beside the data root, and its line opens with the
-    database's own name because the renderer sorts the names); which one leads, and every value, is the
-    word-vector comparison's business (`reported_invocation`). Three spellings are refused, and each is a
-    different command than the line looks like: a quoted assignment (`… && 'NAME=…' …` is a *program* by
-    that name to a shell, so nothing sets the variable and the harness opens the caller's own data
-    directory); a character a shell acts on left unquoted inside the value (`NAME=a;b` sets the variable
-    to `a` and runs `b`); and an operator glued to a word (`cd /a&&b …` is a directory named `/a&&b` to a
-    shell, not a change followed by an assignment) -- which the whitespace test below answers, because a
-    `&&` a shell reads as its operator is a word of its own and therefore has whitespace on both sides.
+    off it: the opening `cd` word, then `&&` as an operator word of its own, then the assignments' own
+    `NAME=` prefixes, with no other unquoted character a shell would act on. The names the word vector
+    carries are `home_env`, every name in `also` (the OpenCode route pins the database file beside the data
+    root) and `session_dir_env` (the Pi and OMP routes name the sessions tree the harness resolves a
+    session under), and *each* of them is required here rather than only the one that leads: a shell reads
+    a word as an assignment only where its `NAME=` stands unquoted at that word's start, so quoting a whole
+    assignment anywhere on the line makes `NAME=value` the *program* to run and sets nothing at all. Which
+    name leads, and every value, is the word-vector comparison's business (`reported_invocation`); what is
+    read here is that the words a shell reads are spelled as assignments and as nothing else. Three
+    spellings are refused, and each is a different command than the line looks like: a quoted assignment,
+    wherever it stands (`… && 'NAME=…' …` is a *program* by that name to a shell, so nothing sets the
+    variable and the harness opens the caller's own data directory -- or resumes it from nowhere); a
+    character a shell acts on left unquoted inside a value (`NAME=a;b` sets the variable to `a` and runs
+    `b`); and an operator glued to a word (`cd /a&&b …` is a directory named `/a&&b` to a shell, not a
+    change followed by an assignment) -- which the whitespace test below answers, because a `&&` a shell
+    reads as its operator is a word of its own and therefore has whitespace on both sides.
     The Pi, OMP and OpenCode checks read their lines through this one implementation, so a fix to the rule
     is not a fix to one of those routes and a silent drift for the others; the Claude and Codex checks
     keep readings of their own (`claude-native-check.spelled_as_invocation`,
@@ -372,9 +377,15 @@ def spelled_as_invocation(command: str, home_env: str, also: dict[str, str] | No
         return False
     if head.split()[:1] != [CD_WORD] or not head[-1:].isspace() or not tail[:1].isspace():
         return False
-    assignments = [home_env, *(also or {})]
-    leading = tail.lstrip().split(maxsplit=1)[:1]
-    if not leading or not any(leading[0].startswith(name + "=") for name in assignments):
+    assignments = [home_env, *(also or {}), *([session_dir_env] if session_dir_env else [])]
+    words = tail.split()
+    # The word the operator is followed by is an assignment: a line that names the program there sets no
+    # variable at all, whatever the rest of the line says.
+    if not words or not any(words[0].startswith(name + "=") for name in assignments):
+        return False
+    # ... and every assignment the word vector carries is one a shell reads as an assignment: a quoted
+    # one is gone from the unquoted text, so its own name stands at the start of no word.
+    if not all(any(word.startswith(name + "=") for word in words) for name in assignments):
         return False
     forbidden = set(SHELL_SYNTAX_CHARACTERS)
     return not (set(head) | set(tail)) & forbidden
@@ -392,12 +403,13 @@ def reported_invocation(command: str, workspace, home, home_env: str, arguments:
     else. The environment assignments are compared in the order the routes' own renderer writes them (its
     names sorted), and `also` names any further variables the line sets: the OpenCode route pins the
     database file beside the data root, so its line carries two assignments and both are compared. The
-    spelling is read too (`spelled_as_invocation`, which `also` reaches for the same reason), which is why
-    both halves decide this rule. A route whose printed line names the sessions directory directly passes
-    that directory in `session_dir`, with `session_dir_env` naming its variable: it is compared against
-    the directory the check itself looked the session up in, not against a spelling computed twice. A
-    route whose sessions tree is its own spelling computes that tree in its own wrapper and passes the
-    result here.
+    spelling is read too (`spelled_as_invocation`, which every name the vector carries reaches -- `also`'s
+    and the sessions-directory one -- because a quoted assignment anywhere on the line is the program to
+    run), which is why both halves decide this rule. A route whose printed line names the sessions
+    directory directly passes that directory in `session_dir`, with `session_dir_env` naming its variable:
+    it is compared against the directory the check itself looked the session up in, not against a spelling
+    computed twice. A route whose sessions tree is its own spelling computes that tree in its own wrapper
+    and passes the result here.
     """
     environment = {home_env: str(home)}
     if session_dir_env:
@@ -406,7 +418,7 @@ def reported_invocation(command: str, workspace, home, home_env: str, arguments:
         environment.update(also)
     words = [f"{name}={environment[name]}" for name in sorted(environment)]
     return (shell_words(command) == [CD_WORD, str(workspace), OPERATOR_WORD, *words, *arguments]
-            and spelled_as_invocation(command, home_env, also))
+            and spelled_as_invocation(command, home_env, also, session_dir_env))
 
 
 def session_records(text: str) -> list[dict]:

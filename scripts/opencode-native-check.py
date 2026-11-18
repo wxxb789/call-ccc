@@ -146,6 +146,33 @@ TURN_TIMEOUT = 600
 DEFAULT_COMMAND_TIMEOUT = 600
 
 
+def harness_executable(binary: str) -> str | None:
+    """The harness executable this run drives, as a word no working directory changes the meaning of: the
+    lookup's own answer, made absolute against this process's own working directory -- the directory
+    ``shutil.which`` itself resolves a spelling against.
+
+    ``shutil.which`` returns the spelling it was handed whenever that spelling names a path (a word holding
+    a separator is tried directly rather than searched for on ``PATH``), so ``--opencode ./tools/opencode``
+    stays relative. Every command this check runs *from the session's own directory* -- the export the
+    installation is read back through, its unknown-id control arm and the listing that must not name the
+    session -- would then be evaluated against that directory: ``FileNotFoundError``, raised by
+    ``subprocess`` rather than answered by any deadline, out of ``main`` before its cleanup and its verdict
+    (measured: the planted session stayed in a caller-named home and no ``RESULT`` line was printed).
+    Resolving once here makes one program do the probe, the planting, the reading and the turn, whichever
+    directory each of those runs in.
+
+    The conversion's own CLI runs from the repository root and resolves a relative ``--target-binary``
+    against *its* directory (``internal/ccc/targets.go``'s ``invocationBinary``), so a spelling that means
+    different programs in the two directories is refused rather than half-run: the report's argument vector
+    is read against the word resolved here (``_read_turn_vector``), and that reading names both words
+    instead of comparing the report with itself.
+    """
+    found = shutil.which(binary)
+    if found is None:
+        return None
+    return found if os.path.isabs(found) else os.path.abspath(found)
+
+
 def deadline_run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = None,
                  timeout: int = DEFAULT_COMMAND_TIMEOUT,
                  replace_env: bool = False) -> subprocess.CompletedProcess:
@@ -526,7 +553,7 @@ def main(argv: list[str] | None = None) -> int:
 
     repo = args.repo.resolve()
     fixture_root = repo / FIXTURE_ROOT
-    opencode = shutil.which(args.opencode)
+    opencode = harness_executable(args.opencode)
     if opencode is None:
         print(f"RESULT: INCOMPLETE — 0 check(s) ran; {args.opencode} is not on PATH, so the native half of "
               f"the {TARGET_PROVIDER} route could not run (this route's installation *is* the harness's own "

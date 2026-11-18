@@ -972,6 +972,124 @@ increment under review, implemented on its branch with its row. No new OPEN-QUES
 applies rules the increment already states (a result pairs with the call that recorded its id; a failure
 reports the harness's own words), so no owner-only default was taken.
 
+### The sixth review round's fixes (`a8ee709` + working tree), re-measured
+
+The findings file (`review-findings-r6.md`, review head `a8ee709`) named two defects, both P2, both in the
+native check's own half: one in the reading the three routes share, one in the OpenCode check's own lookup.
+Both are fixed on the working tree, each rule's own case was shown to redden without it (every mutation
+executed and restored, and the mutated file hashed back to the value it held before its mutation —
+`scripts/native_check_common.py` `4f74f6b8…` and `scripts/opencode-native-check.py` `212c9e79…`), and the
+gate and the runs below ran on the fixed bytes. The case files the fixes are pinned by are
+`scripts/tests/test_opencode_native_check.py` `e21a3539…` and `scripts/tests/test_omp_native_check.py`
+`7ac4940a…`.
+
+- **Every assignment the printed line's word vector carries must stand unquoted as `NAME=`**
+  (`native_check_common.spelled_as_invocation`). The rule read the *leading* assignment's spelling, and
+  nothing else: a shell reads a word as an assignment only where its `NAME=` stands unquoted, so a line
+  whose **second** assignment is spelled as one quoted word sets no variable there while its words read
+  back as the invocation — measured before the fix, for the OpenCode line
+  (`… && OPENCODE_DB=… 'XDG_DATA_HOME=/data' opencode …`: `reported_invocation` `True`, `shell_words`
+  matching, the quoted word absent from `unquoted_text` — a POSIX shell would run a program named
+  `XDG_DATA_HOME=/data`) and for the OMP/Pi line, whose sessions-tree assignment the spelling rule never saw
+  at all (`reported_invocation` `True` with `'PI_CODING_AGENT_SESSION_DIR=…'` quoted). Every name the vector
+  carries — `home_env`, `also`'s names and, for the first time, `session_dir_env` — is now required to stand
+  unquoted as an assignment word, and the leading word after `&&` must still be an assignment of the line's
+  own names. The new cases are `PrintedInvocation.test_a_quoted_second_assignment_is_not_the_invocation`
+  (both path flavours, with the word vector asserted equal so the refusal is the spelling's) and
+  `ReportedInvocationCases.test_a_quoted_second_assignment_is_not_read_as_the_invocation`;
+  `ReportedInvocationCases.test_a_quoted_assignment_is_not_read_as_the_invocation` (both assignments quoted)
+  stays as the leading-word arm.
+- **The harness word this run drives is resolved once, before any command runs**
+  (`opencode-native-check.harness_executable`). `shutil.which` answers a spelling that names a path
+  *unchanged*, so `--opencode ./tools/opencode` stayed relative, and the stages that run **from the
+  session's own directory** — the export the installation is read back through, its unknown-id control arm,
+  the listing that must not name the session, and the turn — were evaluated there. Measured on the
+  pre-fix tree: the run converted, installed and read its report through the CLI (through
+  `PASS: the report names the store the harness reads as the installed path`), then died on its first
+  `cwd=<workspace>` command with `FileNotFoundError: [Errno 2] No such file or directory:
+  './tools/opencode'`, printed **no** `RESULT` line, and left the caller-named home's store holding both the
+  installed session and the planted `ses_nativecheckunrelated0`. The word is now made absolute against the
+  directory `shutil.which` resolved it in; the conversion's CLI resolves the same spelling against its own
+  directory, so one program does the probing, the planting, the reading and the turn, and a spelling that
+  means different programs in the two directories is refused by `_read_turn_vector`, which names both words.
+  The new cases are `HarnessExecutable.test_a_relative_harness_argument_is_absolute_before_any_command_runs`
+  (a `main` run whose version probe and planting word are both asserted absolute) and
+  `HarnessExecutable.test_a_directory_changing_stage_is_handed_an_absolute_word` (the export itself, run
+  from a directory that is not this process's).
+
+The mutations that name the repaired rules, executed and restored (each file hashed after its restore, the
+hashes quoted above):
+
+| Rule | Line disabled | Observed |
+| --- | --- | --- |
+| every assignment the vector carries stands unquoted as `NAME=` | the `all(… startswith(name + "=") …)` clause replaced by `all(True …)` | `PrintedInvocation.test_a_quoted_second_assignment_is_not_the_invocation` FAIL on both flavours — `AssertionError: 'PASS' != 'FAIL'`; `ReportedInvocationCases.test_a_quoted_second_assignment_is_not_read_as_the_invocation` FAIL — `AssertionError: True is not false` |
+| the sessions-tree name reaches the spelling rule | `reported_invocation` calling `spelled_as_invocation(command, home_env, also, None)` again | the OMP case FAIL — `AssertionError: True is not false` (the line's words still match; only the spelling half is missing the name) |
+| the run's harness word is resolved before any command runs | `main` calling `shutil.which(args.opencode)` again | `HarnessExecutable.test_a_relative_harness_argument_is_absolute_before_any_command_runs` FAIL — `['tools/opencode'] != ['/home/azureuser/repos/call-ccc/tools/opencode']` |
+| the resolution makes the word absolute | `harness_executable` returning the lookup's answer | both `HarnessExecutable` cases FAIL — `PosixPath('tools/opencode') != PosixPath('/home/azureuser/repos/call-ccc/tools/opencode')` |
+
+The runs on the fixed bytes. The relative-spelling arm is the finding's own scenario end to end:
+`./bin/opencode-relative-test` is a symlink to the installed harness, made for this run and removed after it
+(`bin/` is `.gitignore`d), which is the spelling that crashed pre-fix.
+
+```
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode
+RESULT: PASS — 31 check(s), none failed
+$ python3 scripts/opencode-native-check.py --opencode ./bin/opencode-relative-test
+target:      ./bin/opencode-relative-test (/home/azureuser/repos/call-ccc/bin/opencode-relative-test; opencode v2.2.5)
+PASS: the report's resume_arguments names the harness this run probed, this session and the empty prompt — /home/azureuser/repos/call-ccc/bin/opencode-relative-test run --standalone --session ses_CVd1hrbNsvEcvQUqu6F…
+RESULT: PASS — 31 check(s), none failed
+$ python3 scripts/opencode-native-check.py --opencode ./bin/opencode-relative-test \
+    --resume-prompt 'Reply with exactly: NATIVE-TURN-OK' --expect NATIVE-TURN-OK
+PASS: the turn ran through the printed invocation and exited 0 — exit 0; stderr 
+the turn's own output (the target's answer, as the harness printed it):
+    NATIVE-TURN-OK
+PASS: the turn grew the installed session, through the harness's own reader — 7 message(s) before the turn, 10 after
+PASS: the session's own records were not rewritten by the turn — the first 7 message(s) are unchanged
+RESULT: PASS — 35 check(s), none failed
+$ python3 scripts/omp-native-check.py --direction claude-to-omp
+RESULT: PASS — 23 check(s), none failed
+$ python3 scripts/pi-native-check.py --direction claude-to-pi
+RESULT: PASS — 21 check(s), none failed
+```
+
+The opencode arms' counts are where §2/§4's earlier runs measured them (31 offline with one named `SKIP`,
+35 with the turn; the fixed bytes change no step set). The OMP and Pi runs are the offline arms of the two
+routes that read their lines through the changed shared rule — §3's OMP number (25) is that run's own turn
+arm, and neither route's step set changed. The turn arm re-run for the OpenCode route is this round's own
+one real turn, run from the session's own directory (the stage the defect was reached through) through the
+**relative** spelling the finding names.
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3620 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 339 tests in 5.808s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 31 project-owned prefix(es); files seen by git: 5701 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
+  PASS     secrets  no leaks found in 155 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+(A `…` inside the parity line and inside the quoted run lines is this record's own elision.)
+
+`selftest` ran 335 tests before the round and 339 after (the round's four cases: three in
+`scripts/tests/test_opencode_native_check.py`, one in `scripts/tests/test_omp_native_check.py`). What else
+the round moved: `docs/harness.md` (the OpenCode check's entry states the once-resolved harness word; the
+shared module's entry states that `spelled_as_invocation` requires every name the line's word vector
+carries) and `docs/plans/0007-opencode-target-continuation.md` (§6.1's sixth-round paragraph). `AGENTS.md`
+is **not** edited: the round changes no repository layout, gate step, command, read order or rule that file
+states — the rules it states about this route (the store-only installation, the three required members,
+`--standalone`'s position, the load level's `session export`, the printed line's data root and store pin)
+are all unaffected, and neither how a checker resolves its own harness nor how it reads an assignment is a
+rule that file states. No goal file is moved: 0007 is still the increment under review, implemented on its
+branch with its row; 0006 was archived in an earlier round and its row says so. No new OPEN-QUESTIONS
+entry: both findings apply rules the increment already states (a printed line's assignments set the
+variables a harness reads; the run drives the harness it probed), so no owner-only default was taken.
+
 ## 5. What travels, source side and target side
 
 | Source evidence | Target side, and the run that recorded it |
@@ -988,7 +1106,9 @@ reports the harness's own words), so no owner-only default was taken.
 | the source file during and after the run | `source file:  unchanged (sha256 fc21f865…, taken before and after the conversion)` (§1) and `PASS: the source fixture tree is unchanged — 1 file(s) digested before and after` (§2) |
 | a session the target store already held | untouched: planted through the harness's own importer and `PASS: the planted unrelated session is unchanged — exit 0; its document is byte-identical before and after` (§2), then removed through the harness's own `session delete` and shown gone |
 | the invocation a caller resumes with | the round's re-measured run: `cd …/workspace && OPENCODE_DB=…/opencode/opencode.db XDG_DATA_HOME=… opencode run --standalone --session … -- ''` (the review round below), read back as a POSIX shell line along with the exec form; §1's earlier line (`cd /tmp/ocx/ws && XDG_DATA_HOME=/tmp/ocx/data10 …`) is that run's own bytes, before the store's database was pinned beside the root |
-| the accepted OMP route after the shared change | `RESULT: PASS — 25 check(s), none failed` with a real turn (§3) |
+| the accepted OMP route after the shared change | `RESULT: PASS — 25 check(s), none failed` with a real turn (§3); re-run after the sixth round's shared change, offline: `RESULT: PASS — 23 check(s), none failed` (§4) |
+| the accepted Pi route after the same shared change | re-run offline, `RESULT: PASS — 21 check(s), none failed` (§4) |
+| the invocation a caller resumes with, spelled by the caller as a path | the sixth round's run drove every stage — the export, the listing and one real turn — through a relative spelling the check resolved once to the absolute word it names, ending 35 check(s) with none failed and that turn's own answer recorded under the marker as `NATIVE-TURN-OK` (§4); the same spelling crashed the pre-fix run before its verdict and left the planted session in the caller-named home (§4) |
 | the accepted Claude Code → Codex route after the shared change | its offline half passes in full (§3); its real turn failed on this host with the harness's own `failed to connect to Responses WebSocket`, named there rather than hidden |
 
 The row that rests on the target model's own words is the `NATIVE-TURN-OK` one: it is the block the

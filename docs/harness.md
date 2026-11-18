@@ -466,7 +466,14 @@ says so.
   data directory itself, and its parent becomes the root), and the conversion is handed the caller's own
   spelling so each side applies that rule once — so the conversion and the check are pointed at one store
   for every spelling, where handing the conversion this check's normalized root would have the route
-  normalize a second time and split the two. The script builds `ccc` into
+  normalize a second time and split the two. The harness word is **resolved once, before any command
+  runs**: a `--opencode` spelling that names a path is made absolute against the directory this check runs
+  in, because `shutil.which` answers such a spelling unchanged, and the export, its unknown-id control arm,
+  the listing and the turn run *from the session's own directory* — where a relative spelling raised
+  `FileNotFoundError` out of the run, before its cleanup and its `RESULT` line, leaving the planted session
+  in a caller-named home (measured). The conversion's own CLI resolves the same word against its own
+  directory, and a spelling that means different programs in the two is refused by the report's vector
+  reading, which names both words. The script builds `ccc` into
   `bin/ccc-native-check-opencode` (`.gitignore` covers `bin/`),
   takes `--opencode`/`--source`/`--target-home`/`--resume-prompt`/`--expect`/`--keep`/`--json`, and prints
   each check's own state.
@@ -475,7 +482,10 @@ says so.
   subprocess runner (`run`, which a check can hand a command's *whole* environment instead of an overlay
   of this process's, so a name the check's own dictionary removed cannot be restored underneath it), the
   POSIX-shell reading of a rendered command (`shell_words`,
-  `unquoted_text` and the character set a shell acts on), the JSONL record-shape test the checks report
+  `unquoted_text` and the character set a shell acts on, with `spelled_as_invocation` requiring **every**
+  name the line's own word vector carries to stand unquoted as `NAME=` — a quoted assignment is the program
+  to a shell, so a line whose *second* assignment is quoted sets no variable there even though its words
+  read back as the invocation), the JSONL record-shape test the checks report
   through (a line may be blank or one JSON **object**; anything else — unparseable, or a value that is not
   an object — is that check's FAIL with the line's number), the two strings the record's own rules
   read (`TURN_OUTPUT_MARKER`, `PROMPT_PLACEHOLDER`), the fixture-copy mechanism (`rewrite_source_cwd`:

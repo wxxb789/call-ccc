@@ -348,6 +348,24 @@ with exit 1, and a core API caller that left `ContinueOptions.Stderr` unset has 
 so the returned error now carries the same bounded sentence the exit-zero path reports and still wraps
 the process error for `errors.Is`/`As`.
 
+The sixth review round's fixes close the two halves of one question — *what a printed line and a named
+harness actually name*. **Every assignment the printed line's word vector carries must stand unquoted as
+`NAME=`** (`native_check_common.spelled_as_invocation`): a shell reads a quoted assignment — in *any*
+position, not only the leading one the rule once read — as the *program* to run, so a line whose second
+assignment is spelled `'XDG_DATA_HOME=…'` sets no data root while its words read back as the invocation.
+The rule now requires each name the vector carries (`home_env`, `also`'s names, and the sessions-tree one
+the Pi and OMP routes pass in `session_dir_env`, which reaches the spelling check through
+`reported_invocation` for the first time — that name was compared as a word and never read as a spelling).
+And **the harness word the native check drives is resolved once, absolutely, before any command runs**
+(`opencode-native-check.harness_executable`): `shutil.which` answers a spelling that names a path
+unchanged, so `--opencode ./tools/opencode` stayed relative and the stages that run *from the session's own
+directory* — the export, its unknown-id control arm, the listing that must not name the session, and the
+turn — raised `FileNotFoundError` out of the run, before its cleanup and its `RESULT` line, leaving the
+planted session in a caller-named home (measured). The conversion's CLI resolves the same word against its
+own directory, so one program now does the probing, the planting, the reading and the turn, and a spelling
+that means different programs in the two directories is refused by the report's vector reading, which
+names both words.
+
 ## 7. Gate, docs, bookkeeping
 
 - Gate: **no new step and no new required step.** New tests live in `internal/ccc` and `cmd/ccc`, which

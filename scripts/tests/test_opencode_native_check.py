@@ -145,17 +145,24 @@ def vector_check(arguments_field: str, prompt_name: str) -> str:
             f"{prompt_name}")
 
 
-def invocation(workspace, environment: dict[str, str], arguments: list[str]) -> str:
+def invocation(workspace, environment: dict[str, str], arguments: list[str],
+               whole_quoted: str | None = None) -> str:
     """One printed invocation as ``internal/ccc/continue.go``'s renderer spells it.
 
     ``renderInvocation`` starts with ``cd <shellQuote(workingDir)> &&``, then ``renderResumeCommand``
     spells each assignment as its bare ``NAME=`` beside a quoted value -- the names sorted -- and every
     argument quoted where a POSIX shell would act on it, which is what ``shlex.quote`` does. The cases
     build the report's own ``resume_command`` with this, so the line they hand the check is one the shipped
-    renderer really prints rather than a hand-spelling that happens to read back on this host."""
+    renderer really prints rather than a hand-spelling that happens to read back on this host.
+
+    ``whole_quoted`` names one variable whose *whole* assignment is spelled as a single quoted word
+    (``'NAME=value'``) instead: a spelling the renderer never emits, whose words are the invocation's while
+    a shell reads that word as the program to run. It is the negative arm the cases drive, not a spelling
+    any route writes."""
     pieces = [shlex.quote(NATIVE_COMMON.CD_WORD), shlex.quote(str(workspace)),
               NATIVE_COMMON.OPERATOR_WORD]
-    pieces += [f"{name}={shlex.quote(value)}" for name, value in sorted(environment.items())]
+    pieces += ["'" + f"{name}={value}" + "'" if name == whole_quoted
+               else f"{name}={shlex.quote(value)}" for name, value in sorted(environment.items())]
     pieces += [shlex.quote(word) for word in arguments]
     return " ".join(pieces)
 
@@ -357,6 +364,37 @@ class PrintedInvocation(unittest.TestCase):
                     states["the report names the environment the printed invocation sets"], "FAIL")
                 self.assertEqual(
                     states["the printed resume_command reads as a POSIX shell line naming the session"],
+                    "FAIL")
+
+    def test_a_quoted_second_assignment_is_not_the_invocation(self) -> None:
+        """The line's words are the invocation's to the last one, and the assignment the renderer writes
+        *second* is spelled as one quoted word: a shell reads `'XDG_DATA_HOME=/data'` as the *program* to
+        run, so the data root is never set and the harness opens the caller's own -- while the word vector,
+        which throws the quoting away, reads back as the invocation. The spelling rule therefore requires
+        every assignment the vector carries, and not only the one the line opens with (which is
+        ``OPENCODE_DB`` here, the renderer's sorted names putting the database first)."""
+        for flavour in PATH_FLAVOURS:
+            with self.subTest(flavour=flavour.__name__):
+                target = self.target(flavour)
+                environment = target["resume_environment"]
+                for field, arguments_field in (("resume_command", "resume_arguments"),
+                                               ("exec_resume_command", "exec_resume_arguments")):
+                    target[field] = invocation(flavour(self.WORKSPACE), environment,
+                                               target[arguments_field],
+                                               whole_quoted=NATIVE_CHECK.OPENCODE_DATA_ROOT_ENV)
+                self.assertEqual(
+                    NATIVE_COMMON.shell_words(target["resume_command"]),
+                    [NATIVE_COMMON.CD_WORD, str(flavour(self.WORKSPACE)), NATIVE_COMMON.OPERATOR_WORD,
+                     *[f"{name}={environment[name]}" for name in sorted(environment)],
+                     *target["resume_arguments"]],
+                    "the line's own words are not the invocation's, so the case would not be about the "
+                    "spelling")
+                states = self.check(target, flavour)
+                self.assertEqual(
+                    states["the printed resume_command reads as a POSIX shell line naming the session"],
+                    "FAIL")
+                self.assertEqual(
+                    states["the printed exec_resume_command reads as a POSIX shell line naming the session"],
                     "FAIL")
 
     def test_a_pair_agreeing_with_itself_but_naming_another_session_is_not_this_turn(self) -> None:
@@ -700,6 +738,83 @@ class MissingHarness(unittest.TestCase):
             code = NATIVE_CHECK.main(["--opencode", "opencode"])
         self.assertEqual(code, 2)
         self.assertIn("go is not on PATH", stderr.getvalue())
+
+
+class HarnessExecutable(unittest.TestCase):
+    """The harness word this run drives is resolved once, before any command runs, so no stage's own
+    working directory decides which program a command names.
+
+    ``shutil.which`` answers a spelling that names a path unchanged, so a relative ``--opencode`` stayed
+    relative and the stages that run *from the session's own directory* -- the export the installation is
+    read back through, its unknown-id control arm and the listing that must not name the session -- were
+    evaluated there. Measured: ``FileNotFoundError`` out of ``main``, no cleanup, no ``RESULT`` line, the
+    planted session left in a caller-named home. A case that read only a stage running from the caller's
+    own directory would not see it, which is where the relative word means what the caller meant."""
+
+    #: The caller's spelling, and the word it means: a path the lookup answers unchanged, made absolute
+    #: against the directory it was resolved in.
+    RELATIVE = "tools/opencode"
+
+    def resolved(self) -> str:
+        return str(Path(os.getcwd()) / "tools" / "opencode")
+
+    def test_a_relative_harness_argument_is_absolute_before_any_command_runs(self) -> None:
+        seen: list[tuple[str, Path | None]] = []
+        commands: list[list[str]] = []
+
+        def fake_run(command, cwd=None, env=None, timeout=None, replace_env=False):
+            commands.append(list(command))
+            return completed(stdout="opencode v2.2.5")
+
+        def fake_ask(opencode, verb, data_root, cwd=None, timeout=None):
+            seen.append((opencode, cwd))
+            # The planting is where this case stops: an import that failed leaves a run that reports its
+            # own failure and reaches its verdict, which is all this case needs of the run.
+            return completed(stderr="the importer refused this case's planting\n", returncode=1)
+
+        def which(name):
+            return self.RELATIVE if name == self.RELATIVE else "/usr/local/bin/go"
+
+        with tempfile.TemporaryDirectory() as scratch, \
+             mock.patch.object(NATIVE_CHECK.shutil, "which", side_effect=which), \
+             mock.patch.object(NATIVE_CHECK, "BINARY",
+                               Path(scratch) / "bin" / "ccc-native-check-opencode"), \
+             mock.patch.object(NATIVE_CHECK, "ask_opencode", side_effect=fake_ask), \
+             mock.patch.object(NATIVE_CHECK, "run", side_effect=fake_run):
+            with recorded():
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    code = NATIVE_CHECK.main(["--opencode", self.RELATIVE])
+        printed = stdout.getvalue()
+        self.assertIn("RESULT:", printed, f"the run printed no verdict: {printed[-400:]}")
+        self.assertEqual(code, 1, printed)
+        # The version probe is the first command a run makes through the harness word, and the planting is
+        # the first stage handed one: neither carries the caller's relative spelling.
+        self.assertEqual([command[0] for command in commands], [self.resolved()])
+        self.assertEqual(seen, [(self.resolved(), None)],
+                         "a stage ran the caller's relative spelling")
+
+    def test_a_directory_changing_stage_is_handed_an_absolute_word(self) -> None:
+        """The stage the defect was reached through: the harness's own reader, asked from the session's
+        own working directory, whose command would be looked up in *that* directory rather than the
+        caller's."""
+        seen: list[tuple[list[str], Path | None]] = []
+
+        def fake_run(command, cwd=None, env=None, timeout=None, replace_env=False):
+            seen.append((list(command), cwd))
+            return completed(stdout=json.dumps(document(2)))
+
+        with mock.patch.object(NATIVE_CHECK.shutil, "which", return_value=self.RELATIVE):
+            opencode = NATIVE_CHECK.harness_executable(self.RELATIVE)
+        workspace = Path(os.getcwd()) / "a-workspace-that-is-not-this-one"
+        with mock.patch.object(NATIVE_CHECK, "run", side_effect=fake_run):
+            NATIVE_CHECK.export_document(opencode, Path("/data"), SESSION, cwd=workspace)
+        self.assertEqual(len(seen), 1, "the export did not reach a command")
+        command, cwd = seen[0]
+        self.assertEqual(Path(cwd), workspace, "the stage did not change the directory it runs in")
+        self.assertEqual(Path(command[0]), Path(self.resolved()),
+                         "the command a directory-changing stage runs names the spelling it was handed")
+        self.assertTrue(os.path.isabs(command[0]), command)
 
 
 class ToolEvidenceComparison(unittest.TestCase):
