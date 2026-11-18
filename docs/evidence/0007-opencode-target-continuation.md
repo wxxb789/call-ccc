@@ -879,6 +879,99 @@ states (a target writes no outcome the source did not record; the recorded direc
 value; the two sides of the check resolve one store; a case asserts what the writer writes), so no
 owner-only default was taken.
 
+### The fifth review round's fixes (`1a88631` + working tree), re-measured
+
+The findings file (`review-findings-r5.md`, review head `1a88631`) named two P2 defects on this surface:
+a minted call id could alias a recorded one, and the nonzero importer branch dropped the harness's own
+refusal. Both are fixed on the working tree, each rule below was shown to redden without it (each mutation
+executed and restored; the four files hashed after their restore — `internal/ccc/opencode_target.go`
+`11d49155…`, its cases `93e67b46…`, `internal/ccc/opencode_install.go` `fdf77aff…`, its cases
+`4d588de5…`), and the gate and the native runs below ran on the fixed bytes.
+
+The writer (`internal/ccc/opencode_target.go`):
+
+- **A minted id is never one the read recorded.** This target's pairing map is keyed by id across the
+  whole document, and `openCodeCallID`'s positional spelling (`call_<message index>_<call index>`) sat in
+  the same namespace the source's own ids use: an assistant record holding a recorded `call_1_1` with an
+  id-less call beside it minted the recorded call's own spelling for the id-less one, the plan's map
+  assignment replaced the recorded call's entry, the recorded result was consumed by the id-less call,
+  and the call the result actually answered was dropped as unpaired — one tool's output written as another
+  tool's own result. `reserveRecordedCallIDs` now registers every id the read holds — each call's and each
+  result's, on every record, carried or not — before anything is minted, and `freshCallID` walks the
+  positional spelling upward (by a suffix) until it is outside that set, recording what it mints so two
+  id-less calls never share one id. Reserving *result* ids is the arm that answers a result naming no
+  carried call as unpaired rather than as the invented call's own outcome.
+  `TestOpenCodeGeneratedCallIDsDoNotAliasRecordedOnes` drives three arms: the recorded call keeps its
+  result and its own input while the id-less sibling is counted unpaired; the orphan-named result is
+  answered as unpaired with no part written; and two id-less calls in one message stay two calls, so an
+  id-less result arriving while both are outstanding is counted unpaired rather than attached to one of
+  them.
+
+The installer (`internal/ccc/opencode_install.go`):
+
+- **A nonzero importer run keeps the harness's own words.** The branch returned only
+  `the harness's own importer could not be run: exit status 1`, discarding both captured streams, so a
+  core API caller that left `ContinueOptions.Stderr` unset had no `LocationNotFoundError` (the measured
+  refusal for a missing recorded directory) and the structured failure report inherited the generic exit
+  status. The returned error now appends the same bounded sentence the exit-zero path reports
+  (`openCodeAnswerSentence(output+diagnostics)`) beside the wrapped process error, which stays inspectable
+  through `errors.Is`/`As`. `TestInstallOpenCodeSessionKeepsTheImportersOwnRefusal` pins both halves.
+
+The mutations that name the rules of the touched surface, executed and restored:
+
+| Rule | Line disabled | Observed |
+| --- | --- | --- |
+| a minted id is minted outside the read's own ids | the minting call site restored to `openCodeCallID(index, len(c.plan[index].calls))`, bypassing the walk past the reserved set | `TestOpenCodeGeneratedCallIDsDoNotAliasRecordedOnes` FAIL — `call_1_1 part = {Type:tool ID:call_1_1 Name:Read …}, want the recorded call's own input "{\"file_path\":\"/recorded\"}": the id-less sibling must not have taken its id`, `generated_call_ids = 1, want 0`, `the document holds map[call_0_0:{…}], want no tool part: the id-less call has no result and the result names no carried call`, `unpaired_tool_calls = 0, want 1`, `unpaired_tool_results = 0, want 1`, `generated_call_ids = 1, want 0` |
+| two id-less calls in one message never share a minted id | `freshCallID`'s body reduced to one constant spelling (`return "call_generated_shared"`) | `TestOpenCodeGeneratedCallIDsDoNotAliasRecordedOnes` FAIL — `the document holds map[call_generated_shared:{…}], want no tool part: two calls were outstanding, so the id-less result belongs to neither`, `unpaired_tool_calls = 1, want 2`, `unpaired_tool_results = 0, want 1`, `generated_call_ids = 1, want 0` |
+| a nonzero importer run keeps the harness's own refusal | the error sentence reverted to `%w` alone (no excerpt) | `TestInstallOpenCodeSessionKeepsTheImportersOwnRefusal` FAIL — `refusal = the harness's own importer could not be run: exit status 1, want the harness's own refusal preserved` |
+
+The runs on the fixed bytes:
+
+```
+$ go test -count=1 -tags fts5 ./internal/ccc/ ./cmd/ccc/...
+ok  	go.kenn.io/agentsview/internal/ccc	14.236s
+ok  	go.kenn.io/agentsview/cmd/ccc	3.724s
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode
+…
+RESULT: PASS — 31 check(s), none failed
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode \
+    --resume-prompt 'Reply with exactly: NATIVE-TURN-OK' --expect NATIVE-TURN-OK
+…
+PASS: the turn grew the installed session, through the harness's own reader — 7 message(s) before the turn, 10 after
+RESULT: PASS — 35 check(s), none failed
+```
+
+The check's fixture records an id on every call, so neither arm exercises the minting rule; both counts
+stand where the second round measured them (31 offline with one named `SKIP`, 35 with the turn).
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3620 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 335 tests in 5.822s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | … | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 155 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+(A `…` inside the parity line is this record's own elision of that line's middle, as in §2's block.)
+
+`selftest` ran 335 tests before the round and 335 after (the round's cases are Go cases, not `selftest`
+cases); the `internal/ccc` package gained two test functions (the minted-id namespace, the importer's own
+refusal), 335 → 337. What else the round moved:
+`docs/plans/0007-opencode-target-continuation.md` (§6.1's fifth-round paragraph). `AGENTS.md` is **not**
+edited: the round changes no repository layout, gate step, command, read order or rule that file states
+(the id-minting algorithm is not a rule that file states, and the importer-as-only-install-path rule and
+the failure-reporting rule it does state are both unaffected). No goal file is moved: 0007 is still the
+increment under review, implemented on its branch with its row. No new OPEN-QUESTIONS entry: the round
+applies rules the increment already states (a result pairs with the call that recorded its id; a failure
+reports the harness's own words), so no owner-only default was taken.
+
 ## 5. What travels, source side and target side
 
 | Source evidence | Target side, and the run that recorded it |

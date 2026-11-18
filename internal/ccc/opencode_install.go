@@ -197,7 +197,12 @@ func InstallOpenCodeSession(
 	output, diagnostics, err := runOpenCodeImporter(ctx, path, "", arguments, environment,
 		openCodeTimeout(in.Timeout), in.Stderr)
 	if err != nil {
-		return "", "", fmt.Errorf("the harness's own importer could not be run: %w", err)
+		// The harness's own words travel beside the process error: a refusal is what a caller can act on
+		// (measured: a missing recorded directory answers `LocationNotFoundError: Location not found:
+		// <dir>` and exits 1), and a core API caller that left ContinueOptions.Stderr unset has nowhere
+		// else to read them. The excerpt's bound is the exit-zero path's own sentence rule.
+		return "", "", fmt.Errorf("the harness's own importer could not be run: %w: %s",
+			err, openCodeAnswerSentence(output+diagnostics))
 	}
 	if _, ok := openCodeImportAnswer(output+diagnostics, session.SessionID); !ok {
 		return "", "", fmt.Errorf("the harness's own importer did not accept the document: %s",

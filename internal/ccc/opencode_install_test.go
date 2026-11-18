@@ -274,6 +274,38 @@ func TestInstallOpenCodeSessionAsksTheHarnesssOwnImporter(t *testing.T) {
 	}
 }
 
+// TestInstallOpenCodeSessionKeepsTheImportersOwnRefusal pins the nonzero branch's evidence rule: an
+// import the harness refuses (measured: a missing recorded directory answers
+// `LocationNotFoundError: Location not found: <dir>` and exits 1) must carry the harness's own words in
+// the returned error -- a core API caller that left ContinueOptions.Stderr unset has nowhere else to read
+// them -- while the process error stays wrapped for errors.Is/As.
+func TestInstallOpenCodeSessionKeepsTheImportersOwnRefusal(t *testing.T) {
+	session := openCodeTestConversion(t)
+	home := filepath.Join(t.TempDir(), openCodeDataDirName)
+	stubOpenCodeExecutable(t, func(string) (string, error) { return "/stub/opencode", nil })
+	refusalErr := errors.New("exit status 1")
+	const refusedText = "LocationNotFoundError: Location not found: /gone"
+	stubOpenCodeRun(t, &runOpenCodeImporter, func(
+		_ context.Context, _ string, _ string, argv []string, _ []string, _ time.Duration, _ io.Writer,
+	) (string, string, error) {
+		if len(argv) > 1 && argv[1] == "import" {
+			return "", refusedText + "\n", refusalErr
+		}
+		return "", "Session not found: " + session.SessionID + "\n", refusalErr
+	})
+	if _, _, err := InstallOpenCodeSession(context.Background(), session,
+		openCodeTestInstallInput(home, "opencode")); err == nil {
+		t.Fatal("a refused import was reported as an install")
+	} else {
+		if !strings.Contains(err.Error(), refusedText) {
+			t.Errorf("refusal = %v, want the harness's own refusal preserved", err)
+		}
+		if !errors.Is(err, refusalErr) {
+			t.Errorf("refusal = %v, want the process error still wrapped", err)
+		}
+	}
+}
+
 // TestVerifyOpenCodeSessionStructureReadsTheStoreBack pins the structure check end to end: the inherited
 // OpenCode reader resolves the session by its own `<store>#<id>` reference, reads the dialogue (the
 // rendering the document's parts produce under a read), the call with its result and the boundary, and

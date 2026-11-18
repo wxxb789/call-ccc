@@ -356,7 +356,13 @@ type openCodeConverter struct {
 
 	plan  []openCodePlan
 	calls map[string]*openCodeCall
-	clock openCodeClock
+	// usedCallIDs is the namespace a minted id must stay out of: every tool-use id the read recorded
+	// (each call's and each result's, reserved by reserveRecordedCallIDs before the plan mints anything)
+	// plus every id already minted for an id-less call. The pairing map and the pending set are keyed by
+	// id across the whole document, so a generated id reusing a recorded spelling would alias two
+	// different calls.
+	usedCallIDs map[string]struct{}
+	clock       openCodeClock
 	// ledger is the bookkeeping this family's writers share: the carried calls no result has answered
 	// yet, which an id-less result may be paired with, and every tool name in the order it was first
 	// written.
@@ -534,7 +540,11 @@ func (c *openCodeConverter) convert() error {
 // terminal event the same call recorded is what the part states, and a call whose read holds only
 // progress has no outcome here (counted as unpaired_tool_calls). Both shapes are counted separately
 // (nonterminal_tool_events), so a progress event is never presented as the call's outcome.
+//
+// The read's own ids are reserved before any is minted (reserveRecordedCallIDs): a generated id that
+// reused a recorded spelling would alias two calls in the maps below.
 func (c *openCodeConverter) planToolEvidence(inactive []bool) {
+	c.reserveRecordedCallIDs()
 	for index, message := range c.conv.Messages {
 		if inactive[index] || message.IsSidechain {
 			continue
@@ -544,7 +554,7 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 			id := strings.TrimSpace(call.ToolUseID)
 			madeID := false
 			if id == "" {
-				id = openCodeCallID(index, len(c.plan[index].calls))
+				id = c.freshCallID(index, len(c.plan[index].calls))
 				madeID = true
 			}
 			entry := &openCodeCall{ID: id, Source: call, At: message.Timestamp, generatedID: madeID}
@@ -1097,10 +1107,53 @@ func openCodeFreshID(prefix string) (string, error) {
 	return prefix + string(tail), nil
 }
 
-// openCodeCallID mints the id of a call that recorded none, from its own place in the message: two
-// id-less calls in one message are two calls, and a generated id must not collide with a recorded one.
+// openCodeCallID is the positional spelling of an id for a call that recorded none: two id-less calls in
+// one message are two calls. The spelling alone is not the id -- freshCallID walks it past the ids the
+// document already answers -- because the pairing maps are keyed by id, and reusing a recorded spelling
+// would answer a result with a call it does not name.
 func openCodeCallID(messageIndex, callIndex int) string {
 	return fmt.Sprintf("call_%d_%d", messageIndex, callIndex)
+}
+
+// reserveRecordedCallIDs registers every tool-use id the read holds -- each call's and each result's,
+// across every record the read answered, carried or not -- as one no minted id may reuse. The pairing
+// map is keyed by id across the whole document: a generated id reusing a recorded call's spelling would
+// replace that call's entry (handing its recorded result to the id-less call), and one reusing a
+// result's spelling would take a result this conversion cannot pair and present it as the invented
+// call's outcome. A record the source's relations place off the conversation's line is reserved too: its
+// call is not carried, so nothing would be replaced -- but a carried result naming it must still be
+// answered as unpaired rather than as the outcome of a call this conversion invented an id for.
+func (c *openCodeConverter) reserveRecordedCallIDs() {
+	c.usedCallIDs = make(map[string]struct{})
+	for _, message := range c.conv.Messages {
+		for _, call := range message.ToolCalls {
+			if id := strings.TrimSpace(call.ToolUseID); id != "" {
+				c.usedCallIDs[id] = struct{}{}
+			}
+		}
+		for _, result := range message.ToolResults {
+			if id := strings.TrimSpace(result.ToolUseID); id != "" {
+				c.usedCallIDs[id] = struct{}{}
+			}
+		}
+	}
+}
+
+// freshCallID answers the id one id-less call is written under: the positional spelling, walked upward
+// by a suffix until it is one the document does not already answer. The candidates are read from
+// usedCallIDs, so no minted id can name a recorded call or result, and two id-less calls never share an
+// id.
+func (c *openCodeConverter) freshCallID(messageIndex, callIndex int) string {
+	base := openCodeCallID(messageIndex, callIndex)
+	id := base
+	for suffix := 1; ; suffix++ {
+		if _, taken := c.usedCallIDs[id]; !taken {
+			break
+		}
+		id = fmt.Sprintf("%s_%d", base, suffix)
+	}
+	c.usedCallIDs[id] = struct{}{}
+	return id
 }
 
 // openCodeFormatLimits states what this pair of formats cannot express at all, so a consumer reads them

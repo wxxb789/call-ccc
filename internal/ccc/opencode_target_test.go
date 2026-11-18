@@ -484,6 +484,120 @@ func TestOpenCodeToolPartsCarryOnlyWhatTheImporterAccepts(t *testing.T) {
 	}
 }
 
+// openCodeToolParts indexes one converted document's tool parts by the id they carry, so a case can ask
+// what the pairing wrote without re-walking the document's messages itself.
+func openCodeToolParts(t *testing.T, session OpenCodeSession) map[string]openCodePart {
+	t.Helper()
+	var document openCodeDocument
+	if err := json.Unmarshal(session.Data, &document); err != nil {
+		t.Fatalf("the document does not parse: %v", err)
+	}
+	parts := map[string]openCodePart{}
+	for _, message := range document.Messages {
+		for _, part := range message.Content {
+			if part.Type == openCodePartTool {
+				parts[part.ID] = part
+			}
+		}
+	}
+	return parts
+}
+
+// TestOpenCodeGeneratedCallIDsDoNotAliasRecordedOnes pins the namespace rule the pairing map needs: the
+// map is keyed by id across the whole document, so an id minted for a call that recorded none must not
+// reuse any spelling the read already holds. Reusing a recorded call's id would replace that call's own
+// entry in the plan's map -- handing its recorded result to the id-less call and dropping the call the
+// result actually answers -- and reusing an id a recorded result names would take a result this
+// conversion cannot pair and present it as the invented call's outcome.
+func TestOpenCodeGeneratedCallIDsDoNotAliasRecordedOnes(t *testing.T) {
+	at := time.UnixMilli(1_700_000_000_000).UTC()
+	// The second call of message 1 records no id, and the first call of that same message carries the id
+	// openCodeCallID(1, 1) would mint for it: the collision the generator must walk past.
+	conversation := openCodeTestConversation(
+		Message{Role: "user", Dialogue: "hello", DialogueProjected: true, Content: "hello", Timestamp: at},
+		Message{Role: "assistant", Dialogue: "two calls", DialogueProjected: true, Content: "two calls",
+			Timestamp: at.Add(time.Second), ToolCalls: []ToolCall{
+				openCodeTestCall("call_1_1", "Read", `{"file_path":"/recorded"}`),
+				openCodeTestCall("", "Read", `{"file_path":"/id-less"}`),
+			}},
+		Message{Role: "user", Timestamp: at.Add(2 * time.Second), ToolResults: []ToolResult{
+			openCodeTestResult("call_1_1", "completed", `"the recorded call's output"`),
+		}},
+	)
+	session, err := ConvertToOpenCodeSession(conversation, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	parts := openCodeToolParts(t, session)
+	if len(parts) != 1 {
+		t.Fatalf("the document holds %d tool part(s), want one: the id-less call has no outcome here",
+			len(parts))
+	}
+	part, ok := parts["call_1_1"]
+	if !ok {
+		t.Fatalf("the document holds no part under the recorded call's own id: %v", parts)
+	}
+	if part.State == nil || string(part.State.Input) != `{"file_path":"/recorded"}` {
+		t.Errorf("call_1_1 part = %+v, want the recorded call's own input %q: the id-less sibling must "+
+			"not have taken its id", part, `{"file_path":"/recorded"}`)
+	}
+	if part.State == nil || len(part.State.Content) != 1 ||
+		part.State.Content[0].Text != "the recorded call's output" {
+		t.Errorf("call_1_1 part = %+v, want the result the source recorded for that id", part)
+	}
+	openCodeRequireLoss(t, session, "unpaired_tool_calls", 1)
+	openCodeRequireLoss(t, session, "unpaired_tool_results", 0)
+	openCodeRequireLoss(t, session, "generated_call_ids", 0)
+
+	// The namespace is the whole document's, results included: a result whose recorded id no carried call
+	// holds still keeps its spelling out of the minted ids, so it is answered as unpaired rather than as
+	// the invented call's own outcome.
+	orphaned := openCodeTestConversation(
+		Message{Role: "assistant", Dialogue: "one call", DialogueProjected: true, Content: "one call",
+			Timestamp: at, ToolCalls: []ToolCall{openCodeTestCall("", "Read", `{"file_path":"/id-less"}`)}},
+		Message{Role: "user", Timestamp: at.Add(time.Second), ToolResults: []ToolResult{
+			openCodeTestResult("call_0_0", "completed", `"an orphan result"`),
+		}},
+	)
+	session, err = ConvertToOpenCodeSession(orphaned, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting the conversation whose result names no carried call: %v", err)
+	}
+	if parts := openCodeToolParts(t, session); len(parts) != 0 {
+		t.Errorf("the document holds %v, want no tool part: the id-less call has no result and the result "+
+			"names no carried call", parts)
+	}
+	openCodeRequireLoss(t, session, "unpaired_tool_calls", 1)
+	openCodeRequireLoss(t, session, "unpaired_tool_results", 1)
+	openCodeRequireLoss(t, session, "generated_call_ids", 0)
+
+	// And the minted ids do not alias each other: two id-less calls in one message are two calls, so an
+	// id-less result that arrives while both are outstanding has no sole call it could belong to and is
+	// counted unpaired. Collapsing the two minted spellings into one would leave exactly one pending call
+	// and the result would be attached to a call the source did not record it for.
+	twoBare := openCodeTestConversation(
+		Message{Role: "assistant", Dialogue: "two calls", DialogueProjected: true, Content: "two calls",
+			Timestamp: at, ToolCalls: []ToolCall{
+				openCodeTestCall("", "Read", `{"file_path":"/first"}`),
+				openCodeTestCall("", "Read", `{"file_path":"/second"}`),
+			}},
+		Message{Role: "user", Timestamp: at.Add(time.Second), ToolResults: []ToolResult{
+			openCodeTestResult("", "completed", `"the only recorded result"`),
+		}},
+	)
+	session, err = ConvertToOpenCodeSession(twoBare, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting the conversation with two id-less calls: %v", err)
+	}
+	if parts := openCodeToolParts(t, session); len(parts) != 0 {
+		t.Errorf("the document holds %v, want no tool part: two calls were outstanding, so the id-less "+
+			"result belongs to neither", parts)
+	}
+	openCodeRequireLoss(t, session, "unpaired_tool_calls", 2)
+	openCodeRequireLoss(t, session, "unpaired_tool_results", 1)
+	openCodeRequireLoss(t, session, "generated_call_ids", 0)
+}
+
 // TestOpenCodeFlatTargetOmitsABranchAndCountsIt pins the flat target's source-side rule: the line is
 // the one the read's *last* record selects (here rec-3, which named rec-1), so that record's own text
 // stays and the sibling branch the conversation left (rec-2, hanging off the same rec-1) is omitted --

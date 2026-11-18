@@ -335,6 +335,19 @@ the writer puts dialogue in** — a user message's `text` and an assistant messa
 asserts the last record's own path stays while the sibling branch is absent, where searching only
 `message.Text` never saw an assistant branch at all and let a reversed expectation sit unnoticed.
 
+The fifth review round's fixes (`1a88631` + working tree) close the generated-id namespace the pairing
+runs in and the nonzero importer branch's own evidence. **An id minted for a call that recorded none is minted
+outside every id the read recorded** — each call's and each result's, carried or not
+(`reserveRecordedCallIDs`, `freshCallID`) — because this target's pairing map is keyed by id across the
+whole document: reusing a recorded call's spelling would replace that call's own entry and hand its
+recorded result to the id-less sibling, and reusing a spelling a recorded result names (including one
+whose call the read does not carry) would take a result this conversion cannot pair and present it as the
+invented call's own outcome. **A nonzero importer run keeps the harness's own refusal beside the process
+error**: measured, a missing recorded directory answers `LocationNotFoundError: Location not found: <dir>`
+with exit 1, and a core API caller that left `ContinueOptions.Stderr` unset has nowhere else to read it,
+so the returned error now carries the same bounded sentence the exit-zero path reports and still wraps
+the process error for `errors.Is`/`As`.
+
 ## 7. Gate, docs, bookkeeping
 
 - Gate: **no new step and no new required step.** New tests live in `internal/ccc` and `cmd/ccc`, which
