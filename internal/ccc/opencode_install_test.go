@@ -126,7 +126,12 @@ func TestOpenCodeHomeRules(t *testing.T) {
 		t.Errorf("home %q resolves to root %q / data %q, want the harness's own rule under it",
 			rooted, openCodeDataRoot(rooted), openCodeDataDir(rooted))
 	}
-	t.Setenv(openCodeDataRootEnv, "/tmp/ccc-opencode-xdg-root")
+	// The data root is spelled the host's own way -- an absolute temporary directory, as a caller's own
+	// XDG_DATA_HOME is -- rather than as a POSIX literal, because the value is resolved through the host's
+	// own path rules: on a host whose spelling is not POSIX's, `/tmp/...` is not an absolute path, and the
+	// rule this case is about is that the value is the *root* the home's `opencode` directory hangs below.
+	dataRoot := filepath.Join(t.TempDir(), "ccc-opencode-xdg-root")
+	t.Setenv(openCodeDataRootEnv, dataRoot)
 	fromEnv, explicit, err := ResolveOpenCodeHome("")
 	if err != nil {
 		t.Fatalf("resolving the home from the environment: %v", err)
@@ -134,7 +139,11 @@ func TestOpenCodeHomeRules(t *testing.T) {
 	if explicit {
 		t.Error("a home taken from the environment was reported as the caller's own")
 	}
-	if fromEnv != filepath.Join("/tmp/ccc-opencode-xdg-root", openCodeDataDirName) {
+	if !filepath.IsAbs(fromEnv) {
+		t.Errorf("home = %q, want an absolute directory: the store it names is read by its absolute path",
+			fromEnv)
+	}
+	if fromEnv != filepath.Join(dataRoot, openCodeDataDirName) {
 		t.Errorf("home = %q, want the harness's own directory below the environment's data home", fromEnv)
 	}
 }
