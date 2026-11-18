@@ -319,6 +319,12 @@ type openCodeCall struct {
 	// call the source did not record). It is the call's own instant where the result came from the
 	// archive's derived summary, which is stored on the call row and has no record of its own.
 	ResultAt time.Time
+	// recordedEvents says the read recorded a result event of this call's -- whether or not this target
+	// can write it as an outcome. A progress event is not an outcome here, but it is still evidence the
+	// read holds: the archive's summary is a view of the call's recorded events, so a call whose read
+	// holds one cannot use that summary as the only evidence of an outcome the events never stated
+	// (openCodeResultStatesAnOutcome).
+	recordedEvents bool
 	// inferredResultID says the result was paired through a generated call id (a result that recorded
 	// none), which is what the generated_call_ids caveat counts beside the calls themselves.
 	inferredResultID bool
@@ -403,6 +409,29 @@ func (c *openCodeClock) next(at time.Time) int64 {
 	}
 	c.last = millis
 	return millis
+}
+
+// span answers the two instants of one tool part's own time span: `floor`, the message's own instant,
+// for `created` -- the plan stores every call of a record with that record's own instant, and the record
+// is the message the part is written into, so the message's own instant is the call's recorded start --
+// and the instant of the record the carried result was recorded on for `completed`, never before the
+// start. Reading the pair this way keeps every part's span its own: taken through `next` one after the
+// other, a sibling call's completion would sit between this call's two instants and move its recorded
+// start up to that completion, silently rewriting a duration the source recorded. The pair is adjusted in
+// the one way the document's own order allows -- a source whose records are out of order cannot write a
+// part whose end precedes its start, so `completed` rises to the message's own instant -- and nothing
+// else about it is rewritten. The clock's floor rises to the span's own end, so a later record's own
+// instant never precedes what the document already holds.
+func (c *openCodeClock) span(floor int64, resultAt time.Time) (int64, int64) {
+	created := floor
+	completed := resultAt.UTC().UnixMilli()
+	if resultAt.IsZero() || completed < created {
+		completed = created
+	}
+	if completed > c.last {
+		c.last = completed
+	}
+	return created, completed
 }
 
 // newOpenCodeConverter prepares one conversion, including the clock the document's times come from.
@@ -527,7 +556,12 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 				// arrives). The harness's tool states are `completed` and `error`, so a progress event is
 				// no outcome this target may write -- and it must not consume the call's pending slot
 				// either, or the terminal event that follows would read as a repeat of an outcome that
-				// was never recorded.
+				// was never recorded. It is still marked on the call it names (through the same id rules
+				// a terminal event's pairing uses), because the archive's derived summary of that call is
+				// a view of this event rather than an outcome recorded beside it.
+				if entry, ok := c.calls[c.callNamedByResult(result)]; ok {
+					entry.recordedEvents = true
+				}
 				c.lossNonterminal++
 				continue
 			}
@@ -564,11 +598,14 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 	}
 	// An archive read carries a call's outcome both as the result events the archive kept on the call
 	// and as the derived summary it holds in ResultContent. The events are the recorded evidence and the
-	// summary a view of them, so the summary is used only for a call with no result of its own, where it
-	// is the only evidence the read holds of that outcome -- the family's rule.
+	// summary a view of them, so the summary is used only for a call with no recorded result event of
+	// its own -- where it is the only evidence the read holds of that outcome, the family's rule. An
+	// event this target refuses to write counts here too: a call whose only recorded event is progress
+	// has no outcome here, and its summary is that progress event's own text, so writing it would state
+	// an outcome the source never recorded.
 	for _, plan := range c.plan {
 		for _, entry := range plan.calls {
-			if entry.Result != nil {
+			if entry.Result != nil || entry.recordedEvents {
 				continue
 			}
 			result, ok := derivedResultSummary(entry.Source, entry.ID)
@@ -582,6 +619,19 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 			entry.ResultAt = entry.At
 		}
 	}
+}
+
+// callNamedByResult answers the id of the carried call one recorded result event names, through the same
+// pairing a terminal event's own plan uses: the id the event recorded, or -- for an event that recorded
+// none -- the sole call still awaiting a result, where the source's own relation leaves no other call it
+// could mean. An event naming a call this conversion does not carry answers an id the caller's own map
+// lookup will not hold, which is the same answer the plan gives such an event.
+func (c *openCodeConverter) callNamedByResult(result ToolResult) string {
+	if id := strings.TrimSpace(result.ToolUseID); id != "" {
+		return id
+	}
+	id, _ := c.solePendingCall()
+	return id
 }
 
 // openCodeResultStatesAnOutcome answers whether one recorded result event states an outcome this target
@@ -743,7 +793,7 @@ func (c *openCodeConverter) writeAssistantMessage(
 		parts = append(parts, openCodePart{Type: openCodePartText, Text: text})
 	}
 	for _, call := range calls {
-		part, ok, err := c.toolPart(call)
+		part, ok, err := c.toolPart(call, created)
 		if err != nil {
 			return err
 		}
@@ -843,7 +893,7 @@ func (c *openCodeConverter) writeCompaction(message Message) error {
 // text for `completed`, and a type and message for `error`; the importer accepts no other state
 // (measured: `pending` and `running` are refused), and a call whose result holds no text at all is left
 // out and counted rather than written with an invented outcome.
-func (c *openCodeConverter) toolPart(call *openCodeCall) (openCodePart, bool, error) {
+func (c *openCodeConverter) toolPart(call *openCodeCall, floor int64) (openCodePart, bool, error) {
 	if call.Result == nil {
 		// The source recorded the call and no result: the target has no state for a call that has not
 		// finished, so the call is left out and counted.
@@ -902,10 +952,10 @@ func (c *openCodeConverter) toolPart(call *openCodeCall) (openCodePart, bool, er
 	// The part's own time is required by the importer: the call's recorded instant for `created`, and
 	// the instant of the record the carried result was recorded on for `completed` (the plan keeps the
 	// pairing, so this is the result's own record -- or the call's own instant where the result came from
-	// the archive's derived summary). Both go through the clock, so a source whose messages are unordered
-	// cannot write a part whose end precedes its start.
-	created := c.clock.next(call.At)
-	completed := c.clock.next(call.ResultAt)
+	// the archive's derived summary). The pair is read through the clock's own span, under the message's
+	// instant as the floor, so a sibling's completion cannot move this call's recorded start and an
+	// unordered source still cannot write a part whose end precedes its start.
+	created, completed := c.clock.span(floor, call.ResultAt)
 	return openCodePart{
 		Type:  openCodePartTool,
 		ID:    call.ID,

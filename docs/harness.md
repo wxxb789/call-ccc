@@ -440,7 +440,9 @@ says so.
   unrelated session **through the harness's own importer**, reads that session's document back around the
   run, converts through the CLI (`--json`) and reads the report's three states rather than trusting them,
   and then asks the harness itself: `session export <id>` for the installed session (its own document,
-  compared with the source's first prompt, its tool call and recorded result and its compaction boundary),
+  compared with the source's first prompt, its compaction boundary and the tool call with the arguments
+  and result text the **source fixture's own bytes** record — read independently of the conversion's
+  report and items, so a writer that mangled either member cannot pass by agreeing with itself),
   the same command for an id nothing installed as the control arm (it must refuse, naming the id),
   `session list --format json` from the session's own recorded directory (it must name the session) and
   from another (it must not), and `session delete` to remove the planted session — the run records that
@@ -456,7 +458,10 @@ says so.
   inherited `OPENCODE_DB`, and the pin is what makes the pasted command read this run's store). A vector
   that only agreed with the report's own words is recorded as a failure and nothing is run. The harness's
   own answer is printed under `TURN_OUTPUT_MARKER`, and the growth is measured through the harness's own
-  reader (before/after `session export`: a turn appends its own records, 3 per turn measured). A named
+  reader (before/after `session export`: a turn appends its own records, 3 per turn measured). Every
+  command the check runs goes through one deadlined runner: an overrun is recorded as a failed check of
+  its own and answered as a failed exit status, so a hung harness cannot skip the planted session's
+  removal or the run's final `RESULT` line. A named
   `--target-home` whose own name is `opencode` is read through the harness's own rule first (it is the
   data directory itself, and its parent becomes the root), so the conversion and the check are pointed at
   one store. The script builds `ccc` into `bin/ccc-native-check-opencode` (`.gitignore` covers `bin/`),

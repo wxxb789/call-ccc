@@ -407,6 +407,17 @@ func TestOpenCodeToolPartsCarryOnlyWhatTheImporterAccepts(t *testing.T) {
 		t.Errorf("call-ok completed = %d, want the result record's own instant %d",
 			ok.Time.Completed, at.Add(time.Second).UnixMilli())
 	}
+	// Every part's pair is the records its call and its result were recorded on, not the previous part's
+	// completion: these calls share one message and their results one later record, so every part states
+	// the same recorded span. Asserting only the first call's start was what let a sibling's completion
+	// rewrite the later calls' start times to it.
+	for id, part := range parts {
+		if part.Time == nil || part.Time.Created != at.UnixMilli() ||
+			part.Time.Completed != at.Add(time.Second).UnixMilli() {
+			t.Errorf("%s time = %+v, want created %d and completed %d: each part carries its own records' "+
+				"instants", id, part.Time, at.UnixMilli(), at.Add(time.Second).UnixMilli())
+		}
+	}
 	failed := parts["call-failed"]
 	if failed.State == nil || failed.State.Status != openCodeToolError || failed.State.Error == nil ||
 		failed.State.Error.Type != openCodeToolErrorType || failed.State.Error.Message != "permission denied" {
@@ -589,6 +600,163 @@ func TestOpenCodeCarriesATerminalOutcomeRatherThanProgress(t *testing.T) {
 	openCodeRequireLoss(t, session, "unpaired_tool_calls", 1)
 	openCodeRequireLoss(t, session, "repeated_tool_results", 0)
 	openCodeRequireNoToolPart(t, session)
+}
+
+// TestOpenCodeArchiveSummaryIsAViewOfRecordedEvents pins the fallback's own rule: the summary the archive
+// keeps beside a call is a view of the result events it recorded on that call (internal/db restores the
+// sole content-bearing event's text into the column), so it is written only for a call whose read
+// recorded no result event at all. A call whose only recorded event is progress -- the shape
+// messageFromArchive produces when the column was restored from a `running` notification -- has no
+// outcome this target can write, and its summary is that event's own text: writing it would state a
+// completed outcome the source never recorded while the report counts the event as omitted.
+func TestOpenCodeArchiveSummaryIsAViewOfRecordedEvents(t *testing.T) {
+	at := time.UnixMilli(1_700_000_000_000).UTC()
+	progress := "Still working"
+	archive := openCodeTestConversation(
+		Message{Role: "assistant", Dialogue: "spawning", DialogueProjected: true, Content: "spawning",
+			Timestamp: at,
+			ToolCalls: []ToolCall{{
+				ToolUseID: "call_pending", Name: "spawn_agent", InputJSON: `{"agent_type":"awaiter"}`,
+				ResultContent: progress, ResultContentSize: len(progress),
+			}},
+			ToolResults: []ToolResult{{
+				ToolUseID: "call_pending", Status: "running", ContentRaw: progress,
+				ContentSize: len(progress), ContentDecoded: true,
+			}}},
+	)
+	session, err := ConvertToOpenCodeSession(archive, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting the archive shape: %v", err)
+	}
+	if strings.Contains(string(session.Data), progress) {
+		t.Error("the archive's summary of a progress event was written as the call's outcome")
+	}
+	openCodeRequireLoss(t, session, "nonterminal_tool_events", 1)
+	openCodeRequireLoss(t, session, "unpaired_tool_calls", 1)
+	openCodeRequireNoToolPart(t, session)
+
+	// The rule's other arm: a call whose read recorded no result event at all keeps the archive's summary
+	// as the only evidence of its outcome, exactly as the family's writers hold it.
+	summaryOnly := openCodeTestConversation(
+		Message{Role: "assistant", Dialogue: "reading", DialogueProjected: true, Content: "reading",
+			Timestamp: at,
+			ToolCalls: []ToolCall{{
+				ToolUseID: "call_summary", Name: "Read", InputJSON: `{"file_path":"/x"}`,
+				ResultContent: "summary-only outcome", ResultContentSize: len("summary-only outcome"),
+			}}},
+	)
+	session, err = ConvertToOpenCodeSession(summaryOnly, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting the summary-only shape: %v", err)
+	}
+	var document openCodeDocument
+	if err := json.Unmarshal(session.Data, &document); err != nil {
+		t.Fatalf("the document does not parse: %v", err)
+	}
+	var part openCodePart
+	for _, message := range document.Messages {
+		for _, candidate := range message.Content {
+			if candidate.Type == openCodePartTool && candidate.ID == "call_summary" {
+				part = candidate
+			}
+		}
+	}
+	if part.State == nil || part.State.Status != openCodeToolCompleted || len(part.State.Content) != 1 ||
+		part.State.Content[0].Text != "summary-only outcome" {
+		t.Errorf("call_summary part = %+v, want the archive summary under `completed`: the read recorded "+
+			"no result event for it", part)
+	}
+	openCodeRequireLoss(t, session, "nonterminal_tool_events", 0)
+	openCodeRequireLoss(t, session, "unpaired_tool_calls", 0)
+}
+
+// TestOpenCodeParallelToolSpansKeepTheirOwnInstants pins every call's recorded pair: calls recorded on one
+// message started together, and one call's result arriving later must not move a sibling's recorded start
+// up to that completion. Both instants used to be taken through the shared clock one after the other, so
+// the first completion to arrive rewrote every later call's `created` to itself and the durations the
+// source recorded disappeared from the store. The message's own instant is now the floor under each pair
+// (so an unordered source still cannot write a part whose end precedes its start), and a completion only
+// raises the clock's floor for the records that follow it.
+func TestOpenCodeParallelToolSpansKeepTheirOwnInstants(t *testing.T) {
+	at := time.UnixMilli(1_700_000_000_000).UTC()
+	conversation := openCodeTestConversation(
+		Message{Role: "assistant", Dialogue: "two calls", DialogueProjected: true, Content: "two calls",
+			Timestamp: at,
+			ToolCalls: []ToolCall{
+				openCodeTestCall("call-a", "Read", `{"file_path":"/a"}`),
+				openCodeTestCall("call-b", "Read", `{"file_path":"/b"}`),
+			}},
+		Message{Role: "user", Timestamp: at.Add(time.Second), ToolResults: []ToolResult{
+			openCodeTestResult("call-a", "completed", `"a"`),
+		}},
+		Message{Role: "user", Timestamp: at.Add(2 * time.Second), ToolResults: []ToolResult{
+			openCodeTestResult("call-b", "completed", `"b"`),
+		}},
+	)
+	session, err := ConvertToOpenCodeSession(conversation, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	var document openCodeDocument
+	if err := json.Unmarshal(session.Data, &document); err != nil {
+		t.Fatalf("the document does not parse: %v", err)
+	}
+	spans := map[string]*openCodeTimeSpan{}
+	for _, message := range document.Messages {
+		for _, part := range message.Content {
+			if part.Type == openCodePartTool {
+				spans[part.ID] = part.Time
+			}
+		}
+	}
+	want := map[string]openCodeTimeSpan{
+		"call-a": {Created: at.UnixMilli(), Completed: at.Add(time.Second).UnixMilli()},
+		"call-b": {Created: at.UnixMilli(), Completed: at.Add(2 * time.Second).UnixMilli()},
+	}
+	for id, expected := range want {
+		span := spans[id]
+		if span == nil || *span != expected {
+			t.Errorf("%s time = %+v, want the records' own pair %+v: a sibling's completion must not "+
+				"move a call's recorded start", id, span, expected)
+		}
+	}
+	openCodeRequireLoss(t, session, "unpaired_tool_calls", 0)
+	openCodeRequireLoss(t, session, "repeated_tool_results", 0)
+
+	// The one adjustment the pair may take: a source whose records are out of order -- here the call's
+	// record carries the later instant and the result's record the earlier one, while the read's own order
+	// is the one the document keeps -- cannot write a part whose end precedes its start. The part's whole
+	// span is then the message's own instant, which the comment on the clock's own span and the plan's
+	// timestamps row disclose; nothing else about the recorded pair is rewritten.
+	unordered := openCodeTestConversation(
+		Message{Role: "assistant", Dialogue: "later call", DialogueProjected: true, Content: "later call",
+			Timestamp: at.Add(time.Second),
+			ToolCalls: []ToolCall{openCodeTestCall("call-late", "Read", `{"file_path":"/c"}`)}},
+		Message{Role: "user", Timestamp: at, ToolResults: []ToolResult{
+			openCodeTestResult("call-late", "completed", `"c"`),
+		}},
+	)
+	session, err = ConvertToOpenCodeSession(unordered, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting an unordered source: %v", err)
+	}
+	if err := json.Unmarshal(session.Data, &document); err != nil {
+		t.Fatalf("the document does not parse: %v", err)
+	}
+	span := (*openCodeTimeSpan)(nil)
+	for _, message := range document.Messages {
+		for _, part := range message.Content {
+			if part.Type == openCodePartTool && part.ID == "call-late" {
+				span = part.Time
+			}
+		}
+	}
+	if span == nil || span.Created != at.Add(time.Second).UnixMilli() ||
+		span.Completed != at.Add(time.Second).UnixMilli() {
+		t.Errorf("call-late time = %+v, want the message's own instant %d twice: the result's record "+
+			"precedes the call's, so the part may not end before it starts",
+			span, at.Add(time.Second).UnixMilli())
+	}
 }
 
 // TestOpenCodePlansNoEvidenceFromARecordItWillNotWrite pins the two passes' own consistency: the plan

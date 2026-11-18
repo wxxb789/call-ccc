@@ -623,6 +623,137 @@ rules the increment already states (a progress event is not an outcome; the comp
 written; one requested turn is one turn; the route's own directory rule), and the progress-word list is
 the inherited readers' own, disclosed in the code and the plan's row.
 
+### The third review round's fixes (`33645b3` + working tree), re-measured
+
+The findings file (`review-findings-r3.md`, review head `33645b3`) named four defects: one P1 and three P2.
+All four are fixed on the working tree, each rule's own case was shown to redden without it (every mutation
+executed and restored; every file hashed after its restore — `internal/ccc/opencode_target.go`
+`d6fcc8cb…`, its cases `cd7b0362…`, `scripts/opencode-native-check.py` `49d57d82…`, its cases
+`9f1b2a52…`), and the gate and the native runs below ran on the fixed bytes.
+
+The writer (`internal/ccc/opencode_target.go`):
+
+- **The archive's derived summary is a view of the recorded events, progress included.** The summary
+  column is the inherited write path's own view of a call's result events (`internal/db`'s
+  `RestoreToolCallResultContent` refills it from the sole content-bearing event), so a conversion may write
+  it only for a call whose read recorded no result event at all. The second round's rule that a progress
+  event is not an outcome left a hole beside it: a call whose only recorded event was `running` had
+  `entry.Result == nil`, the summary fallback then restored that event's own text as a statusless result,
+  and `toolPart` wrote it under `completed` while the report counted the event as omitted — a fabricated
+  completion out of progress. Every call a recorded event names is now marked
+  (`openCodeCall.recordedEvents`, through the same id pairing a terminal event gets: `callNamedByResult`,
+  which answers the sole outstanding call for an event that recorded no id), and the fallback skips a
+  marked call as well as one with a carried result.
+  `TestOpenCodeArchiveSummaryIsAViewOfRecordedEvents` drives the archive shape (`ResultContent` beside the
+  `running` event that produced it) and the summary-only arm the fallback still serves.
+- **Each tool part's span is its own records' pair.** Both instants were taken through the shared clock one
+  after the other, so a sibling's completion sat between a call's two instants: with two calls recorded on
+  one message at `T` and their results at `T+1s` and `T+2s`, the second call's `created` was rewritten to
+  `T+1s` and the duration the source recorded disappeared from the store. `openCodeClock.span` takes the
+  part's start from the message's own instant — the clock's floor at that point, not whatever a sibling's
+  completion raised it to — and its end from the result record's own instant, raised to the start where
+  the result's record precedes the call's; so calls recorded together start together while an unordered
+  source still cannot write a part whose end precedes its start.
+  `TestOpenCodeParallelToolSpansKeepTheirOwnInstants` pins a staggered pair
+  and the one adjustment the pair may take (a result record whose own instant precedes the call's message:
+  the part's whole span is then the message's own instant), and
+  `TestOpenCodeToolPartsCarryOnlyWhatTheImporterAccepts` now asserts every parallel part's pair, not
+  only the first call's start.
+
+The native check (`scripts/opencode-native-check.py`, its cases in
+`scripts/tests/test_opencode_native_check.py`):
+
+- **The store's tool part is compared with the source fixture's own bytes.** The check labelled "the
+  installed session holds the source's tool call and its recorded result" compared `(call id, name,
+  status)` alone, so a store holding different arguments or different output passed it — the shape a
+  writer that mangled either member produces, and one the structural round trip cannot see when the
+  conversion's own intended items hold the same mangled bytes. `source_tool_evidence` reads the fixture
+  copy the conversion read (each `tool_use`'s recorded input value and the `tool_result`'s text, the
+  latter through the inherited parser's `DecodeContent` rule, with `is_error` as the `errored` status the
+  reader records and this target writes as the `error` state), and `tool_evidence_differences` compares
+  identity, input value and result text part by part (a missing, duplicated or unknown part is a
+  difference of its own); the passing line now names the compared arguments and text. `ToolEvidenceComparison`
+  drives the fixture reading, the matching arm, a changed input, a changed result text, a changed
+  name/status, a missing/duplicated/unknown part, and the `is_error` reading.
+- **Every command is deadlined.** The shared runner raises `subprocess.TimeoutExpired`, and nothing caught
+  it: a hung turn (or build, or harness command) ended the run before `stop()` — the planted session stayed
+  in a caller-named home, its fixed id made every later run's planting meet it, and no final `RESULT` line
+  was printed. Every command this check runs now goes through `deadline_run`: an overrun is recorded as a
+  failed check of its own (naming the command and the bound) and answered as a completed process with exit
+  status -1, so the caller's own check reports what it could not read and the run still reaches
+  `remove_planted` and `finish`. `CommandDeadlines` drives the runner, the harness-command path, the turn
+  stage, and one end-to-end `main` run whose turn times out — asserting the planted session is still
+  deleted and a `RESULT:` line (exit 1) is still printed.
+
+The mutations that name the repaired rules, executed and restored (each file hashed after its restore):
+
+| Rule | Line disabled | Observed |
+| --- | --- | --- |
+| the summary fallback skips a call with any recorded event | the fallback's guard restored to `entry.Result != nil` alone | `TestOpenCodeArchiveSummaryIsAViewOfRecordedEvents` FAIL — `the archive's summary of a progress event was written as the call's outcome`, `unpaired_tool_calls = 0, want 1`, `the document holds a tool part for call "call_pending"` |
+| each tool part's pair is its own records' pair | the pair taken through `c.clock.next(call.At)`/`next(call.ResultAt)` again | `TestOpenCodeParallelToolSpansKeepTheirOwnInstants` FAIL — `call-b time = &{Created:1700000001000 …}, want … {Created:1700000000000 …}`; `TestOpenCodeToolPartsCarryOnlyWhatTheImporterAccepts` FAIL on `call-failed`/`call-noinput`/`call-repeated`/`call-blocks`/`call-rawinput` (`created 1700000001000, want 1700000000000`) |
+| a tool part may not end before it starts | `span`'s `completed < created` guard dropped (the zero-instant guard kept) | `TestOpenCodeParallelToolSpansKeepTheirOwnInstants` FAIL — `call-late time = &{Created:1700000001000 … Completed:1700000000000 …}, want the message's own instant 1700000001000 twice: the result's record precedes the call's, so the part may not end before it starts` |
+| a timeout is a recorded failure, not an escaping exception | `deadline_run`'s `try`/`except` replaced by the bare `run` call | `CommandDeadlines` all four cases ERROR — the end-to-end one with the raw `subprocess.TimeoutExpired: Command '['/usr/local/bin/opencode', 'run', …]' timed out after 600 seconds` out of `main` (no removal, no `RESULT` line) |
+| every command goes through the deadlined runner | `ask_opencode` calling the shared `run` directly again | `CommandDeadlines.test_a_timed_out_harness_command_reaches_the_callers_own_answer` ERROR — the timeout escapes `ask_opencode` |
+| the arguments and the result text are compared | both comparisons dropped from `tool_evidence_differences` (identity and status kept) | `ToolEvidenceComparison.test_changed_arguments_are_a_difference` and `test_changed_result_text_is_a_difference` FAIL — `AssertionError: False is not true : []` (an identity-only comparison finds nothing) |
+
+The runs on the fixed bytes:
+
+```
+$ go test -count=1 -tags fts5 ./internal/ccc/ ./cmd/ccc/...
+ok  	go.kenn.io/agentsview/internal/ccc	14.411s
+ok  	go.kenn.io/agentsview/cmd/ccc	3.086s
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode
+PASS: the installed session holds the source's tool call and its recorded result — toolu_01Example0000000000000000 Read [completed] input {"file_path": "/home/user/code/example-api/internal/retry/policy.go"} result 'package retry\n\nconst MaxAttempts = 4'
+RESULT: PASS — 31 check(s), none failed
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode \
+    --resume-prompt 'Reply with exactly: NATIVE-TURN-OK' --expect NATIVE-TURN-OK
+PASS: the installed session holds the source's tool call and its recorded result — toolu_01Example0000000000000000 Read [completed] input {"file_path": "/home/user/code/example-api/internal/retry/policy.go"} result 'package retry\n\nconst MaxAttempts = 4'
+PASS: the turn ran through the printed invocation and exited 0 — exit 0; stderr 
+the turn's own output (the target's answer, as the harness printed it):
+    NATIVE-TURN-OK
+PASS: the turn grew the installed session, through the harness's own reader — 7 message(s) before the turn, 10 after
+RESULT: PASS — 35 check(s), none failed
+```
+
+(The two runs' tool-evidence lines name the same fixture part — the comparison is against the fixture, not
+against the run; the offline arm's count is 31 with one named `SKIP`, the turn arm's 35 — the same step set
+the second round measured.)
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3620 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 334 tests in 5.743s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 31 project-owned prefix(es); files seen by git: 5701 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
+  PASS     secrets  no leaks found in 155 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+(A `…` inside the parity line is this record's own elision of that line's middle — the pinned revision's
+own description, which §2's earlier block elides the same way.)
+
+`selftest` ran 323 tests before the round and 334 after (the round's eleven cases: seven for the
+fixture-driven tool comparison, four for the deadlined runner); the Go suites gained two cases
+(`TestOpenCodeArchiveSummaryIsAViewOfRecordedEvents`, `TestOpenCodeParallelToolSpansKeepTheirOwnInstants`)
+and the every-part assertion in the existing tool case. What else the round moved: `docs/harness.md` (the
+check's entry: the tool evidence is compared with the fixture's own bytes, and every command is deadlined)
+and `docs/plans/0007-opencode-target-continuation.md` (the tool-call and timestamps mapping rows, the
+`nonterminal_tool_events` row, the two `Done when` evidence rows and §6.1's measurement list). `AGENTS.md`
+is **not** edited: the round changes no repository layout, gate step, command, read order or rule an agent
+must follow — the rules that file states about this route (the store-only installation, the required
+members, `--standalone`'s position, `session export` for the load level, the printed line's root and store
+pin) all still hold, and neither the writer's span arithmetic nor one script's timeout handling is a rule
+that file states. No goal file is moved: 0007 is still the increment under review and stays implemented on
+its branch with its row. No new OPEN-QUESTIONS entry: the round re-applies rules the increment already
+states (the summary is a view of the recorded events; the part's pair is the records it names; the
+comparison asks about the source's own bytes; a hung command is a failed check rather than a lost run), so
+no owner-only default was taken.
+
 ## 5. What travels, source side and target side
 
 | Source evidence | Target side, and the run that recorded it |
@@ -630,7 +761,7 @@ the inherited readers' own, disclosed in the code and the plan's row.
 | a Claude Code conversation with a tool call, its result, recorded reasoning and a compaction boundary | converted into a 7-message OpenCode document (`converted: opencode-import-document, 2312 bytes: 7 message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies), 2 turn(s)`, §1) and materialised by the harness's own importer as a store session (§2: `the store's own document holds 10 message(s); the conversion carried 7`, the extra three being the turn's own records) |
 | the source read's own omissions and rewrites | named, counted and per-category: `empty_user_messages ×1`, `tool_name_vocabulary ×1`, `message_model_attribution ×4`, `usage_zeroed ×1`, `target_model_id_attribution ×2`, `compaction_reason ×1`, `assistant_completion_instant ×4`, `unresolved_source_parents ×1`, `pre_compaction_history ×4`, `malformed_source_lines ×1` (§1), out of the 37 categories the report names on every run (§2's recorded run named 35: the first review round added `coalesced_tool_call_projections`, which the committed multi-file patch fixture exercises, and the second added `nonterminal_tool_events`, §4) |
 | the assistant message's own completion instant the importer requires | written for every assistant message from the record's own instant, `×4` in §1 — the member whose absence the harness accepts and then drops the message over (§0), disclosed as `assistant_completion_instant`; the read-back is the check that caught it |
-| the tool call and its recorded result | `[('toolu_01Example0000000000000000', 'Read', 'completed')]` in the harness's own document (§2) — the same call id and name the source recorded, with the result's own text as the part's completed state |
+| the tool call with its recorded arguments and result text | `toolu_01Example0000000000000000 Read [completed] input {"file_path": "/home/user/code/example-api/internal/retry/policy.go"} result 'package retry\n\nconst MaxAttempts = 4'` in the harness's own document (§4's third round) — the same call id and name the source recorded, with its recorded arguments and the result's own text, compared part by part with the **source fixture's own bytes**, so a store holding different arguments or different output fails the check instead of passing on its identity |
 | the compaction boundary | `{"type": "compaction", … "status": "completed", "reason": "auto", "summary": "Summary: the retry policy caps attempts at four…` (§2) — the source's own summary, with the harness's own `reason` vocabulary (`auto`) disclosed as `compaction_reason` |
 | the model binding a resumed turn runs under | the **target home's** own configured pair, asked of the harness's own `debug agents` listing — `tencent-litellm/deepseek-v4.1-flash-fast` (§2), written as the document's `info.model` and named by `target_model_binding` (§1) — never the source's model |
 | the directory a session is filed under | the session's recorded working directory, and the harness's own lookup resolves the session from it: `['ses_7utczOHDIjpwHab8vubyl0UDVt']` listed from that directory and not from another (§2), which is why the printed line changes into it |
@@ -671,7 +802,8 @@ block (`scripts/tests/test_evidence_claims.py`, which this record is registered 
 - **§1–§3 quote the runs they name, at the tree they ran on.** Their transcripts are those runs' own bytes:
   the printed resume line in them names the data root alone, because the store's database was pinned beside
   it later (§4's review round), and their check counts (27 offline, 31 with a turn) are that round's step
-  set; §4's re-measured runs are the current build's own.
+  set; §4's re-measured runs are the current build's own (the third round's: the same 31 offline, 35 with a
+  turn, on the step set the second round measured).
 - **Not measured here:** a `--to opencode` conversion on a source whose recorded directory does not exist
   (refused by the harness, and reported as the failure it is), a Windows host, and the real pilot-time
   behaviour of a converted session inside OpenCode's TUI (this increment verifies the loader, the reader,

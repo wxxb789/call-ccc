@@ -24,9 +24,11 @@ What it does:
    level is ``load`` even when a turn was requested: the one real turn is this check's own (step 7), and
    asking the CLI's resume verification as well would run and bill two turns for one ``--resume-prompt``;
 5. asks the harness's **own reader** about the installed session (``opencode session export <id>``) and
-   compares its answer with the report and the source's own evidence -- the source's first prompt, the tool
-   call with its recorded result, the compaction boundary -- with an unknown-id control arm: the same
-   command must refuse, naming the id it could not find;
+   compares its answer with the report, the source's own evidence and the **source fixture's own bytes** --
+   the source's first prompt, the compaction boundary, and the tool call with the arguments and result text
+   that fixture records (read by ``source_tool_evidence``, not by the conversion's own items, so a writer
+   that mangled either member cannot pass by agreeing with itself) -- with an unknown-id control arm: the
+   same command must refuse, naming the id it could not find;
 6. asks the harness's own project-scoped listing (``opencode session list --format json``) **from the
    session's own recorded directory**, where it must name the installed session, and from a directory that
    is not that one, where it must not: a session the harness does not resolve from where the report says to
@@ -42,6 +44,12 @@ What it does:
 8. re-digests the source tree and re-reads the planted session's document, so "nothing else moved" is
    measured after the run as well as before it, and removes the planted session through the harness's own
    ``session delete``.
+
+Every command this check runs goes through ``deadline_run``: a command that overruns its own bound is
+recorded as a failed check of its own and answered as a failed exit status, rather than raising out of the
+run. That is what keeps the cleanup (step 8) and the final ``RESULT`` line reachable on every path -- an
+uncaught ``TimeoutExpired`` would leave the planted session in a caller-named home, and its fixed id would
+make every later run's planting meet it.
 
 Measured on this host against OpenCode 2.2.5 (``opencode --version`` prints ``opencode v2.2.5``): the data
 directory is ``$XDG_DATA_HOME/opencode`` and the store inside it is ``opencode.db`` (there is no variable
@@ -133,6 +141,33 @@ HARNESS_TIMEOUT = 300
 #: The bound on one real resume turn: a model call in the caller's own session.
 TURN_TIMEOUT = 600
 
+#: The bound one of this check's own commands runs under when its call site names none: the shared
+#: runner's own default (``native_check_common.run``).
+DEFAULT_COMMAND_TIMEOUT = 600
+
+
+def deadline_run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = None,
+                 timeout: int = DEFAULT_COMMAND_TIMEOUT,
+                 replace_env: bool = False) -> subprocess.CompletedProcess:
+    """Run one command under its own deadline, with a timeout as a recorded failure rather than an
+    escaping exception.
+
+    ``native_check_common.run`` answers a command that overruns its bound by raising
+    ``subprocess.TimeoutExpired``; uncaught, that exception ends the run before its own cleanup and its
+    verdict -- the planted session would stay in a caller-named home (and its fixed id would then make
+    every later run's planting meet it), and no final ``RESULT`` line would be printed. Every command
+    this check runs therefore goes through here: a command that does not answer inside its bound is
+    recorded as a failed check of its own, naming the command and the bound, and answered as a completed
+    process with exit status -1 whose stderr carries the same words -- so each caller's own check reports
+    the evidence it could not read, and the run still reaches the planted session's removal and its
+    verdict."""
+    try:
+        return run(cmd, cwd=cwd, env=env, timeout=timeout, replace_env=replace_env)
+    except subprocess.TimeoutExpired:
+        words = f"timed out after {timeout}s: {bounded(' '.join(cmd), 300)}"
+        record(f"{' '.join(cmd[:2])} answers within its {timeout}s bound", False, words)
+        return subprocess.CompletedProcess(cmd, -1, "", words)
+
 
 def opencode_environment(data_root: Path) -> dict[str, str]:
     """The environment one OpenCode command this check runs is given: this process's own, with the data
@@ -178,8 +213,8 @@ def ask_opencode(opencode: str, verb: list[str], data_root: Path, cwd: Path | No
     ``opencode_environment`` builds is this process's own with the data root named and the database
     override removed, and an overlay would restore the removed name from this process's environment --
     sending the command to a database this check did not choose."""
-    return run([opencode, *opencode_arguments(verb)], cwd=cwd, env=opencode_environment(data_root),
-               timeout=timeout, replace_env=True)
+    return deadline_run([opencode, *opencode_arguments(verb)], cwd=cwd, env=opencode_environment(data_root),
+                        timeout=timeout, replace_env=True)
 
 
 def unrelated_document() -> dict:
@@ -293,18 +328,154 @@ def document_texts(document: dict, kind: str) -> list[str]:
     return texts
 
 
-def document_tool_evidence(document: dict) -> list[tuple[str, str, str]]:
-    """Every tool part a document holds, as `(call id, name, status)`: the evidence a read of the session
-    shows for a call and its recorded result."""
-    evidence: list[tuple[str, str, str]] = []
+def tool_result_text(content: object) -> str:
+    """The text the inherited parser reads out of one ``tool_result`` block's content
+    (``internal/parser/content.go``'s ``DecodeContent``): a string is itself, and an array of blocks
+    contributes each block's ``text``, or its ``result``, joined in the block's own order."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if isinstance(block.get("text"), str) and block["text"]:
+            parts.append(block["text"])
+        elif isinstance(block.get("result"), str) and block["result"]:
+            parts.append(block["result"])
+    return "".join(parts)
+
+
+def source_tool_evidence(source: Path) -> dict[str, dict]:
+    """The tool evidence one Claude transcript records, from the transcript's own bytes: for every
+    ``tool_use`` block, its id, name, recorded input value and the text of the ``tool_result`` block
+    recorded for it.
+
+    This is the native check's independent side: the store's own document is compared against the source
+    fixture rather than against the conversion's report or its intended items, so a writer that recorded
+    different arguments or different output cannot pass by agreeing with itself. The reading mirrors the
+    inherited parser's own two rules in the small -- a result's text is ``tool_result_text``
+    (``DecodeContent``), and ``is_error`` is the ``errored`` status the reader records, which this
+    target's vocabulary writes as the ``error`` state. A call the transcript records with no result at
+    all, or with one whose text is blank, is not expected from the store: the writer leaves such a call
+    out and counts it (``unpaired_tool_calls``/``empty_tool_results``) rather than writing a state its
+    importer refuses.
+    """
+    evidence: dict[str, dict] = {}
+    for line in source.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            record_ = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record_, dict):
+            continue
+        message = record_.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use":
+                evidence[str(block.get("id", ""))] = {
+                    "name": str(block.get("name", "")),
+                    "status": "completed",
+                    "input": block.get("input"),
+                    "result": None,
+                }
+            elif block.get("type") == "tool_result":
+                entry = evidence.get(str(block.get("tool_use_id", "")))
+                if entry is None:
+                    continue
+                entry["result"] = tool_result_text(block.get("content"))
+                entry["status"] = "error" if block.get("is_error") is True else "completed"
+    return {call_id: entry for call_id, entry in evidence.items()
+            if entry["result"] is not None and entry["result"].strip() != ""}
+
+
+def document_tool_evidence(document: dict) -> list[dict]:
+    """Every tool part the harness's own document holds, with the members this check compares: the call's
+    identity (id, name, status) and the store's own copy of the recorded evidence -- the ``state.input``
+    value, and the completed state's text (its ``state.content`` blocks) or an error state's message.
+
+    The identity alone is not evidence: a part whose id, name and ``completed`` status are right can
+    still carry different arguments or different output, which is exactly the shape a writer that mangled
+    either member produces -- and the structural round trip cannot see it when the conversion's own
+    intended items hold the same mangled bytes. The recorded input is compared as the JSON *value* both
+    sides parsed, because the store keeps the value and the recorded key order while the recorded
+    whitespace is not what it keeps (measured on 2.2.5); the two sides are compared by
+    ``tool_evidence_differences``."""
+    evidence: list[dict] = []
     for message in document.get("messages") or []:
         for part in message.get("content") or []:
             if not isinstance(part, dict) or part.get("type") != "tool":
                 continue
             state = part.get("state") or {}
-            evidence.append((str(part.get("id", "")), str(part.get("name", "")),
-                             str(state.get("status", ""))))
+            text = ""
+            content = state.get("content")
+            if isinstance(content, list):
+                text = "".join(block.get("text", "") for block in content
+                               if isinstance(block, dict) and isinstance(block.get("text"), str))
+            error = state.get("error")
+            if isinstance(error, dict) and isinstance(error.get("message"), str):
+                text = error["message"]
+            evidence.append({
+                "id": str(part.get("id", "")),
+                "name": str(part.get("name", "")),
+                "status": str(state.get("status", "")),
+                "input": state.get("input"),
+                "result": text,
+            })
     return evidence
+
+
+def tool_evidence_differences(expected: dict[str, dict], exported: list[dict]) -> list[str]:
+    """Every way the store's own tool evidence differs from the source fixture's, as sentences a FAIL line
+    can carry: the call's identity, its recorded input value and its recorded result text are each
+    compared, and a part the fixture records nothing about -- or one the store holds twice -- is a
+    difference of its own. An empty answer is the store matching the fixture."""
+    differences: list[str] = []
+    seen: dict[str, dict] = {}
+    for part in exported:
+        if part["id"] in seen:
+            differences.append(f"the store's document holds {part['id']} more than once")
+            continue
+        seen[part["id"]] = part
+    for call_id, want in expected.items():
+        part = seen.pop(call_id, None)
+        if part is None:
+            differences.append(f"the store's document holds no part for the source's call {call_id}")
+            continue
+        if part["name"] != want["name"]:
+            differences.append(f"{call_id}'s name is {part['name']!r}, the source recorded "
+                               f"{want['name']!r}")
+        if part["status"] != want["status"]:
+            differences.append(f"{call_id}'s status is {part['status']!r}, the source's result is "
+                               f"{want['status']!r}")
+        if part["input"] != want["input"]:
+            differences.append(f"{call_id}'s input is {bounded(json.dumps(part['input']), 120)}, the "
+                               f"source recorded {bounded(json.dumps(want['input']), 120)}")
+        if part["result"] != want["result"]:
+            differences.append(f"{call_id}'s result text is {bounded(part['result'], 120)!r}, the source "
+                               f"recorded {bounded(want['result'], 120)!r}")
+    for call_id in sorted(seen):
+        differences.append(f"the store's document holds a part for {call_id}, which the source fixture "
+                           f"records no carryable result for")
+    return differences
+
+
+def recorded_tool_evidence(evidence: list[dict]) -> str:
+    """The detail a *passing* tool-evidence check records: every part's identity and what it carries, so
+    the line shows the evidence the store's own document holds rather than only a count."""
+    return "; ".join(
+        f"{part['id']} {part['name']} [{part['status']}] input {bounded(json.dumps(part['input']), 80)} "
+        f"result {bounded(part['result'], 60)!r}" for part in evidence)
 
 
 def document_compactions(document: dict) -> list[dict]:
@@ -380,7 +551,7 @@ def main(argv: list[str] | None = None) -> int:
     data_root.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    version = run([opencode, "--version"]).stdout.strip()
+    version = deadline_run([opencode, "--version"]).stdout.strip()
     print(f"repo:        {repo}")
     print(f"direction:   {SOURCE_PROVIDER}:{source_session} → {TARGET_PROVIDER}")
     print(f"target:      {args.opencode} ({opencode}; {version[:60] or 'no version line'})")
@@ -421,7 +592,7 @@ def main(argv: list[str] | None = None) -> int:
 
     build_parent = (repo / BINARY).parent
     build_parent.mkdir(parents=True, exist_ok=True)
-    build = run([go, "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY), "./cmd/ccc"], cwd=repo)
+    build = deadline_run([go, "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY), "./cmd/ccc"], cwd=repo)
     if build.returncode != 0:
         record("ccc builds with the flags upstream ships", False, build.stderr.strip()[:400])
         return stop()
@@ -435,7 +606,7 @@ def main(argv: list[str] | None = None) -> int:
     command = [str(repo / BINARY), "continue", f"{SOURCE_PROVIDER}:{source_session}", "--to",
                TARGET_PROVIDER, "--target-home", str(data_root), "--target-binary", opencode,
                "--verify", "load", "--json"]
-    convert = run(command, cwd=repo, env={SOURCE_ROOT_ENV[SOURCE_PROVIDER]: str(source_root)})
+    convert = deadline_run(command, cwd=repo, env={SOURCE_ROOT_ENV[SOURCE_PROVIDER]: str(source_root)})
     try:
         document = json.loads(convert.stdout)
     except json.JSONDecodeError:
@@ -504,9 +675,13 @@ def main(argv: list[str] | None = None) -> int:
         record("the installed session holds the source's own first prompt",
                bool(user_texts) and user_texts[0].strip().startswith("Summarize the retry policy"),
                f"{user_texts[0][:80]!r}" if user_texts else "no user text")
+        expected_evidence = source_tool_evidence(destination)
         evidence = document_tool_evidence(exported)
+        evidence_differences = tool_evidence_differences(expected_evidence, evidence)
         record("the installed session holds the source's tool call and its recorded result",
-               evidence == [("toolu_01Example0000000000000000", "Read", "completed")], f"{evidence}")
+               not evidence_differences,
+               bounded("; ".join(evidence_differences) if evidence_differences
+                       else recorded_tool_evidence(evidence), 400))
         compactions = document_compactions(exported)
         record("the installed session holds the compaction boundary with the harness's own members",
                len(compactions) == 1 and compactions[0].get("status") == "completed"
@@ -710,8 +885,8 @@ def _run_turn(args: argparse.Namespace, target: dict, opencode: str, data_root: 
         record("the installed session reads back before the turn", False,
                f"exit {before_status}; {bounded(before_words, 200)}")
         return
-    turn = run([*arguments[:-1], args.resume_prompt], cwd=workspace, env=environment,
-               timeout=TURN_TIMEOUT, replace_env=True)
+    turn = deadline_run([*arguments[:-1], args.resume_prompt], cwd=workspace, env=environment,
+                        timeout=TURN_TIMEOUT, replace_env=True)
     record("the turn ran through the printed invocation and exited 0", turn.returncode == 0,
            f"exit {turn.returncode}; stderr {bounded(turn.stderr, 300)}")
     print_answer(turn.stdout)

@@ -42,6 +42,7 @@ import io
 import json
 import os
 import shlex
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path, PureWindowsPath
@@ -677,6 +678,260 @@ class MissingHarness(unittest.TestCase):
             code = NATIVE_CHECK.main(["--opencode", "opencode"])
         self.assertEqual(code, 2)
         self.assertIn("go is not on PATH", stderr.getvalue())
+
+
+class ToolEvidenceComparison(unittest.TestCase):
+    """The store's tool part is compared with the *source fixture's* own bytes -- the committed Claude
+    transcript the check converts -- and not with the conversion's report or its intended items: the
+    call's identity, its recorded arguments and its recorded result text are each compared, because a
+    writer that mangled the arguments or the output produces a report whose own items hold the same
+    mangled bytes, and a comparison that read only the identity would pass it."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        candidates = sorted((SCRIPTS.parent / "internal/ccc/testdata/fixtures" / NATIVE_CHECK.SOURCE_PROVIDER)
+                            .rglob(f"*{NATIVE_CHECK.SOURCE_SESSION}.jsonl"))
+        cls.source = candidates[0]
+        cls.expected = NATIVE_CHECK.source_tool_evidence(cls.source)
+
+    def document(self, mutate=None) -> dict:
+        """One exported document as the harness answers it, carrying what the fixture records: one tool
+        part per recorded call, in the shape ``session export`` prints (``state.input`` and the completed
+        state's text). ``mutate`` drives one member away from the fixture's own evidence."""
+        parts = []
+        for call_id, entry in self.expected.items():
+            state: dict = {"status": entry["status"], "input": entry["input"]}
+            if entry["status"] == "error":
+                state["error"] = {"type": "tool", "message": entry["result"]}
+            else:
+                state["content"] = [{"type": "text", "text": entry["result"]}]
+            parts.append({"type": "tool", "id": call_id, "name": entry["name"], "state": state})
+        document = {"info": {"id": SESSION},
+                    "messages": [{"id": "msg_1", "type": "assistant", "content": parts}]}
+        if mutate is not None:
+            mutate(document)
+        return document
+
+    def differences(self, mutate=None) -> list[str]:
+        return NATIVE_CHECK.tool_evidence_differences(
+            self.expected, NATIVE_CHECK.document_tool_evidence(self.document(mutate)))
+
+    def part(self, document: dict) -> dict:
+        return document["messages"][0]["content"][0]
+
+    def test_the_fixture_reader_reads_the_recorded_call(self) -> None:
+        """The independent side is the fixture's own bytes: its call id, name, arguments and result text
+        are read from the transcript rather than from anything the conversion wrote."""
+        self.assertEqual(len(self.expected), 1, "the committed fixture records one call")
+        call_id, entry = next(iter(self.expected.items()))
+        self.assertEqual(call_id, "toolu_01Example0000000000000000")
+        self.assertEqual(entry["name"], "Read")
+        self.assertEqual(entry["status"], "completed")
+        self.assertEqual(entry["input"], {"file_path": "/home/user/code/example-api/internal/retry/policy.go"})
+        self.assertEqual(entry["result"], "package retry\n\nconst MaxAttempts = 4\n")
+
+    def test_the_fixtures_own_evidence_matches(self) -> None:
+        self.assertEqual(self.differences(), [])
+
+    def test_changed_arguments_are_a_difference(self) -> None:
+        """The identity and the status stay right while the recorded input changes: the shape a writer
+        that mangled the arguments produces, which an identity-only comparison passed."""
+        def mutate(document: dict) -> None:
+            self.part(document)["state"]["input"] = {"file_path": "/etc/passwd"}
+        differences = self.differences(mutate)
+        self.assertTrue(any("input" in difference for difference in differences), differences)
+
+    def test_changed_result_text_is_a_difference(self) -> None:
+        def mutate(document: dict) -> None:
+            self.part(document)["state"]["content"][0]["text"] = "a different output"
+        differences = self.differences(mutate)
+        self.assertTrue(any("result text" in difference for difference in differences), differences)
+
+    def test_changed_name_or_status_are_differences(self) -> None:
+        def rename(document: dict) -> None:
+            self.part(document)["name"] = "Bash"
+
+        def restatus(document: dict) -> None:
+            part = self.part(document)
+            part["state"]["status"] = "error"
+            part["state"].pop("content")
+            part["state"]["error"] = {"type": "tool", "message": "x"}
+
+        self.assertTrue(any("name" in difference for difference in self.differences(rename)))
+        self.assertTrue(any("status" in difference for difference in self.differences(restatus)))
+
+    def test_a_missing_or_extra_part_is_a_difference(self) -> None:
+        def remove(document: dict) -> None:
+            document["messages"][0]["content"] = []
+
+        def duplicate(document: dict) -> None:
+            content = document["messages"][0]["content"]
+            content.append(dict(content[0]))
+
+        def extra(document: dict) -> None:
+            part = {"type": "tool", "id": "toolu_other", "name": "Read",
+                    "state": {"status": "completed", "input": {},
+                              "content": [{"type": "text", "text": "x"}]}}
+            document["messages"][0]["content"].append(part)
+
+        self.assertTrue(any("holds no part" in difference for difference in self.differences(remove)))
+        self.assertTrue(any("more than once" in difference for difference in self.differences(duplicate)))
+        self.assertTrue(any("records no carryable result" in difference
+                            for difference in self.differences(extra)))
+
+    def test_an_errored_result_is_expected_as_the_error_state(self) -> None:
+        """``is_error`` is the reader's own ``errored`` status, which this target writes as the ``error``
+        state: the fixture-driven expectation follows the flag rather than assuming every result completed.
+        """
+        with tempfile.TemporaryDirectory() as scratch:
+            transcript = Path(scratch) / "session.jsonl"
+            transcript.write_text("\n".join([
+                json.dumps({"type": "assistant", "message": {"content": [
+                    {"type": "tool_use", "id": "toolu_e", "name": "Bash", "input": {"command": "false"}}]}}),
+                json.dumps({"type": "user", "message": {"content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_e", "content": "boom", "is_error": True}]}}),
+            ]) + "\n", encoding="utf-8")
+            expected = NATIVE_CHECK.source_tool_evidence(transcript)
+        self.assertEqual(expected["toolu_e"]["status"], "error")
+        self.assertEqual(expected["toolu_e"]["result"], "boom")
+
+
+class CommandDeadlines(unittest.TestCase):
+    """Every command this check runs goes through the one deadlined runner: a command that overruns its
+    bound is recorded as a failed check of its own and answered as a failed exit status, so no timeout
+    raises out of the run. Without that, a timeout would end the run before its cleanup and its verdict --
+    the planted session would stay in a caller-named home, and its fixed id would make every later run's
+    planting meet it."""
+
+    def test_a_timed_out_command_is_recorded_and_answered(self) -> None:
+        cmd = ["opencode", "session", "export", SESSION]
+        with mock.patch.object(NATIVE_CHECK, "run",
+                               side_effect=subprocess.TimeoutExpired(cmd, NATIVE_CHECK.HARNESS_TIMEOUT)):
+            with recorded() as results:
+                answer = NATIVE_CHECK.deadline_run(cmd, timeout=NATIVE_CHECK.HARNESS_TIMEOUT)
+                snapshot = list(results)
+        self.assertNotEqual(answer.returncode, 0, "a timed-out command answered as a success")
+        self.assertIn("timed out after", answer.stderr)
+        self.assertEqual([(name, state) for name, state, _ in snapshot],
+                         [("opencode session answers within its 300s bound", "FAIL")])
+        self.assertIn("timed out after 300s", snapshot[0][2])
+
+    def test_a_timed_out_harness_command_reaches_the_callers_own_answer(self) -> None:
+        with mock.patch.object(NATIVE_CHECK, "run",
+                               side_effect=subprocess.TimeoutExpired("opencode", NATIVE_CHECK.HARNESS_TIMEOUT)):
+            with recorded() as results:
+                answer = NATIVE_CHECK.ask_opencode("opencode", ["session", "export", SESSION], Path("/data"))
+                snapshot = list(results)
+        self.assertNotEqual(answer.returncode, 0, "the timeout raised out of ask_opencode")
+        self.assertEqual([state for _, state, _ in snapshot], ["FAIL"])
+
+    def test_a_timed_out_turn_is_recorded_and_the_stage_returns(self) -> None:
+        target = turn_target()
+        with mock.patch.object(NATIVE_CHECK, "run",
+                               side_effect=subprocess.TimeoutExpired("opencode", NATIVE_CHECK.TURN_TIMEOUT)), \
+             mock.patch.object(NATIVE_CHECK, "export_document",
+                               side_effect=[(document(3), "ok", 0), (document(3), "ok", 0)]):
+            with recorded() as results:
+                NATIVE_CHECK._run_turn(mock.Mock(resume_prompt="a turn", expect=None), target, OPENCODE,
+                                       Path("/data"), Path("/data/opencode/opencode.db"),
+                                       Path("/workspace"))
+                states = {name: state for name, state, _ in results}
+        self.assertEqual(states[f"{OPENCODE} run answers within its {NATIVE_CHECK.TURN_TIMEOUT}s bound"],
+                         "FAIL")
+        self.assertEqual(states["the turn ran through the printed invocation and exited 0"], "FAIL")
+
+    def test_a_timed_out_turn_still_removes_the_planted_session_and_prints_a_verdict(self) -> None:
+        """The end-to-end guarantee: a run whose own turn times out still reaches ``remove_planted`` --
+        the planted session is deleted through the harness's own verb -- and ends with a ``RESULT`` line
+        and its exit code, because the timeout is answered rather than raised."""
+        session_id = "ses_installed000000000000000"
+        verbs: list[list[str]] = []
+        planted = {"removed": False}
+
+        def fake_ask(opencode, verb, data_root, cwd=None, timeout=None):
+            verbs.append(list(verb))
+            if verb[1] == "import":
+                return completed(stdout=f"Imported session: {NATIVE_CHECK.UNRELATED_SESSION}\n")
+            if verb[1] == "export":
+                wanted = verb[2]
+                if wanted == NATIVE_CHECK.UNRELATED_SESSION:
+                    if planted["removed"]:
+                        return completed(stderr=f"Session not found: {wanted}\n", returncode=1)
+                    return completed(stdout=json.dumps(NATIVE_CHECK.unrelated_document()))
+                if wanted == session_id:
+                    return completed(stdout=json.dumps(document(3, session_id=session_id)))
+                return completed(stderr=f"Session not found: {wanted}\n", returncode=1)
+            if verb[1] == "list":
+                return completed(stdout="[]")
+            if verb[1] == "delete":
+                planted["removed"] = True
+                return completed(stdout=f"Session {verb[2]} deleted\n")
+            raise AssertionError(f"unexpected harness verb {verb}")
+
+        with tempfile.TemporaryDirectory() as scratch:
+            scratch_path = Path(scratch)
+            # The named root is resolved the way the check resolves it, and its own name is not
+            # `opencode`, so the data directory below it is `opencode/` and the report's own environment
+            # can name exactly the root and store the check computes.
+            data_root = (scratch_path / "data").resolve()
+            store = data_root / NATIVE_CHECK.OPENCODE_DATA_DIR / NATIVE_CHECK.OPENCODE_STORE
+            report = {
+                "conversion": {"state": "converted", "carried": {"messages": 7, "tool_calls": 1,
+                                                                 "tool_results": 1},
+                               "losses": [{"category": "usage_zeroed", "count": 1}]},
+                "installation": {"state": "installed",
+                                 "mechanism": "the target harness's own session importer "
+                                              "(opencode session import)",
+                                 "path": str(store)},
+                "verification": {"structure": {"state": "verified"},
+                                 "load": {"state": "verified", "detail": "…"}},
+                "target_session": {
+                    "session_id": session_id, "cli_version": "2.2.5",
+                    "model": "target-model", "model_provider": "target-provider",
+                    "model_provider_source": "the harness's own debug agents answer",
+                    "resume_environment": {NATIVE_CHECK.OPENCODE_DATA_ROOT_ENV: str(data_root),
+                                           NATIVE_CHECK.OPENCODE_DB_ENV: str(store)},
+                    "resume_arguments": [OPENCODE, "run", "--standalone", "--session", session_id, "--", ""],
+                    "exec_resume_arguments": [OPENCODE, "run", "--standalone", "--session", session_id,
+                                              "--", NATIVE_CHECK.PROMPT_PLACEHOLDER],
+                },
+            }
+
+            def fake_run(command, cwd=None, env=None, timeout=None, replace_env=False):
+                if "--version" in command:
+                    return completed(stdout="opencode v2.2.5")
+                if "build" in command:
+                    return completed()
+                if "continue" in command:
+                    return completed(stdout=json.dumps(report))
+                if "run" in command:
+                    raise subprocess.TimeoutExpired(command, NATIVE_CHECK.TURN_TIMEOUT)
+                raise AssertionError(f"unexpected command {command}")
+
+            def which(name):
+                return "/usr/local/bin/opencode" if name == "opencode" else "/usr/local/bin/go"
+
+            with mock.patch.object(NATIVE_CHECK.shutil, "which", side_effect=which), \
+                 mock.patch.object(NATIVE_CHECK, "BINARY",
+                                   scratch_path / "bin" / "ccc-native-check-opencode"), \
+                 mock.patch.object(NATIVE_CHECK, "ask_opencode", side_effect=fake_ask), \
+                 mock.patch.object(NATIVE_CHECK, "run", side_effect=fake_run):
+                with recorded() as results:
+                    stdout = io.StringIO()
+                    with contextlib.redirect_stdout(stdout):
+                        code = NATIVE_CHECK.main(["--opencode", "opencode", "--target-home", str(data_root),
+                                                  "--resume-prompt", "a turn"])
+                    states = {name: state for name, state, _ in results}
+        printed = stdout.getvalue()
+        self.assertIn("RESULT:", printed, f"the run printed no verdict: {printed[-800:]}")
+        self.assertEqual(code, 1, printed)
+        self.assertEqual(states[f"{OPENCODE} run answers within its {NATIVE_CHECK.TURN_TIMEOUT}s bound"],
+                         "FAIL")
+        self.assertEqual(states["the turn ran through the printed invocation and exited 0"], "FAIL")
+        self.assertIn(["session", "delete", NATIVE_CHECK.UNRELATED_SESSION], verbs,
+                      "a timeout left the planted session in the home")
+        self.assertEqual(states["the planted session is removed through the harness's own session delete"],
+                         "PASS")
 
 
 if __name__ == "__main__":
