@@ -507,3 +507,41 @@ measurement that decided it, followed by the review round's own:
       executed mutations (a duplicated Pi result entry, a moved Codex output link) fail it.
       `docs/evidence/0009-citations.tsv` gains the `S6-leaf` row and names the round's refinements in its
       extended S2-idless-path and S6-inactive rows.
+
+14. **The eighth review round's four findings.** The review of `9242e49..6bcf91c` found three P1s and one
+    P3 -- an identity-less off-line record reviving through a window that retains neither record's
+    ancestry, two outstanding occurrences sharing an id collapsing into one eligible call, progress
+    closing an outstanding call in the reduced writers, and the missing D3 fixed-point citation -- and
+    asks for a machine-checked pin per rule the touched surface claims. It leaves four departures:
+
+    * **a reduced document's line answer is the read's own per-position membership, for identity-less
+      records too** (review 1/4, a P1): the flags mark a record off the line only where the read holds an
+      identity for it, so the window `2-3` over the identity-less-leaf fixture -- the off-line child and
+      the line's own leaf, neither ancestry retained -- converted with the leaf chained under the child on
+      the trees and the child written into the line targets' logs. `sourceLineAnswers` and
+      `sourceLineFlags` read `Conversation.sourceLineHolds` for a reduced document, the tree's off-line
+      registration (`wrote`/`offLineEntry`) and the refusal's second name are keyed by the record's own
+      position (`revivedParent`), and the flagless path keeps the flags' long-standing answer (D4). The
+      extended `TestSelectionRefusesAnIdentityLessLeafChainedOffTheLine` pins the refusal's two names and
+      the line targets' omission with its count.
+    * **the reduced id-less inference counts call occurrences** (review 2/4, a P1): Claude's and Pi/OMP's
+      `soleResultCall` rejected a second eligible occurrence only when its id differed, and Codex's and
+      OpenCode's id-keyed pending sets read two occurrences as one call -- Pi's map iteration order could
+      pick either occurrence's tool name, and OpenCode's `calls` map attached the result to the later one.
+      Each writer's reduced inference now requires exactly one eligible occurrence (whatever ids they
+      carry) and otherwise omits and counts the result; the reused-id arm of
+      `TestSelectionInfersAnIdLessResultOnlyToACallOnItsWrittenPath` pins all five routes and the
+      unflagged contrast.
+    * **progress is not an answer in the reduced writers' outstanding set** (review 3/4, a P1): Claude,
+      Pi/OMP and Codex cleared a call on a `running` event, so a later id-less result was inferred onto a
+      second call although both were still unanswered. The reduced path records a call's completion only
+      where the status states an outcome (`resultStatesAnOutcome`), the event itself still travels, and
+      the flagless path keeps the ledger's answer (D4). The new
+      `TestSelectionKeepsProgressOnlyCallsOutstandingForTheWriters` pins the omission, the counts and the
+      progress event's own travel (OpenCode's plan already refused progress as an outcome and counts the
+      event `nonterminal_tool_events`).
+    * **the D3 fixed-point closure gains its citation row** (review 4/4, a P3): the cited D3 case exercises
+      isolated pairs, which a single forward pass carries correctly; `D3-fixedpoint` now cites
+      `TestSelectionClosesTheCounterpartGraphToAFixedPoint`, whose chain requires `2 → 1 → 0`.
+      `docs/evidence/0009-citations.tsv` gains the five rows (`S5-identityless`, `S6-identityless`,
+      `S2-idless-occurrences`, `S7-writers`, `D3-fixedpoint`) and the round's header block.

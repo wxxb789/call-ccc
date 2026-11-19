@@ -1481,6 +1481,180 @@ GATE: PASS
 exit=0
 ```
 
+### The eighth review round's findings (`6bcf91c`), fixed and re-measured
+
+The review of `9242e49..6bcf91c` found four items (three P1, one P3): a selected window that retained
+neither record's ancestry converted with the line's own leaf chained under an identity-less off-line
+record on the trees (the target's loader resumed the abandoned branch) and with that record written into
+the line targets' logs (finding 1); two call occurrences the source recorded under one id collapsed into
+one eligible call, so an id-less result was inferred onto the later occurrence -- and Pi/OMP could take
+either occurrence's tool name by map order (finding 2); a `running` event cleared an outstanding call in
+Claude, Pi/OMP and Codex, so a later id-less result was inferred onto a second call although both were
+still unanswered where the result stood (finding 3); and the D3 citation named only the isolated-pair
+case, which a single forward pass carries correctly (finding 4). This round fixes all four and follows the
+review's systematic close-out: every rule the touched surface claims was proved by **one executed
+mutation** -- the rule's line reverted, the case that claims to pin it run, the failure recorded, the line
+restored. The three findings' own shapes were run on the pre-fix tree first (`F1`-`F3`; finding 4's rule is
+a citation, proved by the `citations` step below), then the fixed lines were reverted one at a time --
+twelve lines in all across `M1`-`M7`, the writers sharing a rule counted per writer. Every run failed for
+the reason its rule names, and
+`grep -rn 'false &&\|&& false' internal/ccc/*.go` is empty after the restores:
+
+```console
+$ # F1: the pre-fix line: the window "2-3" over the identity-less-leaf fixture (finding 1's shape)
+$ go test -tags fts5 -count=1 -run TestSelectionRefusesAnIdentityLessLeafChainedOffTheLine ./internal/ccc/
+--- FAIL: TestSelectionRefusesAnIdentityLessLeafChainedOffTheLine (0.00s)
+    selection_test.go:1576: claude: converting "2-3": err = <nil>, want ErrUnrepresentableLeaf: the
+    window's leaf would be chained to the entry of the identity-less record the read's line leaves off it
+    (the same for pi and omp)
+    selection_test.go:1598: codex: the written document holds the identity-less record the read's line
+    leaves off it: written into this target's log it becomes model-visible history
+    selection_test.go:1604: codex: inactive_branch_records = 0, want the one record the read's own walk
+    does not reach   (the same for opencode)
+exit=1
+$ # F2: the pre-fix inference: two occurrences sharing an id and an id-less result (finding 2's shape)
+$ go test -tags fts5 -count=1 -run TestSelectionInfersAnIdLessResultOnlyToACallOnItsWrittenPath ./internal/ccc/
+--- FAIL: TestSelectionInfersAnIdLessResultOnlyToACallOnItsWrittenPath (0.00s)
+    selection_test.go:3005: claude: the written document holds the id-less result: two call occurrences
+    sharing the id were outstanding, so the result could belong to either and the inference had no call to
+    name
+    selection_test.go:3010: claude: unpaired_tool_results = 0, want the one result no single call answers
+    selection_test.go:3014: claude: generated_call_ids = 1, want 0: the inference picked no call
+    … (pi, omp, codex and opencode likewise)
+exit=1
+$ # F3: the pre-fix progress reading: a `running` event of A, call B, an id-less result (finding 3's shape)
+$ go test -tags fts5 -count=1 -run TestSelectionKeepsProgressOnlyCallsOutstandingForTheWriters ./internal/ccc/
+--- FAIL: TestSelectionKeepsProgressOnlyCallsOutstandingForTheWriters (0.00s)
+    selection_test.go:2131: claude: the written document holds the id-less result: both calls on its path
+    were outstanding (A's only recorded event is progress), so the inference had no single call to name
+    … (pi, omp and codex likewise; opencode already refused the event)
+exit=1
+$ # M1: sourceLineAnswers' membership branch reverted (the flags return; S5-identityless)
+$ go test -tags fts5 -count=1 -run TestSelectionRefusesAnIdentityLessLeafChainedOffTheLine ./internal/ccc/
+--- FAIL: TestSelectionRefusesAnIdentityLessLeafChainedOffTheLine (0.00s)
+    selection_test.go:1598: codex: the written document holds the identity-less record the read's line
+    leaves off it   (the same for opencode, with inactive_branch_records = 0)
+exit=1
+$ # M2: sourceLineFlags' membership branch reverted (the trees read the flags again; S6-identityless)
+$ go test -tags fts5 -count=1 -run 'TestSelectionRefusesAnIdentityLessLeafChainedOffTheLine|TestSelectionChainsARecordWithoutAnIdentityToItsRetainedAncestor|TestSelectionKeepsAnInactiveBranchesRecordedAncestry' ./internal/ccc/
+--- FAIL: TestSelectionRefusesAnIdentityLessLeafChainedOffTheLine (0.00s)
+    selection_test.go:1576: claude: converting "2-3": err = <nil>, want ErrUnrepresentableLeaf
+    (the same for pi and omp)
+exit=1
+$ # M3: the off-line registration keyed by identity again (t.pending.sourceID != ""; S6-identityless)
+$ go test -tags fts5 -count=1 -run 'TestSelectionRefusesAnIdentityLessLeafChainedOffTheLine|TestSelectionChainsARecordWithoutAnIdentityToItsRetainedAncestor' ./internal/ccc/
+--- FAIL: TestSelectionRefusesAnIdentityLessLeafChainedOffTheLine (0.00s)
+    selection_test.go:1576: claude: converting "2-3": err = <nil>, want ErrUnrepresentableLeaf
+    (the same for pi and omp)
+exit=1
+$ # M4: the refusal's second name read from the child's position (S6-identityless's message half)
+$ go test -tags fts5 -count=1 -run 'TestSelectionRefusesAnIdentityLessLeafChainedOffTheLine|TestSelectionChainsARecordWithoutAnIdentityToItsRetainedAncestor|TestSelectionKeepsAnInactiveBranchesRecordedAncestry' ./internal/ccc/
+--- FAIL: TestSelectionRefusesAnIdentityLessLeafChainedOffTheLine (0.00s)
+    selection_test.go:1584: claude: the refusal for "2-3" (… would be chained to the entry of c3
+    (ordinal 3) …) does not name "the record at ordinal 2 (the read answered no identity for it)"
+    (the same for pi and omp)
+--- FAIL: TestSelectionChainsARecordWithoutAnIdentityToItsRetainedAncestor (0.00s)
+    selection_test.go:1426: the refusal … does not name b2
+--- FAIL: TestSelectionKeepsAnInactiveBranchesRecordedAncestry (0.00s)
+    selection_test.go:1747: the refusal … does not name b2 (ordinal 1)
+exit=1
+$ # M5: each writer's occurrence count reverted to the id check (S2-idless-occurrences)
+$ go test -tags fts5 -count=1 -run TestSelectionInfersAnIdLessResultOnlyToACallOnItsWrittenPath ./internal/ccc/
+--- FAIL: TestSelectionInfersAnIdLessResultOnlyToACallOnItsWrittenPath (0.00s)
+    selection_test.go:3005: claude: the written document holds the id-less result: two call occurrences
+    sharing the id were outstanding …   (pi, omp, codex and opencode likewise)
+exit=1
+$ # M6: each reduced writer's outcome gate removed (progress marks the call answered again; S7-writers)
+$ go test -tags fts5 -count=1 -run TestSelectionKeepsProgressOnlyCallsOutstandingForTheWriters ./internal/ccc/
+--- FAIL: TestSelectionKeepsProgressOnlyCallsOutstandingForTheWriters (0.00s)
+    selection_test.go:2131: claude: the written document holds the id-less result …   (pi, omp and codex
+    likewise)
+exit=1
+$ # M7: OpenCode's progress branch disabled (the event read as an outcome; S7-writers' OpenCode arm)
+$ go test -tags fts5 -count=1 -run TestSelectionKeepsProgressOnlyCallsOutstandingForTheWriters ./internal/ccc/
+--- FAIL: TestSelectionKeepsProgressOnlyCallsOutstandingForTheWriters (0.00s)
+    selection_test.go:2131: opencode: the written document holds the id-less result …
+    selection_test.go:2147: opencode: nonterminal_tool_events = 0, want the one recorded progress event
+    the harness's tool states cannot hold
+exit=1
+```
+
+**R-37 — an identity-less off-line record could revive through the fallback (P1), fixed.** The read's
+line flags mark a record off the line only where the read holds an identity for it, and the writers'
+off-line registration was keyed by the identity beside it, so the window `2-3` over the identity-less-leaf
+fixture -- the abandoned branch's identity-less child and the line's own leaf, with neither record's
+ancestry retained -- wrote the leaf chained under the child on the trees (the target's loader walked
+`3 → 2` and would resume the branch the source's conversation left) and wrote the child into Codex's and
+OpenCode's line. `sourceLineAnswers` and `sourceLineFlags` read the read's own walk membership per record
+position (`Conversation.sourceLineHolds`) for a document a selection produced, the off-line registration
+and the revival pair are keyed by that position (`offLineEntry`, `revivedParent`), and the refusal names
+both records by position (`recordDescription`; the identity-keyed `recordWithOrdinal` became dead and was
+deleted). The flagless path keeps the flags' long-standing answer (D4; §4's probe below is silent over
+1109 shared lines). `TestSelectionRefusesAnIdentityLessLeafChainedOffTheLine` gains the `2-3` arm (the
+tree refusal naming ordinal 2 and ordinal 3, the line targets' omission with `inactive_branch_records`
+1), and the four mutations M1-M4 fail it -- including the argument swap M4, which shows the refusal's
+second name is what three cases pin.
+
+**R-38 — two occurrences sharing an id were one eligible call (P1), fixed.** Claude's and Pi/OMP's
+`soleResultCall` rejected a second eligible occurrence only when its id differed (`found != "" &&
+found != id`), and Codex's and OpenCode's pending sets are keyed by id: a read recording call A, call B
+and an id-less result -- both calls unanswered and both on the result's written path -- had one eligible
+"call", so the result was written under it (Pi/OMP taking the tool name of whichever occurrence map order
+reached last, OpenCode's `calls` map holding the later write). Each reduced inference now requires exactly
+one eligible *occurrence*, whatever ids they carry, and the ambiguous result is omitted and counted;
+Codex's `writtenCalls` becomes occurrence-to-id (`map[callOccurrence]string`) with `answeredCalls` beside
+it, and OpenCode's plan answers through `soleOutstandingPlannedCall`. The reused-id arm of
+`TestSelectionInfersAnIdLessResultOnlyToACallOnItsWrittenPath` pins all five routes and the unflagged
+contrast (the ledger's id-keyed set still writes the result -- D4), and the M5 mutation fails it on all
+five routes.
+
+**R-39 — progress closed a pending call in the reduced writers (P1), fixed.** The selection's own count
+reads a `running` event as progress rather than an outcome, but Claude and Pi/OMP appended every accepted
+result to `answeredCalls` and Codex deleted its id from `pendingCalls`, so a later id-less result was
+inferred onto a second call although both were outstanding where it stood. The reduced path now records a
+call's completion only where `resultStatesAnOutcome` says so -- the event itself still travels as the
+recorded evidence it is, and the flagless path keeps the ledger's answer (D4). OpenCode's plan already
+refused progress as an outcome (`nonterminal_tool_events`); M7 shows the new case pins that too. The new
+`TestSelectionKeepsProgressOnlyCallsOutstandingForTheWriters` pins the omission, the counts, the progress
+event's travel on the routes whose format holds it, and the unflagged contrast; the M6 mutation fails it
+on claude, pi, omp and codex.
+
+**R-40 — the D3 fixed-point closure had no citation row (P3), fixed.** The D3 rows cited
+`TestSelectionCarriesTheCounterpartOfASeparatedCallAndResult` and the strict case, which exercise
+isolated pairs a single forward pass carries correctly; `TestSelectionClosesTheCounterpartGraphToAFixedPoint`
+(`2 → 1 → 0`, each addition named with its puller) is now cited as `D3-fixedpoint`, so the required
+`citations` step re-derives the transitive rule. The manifest gains four more rows for this round's
+refinements (`S5-identityless`, `S6-identityless`, `S2-idless-occurrences`, `S7-writers`) and the round's
+header block.
+
+The round's verification: the two packages' Go cases run green (below), the D4 probe re-ran over the two
+trees (`git worktree add --detach /tmp/ccc-d4-base 9242e49b…`, the retained probe revision copied into
+both): 1109 / 1234 lines, each tree's two runs identical, the shared-document diff silent and the
+125-line increment fixture absent from the base run -- §4's numbers reproduced with the round's changes,
+so no number in §4 moved. The gate below is this round's own run -- `GATE: PASS`, exit 0, with
+`0009-citations.tsv` grown 37 → **42** rows. 451 → **452** top-level `Test…` functions in the
+`./cmd/ccc/... ./internal/ccc/...` test files (counted at HEAD and in this tree): the round adds one case
+(`TestSelectionKeepsProgressOnlyCallsOutstandingForTheWriters`) and extends
+`TestSelectionRefusesAnIdentityLessLeafChainedOffTheLine` and
+`TestSelectionInfersAnIdLessResultOnlyToACallOnItsWrittenPath`; none deleted.
+
+```console
+$ go test -tags fts5 -count=1 ./internal/ccc/ ./cmd/ccc/
+ok  	go.kenn.io/agentsview/internal/ccc	18.695s
+ok  	go.kenn.io/agentsview/cmd/ccc	5.193s
+$ python3 scripts/gate.py; echo "exit=$?"
+  PASS     gofmt    3627 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 442 tests in 8.967s (rc=0)
+  PASS     parity   carried: 5553 file(s) identical to the pinned revision
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009-citations.tsv: 42 row(s) verified
+  PASS     secrets  no leaks found in 196 file(s) this repository owns
+GATE: PASS
+exit=0
+```
+
 ## 7. Docs, rules and bookkeeping
 
 * `AGENTS.md` — a new binding bullet ("A conversion carries only what the caller selected …") outside the
@@ -1506,7 +1680,12 @@ exit=0
   round sharpened the id-less inference's sentence (completion is per call occurrence and per written
   path: a recorded outcome on another branch does not clear the call for a result standing here) and the
   line sentence's leaf clause (the guard answers by the record's own position through the entries actually
-  written, so a record the read gave no identity for is refused like any other).
+  written, so a record the read gave no identity for is refused like any other). The eighth fix round
+  extended the id-less inference's sentence to the call *occurrence* (two outstanding occurrences sharing
+  an id are two calls, so an ambiguous result is omitted rather than bound to either) and the progress
+  clause to the reduced writers' own outstanding set, and the line sentence to the per-position membership
+  (a line target omits what the read's walk does not reach, identity-less records included, and the
+  off-line registration the revival check reads is by that position too).
 * `docs/conventions.md` — the layout block names `selection.go`; a new rule under "Rules of the work"
   states the specification's grammar, the seam, the refusals and the report's classes, with the second
   round's refinements (order pairing, progress, ancestry, supplied blank) folded into the same rule, the
@@ -1519,10 +1698,13 @@ exit=0
   writers' disposition with the default path's report untouched, the id-less inference's written walk,
   paired occurrence's tool name, the Codex coalescing and its reduction-only category, and the
   `ErrSelectionReduced` refusal) folded in as well, and the seventh round's (the id-less inference's
-  per-occurrence completion and the leaf guard's position-keyed answer) folded in beside them.
+  per-occurrence completion and the leaf guard's position-keyed answer) folded in beside them, and the
+  eighth round's (the reduced line answer as the read's per-position membership for identity-less records,
+  the occurrence-counted id-less inference, and the progress rule on the reduced writers' side) folded in
+  as well.
 * `docs/plans/0009-selective-context.md` — §11 records the increment's numbered departures with the
-  measurement behind each (the third round's four in §11.12) and the fourth, fifth, sixth and seventh
-  rounds' seven, five, six and three at its close (the seventh's as item 13).
+  measurement behind each (the third round's four in §11.12) and the fourth through eighth rounds' seven,
+  five, six, three and four at its close (the seventh's as item 13, the eighth's as item 14).
 * `docs/goals/README.md` — 0009's row reads *Implemented on `feat/0009-selective-context`; awaiting
   operator acceptance*, and the goal file's own `Status:` line reads the same (the form 0007 and 0008
   carried while their increments awaited acceptance); nothing else was ready to archive (0008 was archived
@@ -1545,7 +1727,12 @@ exit=0
   category unconditional and moves the probe's report lines); and Q-0009-09 (this round: a reduced
   document's id-less inference reads completion per call occurrence and per written path while the default
   path keeps the ledger's file-wide question, and a tree conversion refuses an identity-less leaf that the
-  read's line does not hold — the reversals are a path-aware default and a passing identity-less leaf).
+  read's line does not hold — the reversals are a path-aware default and a passing identity-less leaf);
+  and Q-0009-10 (this round: a reduced document's line answer is the read's walk membership per record
+  position — identity-less records included — and its id-less inference counts call occurrences and
+  outcome-stating answers, while the default path keeps the flags and the ledger's id-keyed set — the
+  reversals return the reduced writers to those and reopen the round's mutations, or ask the same question
+  on the flagless path and break D4).
 * `README.md` — an example line (`--select 0-3,7`, in range for its fixture), a paragraph on the flag and
   its report, and `Select` in the engine list. Unchanged by the third and fourth rounds: the paragraph's
   claims (the order pairing, the progress rule, the blank refusal, the ancestry rule) are still what the
@@ -1554,7 +1741,11 @@ exit=0
   the paragraph's written-ancestry sentence to the runs that carry a selection, added the id-less
   inference's written walk and named the second-selection refusal. The seventh round extended the id-less
   sentence (the eligible call must also be unanswered on that walk) and the tree-leaf sentence (the
-  refusal answers by record position, an identity-less end included).
+  refusal answers by record position, an identity-less end included). The eighth round extended the id-less
+  sentence (the eligible occurrence must also have an unanswered walk, two occurrences sharing an id are
+  ambiguous, and progress is not an answer on the reduced writers' side) and the line sentence (a line
+  target omits what the read's walk does not reach, identity-less records included, and an on-line record
+  is never chained under an identity-less off-line one).
 * `docs/harness.md` — unchanged: this increment adds no gate step and no knob, and the citations step it
   already requires is the one that reads the new manifest.
 * The throw-away probe file (§4) and the pre-change worktree were removed before the gate run; the probe's
@@ -1565,7 +1756,7 @@ exit=0
   quotes (recorded identities left as recorded — `d4ProbeRecordedIDs` — with the
   `recorded-call-id-change`/`recorded-uuid-change` control lines pinning it), and the sixth with the one
   this record quotes (the off-path transcript materialized at run time, `d4ProbeOffPathTranscript`, so the
-  review's input is compared on both trees); the seventh round re-ran that same revision unchanged over
-  both trees (1109/1234 lines, the shared diff silent — §4's numbers reproduced). The
+  review's input is compared on both trees); the seventh and eighth rounds re-ran that same revision
+  unchanged over both trees (1109/1234 lines, the shared diff silent — §4's numbers reproduced). The
   fixture generator (`internal/ccc/fixturegen`) and the committed fixture tree move together, pinned by
   the existing `TestFixturesMatchTheirGenerator`.

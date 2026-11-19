@@ -1551,6 +1551,61 @@ func TestSelectionRefusesAnIdentityLessLeafChainedOffTheLine(t *testing.T) {
 		}
 	}
 
+	// A window that retains neither record's ancestry: the identity-less off-line child and the line's
+	// own leaf, and nothing else. The child has no entry to stand on, so the node written before the
+	// leaf's entry is the child's own, and the fallback's revival check has to refuse the shape by the
+	// record's own *position* -- the child carries no identity for the check to key on. The line targets
+	// omit the child and count it: the position-based membership is the only answer its identity-less
+	// record has, and writing it into a one-line log makes the abandoned branch model-visible history.
+	noAncestry, _, err := Select(conversation, "2-3", false)
+	if err != nil {
+		t.Fatalf("selecting 2-3: %v", err)
+	}
+	if got := noAncestry.sourceLineHolds; !reflect.DeepEqual(got, []bool{false, true}) {
+		t.Fatalf("selecting 2-3: sourceLineHolds = %v, want [false true]: the identity-less child stands "+
+			"off the line the read's last record answers, and the leaf's own ancestry is not in the window",
+			got)
+	}
+	for _, target := range []string{TargetClaude, TargetPi, TargetOMP} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		_, err = route.Convert(noAncestry, selectionProbeOptions())
+		if !errors.Is(err, ErrUnrepresentableLeaf) {
+			t.Errorf("%s: converting %q: err = %v, want ErrUnrepresentableLeaf: the window's leaf would "+
+				"be chained to the entry of the identity-less record the read's line leaves off it",
+				target, "2-3", err)
+			continue
+		}
+		for _, want := range []string{"c3 (ordinal 3)",
+			"the record at ordinal 2 (the read answered no identity for it)"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: the refusal for %q (%v) does not name %q", target, "2-3", err, want)
+			}
+		}
+	}
+	for _, target := range []string{TargetCodex, TargetOpenCode} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(noAncestry, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting %q: %v", target, "2-3", err)
+		}
+		if data := string(converted.Data); strings.Contains(data, "the abandoned child") {
+			t.Errorf("%s: the written document holds the identity-less record the read's line leaves off "+
+				"it: written into this target's log it becomes model-visible history", target)
+		} else if !strings.Contains(data, "the active line") {
+			t.Errorf("%s: the written document does not hold the line's own leaf", target)
+		}
+		if count := lossCount(t, converted.Losses, "inactive_branch_records").Count; count != 1 {
+			t.Errorf("%s: inactive_branch_records = %d, want the one record the read's own walk does not "+
+				"reach", target, count)
+		}
+	}
+
 	// The identity-less record with an explicit parent that *is* on the line: the read's own order
 	// reaches it (the last record names no parent, so the walk steps to the record before it), and the
 	// guard answers on the line. Refusing this shape would be a refusal about the identity and not about
@@ -2022,6 +2077,100 @@ func TestSelectionCountsACallWithOnlyProgressEventsUndischarged(t *testing.T) {
 		if report.CallsUndischarged.Count != 0 {
 			t.Errorf("the %q event: calls_undischarged = %+v, want none: the read holds an outcome",
 				status, report.CallsUndischarged)
+		}
+	}
+}
+
+// TestSelectionKeepsProgressOnlyCallsOutstandingForTheWriters pins the writers' half of the progress
+// rule on a reduced document: a recorded result whose status says the call is still running is not an
+// answer -- the selection's own count reads the event that way -- so it must not leave the outstanding
+// set a reduced writer's id-less inference reads either. The read records call A, a `running` event of
+// A, call B, and an id-less result on the same path: both calls are outstanding where the result stands,
+// so the result is omitted and counted while the progress event itself travels as the recorded evidence
+// it is. The default path keeps the ledger's file-wide set, which the running event clears (goal 0009's
+// D4: a run without a selection keeps the answer its writers had).
+func TestSelectionKeepsProgressOnlyCallsOutstandingForTheWriters(t *testing.T) {
+	const progressText = "Still working"
+	const outcomeText = "the late output"
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "root", Dialogue: "root", SourceUUID: "u1"},
+		Message{Ordinal: 1, Role: "assistant", Content: "call a", Dialogue: "call a",
+			SourceUUID: "a2", SourceParentUUID: "u1",
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_wait", Name: "Bash", InputJSON: `{"command":"a"}`}}},
+		Message{Ordinal: 2, Role: "user", Content: "the check", Dialogue: "the check",
+			SourceUUID: "r3", SourceParentUUID: "a2",
+			ToolResults: []ToolResult{{ToolUseID: "toolu_wait", Status: "running",
+				ContentRaw: progressText, ContentSize: len(progressText)}}},
+		Message{Ordinal: 3, Role: "assistant", Content: "call b", Dialogue: "call b",
+			SourceUUID: "b4", SourceParentUUID: "r3",
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_next", Name: "Bash", InputJSON: `{"command":"b"}`}}},
+		Message{Ordinal: 4, Role: "user", Content: "the ask", Dialogue: "the ask",
+			SourceUUID: "c5", SourceParentUUID: "b4",
+			ToolResults: []ToolResult{{ContentRaw: outcomeText, ContentSize: len(outcomeText)}}},
+	)
+	selected, report, err := Select(conversation, "0-", false)
+	if err != nil {
+		t.Fatalf("selecting the whole read: %v", err)
+	}
+	if report.CallsUndischarged.Count != 2 ||
+		strings.Join(report.CallsUndischarged.Regions, ",") != "1,3" {
+		t.Fatalf("calls_undischarged = %+v, want the calls at ordinals 1 and 3: the running event is not "+
+			"an outcome", report.CallsUndischarged)
+	}
+	for _, target := range []string{TargetClaude, TargetPi, TargetOMP, TargetCodex, TargetOpenCode} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(selected, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the progress window: %v", target, err)
+		}
+		data := string(converted.Data)
+		if strings.Contains(data, outcomeText) {
+			t.Errorf("%s: the written document holds the id-less result: both calls on its path were "+
+				"outstanding (A's only recorded event is progress), so the inference had no single call "+
+				"to name", target)
+		}
+		if count := lossCount(t, converted.Losses, "unpaired_tool_results").Count; count != 1 {
+			t.Errorf("%s: unpaired_tool_results = %d, want the one result no single call answers",
+				target, count)
+		}
+		if count := lossCount(t, converted.Losses, "generated_call_ids").Count; count != 0 {
+			t.Errorf("%s: generated_call_ids = %d, want 0: the inference picked no call", target, count)
+		}
+		if target == TargetOpenCode {
+			// This target's tool part holds an outcome or nothing, so the progress event is not written
+			// -- it is counted under the route's own category rather than presented as the call's
+			// outcome.
+			if count := lossCount(t, converted.Losses, "nonterminal_tool_events").Count; count != 1 {
+				t.Errorf("opencode: nonterminal_tool_events = %d, want the one recorded progress event "+
+					"the harness's tool states cannot hold", count)
+			}
+			continue
+		}
+		if !strings.Contains(data, progressText) {
+			t.Errorf("%s: the written document does not hold the recorded progress event: it is evidence "+
+				"the read carries, and the rule is about what answers a call", target)
+		}
+	}
+	// The default path keeps the ledger's own answer: the running event clears the call's id there, so
+	// the one outstanding id is B's and the result is written under it -- the writer's answer before
+	// selections existed, which a run without the flag must keep (goal 0009's D4). OpenCode is left out
+	// of this arm: its plan already refuses a progress event as an outcome, so its ledger holds A and B
+	// and its default path omits the result too.
+	for _, target := range []string{TargetClaude, TargetPi, TargetOMP, TargetCodex} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(conversation, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the read without a selection: %v", target, err)
+		}
+		if !strings.Contains(string(converted.Data), outcomeText) {
+			t.Errorf("%s: the unflagged conversion drops the id-less result: the ledger's id-keyed set "+
+				"is the default path's answer", target)
 		}
 	}
 }
@@ -2808,6 +2957,76 @@ func TestSelectionInfersAnIdLessResultOnlyToACallOnItsWrittenPath(t *testing.T) 
 		if count := lossCount(t, converted.Losses, "generated_call_ids").Count; count != 1 {
 			t.Errorf("%s: unflagged generated_call_ids = %d, want the one pairing the ledger's answer "+
 				"mints", target, count)
+		}
+	}
+
+	// Two occurrences the source recorded under one id, both unanswered, and an id-less result after them
+	// on the same path: the eligible set holds two call occurrences, and a result the read left no link
+	// for could belong to either. Reading the set by id would see one outstanding call -- Codex's and
+	// OpenCode's pending sets are keyed by id, Pi's inference rejected a second eligible occurrence only
+	// when its id differed, and the family's id-keyed maps hold the last write -- and the result would be
+	// written under the later occurrence, a pairing the read never recorded. The reduced inference counts
+	// occurrences on the written path, so the result is omitted and counted; the same read without a
+	// selection keeps the ledger's own id-keyed answer (goal 0009's D4).
+	const reusedAnswer = "the ambiguous output"
+	reused := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "root", Dialogue: "root", SourceUUID: "u1"},
+		Message{Ordinal: 1, Role: "assistant", Content: "call one", Dialogue: "call one",
+			SourceUUID: "a2", SourceParentUUID: "u1",
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_shared", Name: "Bash", InputJSON: `{"command":"one"}`}}},
+		Message{Ordinal: 2, Role: "assistant", Content: "the middle", Dialogue: "the middle",
+			SourceUUID: "m3", SourceParentUUID: "a2"},
+		Message{Ordinal: 3, Role: "assistant", Content: "call two", Dialogue: "call two",
+			SourceUUID: "b4", SourceParentUUID: "m3",
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_shared", Name: "Bash", InputJSON: `{"command":"two"}`}}},
+		Message{Ordinal: 4, Role: "user", Content: "the ask", Dialogue: "the ask",
+			SourceUUID: "c5", SourceParentUUID: "b4",
+			ToolResults: []ToolResult{{ContentRaw: reusedAnswer, ContentSize: len(reusedAnswer)}}},
+	)
+	selected, report, err = Select(reused, "0-", false)
+	if err != nil {
+		t.Fatalf("selecting the whole reused-id read: %v", err)
+	}
+	if report.CallsUndischarged.Count != 2 ||
+		strings.Join(report.CallsUndischarged.Regions, ",") != "1,3" {
+		t.Fatalf("calls_undischarged = %+v, want the two calls the source left unanswered: the id the two "+
+			"occurrences share is carried by two distinct records", report.CallsUndischarged)
+	}
+	for _, target := range []string{TargetClaude, TargetPi, TargetOMP, TargetCodex, TargetOpenCode} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(selected, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the reused-id window: %v", target, err)
+		}
+		if strings.Contains(string(converted.Data), reusedAnswer) {
+			t.Errorf("%s: the written document holds the id-less result: two call occurrences sharing the "+
+				"id were outstanding, so the result could belong to either and the inference had no call "+
+				"to name", target)
+		}
+		if count := lossCount(t, converted.Losses, "unpaired_tool_results").Count; count != 1 {
+			t.Errorf("%s: unpaired_tool_results = %d, want the one result no single call answers",
+				target, count)
+		}
+		if count := lossCount(t, converted.Losses, "generated_call_ids").Count; count != 0 {
+			t.Errorf("%s: generated_call_ids = %d, want 0: the inference picked no call, so it minted no "+
+				"pairing either", target, count)
+		}
+	}
+	for _, target := range []string{TargetClaude, TargetPi, TargetOMP, TargetCodex, TargetOpenCode} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(reused, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the reused-id read without a selection: %v", target, err)
+		}
+		if !strings.Contains(string(converted.Data), reusedAnswer) {
+			t.Errorf("%s: the unflagged conversion drops the id-less result: the ledger's id-keyed set "+
+				"is the default path's answer", target)
 		}
 	}
 }

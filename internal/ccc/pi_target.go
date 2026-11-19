@@ -535,12 +535,14 @@ type piSessionBuilder struct {
 	// with: callNames is keyed by id and the last write wins, so a reused id's later occurrence -- the
 	// inactive sibling a window may carry as history -- would otherwise supply its name.
 	writtenCalls map[callOccurrence]piWrittenCall
-	// answeredCalls names, per call occurrence, the records whose written results answered it (each
-	// record's own position in the document): the completion a reduced document's id-less inference
-	// reads. The question is per occurrence and per path -- whether an answer stands on the written walk
-	// of the result being serialized -- because a result the window carries on another branch is recorded
-	// history there and answers nothing here, while the ledger's file-wide id set (the default path's
-	// answer) cannot say which branch an answer belongs to.
+	// answeredCalls names, per call occurrence, the records whose written results *stating an outcome*
+	// answered it (each record's own position in the document): the completion a reduced document's
+	// id-less inference reads. The question is per occurrence and per path -- whether an answer stands on
+	// the written walk of the result being serialized -- because a result the window carries on another
+	// branch is recorded history there and answers nothing here, while the ledger's file-wide id set (the
+	// default path's answer) cannot say which branch an answer belongs to. A recorded event whose status
+	// says the call is still running is not an answer and is not recorded here (resultStatesAnOutcome):
+	// progress leaves the call outstanding where the result stands.
 	answeredCalls map[callOccurrence][]int
 	// selectionReduced says the document this conversion walks is one Select produced
 	// (Conversation.selectionReduced): the written-ancestry acceptance, the path-restricted inference and
@@ -1181,12 +1183,14 @@ func (b *piSessionBuilder) resultCallWritten(paired *callOccurrence, callID stri
 // states, and whether there is exactly one such call. A conversation the read returned asks the ledger's
 // own question -- the one call still outstanding anywhere in the walk. A document a selection produced
 // asks the narrower one: the sole call occurrence that is outstanding *on the written walk of the
-// result's record* (sourceTree.recordOnWrittenPath) and that no written result standing on that walk has
-// answered (answeredOnWrittenPath). This family's files hold the records the read's line leaves off it
-// as recorded history, so the outstanding set can include a call on another branch; inferring the result
-// onto such a call would write an outcome whose invocation the resumed context cannot see, and
-// `generated_call_ids` discloses the inference rather than a placement. The inference picks no call
-// where the eligible ones do not name exactly one id, and the result is omitted and counted.
+// result's record* (sourceTree.recordOnWrittenPath) and that no written result stating an outcome,
+// standing on that walk, has answered (answeredOnWrittenPath). This family's files hold the records the
+// read's line leaves off it as recorded history, so the outstanding set can include a call on another
+// branch; inferring the result onto such a call would write an outcome whose invocation the resumed
+// context cannot see, and `generated_call_ids` discloses the inference rather than a placement. The
+// eligible set is counted in call *occurrences*: two occurrences the source recorded under one id are
+// two calls, and a result the read left no link for could belong to either, so the inference picks no
+// call where two are eligible -- whatever ids they carry. The result is then omitted and counted.
 func (b *piSessionBuilder) soleResultCall() (piWrittenCall, callOccurrence, bool) {
 	if !b.selectionReduced {
 		id, ok := b.solePendingCall()
@@ -1207,7 +1211,9 @@ func (b *piSessionBuilder) soleResultCall() (piWrittenCall, callOccurrence, bool
 		if !b.tree.recordOnWrittenPath(occurrence.message) {
 			continue
 		}
-		if foundAny && found.id != written.id {
+		if foundAny {
+			// A second eligible occurrence: the result could belong to either one, and sharing an id does
+			// not merge them -- the read recorded two calls.
 			return piWrittenCall{}, callOccurrence{}, false
 		}
 		found, foundAt, foundAny = written, occurrence, true
@@ -1282,10 +1288,17 @@ func (b *piSessionBuilder) writeToolResult(paired *callOccurrence, result ToolRe
 		// The accepted result answers its call on the place it stands at, whether or not the text below
 		// gives it an entry: the recorded outcome is what leaves the outstanding set, exactly as the
 		// default path's ledger has always read it (the delete happens past the acceptance, before the
-		// text is known to be writable).
-		b.answeredCalls[answered] = append(b.answeredCalls[answered], b.tree.record)
+		// text is known to be writable). A result whose recorded status says the call is still running is
+		// progress rather than an answer (resultStatesAnOutcome): it travels as the evidence it is, and it
+		// leaves no mark on the outstanding set -- or a later id-less result would be inferred onto a call
+		// that was still unanswered where the result stands.
+		if resultStatesAnOutcome(result.Status) {
+			b.answeredCalls[answered] = append(b.answeredCalls[answered], b.tree.record)
+			delete(b.pendingCalls, callID)
+		}
+	} else {
+		delete(b.pendingCalls, callID)
 	}
-	delete(b.pendingCalls, callID)
 	text, blocks := resultText(result)
 	b.lossResultBlocks += blocks
 	if strings.TrimSpace(text) == "" {

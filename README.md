@@ -132,12 +132,19 @@ hold it is that writer's answer, named in the conversion's losses. On a target w
 selection that leaves out a record's own parent hangs it off its nearest retained ancestor instead, so the
 resumed context is the read's own line and a branch the selection carried stays recorded history off that
 line (a window whose own end stands off that line is refused by name rather than written under a branch --
-the guard answers by record position, so a record the read gave no identity for is refused like any other
+the guard answers by record position, so a record the read gave no identity for is refused like any other,
+and an on-line record is never chained under an identity-less record the line leaves off
 -- and a window with no retained ancestor at all is refused the same way);
+a line target (a Codex rollout, an OpenCode session) instead omits the records the read's own walk does not
+reach and counts them (`inactive_branch_records`), that membership answering for an identity-less record
+too;
 and, on the runs that carry a selection, a result whose paired call is written but off that result's own
 walk is omitted and counted (`unpaired_tool_results`) rather than published as an output whose invocation
 the resumed context cannot see — a result with no recorded id is inferred only onto a call that stands on
-the walk its own record hangs off and that no written result on that walk has answered. The dispositions
+the walk its own record hangs off and that no written result *stating an outcome* on that walk has
+answered (two outstanding occurrences sharing an id are two calls, so a result that could belong to either
+is omitted and counted, and a progress event is not an answer on the reduced writers' own side either).
+The dispositions
 that exist for the reduction act only there: a run
 without the flag, and a selection applied to a document a selection already produced (refused by name),
 are what they were.

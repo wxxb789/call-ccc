@@ -300,7 +300,9 @@ type sourceTree struct {
 	entryByRecord        map[int]string
 	omittedEntryByRecord map[int]string
 	// inactive carries, per record of the document this conversion walks, whether the read's own line
-	// leaves it off it (sourceLineFlags: the read's answer kept through a selection). It is keyed by the
+	// leaves it off it (sourceLineFlags: the read's answer kept through a selection, or the read's own
+	// walk membership for a document a selection produced -- the flags alone never mark an identity-less
+	// record, and the membership is the only answer such a record's place has). It is keyed by the
 	// record's own walk position for the same reason entryByRecord is: the fallback's revival check and
 	// the off-line-entry registration ask about a record that may carry no identity.
 	inactive []bool
@@ -318,16 +320,17 @@ type sourceTree struct {
 	keptAncestor []keptAncestorAnswer
 	reduced      bool
 	// offLineEntry maps each entry written for a record the read's line leaves off it to that record's own
-	// identity, and revivedChild/revivedParent name the first relation the fallback resolved from a record
-	// on the line onto such an entry: the child whose entry would hang there (its own position in
-	// Messages, an index rather than an identity because the read answers no identity for some records)
-	// and the off-line record whose entry it is (an identity, which is what offLineEntry is keyed by). A
-	// negative revivedChild means no such relation was resolved; a non-negative one is what the leaf guard
-	// refuses (selectedLeafRefusal), because following the entry written before the child would put an
-	// abandoned record on the walk a resumed session makes.
-	offLineEntry  map[string]string
+	// position in the document this conversion walks, and revivedChild/revivedParent name the first
+	// relation the fallback resolved from a record on the line onto such an entry: the child whose entry
+	// would hang there (its own position in Messages) and the off-line record whose entry it is (its own
+	// position too, because the read answers no identity for some records and the off-line answer the
+	// check reads is per position: a record the read answered no identity for must be refused like any
+	// other). A negative revivedChild means no such relation was resolved; a non-negative one is what the
+	// leaf guard refuses (selectedLeafRefusal), because following the entry written before the child would
+	// put an abandoned record on the walk a resumed session makes.
+	offLineEntry  map[string]int
 	revivedChild  int
-	revivedParent string
+	revivedParent int
 	// entryPlaces is where each written entry stands: the entry it hangs off -- the place its record's
 	// first entry resolved, else the entry written before it, entryParent's own answer -- and the position
 	// of the record it was written for (-1 for an entry a family writes before the conversation). It is
@@ -357,7 +360,7 @@ func newSourceTree(conversation Conversation) sourceTree {
 		toolResultEntry:      map[string]string{},
 		entryByRecord:        map[int]string{},
 		omittedEntryByRecord: map[int]string{},
-		offLineEntry:         map[string]string{},
+		offLineEntry:         map[string]int{},
 		entryPlaces:          map[string]writtenEntryPlace{},
 		recordPlace:          map[int]string{},
 		inactive:             sourceLineFlags(conversation),
@@ -366,6 +369,7 @@ func newSourceTree(conversation Conversation) sourceTree {
 		reduced:              conversation.sourceKeptAncestor != nil,
 		record:               -1,
 		revivedChild:         -1,
+		revivedParent:        -1,
 	}
 }
 
@@ -490,8 +494,12 @@ func (t *sourceTree) wrote(id string) {
 	if t.pending.sourceID != "" {
 		t.writtenEntryID[t.pending.sourceID] = id
 	}
-	if t.record >= 0 && t.record < len(t.inactive) && t.inactive[t.record] && t.pending.sourceID != "" {
-		t.offLineEntry[id] = t.pending.sourceID
+	if t.record >= 0 && t.record < len(t.inactive) && t.inactive[t.record] {
+		// The entry stands for a record the read's line leaves off it. It is registered by the record's
+		// own position, not its identity: the read answers no identity for some records, and the
+		// revival check has to refuse a record the line holds chained under such an entry exactly as
+		// under an identified one.
+		t.offLineEntry[id] = t.record
 	}
 	if t.projectedParents && t.pending.toolResultCarrier != "" {
 		t.toolResultEntry[t.pending.toolResultCarrier] = id
@@ -627,8 +635,8 @@ func (t *sourceTree) fallbackPlace() *string {
 	if t.record < len(t.inactive) && t.inactive[t.record] {
 		return entry
 	}
-	if offLine, ok := t.offLineEntry[*entry]; ok {
-		t.revivedChild, t.revivedParent = t.record, offLine
+	if offLineRecord, ok := t.offLineEntry[*entry]; ok {
+		t.revivedChild, t.revivedParent = t.record, offLineRecord
 	}
 	return entry
 }
@@ -725,11 +733,17 @@ func (t *sourceTree) recordOnWrittenPath(record int) bool {
 // does not hold, and a record chained through a tool result standing between it and the call it named.
 // The detail the report carries names each of the three.
 //
-// A record the read answered no identity for is never marked inactive: the read recorded no place for it
-// in the source's tree, and omitting evidence on a relation the read did not give is exactly what the
-// report exists to prevent. The walk uses the writers' own tool-result rule, so a record the reader
-// answers as hanging off the message that made a call -- while the source's file runs call → result →
-// what follows -- keeps the result on the line.
+// A record the read answered no identity for is never marked inactive *in the flags*: the read recorded
+// no place for it in the source's tree, and omitting evidence on a relation the read did not give is
+// exactly what the report exists to prevent. Its place is answered by membership instead, and a document
+// a selection produced -- whose line answer travels per position (sourceLineFlags) -- reads it there: a
+// window that carries such a record as its leaf, or chains one onto the line, is refused or omitted by
+// the position-keyed answer exactly as an identified record is. A read that was not reduced keeps the
+// flags' long-standing answer: the writers write every record the flags do not name, because the read
+// recorded no off-line place for it, and goal 0009's D4 keeps those bytes and that report as they were.
+// The walk uses the writers' own tool-result rule, so a record the reader answers as hanging off the
+// message that made a call -- while the source's file runs call → result → what follows -- keeps the
+// result on the line.
 func inactiveSourceRecords(messages []Message, provider string) ([]bool, []bool, int) {
 	inactive := make([]bool, len(messages))
 	if len(messages) == 0 {
@@ -854,32 +868,46 @@ var ErrUnrepresentableLeaf = errors.New(
 // how many of the places a walk over the records this conversion writes were ones the read did not
 // establish (the same category the tree writers count).
 //
-// A conversation the reader returned is the read itself, and the walk is taken over it. A conversation
-// Select produced carries the read's own per-record answers (Conversation.sourceLineInactive): the line
+// A conversation the reader returned is the read itself, and the walk is taken over it: the flags answer
+// off the line only where the read holds an identity for the record. A conversation Select produced
+// carries the read's own *walk membership* per record position (Conversation.sourceLineHolds): the line
 // belongs to the read and not to the window, so a selection that ends off it must not redefine it -- a
-// target session written from such a window would resume a branch the source's conversation left. The
-// unresolved count is the carried line's own: a walk over the records this conversion writes, so it
-// names the places of the entries actually written rather than of a read the caller did not carry.
+// target session written from such a window would resume a branch the source's conversation left -- and
+// this target's log is one line of records, so a record the read's own walk does not reach is omitted and
+// counted whether or not the read held an identity for it: writing the identity-less record into it would
+// make the abandoned branch model-visible history, and the membership is the only answer such a record's
+// place has. The unresolved count is the carried line's own: a walk over the records this conversion
+// writes, so it names the places of the entries actually written rather than of a read the caller did not
+// carry.
 func sourceLineAnswers(conversation Conversation) ([]bool, int) {
-	if conversation.sourceLineInactive == nil {
+	if conversation.sourceLineHolds == nil {
 		inactive, _, unresolved := inactiveSourceRecords(conversation.Messages, conversation.Source.Provider)
 		return inactive, unresolved
 	}
+	inactive := make([]bool, len(conversation.sourceLineHolds))
 	kept := make([]Message, 0, len(conversation.Messages))
 	for index, message := range conversation.Messages {
-		if !conversation.sourceLineInactive[index] {
+		inactive[index] = !conversation.sourceLineHolds[index]
+		if !inactive[index] {
 			kept = append(kept, message)
 		}
 	}
 	_, _, unresolved := inactiveSourceRecords(kept, conversation.Source.Provider)
-	return conversation.sourceLineInactive, unresolved
+	return inactive, unresolved
 }
 
 // sourceLineFlags answers only the per-record flags, for a caller that asks about one record's place
-// (the leaf guard) rather than about the counts.
+// (the leaf guard) rather than about the counts. A document a selection produced answers by the read's
+// walk membership (Conversation.sourceLineHolds), which holds for records the read gave no identity for
+// exactly as for any other; a document the read returned keeps the identity-gated flags, whose
+// long-standing answer for an identity-less record is that the read recorded no place to mark.
 func sourceLineFlags(conversation Conversation) []bool {
-	if conversation.sourceLineInactive != nil {
-		return conversation.sourceLineInactive
+	if conversation.sourceLineHolds != nil {
+		inactive := make([]bool, len(conversation.sourceLineHolds))
+		for index, holds := range conversation.sourceLineHolds {
+			inactive[index] = !holds
+		}
+		return inactive
 	}
 	inactive, _, _ := inactiveSourceRecords(conversation.Messages, conversation.Source.Provider)
 	return inactive
@@ -928,7 +956,7 @@ func selectedLeafRefusal(conversation Conversation, tree *sourceTree) error {
 		"record's ancestry out), so following the entry written before it would put an abandoned record on "+
 		"the walk a resumed session makes", ErrUnrepresentableLeaf,
 		recordDescription(conversation, tree.revivedChild),
-		recordWithOrdinal(conversation, tree.revivedParent))
+		recordDescription(conversation, tree.revivedParent))
 }
 
 // lastEntryLineRefusal answers the guard's own long-standing half: whether the record the entry written
@@ -982,18 +1010,6 @@ func lastEntryLineRefusal(conversation Conversation, tree *sourceTree) error {
 		return nil
 	}
 	return nil
-}
-
-// recordWithOrdinal names one record of the document for a refusal: its own identity and its ordinal
-// value where the read holds it, so a caller can find the record the refusal is about.
-func recordWithOrdinal(conversation Conversation, sourceID string) string {
-	sourceID = strings.TrimSpace(sourceID)
-	for _, message := range conversation.Messages {
-		if strings.TrimSpace(message.SourceUUID) == sourceID {
-			return fmt.Sprintf("%s (ordinal %d)", sourceID, message.Ordinal)
-		}
-	}
-	return sourceID
 }
 
 // recordDescription names one record of the document by its own position, for a refusal about a record

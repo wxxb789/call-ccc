@@ -83,6 +83,19 @@
 #           falls back to the off-line entry written before it as recorded history, without the revival
 #           check firing, where the window's leaf stands on the line (S6-inactive).
 #
+#   S5-identityless, S6-identityless, S2-idless-occurrences, S7-writers, D3-fixedpoint
+#           the eighth fix stage's refinements and the review's close-out pins: a reduced document's line
+#           answer is the read's own walk membership per record position, so an identity-less record the
+#           read's line does not reach is omitted and counted by the line targets (S5-identityless) and a
+#           tree conversion whose on-line leaf would be chained under such a record is refused by name,
+#           the off-line registration the revival check reads being keyed by that position too
+#           (S6-identityless); the reduced id-less inference counts call *occurrences*, so two occurrences
+#           the source recorded under one id are two calls and the ambiguous result is omitted and counted
+#           (S2-idless-occurrences); a recorded result whose status says the call is still running is not
+#           an answer in the reduced writers' outstanding set either (S7-writers); and the D3 fixed-point
+#           case gains a row of its own (D3-fixedpoint), because the isolated-pair cases a single forward
+#           pass carries correctly do not distinguish the transitive closure the goal's D3 requires.
+#
 # scripts/obligation-citations.py is the arbiter: every row's cited test must exist in the named package
 # and run and pass, and the `citations` step is required — a tree that lost this file, or a citation that
 # went stale, fails the gate instead of passing partially. Columns: rule_id, test, package, artifact.
@@ -138,3 +151,8 @@ S2-idless-path	TestSelectionInfersAnIdLessResultOnlyToACallOnItsWrittenPath	./in
 S2-units-codex	TestSelectionCountsTheCallUnitsTheWritersCoalesceAndThePairingAnswers	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (the Codex writer writes the unit the selection's accounting reads: one function_call and one function_call_output for the committed apply_patch fixture's two projected rows, with the folded row counted, while the unflagged conversion keeps the two rows it has always written and the category absent)
 S2-name	TestSelectionKeepsTheReadsPairingWhenTheWindowBreaksItsAncestry	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (the family's result record states the id and tool name of the call occurrence the read paired the result with, not the last write for the reused id: an inactive sibling's different name does not relabel the call the resumed walk reaches)
 S3-reduced	TestSelectRefusesADocumentASelectionProduced	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (a selection over a document a selection produced is refused by name before any specification is read — the line, ancestry and pairing answers are the read's own and cannot be re-derived from the window — and nothing about the document it was handed changes; Q-0009-07)
+S5-identityless	TestSelectionRefusesAnIdentityLessLeafChainedOffTheLine	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (a reduced document's line answer is the read's own walk membership per record position: a line target omits an identity-less record the read's own walk does not reach and counts it (`inactive_branch_records`), because writing it into the one-line log would revive the abandoned branch, and the position is the only answer its place has)
+S6-identityless	TestSelectionRefusesAnIdentityLessLeafChainedOffTheLine	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (the off-line entries the revival check reads are registered by the record's own position too, so a tree conversion of a window that retains neither record's ancestry refuses the on-line leaf that would be chained under the identity-less off-line child, naming both records by position)
+S2-idless-occurrences	TestSelectionInfersAnIdLessResultOnlyToACallOnItsWrittenPath	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (the reduced id-less inference counts call occurrences: two occurrences the source recorded under one id are two calls, so a result the read left no link for and could belong to either is omitted and counted (`unpaired_tool_results`) with no inferred pairing, while a run without a selection keeps the ledger's id-keyed answer — D4)
+S7-writers	TestSelectionKeepsProgressOnlyCallsOutstandingForTheWriters	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (the reduced writers read the progress rule on their own side: a recorded result whose status says the call is still running is not an answer in the outstanding set an id-less result is inferred against, while a run without a selection keeps the ledger's answer; OpenCode's plan already refuses a progress event as an outcome and counts it under `nonterminal_tool_events`)
+D3-fixedpoint	TestSelectionClosesTheCounterpartGraphToAFixedPoint	./internal/ccc	0009-selective-context.md §Done when 3 (the default arm closes the counterpart graph to a fixed point rather than one forward pass: a counterpart the walk pulls in can pull in a second behind it, each addition named with the record that pulled it in — the transitive rule the isolated-pair cases a single forward pass carries correctly do not distinguish)

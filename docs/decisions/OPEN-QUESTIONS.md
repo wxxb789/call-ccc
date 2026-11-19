@@ -3119,3 +3119,41 @@ supersede it with a newer one and say which it supersedes.
   the default path keeps its own answer" and "both paths ask one question", and between "an
   identity-less off-line leaf is refused like any other" and "a record the read gave no identity for
   passes where the flags cannot answer".
+
+## Q-0009-10 — A reduced document's line answer is the read's walk membership (identity-less records included), and its id-less inference counts occurrences and outcomes
+
+- **Status:** open (defaults taken: for a document a selection produced, the line answer and the writers'
+  outstanding set are the read's own walk membership per record position and per call occurrence; the
+  default path keeps the identity-gated flags and the ledger's id-keyed set).
+- **Question:** may a reduced document's line and outstanding-set answers differ from the ones the
+  writers have always read on a run without a selection (the flags mark a record off the line only where
+  the read holds an identity for it, and the ledger's pending set is keyed by id), and may a progress
+  event be read differently by the writers than by the selection's own count?
+- **Default taken:** the reduction-scoped answers, because each completes a rule the surface already
+  claimed rather than widening one. A line target writes every record into one log, so an identity-less
+  record the read's own walk does not reach is model-visible history where it is written: the eighth
+  review round's finding 1 measured a window that retains neither record's ancestry converting with the
+  on-line leaf chained under the identity-less off-line child (the tree's walk resumed the abandoned
+  branch) and the identity-less child written into Codex's and OpenCode's line; the reduced writers now
+  read the membership `Select` already carries (`Conversation.sourceLineHolds`) and the tree's off-line
+  registration is keyed by position, while the flags' long-standing answer for the flagless path (write
+  what the read did not place) is what D4 keeps. The reduced id-less inference counts call *occurrences*:
+  the finding measured two calls the source recorded under one id collapsing into one pending key, so a
+  result the read left no link for was inferred onto the later call by map order (OpenCode's
+  id-keyed `calls` map holds the last write); the eligible set is now counted in occurrences, and two
+  eligible occurrences make the result ambiguous -- omitted and counted. A recorded result whose status
+  says the call is still running is not an answer in the reduced writers' outstanding set either (the
+  finding measured Claude, Pi/OMP and Codex clearing the call on a `running` event, after which the
+  id-less result was inferred onto a second call that was still unanswered); OpenCode's plan already
+  refused progress as an outcome. The default path keeps the ledger's file-wide, id-keyed answer on all
+  three counts, and §4's probe measures that its bytes and report do not move.
+- **Reversal:** the reduced writers return to the flags and the ledger's id-keyed set (the pre-fix
+  behaviour: `git show 6bcf91c:internal/ccc/route_shared.go`'s `sourceLineAnswers` branch on
+  `sourceLineInactive`, the id-equality guards in `soleResultCall`, and the unconditional
+  `delete(b.pendingCalls, callID)`), which reopens the three shapes the round's mutations pin; or the
+  stronger alternative -- asking the same membership/occurrence question on the flagless path too --
+  which would move the default path's bytes and report and break D4.
+- **Settled by:** an operator decision between "the reduction reads the read's per-position and
+  per-occurrence answers while the default path keeps its own" and "both paths ask one question", and
+  between "two outstanding occurrences sharing an id are ambiguous" and "an id names one outstanding
+  call whichever records carry it".

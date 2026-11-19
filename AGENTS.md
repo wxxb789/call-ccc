@@ -300,9 +300,11 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   retroactively answer a call the pairing left unanswered). A
   record the source recorded with **no** id carries no
   recorded link: the seam neither invents one nor carries candidates for it, and the writer's own rule for
-  an id-less result (the sole outstanding call in the line it wrote — in a reduced document, the sole
-  call that stands on the written walk of the result's record and that no written result standing on that
-  walk has answered, so an outcome the window carries on another branch discharges its call there and
+  an id-less result (the sole outstanding call **occurrence** in the line it wrote — in a reduced document,
+  the sole call occurrence that stands on the written walk of the result's record and that no written
+  result *stating an outcome* standing on that walk has answered (two outstanding occurrences sharing an id
+  are two calls, so the result is omitted and counted rather than bound to either), so an outcome the
+  window carries on another branch discharges its call there and
   leaves it outstanding here — disclosed as
   `generated_call_ids`) reads the selected line; an id-less *call* is counted undischarged where the carried document holds no
   id-less result that states an outcome at or after it — no outcome in the line can answer it — and where
@@ -310,7 +312,10 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   carried the call is left to that same disclosed inference instead of being read as answered or as
   undischarged. **A call the source left without a recorded outcome was not answered**: a
   result whose recorded status says the call is still running (a Codex subagent's `running` notification,
-  a streamed chunk) is progress, not an outcome, so such a call is counted undischarged — and an archive
+  a streamed chunk) is progress, not an outcome, so such a call is counted undischarged — and the reduced
+  writers read it the same way: a progress event is not an answer in the outstanding set an id-less result
+  is inferred against, while a run without a selection keeps the ledger's own answer (the status clears its
+  id there) — and an archive
   read's own summary of an outcome on the call itself (`ToolCall.ResultContent`) is outcome evidence where
   the read holds no recorded result event of the call, so that shape is not counted; whether a
   target's own format can hold a call with no outcome is that writer's answer, named in the conversion's
@@ -329,8 +334,11 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   recorded history the writer reproduces, but an on-line record is never chained through one), and a
   window in which a record's whole retained ancestry is gone — so the
   fallback would hang it under an off-line record — is refused by name the same way, the check keyed by
-  the record's position rather than an identity it may never have; a line target
-  omits those records and counts them (`inactive_branch_records`). A bad selection is **refused, never
+  the record's position rather than an identity it may never have, and the off-line entries that check
+  reads are registered by that same position, so an on-line record is never chained under an
+  identity-less off-line one; a line target omits those records and counts them
+  (`inactive_branch_records`), the read's own walk membership answering for a record the read gave no
+  identity for exactly as for any other. A bad selection is **refused, never
   repaired**, with the core's own sentence and the usage exit code (2), before any install: a spec that is
   ill-formed, one whose region reaches outside the ordinals the read supplied (below its lowest or above its
   highest; the space, its gaps included, is spelled in the refusal), one that would carry no record at all — a

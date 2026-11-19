@@ -184,14 +184,18 @@ obligation ships no citations file, rather than an empty one.
   several rows, so one recorded outcome discharges it, and a second outcome does not answer a call the
   pairing left unanswered — while an archive read's own summary of an outcome on the call itself
   (`ToolCall.ResultContent`) is outcome evidence where the read holds no recorded result event of the
-  call, so that shape is not counted. What a target's own format does with such a call is
+  call, so that shape is not counted. The reduced writers read the same rule on their side: a progress
+  event is not an answer in the outstanding set an id-less result is inferred against, while a run without
+  a selection keeps the ledger's own answer (the status clears the call's id there). What a target's own format does with such a call is
   that writer's answer, named in the conversion's losses. A call or result the source
   recorded with **no** id carries no recorded link, so the seam neither invents one nor carries candidates
   for it; the target's writer applies its own rule to the selected line and discloses the pairing it
-  inferred (`generated_call_ids`) — in a reduced document, the sole call that stands on the
-  written walk of the result's record and that no written result standing on that walk has answered
+  inferred (`generated_call_ids`) — in a reduced document, the sole call **occurrence** that stands on the
+  written walk of the result's record and that no written result *stating an outcome* standing on that walk
+  has answered
   (an outcome the window carries on another branch discharges its call there and leaves it outstanding
-  here), so an inference cannot place an output under a call the resumed
+  here, and two outstanding occurrences sharing an id are two calls, so the result is omitted and counted
+  rather than bound to either), so an inference cannot place an output under a call the resumed
   context cannot see — and an id-less *call* is counted undischarged only where the carried
   document holds no id-less result that states an outcome at or after it (where one is carried, the call
   is left to that same disclosed inference). On a target whose session is a
@@ -205,10 +209,14 @@ obligation ships no citations file, rather than an empty one.
   keeping a branch off the active walk is recorded history the writer reproduces — while an on-line record
   is never chained through one, a window ending on an off-line record is refused by name
   (`ErrUnrepresentableLeaf`) rather than written (the check answers by the record's own position through
-  the entries actually written, so a record the read gave no identity for is refused like any other), and
+  the entries actually written, and the off-line entries it reads are registered by that position too, so a
+  record the read gave no identity for is refused like any other and an on-line record is never chained
+  under an identity-less off-line one), and
   a window in which that
   ancestry is gone entirely — the fallback would hang the record under an off-line one — is refused by
-  name (`ErrUnrepresentableLeaf`) rather than written. A bad selection is refused, never repaired, with
+  name (`ErrUnrepresentableLeaf`) rather than written; a line target omits those records and counts them
+  (`inactive_branch_records`), the read's own walk membership answering for an identity-less record
+  exactly as for any other. A bad selection is refused, never repaired, with
   the core's own sentence
   and the usage exit code (2), before any install — ill-formed grammar, a region reaching outside the
   ordinals the read supplied (below its lowest or above its highest; a region spanning a gap carries the

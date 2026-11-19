@@ -660,16 +660,30 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 			id := strings.TrimSpace(result.ToolUseID)
 			var entry *openCodeCall
 			if id == "" {
-				sole, ok := c.solePendingCall()
-				if !ok {
-					// No call is outstanding, or more than one is: the result cannot be placed, and
-					// guessing a call for it would state an invocation the source never recorded.
-					c.lossUnpairedResults++
-					continue
+				if c.conv.selectionReduced() {
+					// A reduced document counts eligible calls in occurrences: the plan carries the
+					// records the read's line holds, and two occurrences sharing an id are two calls the
+					// read recorded -- the id-keyed pending set would read them as one.
+					sole, ok := c.soleOutstandingPlannedCall()
+					if !ok {
+						c.lossUnpairedResults++
+						continue
+					}
+					entry = sole
+					id = sole.ID
+					inferred = true
+				} else {
+					sole, ok := c.solePendingCall()
+					if !ok {
+						// No call is outstanding, or more than one is: the result cannot be placed, and
+						// guessing a call for it would state an invocation the source never recorded.
+						c.lossUnpairedResults++
+						continue
+					}
+					id = sole
+					inferred = true
+					entry = c.calls[id]
 				}
-				id = sole
-				inferred = true
-				entry = c.calls[id]
 			} else {
 				var ok bool
 				entry, ok = c.pairedCallEntry(result, place)
@@ -739,6 +753,28 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 	}
 }
 
+// soleOutstandingPlannedCall answers the one call occurrence this plan carries that no carried outcome
+// has answered yet, and whether there is exactly one. A reduced document's id-less result or event asks
+// this question rather than the ledger's id-keyed one: the plan carries the records the read's line
+// holds, and two call occurrences the source recorded under one id are two calls, so a set keyed by id
+// would read them as one and let the inference attach an output to whichever occurrence the id-keyed map
+// holds last. The eligible set is counted in occurrences, so two eligible calls make the result
+// ambiguous and nothing is inferred -- the result is omitted and counted (unpaired_tool_results) rather
+// than written under a call the read never paired it with.
+func (c *openCodeConverter) soleOutstandingPlannedCall() (*openCodeCall, bool) {
+	found := (*openCodeCall)(nil)
+	for _, entry := range c.plannedCalls {
+		if entry.Result != nil {
+			continue
+		}
+		if found != nil {
+			return nil, false
+		}
+		found = entry
+	}
+	return found, found != nil
+}
+
 // pairedCallEntry answers the planned call one recorded result event names, through the seam's own
 // pairing: the call occurrence the read's own ancestry establishes where it does, else the occurrence the
 // result's id records nearest before it -- or, for an event that
@@ -763,6 +799,12 @@ func (c *openCodeConverter) pairedCallEntry(result ToolResult, place resultOccur
 		}
 		entry, ok := c.plannedCalls[call]
 		return entry, ok
+	}
+	if c.conv.selectionReduced() {
+		// A reduced document counts eligible calls in occurrences (soleOutstandingPlannedCall): two
+		// occurrences sharing an id are two calls, and an event the read left no id for names no call
+		// where two are eligible.
+		return c.soleOutstandingPlannedCall()
 	}
 	id, ok := c.solePendingCall()
 	if !ok {
