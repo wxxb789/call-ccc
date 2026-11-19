@@ -804,12 +804,14 @@ func (c *openCodeConverter) soleOutstandingPlannedCall() (*openCodeCall, bool) {
 // it, so it makes the result ambiguous and nothing is inferred (the result is omitted and counted,
 // unpaired_tool_results). The call the result may be written *for* has to hold no planned result at all:
 // the part states one outcome, and the read's own evidence of a different outcome is not this conversion's
-// to replace.
+// to replace. A call whose only recorded outcome is its writable summary counts as answered too
+// (plannedOutcomeWritable): the summary pass will write that outcome for it, so a later id-less result
+// may not take the slot the summary is owed and leave the recorded outcome unwritten.
 func (c *openCodeConverter) soleInferablePlannedCall() (*openCodeCall, bool) {
 	unanswered := 0
 	found := (*openCodeCall)(nil)
 	for _, entry := range c.plannedCalls {
-		if openCodeOutcomeWritable(entry) {
+		if c.plannedOutcomeWritable(entry) {
 			continue
 		}
 		unanswered++
@@ -830,18 +832,42 @@ func (c *openCodeConverter) soleInferablePlannedCall() (*openCodeCall, bool) {
 // plan, asked by the id-less inference too: a call whose planned result would not be written has no
 // answer in the document.
 func openCodeOutcomeWritable(call *openCodeCall) bool {
-	if call.Result == nil {
+	return call.Result != nil && openCodeResultWritable(*call.Result)
+}
+
+// openCodeResultWritable is the same question about one result value: whether toolPart would write a
+// part stating it, or count its omission. It is separate from openCodeOutcomeWritable so the question can
+// be asked of a summary the plan has not installed yet (plannedOutcomeWritable).
+func openCodeResultWritable(result ToolResult) bool {
+	if text, _ := resultText(result); strings.TrimSpace(text) == "" {
 		return false
 	}
-	if text, _ := resultText(*call.Result); strings.TrimSpace(text) == "" {
-		return false
-	}
-	switch status := strings.ToLower(strings.TrimSpace(call.Result.Status)); status {
+	switch status := strings.ToLower(strings.TrimSpace(result.Status)); status {
 	case "", openCodeToolCompleted, "errored", "error", "failed", "failure":
 		return true
 	default:
 		return false
 	}
+}
+
+// plannedOutcomeWritable answers whether the document this plan will write holds an outcome for one
+// planned call, read the way the summary pass below will: a planned result that is writable
+// (openCodeOutcomeWritable), or -- for a call that still holds none -- the writable summary the summary
+// pass will install (no result, no recorded events, derivedResultSummary). The id-less inference asks
+// this, not openCodeOutcomeWritable: a call whose only recorded outcome is its writable ResultContent
+// summary is answered on the written path, so it neither makes a later id-less result ambiguous nor may
+// have its summary replaced by one the source never recorded beside it. The default path does not ask
+// this question: its ledger's id-keyed answer is what a run without a selection has always had (goal
+// 0009's D4).
+func (c *openCodeConverter) plannedOutcomeWritable(entry *openCodeCall) bool {
+	if openCodeOutcomeWritable(entry) {
+		return true
+	}
+	if entry.Result != nil || entry.recordedEvents {
+		return false
+	}
+	summary, ok := derivedResultSummary(entry.Source, entry.ID)
+	return ok && openCodeResultWritable(summary)
 }
 
 // pairedCallEntry answers the planned call one recorded result event names, through the seam's own

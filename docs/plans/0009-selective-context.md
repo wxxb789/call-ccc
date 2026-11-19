@@ -616,3 +616,60 @@ measurement that decided it, followed by the review round's own:
       inference the route's part has no room for is omitted and counted (`unpaired_tool_results`). This
       case pins both arms (`TestSelectionAnswersOnlyForTheOutcomesItWrites`); one executed mutation (the
       eligibility restored) fails it for OpenCode.
+
+16. **The tenth review round's four findings.** The review of `9242e49..0d213e5` found two P1s and two
+    P2s; all four are fixed, and the round's surface is pinned by nine executed mutations (recorded in the
+    evidence record and the stage report).
+
+    * **a writable summary-only outcome is answered before a later id-less result is inferred** (review
+      1/4, a P1): OpenCode's plan installs an archive read's `ResultContent` summary after the result walk,
+      so the walk saw a call whose only recorded outcome is that summary as unanswered, inferred a later
+      id-less result onto it, and the summary pass then skipped the call with its slot occupied -- the
+      source's recorded outcome replaced by a result it never wrote beside it. The reduced id-less
+      inference now asks `plannedOutcomeWritable`: a writable summary the summary pass will install counts
+      as answered (so it neither makes a later result ambiguous nor may take the slot), an unwritable one
+      (whitespace text, a status the tool states cannot spell) leaves the call unanswered exactly as
+      before. The default path keeps the ledger's id-keyed answer -- the ledger never held the summary --
+      so its bytes are untouched (D4).
+      `TestSelectionDoesNotInferAnIDLessResultOntoASummaryOnlyCall` pins the summary surviving, the
+      omission and its counts, the unwritable-summary arm and the unchanged default path; two executed
+      mutations (the summary check removed; its writability loosened) fail it, and one (the default path
+      made summary-aware) fails its D4 arm.
+    * **the structural check compares a Codex file's invocation units, not the reader's per-file rows**
+      (review 2/4, a P1): the inherited reader projects one written `apply_patch` `function_call` record
+      into one call row per file it names, so a selected (coalesced) rollout read back as two rows against
+      one intended call and `verification.structure` came back `not-verified` although the file held
+      exactly the invocation written; the omitted test counted written envelopes and never ran the
+      read-back. The Codex comparison now answers its call evidence from the installed file's own
+      `function_call` records (`codexInstalledCallUnits`/`codexCallEvidence`): one record is one unit and
+      its rows are the reader's view of it, the rows of *unstated* ids stay the read-back's own, and a
+      file holding fewer rows under an id than records keeps the read-back's rows so an unread record is
+      still reported -- two actual call envelopes are two units and are never folded together.
+      `TestSelectionCountsTheCallUnitsTheWritersCoalesceAndThePairingAnswers` now verifies the selected
+      and unflagged conversions of the committed two-file patch fixture and requires the negative arm (a
+      one-invocation document against a file holding two `function_call` envelopes) to be reported; two
+      executed mutations (the fold bypassed; every id collapsed to one unit) fail it. The default path's
+      *conversion bytes* do not move; its structural verdict for this fixture moves `not-verified` →
+      `verified`, which is the finding's own subject and is disclosed in §4's shared-document diff.
+    * **the generated-id walk is selection-scoped** (review 3/4, a P2): round 8's `freshCallID` was
+      applied to an id-less call unconditionally, so an unflagged conversion whose earlier recorded call
+      already held the positional spelling (`call_ccc_2_0`) wrote `call_ccc_2_0_2` where the pre-0009
+      writer wrote the duplicate spelling -- a D4 break. The default path writes the plain positional
+      spelling again (duplicate included, exactly the bytes the writer always wrote); only a reduced
+      document walks the id past the written ones. `TestSelectionKeepsTheUnflaggedPositionalIDForAnIDLessCall`
+      pins both halves on Codex, Claude and Pi/OMP (OpenCode's positional id was already walked past
+      taken ids before selections existed, so it has no pre-0009 byte to restore); the D4 probe gains the
+      colliding-id transcript (`d4ProbeCollisionTranscript`) the committed fixtures do not carry, and the
+      pre-fix head moves exactly that document's 32 lines. Two executed mutations (the walk made
+      unconditional; the reduced walk removed) fail the test.
+    * **a tree-format owner assertion reads the result's own recorded ancestry** (review 4/4, a P2): the
+      round-trip owner lookup found the last call under the result's id in file order, so a Pi or Claude
+      file whose result entry had been reparented to a sibling verified although the result's own parent
+      walk could not reach its invocation. The tree formats (`piRoundTripReader`, the shared Pi/OMP
+      comparison; `claudeRoundTripReader`) now resolve a stated owner through the result's recorded parent
+      chain -- the nearest ancestor message stating the result's id -- and leave the occurrence ownerless
+      where the chain reaches no such call, while the flat Codex rule is unchanged.
+      `TestSelectionReportsAResultWhoseAncestryLeavesItsCall` installs a tree conversion, changes only
+      the result entry's parent relation to the sibling's entry, and requires the check to report it while
+      the unmutated control verifies (Pi, OMP and Claude). Two executed mutations (each reader's ancestry
+      flag cleared) fail it.

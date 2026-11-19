@@ -71,9 +71,19 @@ func VerifyPiSessionStructure(
 // The Pi reader projects a compaction record as an assistant-role message flagged as a boundary, reads a
 // toolResult record's content as the result's raw content, and recognises no injected-context envelope
 // (there is none in this format), so those are the reader's own normalisations and not differences in
-// what the file holds.
+// what the file holds. The session is a tree whose entries the reader answers parent relations for, so a
+// stated owner is resolved through the result's own ancestry rather than by id order (round 9's finding
+// 4); Oh My Pi is the same format family and uses this comparison.
 func comparePiRoundTrip(session PiSession, readBack Conversation, installed []byte) roundTripComparison {
-	return compareRoundTrip(session.Items, readBack, plainRoundTripReader(), piInstalledDialogue(installed))
+	return compareRoundTrip(session.Items, readBack, piRoundTripReader(), piInstalledDialogue(installed), installed)
+}
+
+// piRoundTripReader is the Pi reader's rules for the read-back walk: the shared plain reader, plus the
+// ancestry rule the family's tree format answers for its results' owners.
+func piRoundTripReader() roundTripReader {
+	reader := plainRoundTripReader()
+	reader.ownersByAncestry = true
+	return reader
 }
 
 // piInstalledMessage is one installed message payload as the dialogue walk reads it: its role and its

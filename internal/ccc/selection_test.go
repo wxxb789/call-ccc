@@ -1,9 +1,11 @@
 package ccc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -1535,6 +1537,102 @@ func TestSelectionAnswersASummaryFromItsOwningOccurrence(t *testing.T) {
 	}
 }
 
+// TestSelectionDoesNotInferAnIDLessResultOntoASummaryOnlyCall pins the ninth round's first finding for
+// the route that has the shape: a call whose only recorded outcome is the archive's writable
+// ResultContent summary is answered on the written path, so a later id-less result may not be inferred
+// onto it -- the summary pass would skip it (its result slot is occupied) and the recorded outcome would
+// be replaced by an unrelated result the source never wrote beside it. The reduced document writes the
+// summary for its call and omits the id-less result (counted). The default path keeps the ledger's
+// id-keyed answer, which is what a run without a selection has always had (goal 0009's D4): there the
+// call is still outstanding and the id-less result is written under it.
+func TestSelectionDoesNotInferAnIDLessResultOntoASummaryOnlyCall(t *testing.T) {
+	const (
+		summaryText = "the call's own recorded outcome"
+		lateText    = "the unrelated late output"
+	)
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "assistant", Content: "call a", Dialogue: "call a",
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_summary", Name: "Bash",
+				InputJSON:     `{"command":"a"}`,
+				ResultContent: summaryText, ResultContentSize: len(summaryText)}}},
+		Message{Ordinal: 1, Role: "user", Content: "the late result", Dialogue: "the late result",
+			ToolResults: []ToolResult{{ContentRaw: lateText, ContentSize: len(lateText)}}},
+	)
+	selected, _, err := Select(conversation, "0-", false)
+	if err != nil {
+		t.Fatalf("selecting the summary window: %v", err)
+	}
+	route, err := targetRouteFor(TargetOpenCode)
+	if err != nil {
+		t.Fatalf("route %s: %v", TargetOpenCode, err)
+	}
+	converted, err := route.Convert(selected, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("converting the summary window: %v", err)
+	}
+	if !strings.Contains(string(converted.Data), summaryText) {
+		t.Errorf("the selected document does not hold the call's own recorded summary: the id-less " +
+			"result took the slot the summary was owed")
+	}
+	if strings.Contains(string(converted.Data), lateText) {
+		t.Errorf("the selected document holds the id-less result although the only call is answered by " +
+			"its summary: an inference onto it would replace the recorded outcome")
+	}
+	if got := lossCount(t, converted.Losses, "unpaired_tool_results").Count; got != 1 {
+		t.Errorf("unpaired_tool_results = %d, want the one id-less result no written call answers", got)
+	}
+	if got := lossCount(t, converted.Losses, "generated_call_ids").Count; got != 0 {
+		t.Errorf("generated_call_ids = %d, want 0: nothing was inferred", got)
+	}
+
+	// The default path keeps the ledger's id-keyed answer: the summary-only call is still outstanding
+	// there, so the id-less result is written under it (counted as an inference) and the summary is not
+	// -- the answer a run without a selection has always had (goal 0009's D4).
+	unflagged, err := route.Convert(conversation, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("converting the read without a selection: %v", err)
+	}
+	if !strings.Contains(string(unflagged.Data), lateText) {
+		t.Errorf("the unflagged document does not hold the id-less result: the ledger's id-keyed " +
+			"outstanding set is the default path's answer")
+	}
+	if strings.Contains(string(unflagged.Data), summaryText) {
+		t.Errorf("the unflagged document holds the summary the id-less result displaced: the default " +
+			"path's bytes are what a run without a selection has always written")
+	}
+	if got := lossCount(t, unflagged.Losses, "generated_call_ids").Count; got != 1 {
+		t.Errorf("unflagged generated_call_ids = %d, want the one inferred result", got)
+	}
+
+	// The summary counts as an answer only where the written path can carry it: a summary whose text is
+	// whitespace only is not a part this target writes, so the call stays unanswered and the id-less
+	// result is what the document can hold -- inferred onto it and counted, exactly as a call with no
+	// writable outcome has always been read (openCodeResultWritable's text guard).
+	blank := testConversation(
+		Message{Ordinal: 0, Role: "assistant", Content: "call a", Dialogue: "call a",
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_summary", Name: "Bash",
+				InputJSON:     `{"command":"a"}`,
+				ResultContent: "   ", ResultContentSize: 3}}},
+		Message{Ordinal: 1, Role: "user", Content: "the late result", Dialogue: "the late result",
+			ToolResults: []ToolResult{{ContentRaw: lateText, ContentSize: len(lateText)}}},
+	)
+	selectedBlank, _, err := Select(blank, "0-", false)
+	if err != nil {
+		t.Fatalf("selecting the blank-summary window: %v", err)
+	}
+	blankConverted, err := route.Convert(selectedBlank, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("converting the blank-summary window: %v", err)
+	}
+	if !strings.Contains(string(blankConverted.Data), lateText) {
+		t.Errorf("the selected document does not hold the id-less result: a whitespace-only summary is " +
+			"no outcome the target can write, so the call was still unanswered")
+	}
+	if got := lossCount(t, blankConverted.Losses, "generated_call_ids").Count; got != 1 {
+		t.Errorf("blank-summary generated_call_ids = %d, want the one inferred result", got)
+	}
+}
+
 // TestSelectionWritesCollidingCallOccurrencesUnderDistinctTargetIDs pins the eighth round's first
 // finding: a document a selection produced writes every call occurrence the read holds, and when the
 // source recorded one id on two of them the later occurrence is written under an id generated from its
@@ -1700,6 +1798,271 @@ func TestSelectionWritesCollidingCallOccurrencesUnderDistinctTargetIDs(t *testin
 			}
 		}
 	}
+}
+
+// TestSelectionKeepsTheUnflaggedPositionalIDForAnIDLessCall pins the D4 half of the colliding-id rule
+// (round 9's finding 3): an id-less call is written under the plain positional spelling a run without a
+// selection has always written, even where an earlier *recorded* call already holds that spelling -- the
+// duplicate id the pre-0009 writer produced, byte for byte -- while a reduced document walks the id past
+// the written ones (freshCallID), because an occurrence written under the shared id could not be told
+// from the earlier one. The read records the three writer families' positional spellings for the
+// id-less call's own place on one record, so one conversation pins each writer's prefix. OpenCode is
+// absent on purpose: its positional id was already walked past taken ids before selections existed, so
+// there is no pre-0009 byte to restore (goal 0009's D4).
+func TestSelectionKeepsTheUnflaggedPositionalIDForAnIDLessCall(t *testing.T) {
+	const (
+		first  = `{"command":"first"}`
+		second = `{"command":"second"}`
+	)
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "assistant", Content: "the recorded calls",
+			Dialogue: "the recorded calls",
+			ToolCalls: []ToolCall{
+				{ToolUseID: "call_ccc_1_0", Name: "Bash", InputJSON: first},
+				{ToolUseID: "toolu_ccc_1_0", Name: "Bash", InputJSON: first},
+				{ToolUseID: "ccc1_0", Name: "Bash", InputJSON: first},
+			}},
+		Message{Ordinal: 1, Role: "assistant", Content: "the id-less call",
+			Dialogue:  "the id-less call",
+			ToolCalls: []ToolCall{{Name: "Bash", InputJSON: second}}},
+	)
+	// The positional spelling each writer mints for the id-less call's own place: message 1, call 0.
+	positional := map[string]string{
+		TargetCodex:  "call_ccc_1_0",
+		TargetClaude: "toolu_ccc_1_0",
+		TargetPi:     "ccc1_0",
+		TargetOMP:    "ccc1_0",
+	}
+	callsUnder := func(t *testing.T, target string, data []byte) map[string]int {
+		t.Helper()
+		counts := map[string]int{}
+		for _, line := range selectionCallAndResultLines(t, target, data) {
+			if fields := strings.Fields(line); strings.HasPrefix(line, "call ") && len(fields) > 1 {
+				counts[fields[1]]++
+			}
+		}
+		return counts
+	}
+	selected, _, err := Select(conversation, "0-", false)
+	if err != nil {
+		t.Fatalf("selecting the whole read: %v", err)
+	}
+	for _, target := range []string{TargetCodex, TargetClaude, TargetPi, TargetOMP} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		id := positional[target]
+		unflagged, err := route.Convert(conversation, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the read without a selection: %v", target, err)
+		}
+		counts := callsUnder(t, target, unflagged.Data)
+		if counts[id] != 2 || counts[id+"_2"] != 0 {
+			t.Errorf("%s: the unflagged conversion writes %v under %q, want the recorded call and the "+
+				"plain positional spelling for the id-less call: the collision is what the writer has "+
+				"always written (goal 0009's D4)", target, counts, id)
+		}
+		for _, loss := range unflagged.Losses {
+			if loss.Category == "colliding_call_ids" {
+				t.Errorf("%s: the unflagged conversion carries the reduction's own colliding_call_ids row",
+					target)
+			}
+		}
+		reduced, err := route.Convert(selected, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the selected read: %v", target, err)
+		}
+		counts = callsUnder(t, target, reduced.Data)
+		if counts[id] != 1 || counts[id+"_2"] != 1 {
+			t.Errorf("%s: the selected conversion writes %v, want the recorded call under %q and the "+
+				"id-less call walked past it to %q: two occurrences must not share one id on a reduced "+
+				"document", target, counts, id, id+"_2")
+		}
+	}
+}
+
+// TestSelectionReportsAResultWhoseAncestryLeavesItsCall pins the ninth round's fourth finding: the owner
+// assertion of the round-trip comparison has to read the result's own recorded ancestry, not the last
+// call sharing its id in file order. The document is a whole-read selection whose written tree holds
+// sibling assistant entries A (with the call) and B; the mutated file is the conversion's own bytes with
+// exactly one field changed -- the result's parent relation, moved from A's branch to B's. Everything
+// else is untouched, so the counts, the dialogue and the result's own text all still match, and only the
+// result's parent walk can no longer reach its invocation. The comparison must report it; the control
+// arm verifies the same file unmutated, so the flip is the mutation's. Pi, OMP (the same comparison) and
+// the Claude transcript (the other tree format whose documents state owners) are each exercised.
+func TestSelectionReportsAResultWhoseAncestryLeavesItsCall(t *testing.T) {
+	const (
+		callID      = "toolu_x"
+		siblingText = "sibling b"
+	)
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "root", Dialogue: "root", SourceUUID: "u0"},
+		Message{Ordinal: 1, Role: "assistant", Content: "call a", Dialogue: "call a",
+			SourceUUID: "a1", SourceParentUUID: "u0",
+			ToolCalls: []ToolCall{{ToolUseID: callID, Name: "Bash", InputJSON: `{"command":"a"}`}}},
+		Message{Ordinal: 2, Role: "assistant", Content: siblingText, Dialogue: siblingText,
+			SourceUUID: "b2", SourceParentUUID: "u0"},
+		Message{Ordinal: 3, Role: "user", Content: "the result", Dialogue: "the result",
+			SourceUUID: "r3", SourceParentUUID: "a1",
+			ToolResults: []ToolResult{{ToolUseID: callID, ContentRaw: "the output"}}},
+	)
+	selected, _, err := Select(conversation, "0-", false)
+	if err != nil {
+		t.Fatalf("selecting the whole read: %v", err)
+	}
+	for _, target := range []string{TargetPi, TargetOMP, TargetClaude} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(selected, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the window: %v", target, err)
+		}
+		home := t.TempDir()
+		path, _, err := route.Install(context.Background(), converted, targetInstallInput{Home: home})
+		if err != nil {
+			t.Fatalf("%s: installing the session: %v", target, err)
+		}
+		verify := func(t *testing.T, arm string) StructureVerification {
+			t.Helper()
+			verification, err := route.ReadBack(context.Background(), route.StructureRoot(home),
+				converted, fixtureConfig(t))
+			if err != nil {
+				t.Fatalf("%s (%s): reading the installed session back: %v", target, arm, err)
+			}
+			return verification
+		}
+		if control := verify(t, "control"); control.State != VerificationStateVerified {
+			t.Fatalf("%s: the unmutated conversion verifies as %s: %s", target, control.State,
+				control.Detail)
+		}
+		installed, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("%s: reading the installed session: %v", target, err)
+		}
+		mutated, ok := mutateResultParent(t, target, installed, callID, siblingText)
+		if !ok {
+			t.Fatalf("%s: the installed session holds no result entry under %q whose parent can be "+
+				"moved to the sibling entry", target, callID)
+		}
+		if err := os.WriteFile(path, mutated, 0o600); err != nil {
+			t.Fatalf("%s: rewriting the installed session: %v", target, err)
+		}
+		moved := verify(t, "mutated")
+		if moved.State == VerificationStateVerified {
+			t.Errorf("%s: the comparison verified a result whose own parent walk cannot reach its "+
+				"invocation: it resolved the owner by id order, not by the relation the file records",
+				target)
+		}
+	}
+}
+
+// mutateResultParent moves one installed result entry's recorded parent from the branch that holds its
+// call to the sibling entry named by its text, changing no other field: the file keeps every record and
+// every word, so only the result's own recorded relation moves. It answers false when the file holds no
+// such result entry or no such sibling entry -- the test then fails rather than asserting on a mutation
+// that never happened. The line shapes are the two tree formats': a Pi-family entry carries `id` /
+// `parentId`, a Claude record `uuid` / `parentUuid`, and both carry the message (with its role or its
+// content blocks) under `message`.
+func mutateResultParent(t *testing.T, target string, installed []byte, callID, siblingText string) ([]byte, bool) {
+	t.Helper()
+	fields := struct{ idField, parentField string }{}
+	switch target {
+	case TargetPi, TargetOMP:
+		fields = struct{ idField, parentField string }{"id", "parentId"}
+	case TargetClaude:
+		fields = struct{ idField, parentField string }{"uuid", "parentUuid"}
+	default:
+		t.Fatalf("mutateResultParent: no parent relation is known for target %s", target)
+	}
+	decode := func(line []byte) (map[string]any, bool) {
+		decoder := json.NewDecoder(bytes.NewReader(line))
+		decoder.UseNumber()
+		var record map[string]any
+		if err := decoder.Decode(&record); err != nil {
+			return nil, false
+		}
+		return record, true
+	}
+	lines := bytes.Split(installed, []byte("\n"))
+	siblingID := ""
+	resultLine := -1
+	for index, line := range lines {
+		record, ok := decode(line)
+		if !ok {
+			continue
+		}
+		id, _ := record[fields.idField].(string)
+		if id == "" {
+			continue
+		}
+		message, _ := record["message"].(map[string]any)
+		if messageHoldsText(message, siblingText) {
+			siblingID = id
+		}
+		if messageHoldsToolResult(message, callID) {
+			resultLine = index
+		}
+	}
+	if siblingID == "" || resultLine < 0 {
+		return nil, false
+	}
+	record, ok := decode(lines[resultLine])
+	if !ok {
+		return nil, false
+	}
+	record[fields.parentField] = siblingID
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("re-encoding the mutated result entry: %v", err)
+	}
+	lines[resultLine] = encoded
+	return bytes.Join(lines, []byte("\n")), true
+}
+
+// messageHoldsText reports whether one entry's message content carries a text block equal to text.
+func messageHoldsText(message map[string]any, text string) bool {
+	if message == nil {
+		return false
+	}
+	blocks, _ := message["content"].([]any)
+	for _, block := range blocks {
+		blockMap, _ := block.(map[string]any)
+		if blockMap == nil {
+			continue
+		}
+		if blockText, _ := blockMap["text"].(string); blockText == text {
+			return true
+		}
+	}
+	return false
+}
+
+// messageHoldsToolResult reports whether one entry's message content carries a tool result under callID.
+func messageHoldsToolResult(message map[string]any, callID string) bool {
+	if message == nil {
+		return false
+	}
+	if role, _ := message["role"].(string); role == "toolResult" {
+		if id, _ := message["toolCallId"].(string); id == callID {
+			return true
+		}
+	}
+	blocks, _ := message["content"].([]any)
+	for _, block := range blocks {
+		blockMap, _ := block.(map[string]any)
+		if blockMap == nil {
+			continue
+		}
+		if blockMap["type"] == "tool_result" {
+			if id, _ := blockMap["tool_use_id"].(string); id == callID {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // codexReadBackMessages installs one Codex rollout into a throw-away home and answers the messages the
@@ -2508,6 +2871,59 @@ func TestSelectionCountsTheCallUnitsTheWritersCoalesceAndThePairingAnswers(t *te
 			t.Errorf("the unflagged codex report names %+v: no row is coalesced on the default path, "+
 				"and its report is byte-identical to the same run before selections existed", loss)
 		}
+	}
+
+	// The read-back is what the structural checker compares, and the inherited reader expands every
+	// written `apply_patch` record into one call row per file it names: the selected file's one
+	// invocation reads back as two rows and the unflagged file's two records as four, so a comparison of
+	// raw read-back rows reports the selected document as missing a call although the file holds the one
+	// invocation it wrote (round 9's finding 2 -- the finding's cited test stopped at the written
+	// envelopes and never ran the read-back). The check compares invocation units -- the file's own
+	// `function_call` records -- so the selected conversion verifies; the negative arm holds the fold to
+	// the file: a document claiming one invocation against a file holding two actual call envelopes is
+	// still reported.
+	installAndVerify := func(t *testing.T, arm string, rollout CodexRollout) (StructureVerification, []byte) {
+		t.Helper()
+		home := t.TempDir()
+		if _, _, err := InstallCodexRollout(rollout, home); err != nil {
+			t.Fatalf("%s: installing the rollout: %v", arm, err)
+		}
+		verification, err := VerifyCodexRolloutStructure(context.Background(),
+			filepath.Join(home, codexSessionsSubdir), rollout, fixtureConfig(t))
+		if err != nil {
+			t.Fatalf("%s: verifying the rollout: %v", arm, err)
+		}
+		installed, err := os.ReadFile(filepath.Join(home, codexSessionsSubdir,
+			filepath.FromSlash(rollout.Directory), rollout.FileName))
+		if err != nil {
+			t.Fatalf("%s: reading the installed rollout: %v", arm, err)
+		}
+		return verification, installed
+	}
+	selectedVerification, _ := installAndVerify(t, "selected", selectedRollout)
+	if selectedVerification.State != VerificationStateVerified {
+		t.Errorf("the selected codex conversion verifies as %s: %s; the file holds the one invocation "+
+			"the document wrote, however many rows the reader's per-file projection shows",
+			selectedVerification.State, selectedVerification.Detail)
+	}
+	selectedRows := 0
+	for _, message := range codexReadBackMessages(t, selectedRollout) {
+		selectedRows += len(message.ToolCalls)
+	}
+	if selectedRows != 2 {
+		t.Errorf("the selected file reads back as %d call row(s), want the two the reader's per-file "+
+			"projection of one `apply_patch` record shows", selectedRows)
+	}
+	unflaggedVerification, unflaggedInstalled := installAndVerify(t, "unflagged", unflaggedRollout)
+	if unflaggedVerification.State != VerificationStateVerified {
+		t.Errorf("the unflagged codex conversion verifies as %s: %s", unflaggedVerification.State,
+			unflaggedVerification.Detail)
+	}
+	if roundTrip := compareCodexRoundTrip(selectedRollout,
+		Conversation{Messages: codexReadBackMessages(t, unflaggedRollout)},
+		unflaggedInstalled); len(roundTrip.differences) == 0 {
+		t.Error("the comparison accepted a document claiming one invocation against a file holding two " +
+			"actual `function_call` envelopes")
 	}
 
 	// The two-calls-two-outcomes shape: both calls are recorded before both results.

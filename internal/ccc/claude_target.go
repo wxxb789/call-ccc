@@ -713,9 +713,14 @@ func (b *claudeTranscriptBuilder) toolCall(index int, call ToolCall, at time.Tim
 		// and the call's index in that message -- and not the message's own ordinal: an embedding caller
 		// may leave ordinals unassigned, and two messages' id-less calls must not collapse into one id.
 		// A shared id would make the pairing below read one call, so an id-less result could pair with
-		// "the" outstanding call while two are. The id is walked past every id this walk already wrote,
-		// so it can never alias a recorded spelling either.
-		callID = b.freshCallID(fmt.Sprintf("%s%d_%d", claudeGeneratedCallPrefix, b.messageIndex, index))
+		// "the" outstanding call while two are. The plain positional spelling is what a run without a
+		// selection writes even where another written call already holds it, exactly as it did before
+		// selections existed (goal 0009's D4); a reduced document walks the id past the written ones
+		// (freshCallID), because a generated id there must not alias a recorded spelling.
+		callID = fmt.Sprintf("%s%d_%d", claudeGeneratedCallPrefix, b.messageIndex, index)
+		if b.selectionReduced {
+			callID = b.freshCallID(callID)
+		}
 		b.lossGeneratedIDs++
 	case b.selectionReduced && b.callIDTaken(callID):
 		// A document a selection produced writes each call occurrence the read holds, and the source

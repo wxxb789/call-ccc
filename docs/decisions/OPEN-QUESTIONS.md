@@ -3200,3 +3200,51 @@ supersede it with a newer one and say which it supersedes.
   id-and-text comparison" and "both paths substitute and assert alike", and between "an inferred result is
   omitted rather than written for a call whose recorded outcome the document cannot hold" and "the
   inference may replace that recorded outcome".
+
+## Q-0009-12 — The structural check compares a Codex file's invocation units, the reduced id-less inference reads writable summaries, and the generated-id walk stays reduction-scoped
+
+- **Status:** open (defaults taken: the Codex structural comparison answers the call evidence of an id the
+  installed file states a `function_call` record under from the file's own records — one record, one
+  invocation unit — while the read-back's rows stand for unstated ids and for an id the read-back holds
+  fewer rows under than the file holds records; OpenCode's reduced id-less inference counts a *writable*
+  summary-only outcome as answered, so the summary pass is not displaced by a later unrelated result,
+  while the default path keeps the ledger's id-keyed answer; the id-less call's generated id is walked
+  past the ids the document already states only on a reduced document, so a run without a selection writes
+  the plain positional spelling (a duplicate of a recorded id included, exactly the pre-0009 bytes); and a
+  tree target's owner assertion resolves the result's owning call through the result's own recorded
+  ancestry rather than by file order).
+- **Question:** may a structural *verdict* move on the default path for a document whose conversion bytes
+  do not, and may a reduced document's inference read an outcome the plan installs later while the default
+  path keeps its ledger's answer?
+- **Default taken:** each change is the smallest one that makes the check or the conversion read what the
+  file and the read state, and each is disclosed rather than silent. The tenth review round's findings
+  measured the four shapes: the inherited Codex reader projects one written `apply_patch` record into one
+  call row per file it names, so the committed two-file patch fixture's own conversion was
+  `not-verified` on the pre-0009 tree *and* the pre-fix head although the file held exactly the
+  invocation written (the finding's P1; the fix compares the file's own records, so the verdict becomes
+  `verified` while the writer arm's and installation's bytes are unchanged — the one line-group in the
+  D4 probe's 1183-line shared diff that moves, `docs/evidence/0009-selective-context.md` §4); OpenCode
+  installed an archive read's `ResultContent` summary after the result walk, so the walk read a
+  summary-only call as unanswered, inferred a later id-less result onto it and the summary pass then
+  skipped the call — the source's recorded outcome replaced by one it never wrote beside it (fixed on the
+  reduced path only: the ledger the default path reads never held the summary, so its bytes stay what they
+  were, D4); round 8's unconditional `freshCallID` had made an unflagged conversion write
+  `call_ccc_2_0_2` for an id-less call where the pre-0009 writer wrote the duplicate `call_ccc_2_0` (a D4
+  break, fixed by scoping the walk to reduced documents; the probe gained the colliding-id transcript the
+  committed fixtures do not carry, and the pre-fix head moves exactly that document's 32 lines); and the
+  round-trip owner lookup found the last call under the result's id in file order, so a Pi or Claude file
+  whose result entry was reparented to a sibling verified although the result's own parent walk could not
+  reach its invocation (fixed for the tree formats through the result's recorded ancestry; the flat Codex
+  rule is unchanged).
+- **Reversal:** the pre-fix behaviour returns by removing `codexCallEvidence` and the reader's
+  `callEvidence` hook, clearing the two `ownersByAncestry` flags, dropping `plannedOutcomeWritable` from
+  the reduced inference, and restoring the three writers' unconditional `freshCallID` — each reopens the
+  failure its mutation records (`docs/evidence/0009-selective-context.md`, tenth round, `M1`-`M9`). The
+  stronger alternative — applying the summary-aware inference to the default path, or the invocation-unit
+  fold only where a selection was made — changes what the default path's report states about a file whose
+  bytes it wrote, and is the operator's decision, not this build's.
+- **Settled by:** an operator decision between "the checker reads the installed file's own invocation
+  units (its verdict may move while the bytes do not), the reduced OpenCode inference reads the summary
+  the plan will install, the default path keeps its ledger's answer and the plain positional spelling, and
+  a tree owner assertion reads the result's recorded ancestry" and "each of those is decided the other
+  way".

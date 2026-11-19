@@ -28,7 +28,7 @@ third round's excerpts (the Codex binary path in §1, the gate transcripts' chec
 | what a `subtype: hook_result` line reads as | **nothing**: the Claude reader skips the provider's own bookkeeping lines (measured on the fixture's first draft — ten records, nine messages — which is why the fixture's system record is the system-reminder promotion shape instead; plan §11.5) |
 | what a target does with an undischarged call | Codex, Claude, Pi and OMP write the call with no output; OpenCode's format has no state for a call that has not finished, so it leaves the call out and counts it (`unpaired_tool_calls`, measured on the fixture through `ConvertToOpenCodeSession`). The report's warning names both halves as the writer's own answer rather than claiming the target records the call |
 | the seam's own two dispositions | a selection that names the call of ordinal 2 alone carries the result at ordinal 3 as a `necessities_added` entry (`pulled_by` 2), and the Codex writer then holds the pair with `unpaired_tool_results = 0`; the same selection under `--strict-selection` is refused by name, before anything is written |
-| what an unflagged run writes | nothing the previous revision did not: a throw-away before/after probe over five routes × the eleven fixtures the two trees share **plus a materialized off-path transcript the committed set does not cover** prints the same 1109 lines and the same normalized bytes on HEAD's tree and on this tree — with source-recorded instants *and recorded identities* in the comparison (the normalizer folds only what a conversion mints or discovers, §4) — and the increment's new fixture adds its own 125 lines with no before-run (§4; the probe's exact source is `docs/evidence/0009-d4-probe.txt`) |
+| what an unflagged run writes | nothing the previous revision did not: a throw-away before/after probe over five routes × the eleven fixtures the two trees share **plus two materialized transcripts the committed set does not cover** (the round-6 off-path case and the round-9 colliding-id case) prints the same normalized bytes on the pre-0009 tree and on this tree, with source-recorded instants *and recorded identities* in the comparison (the normalizer folds only what a conversion mints or discovers, §4) — the one disclosed line-group that moves is the two-file `apply_patch` fixture's Codex structural verdict, `not-verified` → `verified`, because round 9 fixes the checker's invocation-unit comparison while the written bytes stay identical — and the increment's new fixture adds its own 125 lines with no before-run (§4; the probe's exact source is `docs/evidence/0009-d4-probe.txt`) |
 
 ## 1. The recorded run: a selection converts, installs and **Codex's own loader opens it**
 
@@ -213,7 +213,10 @@ A throw-away probe (`internal/ccc/zz_d4_probe_test.go`; its exact revision, byte
 printed these lines, is retained as [`0009-d4-probe.txt`](0009-d4-probe.txt)) walks **every committed
 fixture document** — the eleven the pre-0009 tree and this tree share (two Claude transcripts, two Codex
 rollouts, three Pi sessions, three Oh My Pi sessions, one OpenCode document) *and* the increment's new
-Claude transcript — and for each document × each of the five routes it does two things:
+Claude transcript — **plus two transcripts the committed set does not cover, materialized at run time so
+both trees read identical records**: the round-6 off-path case (`d4ProbeOffPathTranscript`) and the
+round-9 colliding-id case (`d4ProbeCollisionTranscript`) — and for each document × each of the five routes
+it does two things:
 
 * the **writer arm** (`route.Convert` with fixed options): the length of the written bytes and the sha256
   of them over a normalized copy, the carried counts, and every non-zero loss row;
@@ -281,47 +284,66 @@ writer or artifact line, so the fold is narrower than the blanket set it replace
 
 Exactly one probe revision produced every run below — the retained `.txt` is that revision — and each tree
 was run twice. The pre-0009 tree is a throw-away worktree with the identical probe file copied in. The
-revision adds the round-6 review's case to the comparison (its finding 1): the off-path transcript the
-committed fixtures do not carry is materialized at run time under a scratch Claude root
-(`d4ProbeOffPathTranscript`), so both trees read identical records for it and the case travels with the
+revision adds the round-6 review's case to the comparison (its finding 1) and the round-9 review's case
+(its finding 3): the off-path transcript and the colliding-id transcript the committed fixtures do not
+carry are materialized at run time under a scratch Claude root (`d4ProbeOffPathTranscript`,
+`d4ProbeCollisionTranscript`), so both trees read identical records for them and the cases travel with the
 probe rather than with either tree's fixture set:
 
 ```console
-$ git worktree add --detach /tmp/ccc-d4-before 9242e49b2d38aa8474f530c46e26fc3ee3b7a226
-$ cp internal/ccc/zz_d4_probe_test.go /tmp/ccc-d4-before/internal/ccc/
-$ cd /tmp/ccc-d4-before
-$ CCC_D4_PROBE_OUT=/tmp/ccc-d4-r6/before1.txt go test -tags fts5 -count=1 -run TestZZD4Probe ./internal/ccc/
-$ CCC_D4_PROBE_OUT=/tmp/ccc-d4-r6/before2.txt go test -tags fts5 -count=1 -run TestZZD4Probe ./internal/ccc/
+$ git worktree add --detach /tmp/ccc-d4-r9-before 9242e49b2d38aa8474f530c46e26fc3ee3b7a226
+$ cp docs/evidence/0009-d4-probe.txt /tmp/ccc-d4-r9-before/internal/ccc/zz_d4_probe_test.go
+$ cd /tmp/ccc-d4-r9-before
+$ CCC_D4_PROBE_OUT=/tmp/ccc-d4-r9/before1.txt go test -tags fts5 -count=1 -run TestZZD4Probe ./internal/ccc/
+$ CCC_D4_PROBE_OUT=/tmp/ccc-d4-r9/before2.txt go test -tags fts5 -count=1 -run TestZZD4Probe ./internal/ccc/
 $ cd -
-$ CCC_D4_PROBE_OUT=/tmp/ccc-d4-r6/after1.txt go test -tags fts5 -count=1 -run TestZZD4Probe ./internal/ccc/
-$ CCC_D4_PROBE_OUT=/tmp/ccc-d4-r6/after2.txt go test -tags fts5 -count=1 -run TestZZD4Probe ./internal/ccc/
-$ diff /tmp/ccc-d4-r6/before1.txt /tmp/ccc-d4-r6/before2.txt   # silent: one tree's runs agree
-$ diff /tmp/ccc-d4-r6/after1.txt  /tmp/ccc-d4-r6/after2.txt    # silent
-$ grep -v 'claude:c1a74e28' /tmp/ccc-d4-r6/before1.txt > /tmp/ccc-d4-r6/before-shared.txt
-$ grep -v 'claude:c1a74e28' /tmp/ccc-d4-r6/after1.txt  > /tmp/ccc-d4-r6/after-shared.txt
-$ wc -l /tmp/ccc-d4-r6/before1.txt /tmp/ccc-d4-r6/after1.txt
-1109 /tmp/ccc-d4-r6/before1.txt
-1234 /tmp/ccc-d4-r6/after1.txt
-$ diff /tmp/ccc-d4-r6/before-shared.txt /tmp/ccc-d4-r6/after-shared.txt   # silent
-$ grep -c 'claude:c1a74e28' /tmp/ccc-d4-r6/after1.txt
+$ CCC_D4_PROBE_OUT=/tmp/ccc-d4-r9/after1.txt go test -tags fts5 -count=1 -run TestZZD4Probe ./internal/ccc/
+$ CCC_D4_PROBE_OUT=/tmp/ccc-d4-r9/after2.txt go test -tags fts5 -count=1 -run TestZZD4Probe ./internal/ccc/
+$ diff /tmp/ccc-d4-r9/before1.txt /tmp/ccc-d4-r9/before2.txt   # silent: one tree's runs agree
+$ diff /tmp/ccc-d4-r9/after1.txt  /tmp/ccc-d4-r9/after2.txt    # silent
+$ grep -v 'claude:c1a74e28' /tmp/ccc-d4-r9/before1.txt > /tmp/ccc-d4-r9/before-shared.txt
+$ grep -v 'claude:c1a74e28' /tmp/ccc-d4-r9/after1.txt  > /tmp/ccc-d4-r9/after-shared.txt
+$ wc -l /tmp/ccc-d4-r9/before1.txt /tmp/ccc-d4-r9/after1.txt
+1183 /tmp/ccc-d4-r9/before1.txt
+1307 /tmp/ccc-d4-r9/after1.txt
+$ diff /tmp/ccc-d4-r9/before-shared.txt /tmp/ccc-d4-r9/after-shared.txt
+731c731
+< PROBE-RUN codex:5b2d7c14-6e8a-4f31-b0c5-9d7e21a4c8fe codex report folded=18890 digest=d69399c6c6b1cd2199ad414a80f34f59f5660428e6fd39a77e7f48dbf6c9d832
+---
+> PROBE-RUN codex:5b2d7c14-6e8a-4f31-b0c5-9d7e21a4c8fe codex report folded=17878 digest=d17be84e37c92deab1404bc9dca7e98fc71631603e249286e69d0e5f1f0a33c2
+734,735c734
+< PROBE-RUN codex:5b2d7c14-6e8a-4f31-b0c5-9d7e21a4c8fe codex verification structure=not-verified load=not-requested resume=not-requested structure_detail=the installed session does not hold the evidence in the target document: tool call 3 is in the file but was not written: call call_02Example000000000000000000 to apply_patch (128 bytes, sha256 552563bd…); tool call 4 is in the file but was not written: call call_02Example000000000000000000 to apply_patch (128 bytes, sha256 552563bd…)
+< PROBE-RUN codex:5b2d7c14-6e8a-4f31-b0c5-9d7e21a4c8fe codex warning the installed session was not shown to hold every piece of evidence the conversion wrote: the installed session does not hold the evidence in the target document: tool call 3 is in the file but was not written: …
+---
+> PROBE-RUN codex:5b2d7c14-6e8a-4f31-b0c5-9d7e21a4c8fe codex verification structure=verified load=not-requested resume=not-requested structure_detail=
+$ grep -c 'claude:c1a74e28' /tmp/ccc-d4-r9/after1.txt
 125
 ```
 
-The line counts are what the probe's own arms produce: the after tree's 1234 = 65 `PROBE-WRITE` (5 routes
-× 13 documents) + 407 `PROBE-LOSS` + 762 `PROBE-RUN`; the pre-0009 tree's 1109 = 60 + 364 + 685 (5 routes ×
-12 documents: the eleven pre-0009 fixtures plus the materialized off-path case), and the increment's new
+The line counts are what the probe's own arms produce: the after tree's 1307 = 70 `PROBE-WRITE` (5 routes
+× 14 documents) + 425 `PROBE-LOSS` + 812 `PROBE-RUN`; the pre-0009 tree's 1183 = 65 + 382 + 736 (5 routes ×
+13 documents: the eleven pre-0009 fixtures plus the two materialized transcripts), and the increment's new
 fixture accounts for the 125-line difference. Both stability diffs are silent, so the folded digests are a
-statement about the conversion rather than about the ids it mints; the shared-document diff is silent over
-all **1109 lines** — every route's written bytes, every loss row, every report field, every digest of an
-installed artifact, both OpenCode-target arms (writer and pipeline) and the new off-path case on all five
-routes included — so no route's conversion moved for a run without the flag on any document the two
-revisions share, *with source-recorded instants and recorded identities in the comparison* (the round-3
-and round-4 records' same claim rested on a normalizer that masked them; the `PROBE-CONTROL` lines above
-are what makes this revision's claim stronger). The pipeline arm runs every conversion the probe lists:
-each of the 65 runs prints its conversion block, and the arms that stop early stop at the same
+statement about the conversion rather than about the ids it mints. The shared-document diff is silent over
+**every line of the 1183 except one document's three verification lines**, and those are round 9's finding
+2 made visible: the two-file `apply_patch` Codex fixture (`codex:5b2d7c14-…`, the rollout the increment's
+selection tests select from) is *not-verified* on both pre-0009 and pre-fix trees — the inherited reader
+projects its one written `function_call` record into one call row per file it names, and the old comparison
+counted those projected rows as calls the document did not write, so the check failed a file that held
+exactly the invocation written — and the fixed check reads the file's own invocation units, so the verdict
+is `verified`, the warning that restated the verdict is gone, and the report digest moves with them. The
+`artifact` lines do not move on either tree (the written bytes are identical), and every other line of
+every shared document — every route's written bytes, every loss row, every remaining report field, every
+digest of an installed artifact, both OpenCode-target arms (writer and pipeline), both materialized
+transcripts and all five routes included — is byte-identical, *with source-recorded instants and recorded
+identities in the comparison* (the round-3 and round-4 records' same claim rested on a normalizer that
+masked them; the `PROBE-CONTROL` lines above are what makes this revision's claim stronger).
+
+The pipeline arm runs every conversion the probe lists:
+each of the 70 runs prints its conversion block, and the arms that stop early stop at the same
 environment-answered points on both trees — the two branch-switch fixtures (`pi:01a1c337-…`,
 `omp:01a1c33a-…`) on the four non-OpenCode routes (8 runs, two lines each: the source-side leaf refusal
-before any writer runs), every OpenCode run (13, the absent target binary the arm deliberately names),
+before any writer runs), every OpenCode run (14, the absent target binary the arm deliberately names),
 and the new off-path case's Claude arm, whose `structure` line is `not-verified` with the warning quoted
 below — the installed file's own reader walks the parent DAG from its tip, the walk that leaves the branch
 record out, and both trees answer identically. Where the installation wrote the writer's own bytes the two
@@ -382,6 +404,67 @@ recorded identity stands in the measured text (`pi:01a1c335-…`'s Pi writer lin
 its folded length moved 2051 → 2105 while the written bytes did not). What is comparable is this
 revision's own before/after pair, which was produced by one probe revision on both trees.)
 
+The round-9 revision adds the colliding-id transcript and its mutant run for the same reason the round-6
+case was added (its finding 3): the committed fixtures record no call whose id is the positional spelling
+the writers mint for a later id-less call, so the default path's treatment of that collision — the
+duplicate spelling the pre-0009 writer emits, `call_ccc_2_0` twice — was outside the comparison. The
+transcript records the three families' positional spellings (`call_ccc_2_0`, `toolu_ccc_2_0`, `ccc2_0`)
+on the record the read numbers first and an id-less call on the record it numbers second, and the
+pre-0009 tree and this tree print the same 74 lines for it (the `PROBE-WRITE` lines below are the
+evidence; the five digests are equal, not merely the lengths). The pre-fix head (`0d213e5`, the round-8
+tree, whose writers walk every generated id past the taken ones) differs from the pre-0009 tree in
+exactly this document's 32 lines and in no other shared line — the four tree writers' `PROBE-WRITE`
+lines and the four pipeline arms' conversion, report and artifact lines, two bytes or a digest apart
+where the `_2` suffix stands:
+
+```console
+$ git worktree add --detach /tmp/ccc-d4-r9-mutant 0d213e5ee11186455d9f51bbd2f1f9c80e69c1ba
+$ cp docs/evidence/0009-d4-probe.txt /tmp/ccc-d4-r9-mutant/internal/ccc/zz_d4_probe_test.go
+$ cd /tmp/ccc-d4-r9-mutant
+$ CCC_D4_PROBE_OUT=/tmp/ccc-d4-r9/mutant1.txt go test -tags fts5 -count=1 -run TestZZD4Probe ./internal/ccc/
+$ cd -
+$ diff <(grep 'claude:collision' /tmp/ccc-d4-r9/before1.txt) \
+       <(grep 'claude:collision' /tmp/ccc-d4-r9/mutant1.txt) | grep -c '^[<>]'
+32
+$ grep 'claude:collision' /tmp/ccc-d4-r9/before1.txt | grep 'PROBE-WRITE' | sed -E 's/ (PROBE|written).*//' | head -6
+PROBE-WRITE claude:collision-c0b1d2e3-4f50-4a61-8b72-9c8d7e6f5a40 claude
+PROBE-WRITE claude:collision-c0b1d2e3-4f50-4a61-8b72-9c8d7e6f5a40 codex
+PROBE-WRITE claude:collision-c0b1d2e3-4f50-4a61-8b72-9c8d7e6f5a40 omp
+PROBE-WRITE claude:collision-c0b1d2e3-4f50-4a61-8b72-9c8d7e6f5a40 opencode
+PROBE-WRITE claude:collision-c0b1d2e3-4f50-4a61-8b72-9c8d7e6f5a40 pi
+$ grep 'claude:collision' /tmp/ccc-d4-r9/before1.txt | grep 'PROBE-WRITE' | grep -oE 'written=[0-9]+ folded=[0-9]+'
+written=2566 folded=1899
+written=1883 folded=1782
+written=2087 folded=2029
+written=550 folded=475
+written=1543 folded=1491
+$ grep 'claude:collision' /tmp/ccc-d4-r9/after1.txt | grep 'PROBE-WRITE' | grep -oE 'written=[0-9]+ folded=[0-9]+'
+written=2566 folded=1899
+written=1883 folded=1782
+written=2087 folded=2029
+written=550 folded=475
+written=1543 folded=1491
+$ grep 'claude:collision' /tmp/ccc-d4-r9/mutant1.txt | grep 'PROBE-WRITE' | grep -oE 'written=[0-9]+ folded=[0-9]+'
+written=2568 folded=1901
+written=1885 folded=1775
+written=2089 folded=2031
+written=550 folded=475
+written=1545 folded=1493
+$ awk '$2 != "claude:c1a74e28-3b0d-4f91-8d27-6e5b90c4a183" && \
+       $2 != "claude:collision-c0b1d2e3-4f50-4a61-8b72-9c8d7e6f5a40"' \
+      /tmp/ccc-d4-r9/before1.txt | sort > /tmp/ccc-d4-r9/base-rest.txt
+$ awk '$2 != "claude:c1a74e28-3b0d-4f91-8d27-6e5b90c4a183" && \
+       $2 != "claude:collision-c0b1d2e3-4f50-4a61-8b72-9c8d7e6f5a40"' \
+      /tmp/ccc-d4-r9/mutant1.txt | sort > /tmp/ccc-d4-r9/mutant-shared.txt
+$ diff /tmp/ccc-d4-r9/base-rest.txt /tmp/ccc-d4-r9/mutant-shared.txt | wc -l
+0
+```
+
+OpenCode's five lines are equal on all three trees, which is the finding's own scope note measured: its
+positional id was already walked past the taken ones before selections existed, so there is no pre-0009
+byte to restore there. The fixed tree's 74 lines are identical to the pre-0009 tree's, so the finding's
+input is inside the comparison and the default path's byte identity for it is what the equality asserts.
+
 The flag-absent comparison cannot discharge D4 by itself and is not asked to: what the selection *does*
 when it is present is D1/D2's evidence (§1–§2 and the Go cases), and the flag-present-versus-flag-absent
 comparison is a different claim (pinned in `cmd/ccc`'s case: a specification naming every record of the
@@ -410,7 +493,7 @@ D4; the assertion names that one row rather than requiring none).
 | a value supplied blank (`--select ""`) | refused as a request that names nothing, never read as the flag's absence: an automation's empty variable must not publish the whole history | §3's third block; `TestCheckSelectionOptionsRefusesASpecificationWithoutARead`, `TestContinueRefusesABadSelectionBeforeInstalling` |
 | the source file itself | read whole, measured before and after | `source_check_state: unchanged` with the fixture copy's `sha256`, §1 |
 | a call the source left unanswered, at a target whose format has no state for it (OpenCode) | the route leaves the call out and counts it — its own limit, named by its own report rather than claimed for every target | `unpaired_tool_calls ×1`; `TestSelectionWritesExactlyTheSelectedOrdinals`'s `TargetOpenCode` arm and `TestContinueReportsUndischargedCallsOnBothSurfaces` |
-| a run without `--select` | the same conversion it was, byte for byte — the reduction-scoped dispositions (the written-ancestry acceptance and the path-restricted inference) do not act, and the writer's report keeps its own category list | §4's silent diffs over all 1109 shared-document lines (the materialized off-path case included), with source-recorded instants *and recorded identities* in the comparison (§4's `PROBE-CONTROL` lines); `TestSelectionOmitsAResultWhosePairedCallIsOffItsWrittenPath`'s unflagged arm and `TestUnflaggedFlatConversionKeepsTheIDAcceptance` |
+| a run without `--select` | the same conversion it was, byte for byte — the reduction-scoped dispositions (the written-ancestry acceptance, the path-restricted inference, the walked-past generated ids) do not act, and the writer's report keeps its own category list | §4's shared-document diff over the 1183 lines (the two materialized cases included), with source-recorded instants *and recorded identities* in the comparison (§4's `PROBE-CONTROL` lines), silent except the one disclosed Codex checker verdict whose written bytes are unchanged (round 9's finding 2); `TestSelectionOmitsAResultWhosePairedCallIsOffItsWrittenPath`'s unflagged arm, `TestUnflaggedFlatConversionKeepsTheIDAcceptance` and `TestSelectionKeepsTheUnflaggedPositionalIDForAnIDLessCall` |
 | a carried result whose paired call is not on its written ancestry (an inactive sibling reusing the id on a flat target; a call on another branch for a tree target) | omitted and counted on every route — on the flat targets the line leaves the call off, and on the trees the call is written but stands off the walk the target's loader makes from the result; a call the window carried still travels as recorded history, off that walk. The disposition belongs to the reduction: a run without `--select` keeps the acceptance its writer always had (some written call shares the id), which is what §4's silent diff measures | `TestSelectionOmitsAResultWhosePairedCallIsOffItsWrittenPath` (its unflagged arm); `Q-0009-06` |
 | an id-less result whose only outstanding call stands off the written walk of the result's record (a sparse `0,1,3` window keeps call 1 and drops the call at 2 whose record was the result's recorded parent) | the inference may name only a call the walk the result's entry hangs off reaches: with no eligible call the result is omitted and counted, and with exactly one the entry states its own id (the positive `0,2,3` arm) | `TestSelectionInfersAnIdLessResultOnlyToACallOnItsWrittenPath` |
 | a result under a reused id where a later inactive sibling carries a *different* tool name (the window keeps the call the read paired with the result and the sibling) | the result record states the paired occurrence's id and name, not the last write for the id | `TestSelectionKeepsTheReadsPairingWhenTheWindowBreaksItsAncestry` |
@@ -1795,6 +1878,123 @@ exit=0
 
 (`parity`'s detail line is elided here as §6 elides it; the numbers in the elision are the ones it holds.)
 
+### The tenth review round's findings (`0d213e5`), fixed and re-measured
+
+The review of `9242e49..0d213e5` found four items (two P1, two P2), all fixed: the OpenCode plan inferred
+a later id-less result onto a call whose only recorded outcome is the writable `ResultContent` summary the
+summary pass was about to install, replacing the recorded outcome (finding 1); the selected two-file
+`apply_patch` Codex conversion failed the structural check although the file held exactly the invocation
+written, because the comparison counted the reader's per-file projection rows as calls (finding 2, with
+the omitted test counting written envelopes and never running the read-back); the round's unconditional
+`freshCallID` moved an unflagged conversion's bytes for an id-less call whose positional spelling an
+earlier recorded call already held (finding 3, a D4 break the probe's fixture set could not see); and the
+owner lookup found a call by file order, so a tree conversion whose result entry was reparented to a
+sibling verified (finding 4). §4's revision is updated in this round (the colliding-id transcript,
+§4 above); the writers', the checker's and the inference's rules are named in §5's cells and in the plan's
+item 16, and the row of rules this round touches each has one executed mutation below -- the line
+reverted, the case that claims to pin it run, the failure recorded, the line restored;
+`grep -rn 'if true\|if false\|&& false\|false &&\|true ||' internal/ccc/*.go` is empty after the
+restores:
+
+```console
+$ # M1: OpenCode's summary-only answer removed (c.plannedOutcomeWritable → openCodeOutcomeWritable; S7-summary-outcome)
+$ go test -tags fts5 -count=1 -run TestSelectionDoesNotInferAnIDLessResultOntoASummaryOnlyCall ./internal/ccc/
+--- FAIL: TestSelectionDoesNotInferAnIDLessResultOntoASummaryOnlyCall (0.00s)
+    selection_test.go:1574: the selected document does not hold the call's own recorded summary: the id-less result took the slot the summary was owed
+exit=1
+$ # M2: the summary's writability loosened to its status alone (the text guard dropped; S7-summary-outcome)
+$ go test -tags fts5 -count=1 -run TestSelectionDoesNotInferAnIDLessResultOntoASummaryOnlyCall ./internal/ccc/
+--- FAIL: TestSelectionDoesNotInferAnIDLessResultOntoASummaryOnlyCall (0.00s)
+    selection_test.go:1628: the selected document does not hold the id-less result: a whitespace-only summary is no outcome the target can write, so the call was still unanswered
+    selection_test.go:1632: blank-summary generated_call_ids = 0, want the one inferred result
+exit=1
+$ # M3: the default path made summary-aware (the reduced rule added to the ledger branch; S7-summary-outcome's D4 arm)
+$ go test -tags fts5 -count=1 -run TestSelectionDoesNotInferAnIDLessResultOntoASummaryOnlyCall ./internal/ccc/
+--- FAIL: TestSelectionDoesNotInferAnIDLessResultOntoASummaryOnlyCall (0.00s)
+    selection_test.go:1596: the unflagged document does not hold the id-less result: the ledger's id-keyed outstanding set is the default path's answer
+    selection_test.go:1600: the unflagged document holds the summary the id-less result displaced: the default path's bytes are what a run without a selection has always written
+    selection_test.go:1604: unflagged generated_call_ids = 0, want the one inferred result
+exit=1
+$ # M4: Codex's generated-id walk made unconditional again (if b.selectionReduced → if true; S2-positional-ids)
+$ go test -tags fts5 -count=1 -run TestSelectionKeepsTheUnflaggedPositionalIDForAnIDLessCall ./internal/ccc/
+--- FAIL: TestSelectionKeepsTheUnflaggedPositionalIDForAnIDLessCall (0.00s)
+    selection_test.go:1862: codex: the unflagged conversion writes map[call_ccc_1_0:1 call_ccc_1_0_2:1 ccc1_0:1 toolu_ccc_1_0:1] under "call_ccc_1_0", want the recorded call and the plain positional spelling for the id-less call
+exit=1
+$ # M5: the reduced path's walk removed (if b.selectionReduced → if false; S2-positional-ids' reduced arm)
+$ go test -tags fts5 -count=1 -run TestSelectionKeepsTheUnflaggedPositionalIDForAnIDLessCall ./internal/ccc/
+--- FAIL: TestSelectionKeepsTheUnflaggedPositionalIDForAnIDLessCall (0.00s)
+    selection_test.go:1878: codex: the selected conversion writes map[call_ccc_1_0:2 ccc1_0:1 toolu_ccc_1_0:1], want the recorded call under "call_ccc_1_0" and the id-less call walked past it
+exit=1
+$ # M6: the invocation units bypassed (codexCallEvidence handed nil; S2-invocation-units)
+$ go test -tags fts5 -count=1 -run TestSelectionCountsTheCallUnitsTheWritersCoalesceAndThePairingAnswers ./internal/ccc/
+--- FAIL: TestSelectionCountsTheCallUnitsTheWritersCoalesceAndThePairingAnswers (0.16s)
+    selection_test.go:2905: the selected codex conversion verifies as not-verified: … tool call 2 is in the file but was not written …
+    selection_test.go:2919: the unflagged codex conversion verifies as not-verified: … tool call 3 … tool call 4 …
+exit=1
+$ # M7: every id collapsed to one unit (the emitted dedupe added; S2-invocation-units' negative arm)
+$ go test -tags fts5 -count=1 -run TestSelectionCountsTheCallUnitsTheWritersCoalesceAndThePairingAnswers ./internal/ccc/
+--- FAIL: TestSelectionCountsTheCallUnitsTheWritersCoalesceAndThePairingAnswers (0.67s)
+    selection_test.go:2919: the unflagged codex conversion verifies as not-verified: … tool call 2 is in the target document but not in the file …
+    selection_test.go:2925: the comparison accepted a document claiming one invocation against a file holding two actual `function_call` envelopes
+exit=1
+$ # M8: Pi/OMP ancestry cleared (reader.ownersByAncestry = true → false; S2-owner-ancestry)
+$ go test -tags fts5 -count=1 -run TestSelectionReportsAResultWhoseAncestryLeavesItsCall ./internal/ccc/
+--- FAIL: TestSelectionReportsAResultWhoseAncestryLeavesItsCall (0.88s)
+    selection_test.go:1955: pi: the comparison verified a result whose own parent walk cannot reach its invocation: it resolved the owner by id order, not by the relation the file records
+    selection_test.go:1955: omp: the comparison verified a result whose own parent walk cannot reach its invocation: …
+exit=1
+$ # M9: Claude's ancestry cleared (roundTripReader{… ownersByAncestry: true → false}; S2-owner-ancestry's Claude arm)
+$ go test -tags fts5 -count=1 -run TestSelectionReportsAResultWhoseAncestryLeavesItsCall ./internal/ccc/
+--- FAIL: TestSelectionReportsAResultWhoseAncestryLeavesItsCall (0.37s)
+    selection_test.go:1955: claude: the comparison verified a result whose own parent walk cannot reach its invocation: …
+exit=1
+```
+
+The round re-ran §4's probe revision (its new input included) over the two trees
+(`git worktree add --detach /tmp/ccc-d4-r9-before 9242e49b…`, the retained probe copied in): 1183 / 1307
+lines, each tree's two runs identical, the shared-document diff holding exactly the codex patch fixture's
+three verification lines (finding 2's fix: `not-verified` → `verified`, the warning gone, the report
+digest with them; the artifact lines and every other shared line identical), and the colliding-id
+transcript's 74 lines equal on both trees. The pre-fix head's mutant run (the same probe revision on
+`0d213e5`) differs from the pre-0009 tree in exactly that document's 32 lines and nothing else — §4
+quotes both. OpenCode's five lines are equal on all three trees, the finding's own scope note measured.
+
+The round's verification: the two packages' Go cases run green (below), the D4 probe re-ran over the two
+trees (§4's numbers, above), and the gate below is this round's own run -- `GATE: PASS`, exit 0, with
+`0009-citations.tsv` grown 47 → **51** rows. 457 → **460** top-level `Test…` functions in the
+`./cmd/ccc/... ./internal/ccc/...` test files: the round adds three cases
+(`TestSelectionDoesNotInferAnIDLessResultOntoASummaryOnlyCall`,
+`TestSelectionKeepsTheUnflaggedPositionalIDForAnIDLessCall`,
+`TestSelectionReportsAResultWhoseAncestryLeavesItsCall`) and extends two
+(`TestSelectionCountsTheCallUnitsTheWritersCoalesceAndThePairingAnswers` now runs the structural check on
+the selected and unflagged patch conversions and holds the negative arm; the F1 case gained the
+blank-summary and default-path arms); none deleted. The four new rows (`S2-positional-ids`,
+`S2-invocation-units`, `S7-summary-outcome`, `S2-owner-ancestry`) each cite a test that exists in
+`./internal/ccc` and passes. The first `gofmt -l` after the round's edits named
+`internal/ccc/selection_test.go` alone (one field alignment); `gofmt -w` on it was the only change:
+
+```console
+$ go test -tags fts5 -count=1 ./internal/ccc/ ./cmd/ccc/
+ok  	go.kenn.io/agentsview/internal/ccc	34.885s
+ok  	go.kenn.io/agentsview/cmd/ccc	13.707s
+$ python3 scripts/gate.py; echo "exit=$?"
+  PASS     gofmt    3627 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 442 tests in 8.705s (rc=0)
+  PASS     parity   … (5553 carried file(s) identical to the pinned revision; 27 declared deviations + 1
+                    generated input present as declared; 32 project-owned prefix(es); 5727 file(s) seen by git)
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009-citations.tsv: 51 row(s) verified
+  PASS     secrets  no leaks found in 196 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+exit=0
+```
+
+The throw-away probe file and the three worktrees (`before`, `mutant`, and this round's copy inside the
+working tree) were removed before the gate run; `git status` lists the round's own files and no
+probe.
+
 ## 7. Docs, rules and bookkeeping
 
 * `AGENTS.md` — a new binding bullet ("A conversion carries only what the caller selected …") outside the
@@ -1829,7 +2029,11 @@ exit=0
   written-outcome condition and the summary's owner to the id-less inference's sentence, the colliding-id
   substitution beside it, the read-answered count to the line sentence's ancestry clause, and the
   round-trip check's owner assertion to the offline-half sentence (a written result's owning call is
-  compared wherever the document states one).
+  compared wherever the document states one). The tenth fix round extended the offline-half sentence to a
+  reader that projects one call record into several rows (the calls are compared as the file's own record
+  units, one record per invocation) and to a tree format's ancestry-resolved owner, and the id-less
+  inference's sentence to the writable summary's answer and the reduction-scoped generated-id walk (a run
+  without a selection keeps the plain positional spelling, a recorded id's duplicate included).
 * `docs/conventions.md` — the layout block names `selection.go`; a new rule under "Rules of the work"
   states the specification's grammar, the seam, the refusals and the report's classes, with the second
   round's refinements (order pairing, progress, ancestry, supplied blank) folded into the same rule, the
@@ -1847,11 +2051,13 @@ exit=0
   the occurrence-counted id-less inference, and the progress rule on the reduced writers' side) folded in
   as well, and the ninth round's (the colliding-id substitution and the round-trip owner assertion, the
   written-outcome ledger, the summary's owner, and the read-answered unresolved count) folded in beside
-  them.
+  them, and the tenth round's (the invocation-unit comparison and the ancestry-resolved owner assertion,
+  the writable summary's written-path answer, and the reduction-scoped generated-id walk) folded in as
+  well.
 * `docs/plans/0009-selective-context.md` — §11 records the increment's numbered departures with the
-  measurement behind each (the third round's four in §11.12) and the fourth through ninth rounds' seven,
-  five, six, three, four and five at its close (the seventh's as item 13, the eighth's as item 14, the
-  ninth's as item 15).
+  measurement behind each (the third round's four in §11.12) and the fourth through tenth rounds' seven,
+  five, six, three, four, five and four at its close (the seventh's as item 13, the eighth's as item 14,
+  the ninth's as item 15, the tenth's as item 16).
 * `docs/goals/README.md` — 0009's row reads *Implemented on `feat/0009-selective-context`; awaiting
   operator acceptance*, and the goal file's own `Status:` line reads the same (the form 0007 and 0008
   carried while their increments awaited acceptance); nothing else was ready to archive (0008 was archived
@@ -1884,7 +2090,13 @@ exit=0
   writes a summary for the call that stored it, and reads the flat targets' unresolved count from the
   read's own relation answers — the reversals are the pre-fix lines the round's nine mutations record, or
   the same substitution and assertion on the flagless path, which moves its bytes and report and breaks
-  D4).
+  D4); and Q-0009-12 (this round: the Codex structural check reads the installed file's own
+  `function_call` records as invocation units — its verdict for the two-file `apply_patch` fixture moves
+  `not-verified` → `verified` while the written bytes do not — OpenCode's reduced id-less inference counts
+  a writable summary-only outcome as answered, the generated-id walk stays reduction-scoped so the default
+  path keeps the plain positional spelling, and a tree owner assertion reads the result's recorded
+  ancestry; the reversals are the pre-fix lines the round's nine mutations record, or the same rules on
+  the flagless path, which moves what the default path's report states about a file whose bytes it wrote).
 * `README.md` — an example line (`--select 0-3,7`, in range for its fixture), a paragraph on the flag and
   its report, and `Select` in the engine list. Unchanged by the third and fourth rounds: the paragraph's
   claims (the order pairing, the progress rule, the blank refusal, the ancestry rule) are still what the
@@ -1900,7 +2112,12 @@ exit=0
   is never chained under an identity-less off-line one). The ninth round extended the id-less sentence
   (an outcome the document cannot carry does not answer its call; a summary is written for the call that
   stored it) and added the colliding-id substitution, the owning-call assertion and the read-answered
-  unresolved count.
+  unresolved count. The tenth round extended the summary sentence (a writable summary answers its call, so
+  a later id-less result is omitted rather than replacing it), the comparison sentence's owner assertion
+  (a projecting reader's rows are compared as the file's own record units; a tree owner is resolved
+  through the result's recorded ancestry) and the closing "the reduction's dispositions act only there"
+  sentence (an unflagged run writes an id-less call's plain positional spelling, a recorded id's duplicate
+  included).
 * `docs/harness.md` — unchanged: this increment adds no gate step and no knob, and the citations step it
   already requires is the one that reads the new manifest.
 * The throw-away probe file (§4) and the pre-change worktree were removed before the gate run; the probe's

@@ -1127,10 +1127,15 @@ func (b *piSessionBuilder) callBlock(index int, call ToolCall) piContentBlock {
 		// The call's place in the document keys its generated id -- the message's position in the walk
 		// and the call's index in that message -- and not the message's own ordinal: an embedding
 		// caller may leave ordinals unassigned, and two messages' id-less calls must not collapse into
-		// one id, which would make the pairing below read one call where two exist. The id is walked
-		// past every id this file already states (freshCallID): a generated id must not alias a recorded
-		// spelling or another generated one, or the target's reader could not tell the calls apart.
-		callID = b.freshCallID(fmt.Sprintf("%s%d_%d", piGeneratedCallBase, b.writtenMessages, index))
+		// one id, which would make the pairing below read one call where two exist. The plain positional
+		// spelling is what a run without a selection writes even where another written call already
+		// holds it, exactly as it did before selections existed (goal 0009's D4); a reduced document
+		// walks the id past every id the file already states (freshCallID), because a generated id there
+		// must not alias a recorded spelling.
+		callID = fmt.Sprintf("%s%d_%d", piGeneratedCallBase, b.writtenMessages, index)
+		if b.selectionReduced {
+			callID = b.freshCallID(callID)
+		}
 		b.lossGeneratedIDs++
 	case b.selectionReduced && b.callIDTaken(callID):
 		// A document a selection produced writes each call occurrence the read holds, and the source

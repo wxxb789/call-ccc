@@ -179,10 +179,17 @@ obligation ships no citations file, rather than an empty one.
   path's does not. A written call occurrence whose recorded id an earlier written occurrence already
   holds is written under an id generated from its own place (`colliding_call_ids`, scoped the same way —
   a run without a selection keeps the recorded ids), and every result is written under the owning
-  occurrence's emitted id, so an id two occurrences share cannot rebind an output; the round-trip check
+  occurrence's emitted id, so an id two occurrences share cannot rebind an output — and a generated id is
+  walked past the ids the document already states only on a reduced document: a run without a selection
+  writes an id-less call under the plain positional spelling it has always written, the recorded id it may
+  duplicate included; the round-trip check
   asserts that ownership wherever a document states it — a result item names the call item it was written
   for and the read-back's own attachment under the result's id is compared with it — while a document
-  that states no owner keeps the id-and-text comparison the default path has always had. A call whose read
+  that states no owner keeps the id-and-text comparison the default path has always had, a reader that
+  projects one call record into several rows (the Codex reader reads one `apply_patch` as one call per
+  file it names) has its calls compared as the file's own record units rather than the rows, and an owner
+  a tree format states (the Pi family, the Claude transcript) is resolved through the result's own
+  recorded ancestry rather than by file order. A call whose read
   holds no
   recorded outcome (no result at all, only progress events such as a Codex subagent's `running`
   notification, or an id-less progress event) is counted `calls_undischarged`, read from the pairing walk
@@ -195,7 +202,9 @@ obligation ships no citations file, rather than an empty one.
   event is not an answer in the outstanding set an id-less result is inferred against, only an outcome
   the document *states* answers a call there — a result whose text the output field cannot carry is
   omitted and counted and leaves its call outstanding — and a summary the read stored on a call is
-  written for that call's own occurrence rather than inferred, while a run without
+  written for that call's own occurrence rather than inferred, and a writable summary answers the call on
+  the written path (a later id-less result is omitted rather than inferred onto the call the summary is
+  owed to) while a summary the part cannot state leaves the call unanswered, while a run without
   a selection keeps the ledger's own answer (the status clears the call's id there). What a target's own format does with such a call is
   that writer's answer, named in the conversion's losses. A call or result the source
   recorded with **no** id carries no recorded link, so the seam neither invents one nor carries candidates

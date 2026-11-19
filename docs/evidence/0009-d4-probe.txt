@@ -65,6 +65,13 @@ type d4ProbeDocument struct {
 	// the round-5 review's finding 1 shape, materialized at run time (below) so the pre-0009 tree the
 	// probe is also run on reads the identical records.
 	offPath bool
+	// collision says this document is the probe's own synthetic transcript for the round-9 review's
+	// finding 3: a record whose calls are recorded under the positional spellings the writers mint for
+	// the *next* record's id-less call. The pre-0009 writer emits the recorded spelling a second time
+	// for the id-less call (the collision D4 preserves), and an unconditional freshCallID would walk
+	// past it (`_2`) instead -- so an unflagged run of this document moves the moment the collision
+	// handling stops being selection-scoped. Materialized at run time like offPath.
+	collision bool
 }
 
 // d4ProbeOffPathSessionID is the synthetic transcript's session id, and d4ProbeOffPathTranscript its
@@ -88,6 +95,28 @@ func d4ProbeOffPathTranscript() []byte {
 {"message":{"content":"the ask"},"parentUuid":"d4000000-0000-4000-8000-000000000003","sessionId":"` + id + `","timestamp":"2026-05-06T10:00:03.000Z","type":"user","uuid":"d4000000-0000-4000-8000-000000000004","version":"d4-probe"}
 {"message":{"content":[{"content":"the branch call's own output","tool_use_id":"toolu_d4OffPath00000000000001","type":"tool_result"}]},"parentUuid":"d4000000-0000-4000-8000-000000000004","sessionId":"` + id + `","timestamp":"2026-05-06T10:00:04.000Z","type":"user","uuid":"d4000000-0000-4000-8000-000000000005","version":"d4-probe"}
 {"message":{"content":"thanks"},"sessionId":"` + id + `","timestamp":"2026-05-06T10:00:05.000Z","type":"user","version":"d4-probe"}
+`)
+}
+
+// d4ProbeCollisionSessionID is the collision transcript's session id, and d4ProbeCollisionTranscript
+// its bytes: the round-9 review's finding 3 input, materialized so both trees read identical records.
+// Record 1 carries three recorded calls under the positional spellings the writers mint for the id-less
+// call on record 2 -- `call_ccc_2_0` (Codex), `toolu_ccc_2_0` (Claude) and `ccc2_0` (the Pi family),
+// which the read numbers as messages 1 and 2 (each writer's own rule measured on this transcript: the
+// positional base is `<prefix>2_0`, because the record that made no identity is the third message the
+// reader returns). The last record carries no uuid, so the inherited Claude reader's linear arm reads
+// every record in file order (the same device d4ProbeOffPathTranscript explains). The unflagged writers
+// of the pre-0009 revision emit the colliding spelling a second time for the id-less call; the fixed
+// tree keeps that byte for byte, so this document's lines are identical on both trees, and any
+// unconditional walk past taken ids moves them (the round-9 mutant run measures it).
+const d4ProbeCollisionSessionID = "c0b1d2e3-4f50-4a61-8b72-9c8d7e6f5a40"
+
+func d4ProbeCollisionTranscript() []byte {
+	const id = d4ProbeCollisionSessionID
+	return []byte(`{"cwd":"/work/project","message":{"content":"start"},"parentUuid":null,"sessionId":"` + id + `","timestamp":"2026-05-06T10:00:00.000Z","type":"user","uuid":"c9000000-0000-4000-8000-000000000001","version":"d4-probe"}
+{"message":{"content":[{"id":"call_ccc_2_0","input":{"command":"first"},"name":"Bash","type":"tool_use"},{"id":"toolu_ccc_2_0","input":{"command":"first"},"name":"Bash","type":"tool_use"},{"id":"ccc2_0","input":{"command":"first"},"name":"Bash","type":"tool_use"}]},"parentUuid":"c9000000-0000-4000-8000-000000000001","sessionId":"` + id + `","timestamp":"2026-05-06T10:00:01.000Z","type":"assistant","uuid":"c9000000-0000-4000-8000-000000000002","version":"d4-probe"}
+{"message":{"content":[{"input":{"command":"second"},"name":"Bash","type":"tool_use"}]},"parentUuid":"c9000000-0000-4000-8000-000000000002","sessionId":"` + id + `","timestamp":"2026-05-06T10:00:02.000Z","type":"assistant","uuid":"c9000000-0000-4000-8000-000000000003","version":"d4-probe"}
+{"message":{"content":"thanks"},"sessionId":"` + id + `","timestamp":"2026-05-06T10:00:03.000Z","type":"user","version":"d4-probe"}
 `)
 }
 
@@ -148,6 +177,14 @@ func d4ProbeDocuments(t *testing.T) []d4ProbeDocument {
 		ref:     Ref{Provider: "claude", ID: d4ProbeOffPathSessionID},
 		offPath: true,
 	})
+	// The round-9 review's finding 3 case: a recorded call whose id is the positional spelling the
+	// writers mint for a later id-less call, so the collision handling has to stay selection-scoped for
+	// this document's unflagged lines to match the pre-0009 tree's.
+	docs = append(docs, d4ProbeDocument{
+		name:      "claude:collision-" + d4ProbeCollisionSessionID,
+		ref:       Ref{Provider: "claude", ID: d4ProbeCollisionSessionID},
+		collision: true,
+	})
 	sort.Slice(docs, func(i, j int) bool { return docs[i].name < docs[j].name })
 	return docs
 }
@@ -162,16 +199,20 @@ func d4ProbeRead(t *testing.T, doc d4ProbeDocument) (Conversation, config.Config
 		return readOpenCodeSourceFixture(t, root), cfg, NewSourceReader(cfg)
 	}
 	cfg := fixtureConfig(t)
-	if doc.offPath {
+	if doc.offPath || doc.collision {
 		// The synthetic transcript is materialized in the layout the Claude provider discovers: the
 		// session file under the project directory its recorded cwd spells, which is what the committed
 		// fixtures' own root carries.
+		transcript := d4ProbeOffPathTranscript()
+		if doc.collision {
+			transcript = d4ProbeCollisionTranscript()
+		}
 		root := filepath.Join(t.TempDir(), "claude")
 		project := filepath.Join(root, ClaudeProjectDir("/work/project"))
 		if err := os.MkdirAll(project, 0o755); err != nil {
 			t.Fatalf("materializing %s: %v", doc.name, err)
 		}
-		if err := os.WriteFile(filepath.Join(project, doc.ref.ID+".jsonl"), d4ProbeOffPathTranscript(), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(project, doc.ref.ID+".jsonl"), transcript, 0o644); err != nil {
 			t.Fatalf("materializing %s: %v", doc.name, err)
 		}
 		cfg.AgentDirs[parser.AgentClaude] = []string{root}

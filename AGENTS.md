@@ -52,7 +52,12 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   wherever the document states one — a result item names the call item it was written for and the
   read-back's own attachment under the result's id is compared with it, so a file holding an output under
   the wrong occurrence of a shared id is reported rather than accepted, while a document that states no
-  owner keeps the id-and-text comparison the default path has always had). A check whose target harness is absent exits 2 naming the
+  owner keeps the id-and-text comparison the default path has always had — a reader that projects one call
+  record into several rows (the Codex reader reads one `apply_patch` as one call per file it names) has its
+  calls compared as the file's own record units, one record per invocation, so a file holding several call
+  envelopes is not read as one however many rows the reader shows — and an owner a tree format states (the
+  Pi family, the Claude transcript) is resolved through the result's own recorded ancestry, never by file
+  order). A check whose target harness is absent exits 2 naming the
   harness it needs — the Pi, OMP and OpenCode checks end their run with `RESULT: INCOMPLETE` and the
   reason, the Codex and Claude checks print the reason on stderr — so a partial run is never quoted as a
   pass. The Pi and OMP
@@ -314,10 +319,17 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   window carries on another branch discharges its call there and
   leaves it outstanding here — disclosed as
   `generated_call_ids`) reads the selected line; a summary the read stored on a call is written for that
-  call's own occurrence and never inferred, and a written call occurrence whose recorded id an
+  call's own occurrence and never inferred — a *writable* summary answers the call on the written path, so
+  a later id-less result is omitted rather than inferred onto the call the summary is owed to, while a
+  summary the part cannot state leaves the call unanswered and a run without a selection keeps the
+  ledger's id-keyed answer, which the summary was never part of — and a written call occurrence whose
+  recorded id an
   earlier written occurrence already holds is written under an id generated from its own place
   (`colliding_call_ids`, a category the default path's report does not carry), with every result written
-  under the owning occurrence's emitted id, so no id two occurrences share can rebind an output; an
+  under the owning occurrence's emitted id, so no id two occurrences share can rebind an output — and a
+  generated id is walked past the ids the document already states only on a reduced document: a run
+  without a selection writes an id-less call under the plain positional spelling it has always written,
+  the recorded id it may duplicate included; an
   id-less *call* is counted undischarged where the carried document holds no
   id-less result that states an outcome at or after it — no outcome in the line can answer it — and where
   such a result is

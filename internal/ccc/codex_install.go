@@ -229,9 +229,10 @@ func (roundTrip roundTripComparison) detail(reader string) string {
 // difference there is a difference in what the file holds.
 func compareRoundTrip(
 	items []TargetItem, readBack Conversation, reader roundTripReader, installedDialogue dialogueRecords,
+	installed []byte,
 ) roundTripComparison {
 	intended := intendedRoundTripEvidence(items)
-	read := readRoundTripEvidence(readBack, reader, roundTripResultOwnersStated(items))
+	read := readRoundTripEvidence(readBack, reader, roundTripResultOwnersStated(items), installed)
 	dialogue := compareDialogue(intended.dialogue, read.dialogue, installedDialogue)
 	var roundTrip roundTripComparison
 	roundTrip.differences = append(roundTrip.differences, dialogue.differences...)
@@ -317,13 +318,22 @@ func roundTripOwnerResultKey(ownerKey string, known bool, callID, text string) s
 }
 
 // readResultOwnerKeys answers, per result occurrence of a read-back, the call occurrence the target's own
-// reader attaches it to, keyed by the result's place in the read-back: the last call the read-back states
-// under the result's id at or before the result's own place. That is the reading these formats' readers
-// take -- an output names its invocation by id, and a call stated later under the same id is what such a
-// reader resolves it to (the inherited Codex reader keeps the last call registered for an id) -- so a
-// result a conversion wrote under an id two occurrences share answers a different invocation than the
-// writer intended, and comparing the owner is what shows it.
-func readResultOwnerKeys(readBack Conversation) map[resultOccurrence]string {
+// reader attaches it to, keyed by the result's place in the read-back.
+//
+// ownersByAncestry says the read-back's reader answers its records' parent relations (the Pi family and
+// the Claude transcript): the owner is then the call occurrence the result's own written ancestry
+// reaches (readResultOwnerKeysByAncestry), so a result whose recorded relation reaches a sibling's
+// message is reported rather than accepted because an earlier call in file order shares its id (round
+// 9's finding 4). Otherwise the rule these formats' flat readers take stands: the last call the read-back
+// states under the result's id at or before the result's own place -- an output names its invocation by
+// id, and a call stated later under the same id is what such a reader resolves it to (the inherited
+// Codex reader keeps the last call registered for an id) -- so a result a conversion wrote under an id
+// two occurrences share answers a different invocation than the writer intended, and comparing the owner
+// is what shows it.
+func readResultOwnerKeys(readBack Conversation, ownersByAncestry bool) map[resultOccurrence]string {
+	if ownersByAncestry {
+		return readResultOwnerKeysByAncestry(readBack)
+	}
 	owners := map[resultOccurrence]string{}
 	lastUnderID := map[string]string{}
 	for index, message := range readBack.Messages {
@@ -341,25 +351,84 @@ func readResultOwnerKeys(readBack Conversation) map[resultOccurrence]string {
 	return owners
 }
 
+// readResultOwnerKeysByAncestry answers the same question through the read-back's own recorded relations,
+// for a format that is a tree: the result occurrence's owner is the call occurrence the nearest message
+// on the result's own recorded parent chain states under the result's id -- the last call that message
+// states under it, which is the reader's own attachment within one message. A chain that reaches no such
+// call leaves the occurrence ownerless, and the comparison reports it against the document's stated
+// owner instead of finding some other occurrence by id.
+//
+// The walk starts at the result's own message's parent, never at the message itself: the format records
+// the invocation on an ancestor, and a message holding both a call and its own output is the flat
+// format's shape, which keeps the file-order rule above. A chain the file's records cannot answer (an
+// unknown parent id, a record without one) ends the walk; the cycle bound keeps a file whose relations
+// loop from walking forever.
+func readResultOwnerKeysByAncestry(readBack Conversation) map[resultOccurrence]string {
+	position := map[string]int{}
+	for index, message := range readBack.Messages {
+		if id := strings.TrimSpace(message.SourceUUID); id != "" {
+			position[id] = index
+		}
+	}
+	lastUnderID := func(message Message, callID string) (string, bool) {
+		owner := ""
+		found := false
+		for _, call := range message.ToolCalls {
+			if call.ToolUseID != callID {
+				continue
+			}
+			owner = roundTripCallKey(call.ToolUseID, call.Name, call.InputJSON)
+			found = true
+		}
+		return owner, found
+	}
+	owners := map[resultOccurrence]string{}
+	for index, message := range readBack.Messages {
+		for resultIndex, result := range message.ToolResults {
+			parent := strings.TrimSpace(message.SourceParentUUID)
+			for steps := 0; parent != "" && steps <= len(readBack.Messages); steps++ {
+				next, ok := position[parent]
+				if !ok {
+					break
+				}
+				if owner, ok := lastUnderID(readBack.Messages[next], result.ToolUseID); ok {
+					owners[resultOccurrence{message: index, result: resultIndex}] = owner
+					break
+				}
+				parent = strings.TrimSpace(readBack.Messages[next].SourceParentUUID)
+			}
+		}
+	}
+	return owners
+}
+
 // readRoundTripEvidence collects what a read-back of the installed file shows, minus the records the
 // target's own reader classifies away. ownersStated says the target document states the owning call of
 // its results (roundTripResultOwnersStated): the read-back's own attachment is then compared with it,
 // and where the document states none the results keep the id-and-text keys the comparison has always
-// used.
-func readRoundTripEvidence(readBack Conversation, reader roundTripReader, ownersStated bool) roundTripEvidence {
+// used. installed lets a route whose reader projects one call record into several rows fold them back
+// into the file's own invocation units (roundTripReader.callEvidence); a nil installed leaves the
+// read-back's rows as the call evidence.
+func readRoundTripEvidence(
+	readBack Conversation, reader roundTripReader, ownersStated bool, installed []byte,
+) roundTripEvidence {
 	var evidence roundTripEvidence
 	evidence.dialogue = readBackDialogueKeys(readBack, reader)
 	owners := map[resultOccurrence]string{}
 	if ownersStated {
-		owners = readResultOwnerKeys(readBack)
+		owners = readResultOwnerKeys(readBack, reader.ownersByAncestry)
 	}
+	var calls []readBackCall
 	for index, message := range readBack.Messages {
 		if message.IsCompactBoundary {
 			evidence.boundaries = append(evidence.boundaries, roundTripBoundaryKey(message.Content))
 			continue
 		}
 		for _, call := range message.ToolCalls {
-			evidence.calls = append(evidence.calls, roundTripCallKey(call.ToolUseID, call.Name, call.InputJSON))
+			calls = append(calls, readBackCall{
+				id:  call.ToolUseID,
+				key: roundTripCallKey(call.ToolUseID, call.Name, call.InputJSON),
+			})
 		}
 		for resultIndex, result := range message.ToolResults {
 			text, _ := resultText(result)
@@ -367,6 +436,13 @@ func readRoundTripEvidence(readBack Conversation, reader roundTripReader, owners
 			evidence.results = append(evidence.results,
 				roundTripOwnerResultKey(owner, known, result.ToolUseID, text))
 		}
+	}
+	if reader.callEvidence != nil {
+		evidence.calls = reader.callEvidence(calls, installed)
+		return evidence
+	}
+	for _, call := range calls {
+		evidence.calls = append(evidence.calls, call.key)
 	}
 	return evidence
 }
@@ -383,6 +459,27 @@ type roundTripReader struct {
 	// reader joins a message's dialogue and its persisted reasoning into one text). Nil -- every route
 	// whose reader answers dialogue or plain text -- leaves the shared rule in place.
 	readText func(Message) string
+	// callEvidence, where non-nil, answers the read-back's calls as the invocation units the installed
+	// file's own records state (codexCallEvidence for the Codex route). A reader that projects one call
+	// record into several call rows -- the inherited Codex reader reads one `apply_patch` as one call per
+	// file it names -- makes the read-back's rows the reader's view of the file's records rather than
+	// additional invocations, and a comparison that took them for calls would report one invocation as
+	// many (round 9's finding 2). Nil leaves the read-back's own rows as the call evidence, which is what
+	// every other route's format holds.
+	callEvidence func(rows []readBackCall, installed []byte) []string
+	// ownersByAncestry says the read-back's format is a tree whose records the reader answers parent
+	// relations for (the Pi family and the Claude transcript): a result's owning call is then resolved
+	// through the result's own recorded ancestry rather than by file order
+	// (readResultOwnerKeysByAncestry). False is the flat format (the Codex rollout), whose read-back
+	// answers no such relations.
+	ownersByAncestry bool
+}
+
+// readBackCall is one call row of a read-back: the id its file's own record is keyed by, and the
+// comparison's key for the call.
+type readBackCall struct {
+	id  string
+	key string
 }
 
 // readDialogue is one read-back message's dialogue as this route's reader shows it.
@@ -423,7 +520,107 @@ func readBackDialogueKeys(readBack Conversation, reader roundTripReader) []strin
 // injected-context classification, because a block that opens with an envelope is that context rather
 // than a turn (internal/parser's preprocessCodexUserTextBlocks).
 func compareCodexRoundTrip(rollout CodexRollout, readBack Conversation, installed []byte) roundTripComparison {
-	return compareRoundTrip(rollout.Items, readBack, plainRoundTripReader(), installedDialogueRecords(installed))
+	return compareRoundTrip(rollout.Items, readBack, codexRoundTripReader(),
+		installedDialogueRecords(installed), installed)
+}
+
+// codexRoundTripReader is the Codex reader's rules for the read-back walk: the shared plain reader, plus
+// the invocation-unit fold (codexCallEvidence) the reader's per-file projection of one `apply_patch`
+// call requires.
+func codexRoundTripReader() roundTripReader {
+	reader := plainRoundTripReader()
+	reader.callEvidence = codexCallEvidence
+	return reader
+}
+
+// codexInstalledCallUnit is one invocation unit the installed file's own bytes state: the id its
+// `function_call` record registers and the call key the comparison uses.
+type codexInstalledCallUnit struct {
+	id  string
+	key string
+}
+
+// codexInstalledCallUnits answers the invocation units the installed file's own `function_call` records
+// state, in the file's own order: one unit per record, keyed the way both sides spell a call
+// (roundTripCallKey). The inherited reader projects one `apply_patch` record into one call row per file
+// it names, so the read-back's rows are the reader's view of these records; the records themselves are
+// what the file holds, and a file holding two `function_call` records under one id states two units.
+func codexInstalledCallUnits(installed []byte) []codexInstalledCallUnit {
+	var units []codexInstalledCallUnit
+	for _, line := range bytes.Split(installed, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var record codexInstalledCallRecord
+		if err := json.Unmarshal(line, &record); err != nil {
+			continue
+		}
+		if record.Type != codexRecordResponseItem || record.Payload.Type != codexItemFunctionCall {
+			continue
+		}
+		units = append(units, codexInstalledCallUnit{
+			id:  record.Payload.CallID,
+			key: roundTripCallKey(record.Payload.CallID, record.Payload.Name, record.Payload.Arguments),
+		})
+	}
+	return units
+}
+
+// codexCallEvidence answers the read-back's call evidence as the installed file's own invocation units:
+// for every id the file states one or more `function_call` records under, the file's units -- as many as
+// it holds, and no more (two actual call envelopes are two units) -- and for every id the file states
+// none under, the read-back's own rows, exactly as the comparison has always read them.
+//
+// The file's records stand for the read-back's rows under a stated id because one record is one written
+// invocation and the reader's rows are its per-file projection of it: a document that wrote one
+// invocation matches the one envelope however many rows the reader shows, while a second envelope is
+// never folded into the first (round 9's finding 2). Where the read-back holds *fewer* rows under a
+// stated id than the file holds records, some record's rows are not in the read-back at all, and the
+// read-back's own rows stand for the comparison so the document's unmatched call is reported.
+func codexCallEvidence(rows []readBackCall, installed []byte) []string {
+	units := codexInstalledCallUnits(installed)
+	if len(units) == 0 {
+		keys := make([]string, 0, len(rows))
+		for _, row := range rows {
+			keys = append(keys, row.key)
+		}
+		return keys
+	}
+	unitsUnderID := map[string]int{}
+	for _, unit := range units {
+		unitsUnderID[unit.id]++
+	}
+	rowsUnderID := map[string]int{}
+	for _, row := range rows {
+		rowsUnderID[row.id]++
+	}
+	keys := make([]string, 0, len(units)+len(rows))
+	for _, unit := range units {
+		if rowsUnderID[unit.id] < unitsUnderID[unit.id] {
+			continue
+		}
+		keys = append(keys, unit.key)
+	}
+	for _, row := range rows {
+		if unitsUnderID[row.id] > 0 && rowsUnderID[row.id] >= unitsUnderID[row.id] {
+			continue
+		}
+		keys = append(keys, row.key)
+	}
+	return keys
+}
+
+// codexInstalledCallRecord is the part of one installed line the invocation-unit walk reads: the
+// record's own type and its function call's id, name and arguments. It declares no field for anything
+// else, so reading a large session copies no payload the walk does not ask about.
+type codexInstalledCallRecord struct {
+	Type    string `json:"type"`
+	Payload struct {
+		Type      string `json:"type"`
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+		CallID    string `json:"call_id"`
+	} `json:"payload"`
 }
 
 // dialogueKey identifies one piece of dialogue: which role recorded it and the text itself. The two are

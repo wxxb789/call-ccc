@@ -797,8 +797,15 @@ func (b *codexRolloutBuilder) toolCall(index int, call ToolCall, at time.Time) {
 		// and the call's index in that message -- and not the message's own ordinal: an embedding caller
 		// may leave ordinals unassigned, and two messages' id-less calls must not collapse into one id.
 		// A shared id would make the pairing rule below read one call, so an id-less result could pair
-		// with "the" outstanding call while two are.
-		callID = b.freshCallID(fmt.Sprintf("%s%d_%d", codexGeneratedCallPrefix, b.messageIndex, index))
+		// with "the" outstanding call while two are. The plain positional spelling is what a run without
+		// a selection writes even where another written call already holds it, exactly as it did before
+		// selections existed (goal 0009's D4); a reduced document walks the id past the written ones
+		// (freshCallID), because a generated id there must not alias a recorded spelling or another
+		// occurrence.
+		callID = fmt.Sprintf("%s%d_%d", codexGeneratedCallPrefix, b.messageIndex, index)
+		if b.selectionReduced {
+			callID = b.freshCallID(callID)
+		}
 		b.lossGeneratedIDs++
 	case b.selectionReduced && b.callIDTaken(callID):
 		// A document a selection produced writes each call occurrence the read holds, and the source

@@ -145,17 +145,25 @@ the walk its own record hangs off and that no written result *stating an outcome
 answered (two outstanding occurrences sharing an id are two calls, so a result that could belong to either
 is omitted and counted, a progress event is not an answer on the reduced writers' own side either, and an
 outcome the document cannot carry — a text the output field's own shape rejects — does not answer its
-call; a summary the read stored on a call is written for that call's own occurrence and never inferred).
+call; a summary the read stored on a call is written for that call's own occurrence and never inferred —
+and a writable summary answers its call on the written path, so a later id-less result is omitted rather
+than replacing it).
 A call occurrence whose recorded id an earlier written occurrence already holds is written under an id
 generated from its own place (counted `colliding_call_ids`), and each result is written under the owning
 occurrence's emitted id — so an id two calls share cannot rebind an output, and the round-trip check
 asserts that ownership: a result item names the call item it was written for and the read-back's own
-attachment is compared with it, rather than trusting the id and the text. The flat route's
+attachment is compared with it, rather than trusting the id and the text. A reader that projects one call
+record into several rows (Codex reads one `apply_patch` as one call per file it names) is compared as the
+file's own record units, so a file holding several call envelopes is not read as one, and an owner a tree
+format states is resolved through the result's own recorded ancestry rather than by file order. The flat
+route's
 `unresolved_source_parents` count is the read's own relation answers too, so a parent the caller merely
 excluded is not reported as a relation the read could not place.
 The dispositions
 that exist for the reduction act only there: a run
-without the flag, and a selection applied to a document a selection already produced (refused by name),
+without the flag — which writes an id-less call under the plain positional spelling it has always written,
+a recorded id's duplicate included — and a selection applied to a document a selection already produced
+(refused by name),
 are what they were.
 Every run that carried a selection reports the transformation in both the human block and `--json`: the
 space the spec was written against, the included and excluded records, the necessities added and the

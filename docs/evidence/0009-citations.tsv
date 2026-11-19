@@ -113,6 +113,22 @@
 #           relation the read could not place (S6-read-answers), with a whole-read selection reporting
 #           exactly the unflagged conversion's number.
 #
+#   S2-positional-ids, S2-invocation-units, S7-summary-outcome, S2-owner-ancestry
+#           the tenth fix stage's findings: an id-less call's generated id is walked past the ids the
+#           document already states only on a reduced document -- a run without a selection writes the
+#           plain positional spelling it has always written, a recorded id's duplicate included, which is
+#           what the D4 probe's colliding-id transcript measures (S2-positional-ids); the Codex
+#           structural check compares the installed file's own `function_call` records as invocation
+#           units, so one written `apply_patch` reads back as the one invocation it is while a file
+#           holding two actual call envelopes is still two units and a document claiming fewer is
+#           reported (S2-invocation-units, whose shared-document diff moves the verdict while the written
+#           bytes do not, §4); OpenCode's reduced id-less inference counts a writable summary-only
+#           outcome as answered, so the summary is not displaced by a later unrelated result, while the
+#           default path keeps the ledger's id-keyed answer (S7-summary-outcome); and a tree format's
+#           owner assertion resolves the result's owning call through the result's own recorded ancestry,
+#           so a result reparented to a sibling is reported rather than found by file order
+#           (S2-owner-ancestry).
+#
 # scripts/obligation-citations.py is the arbiter: every row's cited test must exist in the named package
 # and run and pass, and the `citations` step is required — a tree that lost this file, or a citation that
 # went stale, fails the gate instead of passing partially. Columns: rule_id, test, package, artifact.
@@ -178,3 +194,7 @@ S2-owning-call	TestCodexRoundTripAssertsTheOwningCallOfEachResult	./internal/ccc
 S7-written-outcomes	TestSelectionAnswersOnlyForTheOutcomesItWrites	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (the reduced writers' ledger answers only for outcomes the document states: a result whose text the output field cannot carry is omitted and counted and leaves its call outstanding, so a later id-less result is omitted rather than inferred onto a second call although neither has a written outcome — with a writable control asserting the inference still fires where exactly one call is unanswered; OpenCode's plan reads the same rule through `openCodeOutcomeWritable`)
 S2-summary-owner	TestSelectionAnswersASummaryFromItsOwningOccurrence	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (a summary the read stored on a call (`ToolCall.ResultContent`) is written for the occurrence that stored it — the writers pass the owning occurrence and the result helper uses its emitted id — so an id-less call's summary is never inferred off the outstanding set, where two eligible calls used to drop an output whose owner was already known)
 S6-read-answers	TestSelectionCountsOnlyThePlacesTheReadCouldNotAnswer	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (the flat targets' `unresolved_source_parents` count is the read's own relation answers, carried per record of the reduced document: a parent the caller excluded is not reported as a relation the read could not place, a record that reached no retained ancestor though it named one is, and a whole-read selection reports exactly the unflagged conversion's number — the same two places the tree route reports for the 1,4 window)
+S7-summary-outcome	TestSelectionDoesNotInferAnIDLessResultOntoASummaryOnlyCall	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (a summary the read stored on a call answers the call on the written path where the part can state it, so a later id-less result is omitted rather than inferred onto the call the summary is owed to — the reduced document writes the summary and counts the omission — while a whitespace-only summary leaves the call unanswered and the default path keeps the ledger's id-keyed answer, D4)
+S2-invocation-units	TestSelectionCountsTheCallUnitsTheWritersCoalesceAndThePairingAnswers	./internal/ccc	AGENTS.md §A target writer's claim is shown through the target harness's own loader (the Codex structural check compares the installed file's own `function_call` records as invocation units: the selected two-file `apply_patch` conversion verifies although the reader projects its one record into two rows, and a document claiming one invocation against a file holding two actual call envelopes is still reported; the written bytes do not move, the verdict does — §4's one disclosed shared-document difference)
+S2-positional-ids	TestSelectionKeepsTheUnflaggedPositionalIDForAnIDLessCall	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (a generated id is walked past the ids the document already states only on a reduced document: a run without a selection writes an id-less call under the plain positional spelling it has always written — the duplicate of an earlier recorded id included, exactly the pre-0009 bytes, D4 — while the reduced document walks the id past it; Codex, Claude and Pi/OMP, OpenCode having had the walk before selections existed)
+S2-owner-ancestry	TestSelectionReportsAResultWhoseAncestryLeavesItsCall	./internal/ccc	AGENTS.md §A target writer's claim is shown through the target harness's own loader (a tree format's owner assertion resolves the result's owning call through the result's own recorded parent chain: a Pi/OMP or Claude file whose result entry is reparented to a sibling entry — only that field changed — is reported as a result whose parent walk cannot reach its invocation, while the unmutated control verifies; the Pi/OMP comparison is shared and the Claude reader is the other tree format whose documents state owners)

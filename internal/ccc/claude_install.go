@@ -77,15 +77,18 @@ func VerifyClaudeTranscriptStructure(
 // is not evidence about the file, which is why the dialogue walk asks the file's own records.
 func compareClaudeRoundTrip(transcript ClaudeTranscript, readBack Conversation, installed []byte) roundTripComparison {
 	return compareRoundTrip(transcript.Items, readBack, claudeRoundTripReader(),
-		newDialogueRecords(claudeInstalledDialogue(installed)))
+		newDialogueRecords(claudeInstalledDialogue(installed)), installed)
 }
 
 // claudeRoundTripReader is the inherited Claude reader's own rules for the read-back walk: a record it
 // classifies as injected context carries no message, and a role that is neither the user's nor the
-// assistant's has no Claude message to stand for.
+// assistant's has no Claude message to stand for. The transcript is a tree whose records the reader
+// answers parent relations for, so a stated owner is resolved through the result's own ancestry
+// (roundTripReader.ownersByAncestry).
 func claudeRoundTripReader() roundTripReader {
 	return roundTripReader{
-		classifiesAway: func(message Message) bool { return message.IsSystem },
+		classifiesAway:   func(message Message) bool { return message.IsSystem },
+		ownersByAncestry: true,
 		kindOf: func(message Message) (TargetItemKind, bool) {
 			switch parser.RoleType(message.Role) {
 			case parser.RoleUser:

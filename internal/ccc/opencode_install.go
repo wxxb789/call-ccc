@@ -430,7 +430,7 @@ func compareOpenCodeRoundTrip(
 	}
 	reader := openCodeRoundTripReader()
 	return compareRoundTrip(items, canonicalOpenCodeReadBack(readBack), reader,
-		newDialogueRecords(readBackDialogueKeys(readBack, reader)))
+		newDialogueRecords(readBackDialogueKeys(readBack, reader)), installed)
 }
 
 // canonicalOpenCodeReadBack re-spells a read-back's tool calls through canonicalJSONValue, for the same
