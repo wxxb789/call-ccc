@@ -763,10 +763,12 @@ branch pattern or a glob pattern under `push:` is refused rather than read as if
 and the sentence above cannot be dropped while the matrix stays two-legged.
 
 The pin's reader fails closed: every workflow shape it does not read exactly — a `runs-on` spelled or
-valued otherwise, a block scalar, a label list in a spelling it cannot read (a block list, or a quote
-that does not enclose a whole label), a job-level or step-level `if:`, a `continue-on-error:`, a trigger
-block outside the shape above, a second matrix or job, a job or step key it does not know — is refused
-by a failing case that names the shape, never read past. The same stance binds future workflows: every
+valued otherwise, a block scalar, a value continued on an indented line (YAML folds the continuation
+into the value), a label list in a spelling it cannot read (a block list, or a quote that does not
+enclose a whole label), a job-level or step-level `if:`, a `continue-on-error:`, a trigger block outside
+the shape above, a second matrix or job, a job or step key it does not know — is refused by a failing
+case that names the shape, never read past, and the reader skips no line: a value region no reader
+claims is refused by its own line number. The same stance binds future workflows: every
 file under `.github/workflows/` must keep its job on `${{ matrix.os }}`
 with the matrix's legs inside the runners this section names, or the pin refuses the file instead of
 certifying it. Two limits are stated rather than hidden: the pin reads raw text, so it cannot see

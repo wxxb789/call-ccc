@@ -8,11 +8,13 @@ committed, pushed or opened as a pull request.
 What it changes: `.github/workflows/gate.yml` (the matrix is `os: [ubuntu-latest, windows-latest]`),
 `docs/harness.md` (§CI and §Platform boundary now state what is verified — the macOS gap and the
 simulations that pin the platform rules — and the `scripts/tests/` knob names the new pin; the review
-round moved the two places that spelled the leg composition, §4),
+round moved the two places that spelled the leg composition, and the round-2 fix added the continuation
+clause to §CI's refusal list, §4),
 `scripts/tests/test_ci_matrix_claim.py` (the pin: four cases in the plan's first cut, six after the
 apply round, seven after the fix round, the same seven after the review round — which corrected the
 reader's semantics for the three constructs the machine review named and swept the rest of its
-inventory; every extension is recorded in §4), and
+inventory — and the same seven again after the round-2 fix, whose contract cases gained the two
+continuation shapes and the bounded check's own subtest; every extension is recorded in §4), and
 `docs/evidence/0001-agentsview-parity-and-inspection.md` (two present-tense CI claims in its
 residual-risk section). Historical rows are untouched: the `macos-latest` reds and the repairs they
 forced, in the 0002/0003 records and in `docs/harness.md`'s own notes, still read as what those rounds
@@ -28,12 +30,15 @@ suite's own time and case count and the tree's own file counts, which this recor
 suite: 384 cases before this increment, 388 when this record was first written (this module's four), 390
 after the apply round (the pin's two extra cases; the second block below quotes that re-run), 391 as
 delivered by the fix round (the pin's rewrite: one case dropped into the reader's refusals, two added;
-§4), and still 391 as delivered by the review round (that round added no case — the two contract cases
-gained named shapes, which are subtests, not cases; §4). The `parity` step's detail is the gate's own
+§4), still 391 as delivered by the review round (that round added no case — the two contract cases
+gained named shapes, which are subtests, not cases; §4), and still 391 after the round-2 fix (again
+shapes, not cases — the two continuation shapes and the bounded check's subtest; §4). The `parity`
+step's detail is the gate's own
 rendering of the checker's stdout — `tail(proc.stdout, 800)`, its line feeds joined with ` | `, which
 is why the line opens on a cut. The first two blocks are
 the earlier rounds' deliveries, quoted as the gate printed them; the third is the fix round's; the
-fourth is the review round's, the run this record's counts come from.
+fourth is the review round's; and the fifth is the round-2 fix's, the run this record's counts come
+from.
 
 ```
 gate: /home/azureuser/repos/call-ccc
@@ -104,10 +109,31 @@ gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./c
 GATE: PASS
 ```
 
+
+The round-2 fix's run — on the delivered tree, exit `0`, 42.6 s on this host, and this block is the
+record's own last edit — quoted as the gate printed it, its `parity` line whole:
+
+```
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3622 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 391 tests in 7.492s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5712 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified
+  PASS     secrets  no leaks found in 168 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
 The `parity` step reports the carried tree identical to the pin (5 553 files), the generated input's
 pinned digest, and the declared deviations as declared — this increment touches nothing the pin covers.
 The `secrets` line's file count is this repository's owned scope with this worktree's own scratch
-included, as the step's own wording says (166 before this record's file existed at a run; 167 after).
+included, as the step's own wording says (166 before this record's file existed at a run; 167 at
+the review round's; 168 at the round-2 fix's — this round's own test runs wrote their bytecode
+under `scripts/tests/__pycache__/`, which the owned scope counts, and a clean CI checkout has no
+such scratch).
 
 ## 2. Each of the pin's rules fails when it is broken
 
@@ -183,6 +209,8 @@ printed them around the tree's own path.
 | the same | `os: [ubuntu-latest, '']` (an empty quoted item) | `FAILED (failures=7)`; `an `os:` label list this pin cannot read ("[ubuntu-latest, '']") — an empty quoted item` |
 | the same | `os: [ubuntu-latest,, windows-latest]` (a doubled comma) | `FAILED (failures=7)`; `an `os:` label list this pin cannot read ('[ubuntu-latest,, windows-latest]') — an empty item (a doubled or leading comma)` |
 | `test_the_claim_names_exactly_the_matrix_s_runners` | §CI names the `self-hosted` class beside its runners | `FAILED (failures=1)`; `Items in the first set but not the second: 'self-hosted'` |
+| all seven cases (the reader's refusal, in `setUp`) | `runs-on: ${{ matrix.os }}` continued on an indented line (`extra-label`) — YAML folds it into the runner value (round-2 finding) | `FAILED (failures=7)`; `the job `gate`'s `runs-on:` with a value that continues on the indented line(s) below — a block value, or a plain scalar's continuation line that YAML folds into it; …` |
+| the same | `branches: [main]` continued on an indented line (`extra-branch`) — YAML folds it into the list | `FAILED (failures=7)`; `a `push:` `branches:` list this pin cannot read ('[main]') — the value continues on the indented line(s) below: …` |
 
 The review round rewrote the reader's semantics again — the machine review's three findings and the
 sweep's refusals (§4) — and re-ran, beside its own shapes, every mutation the earlier rounds had held:
@@ -190,19 +218,41 @@ sweep's refusals (§4) — and re-ran, beside its own shapes, every mutation the
 unchanged and this round's 14, against a fresh throw-away copy (`/tmp/ccc-ci-matrix-review/tree`). Its
 unmutated control run prints `Ran 7 tests … OK` (exit `0`) and the battery's own last line prints
 `52 mutation(s), 0 that did not fail`; the shipped files' digests held before and after it —
-`sha256sum`: `gate.yml` `260923d147…` (still), `harness.md` `5015529782…` and the pin `85910bd82134…`
+`sha256sum`: `gate.yml` `260923d147…` (still), `harness.md` `e0977a7d1e1b…` and the pin `85910bd82134…`
 (both moved this round) — and the battery never wrote into the worktree.
 
+The round-2 fix re-ran every mutation the earlier rounds hold and added this round's two shapes:
+`/tmp/ccc-ci-matrix-r2/mutate.py` carries the review battery's 52 rows plus the two continuation rows
+the table now ends with (54 mutations), and the two earlier batteries as they stand were re-run beside
+it — `/tmp/ccc-ci-matrix-fix/mutate.py` (38) and `/tmp/ccc-ci-matrix-review/mutate.py` (52) — each
+against the new pin from a fresh throw-away copy; all three end `0 that did not fail`, and the 52 prior
+rows' observed messages came back byte-identical to the ones this record holds (a diff of the recorded
+lines moved nothing but the suite's own timings). The control run prints `Ran 7 tests … OK` (exit `0`);
+the shipped files' digests held before and after the batteries — `sha256sum`: `gate.yml`
+`260923d147…` (still), `harness.md` `72ceb7eb…` and the pin `444dc47c…` (both moved this round, §4) —
+and none wrote into the worktree.
+
 No mutation survived. The reader's refusal contract is pinned on the shipped tree per branch by
-`test_the_reader_refuses_a_shape_it_cannot_certify` — 66 crafted shapes, one per refusing branch of the
+`test_the_reader_refuses_a_shape_it_cannot_certify` — 68 crafted shapes, one per refusing branch of the
 walk, each's refusal message asserted (the fix round's STD-10 closure: a mutation that disables one
 branch leaves that shape's named subtest red; the review round added the nine shapes its new refusals
-own) — and the accepting branch has its own case, `test_the_reader_reads_the_shapes_it_accepts`, over
-ten crafted shapes (an ordered matrix with `include:`/`exclude:` on each side of `os:`, an `exclude:`
-and an `include:` naming one label in both key orders, a quoted label list, a `branches:` list holding
-`main` beside another branch and one quoting `main`, a fully quoted gate command, a fully quoted
-`runs-on:` reference, and a `uses:` step with its `with:` block beside the gate step), so a mutation
-that disables an accepting branch cannot pass vacuously. The rows above are the same reader driven on
+own; the round-2 fix added the two continuation shapes) — plus the walk's closing bounded check, whose
+refusing branch no crafted workflow reaches (the readers claim every region of every shape), driven and
+asserted through the module's own reader as a subtest of the same case — and the accepting branch has
+its own case, `test_the_reader_reads_the_shapes_it_accepts`, over twelve crafted shapes (an ordered
+matrix with `include:`/`exclude:` on each side of `os:`, an `exclude:` and an `include:` naming one
+label in both key orders, a quoted label list, a `branches:` list holding `main` beside another branch
+and one quoting `main`, a fully quoted gate command, a fully quoted `runs-on:` reference, a fully quoted
+workflow `name:` and `permissions:` scope, and a `uses:` step with its `with:` block beside the gate
+step), so a mutation that disables an accepting branch cannot pass vacuously. The round-2 fix proved
+each new check on a throw-away copy of the pin (`/tmp/ccc-ci-matrix-r2/pinprobe`): removing `scalar()`'s
+region refusal, `inline_tokens()`'s, or the `read_job` `scalar(runs-on)` call leaves the shape's named
+subtest red — the shape stays refused, by the bounded check's own message, so the net is load-bearing,
+not decorative — and removing the bounded check's body leaves its subtest red (`UnreadableWorkflow not
+raised`) while every shape still refuses; the restored pin prints `Ran 7 tests … OK`. One line stays
+outside any case's reach, stated rather than hidden: while every reader claims its regions, no input
+distinguishes `read()`'s call of the bounded check from its absence — the check's body and its refusal
+are pinned, and the call stands as the next reader's guard. The rows above are the same reader driven on
 the real files.
 
 ## 3. `AGENTS.md` growth: nothing moves
@@ -213,10 +263,10 @@ states or implies the matrix or a platform coverage claim, and the read order it
 `docs/harness.md`, where the claim lives. This increment changes neither the repository layout, the
 gate, the commands, the read order nor a rule an agent follows (the pin is a `scripts/tests/` case,
 which the file's existing harness-tests bullet already covers), so per the file's growth rule that is
-said here instead of editing the file for its own sake. The apply, fix and review rounds re-checked this
-against their own changes: all three live entirely inside `scripts/tests/` and the claim's own docs —
-cases, a reader, a knob sentence and §CI's own paragraph — so the same bullet covers them and the
-conclusion is unchanged.
+said here instead of editing the file for its own sake. The apply, fix, review and round-2 fix rounds
+re-checked this against their own changes: all four live entirely inside `scripts/tests/` and the
+claim's own docs — cases, a reader, a knob sentence and §CI's own lines — so the same bullet covers them
+and the conclusion is unchanged.
 
 ## 4. What else moved, and what did not
 
@@ -271,7 +321,22 @@ conclusion is unchanged.
   the case inventory stays seven, and `docs/harness.md` moved exactly the legs' two spellings — the
   `scripts/tests/` knob bullet and §CI's sentence, both now `(os − exclude) ∪ include` — plus §CI's
   refusal list, whose stale `a quoted or block label list` clause now states the quote rule the reader
-  implements; `sha256sum` `bc675ce2fe04…` → `5015529782…`. No file was added or removed.
+  implements; `sha256sum` `bc675ce2fe04…` → `e0977a7d1e1b…`. No file was added or removed.
+- The round-2 fix (2026-11-19) closed the second machine review's finding and the class behind it, and
+  touched nothing else: `runs-on:` is now read through the scalar reader as well as the walk's own
+  reference check, so a value continued on an indented line — which YAML folds into the runner value —
+  is refused by name; an inline list (`branches:`) refuses its continuation the same way; and the walk
+  is bounded — every line is read as an entry, walked as a key's own block, or refused, and `read()`
+  closes with a check that refuses any line no reader classified, by its own line number — with the
+  rule stated in the pin's docstring. The two reader-contract cases gained shapes (twelve accepted, 68
+  refused, plus the bounded check's own subtest; §2), so the case inventory stays seven. `docs/harness.md`
+  moved exactly one clause — §CI's refusal list, which gained the continuation shape and the
+  no-skipped-line sentence — and `.github/workflows/gate.yml` did not move: `sha256sum`
+  `260923d147…` (still), `e0977a7d1e1b…` → `72ceb7eb…` (`docs/harness.md`), `85910bd82134…` →
+  `444dc47cccfa…` (the pin). This bullet also corrects the review round's digest above: the
+  `5015529782…` the record first held for that round's `docs/harness.md` delivery matches no committed
+  state of the file — its commit carries `e0977a7d1e1b…` (re-measured with
+  `git show 3c6fa14:docs/harness.md | sha256sum`). No file was added or removed.
 - Nothing else moved: no gate step (`scripts/gate.py` and `scripts/gate-required.txt` are untouched),
   no carried file, no manifest, no native check, no other workflow line beyond the matrix and the
   comment above it, and no branch-protection or CI setting outside this file.
@@ -318,15 +383,16 @@ carries (its source is the code; the shape counts are §2's).
 | construct | the pin's reading |
 | --- | --- |
 | `strategy.matrix.os` with `include:`/`exclude:` | **modelled**: the legs are `(os − exclude) ∪ include`. `exclude` entries remove the base labels they name, every `include` is processed after them (the workflow-syntax reference, `strategy.matrix.exclude`: "All `include` combinations are processed after `exclude`"), and YAML key order is irrelevant — so a label both excluded and included is a leg, and the three overlap shapes of §2 fail the case when a macos leg appears. **Refused**: a label named twice in `os:` (one combination per occurrence in GitHub) and an `include:` naming a label that is already a leg (a merge adding no job in one spelling, another combination in the other — the pin reads the set of runners and refuses the repeat) |
-| `runs-on:` | **modelled**: exactly `${{ matrix.os }}`, plain or fully quoted, read as one one-line scalar. **Refused**: every other value, a block sequence, a quoted-or-spaced key spelling |
-| a step's `run:` | **modelled**: the step's whole one-line scalar, compared character for character with `python scripts/gate.py` (plain or fully quoted). **Refused**: a block scalar or block value; a value that is not the command fails the case that holds it |
+| `runs-on:` | **modelled**: exactly `${{ matrix.os }}`, plain or fully quoted, read as one whole inline scalar. **Refused**: every other value, a block sequence, a value continued on an indented line (YAML folds the continuation into the runner value), a quoted-or-spaced key spelling |
+| a step's `run:` | **modelled**: the step's whole one-line scalar, compared character for character with `python scripts/gate.py` (plain or fully quoted). **Refused**: a block scalar, a block value or a value continued on an indented line; a value that is not the command fails the case that holds it |
 | step-level `if:` / `continue-on-error:` | **refused**: a step that may be skipped or ignored is not a step that runs the gate |
 | job-level `if:` / `continue-on-error:` | **refused**: either narrows the run §CI states as universal |
-| the trigger block — `on:`, `pull_request:`, `push:`, `branches:` | **modelled** for the shape §CI states: `pull_request:` bare, `push:` with a `branches:` list of **literal** patterns holding `main`. **Refused**: any other trigger, an inline or filtered `pull_request:`, an inline `push:`, a `push:` key other than `branches:`, a `!`-prefixed branch pattern (GitHub: "The order that you define patterns matters" — `branches: [main, '!main']` excludes `main` again), and any pattern with a glob character (`*`, `**`, `?`, `+`, `[…]`, `\`): with literal patterns only, the presence of `main` is exactly GitHub's answer |
+| the trigger block — `on:`, `pull_request:`, `push:`, `branches:` | **modelled** for the shape §CI states: `pull_request:` bare, `push:` with a `branches:` list of **literal** patterns holding `main`. **Refused**: any other trigger, an inline or filtered `pull_request:`, an inline `push:`, a `push:` key other than `branches:`, a `branches:` list whose value continues on an indented line, a `!`-prefixed branch pattern (GitHub: "The order that you define patterns matters" — `branches: [main, '!main']` excludes `main` again), and any pattern with a glob character (`*`, `**`, `?`, `+`, `[…]`, `\`): with literal patterns only, the presence of `main` is exactly GitHub's answer |
+| the walk's boundedness | **modelled** as a closed walk: every line inside the workflow is read as an entry, walked as a key's own block, or refused — no line is skipped, and every value the reader interprets is validated as the whole scalar it must be by the reader that owns it (a `runs-on:` continuation and an inline list's continuation are refused by those readers). A line no reader classifies is refused by its own line number when the read finishes; no crafted workflow reaches that closing check today (each reader claims its regions), so it is pinned through the module's own reader and proved load-bearing on a throw-away copy with the two region refusals removed (§2) |
 | `paths` / `paths-ignore` | **refused** wherever they stand — as a `pull_request:` value or block, or as a `push:` key the pin does not read: a path filter narrows the trigger claim |
-| quoting and block scalars | **modelled**: quotes are YAML's syntax only where they enclose a whole scalar, so `'ubuntu-latest'`, `"${{ matrix.os }}"` and `'main'` are the text they enclose. **Refused**: an embedded quote is kept literal (`windows-'latest'` is the one label GitHub receives, and the label check refuses it), and a quote left open, text after a close, a YAML escape, an empty quoted item, a doubled or leading comma, or a block scalar/block value where a one-line scalar stands is refused |
+| quoting and block scalars | **modelled**: quotes are YAML's syntax only where they enclose a whole scalar, so `'ubuntu-latest'`, `"${{ matrix.os }}"` and `'main'` are the text they enclose. **Refused**: an embedded quote is kept literal (`windows-'latest'` is the one label GitHub receives, and the label check refuses it), and a quote left open, text after a close, a YAML escape, an empty quoted item, a doubled or leading comma, or a block scalar, block value or indented continuation line where a one-line scalar stands is refused |
 | the Markdown claim side | **modelled** as the labels GitHub's docs spell (the `ubuntu`/`windows`/`macos` families with a version, `latest` or `slim`, and `self-hosted`), the exactly-equal runner set, the gap sentence, and the history markers. A custom label string is outside the reading (stated in the pin's docstring); the raw-text and pin-existence limits of §5 stand |
 
 Every construct in the table's right column is exercised: the modelled readings by the accepted-shapes
-case's ten shapes and the shipped files, the refusals by the refused-shapes case's 66 shapes and by
-§2's rows on the real files.
+case's twelve shapes and the shipped files, the refusals by the refused-shapes case's 68 shapes and by
+§2's rows on the real files, and the closing check by its own subtest (a line no reader classifies).

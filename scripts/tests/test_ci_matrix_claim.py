@@ -25,7 +25,8 @@ semantics:
   adding side — twice in ``os:``, or by an ``include:`` entry that is already a leg — is refused: the
   combination count GitHub schedules then no longer matches the set of runners this pin reads, and
   GitHub's merge rule for a repeated label has one spelling that adds no job and one that adds another.
-- **``runs-on:``** is exactly the matrix reference, read as the one-line scalar it is.
+- **``runs-on:``** is exactly the matrix reference, read as the one whole inline scalar it is: a
+  value that continues on an indented line is refused exactly like a block value.
 - **each step's ``run:``** is its whole one-line scalar, so the gate command is compared character for
   character.
 - **the trigger block**: ``pull_request:`` bare, and ``push:`` whose ``branches:`` list holds the
@@ -37,17 +38,26 @@ semantics:
   ``ubuntu-latest``, while ``windows-'latest'`` is a plain scalar whose quote characters are literal —
   the label GitHub receives — and a quoted form the pin cannot read (a YAML escape, a quote left open,
   text after the close, an empty quoted item) is refused.
+- **a one-line value is read whole**: every value the reader interprets — ``runs-on:``, a step's
+  ``run:``, an inline list such as ``branches:`` — must end on its own line. A plain scalar's
+  continuation line folds into the value in YAML, and a block mapping or sequence stands there as a
+  block value, so a value region under such a key is refused: the first line is never read as the
+  whole value.
+- **the walk is bounded**: every line inside the workflow is read as an entry, walked as a key's own
+  block, or refused — none is skipped. A line no reader classifies — a value region left unclaimed
+  above all — fails the read by its own line number, so the next shape this reader has not learned
+  cannot pass it silently.
 - **the Markdown claim side**: a runner named in §CI is read as GitHub's own docs spell one — the
   hosted ``ubuntu``/``windows``/``macos`` families with a version, ``latest`` or ``slim``, and the
   ``self-hosted`` class — and the section's set must be exactly the matrix's runners; a custom label
   string is not a spelling this pin reads (stated here, not hidden).
 
-Everything else it can meet is refused by name — a block scalar or block value where a one-line scalar
-stands, another spelling or value of ``runs-on``, a step-level or job-level ``if:``/
-``continue-on-error:``, a ``pull_request:`` filter, a ``push:`` key other than ``branches:``, a trigger
-it does not read, a second job or ``matrix:``, a job, step or matrix key it does not know, a key spelled
-with a quote or a space before its colon. Reading past such a shape would pass this pin without holding
-the claim it exists for.
+Everything else it can meet is refused by name — a block scalar, a block value or an indented
+continuation line where a one-line scalar stands, another spelling or value of ``runs-on``, a step-level
+or job-level ``if:``/``continue-on-error:``, a ``pull_request:`` filter, a ``push:`` key other than
+``branches:``, a trigger it does not read, a second job or ``matrix:``, a job, step or matrix key it
+does not know, a key spelled with a quote or a space before its colon. Reading past such a shape would
+pass this pin without holding the claim it exists for.
 
 Two limits are the pin's own, stated rather than hidden. It reads raw text, so it cannot see Markdown
 rendering: wrapping the claim paragraphs in an HTML comment satisfies every case while the rendered
@@ -158,11 +168,12 @@ class UnreadableWorkflow(AssertionError):
 
     Refusing fails the pin; guessing would pass it without holding the claim it exists for. The reader
     refuses every shape it cannot enumerate exactly — a second job or matrix, an ``os:`` it cannot place
-    or parse, a block scalar, a trigger block beyond the accepted shape, a negated or glob branch
-    pattern, a job or step key it does not know, a ``runs-on`` spelled or valued otherwise, a label
-    list in a spelling it cannot read (a block list, or a quote that does not enclose a whole label) —
-    and every refusal names the line and the shape, so a mutation that reaches one fails the case that
-    covers it.
+    or parse, a block scalar, a value continued on an indented line, a trigger block beyond the accepted
+    shape, a negated or glob branch pattern, a job or step key it does not know, a ``runs-on`` spelled
+    or valued otherwise, a label list in a spelling it cannot read (a block list, or a quote that does
+    not enclose a whole label) — and a line the walk never classifies is refused by number rather than
+    skipped. Every refusal names the line and the shape, so a mutation that reaches one fails the case
+    that covers it.
     """
 
 
@@ -228,12 +239,18 @@ class _WorkflowReader:
     ``permissions:``, ``jobs:``, each job, ``strategy:``, ``matrix:`` and ``steps:`` — and hands each
     key's value region to the reader that owns it. A line that is not at the indent its region expects,
     a key its position does not read, an item outside a block sequence, a value region under a key the
-    pin reads as a scalar: each is refused with its line number, never read past.
+    pin reads as a scalar: each is refused with its line number, never read past. The walk is bounded:
+    ``child()`` records each line it reads and every block walk records its own lines through it, so a
+    line left unrecorded — a value region no reader claimed — is refused by number when the read
+    finishes, instead of being skipped.
     """
 
     def __init__(self, path: Path, lines: list[Line]) -> None:
         self.path = path
         self.lines = lines
+        #: The line indices the walk has classified: every entry line ``child()`` read, and every line
+        #: a block walk visited. ``check_bounded()`` refuses any line left out of it.
+        self.consumed: set[int] = set()
 
     def refuse(self, number: int, message: str) -> NoReturn:
         raise UnreadableWorkflow(f"{self.path}: line {number}: {message}")
@@ -268,6 +285,7 @@ class _WorkflowReader:
                     f"a `runs-on:` that is not exactly `{MATRIX_REFERENCE}` ({parsed[1].strip()!r}) — "
                     f"§CI's claim is about the runners the matrix's legs name, and a job whose runner is "
                     f"spelled anywhere else bypasses it"))
+            self.consumed.add(index)
             return Child(line.number, index, self._value_end(index, end), parsed[0], parsed[1], item)
         loose = _LOOSE_KEY.match(line.body)
         if loose is not None and loose.group("key") in _READ_KEYS:
@@ -333,7 +351,10 @@ class _WorkflowReader:
         """A key this pin reads as one inline scalar; refuses a block scalar or a block value.
 
         The value is read through ``unquote``, so a scalar spelled as a fully quoted string is the text
-        GitHub receives and a plain scalar's quote characters are literal.
+        GitHub receives and a plain scalar's quote characters are literal. A value that does not end on
+        its own line is refused: the lines under it are a region this key's value cannot be read
+        from — a block mapping or sequence, or a plain scalar's continuation line, which YAML folds
+        into the value, so the text GitHub receives is not the first line this pin would hold.
         """
         value = entry.value.strip()
         if _BLOCK_SCALAR.fullmatch(value):
@@ -342,7 +363,9 @@ class _WorkflowReader:
                 f"text under a block scalar is not the value any check here can certify"))
         if entry.end > entry.index + 1:
             self.refuse(entry.number, (
-                f"{what} with a block value — the pin reads an inline scalar (`{entry.key}: <value>`)"))
+                f"{what} with a value that continues on the indented line(s) below — a block value, or "
+                f"a plain scalar's continuation line that YAML folds into it; the pin reads one inline "
+                f"scalar (`{entry.key}: <value>`) and refuses both"))
         if not value:
             self.refuse(entry.number, f"a `{entry.key}:` with no value — {what} must be a scalar")
         return self.unquote(entry.number, value, what)
@@ -401,8 +424,15 @@ class _WorkflowReader:
         An item holding no text is read only where it is the trailing comma's own — ``[main, ]`` is
         YAML's spelling of one label — and an empty item elsewhere (a doubled or leading comma) or an
         empty quoted item (``''``) is refused: no check here can certify an empty label or pattern.
+        The list must end on its own line: an indented continuation line (which YAML folds into the
+        value) is refused rather than read from the first line as the whole list.
         """
         value = entry.value.strip()
+        if entry.end > entry.index + 1:
+            self.refuse(entry.number, (
+                f"{what} this pin cannot read ({value!r}) — the value continues on the indented "
+                f"line(s) below: the pin reads one inline list line (`[item, …]`) and refuses the "
+                f"continuation YAML would fold into it"))
         match = re.fullmatch(r"\[(?P<items>.*)\]", value)
         if match is None:
             self.refuse(entry.number, (
@@ -432,7 +462,12 @@ class _WorkflowReader:
         return token
 
     def read(self) -> Workflow:
-        """Read the workflow whole: its trigger block, its matrix's legs, its job's steps."""
+        """Read the workflow whole: its trigger block, its matrix's legs, its job's steps.
+
+        Every value region is handed to the reader that owns it — walked as a block or refused as a
+        scalar — and ``check_bounded`` then refuses any line no reader classified, so no line inside
+        the workflow is skipped.
+        """
         top = self.children(0, len(self.lines), 0, "the workflow")
         if not top:
             self.refuse(1, "an empty workflow file — the pin reads the gate workflow, and a file with no keys is not one")
@@ -463,7 +498,25 @@ class _WorkflowReader:
                 self.refuse(entry.number, (
                     f"a top-level key this pin does not read (`{entry.key}:`) — the pin reads `name`, "
                     f"`on`, `permissions` and `jobs` and refuses one it cannot place"))
+        self.check_bounded()
         return Workflow(self.path, legs, run_values)
+
+    def check_bounded(self) -> None:
+        """The walk's bounded rule: every line of the workflow was classified, or the read refuses.
+
+        ``child()`` records each line it reads and every block walk records its own lines through it, so
+        a line left unrecorded is one no reader claimed — a value region the walk would otherwise skip.
+        A plain scalar's indented continuation line is exactly such a region (YAML folds it into the
+        value above it), so the line is refused by its own number here, never read past: a line this
+        walk does not classify fails the pin instead of passing it quietly.
+        """
+        for index, line in enumerate(self.lines):
+            if index not in self.consumed:
+                self.refuse(line.number, (
+                    f"a line this pin never classified ({line.body!r}) — the walk is bounded: every "
+                    f"line inside the workflow is read as an entry, walked as a key's own block, or "
+                    f"refused; a value region no reader claimed (an indented continuation line folds "
+                    f"into the value above it in YAML) is refused rather than skipped"))
 
     def read_triggers(self, on_key: Child) -> None:
         """``on:`` — the trigger shape §CI's sentence states: every pull request, every push to main.
@@ -571,7 +624,12 @@ class _WorkflowReader:
         return self.read_job(entries[0])
 
     def read_job(self, job: Child) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        """One job: ``name``, ``runs-on: ${{ matrix.os }}``, ``strategy`` (with the matrix) and ``steps``."""
+        """One job: ``name``, ``runs-on: ${{ matrix.os }}``, ``strategy`` (with the matrix) and ``steps``.
+
+        The ``runs-on:`` entry is validated as the whole inline scalar it must be: ``child()`` holds
+        its first line to the matrix reference, and the scalar reader then refuses a value region under
+        it — a value that continues on an indented line cannot ride in as the reference.
+        """
         if job.value.strip():
             self.refuse(job.number, (
                 f"an inline job definition (`{job.key}: {job.value}`) — the pin reads a job's keys as its "
@@ -613,6 +671,10 @@ class _WorkflowReader:
                     f"pin can certify"))
         if "name" in keys:
             self.scalar(keys["name"], f"the job `{job.key}`'s `name:`")
+        # The walk's own check holds `runs-on`'s first line to the matrix reference; reading it through
+        # the scalar reader then refuses a value region under it — a continuation line YAML folds into
+        # the value — which no other check here would see.
+        self.scalar(keys["runs-on"], f"the job `{job.key}`'s `runs-on:`")
         return self.read_strategy(keys["strategy"]), self.read_steps(keys["steps"])
 
     def read_strategy(self, strategy: Child) -> tuple[str, ...]:
@@ -1002,6 +1064,12 @@ class CiMatrixAndThePlatformClaim(unittest.TestCase):
                 workflow_text().replace("    runs-on: ${{ matrix.os }}\n",
                                         "    runs-on: \"${{ matrix.os }}\"\n"),
                 RUNNERS),
+            "a fully quoted workflow `name:` (a scalar the reader classifies exactly)": (
+                workflow_text().replace("name: gate\n", "name: \"gate\"\n"),
+                RUNNERS),
+            "a fully quoted `permissions:` scope": (
+                workflow_text().replace("  contents: read\n", "  contents: \"read\"\n"),
+                RUNNERS),
             "a `uses:` step with its `with:` block, beside the gate step": (
                 workflow_text(steps=(
                     "      - uses: actions/setup-go@v5\n"
@@ -1023,7 +1091,10 @@ class CiMatrixAndThePlatformClaim(unittest.TestCase):
         """A shape the pin cannot read is refused, never read past: the reader's own contract.
 
         One entry per refusing branch of the walk — the shapes the docstrings name among them — so a
-        mutation that disables a branch leaves a named case red here instead of passing quietly.
+        mutation that disables a branch leaves a named case red here instead of passing quietly. The two
+        continuation shapes below are this round's bounded rule made visible: a `runs-on:` and a
+        `branches:` value that does not end on its own line are refused by the reader that owns them, and
+        the walk's closing check refuses any line a reader ever leaves unclaimed.
         """
         shapes = {
             "a second job (and with it a second `strategy.matrix`)": (
@@ -1075,6 +1146,10 @@ class CiMatrixAndThePlatformClaim(unittest.TestCase):
             "a `push:` `branches:` list whose only pattern is a glob (no literal `main` at all)": (
                 workflow_text(triggers="  pull_request:\n  push:\n    branches: [ma*]\n"),
                 "a branch pattern with a glob character ('ma*')"),
+            "a `push:` `branches:` list whose value continues on an indented line": (
+                workflow_text(triggers="  pull_request:\n  push:\n    branches: [main]\n      extra-branch\n"),
+                "a `push:` `branches:` list this pin cannot read ('[main]') — the value continues on the "
+                "indented line(s) below"),
             "a `push:` key this pin does not read": (
                 workflow_text(triggers="  pull_request:\n  push:\n    branches: [main]\n    tags: ['v*']\n"),
                 "a `push:` key this pin does not read"),
@@ -1118,6 +1193,10 @@ class CiMatrixAndThePlatformClaim(unittest.TestCase):
             "a `runs-on:` with a block value": (
                 workflow_text().replace("    runs-on: ${{ matrix.os }}\n", "    runs-on:\n      - macos-latest\n"),
                 "a `runs-on:` that is not exactly"),
+            "a `runs-on:` whose value continues on an indented line (YAML folds it into the runner value)": (
+                workflow_text().replace("    runs-on: ${{ matrix.os }}\n",
+                                        "    runs-on: ${{ matrix.os }}\n      extra-label\n"),
+                "the job `gate`'s `runs-on:` with a value that continues on the indented line(s) below"),
             "a quoted `runs-on` key": (
                 workflow_text().replace("    runs-on: ${{ matrix.os }}\n", "    'runs-on': ${{ matrix.os }}\n"),
                 "a `runs-on` spelled in a form this pin cannot read"),
@@ -1243,7 +1322,7 @@ class CiMatrixAndThePlatformClaim(unittest.TestCase):
                 "a `with:` with no inputs"),
             "a `with:` input with a block value": (
                 workflow_text(steps="      - uses: actions/setup-go@v5\n        with:\n          go-version-file:\n            file: go.mod\n"),
-                "with a block value"),
+                "with a value that continues on the indented line(s) below"),
         }
         for shape, (text, reason) in shapes.items():
             with self.subTest(shape=shape):
@@ -1251,6 +1330,19 @@ class CiMatrixAndThePlatformClaim(unittest.TestCase):
                     read_workflow(WORKFLOW, text)
                 self.assertIn(reason, str(refused.exception),
                               f"{shape}: refusal was {str(refused.exception)!r}")
+        # The walk's closing bounded check is the one refusing branch no crafted workflow reaches — the
+        # readers above claim every region of every shape — so it is driven through the module's own
+        # reader instead: the top level of a real workflow is walked and the value regions nobody was
+        # handed are refused by their own lines.
+        with self.subTest(shape="a line the walk never classifies (the bounded check itself)"):
+            reader = _WorkflowReader(WORKFLOW, structural_lines(workflow_text()))
+            self.assertTrue(
+                reader.children(0, len(reader.lines), 0, "the workflow"),
+                "the driven text must hold a top level, or the check below reads an empty read")
+            with self.assertRaises(UnreadableWorkflow) as refused:
+                reader.check_bounded()
+            self.assertIn("a line this pin never classified", str(refused.exception),
+                          f"the bounded check's refusal was {str(refused.exception)!r}")
 
 
 if __name__ == "__main__":
