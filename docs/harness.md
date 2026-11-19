@@ -260,7 +260,17 @@ says so.
   a §5 comparison cell that credits a recorded run's answer may only quote words that run's recorded
   output holds;
   `test_gate_transcript_claims.py`: a record's quoted `parity` line is the gate's own rendering — its end
-  is the checker's own — and the elision limit a record states is the gate's own call; and
+  is the checker's own — and the elision limit a record states is the gate's own call;
+  `test_ci_matrix_claim.py`: the workflow's matrix and the CI section below are one statement — the
+  matrix's legs (its `os:` list with every `include:`/`exclude:` entry, read in GitHub's own order as
+  `(os − exclude) ∪ include`) are exactly the runner labels the section names, every job of the gate
+  workflow runs the gate file as a whole step command that no `if:`/`continue-on-error:` can skip or
+  ignore, the workflow's triggers are read (a filter on `pull_request:`, a `!`-negated or glob branch
+  pattern under `push:` is refused), the macOS-gap sentence must stand while the matrix stays
+  two-legged, and the reader fails closed — a shape it does not read exactly, from a `runs-on` spelled
+  otherwise to a second matrix, is refused with a failing
+  case naming it. The pin's own two limits and the constraint it puts on future workflows are stated in
+  §CI below; and
   `test_codex_native_check.py`'s `RecordStatesTheChecksOwnOrder`: the record's claim about *when* the
   comparison taken where the copy grows runs is read against the positions of the native check's own
   calls, so a record that drifts back to a placement the script does not have fails there), run by the
@@ -623,6 +633,18 @@ suite answers it from the case's own stub bin and exercises the boundary itself 
 platform probe to its Windows answer (see the `selftest` section): no verdict in the suite depends on
 which platform is running it.
 
+Where each answer is *verified* is narrower than where it applies. `ubuntu-latest` and `windows-latest`
+run the whole gate on real runners; **macOS is not verified on a runner** — the workflow's matrix has no
+macOS leg, by the owner decision of 2026-11-18 that the plan beside this file records
+([`docs/plans/harness-ci-matrix.md`](plans/harness-ci-matrix.md)): the job was repeatedly starved of a
+runner, and a job that fails slowly with zero executed steps is infrastructure, not a verdict. A macOS
+host running `scripts/gate.py` still gets the answers above — a missing Go toolchain or a missing C
+compiler is a failure there, not a boundary — and the rules whose shape matters on macOS are pinned on
+every host by the suite's own executed host simulations and seams (the empty-`PATH` child, the forced
+Windows-without-compiler probe, `platform_name`, `symlink_target`, the path-flavour cases below), never
+by a runner. The `macos-latest` failures recorded below as history are what those rules were repaired
+against while the leg ran; nothing in this file claims a macOS runner today.
+
 Windows has no POSIX mode bits, so `parity` declines to check a carried file's — or a stored-byte
 deviation's — working-tree owner-executable bit there and says so in its output instead of failing every
 executable file; the *stored* mode still comes from git's own index, which records it on every
@@ -723,13 +745,43 @@ not the one the rule is about:
 
 ## CI
 
-`.github/workflows/gate.yml` runs the same `scripts/gate.py` on `ubuntu-latest`, `macos-latest` and
-`windows-latest` for every pull request and every push to `main`. Its step spells the interpreter
-`python`, the name all three runners have — the Windows runner has no `python3` — while the file is
-`#!`-tagged `python3` for the hosts where that is the only name. CI installs Go and gitleaks; a CI job
-with fewer tools than another is the boundary above, not a different gate. The Go toolchain comes
-from `go.mod` (`go-version-file`), so the workflow and the module cannot disagree about the version
-the tree builds with.
+`.github/workflows/gate.yml` runs the same `scripts/gate.py` on `ubuntu-latest` and `windows-latest`
+for every pull request and every push to `main`. **macOS is not verified on a runner**: the matrix has
+no macOS leg (the owner decision of 2026-11-18 stated with the platform rules above), so a
+macOS-shaped rule is answered in CI only by the suite's own executed host simulations — the
+empty-`PATH` child, the forced Windows-without-compiler probe, the
+`platform_name`/`symlink_target`/path-flavour seams — which run wherever the `selftest` step runs. A
+green run may therefore be read as the whole gate passing on Linux and on Windows, and not as evidence
+about macOS. `scripts/tests/test_ci_matrix_claim.py` (the `selftest` step) holds this section and the
+matrix together as one statement: the runners named here are exactly the matrix's legs (the `os:` list
+with every `include:`/`exclude:` entry, read in GitHub's own order — `exclude` removes base labels and
+every `include` is processed after it, so a label both excluded and included is a leg, and the legs are
+`(os − exclude) ∪ include`) — every job of the workflow runs the gate file itself as a whole step
+command that no `if:` or `continue-on-error:` can skip or ignore, the trigger block is read (the gate
+runs for every pull request and every push to `main`, and a filter under `pull_request:`, a `!`-negated
+branch pattern or a glob pattern under `push:` is refused rather than read as if it changed nothing),
+and the sentence above cannot be dropped while the matrix stays two-legged.
+
+The pin's reader fails closed: every workflow shape it does not read exactly — a `runs-on` spelled or
+valued otherwise, a block scalar, a value continued on an indented line (YAML folds the continuation
+into the value), a label list in a spelling it cannot read (a block list, or a quote that does not
+enclose a whole label), a job-level or step-level `if:`, a `continue-on-error:`, a trigger block outside
+the shape above, a second matrix or job, a job or step key it does not know — is refused by a failing
+case that names the shape, never read past, and the reader skips no line: a value region no reader
+claims is refused by its own line number. The same stance binds future workflows: every
+file under `.github/workflows/` must keep its job on `${{ matrix.os }}`
+with the matrix's legs inside the runners this section names, or the pin refuses the file instead of
+certifying it. Two limits are stated rather than hidden: the pin reads raw text, so it cannot see
+Markdown rendering — wrapping these claims in an HTML comment satisfies every case while the rendered
+page loses them — and nothing in the suite pins the pin's own existence (the `selftest` step discovers
+`test_*.py`, so deleting or renaming the pin leaves the gate green), because no case's subject is the
+suite's own module inventory; this file and the increment's record carry that residue instead.
+
+Its step spells the interpreter `python`, the name both runners have — the Windows runner has no
+`python3` — while the file is `#!`-tagged `python3` for the hosts where that is the only name. CI
+installs Go and gitleaks; a CI job with fewer tools than another is the boundary above, not a different
+gate. The Go toolchain comes from `go.mod` (`go-version-file`), so the workflow and the module cannot
+disagree about the version the tree builds with.
 
 ## Growth policy
 
