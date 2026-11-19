@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"go.kenn.io/agentsview/internal/ccc/opencodefixture"
+	"go.kenn.io/agentsview/internal/pathutil"
 )
 
 // openCodeSourceFixtureID is the committed OpenCode fixture's own session id (fixturegen's
@@ -23,8 +24,16 @@ func openCodeSourceFixturePath(t *testing.T) string {
 }
 
 // openCodeSourceStore materialises the committed fixture document into one throw-away OpenCode store and
-// answers the directory that holds it: the directory a caller names with OPENCODE_DIR, and the one whose
-// `opencode.db` the inherited provider's discovery reads.
+// answers the directory that holds it *as the read resolves the configured root*: the configuration
+// resolves every configured session source before discovery reads it
+// (`internal/parser.ResolveProviderRoot`'s `pathutil.ResolveAbsolute` -- absolute, symlinks resolved), so
+// the virtual path the report names is that resolution's spelling and not the spelling this case happened
+// to pass. The store is materialised first, because the resolution follows the directories that exist.
+//
+// The two spellings are one file, and a case that built its expectation from the raw one compares a
+// spelling the read never answers: measured on the windows-latest leg, whose `t.TempDir()` spells its
+// short name (`…\RUNNER~1\…`) while the resolved root is the long one (`…\runneradmin\…`), where both of
+// this file's inspection-shaped cases failed against a correct report.
 func openCodeSourceStore(t *testing.T) string {
 	t.Helper()
 	document, err := os.ReadFile(openCodeSourceFixturePath(t))
@@ -37,7 +46,11 @@ func openCodeSourceStore(t *testing.T) string {
 	} else if id != openCodeSourceFixtureID {
 		t.Fatalf("the store holds %s, want %s", id, openCodeSourceFixtureID)
 	}
-	return root
+	resolved, err := pathutil.ResolveAbsolute(root)
+	if err != nil {
+		t.Fatalf("resolving the OpenCode root the way the configuration does: %v", err)
+	}
+	return resolved
 }
 
 // TestContinueFromOpenCodeWritesTheEstablishedReport pins the goal's interface clause for this source:
@@ -48,7 +61,14 @@ func TestContinueFromOpenCodeWritesTheEstablishedReport(t *testing.T) {
 	isolatedEnvironment(t)
 	store := openCodeSourceStore(t)
 	t.Setenv("OPENCODE_DIR", store)
-	targetHome := t.TempDir()
+	// The target home is spelled the way the Claude, Pi and OMP routes' cases spell theirs
+	// (`cmd/ccc/claude_route_test.go`'s own helper): it holds a space, so the resume line the report
+	// prints must quote it on every host. A home borrowed from the host's own temp directory is spelled
+	// differently per platform -- bare where nothing in it is shell syntax, quoted where it holds
+	// backslashes (Windows) -- so an assertion written against that spelling pins the arm the running host
+	// happens to produce instead of the rule, which is what the windows-latest leg measured: the renderer
+	// quoted the home correctly and the unquoted substring this case looked for could not match it.
+	targetHome := filepath.Join(t.TempDir(), "codex home")
 
 	code, stdout, stderr := runCLI(t, "continue", "opencode:"+openCodeSourceFixtureID, "--to", "codex",
 		"--target-home", targetHome, "--target-binary", missingTargetBinary, "--json")
@@ -111,8 +131,16 @@ func TestContinueFromOpenCodeWritesTheEstablishedReport(t *testing.T) {
 		t.Errorf("target session = %v, want a fresh identity", target)
 	}
 	resume, _ := target["resume_command"].(string)
-	if !strings.Contains(resume, "CODEX_HOME="+targetHome) || !strings.Contains(resume, sessionID) {
-		t.Errorf("resume command = %q, want the target home %q and the session id", resume, targetHome)
+	// The line is read as the renderer wrote it: its assignment names this home in the quoting a POSIX
+	// shell needs (a word is quoted exactly where a shell would otherwise act on it, which the space in
+	// this case's own home makes necessary on every host), and the vector it prints names the harness this
+	// run was handed and the fresh session a caller resumes.
+	for _, want := range []string{
+		"CODEX_HOME='" + targetHome + "'", missingTargetBinary, "resume " + sessionID,
+	} {
+		if !strings.Contains(resume, want) {
+			t.Errorf("resume command = %q, does not hold %q", resume, want)
+		}
 	}
 	verification, _ := document["verification"].(map[string]any)
 	structure, _ := verification["structure"].(map[string]any)

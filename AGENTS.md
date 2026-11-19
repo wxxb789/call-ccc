@@ -339,7 +339,13 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   runs are held to the same rule: a case whose subject is what a check makes of a target harness's
   answer drives that harness through the check's own seam and answers the executable lookup the same
   way, instead of needing the harness installed on the machine running the suite — a case that *is*
-  about a missing binary pins a `PATH` that holds no harness.
+  about a missing binary pins a `PATH` that holds no harness. Two shapes of that rule were measured on
+  the `windows-latest` leg and are binding: a case that asserts a path the CLI reports builds its
+  expectation with the rule the CLI resolves that path by — a configured session root is resolved
+  before discovery reads it (`pathutil.ResolveAbsolute`: absolute, symlinks resolved), which spells a
+  short-named Windows temp path by its long name — and a case that asserts a rendered resume line
+  spells it the way the renderer does, with a home a POSIX shell would act on so the quoted arm holds
+  on every host ([`cmd/ccc/main_test.go`](cmd/ccc/main_test.go)'s `shellUnsafeHome`).
 - Stage order for an increment: implement → verify (gate) → simplify (report only) → apply (accepted
   findings only) → review (report only) → fix → gate → PR. Report stages must not edit the tree.
 - One goal ≈ one branch ≈ one pull request, squash-merged onto a linear `main`. Do not commit, push

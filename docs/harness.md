@@ -744,6 +744,14 @@ not the one the rule is about:
   scripts/tests` (executed; head `1a476e0`'s own file prints `FAILED (failures=4)` there — the two cases
   plus the two self-check cases that read the red child, over the same two child names CI printed — and
   the repaired one `OK`, 153 cases).
+  The OpenCode-source route's two cases write the same shape from the other side: the python case that
+  drives a stubbed report reads that report's printed Codex lines the way a shell does and hand-spelled
+  them bare from its own real home, and the Go case asserted the published line held the unquoted
+  substring `CODEX_HOME=<home>`. Both failed `gate (windows-latest)` at head `6fe0f14` against a renderer
+  that had quoted the home correctly — the quote is there for the backslashes on that host, where a POSIX
+  path of the same shape stands bare — and both now build those lines the way the route's renderer does
+  (`scripts/tests/test_opencode_native_check.py`'s `codex_invocation`) and with a home whose name holds a
+  space (`cmd/ccc/opencode_source_route_test.go`).
 - a path is spelled by the platform that reads it: `pathlib` answers `\tmp\x` for `Path('/tmp/x')` on
   Windows where POSIX answers `/tmp/x`, so a rule whose two sides are "the word a shell reads a rendered
   line back as" and "the home *this host* spells" cannot be pinned by a fixture spelled for one of them.
@@ -772,6 +780,17 @@ not the one the rule is about:
   discover -s scripts/tests` (executed; the unresolved spelling is `FAILED (failures=4)` there — the two
   cases plus the two self-check cases that read the red child, CI's own number — and the repaired one
   `OK`, 153 cases).
+  The OpenCode source's own round met both halves of this rule at head `6fe0f14`: the python case
+  `SourceInvocationReading` hand-spelled its line `CODEX_HOME=/home/x` while handing the reading
+  `Path('/home/x')` — two spellings of one path, since that host spells the second `\home\x` — so the
+  reading answered False for a line it was right to refuse (no renderer writes that word for that home;
+  the case had compared what it wrote against what it passed). It now builds the line with the quoting
+  `shellQuote` applies and drives both flavours (`PATH_FLAVOURS`), which exercises that arm on every
+  host, and the Go CLI cases spelled their expectation from the raw throw-away root they passed while the
+  read had resolved it — for a *configured source root* the configuration resolves it before discovery
+  reads it (`internal/parser.ResolveProviderRoot`'s `pathutil.ResolveAbsolute`), so that runner's
+  `t.TempDir()` spelled `…\RUNNER~1\…` while the report answered `…\runneradmin\…` — and they now take
+  the store through that same rule (`cmd/ccc/opencode_source_route_test.go`'s `openCodeSourceStore`).
 - a path is absolute by the **platform's** own answer, not by its spelling: on Windows `filepath.IsAbs`
   answers false for a POSIX-absolute word like `/opt/tools/claude`, because its volume test wants a drive
   letter, a device prefix or a `\\host\share` UNC form (in the toolchain this tree builds with,

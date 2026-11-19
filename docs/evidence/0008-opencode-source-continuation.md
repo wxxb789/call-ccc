@@ -441,6 +441,105 @@ move with this round: the fix changes no layout, gate step, command, read order 
 it makes the check's comparison read the reader's own rules (and refuse what it cannot read) and strengthens
 one test's input.
 
+### The CI repair on the head `6fe0f14`, re-measured
+
+The hosted `gate (windows-latest)` check failed on that head (run `44515743638`, job `135531169595`; the
+watch log's own line is `real fail: gate (windows-latest) (2m11s)`, and the ubuntu leg passed) for a real
+reason: `FAIL test`, `FAIL selftest REQUIRED but was FAIL: scripts/tests -> rc=1` (`Ran 423 tests in
+13.342s`, `FAILED (failures=4)`), and `FAIL citations REQUIRED but was FAIL:
+docs/evidence/0008-citations.tsv:42: rule D4: test TestContinueFromOpenCodeWritesTheEstablishedReport in
+./cmd/ccc did not pass`. The four python failures close as two broken cases plus the two `HostCase` cases
+they break: `scripts/tests/test_gate.py`'s `HostCase` pair re-runs the *whole* suite in a child and asserts
+the child broke nothing, so each broken case of that child fails both nested-run cases as well — and the
+last two failure blocks are the module's own copies, one whose message ends with the run it drove
+(`RESULT: FAIL — 1 check(s) failed: the printed resume lines name this run's own home and session`) and one
+the job quotes verbatim:
+
+```
+--- FAIL: TestInspectOpenCodeSourceNamesTheStoreAndTheConversation (0.57s)
+    opencode_source_route_test.go:189: the inspection does not hold "source:       C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\TestInspectOpenCodeSourceNamesTheStoreAndTheConversation1442433199\\002\\opencode\\opencode.db#ses_0008opencodefixture00000001":
+          source:       C:\Users\runneradmin\AppData\Local\Temp\TestInspectOpenCodeSourceNamesTheStoreAndTheConversation1442433199\002\opencode\opencode.db#ses_0008opencodefixture00000001
+…
+FAIL: test_the_right_line_is_read_as_the_invocation (test_opencode_native_check.SourceInvocationReading.test_the_right_line_is_read_as_the_invocation)
+    AssertionError: False is not true
+…
+Ran 423 tests in 13.342s
+FAILED (failures=4)
+```
+
+**CI-1 — a case compared two spellings of one path (Go, `cmd/ccc`; the citation row's failure above).**
+`openCodeSourceStore` returned `filepath.Join(t.TempDir(), "opencode")` raw, while the read answers the root
+*resolved*: the configuration resolves every configured session source before discovery reads it
+(`internal/parser.ResolveProviderRoot` → `pathutil.ResolveAbsolute`: `filepath.Abs` + `filepath.EvalSymlinks`,
+tolerating a non-existent tail), and Go's Windows `EvalSymlinks` normalizes every component through
+`FindFirstFile`, so a short-named temp path is answered by its long name. Both of that file's
+inspection-shaped cases spelled their expectation from the raw name. Reproduced on this host the moment the
+two spellings are made to differ, without touching the shipped code (`TMPDIR` pointing at a symlinked
+directory, so `t.TempDir()` spells the link and the read answers the target):
+
+| Rule | Mutation | Observed |
+| --- | --- | --- |
+| a case's expectation is the spelling the read answers | `openCodeSourceStore`'s `return resolved` → `_ = resolved; return root` (executed under `TMPDIR=<a symlink to /tmp>`, restored afterwards — `git diff` back to this round's change) | both cases FAIL: `source path = /tmp/TestContinueFromOpenCodeWritesTheEstablishedReport…/opencode.db#…, want … "/tmp/ccc-link/TestContinueFromOpenCodeWritesTheEstablishedReport…/opencode.db#…"` and `the inspection does not hold "source:       /tmp/ccc-link/…"` — the CI's own two-spellings shape |
+| a rendered resume line is read in the renderer's quoting | the loop `for _, want := range []string{"CODEX_HOME='" + targetHome + "'", …}` → the pre-round `strings.Contains(resume, "CODEX_HOME="+targetHome)`, executed and restored | `TestContinueFromOpenCodeWritesTheEstablishedReport` FAIL: `resume command = "CODEX_HOME='/tmp/…/003/codex home' ccc-no-such-target-harness resume 01a1f3a4-…", want the target home "/tmp/…/003/codex home" and the session id` — the quoted value the renderer writes cannot match the unquoted substring (on the Windows leg the temp path itself holds backslashes, so that arm fires there too) |
+
+The repair is in `cmd/ccc/opencode_source_route_test.go`: `openCodeSourceStore` resolves the throw-away root
+with the configuration's own rule (`pathutil.ResolveAbsolute`, the function `ResolveProviderRoot` calls) and
+documents why, so no expectation is spelled from a name the read never answers; the target home is
+`filepath.Join(t.TempDir(), "codex home")` — the shell-unsafe spelling `cmd/ccc/claude_route_test.go`,
+`pi_route_test.go` and `omp_route_test.go` already use — and the printed line is asserted to hold
+`CODEX_HOME='<that home>'`, the harness word and the session id, as `cmd/ccc/main_test.go`'s Codex cases do.
+No assertion was weakened: the same facts are asserted, in the spelling the report really carries.
+
+**CI-2 — two python cases spelled a Windows-unreadable line themselves (the fourth failure block and the
+`HostCase` pair).** `SourceInvocationReading` hand-spelled `CODEX_HOME=/home/x` and handed it
+`Path("/home/x")`: with `Path` being `WindowsPath` that value spells `\home\x`, so the line's own word
+(`CODEX_HOME=/home/x`) is not the invocation's — `False is not true`, exactly the block the job quotes, in
+the case the file's header already says must be built with the renderer's quoting and driven under both path
+flavours. `SourceDirectionRun`'s stub built its report's two printed Codex lines the same way, unquoted, from
+the case's real `codex-home`; the flow then read them as a shell does — a backslash an unquoted word hands to
+the shell as an escape — and recorded the one failed check the third failure block names.
+
+| Rule | Mutation | Observed |
+| --- | --- | --- |
+| the line a case hands the reading is the renderer's own spelling | the repaired `test_the_right_line_is_read_as_the_invocation` body → the pre-round hand-spelled `Path("/home/x")` call, executed and restored (the file hashes back to `af56d315…`) | under `Path` replaced by the Windows flavour (a scratch harness: POSIX-rooted literals mapped to `PureWindowsPath`), that case FAILs with the job's own `AssertionError: False is not true` |
+| a stubbed report's printed line is rendered, not hand-spelled | `conversion_report_of`'s two `codex_invocation(...)` calls → the pre-round `f"CODEX_HOME={home} …"` strings, executed and restored | the driven run records `the printed resume lines name this run's own home and session` FAIL — the very check the job's third failure block quotes — beside the four checks that fail only because the scratch harness's backslash path cannot be opened on this host (a Windows host opens it) |
+
+Both repaired cases now drive `PATH_FLAVOURS` and spell their lines through
+`scripts/tests/test_opencode_native_check.py`'s `codex_invocation` (the quoting `shellQuote` applies), so the
+Windows arm is pinned on this host rather than left to the job: the case that failed in CI exercises
+`PureWindowsPath` on every run, including this one.
+
+Gate, re-run on this tree (`GATE: PASS`, exit 0):
+
+```console
+$ python3 scripts/gate.py
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3624 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 423 tests in 7.740s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5718 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified
+  PASS     secrets  no leaks found in 174 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+(The `citations` row that failed in CI verifies here — `TestContinueFromOpenCodeWritesTheEstablishedReport`
+is the test this repair fixed, and the manifest's 13 rows are unchanged.) The `selftest` count stays 423
+before and after: the repair changes two cases' inputs, it adds none, and the module's own count stays 95.
+`AGENTS.md` **does** move with this round: the repair is conformance to a rule that file only half stated,
+so its harness-tests bullet now names the two measured shapes (a reported path is asserted through the rule
+the CLI resolves it by; a rendered line is asserted in the renderer's quoting, with a shell-unsafe home),
+`docs/conventions.md`'s platform paragraph states them for the Go suites and `scripts/tests/` alike, and
+`docs/harness.md`'s Platform boundary section — its Windows-answers bullets for a backslash a POSIX shell
+reads as syntax, and for a path the platform that reads it spells — names this head's two instances beside
+the earlier ones (`37c0a10`, `1a476e0`, `524a20f`, `4cd0567`). No
+goal file moves: 0008 is still the increment on its branch, awaiting acceptance. No new OPEN-QUESTIONS
+entry: both shapes are rules the docs already bound in spirit (a case must hold on every platform), so no
+owner-only default was taken.
+
 ## 7. Residual limits and boundaries named rather than hidden
 
 - **The real turn on this host.** §2 and §4: a Codex turn in a scratch home answers `401 Unauthorized`; the

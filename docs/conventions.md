@@ -280,6 +280,27 @@ obligation ships no citations file, rather than an empty one.
   the same way, instead of needing the harness installed on the machine running the suite; a case that
   *is* about a missing binary pins a `PATH` that holds no harness.
 
+  Two shapes of that rule were measured on the `windows-latest` leg and are binding, on the Go side and
+  in `scripts/tests/` alike:
+  - **A path the CLI reports is asserted through the rule the CLI resolves it by.** The configuration
+    resolves every configured session source before discovery reads it
+    (`internal/parser.ResolveProviderRoot`'s `pathutil.ResolveAbsolute`: absolute, symlinks resolved), so
+    a case builds its expectation with that same rule rather than with the spelling it happened to pass:
+    `cmd/ccc/opencode_source_route_test.go`'s `openCodeSourceStore` resolves the throw-away root before
+    any expectation is spelled from it. Measured: `t.TempDir()` on that runner spells the short name
+    (`…\RUNNER~1\…`) and the read answers the long one (`…\runneradmin\…`), so both of that file's
+    inspection-shaped cases failed there against a correct report.
+  - **A rendered line is asserted in the renderer's own quoting, and a case that hands a line to a
+    reading builds it the way the renderer does.** `internal/ccc/continue.go`'s `shellQuote` quotes a word
+    exactly where a POSIX shell would act on it, so a temp path is bare on POSIX and quoted where it holds
+    backslashes (Windows): an assertion spelled against the host's own temp spelling pins whichever arm
+    that host produces. A Go case therefore takes a home a shell would act on — the space in
+    `cmd/ccc/main_test.go`'s `shellUnsafeHome`, which the Claude, Pi and OMP route cases copy — and a
+    python case spells its line with `shlex.quote` and drives both path flavours (`PATH_FLAVOURS`), as the
+    Codex check's own cases and `scripts/tests/test_opencode_native_check.py`'s `codex_invocation` do.
+    Measured: the windows-latest leg failed a hand-spelled `CODEX_HOME=<home>` line and a
+    `CODEX_HOME=<home>` substring assertion, both against output the renderer had spelled correctly.
+
 ## Commits and branches
 
 - `type(scope): imperative summary`, types `feat|fix|refactor|docs|test|chore`.

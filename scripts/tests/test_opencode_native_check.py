@@ -169,6 +169,26 @@ def vector_check(arguments_field: str, prompt_name: str) -> str:
             f"{prompt_name}")
 
 
+#: The Codex argument vector the source direction's reports print: the harness this run probed, the
+#: resume subcommand, and the session a caller resumes.
+CODEX_RESUME_ARGUMENTS = ["codex", "resume", "01a1f342-0000-7000-8000-000000000001"]
+
+
+def codex_invocation(home, arguments: list[str]) -> str:
+    """One printed **Codex** line as ``internal/ccc/continue.go``'s renderer spells it: the
+    ``CODEX_HOME`` assignment -- its value quoted where a POSIX shell would act on it, which ``shellQuote``
+    does for exactly those words -- then the argument vector, each word quoted the same way. (Codex takes
+    its data directory from that variable alone, so the route prints no ``cd``; ``invocation`` below is the
+    OpenCode target's own form, which pins the store beside the root.)
+
+    A case builds the line it hands a reading with this, so the line is one the shipped renderer really
+    prints: a hand-spelling holds only where ``str(Path(...))`` has no backslash in it, and a Windows path
+    -- the spelling the ``windows-latest`` job has -- is quoted, so a case that spelled the line bare
+    failed there against a report no renderer produced."""
+    return " ".join([f"{NATIVE_CHECK.CODEX_HOME_ENV}={shlex.quote(str(home))}",
+                     *(shlex.quote(word) for word in arguments)])
+
+
 def invocation(workspace, environment: dict[str, str], arguments: list[str],
                whole_quoted: str | None = None) -> str:
     """One printed invocation as ``internal/ccc/continue.go``'s renderer spells it.
@@ -1873,23 +1893,58 @@ class SourceTurnVector(unittest.TestCase):
 class SourceInvocationReading(unittest.TestCase):
     """The printed Codex line is read the way a shell reads it: the assignment first and unquoted, then the
     words -- a quoted assignment is the *program* to a shell, so nothing sets the variable and the pasted
-    command resumes the caller's own home."""
+    command resumes the caller's own home.
+
+    Each case drives both path flavours (``PATH_FLAVOURS``) and builds its line with ``codex_invocation``,
+    the quoting the renderer itself applies, so the Windows spelling is exercised on this host too: a
+    hand-spelled ``CODEX_HOME=/home/x`` beside ``Path('/home/x')`` reads back as the invocation only where
+    ``str(Path(...))`` holds no backslash, which is the ``windows-latest`` job's answer and not this
+    one's."""
+
+    #: The home the line resumes, as text: each case spells it with the flavour it drives, so no separator
+    #: or drive letter is hard-coded for one host.
+    HOME = "/home/x"
 
     def test_the_right_line_is_read_as_the_invocation(self) -> None:
-        self.assertTrue(NATIVE_CHECK.reads_as_a_codex_invocation(
-            "CODEX_HOME=/home/x codex resume 01a1f342-0000-7000-8000-000000000001",
-            Path("/home/x"), ["codex", "resume", "01a1f342-0000-7000-8000-000000000001"]))
+        for flavour in PATH_FLAVOURS:
+            with self.subTest(flavour=flavour.__name__):
+                home = flavour(self.HOME)
+                line = codex_invocation(home, CODEX_RESUME_ARGUMENTS)
+                self.assertEqual(NATIVE_CHECK.shell_words(line),
+                                 [f"{NATIVE_CHECK.CODEX_HOME_ENV}={home}", *CODEX_RESUME_ARGUMENTS],
+                                 "the case's own line is not the invocation's words")
+                self.assertTrue(NATIVE_CHECK.reads_as_a_codex_invocation(
+                    line, home, CODEX_RESUME_ARGUMENTS), line)
 
     def test_a_quoted_or_shell_acting_line_is_not_the_invocation(self) -> None:
-        refusals = {
-            "a quoted assignment": "'CODEX_HOME=/home/x' codex resume 01a1f342-0000-7000-8000-000000000001",
-            "an unquoted separator": "CODEX_HOME=/home/x;codex resume 01a1f342-0000-7000-8000-000000000001",
-            "another home": "CODEX_HOME=/home/y codex resume 01a1f342-0000-7000-8000-000000000001",
-        }
-        for label, line in refusals.items():
-            with self.subTest(case=label):
-                self.assertFalse(NATIVE_CHECK.reads_as_a_codex_invocation(
-                    line, Path("/home/x"), ["codex", "resume", "01a1f342-0000-7000-8000-000000000001"]))
+        for flavour in PATH_FLAVOURS:
+            with self.subTest(flavour=flavour.__name__):
+                home = flavour(self.HOME)
+                # The whole assignment as one single-quoted word, its value spelled bare inside the quotes
+                # (a shell reads backslashes literally there, so this is a spelling of the *value*, not a
+                # second quoting of it): a shell reads the word as the *program* to run, which is why the
+                # word reading below is asserted -- it reads back exactly as the invocation's words do.
+                quoted = (f"'{NATIVE_CHECK.CODEX_HOME_ENV}={home}' "
+                          + " ".join(shlex.quote(word) for word in CODEX_RESUME_ARGUMENTS))
+                refusals = {
+                    # A shell reads a quoted assignment as the *program* to run: nothing sets the
+                    # variable, whatever the words read back as (which is why the reading is asserted
+                    # first). The renderer never emits this spelling; it is the defect the rule is about.
+                    "a quoted assignment": (
+                        quoted, [f"{NATIVE_CHECK.CODEX_HOME_ENV}={home}", *CODEX_RESUME_ARGUMENTS]),
+                    # `;` ends the assignment and starts another command, so the variable keeps only the
+                    # part before it and a program of the rest is run.
+                    "an unquoted separator": (
+                        f"{NATIVE_CHECK.CODEX_HOME_ENV}={home};" + " ".join(CODEX_RESUME_ARGUMENTS), None),
+                    # Another home is another store, however the line is spelled.
+                    "another home": (codex_invocation(flavour("/home/y"), CODEX_RESUME_ARGUMENTS), None),
+                }
+                for label, (line, words) in refusals.items():
+                    with self.subTest(case=label):
+                        if words is not None:
+                            self.assertEqual(NATIVE_CHECK.shell_words(line), words, line)
+                        self.assertFalse(NATIVE_CHECK.reads_as_a_codex_invocation(
+                            line, home, CODEX_RESUME_ARGUMENTS), line)
 
 
 class SourceTurn(unittest.TestCase):
@@ -2102,9 +2157,16 @@ def rollout_records_of(document: dict) -> list[dict]:
 def conversion_report_of(document: dict, rollout: Path, codex_home: Path, codex: str) -> dict:
     """The report a `ccc continue … --json` run writes for one OpenCode source, as the driven case's stub:
     the states and the vectors the flow reads, with the target path pointing at the case's own file. The
-    vectors name this run's own harness and home, because the flow reads them against exactly that."""
+    vectors name this run's own harness and home, because the flow reads them against exactly that, and the
+    two printed lines are rendered the way the route's own renderer spells them (``codex_invocation``):
+    the case's own home is a real directory, whose spelling a POSIX shell would act on wherever it holds a
+    backslash (Windows), so a hand-spelled line would hand the flow's own reading a command line the route
+    never prints."""
     session_id = document["info"]["id"]
     home = str(codex_home)
+    resume_arguments = [codex, "resume", "01a1f342-0000-7000-8000-000000000001"]
+    exec_resume_arguments = [codex, "exec", "resume", "01a1f342-0000-7000-8000-000000000001",
+                             NATIVE_CHECK.PROMPT_PLACEHOLDER]
     return {
         "ref": {"Provider": "opencode", "ID": session_id},
         "target": "codex",
@@ -2123,16 +2185,11 @@ def conversion_report_of(document: dict, rollout: Path, codex_home: Path, codex:
                          "source_check_state": "not-verified", "detail": "no file holds this member"},
         "target_session": {"provider": "codex", "session_id": "01a1f342-0000-7000-8000-000000000001",
                            "path": str(rollout), "cwd": str(rollout.parent),
-                           "resume_arguments": [codex, "resume",
-                                                "01a1f342-0000-7000-8000-000000000001"],
-                           "exec_resume_arguments": [codex, "exec", "resume",
-                                                     "01a1f342-0000-7000-8000-000000000001",
-                                                     NATIVE_CHECK.PROMPT_PLACEHOLDER],
-                           "resume_environment": {"CODEX_HOME": home},
-                           "resume_command": f"CODEX_HOME={home} {codex} resume "
-                                             "01a1f342-0000-7000-8000-000000000001",
-                           "exec_resume_command": f"CODEX_HOME={home} {codex} exec resume "
-                                                  "01a1f342-0000-7000-8000-000000000001 '<prompt>'"},
+                           "resume_arguments": resume_arguments,
+                           "exec_resume_arguments": exec_resume_arguments,
+                           "resume_environment": {NATIVE_CHECK.CODEX_HOME_ENV: home},
+                           "resume_command": codex_invocation(codex_home, resume_arguments),
+                           "exec_resume_command": codex_invocation(codex_home, exec_resume_arguments)},
         "verification": {"structure": {"state": "verified", "detail": "read back"},
                          "load": {"state": "verified", "detail": "the harness's loader answered"}},
     }
