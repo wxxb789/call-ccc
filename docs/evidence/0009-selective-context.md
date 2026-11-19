@@ -289,6 +289,109 @@ this increment's own id spaces:
 The native half of D1 ("the target is natively loadable") is §1's `verification.load: verified` — Codex's
 own app server, quoted with the harness's version — and is not a gate step, so no row holds it.
 
+### The review round's findings (`d8e211f` + working tree), fixed and re-measured
+
+The review of `9242e49..d8e211f` found five items (one behavioural defect and four untrue statements) and
+this round fixes all five on `d8e211f`'s tree. The reviewer's own gate run printed the steps §6 quotes; this
+tree's run is below.
+
+**R-01 — `--select` silently disabled the leaf/inactive guard (P1), fixed.** Both guards walked the
+*reduced* slice: `selectedLeafRefusal` and the line writers' `inactiveSourceRecords` derived "the line" from
+the window, so a window ending on a record the *read's* walk places off its line wrote a target session that
+resumes the abandoned branch -- no refusal, no count. The fix makes the line a property of the read: `Select`
+answers the read's own walk before reducing and carries it per kept record
+(`Conversation.sourceLineInactive`), and the writers consult it (`sourceLineAnswers`; the leaf guard is
+`selectedLeafRefusal(conversation, …)` now) instead of re-deriving one from the window; a line writer's
+`unresolved_source_parents` count is taken over the records this conversion writes. Measured on this host on
+the Pi history fixture (`01a1c336-4b02-78d3-9e15-6c7a2f0b8d41`, whose file's last entry *is* the read's last
+record -- so the source-side leaf check passes -- while ordinals 2-4 are the branch the read's line leaves):
+
+```console
+$ … continue pi:01a1c336-… --to codex --select 2-4 --dry-run --json
+carried {messages 0, …} ; inactive_branch_records 3 ; the abandoned texts ("And the retry cap?",
+"Thirty seconds, in internal/retry/config.go.") are absent from the rollout
+$ … continue pi:01a1c336-… --to pi --select 2-4 --dry-run
+ccc: the source's own loader selects a leaf this conversion cannot write as the target's: 3344bb55, the
+record its last entry stands for, is off the line the read's last record answers, so a resumed session
+would continue a branch the source's conversation left     (exit=1 -- the leaf guard's own conversion code,
+nothing installed; the refusal is `ErrUnrepresentableLeaf`, not a selection-refusal sentence)
+$ … continue pi:01a1c336-… --to pi --select 0-1 --dry-run     # a window ending on the read's line
+  converted:    pi-session-jsonl, 799 bytes: 2 message(s), …  (converted; the same window converts on codex)
+```
+
+The new case `TestSelectionEndingOffTheReadsLine` pins all of it (three tree routes refuse, the line route
+omits and counts, a window ending on the line converts); run against the pre-fix tree it fails exactly as
+the review demonstrated:
+
+```console
+$ git stash push -- <the seven fixed files>; go test ./internal/ccc/ -run TestSelectionEndingOffTheReadsLine
+--- FAIL: TestSelectionEndingOffTheReadsLine
+    selection_test.go:435: pi: converting a window ending off the read's line: err = <nil>, want ErrUnrepresentableLeaf
+    selection_test.go:435: omp: … err = <nil>, want ErrUnrepresentableLeaf
+    selection_test.go:435: claude: … err = <nil>, want ErrUnrepresentableLeaf
+    selection_test.go:451: codex: inactive_branch_records = 0, want the branch's three off-line records (ordinals 2-4)
+    selection_test.go:463: codex: the written document holds "And the retry cap?" …
+    selection_test.go:463: codex: the written document holds "Thirty seconds, in internal/retry/config.go." …
+$ git stash pop
+```
+
+The runs §1-§2 quote do not move: the same CLI runs through the pre-fix and post-fix binaries over a copy of
+the Claude fixture print the same carried counts and the same non-zero loss rows for `--select 2`, `5-10`
+and `0-10` (`jq -c '{c:.conversion.carried,l:[.conversion.losses[]|select(.count!=0)]}'`, `pre == post` for
+each). `AGENTS.md`'s selection bullet gains the rule sentence ("**The line is the read's own** …"), and the
+citations manifest gains its row (`S5`).
+
+**R-02 — the CLI case named "a specification that selects nothing" pinned nothing (P2), fixed.** The case's
+args were overwritten by a duplicate-region spec (`9-10,10`, already covered by the `1-3,3` case) and its
+`want` was `""`, which `strings.Contains(stderr, "")` always satisfies. The case and the override are gone;
+the comment states why the arm is unreachable from this fixture and where it *is* pinned (the gappy-read Go
+case).
+
+**R-03 — the refusal criterion said "an ordinal the read does not hold" (P3), fixed.** `AGENTS.md`,
+`docs/conventions.md`, `README.md` and `cmd/ccc/main.go` (the `--select` help, the exit-code paragraph and
+the exit-code mapping comment) now state the implemented rule: a region reaching outside the ordinals the
+read supplied (below its lowest or above its highest), a spec that would carry no record, and the strict
+refusal -- with "a region spanning a gap carries the records it holds" spelled beside it.
+
+**R-04 — "before the target harness is asked anything" was false (P3), fixed.** `AGENTS.md` and the same
+claim in `internal/ccc/continue.go`'s seam comment now say the harness's own *answers* are asked for after
+the step, while its executable's version is probed earlier, before the read.
+
+**R-05 — the B2 citation named a disposition the case did not assert (P3), fixed.** The cited case now
+asserts both halves of the system record's disposition: its `<system-reminder>` text
+(`the workspace state was restored`, measured as `dialogueFromContent` -- the record's own bytes, so writing
+it would present it as the conversation's own turn) is absent from every route's document, and each route
+counts the record (`system_records ×1`) while its tool evidence travels. The row's wording now says exactly
+that.
+
+Gate, re-run on this tree (`GATE: PASS`, exit 0):
+
+```console
+$ python3 scripts/gate.py; echo "exit=$?"
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3627 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 442 tests in 8.773s (rc=0)
+  PASS     parity   (5553 carried file(s) identical to the pinned revision; 27 declared deviations + 1
+                    generated input; 32 project-owned prefix(es); 5726 file(s) seen by git -- the step's
+                    detail is rendered at length, this line keeps §6's spelling)
+  PASS     citations docs/evidence/0002-citations.tsv: 36 | docs/evidence/0007-citations.tsv: 37 |
+                    docs/evidence/0008-citations.tsv: 13 | docs/evidence/0009-citations.tsv: 15 row(s) verified
+  PASS     secrets  no leaks found in 195 file(s) this repository owns
+GATE: PASS
+exit=0
+```
+
+The `0009-citations.tsv` count is 14 → 15 (the new `S5` row, its cited case existing and passing); `gofmt`,
+`selftest` and the other steps hold §6's numbers -- the fix adds no file and no new selftest case, because
+the two changed Go cases live in files the increment already carries. `docs/decisions/OPEN-QUESTIONS.md`
+gains `Q-0009-04` (the read's line is not the selection's to redefine: the default this fix takes, and the
+reversal if the owner wants a selection to be able to choose the resumed line). Bookkeeping: nothing to
+archive -- 0009 is implemented and awaiting operator acceptance.
+
 ## 7. Docs, rules and bookkeeping
 
 * `AGENTS.md` — a new binding bullet ("A conversion carries only what the caller selected …") outside the

@@ -562,9 +562,11 @@ func (c *openCodeConverter) sessionModel() *openCodeModel {
 // a tool part carries a call and its outcome together), then the message walk. Both passes ask the same
 // question about the source's own relations -- which records are on the line the conversation reached --
 // so it is answered once here: a record the walk does not write must contribute no tool evidence either,
-// or its outcome would travel as if the call it answers were on the active line.
+// or its outcome would travel as if the call it answers were on the active line. The line is the read's
+// own and a selection does not redefine it (sourceLineAnswers), so a window that ends on a branch's
+// records omits them and counts them rather than reviving the branch.
 func (c *openCodeConverter) convert() error {
-	inactive, unresolved := inactiveSourceRecords(c.conv.Messages, c.conv.Source.Provider)
+	inactive, unresolved := sourceLineAnswers(c.conv)
 	c.lossUnresolvedParent = unresolved
 	c.planToolEvidence(inactive)
 	return c.writeConversation(inactive)

@@ -209,11 +209,6 @@ func TestContinueRefusesABadSelectionBeforeInstalling(t *testing.T) {
 			"do not hold",
 		},
 		{
-			"a specification that selects nothing",
-			[]string{"--select", "0-10", "--to"},
-			"", // replaced below: the spec that names nothing is written per case
-		},
-		{
 			"the strict arm without a selection",
 			[]string{"--strict-selection"},
 			"--strict-selection",
@@ -224,11 +219,11 @@ func TestContinueRefusesABadSelectionBeforeInstalling(t *testing.T) {
 			"separates a recorded tool call from its recorded result",
 		},
 	}
-	// The specification that selects nothing on this fixture: ordinals 0..10 are all present, so a
-	// well-formed spec that names no record has to name a value in no space -- which the space check
-	// refuses separately. The "selects nothing" arm is pinned by the Go case over a gappy read; here the
-	// point is that no refusal writes anything, so the case names the arms the CLI can reach.
-	cases[4].args = []string{"--select", "9-10,10"}
+	// The specification that selects nothing is not reachable from this fixture -- every ordinal of its
+	// space 0..10 is present, so a well-formed spec that names no record would have to name a value in no
+	// space, which the space check refuses separately. That arm is pinned by the Go case over a gappy read
+	// (`TestSelectionMatchesTheOrdinalValuesTheReadSupplied`); the point of the cases here is that no
+	// refusal writes anything, so each names an arm the CLI can reach.
 
 	for _, testCase := range cases {
 		args := continueArgs(sessionID, testCase.args...)

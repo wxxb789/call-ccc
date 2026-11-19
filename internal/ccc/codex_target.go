@@ -406,7 +406,8 @@ func (b *codexRolloutBuilder) sessionMeta(startedAt time.Time) {
 // written into it becomes part of the conversation a resumed turn reads: an abandoned branch cannot
 // travel here as recorded history without being revived as an active turn, so it is omitted and counted
 // (inactive_branch_records). The branch itself is still in the source session, where its own
-// conversation can be converted on demand.
+// conversation can be converted on demand. The line is the read's own: a selection does not redefine it
+// (sourceLineAnswers), so a window that ends on the branch's records omits them and counts them too.
 //
 // The walk's own answer about the places it chose travels with it: where the read left a record's place
 // open -- a record the read left parentless or gave a parent this read does not hold, or one chained
@@ -414,7 +415,7 @@ func (b *codexRolloutBuilder) sessionMeta(startedAt time.Time) {
 // this conversion's reading rather than the read's, and the report counts it (unresolved_source_parents)
 // instead of presenting the line as the source's own by right.
 func (b *codexRolloutBuilder) writeConversation(conv Conversation) {
-	inactive, unresolved := inactiveSourceRecords(conv.Messages, conv.Source.Provider)
+	inactive, unresolved := sourceLineAnswers(conv)
 	b.lossUnresolvedParents = unresolved
 	for index, message := range conv.Messages {
 		b.messageIndex = index

@@ -281,10 +281,12 @@ func TestSelectionCarriesTheCounterpartOfASeparatedCallAndResult(t *testing.T) {
 	}
 }
 
-// TestSelectionCarriesASystemRecordAndReportsUndischargedCalls pins the two dispositions the seam does not
-// change: a compaction boundary and a system record the selection names travel as the records they are,
-// and a call the source itself left undischarged stays exactly as it is and is counted -- the counterpart
-// rule cannot carry a result the read never held.
+// TestSelectionCarriesASystemRecordAndReportsUndischargedCalls pins the dispositions the seam does not
+// change: a compaction boundary and a system record the selection names are carried, a call the source
+// itself left undischarged stays exactly as it is and is counted -- the counterpart rule cannot carry a
+// result the read never held -- and the system record's own system-injected text is not written as a
+// message: the route counts the record under its own `system_records` category while the tool evidence
+// recorded on the same record travels.
 func TestSelectionCarriesASystemRecordAndReportsUndischargedCalls(t *testing.T) {
 	conversation := readSelectionFixture(t)
 
@@ -376,12 +378,117 @@ func TestSelectionCarriesASystemRecordAndReportsUndischargedCalls(t *testing.T) 
 				"report says it cannot write", target)
 		}
 		// The system record's own text is not dialogue: the target writes its tool evidence and the record
-		// itself travels as the system record it is (or is counted), so the case asserts the *record*, not
-		// a text every format family renders differently.
+		// itself is counted under the route's own category rather than written as a user turn -- so the
+		// case asserts both halves, the text's absence and the count's presence, rather than choosing a
+		// rendering every format family holds differently.
+		if strings.Contains(bytes, "the workspace state was restored") {
+			t.Errorf("%s: the written document holds the system record's own text, so a record the "+
+				"provider flagged as system-injected is presented as the conversation's own turn", target)
+		}
+		if count := lossCount(t, converted.Losses, "system_records").Count; count != 1 {
+			t.Errorf("%s: system_records = %d, want the one system record inside the window counted by "+
+				"the route", target, count)
+		}
 		for _, unwanted := range []string{selectionQuestion, selectionBuildResult} {
 			if strings.Contains(bytes, unwanted) {
 				t.Errorf("%s: the written document holds %q, which the selection excluded", target, unwanted)
 			}
+		}
+	}
+}
+
+// TestSelectionEndingOffTheReadsLine pins the leaf/inactive rule under a selection: the line the target's
+// loader walks is the read's own -- the walk from its last record -- and a window a selection carries must
+// not redefine it. The Pi history fixture carries exactly that shape: its last record is the file's own
+// last entry (so the source-side leaf check passes), and the branch the conversation left before that
+// turn is still in the file, three records the read's own walk places off its line. A window ending on
+// those records is not written as if the branch were the resumed context: the tree routes refuse by name
+// (ErrUnrepresentableLeaf), and the line routes omit the off-line records and count them
+// (inactive_branch_records), the same category the unflagged conversion counts for the whole read.
+func TestSelectionEndingOffTheReadsLine(t *testing.T) {
+	conversation, err := NewSourceReader(fixtureConfig(t)).Read(context.Background(), piHistoryFixtureRef)
+	if err != nil {
+		t.Fatalf("reading the history fixture: %v", err)
+	}
+	if len(conversation.Messages) != 6 {
+		t.Fatalf("the fixture's read holds %d record(s), want the six its file carries",
+			len(conversation.Messages))
+	}
+	// The fixture's own shape, restated from its recorded relations rather than read out of the function
+	// under test: the walk from the read's last record reaches ordinals 0, 1 and 5, while the branch the
+	// conversation left (the compaction summary and the retry-cap question and answer) sits at 2-4.
+	const (
+		onLineFirst  = "How tall is the tower in the plaza?"
+		onLineSecond = "The tower in the plaza is 42 metres tall."
+		abandoned    = "And the retry cap?"
+		abandonedToo = "Thirty seconds, in internal/retry/config.go."
+	)
+
+	// The window 0-4: the read's on-line prefix plus the whole off-line branch, so the window's own last
+	// record (ordinal 4) is one the read's walk never reached.
+	selected, report, err := Select(conversation, "0-4", false)
+	if err != nil {
+		t.Fatalf("selecting 0-4: %v", err)
+	}
+	if report.Included.Count != 5 || report.Excluded.Count != 1 {
+		t.Errorf("selecting 0-4: included %d, excluded %d, want the five records of the window and the one "+
+			"after it", report.Included.Count, report.Excluded.Count)
+	}
+
+	// A tree route refuses: the entry written last would stand for an off-line record, and the target's
+	// own loader walks from it -- the branch revived as the resumed context the guard exists to refuse.
+	for _, target := range []string{TargetPi, TargetOMP, TargetClaude} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		if _, err := route.Convert(selected, selectionProbeOptions()); !errors.Is(err, ErrUnrepresentableLeaf) {
+			t.Errorf("%s: converting a window ending off the read's line: err = %v, want "+
+				"ErrUnrepresentableLeaf", target, err)
+		}
+	}
+
+	// A line route writes only the records the read's own line reaches and counts the branch it cannot
+	// hold -- the same three records the unflagged conversion of the whole read omits.
+	route, err := targetRouteFor(TargetCodex)
+	if err != nil {
+		t.Fatalf("route %s: %v", TargetCodex, err)
+	}
+	converted, err := route.Convert(selected, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("%s: converting the selection: %v", TargetCodex, err)
+	}
+	if count := lossCount(t, converted.Losses, "inactive_branch_records").Count; count != 3 {
+		t.Errorf("%s: inactive_branch_records = %d, want the branch's three off-line records (ordinals 2-4)",
+			TargetCodex, count)
+	}
+	bytes := string(converted.Data)
+	for _, want := range []string{onLineFirst, onLineSecond} {
+		if !strings.Contains(bytes, want) {
+			t.Errorf("%s: the written document does not hold %q, a record on the read's own line",
+				TargetCodex, want)
+		}
+	}
+	for _, unwanted := range []string{abandoned, abandonedToo} {
+		if strings.Contains(bytes, unwanted) {
+			t.Errorf("%s: the written document holds %q: a record written into this target's log becomes "+
+				"model-visible history, so the branch was revived as an active turn", TargetCodex, unwanted)
+		}
+	}
+
+	// A window that ends on the read's own line is written: the refusal is about the window's own last
+	// record, not about the records a window leaves behind.
+	selected, _, err = Select(conversation, "0-1", false)
+	if err != nil {
+		t.Fatalf("selecting 0-1: %v", err)
+	}
+	for _, target := range []string{TargetPi, TargetOMP, TargetClaude, TargetCodex} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		if _, err := route.Convert(selected, selectionProbeOptions()); err != nil {
+			t.Errorf("%s: converting a window ending on the read's line: %v", target, err)
 		}
 	}
 }

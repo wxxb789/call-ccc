@@ -14,6 +14,8 @@
 #           together, the counterpart named with the ordinal that pulled it in); the refusals (the core's
 #           own sentence, the usage exit code, nothing installed) and the strict arm; the report's four
 #           classes with the transformation named in both surfaces.
+#   S5      the read-line sentence the fix stage added to that paragraph: the line the target's loader
+#           walks is the read's own, and a selection neither moves a record onto it nor off it.
 #
 # scripts/obligation-citations.py is the arbiter: every row's cited test must exist in the named package
 # and run and pass, and the `citations` step is required — a tree that lost this file, or a citation that
@@ -42,8 +44,9 @@ D5-syntax	TestSelectionRefusesABadSpecificationBySentence	./internal/ccc	0009-se
 D5-space	TestCheckSelectionOptionsRefusesASpecificationWithoutARead	./internal/ccc	0009-selective-context.md §Done when 5 (the grammar half is answered without a read, so a caller embedding the core and one driving the CLI get the same sentence)
 D5-no-install	TestContinueRefusesABadSelectionBeforeInstalling	./cmd/ccc	0009-selective-context.md §Done when 5 (the usage exit code, the core's sentence and "nothing was written" asserted through the CLI for every refusal arm)
 B1	TestSelectionMatchesTheOrdinalValuesTheReadSupplied	./internal/ccc	0009-selective-context.md §Bounds 1 (the selector is a pure function of the recorded document: the read's own ordinal values, nothing renumbered, gaps and all)
-B2	TestSelectionCarriesASystemRecordAndReportsUndischargedCalls	./internal/ccc	0009-selective-context.md §Bounds 2 (a call the source left undischarged keeps its shape and is counted instead of a result being invented, and a boundary/system record travels as the records they are)
+B2	TestSelectionCarriesASystemRecordAndReportsUndischargedCalls	./internal/ccc	0009-selective-context.md §Bounds 2 (a call the source left undischarged keeps its shape and is counted instead of a result being invented; the window's compaction boundary is carried and its system record's own text is not written as a turn -- the route counts it under `system_records` while its tool evidence travels)
 S1	TestContinueWithoutASelectionReportsNoSelection	./cmd/ccc	AGENTS.md §A conversion carries only what the caller selected … (the flag is opt-in: an unflagged run has no selection section and a specification naming every record converts what it converts)
 S2	TestSelectionCarriesTheCounterpartOfASeparatedCallAndResult	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (the recorded-link seam; an id-less record carries no link, so the writer's own disclosed inference reads the selected line)
 S3	TestContinueRefusesABadSelectionBeforeInstalling	./cmd/ccc	AGENTS.md §A conversion carries only what the caller selected … (a bad selection is refused, never repaired, before any install, with the usage exit code)
 S4	TestSelectionMatchesTheOrdinalValuesTheReadSupplied	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (the report's classes and the space a specification is written against, from the read's own values)
+S5	TestSelectionEndingOffTheReadsLine	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (the line is the read's own and a selection does not redefine it: a window ending on an off-line record is refused by a tree target by name, and a line target omits those records and counts them)

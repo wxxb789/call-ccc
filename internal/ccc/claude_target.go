@@ -198,7 +198,7 @@ func ConvertToClaudeTranscript(conv Conversation, opts ClaudeTargetOptions) (Cla
 	if builder.uuidErr != nil {
 		return ClaudeTranscript{}, builder.uuidErr
 	}
-	if err := selectedLeafRefusal(conv.Messages, builder.tree.lastOrigin.sourceID, conv.Source.Provider); err != nil {
+	if err := selectedLeafRefusal(conv, builder.tree.lastOrigin.sourceID); err != nil {
 		return ClaudeTranscript{}, err
 	}
 	carried := builder.carried

@@ -478,10 +478,11 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 
 	// The selection, when the caller named one, is applied here: after the read and the boundary, because
 	// it is a transformation of the *document* (the source file's bytes are measured whole and never
-	// rewritten), and before the target's own harness is asked anything, because everything downstream --
-	// the writer, the structural read-back, the load check, the printed invocation -- is about the
-	// session that is actually written. Nothing is installed before this point and a refusal returns here,
-	// so a spec this build cannot honour costs no file, no store row and no target identity.
+	// rewritten), and before the target's own answers are asked for -- its executable's version was
+	// already probed above, before the read -- because everything downstream -- the writer, the structural
+	// read-back, the load check, the printed invocation -- is about the session that is actually written.
+	// Nothing is installed before this point and a refusal returns here, so a spec this build cannot
+	// honour costs no file, no store row and no target identity.
 	if strings.TrimSpace(opts.Selection) != "" {
 		selected, report, err := Select(conversation, opts.Selection, opts.StrictSelection)
 		if err != nil {

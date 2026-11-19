@@ -158,7 +158,7 @@ enforces both since 2026-11-19).
 ## 11. Where the implementation departed from this plan, and why
 
 Each departure is recorded here rather than in a rewritten section (0007 §6.1's habit), with the
-measurement that decided it.
+measurement that decided it, followed by the review round's own:
 
 1. **`CheckSelectionOptions` separates the half of the grammar that needs no read.** The plan put every
    refusal in `Select`. The syntax half (`parseSelectionSpec`) needs nothing but the string, so it is
@@ -224,4 +224,21 @@ measurement that decided it.
    conversion (no turn was run), so its record quotes no resumed turn's answer and §5's cells avoid the
    word "answer" where they quote inline code; the record is deliberately not added to
    `test_evidence_claims.py`'s `ROUTE_DOCUMENTS`, which requires §5 to credit a resumed run's answer.
+
+10. **The review round's fix makes the line a property of the read.** §3.2 and §9 decide what a selection
+    *carries*; they left open what the writers' inactive-branch and leaf answers are when a window ends on a
+    record the read's own walk places off its line, and the first implementation derived them from the
+    reduced document — so a selection could revive an abandoned branch and resume from it with no refusal,
+    no count and no report field (the review's R-01, demonstrated on the Pi history fixture). The fix
+    answers the read's walk before reducing and carries it per kept record
+    (`Conversation.sourceLineInactive`); the tree routes' leaf guard refuses by the read's answer
+    (`ErrUnrepresentableLeaf`) and the line routes omit and count the off-line records
+    (`inactive_branch_records`), `TestSelectionEndingOffTheReadsLine` pins it, and the default for "may a
+    selection choose the resumed line" is recorded in Q-0009-04. The same round corrected the refusal
+    criterion's wording in `AGENTS.md`, `docs/conventions.md`, `README.md` and `cmd/ccc/main.go` (a region
+    reaching outside the ordinals the read supplied — not "an ordinal the read does not hold": a region
+    spanning a gap carries the records it holds), corrected the false "before the target harness is asked
+    anything" (its executable's version is probed earlier, before the read), strengthened the B2 case to
+    assert the system record's own disposition rather than naming it in the row, and dropped the CLI case
+    that had claimed — without asserting — the "selects nothing" arm (§11.8's own reason).
 

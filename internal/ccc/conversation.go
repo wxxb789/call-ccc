@@ -215,6 +215,14 @@ type Conversation struct {
 	Source   SourceIdentity `json:"source"`
 	Messages []Message      `json:"messages"`
 	Fidelity Fidelity       `json:"fidelity"`
+	// sourceLineInactive carries, per message of Messages, the *read's* own answer to whether the
+	// source's relations place the record off the line the read's last record answers
+	// (inactiveSourceRecords), keyed to the messages Select kept. It is set only by Select, because the
+	// line is a property of the read and not of a selection: a window that ends off that line must not
+	// redefine it, or a conversion would write a target session whose resumed context is a branch the
+	// source's conversation left. nil means Messages is the read itself, and a writer takes the walk over
+	// it as before.
+	sourceLineInactive []bool
 }
 
 // fidelityWarnings names what the provider itself said about the completeness of one read, in the words

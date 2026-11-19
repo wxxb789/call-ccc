@@ -127,9 +127,10 @@ before anything is installed instead. A call the source itself never answered st
 counted (`calls_undischarged`). Every run that carried a selection reports the transformation in both the
 human block and `--json`: the space the spec was written against, the included and excluded records, the
 necessities added and the undischarged calls, each with counts and the ordinals it names — so a caller can
-see exactly which recorded context crossed and which stayed behind. An ill-formed specification, one naming
-an ordinal the read does not hold and one that would carry no record at all are refused with the core's own
-sentence and exit code 2, before anything is written; a run without the flag is unchanged.
+see exactly which recorded context crossed and which stayed behind. An ill-formed specification, one whose
+region reaches outside the ordinals the read supplied and one that would carry no record at all are refused
+with the core's own sentence and exit code 2, before anything is written (a region that spans a gap carries
+the records it holds); a run without the flag is unchanged.
 
 A conversion is a snapshot of the source at one moment, and it says where that moment is: the result
 names the boundary it covers — the source file's `sha256` and size, whether the file is still the size

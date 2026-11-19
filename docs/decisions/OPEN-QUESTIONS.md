@@ -2930,3 +2930,27 @@ supersede it with a newer one and say which it supersedes.
   sentence (one branch, one extra call), which turns the footgun into a refusal.
 - **Settled by:** an operator preference between "an empty value means 'no selection'" and "an empty value
   is refused by name".
+
+## Q-0009-04 — A selection window that ends off the read's own line
+
+- **Status:** open (default taken: the read's line is not the selection's to redefine). A window whose last
+  record the read's own walk places off the line its loader walks is **refused by a tree target**
+  (`ErrUnrepresentableLeaf`, the entry written last would be the resumed leaf) and **omitted and counted by a
+  line target** (`inactive_branch_records`, the category the unflagged conversion already uses for those
+  records), never written as a session that resumes the abandoned branch.
+- **Question:** may a caller use `--select` to *choose the resumed line* -- e.g. hand a Pi session a window
+  that ends inside a branch the conversation left, so the target continues that branch? The first
+  implementation answered "yes" silently: the writers derived the line from the reduced document, so the
+  window's own last record became the line's end and the branch revived with no refusal, no count and no
+  report field. The review demonstrated it (a Pi-family fixture whose file's leaf is a later active turn,
+  `--select` on the branch's own records).
+- **Default taken:** no. `AGENTS.md` and the pre-existing tree/leaf rule make the line a property of the
+  read ("a selection neither moves a record onto that line nor off it"), and the goal's bounds say a
+  selection never turns a recorded structure into a false one; `Select` therefore carries the read's own
+  per-record answer (`Conversation.sourceLineInactive`) and the writers consult it
+  (`TestSelectionEndingOffTheReadsLine`).
+- **Reversal:** if the owner wants line-selection, record it as a departure, give it its own disclosed class
+  (a selection-owned count/warning naming the revived branch) and drop the read-line flags from the
+  writers.
+- **Settled by:** an operator decision between "a selection chooses what to carry, the read chooses the
+  line" and "a selection may choose the resumed line, disclosed".

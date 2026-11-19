@@ -604,23 +604,59 @@ func unresolvedSourceParentsDetail() string {
 var ErrUnrepresentableLeaf = errors.New(
 	"the source's own loader selects a leaf this conversion cannot write as the target's")
 
+// sourceLineAnswers answers the two facts a route's line rule needs about a conversation: for every
+// message, whether the source's own relations place it off the line the read's last record answers, and
+// how many of the places a walk over the records this conversion writes were ones the read did not
+// establish (the same category the tree writers count).
+//
+// A conversation the reader returned is the read itself, and the walk is taken over it. A conversation
+// Select produced carries the read's own per-record answers (Conversation.sourceLineInactive): the line
+// belongs to the read and not to the window, so a selection that ends off it must not redefine it -- a
+// target session written from such a window would resume a branch the source's conversation left. The
+// unresolved count is the carried line's own: a walk over the records this conversion writes, so it
+// names the places of the entries actually written rather than of a read the caller did not carry.
+func sourceLineAnswers(conversation Conversation) ([]bool, int) {
+	if conversation.sourceLineInactive == nil {
+		return inactiveSourceRecords(conversation.Messages, conversation.Source.Provider)
+	}
+	kept := make([]Message, 0, len(conversation.Messages))
+	for index, message := range conversation.Messages {
+		if !conversation.sourceLineInactive[index] {
+			kept = append(kept, message)
+		}
+	}
+	_, unresolved := inactiveSourceRecords(kept, conversation.Source.Provider)
+	return conversation.sourceLineInactive, unresolved
+}
+
+// sourceLineFlags answers only the per-record flags, for a caller that asks about one record's place
+// (the leaf guard) rather than about the counts.
+func sourceLineFlags(conversation Conversation) []bool {
+	if conversation.sourceLineInactive != nil {
+		return conversation.sourceLineInactive
+	}
+	inactive, _ := inactiveSourceRecords(conversation.Messages, conversation.Source.Provider)
+	return inactive
+}
+
 // selectedLeafRefusal answers whether the entry a tree-reproducing conversion wrote last is one the
-// source's own loader reaches. The check is the read's own line, recorded by the same walk the writers
-// use (provider selects the same reading the tree does): the record the last entry stands for is on it,
+// source's own loader reaches. The check is the read's own line (sourceLineFlags: the walk the writers
+// use, with the read's answer kept through a selection): the record the last entry stands for is on it,
 // or the conversion wrote an off-line branch's record as the file's last entry and the target would
-// resume from there. An empty identity (a record the read answered none for) or a record the read does
-// not hold is not this case: nothing was answered about its place, and the writers already follow the
-// read's own order there.
-func selectedLeafRefusal(messages []Message, lastWrittenSourceID, provider string) error {
+// resume from there -- a window a selection reduced must not move that answer, or a selection could
+// revive the branch by making its own last record the line's end. An empty identity (a record the read
+// answered none for) or a record the read does not hold is not this case: nothing was answered about its
+// place, and the writers already follow the read's own order there.
+func selectedLeafRefusal(conversation Conversation, lastWrittenSourceID string) error {
 	lastWrittenSourceID = strings.TrimSpace(lastWrittenSourceID)
-	if lastWrittenSourceID == "" || len(messages) == 0 {
+	if lastWrittenSourceID == "" || len(conversation.Messages) == 0 {
 		return nil
 	}
 	// The refusal is about the line, not about the count: the walk's own unresolved answer names the
 	// relations the conversion placed, and the leaf check only asks whether the entry written last is on
 	// the line that walk reached.
-	inactive, _ := inactiveSourceRecords(messages, provider)
-	for index, message := range messages {
+	inactive := sourceLineFlags(conversation)
+	for index, message := range conversation.Messages {
 		if strings.TrimSpace(message.SourceUUID) != lastWrittenSourceID {
 			continue
 		}

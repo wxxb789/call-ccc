@@ -134,9 +134,10 @@ continuation options:
                      tool call or a result on is carried with the recorded counterpart of that call or
                      result (a selection never separates one from the other), and each record carried
                      this way is named in the report as a necessity. An ill-formed specification, one
-                     naming an ordinal the read does not hold and one that would carry no record at all
-                     are refused, with nothing written; an empty value is read as the flag's absence,
-                     and the run without the flag is unchanged.
+                     whose region reaches outside the ordinals the read supplied and one that would carry
+                     no record at all are refused, with nothing written (a region spanning a gap carries
+                     the records it holds); an empty value is read as the flag's absence, and the run
+                     without the flag is unchanged.
   --strict-selection refuse, by name and before anything is installed, a selection that would carry a
                      recorded tool call without its recorded result (or the reverse) instead of carrying
                      the counterpart as a necessity. It needs --select.
@@ -152,8 +153,8 @@ exit codes:
   1  nothing was found, the reference was ambiguous, the conversion or installation failed, or a
      requested verification ran and failed
   2  the command line could not be understood, or the selection it names cannot be honoured (a
-     specification that is ill-formed, one naming an ordinal the read does not hold, one that would
-     carry no record, or the --strict-selection refusal)
+     specification that is ill-formed, one whose region reaches outside the ordinals the read supplied,
+     one that would carry no record, or the --strict-selection refusal)
 `
 
 const (
@@ -544,9 +545,10 @@ func runContinue(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stderr, "ccc: %v\n", err)
 		// A selection this build refuses is a command line that cannot be honoured -- a specification
-		// naming ordinals the read does not hold, one that selects nothing, or a strict refusal of a
-		// selection that separates a recorded call from its recorded result -- and it was refused before
-		// anything was installed, so the exit code says "command line" rather than "conversion failed".
+		// naming ordinals outside the space the read's own values span, one that selects nothing, or a
+		// strict refusal of a selection that separates a recorded call from its recorded result -- and it
+		// was refused before anything was installed, so the exit code says "command line" rather than
+		// "conversion failed".
 		if errors.Is(err, ccc.ErrBadSelection) || errors.Is(err, ccc.ErrStrictSelection) {
 			return exitUsage
 		}

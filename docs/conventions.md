@@ -163,8 +163,9 @@ obligation ships no citations file, rather than an empty one.
   recorded with **no** id carries no recorded link, so the seam neither invents one nor carries candidates
   for it; the target's writer applies its own rule to the selected line and discloses the pairing it
   inferred (`generated_call_ids`). A bad selection is refused, never repaired, with the core's own sentence
-  and the usage exit code (2), before any install — ill-formed grammar, an ordinal the read's space does
-  not hold, a spec that would carry no record, and the strict refusal — and the report names the
+  and the usage exit code (2), before any install — ill-formed grammar, a region reaching outside the
+  ordinals the read supplied (below its lowest or above its highest; a region spanning a gap carries the
+  records it holds), a spec that would carry no record, and the strict refusal — and the report names the
   transformation on every run that had one, in the human block and in `--json`, as
   `selection.ordinal_space` (min/max/records/contiguous) and the four classes `included`, `excluded`,
   `necessities_added` and `calls_undischarged`. `included + necessities_added + excluded` is the read's own

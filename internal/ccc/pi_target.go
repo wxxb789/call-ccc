@@ -472,7 +472,7 @@ func convertToPiFamilySession(conv Conversation, opts PiTargetOptions, family pi
 	if builder.idErr != nil {
 		return PiSession{}, builder.idErr
 	}
-	if err := selectedLeafRefusal(conv.Messages, builder.tree.lastOrigin.sourceID, conv.Source.Provider); err != nil {
+	if err := selectedLeafRefusal(conv, builder.tree.lastOrigin.sourceID); err != nil {
 		return PiSession{}, err
 	}
 	return PiSession{

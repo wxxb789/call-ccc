@@ -103,11 +103,15 @@ func CheckSelectionOptions(selection string, strict bool) error {
 // Select applies one selection specification to a read conversation and answers the conversation to carry,
 // the report of what the selection did, and any refusal.
 //
-// It is a pure function of the document: the messages, their own order, their recorded tool calls and
-// results, and nothing else. It never reads a file, follows a linked session or infers project state. The
-// selection matches the ordinal values the read supplied, never a position in the read and never the
-// target's post-write numbering; nothing is renumbered, so the ordinals a report names are the ones a
-// caller wrote the spec with.
+// It is a pure function of the document: the messages, their own order, their recorded identities and
+// relations, their recorded tool calls and results, and the source's own provider label -- which decides
+// whether its reader may answer a projection -- and nothing else. It never reads a file, follows a linked
+// session or infers project state. The selection matches the ordinal values the read supplied, never a
+// position in the read and never the target's post-write numbering; nothing is renumbered, so the ordinals
+// a report names are the ones a caller wrote the spec with. The conversation it returns carries the read's
+// own per-record line answer (Conversation.sourceLineInactive), because the line the target's loader walks
+// is the read's and a window must not redefine it: a window ending on a record the read's walk places off
+// that line is refused by a tree target's leaf guard and omitted and counted by a line target's walk.
 //
 // One structure is carried whole or not at all: a recorded call and the recorded result that answers it
 // (the two records whose ToolUseID is the same non-empty value) are paired by that recorded link, and a
@@ -157,7 +161,16 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 		return Conversation{}, SelectionReport{}, err
 	}
 
+	// The read's own line is answered here, before the document is reduced: which records the source's
+	// relations place off the line its loader walks is a property of the read, and the writers' guard
+	// exists so a target session a resumed turn would continue from cannot be a branch the source's
+	// conversation left. The subset's own walk would make its last record the line's end, so the answer
+	// travels with the reduced conversation (sourceLineInactive) and the writers consult it instead of
+	// re-deriving one from the window.
+	readLineInactive, _ := inactiveSourceRecords(conversation.Messages, conversation.Source.Provider)
+
 	messages := make([]Message, 0, selectedCount+len(necessities))
+	lineInactive := make([]bool, 0, selectedCount+len(necessities))
 	includedOrdinals := []int{}
 	excludedOrdinals := []int{}
 	for index, message := range conversation.Messages {
@@ -165,8 +178,10 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 		case selected[index]:
 			includedOrdinals = append(includedOrdinals, message.Ordinal)
 			messages = append(messages, message)
+			lineInactive = append(lineInactive, readLineInactive[index])
 		case carried[index]:
 			messages = append(messages, message)
+			lineInactive = append(lineInactive, readLineInactive[index])
 		default:
 			excludedOrdinals = append(excludedOrdinals, message.Ordinal)
 		}
@@ -198,9 +213,10 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 		},
 	}
 	selectedConversation := Conversation{
-		Source:   conversation.Source,
-		Messages: messages,
-		Fidelity: conversation.Fidelity,
+		Source:             conversation.Source,
+		Messages:           messages,
+		Fidelity:           conversation.Fidelity,
+		sourceLineInactive: lineInactive,
 	}
 	return selectedConversation, report, nil
 }
