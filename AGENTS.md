@@ -331,11 +331,14 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
 - The harness's own tests are part of that contract: an assertion under `scripts/tests/` must fail
   when the rule it names is broken, and must hold on every platform and every Python 3 the docs name
   — no hard-coded separators, no POSIX-only tool behaviour, no assumption that a tool is installed,
-  no reliance on a `pathlib` behaviour that differs between Python minors, and no expectation that
-  only holds on the platform or the `PATH` the case happens to run on: a case's stub bin answers the
-  host probes it is not about, and the suite re-runs itself in a child whose `PATH` holds no tools and,
-  once, with the platform probe answering Windows-without-a-compiler, so a host-dependent case fails
-  on this host ([`docs/conventions.md`](docs/conventions.md)). The Go suites the gate's `test` step
+  no reliance on a `pathlib` behaviour that differs between Python minors, no grammar above the oldest
+  minor the docs name (`scripts/tests/test_python_floor.py` holds every `scripts/**/*.py` to it: the
+  running parser constrained to 3.11, plus the four PEP 701 f-string relaxations `feature_version`
+  cannot see), and no expectation that only holds on the platform or the `PATH` the case happens to
+  run on: a case's stub bin answers the host probes it is not about, and the suite re-runs itself in
+  a child whose `PATH` holds no tools and, once, with the platform probe answering
+  Windows-without-a-compiler, so a host-dependent case fails on this host
+  ([`docs/conventions.md`](docs/conventions.md)). The Go suites the gate's `test` step
   runs are held to the same rule: a case whose subject is what a check makes of a target harness's
   answer drives that harness through the check's own seam and answers the executable lookup the same
   way, instead of needing the harness installed on the machine running the suite — a case that *is*

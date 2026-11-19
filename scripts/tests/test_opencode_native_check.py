@@ -1913,8 +1913,9 @@ class SourceEvidence(unittest.TestCase):
         short = {0x08: "\\b", 0x09: "\\t", 0x0A: "\\n", 0x0C: "\\f", 0x0D: "\\r"}
         for code in range(0x20):
             with self.subTest(code=code):
+                fallback = f"\\u{code:04x}"  # outside the f-string: 3.11 forbids a backslash in one
                 self.assertEqual(NATIVE_CHECK.go_json_string(chr(code)),
-                                 f'"{short.get(code, f"\\u{code:04x}")}"')
+                                 f'"{short.get(code, fallback)}"')
         for character in (" ", "\x7f", "<", ">", "&", "'", "\u2028", "\u2029", "\u00e9", "\u4e2d",
                           "\U0001F600"):
             with self.subTest(character=character):

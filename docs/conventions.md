@@ -263,16 +263,23 @@ obligation ships no citations file, rather than an empty one.
   tool behaviour, no assumption that a tool is installed, and no `pathlib` behaviour that moved
   between 3.11 and 3.12 (`PurePath` parses its arguments in `__new__` before 3.12 and in `__init__`
   from 3.12 on, which is why the suite's Windows-flavoured root is a plain object holding
-  `PureWindowsPath` children rather than a `PureWindowsPath` subclass). Where a rule cannot be
-  exercised host-independently through a subprocess, the case drives the shipped module directly —
-  `PATH` pinned to a stub bin, one probe patched, or a root whose children carry the Windows path
-  flavour — instead of leaving the rule untested here and hoping a Windows job notices. The same
-  applies to the *host probes* the gate makes before it looks at a tree: a case's stub bin answers the
-  Go toolchain and the C compiler Windows needs, so a case whose subject is something else cannot fall
-  into the Windows compiler boundary by forgetting a stub — a case that *is* about a missing tool says
-  so, by pinning `PATH` to a bin without it or by patching the probe. The suite enforces that from the
-  outside: two of its cases re-run the *whole* suite in a child process whose `PATH` holds no tools,
-  the second with the host answering Windows-without-a-compiler
+  `PureWindowsPath` children rather than a `PureWindowsPath` subclass). The *shipped* Python is held
+  to that floor mechanically, not only by review: `scripts/tests/test_python_floor.py` parses every
+  `scripts/**/*.py` — the Python this repository owns — with the running parser constrained to the
+  oldest minor the docs name (`ast.parse(..., feature_version=(3, 11))`) and, where the running
+  tokenizer is new enough to expose a replacement field's structure, reads the four PEP 701 f-string
+  relaxations that constraint cannot see (a backslash, a comment, the literal's own quote, a field
+  inside two format specs), each pinned against CPython 3.11.14's own verdicts; the suite's own
+  modules are inside that scope, because discovery imports them before any case runs. Where a rule
+  cannot be exercised host-independently through a subprocess, the case drives the shipped module
+  directly — `PATH` pinned to a stub bin, one probe patched, or a root whose children carry the
+  Windows path flavour — instead of leaving the rule untested here and hoping a Windows job notices.
+  The same applies to the *host probes* the gate makes before it looks at a tree: a case's stub bin
+  answers the Go toolchain and the C compiler Windows needs, so a case whose subject is something
+  else cannot fall into the Windows compiler boundary by forgetting a stub — a case that *is* about a
+  missing tool says so, by pinning `PATH` to a bin without it or by patching the probe. The suite
+  enforces that from the outside: two of its cases re-run the *whole* suite in a child process whose
+  `PATH` holds no tools, the second with the host answering Windows-without-a-compiler
   (`scripts/tests/test_gate.py`, `HostCase`), so a case that leans on this machine, or on the platform
   it runs on, fails on this machine rather than in a CI job nobody can watch. The Go suites the `test`
   step runs are held to the same rule: a case whose subject is what a check makes of a target

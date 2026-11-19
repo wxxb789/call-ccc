@@ -42,7 +42,15 @@ suite must hold on every Python 3 the docs allow and not only on CI's pinned 3.1
 Python 3, and no case may depend on a `pathlib` behaviour that moved between minor versions —
 `PurePath` parses its constructor arguments in `__new__` before 3.12 and in `__init__` from 3.12 on,
 which is why the suite's Windows-flavoured root is a plain object holding `PureWindowsPath` children
-instead of a `PureWindowsPath` subclass.
+instead of a `PureWindowsPath` subclass. The *shipped* Python is held to that floor by a case, not
+only by review: `scripts/tests/test_python_floor.py` parses every `scripts/**/*.py` with the running
+parser constrained to the oldest minor the docs name (`ast.parse(..., feature_version=(3, 11))`) and
+reads the four PEP 701 f-string relaxations that constraint cannot see from the token structure of
+each literal (a backslash, a comment, the literal's own quote, a field inside two format specs — the
+rule set measured against CPython 3.11.14's own verdicts, its corpus committed). Review round 4 of
+goal 0008 found the pin was missing the hard way: one 3.12-only f-string in the suite made discovery
+fail on 3.11, so the required `selftest` step broke on the interpreter the docs allow while CI's
+3.13 pinned leg stayed green.
 
 The same step must not depend on the *host* either, so two of its cases re-run the whole suite in a
 child process — once with `PATH` pointing at a directory that holds no tools at all, once with the

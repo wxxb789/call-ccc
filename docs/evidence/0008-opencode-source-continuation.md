@@ -917,6 +917,145 @@ The plan's §11 gained its seventh departure note and the decision record a new 
 disposition between mirroring and refusing). No goal file moves: 0008 is still the increment on its branch,
 awaiting operator acceptance.
 
+### The fifth review round's findings (`r4`, on `262704b` + working tree), fixed and re-measured
+
+`review-findings-r4.md` carried one P2 finding, about the *suite itself* and established by static
+inspection: `scripts/tests/test_opencode_native_check.py` held a backslash inside an f-string expression
+(`f'"{short.get(code, f"\\u{code:04x}")}"'`, line 1917 — added by the previous round's Go-encoder mirror),
+a form PEP 701 relaxed at 3.12 and 3.11's grammar rejects. `scripts/gate.py` runs discovery with the
+gate's own interpreter and `selftest` is a required step, so the documented gate could not import the suite
+on a 3.11 host. **Reproduced before anything was changed**, on this host's CPython 3.11.14
+(`/home/azureuser/.local/bin/python3.11`), the finding's own two traces:
+
+```console
+$ /home/azureuser/.local/bin/python3.11 -c "compile(open('scripts/tests/test_opencode_native_check.py','rb').read(), 'x', 'exec')"
+SyntaxError: f-string expression part cannot include a backslash        # line 1917
+$ /home/azureuser/.local/bin/python3.11 -m unittest discover -s scripts/tests -p 'test_*.py'
+Ran 329 tests in 8.601s
+FAILED (failures=2, errors=1)          # broken: test_opencode_native_check (the import error)
+```
+
+(The two failures are `HostCase`'s nested runs, which re-run the whole suite and report the broken child;
+the module discovery could not import is the one error, which is why the count reads 329 where the
+repaired suite reads 442.)
+
+**R4-1 — the required selftest must be importable on every minor the docs name (P2).** Fixed as the
+finding asked: the escaped fallback is computed outside the outer f-string
+(`fallback = f"\\u{code:04x}"  # outside the f-string: 3.11 forbids a backslash in one`), so the case's
+semantics are unchanged and the module parses at 3.11. The round-4 close-out asked for a *pin* rather than
+another one-line fix, and the class had none: no case could fail when a shipped source needed grammar above
+the floor, so the same defect could arrive again in any file the gate or the suite loads.
+
+**The pin: `scripts/tests/test_python_floor.py`** (5 cases; `scripts/**/*.py` — the Python the manifest
+marks `owned`; the carried upstream tree is out of scope and untouchable). Its docstring carries the
+claim, the measured facts and its own stated limit; two arms answer the floor, neither skipping, so the
+claim holds on every host:
+
+- the **grammar arm**, `ast.parse(source, feature_version=(3, 11))` — the running interpreter's own parser
+  constrained to the floor. Measured on CPython 3.15.2 it *rejects* PEP 695 (`type X = int`,
+  `def f[T]()`, `class C[T]`), 3.13's type-parameter defaults, and 3.14's t-strings and
+  parenthesized-free `except`, while it *accepts* every f-string form PEP 701 relaxed — the reported shape
+  among them. On a 3.11 host the arm is the floor parser itself, so it answers the whole question there.
+- the **f-string arm** reads each literal's field structure from the 3.12 tokenizer
+  (`FSTRING_START`/`FSTRING_END`, field braces as real `{`/`}` operators) and reports the four relaxations
+  the grammar arm cannot see.
+
+**f-strings and `feature_version`, measured.** Each `FSTRING_CORPUS` entry was compiled by CPython 3.11.14
+*and* CPython 3.15.2 on 2026-11-19; the table below is the 3.11 half re-derived against the shipped corpus
+(mismatches against the committed expectation: **0**), and every rejection is 3.11's own words:
+
+| Corpus entry | 3.11.14 | 3.15.2 |
+| --- | --- | --- |
+| the reviewed defect: `x = f"{d.get(1, f"\u{1:04x}")}"` | `unexpected character after line continuation character` (the literal is truncated at its own quote) | accepted |
+| the same quote inside a field: `x = f"{d["k"]}"` | `f-string: unmatched '['` | accepted |
+| a same-quote nested literal: `x = f"{f"{a}"}"` | `f-string: expecting '}'` | accepted |
+| the own triple-quote run in a field: `x = f"""{d["""k"""]}"""` | `f-string: unmatched '['` | accepted |
+| a comment in a field (two lines, the field closed on the second) | `f-string expression part cannot include '#'` | accepted |
+| a backslash in a field after a non-ASCII literal: `x = f"é{'\n'}{a}"` | `f-string expression part cannot include a backslash` | accepted |
+| a field inside two format specs: `x = f"{a:{b:{c}}}"` | `f-string: expressions nested too deeply` | accepted |
+| *floor-valid, reported by neither arm*: a backslash in the literal part (`f"A\nB{a}"`), a backslash in a spec (`f"{a:\n}"`), `#` in a spec (`f"{a:#x}"`), one spec deep (`f"{a:{w}}"`), other quotes in a field (`f"{'a' + 'b'}"`, `f"{f'{a}'}"`), `#` inside a string in a field (`f"{ '#' }"`), a same quote in a triple (`f'''{ 'a' }'''`), a two-quote run in a triple (`f"""{ "" }"""`), a slice colon (`f"{a[1:2]}"`) | accepted | accepted |
+
+Two further measurements shaped the arms rather than the corpus: `feature_version=(3, 11)` is a *no-op*
+for f-strings on a newer interpreter (it accepted the reviewed defect's exact line), which is why the
+second arm exists at all; and a UTF-8 BOM is stripped by the importer but rejected by `ast.parse` of the
+raw *string*, so the pin reads every source `utf-8-sig` and a case pins that reading (and its failure
+mode) on a throw-away copy.
+
+**Every rule proven by an executed mutation, on this tree, applied and reverted.** The observed failure is
+the pin's own message (the live-tree case names path, line and rule):
+
+| Rule | Mutation (the first row restores the finding's own line; the middle three append one shape each to `scripts/opencode-native-check.py`) | Observed |
+| --- | --- | --- |
+| a backslash in a field's expression (the reviewed defect) | `scripts/tests/test_opencode_native_check.py:1917` reverted to `f'"{short.get(code, f"\\u{code:04x}")}"'` | `FAIL: scripts/tests/test_opencode_native_check.py:1917: a backslash stands in a replacement field's expression, which the floor rejects` |
+| a comment in a field | `COMMENT_PROBE = f"""{1 # a comment in a field`⏎`}"""` (the comment runs to the line's end, so the field closes on the second line) | `FAIL: …:2203: a comment stands in a replacement field's expression, which the floor rejects` |
+| the literal's own quote inside it | `OWN_QUOTE_PROBE = f"{d["k"]}"` | `FAIL: …:2205: the literal's own quote stands inside it, where the floor's tokenizer ends the literal` |
+| a field inside two format specs | `TWO_SPECS_PROBE = f"{a:{b:{c}}}"` | `FAIL: …:2206: a replacement field stands inside two format specs, deeper than the floor allows` |
+| grammar above the floor (the grammar arm) | `type FloorProbe = int` | `FAIL: …:2207: Type statement is only supported in Python 3.12 and greater` |
+| the BOM reading | `read_source`'s `utf-8-sig` → `utf-8` | `FAIL: Lists differ: [(1, 'invalid non-printable character U+FEFF')] != []` |
+
+The mutant script's own floor verdict, for the record (the shapes are floor-rejected, not merely
+newer-valid): 3.11's compile of `scripts/opencode-native-check.py` with the four probes answered
+`f-string expression part cannot include '#'` at line 2204. Each corpus entry additionally pins its rule's
+*reason string* by name, and the live-tree case is what the mutations above exercise.
+
+**Re-measured on this tree.** The `selftest` step 437 → 442 cases (`Ran 442 tests`, `rc=0`), and the suite
+now holds on the floor interpreter the docs name (where the pre-fix tree read `Ran 329 … FAILED`):
+
+```console
+$ /home/azureuser/.local/bin/python3.11 -m unittest discover -s scripts/tests -p 'test_*.py'
+Ran 442 tests in 8.143s
+
+OK
+```
+
+Gate, re-run on this tree (`GATE: PASS`, exit 0):
+
+```console
+$ python3 scripts/gate.py
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3624 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 442 tests in 8.639s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5719 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified
+  PASS     secrets  no leaks found in 188 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The finding's own scenario — *the documented gate run under 3.11* — is re-derived whole on the same tree,
+not inferred from the `selftest` step alone (the Go steps are the same commands on the same tree):
+
+```console
+$ /home/azureuser/.local/bin/python3.11 scripts/gate.py
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3624 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 442 tests in 8.167s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5719 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified
+  PASS     secrets  no leaks found in 188 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+`AGENTS.md` moves with this round: the rule review round 4 found unenforced is now named where the file
+already lists the suite's cross-platform and cross-minor rules — "no grammar above the oldest minor the
+docs name (`scripts/tests/test_python_floor.py` holds every `scripts/**/*.py` to it: the running parser
+constrained to 3.11, plus the four PEP 701 f-string relaxations `feature_version` cannot see)" — and the
+two documents that state the rule gained the pin's description (`docs/conventions.md`'s Python paragraph,
+`docs/harness.md`'s `selftest` section). The plan's §11 gained its eighth departure note and
+`docs/decisions/OPEN-QUESTIONS.md` a ninth 0008 entry (Q-0008-09: the floor is pinned in the suite; whether
+CI also runs a floor leg is the operator's call, because the CI matrix and `docs/harness.md`'s CI section
+are one statement held together by `scripts/tests/test_ci_matrix_claim.py`, which refuses a matrix key it
+does not read). No goal file moves: 0008 is still the increment on its branch, awaiting operator
+acceptance, and none of the other goal files under `docs/goals/` is accepted (0009–0013 provisional,
+0014–0017 ready).
+
 ## 7. Residual limits and boundaries named rather than hidden
 
 - **The real turn on this host.** §2 and §4: a Codex turn in a scratch home answers `401 Unauthorized`; the

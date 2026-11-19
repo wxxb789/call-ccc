@@ -2833,3 +2833,31 @@ supersede it with a newer one and say which it supersedes.
   for block-bearing results (the encoding, the member rewrite, or whether the read hands it on as decoded
   text) — the mirror belongs to the carried revision's own rules, so the measurement belongs to an upstream
   revision bump, and an operator who prefers refusal for this shape can say so.
+
+## Q-0008-09 — The Python-minor floor is pinned in the suite; whether CI also runs the gate under it is the operator's call
+
+- **Status:** open (default taken: the floor is pinned in the suite and the floor run is this increment's
+  evidence on the authoring host; the CI matrix keeps its two 3.13 legs).
+- **Question:** the docs bind the suite -- and, from this round, the shipped `scripts/**/*.py` -- to the
+  oldest Python they name (3.11), and the fourth review round found that binding unenforced: a 3.12-only
+  f-string in the suite made `selftest` unimportable under 3.11 (measured: `python3.11 -m unittest discover`
+  reported the module broken before any case ran) while CI's pinned 3.13 stayed green. The fix adds
+  `scripts/tests/test_python_floor.py` (the running parser constrained to the floor via `feature_version`,
+  plus the four PEP 701 f-string relaxations that constraint cannot see). That pin runs wherever the suite
+  runs and needs no host tool -- but CI's matrix never runs a floor interpreter, and the matrix and the CI
+  section of `docs/harness.md` are one statement held together by `scripts/tests/test_ci_matrix_claim.py`
+  (which refuses a matrix key it does not read), so adding a floor leg is a deliberate change to a pinned
+  artifact, not a step this round could take inside its own scope.
+- **Default taken:** no CI change. The residual gap is disclosed rather than hidden: the pin's four rules
+  cover the measured PEP 701 set, and a relaxation outside it (PEP 701's implicit parentheses around a
+  field's expression, say) is caught only where the interpreter at the floor itself parses the file -- which
+  is why the floor run is recorded as evidence: `python3.11 -m unittest discover -s scripts/tests
+  -p 'test_*.py'` answers `Ran 442 tests ... OK` on the authoring host (and `python3.11 scripts/gate.py`
+  was run for the same record).
+- **Reversal:** add a `python-version` dimension (or one `include:` leg) to `.github/workflows/gate.yml`,
+  extend `scripts/tests/test_ci_matrix_claim.py`'s reader and the §CI/§Platform-boundary statement with it,
+  and let CI hold the floor; the cost is one more job per run, the benefit is the *behavioural* half of the
+  3.11 claim (the suite's `pathlib`-style differences, not only its parses) checked where nobody has to
+  remember to run it.
+- **Settled by:** an operator instruction, or a CI change that adds (or deliberately refuses) a floor leg --
+  the pin itself needs no decision.

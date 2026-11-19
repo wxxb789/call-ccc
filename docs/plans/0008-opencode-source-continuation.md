@@ -332,3 +332,16 @@ habit), followed by the review round's own:
    the members (including the inline-image rewrite `input_image`/`image_url` with `uri` dropped and
    `mime`/`name` kept) and the encoder's escapes, each failing under an executed mutation of the line it
    claims.
+
+8. **The Python-minor floor the docs always claimed is now pinned by a case (`scripts/tests/test_python_floor.py`).**
+   The r4 round found that the claim had no enforcement: a case added in this increment (the Go encoder
+   mirror of note 7) held a backslash inside an f-string expression, which 3.11's grammar rejects, so
+   the required `selftest` step could not even *import* the suite on an interpreter the docs allow
+   (measured: `python3.11 -m unittest discover` reported the module as broken before any case ran) while
+   CI's 3.13 leg stayed green. The fix moves the fallback out of the f-string; the pin is the new module,
+   which parses every `scripts/**/*.py` with the running parser constrained to the floor
+   (`feature_version=(3, 11)`) and reads the four PEP 701 f-string relaxations that constraint cannot see
+   from each literal's token structure — a rule set measured against CPython 3.11.14's verdicts (the
+   pin's own corpus, carried in the module), with each rule proven by an executed mutation in the
+   round's record. Not a planned deliverable: it exists because the fix-round close-out requires a
+   machine-checked pin for the rule the round touched, and it changes no other obligation.
