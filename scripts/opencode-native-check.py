@@ -148,6 +148,7 @@ from native_check_common import (  # noqa: E402
     reported_invocation as _shared_reported_invocation,
     rewrite_source_cwd,
     run,
+    session_records,
     shell_words,
     tree_digest,
     unquoted_text,
@@ -191,7 +192,7 @@ OPENCODE_DB_ENV = "OPENCODE_DB"
 CODEX_HOME_ENV = "CODEX_HOME"
 
 #: The committed fixture the source direction plants: the harness's own export document for one invented
-#: conversation (internal/ccc/fixturegen's `opencodeSession`), which is the only file-shaped native
+#: conversation (internal/ccc/fixturegen's `openCodeSession`), which is the only file-shaped native
 #: artifact this provider has -- a session is a row inside the harness's own store, so the document is what
 #: is committed and the harness's own importer materialises the store from it.
 OPENCODE_SOURCE_FIXTURE = Path("opencode", "ses_0008opencodefixture00000001.json")
@@ -897,13 +898,8 @@ def main(argv: list[str] | None = None) -> int:
     if unrelated_before is None:
         return stop()
 
-    build_parent = (repo / BINARY).parent
-    build_parent.mkdir(parents=True, exist_ok=True)
-    build = deadline_run([go, "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY), "./cmd/ccc"], cwd=repo)
-    if build.returncode != 0:
-        record("ccc builds with the flags upstream ships", False, build.stderr.strip()[:400])
+    if not _build_ccc(go, repo):
         return stop()
-    record("ccc builds with the flags upstream ships", True)
 
     # The conversion is verified at the load level even when a turn was requested: with --resume-prompt
     # this check runs that one real turn itself, below, through the invocation the report printed -- so
@@ -914,34 +910,24 @@ def main(argv: list[str] | None = None) -> int:
                TARGET_PROVIDER, "--target-home", str(conversion_home), "--target-binary", opencode,
                "--verify", "load", "--json"]
     convert = deadline_run(command, cwd=repo, env={SOURCE_ROOT_ENV[SOURCE_PROVIDER]: str(source_root)})
-    try:
-        document = json.loads(convert.stdout)
-    except json.JSONDecodeError:
-        record("ccc continue writes one JSON result document", False,
-               bounded(convert.stdout or convert.stderr, 400))
+    read = _read_conversion_report(convert)
+    if read is None:
         return stop()
-    record("ccc continue writes one JSON result document", True)
+    document, blocks = read
     parsed = document
 
-    conversion = document.get("conversion") or {}
-    installation = document.get("installation") or {}
-    target = document.get("target_session") or {}
-    verification = document.get("verification") or {}
-    losses = {loss.get("category"): loss.get("count") for loss in conversion.get("losses") or []}
+    conversion = blocks["conversion"]
+    installation = blocks["installation"]
+    target = blocks["target_session"]
+    verification = blocks["verification"]
     carried = conversion.get("carried") or {}
-    record("the conversion reports the conversation it carried and every loss category",
-           conversion.get("state") == "converted" and carried.get("messages", 0) > 0 and bool(losses),
-           f"carried {carried.get('messages')} message(s), {carried.get('tool_calls')} call(s), "
-           f"{carried.get('tool_results')} result(s); loss categories named: {len(losses)}")
+    _record_carried_conversion(conversion)
     record("the installation names the harness's own importer",
            installation.get("state") == "installed"
            and "opencode session import" in (installation.get("mechanism") or ""),
            f"{installation.get('state')} — {bounded(installation.get('mechanism') or '', 200)}")
-    record("ccc continue exits 0", convert.returncode == 0,
-           f"exit {convert.returncode}; stderr {bounded(convert.stderr, 300)}")
-    structure = verification.get("structure") or {}
-    record("the structural read-back verified the installed session",
-           structure.get("state") == "verified", bounded(structure.get("detail") or "", 400))
+    _record_conversion_exit(convert)
+    _record_structure_read_back(verification)
     load = verification.get("load") or {}
     record("the route's own load check verified the installed session natively",
            load.get("state") == "verified", bounded(load.get("detail") or "", 400))
@@ -1228,6 +1214,75 @@ def _run_turn(args: argparse.Namespace, target: dict, opencode: str, data_root: 
            + f" {needle[:160]!r}")
 
 
+# --- the build and the report reading both directions share -------------------------------------------
+
+
+def _build_ccc(go: str, repo: Path) -> bool:
+    """Build the ccc binary this run drives, recording the one check both directions share.
+
+    It answers whether the build succeeded; the direction that called it ends its own run with its own
+    cleanup when it did not (``stop``), so that decision stays with the caller."""
+    build_parent = (repo / BINARY).parent
+    build_parent.mkdir(parents=True, exist_ok=True)
+    build = deadline_run([go, "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY), "./cmd/ccc"], cwd=repo)
+    if build.returncode != 0:
+        record("ccc builds with the flags upstream ships", False, build.stderr.strip()[:400])
+        return False
+    record("ccc builds with the flags upstream ships", True)
+    return True
+
+
+def _read_conversion_report(convert: subprocess.CompletedProcess) -> tuple[dict, dict[str, dict]] | None:
+    """The result document one ``ccc continue … --json`` run wrote, and its member blocks, or None when its
+    stdout is not one JSON object.
+
+    It records the one check both directions make of that read -- the document parses -- and answers the
+    document beside the blocks each direction reads its own records from: ``conversion``, ``installation``,
+    ``target_session``, ``verification`` and ``source``, each defaulted to an empty mapping, so a member a
+    report omitted is the caller's own check to fail rather than a KeyError in this reading. A stdout that
+    carries a JSON value which is not an object is the same recorded failure as one that carries no
+    document at all: the readings below would otherwise raise instead of recording the check that failed.
+    """
+    try:
+        document = json.loads(convert.stdout)
+    except json.JSONDecodeError:
+        document = None
+    if not isinstance(document, dict):
+        record("ccc continue writes one JSON result document", False,
+               bounded(convert.stdout or convert.stderr, 400))
+        return None
+    record("ccc continue writes one JSON result document", True)
+    blocks = {name: document.get(name) or {} for name in
+              ("conversion", "installation", "target_session", "verification", "source")}
+    return document, blocks
+
+
+def _record_carried_conversion(conversion: dict) -> None:
+    """Record the one check both directions make of the report's conversion block: the conversation was
+    converted, it carried at least one message, and every loss category is named."""
+    carried = conversion.get("carried") or {}
+    losses = {loss.get("category"): loss.get("count") for loss in conversion.get("losses") or []}
+    record("the conversion reports the conversation it carried and every loss category",
+           conversion.get("state") == "converted" and carried.get("messages", 0) > 0 and bool(losses),
+           f"carried {carried.get('messages')} message(s), {carried.get('tool_calls')} call(s), "
+           f"{carried.get('tool_results')} result(s); loss categories named: {len(losses)}")
+
+
+def _record_conversion_exit(convert: subprocess.CompletedProcess) -> None:
+    """Record the conversion's exit status: one check both directions make, each at the point its own
+    record order puts it."""
+    record("ccc continue exits 0", convert.returncode == 0,
+           f"exit {convert.returncode}; stderr {bounded(convert.stderr, 300)}")
+
+
+def _record_structure_read_back(verification: dict) -> None:
+    """Record the inherited reader's structural read-back of the installed session: one check both
+    directions make, each at the point its own record order puts it."""
+    structure = verification.get("structure") or {}
+    record("the structural read-back verified the installed session",
+           structure.get("state") == "verified", bounded(structure.get("detail") or "", 400))
+
+
 # --- the source direction (goal 0008): the harness writes the source store, Codex is the target --------
 
 
@@ -1266,8 +1321,8 @@ def opencode_tool_call_input(part: dict) -> str:
 
     The read holds none for a ``pending``/``streaming`` part (the reader blanks the call's input while its
     state is still open -- ``internal/parser``'s ``openCodeV2ToolCall``) and for a part that recorded no
-    input at all, and each writer then writes ``{}`` and counts it (``empty_inputs``): a comparison that
-    expected the document's own member there would report a difference that is not one."""
+    input at all, and each writer then writes ``{}`` and counts it (``empty_tool_inputs``): a comparison
+    that expected the document's own member there would report a difference that is not one."""
     state = part.get("state") if isinstance(part.get("state"), dict) else {}
     if str(state.get("status") or "") in ("pending", "streaming"):
         raw: object = ""
@@ -1360,22 +1415,6 @@ def opencode_document_evidence(document: dict) -> dict[str, list[str]]:
                 if text.strip():
                     evidence["call_results"].append(text)
     return evidence
-
-
-def rollout_records(path: Path) -> list[dict]:
-    """Every record of one installed Codex rollout, in the file's own order."""
-    records: list[dict] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            value = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict):
-            records.append(value)
-    return records
 
 
 def rollout_evidence(records: list[dict]) -> dict[str, list[str]]:
@@ -1488,18 +1527,29 @@ def run_source_direction(args: argparse.Namespace, repo: Path, go: str, opencode
     """Goal 0008's direction, end to end: the harness's own importer plants the fixture's store, the CLI
     converts it into a Codex session, the target harness's own loader opens what was installed, and this
     check's own readings of the installed rollout and of the source's records are what the verdict rests on."""
+    def refuse(message: str) -> int:
+        """Refuse this run before it plants anything, leaving nothing behind: the scratch tree ``main``
+        made for it is removed here, because no check has run and the run's own report -- the only other
+        remover -- is never reached on this path."""
+        print(message, file=sys.stderr)
+        shutil.rmtree(scratch, ignore_errors=True)
+        return 2
+
     fixture = Path(args.source).resolve() if args.source else repo / FIXTURE_ROOT / OPENCODE_SOURCE_FIXTURE
     if not fixture.is_file():
-        print(f"{fixture} is not a file: this direction plants the committed OpenCode fixture document, or "
-              f"the one --source names", file=sys.stderr)
-        return 2
-    source = fixture_document(fixture)
+        return refuse(f"{fixture} is not a file: this direction plants the committed OpenCode fixture "
+                      f"document, or the one --source names")
+    try:
+        source = fixture_document(fixture)
+    except SystemExit as exc:
+        # The document's own reading refuses a file it cannot read or one that names no session; its words
+        # are this refusal's, and the scratch tree still goes with it.
+        return refuse(str(exc))
     session_id = str(source["info"]["id"])
     if args.source is None and session_id != OPENCODE_SOURCE_SESSION:
-        print(f"the committed fixture {fixture} names {session_id}, not "
-              f"{OPENCODE_SOURCE_SESSION}: internal/ccc/fixturegen and this check's own identity have "
-              f"drifted apart, and the run would plant a session it does not know", file=sys.stderr)
-        return 2
+        return refuse(f"the committed fixture {fixture} names {session_id}, not "
+                      f"{OPENCODE_SOURCE_SESSION}: internal/ccc/fixturegen and this check's own identity "
+                      f"have drifted apart, and the run would plant a session it does not know")
     expected = opencode_document_evidence(source)
 
     workspace = scratch / "workspace"
@@ -1512,9 +1562,12 @@ def run_source_direction(args: argparse.Namespace, repo: Path, go: str, opencode
 
     version = deadline_run([opencode, "--version"]).stdout.strip()
     codex_version = deadline_run([codex, "--version"]).stdout.strip()
+    # ``--source`` names a document of the caller's own, which need not live below the repository: one
+    # outside it is named by its own path rather than by a relative spelling it has none of.
+    shown = fixture.relative_to(repo) if fixture.is_relative_to(repo) else fixture
     print(f"repo:        {repo}")
     print(f"direction:   {args.direction} ({TARGET_PROVIDER}:{session_id} → {CODEX_TARGET_PROVIDER})")
-    print(f"source:      {fixture.relative_to(repo)} (planted through the harness's own importer; the "
+    print(f"source:      {shown} (planted through the harness's own importer; the "
           f"store is materialised by the harness, not committed)")
     print(f"workspace:   {workspace} (the directory the session is planted under: the harness's own "
           f"importer refuses one that does not exist)")
@@ -1535,13 +1588,8 @@ def run_source_direction(args: argparse.Namespace, repo: Path, go: str, opencode
         remove_planted(opencode, data_root, published, session_id)
         return finish(args, scratch, parsed, target_session)
 
-    build_parent = (repo / BINARY).parent
-    build_parent.mkdir(parents=True, exist_ok=True)
-    build = deadline_run([go, "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY), "./cmd/ccc"], cwd=repo)
-    if build.returncode != 0:
-        record("ccc builds with the flags upstream ships", False, build.stderr.strip()[:400])
+    if not _build_ccc(go, repo):
         return stop()
-    record("ccc builds with the flags upstream ships", True)
 
     published, detail = plant_fixture(opencode, data_root, fixture, workspace, session_id)
     record("the source session is planted through the harness's own importer", published, detail)
@@ -1572,37 +1620,26 @@ def run_source_direction(args: argparse.Namespace, repo: Path, go: str, opencode
                CODEX_TARGET_PROVIDER, "--target-home", str(codex_home), "--target-binary", codex,
                "--verify", "load", "--json"]
     convert = deadline_run(command, cwd=repo, env={SOURCE_ROOT_ENV[TARGET_PROVIDER]: str(data_dir)})
-    try:
-        document = json.loads(convert.stdout)
-    except json.JSONDecodeError:
-        record("ccc continue writes one JSON result document", False,
-               bounded(convert.stdout or convert.stderr, 400))
+    read = _read_conversion_report(convert)
+    if read is None:
         return stop()
-    record("ccc continue writes one JSON result document", True)
+    document, blocks = read
     parsed = document
 
-    conversion = document.get("conversion") or {}
-    installation = document.get("installation") or {}
-    target = document.get("target_session") or {}
-    verification = document.get("verification") or {}
-    source_report = document.get("source") or {}
-    carried = conversion.get("carried") or {}
-    losses = {loss.get("category"): loss.get("count") for loss in conversion.get("losses") or []}
-    record("the conversion reports the conversation it carried and every loss category",
-           conversion.get("state") == "converted" and carried.get("messages", 0) > 0 and bool(losses),
-           f"carried {carried.get('messages')} message(s), {carried.get('tool_calls')} call(s), "
-           f"{carried.get('tool_results')} result(s); loss categories named: {len(losses)}")
-    record("ccc continue exits 0", convert.returncode == 0,
-           f"exit {convert.returncode}; stderr {bounded(convert.stderr, 300)}")
+    conversion = blocks["conversion"]
+    installation = blocks["installation"]
+    target = blocks["target_session"]
+    verification = blocks["verification"]
+    source_report = blocks["source"]
+    _record_carried_conversion(conversion)
+    _record_conversion_exit(convert)
 
     target_session = str(target.get("session_id") or "")
     rollout = Path(str(target.get("path") or ""))
     record("the installation names the target's own mechanism and the installed rollout",
            installation.get("state") == "installed" and bool(target_session) and rollout.is_file(),
            f"{installation.get('state')} [{installation.get('mechanism')}] -> {target.get('path')!r}")
-    structure = verification.get("structure") or {}
-    record("the structural read-back verified the installed session",
-           structure.get("state") == "verified", bounded(structure.get("detail") or "", 400))
+    _record_structure_read_back(verification)
     load = verification.get("load") or {}
     record("the target harness's own loader verified the installed session",
            load.get("state") == "verified", bounded(load.get("detail") or "", 400))
@@ -1623,7 +1660,7 @@ def run_source_direction(args: argparse.Namespace, repo: Path, go: str, opencode
     # conversion wrote here, because the conversion ran no turn.
     records: list[dict] = []
     if rollout.is_file():
-        records = rollout_records(rollout)
+        records = session_records(rollout.read_text(encoding="utf-8"))
         rollout_differences = evidence_differences(expected, rollout_evidence(records))
         record("the installed rollout holds the fixture's own prompts, tool call, result text and texts",
                not rollout_differences,
@@ -1720,10 +1757,10 @@ def run_source_turn(args: argparse.Namespace, target: dict, codex: str, codex_ho
     if args.expect:
         record(f"the turn's answer contains {args.expect!r}", args.expect in answer,
                bounded(answer, 160))
-    after_records = rollout_records(rollout) if rollout.is_file() else []
+    after_records = session_records(rollout.read_text(encoding="utf-8")) if rollout.is_file() else []
     unchanged = after_records[:len(records_before)] == records_before
-    texts = (rollout_evidence(after_records)["user_texts"]
-             + rollout_evidence(after_records)["assistant_texts"]) if after_records else []
+    after_evidence = rollout_evidence(after_records)
+    texts = after_evidence["user_texts"] + after_evidence["assistant_texts"]
     holds_prompt = any(args.resume_prompt in text for text in texts)
     record("the turn was appended to the installed session",
            len(after_records) > len(records_before) and unchanged and holds_prompt,

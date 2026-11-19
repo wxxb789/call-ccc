@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,7 +16,7 @@ import (
 // openCodeSession): the source direction's reference in these cases.
 const openCodeSourceFixtureID = "ses_0008opencodefixture00000001"
 
-// openCodeSourceStorePath is the committed fixture document.
+// openCodeSourceFixturePath is the committed fixture document.
 func openCodeSourceFixturePath(t *testing.T) string {
 	t.Helper()
 	return filepath.Join(fixtureRoot(t), "opencode", openCodeSourceFixtureID+".json")
@@ -68,12 +69,12 @@ func TestContinueFromOpenCodeWritesTheEstablishedReport(t *testing.T) {
 	}
 	for _, key := range wantKeys {
 		if _, ok := document[key]; !ok {
-			t.Errorf("the report holds no %s member: %v", key, sortedKeys(document))
+			t.Errorf("the report holds no %s member: %v", key, slices.Sorted(maps.Keys(document)))
 		}
 	}
-	for _, key := range sortedKeys(document) {
+	for _, key := range slices.Sorted(maps.Keys(document)) {
 		if !slices.Contains(wantKeys, key) && key != "warnings" {
-			t.Errorf("the report holds an unexpected %s member: %v", key, sortedKeys(document))
+			t.Errorf("the report holds an unexpected %s member: %v", key, slices.Sorted(maps.Keys(document)))
 		}
 	}
 	ref, _ := document["ref"].(map[string]any)
@@ -211,14 +212,4 @@ func TestContinueFromAnUnknownOpenCodeSessionFailsWithoutWriting(t *testing.T) {
 	if _, err := os.Stat(targetHome); !os.IsNotExist(err) {
 		t.Errorf("the refused run created the target home %s (%v)", targetHome, err)
 	}
-}
-
-// sortedKeys lists a decoded document's members, so a shape failure shows what was there.
-func sortedKeys(document map[string]any) []string {
-	keys := make([]string, 0, len(document))
-	for key := range document {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	return keys
 }

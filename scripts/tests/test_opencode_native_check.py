@@ -1650,8 +1650,8 @@ class SourceEvidence(unittest.TestCase):
 
     def test_the_expectation_holds_what_a_conversion_writes_for_an_open_call(self) -> None:
         """A ``pending``/``streaming`` part's input is blanked by the read and written as ``{}`` by each
-        writer (counted ``empty_inputs``), and no result is written while the part is open: an expectation
-        holding the document's own member would report a difference that is not one."""
+        writer (counted ``empty_tool_inputs``), and no result is written while the part is open: an
+        expectation holding the document's own member would report a difference that is not one."""
         document = {"messages": [{"type": "assistant", "content": [{
             "type": "tool", "name": "read",
             "state": {"status": "streaming", "input": {"path": "/x"}}}]}]}
@@ -1878,8 +1878,7 @@ class SourceDirectionRun(unittest.TestCase):
     """The whole direction driven in-process: the harness's own importer, the CLI conversion, the target's
     loader and the turn are all stubbed, so *the flow itself* is exercised without either harness -- which
     level the conversion is asked for, which commands run in which order, and whether every check the run
-    promises is reached. (The first revision of this direction named a marker it had not imported, which
-    only a driven run could see.)"""
+    promises is reached."""
 
     def test_an_opencode_source_converts_through_the_flow_and_asks_for_the_load_level(self) -> None:
         root = Path(__file__).resolve().parents[2]
@@ -1938,7 +1937,9 @@ class SourceDirectionRun(unittest.TestCase):
             args = mock.Mock(direction=NATIVE_CHECK.SOURCE_DIRECTION, source=None,
                              target_home=None, resume_prompt="a turn", expect="TURN-OK",
                              keep=False, json=False)
-            with mock.patch.object(NATIVE_CHECK, "ask_opencode", side_effect=fake_ask), \
+            with mock.patch.object(NATIVE_CHECK, "BINARY",
+                                   scratch / "bin" / "ccc-native-check-opencode"), \
+                 mock.patch.object(NATIVE_CHECK, "ask_opencode", side_effect=fake_ask), \
                  mock.patch.object(NATIVE_CHECK, "deadline_run", side_effect=fake_deadline):
                 with recorded() as results:
                     stdout = io.StringIO()

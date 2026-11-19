@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -72,16 +73,12 @@ func openCodeSourceStore(t *testing.T, document []byte) string {
 	if id != openCodeSourceSessionID {
 		t.Fatalf("the store holds session %s, want the fixture's own id %s", id, openCodeSourceSessionID)
 	}
-	want := filepath.Join(root, openCodeStoreName())
+	want := filepath.Join(root, opencodefixture.StoreName)
 	if path != want {
 		t.Fatalf("the store is at %s, want %s", path, want)
 	}
 	return root
 }
-
-// openCodeStoreName is the file name the harness keeps its sessions in, read from the fixture package so a
-// case never spells it twice.
-func openCodeStoreName() string { return opencodefixture.StoreName }
 
 // openCodeSourceConfig points the inherited providers at one OpenCode root beside the committed fixtures'
 // own roots, and the archive at a throw-away directory.
@@ -97,7 +94,6 @@ func openCodeSourceConfig(t *testing.T, root string) config.Config {
 	return cfg
 }
 
-// readOpenCodeSourceFixture reads the committed fixture through the inherited provider.
 func readOpenCodeSourceFixture(t *testing.T, root string) Conversation {
 	t.Helper()
 	conversation, err := NewSourceReader(openCodeSourceConfig(t, root)).Read(
@@ -106,18 +102,6 @@ func readOpenCodeSourceFixture(t *testing.T, root string) Conversation {
 		t.Fatalf("reading the OpenCode fixture: %v", err)
 	}
 	return conversation
-}
-
-// lossByCategory answers one loss row, which every routed writer reports on every run.
-func lossByCategory(t *testing.T, losses []Loss, category string) Loss {
-	t.Helper()
-	for _, loss := range losses {
-		if loss.Category == category {
-			return loss
-		}
-	}
-	t.Fatalf("the report names no %s row: %+v", category, losses)
-	return Loss{}
 }
 
 // TestOpenCodeSourceReadAnswersItsOwnProviderAndRecords pins the whole source half of goal 0008's route:
@@ -143,7 +127,7 @@ func TestOpenCodeSourceReadAnswersItsOwnProviderAndRecords(t *testing.T) {
 	}
 	// The read's identity is the provider's own virtual path for a member of its store: no file holds this
 	// conversation's bytes, which is the fact the boundary block states later.
-	wantPath := parser.VirtualSourcePath(filepath.Join(root, openCodeStoreName()), openCodeSourceSessionID)
+	wantPath := parser.VirtualSourcePath(filepath.Join(root, opencodefixture.StoreName), openCodeSourceSessionID)
 	if conversation.Source.SourcePath != wantPath || conversation.Source.DisplayPath != wantPath {
 		t.Errorf("source path = %q/%q, want %q", conversation.Source.SourcePath,
 			conversation.Source.DisplayPath, wantPath)
@@ -259,7 +243,7 @@ func TestOpenCodeSourceResolvesByIdentifierAndByItsOwnPath(t *testing.T) {
 	}
 	byPath, err := reader.Read(context.Background(), Ref{
 		Provider: "opencode",
-		ID:       parser.VirtualSourcePath(filepath.Join(root, openCodeStoreName()), openCodeSourceSessionID),
+		ID:       parser.VirtualSourcePath(filepath.Join(root, opencodefixture.StoreName), openCodeSourceSessionID),
 	})
 	if err != nil {
 		t.Fatalf("reading by the provider's own virtual path: %v", err)
@@ -317,13 +301,13 @@ func TestContinueFromOpenCodeThroughTheCommonModel(t *testing.T) {
 			// Every written message is counted as unprojected dialogue -- the reader answered no projection
 			// for any record -- and the progress event is counted as a result with no text rather than
 			// dropped in silence.
-			unprojected := lossByCategory(t, result.Conversion.Losses, "unprojected_dialogue")
+			unprojected := lossCount(t, result.Conversion.Losses, "unprojected_dialogue")
 			if unprojected.Disposition != DispositionCarriedWithCaveat ||
 				unprojected.Count != result.Conversion.Carried.Messages {
 				t.Errorf("unprojected_dialogue = %+v, want every carried message (%d)",
 					unprojected, result.Conversion.Carried.Messages)
 			}
-			progress := lossByCategory(t, result.Conversion.Losses, "empty_tool_results")
+			progress := lossCount(t, result.Conversion.Losses, "empty_tool_results")
 			if progress.Disposition != DispositionOmitted || progress.Count != 1 {
 				t.Errorf("empty_tool_results = %+v, want the fixture's one textless progress event", progress)
 			}
@@ -368,7 +352,7 @@ func TestOpenCodeSourceBoundaryStatesTheContainerItCannotMeasure(t *testing.T) {
 	if boundary.State != SourceBoundaryNotTaken {
 		t.Errorf("boundary = %+v, want not-taken for a container member", boundary)
 	}
-	for _, want := range []string{openCodeSourceSessionID, openCodeStoreName(), root} {
+	for _, want := range []string{openCodeSourceSessionID, opencodefixture.StoreName, root} {
 		if !strings.Contains(boundary.Detail, want) {
 			t.Errorf("the boundary detail does not name %q: %q", want, boundary.Detail)
 		}
@@ -477,7 +461,7 @@ func TestOpenCodeSourceToolEvidenceReachesEachTarget(t *testing.T) {
 				t.Errorf("the installed file holds %d output(s) for %s: the textless progress event is "+
 					"not a second output", outputsForCall, openCodeSourceCallID)
 			}
-			progress := lossByCategory(t, result.Conversion.Losses, "empty_tool_results")
+			progress := lossCount(t, result.Conversion.Losses, "empty_tool_results")
 			if progress.Count != 1 {
 				t.Errorf("empty_tool_results = %+v, want the one progress event the file does not hold",
 					progress)
@@ -486,15 +470,15 @@ func TestOpenCodeSourceToolEvidenceReachesEachTarget(t *testing.T) {
 			// record that carries a reasoning trace travels as the reader's rendering of it -- the trace's
 			// own text between the reader's markers -- under the counted caveat, never removed and never
 			// summarized.
-			if !holdsText(texts, openCodeSourceAnswer) {
+			if !slices.Contains(texts, openCodeSourceAnswer) {
 				t.Errorf("the installed file does not hold the fixture's own answer %q: %v",
 					openCodeSourceAnswer, texts)
 			}
-			if !holdsText(texts, openCodeSourceRenderedText) {
+			if !slices.Contains(texts, openCodeSourceRenderedText) {
 				t.Errorf("the installed file does not hold the reader's rendering of the reasoning record: %v",
 					texts)
 			}
-			if !holdsText(texts, openCodeSourceQuestion) || !holdsText(texts, openCodeSourceFollowup) {
+			if !slices.Contains(texts, openCodeSourceQuestion) || !slices.Contains(texts, openCodeSourceFollowup) {
 				t.Errorf("the installed file does not hold the fixture's own prompts: %v", texts)
 			}
 		})
@@ -562,39 +546,18 @@ func collectBlocks(
 
 // sameJSONValue reports whether two JSON spellings carry the same value, which is the comparison a target's
 // own encoding allows: a writer must not change the recorded arguments, and how it spells them is its own.
+// Both spellings are parsed first, so an unparseable one still fails the case rather than being compared as
+// text, and the comparison is the package's own canonicalization of the value (json.Number, so an integer
+// wider than a float64 compares as the integer it is).
 func sameJSONValue(t *testing.T, left, right string) bool {
 	t.Helper()
-	var a, b any
-	if err := json.Unmarshal([]byte(left), &a); err != nil {
-		t.Fatalf("parsing %q: %v", left, err)
-	}
-	if err := json.Unmarshal([]byte(right), &b); err != nil {
-		t.Fatalf("parsing %q: %v", right, err)
-	}
-	return jsonEqual(a, b)
-}
-
-// jsonEqual compares two decoded JSON values.
-func jsonEqual(a, b any) bool {
-	left, err := json.Marshal(a)
-	if err != nil {
-		return false
-	}
-	right, err := json.Marshal(b)
-	if err != nil {
-		return false
-	}
-	return string(left) == string(right)
-}
-
-// holdsText reports whether one of the collected texts is exactly this text.
-func holdsText(texts []string, want string) bool {
-	for _, text := range texts {
-		if text == want {
-			return true
+	var value any
+	for _, text := range []string{left, right} {
+		if err := json.Unmarshal([]byte(text), &value); err != nil {
+			t.Fatalf("parsing %q: %v", text, err)
 		}
 	}
-	return false
+	return canonicalJSONValue(left) == canonicalJSONValue(right)
 }
 
 // TestOpenCodeSourceStoreIsNeverOpenedForWriting pins the non-destructive half of the route for a source
