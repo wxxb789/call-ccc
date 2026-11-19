@@ -45,9 +45,22 @@ const (
 // otherwise write a file whose order contradicts its own times. The layout is the route's own: the Codex
 // and Claude routes write `time.RFC3339Nano`, and Pi writes milliseconds, always three digits, always
 // UTC (`2026-11-10T02:07:01.784Z`, piEntryTimestampLayout).
+//
+// A record whose own *recorded* instant precedes the instant already written is stamped with that
+// instant instead, and counted (`substituted`): the document then carries an instant the read did not
+// answer for that record, and the report names the substitution (`substituted_record_instants`) rather
+// than letting the written record read as the source's own answer. A record the read answered no
+// instant for at all is not counted as a substitution: there is no recorded instant to replace, and the
+// conversion instant the options document ("used for identities and for a source that recorded no
+// times") is what such a record is stamped with.
 type entryClock struct {
 	last   time.Time
 	layout string
+	// substituted counts the written timestamps whose recorded instant the document does not carry: each
+	// call with a record's own earlier instant replaces one written timestamp, so a record the writer
+	// stamps as several entries (Codex writes a turn context, a response item and a view event for one
+	// message) is counted on each of its entries rather than once for the record.
+	substituted int
 }
 
 func newEntryClock(start time.Time, layout string) *entryClock {
@@ -56,11 +69,31 @@ func newEntryClock(start time.Time, layout string) *entryClock {
 
 func (c *entryClock) next(at time.Time) string {
 	at = at.UTC()
-	if at.IsZero() || at.Before(c.last) {
+	if at.IsZero() {
+		at = c.last
+	} else if at.Before(c.last) {
+		c.substituted++
 		at = c.last
 	}
 	c.last = at
 	return at.Format(c.layout)
+}
+
+// substitutedRecordInstantsDetail words the caveat the clock-bearing writers report for a record whose
+// own recorded instant the document does not carry. The instant written in the recorded one's place is
+// always another instant the read recorded -- the previous written record's, the highest the document
+// already holds -- never one this build invented, and the entries and their order are unaffected; only
+// the one instant is. The text is the same for every writer that shares the clock, and keeping one copy
+// is what stops the routes from drifting apart.
+func substitutedRecordInstantsDetail() string {
+	return "the read recorded an instant for each of these records, and the document does not hold " +
+		"it: the target orders its records by the timestamp it writes, so a record whose own instant " +
+		"precedes the instant already written is stamped with the previous written record's instant " +
+		"instead -- an instant the read recorded for a record, never one this build invented -- and " +
+		"the record's own instant is in the source session alone. The count is per written timestamp, " +
+		"not per source record: a record the writer stamps as several entries (a turn context, a " +
+		"response item and a view event for one message) carries the substituted instant on each of " +
+		"them, and each of those written timestamps is counted"
 }
 
 // ledger accumulates the bookkeeping the three writers share while they walk a document: the calls

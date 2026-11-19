@@ -2778,15 +2778,185 @@ The required lines, verbatim with their own return codes, from that run over thi
 test was renamed). A later run on the final tree reprinted every step line and every count, differing only
 in the `selftest` line's duration, and exited 0.
 
+### The PR #9 machine review's round-2 finding (`d16a9ac` + working tree), applied
+
+The cross-family machine review of PR #9's round 2 (`review-lane.py`, gpt-6.1-sol; report at
+`~/claw/tasks/2026-11-19/call-ccc-0007-rootfix/artifacts/pr9/review-2/report.md`) returned one finding —
+**[P2] "Disclose rewritten message and tool-start timestamps", `internal/ccc/opencode_target.go:439–443`**
+— beside a carried-tree parity audit that found nothing (the manifest diff only adds ownership of
+`scripts/opencode-native-check.py`, and the checker's declarations agree with `docs/upstream.md`), and its
+own "verification limits" say it performed no edits, builds, tests, native checks or gate runs: the
+finding is static tracing. Its claim: `openCodeClock.next` replaces an earlier *recorded* timestamp with
+the preceding message's timestamp, and no loss category counts that substitution — "for two carried
+messages recorded at `T+2` and then `T+1`, the second is written at `T+2`. If it carries a call whose
+result explicitly records `T+3`, `writeAssistantMessage` passes the substituted start to `toolPart`,
+shortening the recorded span from two seconds to one. Neither `result_completion_fallbacks` nor
+`result_completion_adjustments` counts this: the result timestamp exists and its completion was not
+raised." The round's scope was the class, not the instance: `entryClock.next` (`route_shared.go`) makes
+the same substitution for the Codex, Claude, Pi and OMP writers, and the round before's own
+reported-and-not-fixed paragraph named both.
+
+**The pre-fix reproduction.** In a throw-away worktree of `d16a9ac` (`/tmp/cccfix-r2`, removed afterwards)
+a throw-away `internal/ccc/zz_repro_test.go` built the reviewer's shape — messages at `T+2` then `T+1`, the
+second carrying a call whose result's own record instant is `T+3` — and the same out-of-order document
+through the routes with their own entry points among those the shared clock serves (Codex, Claude and Pi;
+OMP is Pi's own writer):
+
+```console
+$ go test -count=1 -tags fts5 -v -run 'TestZZRepro' ./internal/ccc/
+REPRO opencode: recorded message instants: T+2=1700000002000 T+1=1700000001000; result record T+3=1700000003000
+REPRO opencode: message type=user created=1700000002000
+REPRO opencode: message type=assistant created=1700000002000
+REPRO opencode: tool part call-x created=1700000002000 completed=1700000003000 (recorded span 1700000001000..1700000003000 = 2000ms, written = 1000ms)
+REPRO opencode: result_completion_fallbacks = 0 (reported=true)
+REPRO opencode: result_completion_adjustments = 0 (reported=true)
+REPRO opencode: nonzero loss counts: [assistant_completion_instant=1 empty_user_messages=1 message_model_attribution=1 target_model_binding=1 target_model_id_attribution=1 tool_name_vocabulary=1 usage_zeroed=1]
+REPRO opencode: categories naming a substituted/rewritten instant: [assistant_completion_instant=1]
+```
+
+The third line's message is the `T+1` record written at `T+2` (the second line's user message is the
+`T+2` record and keeps its own instant), the fourth line's part starts at that substituted `T+2` (the
+recorded 2000 ms call written as 1000 ms), and both completion rows are zero (the fifth and sixth lines)
+while the only "instant"-matching row is `assistant_completion_instant` — a different rule (the harness's
+own `time.completed` member), which is why it is quoted here rather than read as disclosure. The repro's
+shared-clock arms printed the same silence: on Codex the out-of-order message's `response_item` and
+`event_msg` are both stamped `09:00:02Z` where the record says `09:00:01Z`, the report's non-zero counts
+are empty (Claude the same; Pi only `unrecorded_token_usage ×1`), and no category names an instant on any
+of the three routes (`REPRO codex: categories naming a substituted/rewritten instant: []`, likewise
+claude and pi).
+
+**What changed.** `openCodeClock.next` now answers whether the instant it wrote is the read's recorded one
+or the previous written message's (`substituted`), and the writer counts a substitution where the message
+is actually written — `writeUserMessage`, `writeCompaction`, and `writeAssistantMessage` past its
+release path (a message whose parts all turned out unwritable releases the count with its reservations).
+`entryClock.next` counts each written timestamp it stamped with the previous written record's instant;
+`substitutedRecordInstantsDetail()` is the one shared sentence for the four writers that share the clock,
+and the OpenCode route has its own (its story is a message's `created` and the parts inside it). All five
+routes report the one category **`substituted_record_instants`** (carried-with-caveat) beside the two
+completion rows, and its own detail says which instant the read recorded, which instant the document
+carries in its place, why the document's order forces it, and — on OpenCode — that the tool parts inside
+such a message take the substituted instant as their `created`, so a recorded call→result span shortened
+by it is disclosed rather than left to read as the call's recorded start. A record the read recorded no
+instant for is not counted as a substitution: there is no recorded instant to replace — the family routes
+stamp such a record with the instant the options document for a source that recorded no times, and
+OpenCode with the instant the document already holds — and the row is about the recorded instants alone.
+`AGENTS.md`'s OpenCode clause states both rules
+in the same increment (a rule an agent must follow), the plan's timestamps and category rows state the
+clock's whole rule beside the two completion rows, and `docs/evidence/0007-citations.tsv` gains R11
+(`TestOpenCodeSubstitutedMessageInstantsAreCounted`) and R12
+(`TestCodexRolloutStampsRecordsInOneOrderedRun`).
+
+**What did not move.** The fix is a counter, its increment and report rows: the clock's arithmetic is
+untouched. Proven with the same before/after probe the round before used — a throw-away
+`internal/ccc/zz_probe_test.go` converting four documents (the reviewer's out-of-order shape, an ordered
+control, and both committed fixtures) through all five routes and printing each conversion's written
+bytes' digest (over a normalized copy: the minted session/message/record ids differ run to run, so the
+probe normalizes them and was run twice on the same tree to show the normalization is stable), every item
+line, and the non-zero report rows:
+
+```console
+$ diff <(grep '^PROBE-BYTES\|^PROBE-ITEM' before.txt) <(grep '^PROBE-BYTES\|^PROBE-ITEM' after.txt)   # silent
+$ diff -r zzprobe-before-a zzprobe-after                                                                  # silent
+$ diff <(grep '^PROBE-LOSS' before.txt) <(grep '^PROBE-LOSS' after.txt)
+< PROBE-LOSS codex/out-of-order: [tool_name_vocabulary=1 tool_result_outcomes=1]
+< PROBE-LOSS claude/out-of-order: [tool_name_vocabulary=1 tool_result_statuses=1]
+< PROBE-LOSS pi/out-of-order: [tool_name_vocabulary=1 tool_result_statuses=1 unrecorded_token_usage=1]
+< PROBE-LOSS omp/out-of-order: [message_model_attribution=1 target_model_binding=1 title_slot_written=1 tool_name_vocabulary=1 tool_result_statuses=1 unrecorded_token_usage=1]
+< PROBE-LOSS opencode/out-of-order: [assistant_completion_instant=1 empty_user_messages=1 message_model_attribution=1 target_model_binding=1 target_model_id_attribution=1 tool_name_vocabulary=1 usage_zeroed=1]
+> PROBE-LOSS codex/out-of-order: [substituted_record_instants=3 tool_name_vocabulary=1 tool_result_outcomes=1]
+> PROBE-LOSS claude/out-of-order: [substituted_record_instants=2 tool_name_vocabulary=1 tool_result_statuses=1]
+> PROBE-LOSS pi/out-of-order: [substituted_record_instants=1 tool_name_vocabulary=1 tool_result_statuses=1 unrecorded_token_usage=1]
+> PROBE-LOSS omp/out-of-order: [message_model_attribution=1 substituted_record_instants=1 target_model_binding=1 title_slot_written=1 tool_name_vocabulary=1 tool_result_statuses=1 unrecorded_token_usage=1]
+> PROBE-LOSS opencode/out-of-order: [assistant_completion_instant=1 empty_user_messages=1 message_model_attribution=1 substituted_record_instants=1 target_model_binding=1 target_model_id_attribution=1 tool_name_vocabulary=1 usage_zeroed=1]
+```
+
+The ordered control and both fixture conversions print no new row at all, so the counts above are the
+out-of-order document's own; the Codex count of 3 is its writer's three stamped entries for that one
+record (a `response_item`, an `event_msg` and the `function_call` — the shared clock's count is per
+written timestamp), and OpenCode's 1 is the one written message whose `created` moved, its parts'
+`created` following it without a second count. The first two diffs above are silent: the same 20 byte
+digests, the same 115 item lines, the same normalized documents, for every route × document pair. No
+route's written bytes, item lines, document member or record order moved for any of the 20 conversions, so
+no native check was re-run: the load-level evidence the earlier sections recorded still describes what
+these routes write.
+
+**The pins, and that they are not vacuous.** `TestOpenCodeSubstitutedMessageInstantsAreCounted` asserts the
+document's own bytes (both messages created at `T+2`, the part's pair `T+2`/`T+3` against the recorded
+`T+1`/`T+3`), the row's count ×1 and disposition, the three phrases its detail must state, both completion
+rows at ×0, and an ordered control whose messages keep their own instants and count ×0.
+`TestCodexRolloutStampsRecordsInOneOrderedRun` — the shared clock's own regression scenario — now asserts
+that every entry stamped for the out-of-order record carries `10:00:10` (its own instant is `09:00:00`),
+that `substituted_record_instants` equals the record's written entries, its detail, and an ordered control
+at ×0; its comment names the Claude, Pi and OMP writers that drive the same helper. Both mutations were
+made in a throw-away copy of this round's code (`/tmp/cccfix-r2-mut`, deleted afterwards; its only code
+differences are the two mutations — the copy was taken before this section's prose existed) and each
+failed its case under
+`go test -count=1 -tags fts5 -run '<the case>' ./internal/ccc/`:
+
+| what the case pins | the mutation | the failure it produced |
+| --- | --- | --- |
+| the OpenCode substitution is counted where the message is written | `opencode_target.go`: the three `if substituted {` guards disabled (`if false && substituted {`) | `opencode_target_test.go:1783: substituted_record_instants = 0, want 1` |
+| the shared clock's substitution is counted | `route_shared.go`: the `c.substituted++` increment removed | `codex_target_test.go:1531: substituted_record_instants = {Category:substituted_record_instants Disposition:carried-with-caveat Count:0 Detail:…}` |
+
+The codex cell's `…` is this record's elision of the row's own fixed detail sentence — the run's line is
+924 characters and the assertion it reports is the `Count:0` the cell quotes beside it — and every other
+quoted run line in this section is whole.
+
+The every-category lists that claim completeness name the new row: the Codex map
+(`substituted_record_instants ×0`) and the Claude list (present, ×0 in its count table) in their
+by-hand lists, and Pi's `TestPiSessionReportsEveryLossCategory` walks its report in both directions, so a
+dropped row is red there; OMP reads the same shared `losses()` list (its own case covers only the two
+OMP-only rows, which is what that case is about), and the OpenCode route has no by-hand completeness list,
+so its new row is pinned by the new regression's own `openCodeRequireLoss` (which fails when the category
+is missing) and by the count and detail assertions beside it.
+
+**Counts refreshed.** The OpenCode report now names 43 rows (measured on a throw-away counter case:
+`openCode loss rows = 43`), the narrowed suites' test functions count 403 (`^func Test` over the test files
+git lists under `cmd/ccc` and `internal/ccc`; 402 at `d16a9ac` — one case added, none deleted, merged,
+weakened or renamed), and `docs/evidence/0007-citations.tsv` holds 30 rows (the gate's `citations` line
+below). The current-state counts moved with them: §5's category total and its per-round history, §6's
+loss-categories bullet, and the plan's §2.2 timestamps row and §2.3 category rows (the new row's own rule
+row included); the round-1 plan paragraph's "28 rows in that file" is scoped there to that round. The
+per-round sections above quote the runs they made, at the trees they ran on, and are not rewritten — their
+gate transcripts and category counts are those rounds' own bytes.
+
+`python3 scripts/gate.py`, exit code 0, on this round's final tree:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3622 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 384 tests in 8.909s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5709 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 30 row(s) verified
+  PASS     secrets  no leaks found in 163 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The block is a run on this round's tree before this section's prose settled; the `parity` line is quoted
+whole (840 characters, the gate's own rendering end to end), and its deviation list is the one the round
+before's run printed too (`AGENTS.md` is a declared deviation; this round edits it, as those runs did).
+
+The required lines, verbatim with their own return codes:
+`selftest` printed `  PASS     selftest Ran 384 tests in 8.909s (rc=0)` and `citations` printed
+`  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 30 row(s) verified`
+(0002 unchanged at 36 rows; 0007 at 30 — R11 and R12 are this round's, verified with the rest, and no
+row's test was renamed). Every step passed and the run exited 0. A later run on the final tree, after this
+section was written, reprinted every step line and every count byte for byte, differing only in the
+`selftest` line's duration (`Ran 384 tests in 8.665s (rc=0)`), and exited 0.
+
 ## 5. What travels, source side and target side
 
 | Source evidence | Target side, and the run that recorded it |
 | --- | --- |
 | a Claude Code conversation with a tool call, its result and a compaction boundary (the fixture's own bytes record no persisted reasoning trace, so no run in §1–§2 imports one: §6 names that boundary) | converted into a 7-message OpenCode document (`converted: opencode-import-document, 2312 bytes: 7 message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies), 2 turn(s)`, §1) and materialised by the harness's own importer as a store session (§2: `the store's own document holds 10 message(s); the conversion carried 7`, the extra three being the turn's own records) |
-| the source read's own omissions and rewrites | named, counted and per-category: `empty_user_messages ×1`, `tool_name_vocabulary ×1`, `message_model_attribution ×4`, `usage_zeroed ×1`, `target_model_id_attribution ×2`, `compaction_reason ×1`, `assistant_completion_instant ×4`, `unresolved_source_parents ×1`, `pre_compaction_history ×4`, `malformed_source_lines ×1` (§1), out of the 42 categories the report names on every run (§2's recorded run named 35: the first review round added `coalesced_tool_call_projections`, which the committed multi-file patch fixture exercises, the second added `nonterminal_tool_events`, the twelfth added `result_completion_fallbacks`, the root-fix round added the two dialogue rows, the round-17 fix added `non_assistant_reasoning`, and the PR #9 machine review's second finding added `result_completion_adjustments`, §4) |
+| the source read's own omissions and rewrites | named, counted and per-category: `empty_user_messages ×1`, `tool_name_vocabulary ×1`, `message_model_attribution ×4`, `usage_zeroed ×1`, `target_model_id_attribution ×2`, `compaction_reason ×1`, `assistant_completion_instant ×4`, `unresolved_source_parents ×1`, `pre_compaction_history ×4`, `malformed_source_lines ×1` (§1), out of the 43 categories the report names on every run (§2's recorded run named 35: the first review round added `coalesced_tool_call_projections`, which the committed multi-file patch fixture exercises, the second added `nonterminal_tool_events`, the twelfth added `result_completion_fallbacks`, the root-fix round added the two dialogue rows, the round-17 fix added `non_assistant_reasoning`, the PR #9 machine review's second finding added `result_completion_adjustments`, and its round-2 review added `substituted_record_instants`, §4) |
 | the assistant message's own completion instant the importer requires | written for every assistant message from the record's own instant, `×4` in §1 — the member whose absence the harness accepts and then drops the message over (§0), disclosed as `assistant_completion_instant`; the read-back is the check that caught it |
 | the tool call with its recorded arguments and result text | `toolu_01Example0000000000000000 Read [completed] input {"file_path": "/home/user/code/example-api/internal/retry/policy.go"} result 'package retry\n\nconst MaxAttempts = 4'` in the harness's own document (§4's fourth round) — the same call id and name the source recorded, with its recorded arguments and the result's own text, compared part by part with the **source fixture's own bytes**, so a store holding different arguments or different output fails the check instead of passing on its identity |
-| a tool part's pair of instants | the part's `created` is the call's record's instant and its `completed` the **result's own record's** instant — the committed Codex fixture records its shell call at `09:15:05` and its output at `09:15:06`, so the part states that one-second span (§4's twelfth round) — carried per result through `ToolResult.Timestamp`; a read holding no instant of the result's own record (a provider event without a timestamp, the archive's derived summary on the call's row) falls back to the containing record's instant and is counted (`result_completion_fallbacks`) rather than presented as recorded; and where the instant the read holds for the result precedes the part's own `created` (an out-of-order source, whose result record stands before the record that carried the call), `completed` is raised to the call's own recorded start and the part is counted (`result_completion_adjustments`), so a raised instant is never presented as the result's recorded completion either |
+| a tool part's pair of instants | the part's `created` is the call's record's instant and its `completed` the **result's own record's** instant — the committed Codex fixture records its shell call at `09:15:05` and its output at `09:15:06`, so the part states that one-second span (§4's twelfth round) — carried per result through `ToolResult.Timestamp`; a read holding no instant of the result's own record (a provider event without a timestamp, the archive's derived summary on the call's row) falls back to the containing record's instant and is counted (`result_completion_fallbacks`) rather than presented as recorded; where the instant the read holds for the result precedes the part's own `created` (an out-of-order source, whose result record stands before the record that carried the call), `completed` is raised to the call's own recorded start and the part is counted (`result_completion_adjustments`), so a raised instant is never presented as the result's recorded completion either; and where the *message's own* recorded instant precedes the instant already written, the message is written at that instant and counted (`substituted_record_instants`, the round-2 review's finding, §4), the part's `created` being that substituted instant — so a recorded call→result span shortened by the substitution is disclosed rather than left to read as the call's recorded start, on this route and on the Codex, Claude, Pi and OMP writers that share the clock |
 | the compaction boundary | `{"type": "compaction", … "status": "completed", "reason": "auto", "summary": "Summary: the retry policy caps attempts at four…` (§2) — the source's own summary, with the harness's own `reason` vocabulary (`auto`) disclosed as `compaction_reason` |
 | the model binding a resumed turn runs under | the **target home's** own configured pair, asked of the harness's own `debug agents` listing — `tencent-litellm/deepseek-v4.1-flash-fast` (§2), written as the document's `info.model` and named by `target_model_binding` (§1) — never the source's model |
 | the directory a session is filed under | the session's recorded working directory, and the harness's own lookup resolves the session from it: `['ses_7utczOHDIjpwHab8vubyl0UDVt']` listed from that directory and not from another (§2), which is why the printed line changes into it |
@@ -2821,13 +2991,13 @@ block (`scripts/tests/test_evidence_claims.py`, which this record is registered 
 - **The user count of a read-back includes the compaction row.** The inherited reader reads a compaction row as
   a system record under the user role, so a read-back of a 7-message document reports
   `user_messages: 3`; the boundary count names the same row, and the comparison itself is itemwise.
-- **The 42 loss categories are the writer's own vocabulary, not a claim about the harness's behaviour.** A
+- **The 43 loss categories are the writer's own vocabulary, not a claim about the harness's behaviour.** A
   category whose count is zero is still named (that is what makes a missing category a defect), and each
   non-zero one is disclosed with its own sentence. (They were 35 when this record's runs in §1–§3 were
   made; the first review round added `coalesced_tool_call_projections`, the second added
   `nonterminal_tool_events`, the twelfth added `result_completion_fallbacks`, the root-fix round the two
-  dialogue rows, the round-17 fix `non_assistant_reasoning`, and the PR #9 machine review's second finding
-  `result_completion_adjustments`.)
+  dialogue rows, the round-17 fix `non_assistant_reasoning`, the PR #9 machine review's second finding
+  `result_completion_adjustments`, and its round-2 review `substituted_record_instants`.)
 - **§1–§3 quote the runs they name, at the tree they ran on.** Their transcripts are those runs' own bytes:
   the printed resume line in them names the data root alone, because the store's database was pinned beside
   it later (§4's review round), and their check counts (27 offline, 31 with a turn) are that round's step

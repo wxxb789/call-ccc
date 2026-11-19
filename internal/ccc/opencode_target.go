@@ -402,6 +402,7 @@ type openCodeConverter struct {
 	lossGeneratedIDs                int
 	lossResultCompletionFallbacks   int
 	lossResultCompletionAdjustments int
+	lossSubstitutedRecordInstants   int
 	lossSyntheticCalls              int
 	lossPreBoundary                 int
 	lossEmptySummaries              int
@@ -436,8 +437,18 @@ type openCodeClock struct {
 
 // next answers one message instant in Unix milliseconds, never below the previous answer, and records it
 // as the document's highest instant too.
-func (c *openCodeClock) next(at time.Time) int64 {
+//
+// The second answer says the instant the read recorded for this message is not the one written, because
+// it precedes the previous answer: the document's message order is the read's own, and a message whose
+// `created` stood before the one already written would state times contradicting that order. That
+// substitution is the writer's to count (`substituted_record_instants`), and only once the message it
+// belongs to is actually written: a message released because it turned out to carry nothing
+// (writeAssistantMessage) releases its substitution with its reservations. A message the read answered
+// no instant for at all takes the previous answer too and is not counted: there is no recorded instant
+// to replace, and the value written is the instant the document's order already holds.
+func (c *openCodeClock) next(at time.Time) (int64, bool) {
 	millis := at.UTC().UnixMilli()
+	substituted := !at.IsZero() && millis < c.lastMessage
 	if at.IsZero() || millis < c.lastMessage {
 		millis = c.lastMessage
 	}
@@ -445,7 +456,7 @@ func (c *openCodeClock) next(at time.Time) int64 {
 	if millis > c.lastInstant {
 		c.lastInstant = millis
 	}
-	return millis
+	return millis, substituted
 }
 
 // span answers the two instants of one tool part's own time span: `floor`, the message's own instant,
@@ -462,7 +473,10 @@ func (c *openCodeClock) next(at time.Time) int64 {
 // where it held none of the result's own, and this one answers whether the answer was written, so a
 // raised instant is never left to read as the recorded one. The span raises the document's highest
 // instant, and never the floor the document's messages are ordered by: a completion that follows a later
-// call's own start leaves that call's start where the source recorded it.
+// call's own start leaves that call's start where the source recorded it. The `floor` itself is the
+// message's *written* instant, which may be one the clock substituted for an earlier recorded one
+// (counted beside this row, `substituted_record_instants`): a part inside such a message then starts at
+// the substituted instant, and this row's own raise is about the `completed` side alone.
 func (c *openCodeClock) span(floor int64, resultAt time.Time) (int64, int64) {
 	created := floor
 	completed := resultAt.UTC().UnixMilli()
@@ -848,9 +862,13 @@ func (c *openCodeConverter) writeUserMessage(text string, at time.Time) error {
 		return err
 	}
 	files := []openCodeFile{}
+	created, substituted := c.clock.next(at)
+	if substituted {
+		c.lossSubstitutedRecordInstants++
+	}
 	c.document.Messages = append(c.document.Messages, openCodeMessage{
 		ID:    id,
-		Time:  openCodeTimeSpan{Created: c.clock.next(at)},
+		Time:  openCodeTimeSpan{Created: created},
 		Type:  openCodeMessageUser,
 		Text:  text,
 		Files: &files,
@@ -875,9 +893,10 @@ func (c *openCodeConverter) writeAssistantMessage(
 	// in the document's own order, so its `created` member is taken first -- taken last, the later instant
 	// of the record a result was recorded on would become the message's own time. A record that turns out
 	// to carry nothing releases the reservation below, so a message the document does not hold cannot
-	// raise a later record's floor.
+	// raise a later record's floor; the substitution the clock answered is counted only where the message
+	// is actually written, so a released message releases it too.
 	reservedMessage, reservedInstant := c.clock.lastMessage, c.clock.lastInstant
-	created := c.clock.next(message.Timestamp)
+	created, substituted := c.clock.next(message.Timestamp)
 	parts := make([]openCodePart, 0, len(calls)+2)
 	whitespaceDialogue := false
 	if trace := message.Thinking; strings.TrimSpace(trace) != "" {
@@ -936,6 +955,14 @@ func (c *openCodeConverter) writeAssistantMessage(
 		c.lossSyntheticCalls++
 	}
 	c.lossCompletion++
+	// The message's own instant, and with it the `created` member of every part inside it (span), is the
+	// clock's answer: where that answer is the previous written message's instead of this record's own
+	// instant, the substitution is counted (`substituted_record_instants`) rather than left to read as
+	// the recorded start -- the parts' spans are read from this one instant, so a recorded call→result
+	// duration can be shortened by it.
+	if substituted {
+		c.lossSubstitutedRecordInstants++
+	}
 	c.carried.Messages++
 	c.carried.AssistantMessages++
 	if dialogue := openCodePartsDialogue(parts); strings.TrimSpace(dialogue) != "" {
@@ -972,9 +999,13 @@ func (c *openCodeConverter) writeCompaction(message Message) error {
 	// message (measured), and an empty summary still marks the boundary. A pointer is what keeps it
 	// absent on every other message type while an empty string stays present here.
 	summary := message.Content
+	created, substituted := c.clock.next(message.Timestamp)
+	if substituted {
+		c.lossSubstitutedRecordInstants++
+	}
 	c.document.Messages = append(c.document.Messages, openCodeMessage{
 		ID:      id,
-		Time:    openCodeTimeSpan{Created: c.clock.next(message.Timestamp)},
+		Time:    openCodeTimeSpan{Created: created},
 		Type:    openCodeMessageCompaction,
 		Summary: &summary,
 		Status:  openCodeCompactionStatus,
@@ -1590,6 +1621,21 @@ func (c *openCodeConverter) losses() []Loss {
 				"one this build invented, and this row counts each written part that took the " +
 				"raise; a result whose record holds no instant at all is the other read, counted " +
 				"as result_completion_fallbacks",
+		},
+		{
+			Category:    "substituted_record_instants",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       c.lossSubstitutedRecordInstants,
+			Detail: "the read recorded an instant for each of these messages, and the document does " +
+				"not hold it: the document's message order is the read's own, and a message whose " +
+				"recorded instant precedes the previous written message's instant is written at that " +
+				"instant instead -- an instant the read recorded for a message, never one this build " +
+				"invented. A tool part's `created` member is the message's own written instant, so " +
+				"the parts inside such a message start at the substituted instant, and a call→result " +
+				"span the source recorded is shortened by the substitution wherever the call's own " +
+				"record was one of these. The count is per written message -- the substitution is the " +
+				"message's own, and a message released (one that turned out to carry nothing) " +
+				"releases it -- and the record's own instant is in the source session alone",
 		},
 		{
 			Category:    "tool_name_vocabulary",

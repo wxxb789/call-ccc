@@ -138,7 +138,15 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   are different reads and a fallback that was raised too takes both. The floor a message's own `created`
   is taken against is the messages' own records and nothing else: a part's completion raises only the
   instant the session's `time.updated` is read for, so an earlier call's result does not move a later,
-  overlapping call's recorded start up to itself (round 15's finding).
+  overlapping call's recorded start up to itself (round 15's finding). A message whose own recorded
+  instant precedes the instant already written is written at that instant instead — the document's message
+  order is the read's own — and each such written instant is counted (`substituted_record_instants`),
+  because every tool part inside that message takes the substituted instant as its `created` and a recorded
+  call→result span is shortened by it. The Codex, Claude, Pi and OMP writers share that clock rule
+  (`internal/ccc/route_shared.go`'s `entryClock`) and report its substitution under the same category:
+  each written timestamp the clock stamped with the previous written record's instant is counted there,
+  and the instant written in a record's place is always another instant the read recorded — never one this
+  build invented — so a recorded instant is not silently replaced on any route.
   The load level asks the harness's own
   `session export`, never `run`: `run` *creates* a session for an id the store does not hold. The
   directory a session is resolved from is the one its own document records, and the model

@@ -7,10 +7,11 @@
 #   B1–B3   the goal's three `Bounds` clauses, in order;
 #   O1–O12  the rules of AGENTS.md §"OpenCode is a target whose store only the harness writes", in the
 #           paragraph's own order;
-#   R1–R10  the rules of AGENTS.md's dialogue boundary — the semantic rule ("A record's dialogue is the
+#   R1–R12  the rules of AGENTS.md's dialogue boundary — the semantic rule ("A record's dialogue is the
 #           source's own answer or the record's own bytes, never a reading of them") and the disclosed-outcome
 #           rule that follows it ("Where the read answered no projection, the outcome is disclosed, never
-#           guessed") — plus the OpenCode paragraph's tool-part instant rule, in the order the rows read.
+#           guessed") — plus the OpenCode paragraph's tool-part instant and record-instant rules, in the
+#           order the rows read.
 #
 # scripts/obligation-citations.py is the arbiter: every row's cited test must exist in the named package
 # and run and pass, and the `citations` step is required — a tree that lost this file, or a citation that
@@ -60,3 +61,5 @@ R7	TestRenderingReadersReasoningOnlyRecordKeepsItsTraceOnce	./internal/ccc	AGENT
 R8	TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader	./internal/ccc	AGENTS.md §dialogue — a literal marker block of a reader that records Content as written is the model's own words
 R9	TestOpenCodeOverlappingCallsOnSeparateMessagesKeepTheirOwnInstants	./internal/ccc	AGENTS.md §OpenCode — the message floor is the messages' own records, not a part's completion
 R10	TestOpenCodeParallelToolSpansKeepTheirOwnInstants	./internal/ccc	AGENTS.md §OpenCode — a completion raised to the part's own start counted apart from the fallback (result_completion_adjustments)
+R11	TestOpenCodeSubstitutedMessageInstantsAreCounted	./internal/ccc	AGENTS.md §OpenCode — a message's own recorded instant written at the previous written one, counted, its parts taking it (substituted_record_instants)
+R12	TestCodexRolloutStampsRecordsInOneOrderedRun	./internal/ccc	AGENTS.md §OpenCode — the Codex/Claude/Pi/OMP shared clock's substituted written timestamps counted (substituted_record_instants)

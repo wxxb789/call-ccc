@@ -1105,7 +1105,8 @@ func TestPiSessionReportsEveryLossCategory(t *testing.T) {
 		"empty_tool_results", "whitespace_only_tool_results", "unrepresentable_result_blocks",
 		"unresolved_tool_outputs", "unrecorded_token_usage", "tool_result_statuses",
 		"empty_tool_inputs", "generated_call_ids", "coalesced_tool_call_projections",
-		"subagent_session_links", "tool_name_vocabulary", "message_model_attribution",
+		"subagent_session_links", "substituted_record_instants", "tool_name_vocabulary",
+		"message_model_attribution",
 		"pre_compaction_history", "empty_compaction_summary", "malformed_source_lines",
 		"summary_transcript", "source_needs_retry", "unresolved_source_parents",
 	}

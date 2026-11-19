@@ -123,7 +123,7 @@ writer emits `{info, messages}` in that order):
 | — reasoning | the message's persisted reasoning trace | one `{type:"reasoning", text}` block (no `native`: the read answers no provider-native payload) |
 | — tool call with a recorded, non-empty **outcome** | the call and its paired terminal result | one `{type:"tool", id, name, state, time:{created,completed}}` block with `state.status` `"completed"` (`input` = the object written for the call's own input, `content:[{type:"text", text:<the result text>}]`) or `"error"` (`error:{type:"tool.execution", message:<the result text>}`). A result event whose status is progress rather than an outcome (the inherited readers' `running`/`pending`/`streaming`/`started`/`in_progress`: a Codex subagent notification streams in while its call executes) is **not** an outcome: the terminal event the same call recorded is what the part carries (counted as `nonterminal_tool_events`), and a call whose read holds only progress has no outcome here (counted as `unpaired_tool_calls`). A recorded status word with a third meaning — the `cancelled` outcome the Vibe and Amp readers preserve, a provider's own word — is not written either: the two states would each claim an outcome the source did not record, so the call is left out and the result counted (`tool_result_statuses`). The archive's derived summary column is a view of a call's result events, not a second outcome: it is written only for a call whose read recorded no result event at all, so a column restored from a progress event (the shape `messageFromArchive` carries beside that event) is not written as a `completed` state either |
 | a compaction boundary | a record the source marked as a boundary | `{id, type:"compaction", time, status:"completed", reason:"auto", summary}` |
-| timestamps | the recorded timestamps | a message's `time.created` is its own record's instant; a message's `time.completed` is that same instant (a zero-length turn: the read answers one instant per record, `assistant_completion_instant`); a tool part's `time.created` is the call's record instant and its `time.completed` the instant of the record the carried result was recorded on — the result's *own* record where the read answers it (`ToolResult.Timestamp`: a folded result event's envelope instant, which the committed Codex fixture records one second after its call's record; a result block's containing record, which is where it stands; an archive row's stored event instant), and the containing record's instant (or the call's own row, for the archive's derived summary) only where the read holds no instant of the result's own record, counted as `result_completion_fallbacks` rather than presented as recorded. Each part's pair is read under the message's own instant as the clock's floor and raises the floor to its own end afterwards: siblings recorded on one message start together, so one call's completion cannot move another's recorded start, and an unordered source still cannot write a part whose end precedes its start. Where that floor does rewrite the pair — the instant the read answered for the result precedes the part's own `created` — `completed` is raised to the call's recorded start and the part is counted (`result_completion_adjustments`), so the raise is never left to read as the result's recorded completion, and a result whose own record holds no instant is counted under the fallback row beside it rather than merged with it |
+| timestamps | the recorded timestamps | a message's `time.created` is its own record's instant; a message's `time.completed` is that same instant (a zero-length turn: the read answers one instant per record, `assistant_completion_instant`); a tool part's `time.created` is the call's record instant and its `time.completed` the instant of the record the carried result was recorded on — the result's *own* record where the read answers it (`ToolResult.Timestamp`: a folded result event's envelope instant, which the committed Codex fixture records one second after its call's record; a result block's containing record, which is where it stands; an archive row's stored event instant), and the containing record's instant (or the call's own row, for the archive's derived summary) only where the read holds no instant of the result's own record, counted as `result_completion_fallbacks` rather than presented as recorded. Each part's pair is read under the message's own instant as the clock's floor and raises the floor to its own end afterwards: siblings recorded on one message start together, so one call's completion cannot move another's recorded start, and an unordered source still cannot write a part whose end precedes its start. Where that floor does rewrite the pair — the instant the read answered for the result precedes the part's own `created` — `completed` is raised to the call's recorded start and the part is counted (`result_completion_adjustments`), so the raise is never left to read as the result's recorded completion, and a result whose own record holds no instant is counted under the fallback row beside it rather than merged with it. The floor itself is the message's own *written* instant, and where the read recorded an instant *earlier* than the one already written the message is written at that instant instead — the document's message order is the read's own — and counted (`substituted_record_instants`): the parts inside such a message take the substituted instant as their `created`, so a recorded call→result span shortened by the substitution is disclosed rather than left to read as the call's recorded start (the class is counted on the Codex, Claude, Pi and OMP routes too, whose shared clock reports each substituted written timestamp under the same category) |
 | the document's message order | the read's own order | the order the conversation document holds (the importer assigns `seq` from it) |
 
 ### 2.3 Mapping rules, category by category
@@ -143,6 +143,7 @@ counted with the same shape (`Loss{Category, Count, Detail}`), and OpenCode-spec
 | `target_agent` | every assistant record's `agent` is the target home's own primary agent id (written `build` when the harness answered none: its built-in default agent) | the field is required and the read answers no agent; naming the source's agent would name an agent the target does not have |
 | `usage_zeroed` | `info.cost`/`info.tokens` zeros | the conversation document holds no usage |
 | `tool_part_times` / `result_completion_fallbacks` / `result_completion_adjustments` | the `time` member a tool part requires is the recorded instant, else the entry clock; its `completed` is the result's own record where the read answers one (`ToolResult.Timestamp`), and the containing record's instant only where it answers none — counted as `result_completion_fallbacks`, so a fallback is never presented as recorded — and where the instant the read answered (the result's own record, or the fallback) precedes the part's own `created`, `completed` rises to that start and the part is counted as `result_completion_adjustments`: two rows, because the read's answers differ — one says *which* instant the read answered and the other that the answer was not written — and a part can take both | the member is required; the clock never goes backwards, a part may not end before it starts, and the call's own instant twice would turn a recorded span into one the source never recorded |
+| `substituted_record_instants` | a message's own recorded instant (on the shared clock, a record's) that precedes the instant already written: the message is written at that instant — an instant the read recorded for another record, never one invented here — and each substituted written timestamp is counted. The parts inside such a message take the substituted instant as their `created` | the target orders its records by the timestamps it writes and the document's order is the read's own, so a recorded start the document does not hold must be disclosed: a tool part inside such a message carries the substituted instant as its recorded start, shortening a call→result span the source recorded. The Codex, Claude, Pi and OMP writers share the rule and the category (`internal/ccc/route_shared.go`'s `entryClock`) |
 | `compaction_reason` | the boundary's `reason` is written `auto` | the member is required and must be one of the harness's own values (measured); the source read answers no reason, and the count names the value as the target's vocabulary rather than the source's answer |
 
 **Format limits** (properties of the pair, not of one run): the source's session-level title, its
@@ -603,8 +604,39 @@ recorded no instant of its own *and* the fallback instant precedes the call's) a
 result carries its own earlier instant (`result_completion_adjustments ×1`,
 `result_completion_fallbacks ×0`), with the row's detail asserted; disabling the count, filing the raise
 under the fallback row, or dropping the phrase naming what was rewritten each fails the case. The control
-file's clause carries the case's own citations row (R10, `docs/evidence/0007-citations.tsv`, 28 rows in
-that file), which the required `citations` step verifies with the rest.
+file's clause carries the case's own citations row (R10, `docs/evidence/0007-citations.tsv` — 28 rows at
+that round; the file holds 30 after the round-2 review's R11 and R12, below), which the required
+`citations` step verifies with the rest.
+
+The cross-family machine review of PR #9 round 2 (`review-lane.py`, gpt-6.1-sol) found the class the
+round-1 fix left standing: every clock that raises a *record's own recorded* instant to the instant
+already written did so silently. On OpenCode, two carried messages recorded at T+2 and then T+1 are
+written in the read's own order, so the second is created at T+2; a call it carries takes that instant as
+its `created`, and a result recorded at T+3 then writes T+2..T+3 where the source recorded T+1..T+3 —
+neither completion row counts it (the result's own instant exists, so there is no fallback, and its
+completion does not precede the part's start, so there is no raise). The same substitution stood uncounted
+in the Codex, Claude, Pi and OMP writers' shared clock (`entryClock`). **The substitution is now counted
+on all five routes under one category, `substituted_record_instants`** (carried-with-caveat): OpenCode
+counts each written message the clock wrote at the previous message's instant (a message released for
+carrying nothing releases its substitution with its reservations), and the shared clock counts each
+written timestamp it stamped with the previous written record's instant — per written timestamp, so a
+record the writer stamps as several entries counts on each of them. A record the read recorded *no*
+instant for is not counted as a substitution: there is nothing to replace — the family routes stamp such
+a record with the instant the options document for a source that recorded no times, OpenCode with the
+instant the document already holds — and the count is of the recorded instants alone. Each row's own
+detail says which instant the
+read recorded, that the instant written in its place is another instant the read recorded and never one
+this build invented, and what the document's own order forces. The pins are
+`TestOpenCodeSubstitutedMessageInstantsAreCounted` (the reviewer's own shape: the written message and part
+instants, `substituted_record_instants ×1`, both completion rows ×0, the detail's phrases, and an ordered
+control at ×0) and `TestCodexRolloutStampsRecordsInOneOrderedRun` (the shared clock's own regression
+scenario — its unordered source — asserting the substituted stamps and the per-written-timestamp count,
+with an ordered control at ×0); disabling either count reddens its case, and the case's comment names the
+Claude, Pi and OMP writers the shared helper serves. `AGENTS.md`'s OpenCode clause states both rules (the
+message's own instant, and the shared clock's record instants) in the same increment, and R11 and R12 in
+`docs/evidence/0007-citations.tsv` are the cases the required `citations` step verifies. No written byte
+moves: the same before/after probe the round before used prints the same bytes and item lines over twenty
+route × document conversions (the probe and the review's pre-fix reproduction are in the evidence record).
 
 ## 7. Gate, docs, bookkeeping
 
@@ -615,7 +647,11 @@ that file), which the required `citations` step verifies with the rest.
   OpenCode-specific rules (the importer as the only install path, the data directory's own rule and the
   `XDG_DATA_HOME` spelling, the fresh identity the harness adopts, the content-neutral export the load
   level uses, the required document members, and the tool part's `completed` as the result's own record's
-  instant with its fallback caveat); its dialogue rule is now two rules where it was one. The semantic
+  instant with its fallback caveat); the record-instant rules the round-2 review added are there too (a
+  message whose own recorded instant precedes the instant already written is written at that instant and
+  counted as `substituted_record_instants`, its parts taking the substituted instant as their `created`;
+  and the Codex, Claude, Pi and OMP writers' shared clock counts each substituted written timestamp under
+  the same category); its dialogue rule is now two rules where it was one. The semantic
   one states what a record's dialogue is (the source's own projection, asked before `Content` and answered
   byte for byte, an explicitly empty projection included) and the two shapes that stand on their own (a
   `Content` that is byte for byte its reader's rendering of the record's whole trace is no dialogue; a

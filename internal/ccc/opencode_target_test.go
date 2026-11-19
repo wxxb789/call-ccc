@@ -1714,6 +1714,124 @@ func TestOpenCodeParallelToolSpansKeepTheirOwnInstants(t *testing.T) {
 	}
 }
 
+// TestOpenCodeSubstitutedMessageInstantsAreCounted is the second machine review's finding: two carried
+// messages recorded at T+2 and then T+1 -- a source whose records are out of order -- are written in the
+// read's own order, so the second message is stamped with the first's instant (T+2). A tool part it
+// carries takes that instant as its `created`, which is the call's recorded start on no reading of the
+// source: the recorded call→result span (T+1..T+3) is written as T+2..T+3. Neither completion row counts
+// the rewrite -- the result's own record instant exists, so there is no fallback, and its completion
+// (T+3) does not precede the part's start, so there is no raise -- so the message's own substituted
+// instant is what this case pins, in the document's own bytes and in the report's own row, each told
+// apart from the two completion rows by its count.
+func TestOpenCodeSubstitutedMessageInstantsAreCounted(t *testing.T) {
+	at := time.UnixMilli(1_700_000_000_000).UTC()
+	// The reviewer's shape: the result's own record carries its instant (ToolResult.Timestamp), which is
+	// what keeps result_completion_fallbacks at zero and leaves result_completion_adjustments unable to
+	// speak for the substituted start.
+	result := openCodeTestResult("call-x", "completed", `"x"`)
+	result.Timestamp = at.Add(3 * time.Second)
+	conversation := openCodeTestConversation(
+		Message{Role: "user", Dialogue: "first", DialogueProjected: true, Content: "first",
+			Timestamp: at.Add(2 * time.Second)},
+		Message{Role: "assistant", Dialogue: "second", DialogueProjected: true, Content: "second",
+			Timestamp: at.Add(time.Second),
+			ToolCalls: []ToolCall{openCodeTestCall("call-x", "Read", `{"file_path":"/x"}`)}},
+		Message{Role: "user", Timestamp: at.Add(3 * time.Second), ToolResults: []ToolResult{result}},
+	)
+	session, err := ConvertToOpenCodeSession(conversation, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	var document openCodeDocument
+	if err := json.Unmarshal(session.Data, &document); err != nil {
+		t.Fatalf("the document does not parse: %v", err)
+	}
+	wantCreated := map[string]int64{
+		openCodeMessageUser:      at.Add(2 * time.Second).UnixMilli(),
+		openCodeMessageAssistant: at.Add(2 * time.Second).UnixMilli(),
+	}
+	var span *openCodeTimeSpan
+	for _, message := range document.Messages {
+		want, ok := wantCreated[message.Type]
+		if !ok {
+			t.Fatalf("the document holds a %s message this case does not expect", message.Type)
+		}
+		if message.Time.Created != want {
+			t.Errorf("the %s message is created at %d, want %d: the assistant record's own instant "+
+				"(T+1) precedes the instant already written, and the read's own order is the document's, "+
+				"so it is written at the previous message's instant", message.Type, message.Time.Created, want)
+		}
+		delete(wantCreated, message.Type)
+		for _, part := range message.Content {
+			if part.Type == openCodePartTool && part.ID == "call-x" {
+				span = part.Time
+			}
+		}
+	}
+	if len(wantCreated) != 0 {
+		t.Fatalf("the document is missing messages for %v", wantCreated)
+	}
+	if span == nil || span.Created != at.Add(2*time.Second).UnixMilli() ||
+		span.Completed != at.Add(3*time.Second).UnixMilli() {
+		t.Errorf("call-x time = %+v, want the substituted start %d and the result's own record instant "+
+			"%d: the recorded span T+1..T+3 is not the one the document holds",
+			span, at.Add(2*time.Second).UnixMilli(), at.Add(3*time.Second).UnixMilli())
+	}
+	// The disclosure: the message's substituted instant has its own row, counted once for the one written
+	// message whose recorded instant the document does not hold, and its own sentence names the recorded
+	// instant, the instant written in its place, and the parts that start at it.
+	openCodeRequireLoss(t, session, "substituted_record_instants", 1)
+	if loss := lossCount(t, session.Losses, "substituted_record_instants"); loss.Disposition != DispositionCarriedWithCaveat {
+		t.Errorf("substituted_record_instants = %+v, want the substitution counted as carried-with-caveat", loss)
+	}
+	for _, want := range []string{
+		"recorded instant precedes the previous written message's instant",
+		"never one this build invented",
+		"call→result span",
+	} {
+		if detail := openCodeLossDetail(t, session, "substituted_record_instants"); !strings.Contains(detail, want) {
+			t.Errorf("substituted_record_instants detail = %q, want it to state %q", detail, want)
+		}
+	}
+	// The two completion rows stay the reads they are: nothing fell back (the result's record instant
+	// exists) and no completion was raised (T+3 follows the part's start), so a reader who sees the new
+	// row cannot confuse it with either.
+	openCodeRequireLoss(t, session, "result_completion_fallbacks", 0)
+	openCodeRequireLoss(t, session, "result_completion_adjustments", 0)
+
+	// The control: the same conversation in the source's own order writes every message at its own
+	// recorded instant (T, T+1, T+3) and counts no substitution, so the count above is this source's
+	// order and not the document's shape.
+	orderedResult := openCodeTestResult("call-x", "completed", `"x"`)
+	orderedResult.Timestamp = at.Add(3 * time.Second)
+	ordered := openCodeTestConversation(
+		Message{Role: "user", Dialogue: "first", DialogueProjected: true, Content: "first",
+			Timestamp: at},
+		Message{Role: "assistant", Dialogue: "second", DialogueProjected: true, Content: "second",
+			Timestamp: at.Add(time.Second),
+			ToolCalls: []ToolCall{openCodeTestCall("call-x", "Read", `{"file_path":"/x"}`)}},
+		Message{Role: "user", Timestamp: at.Add(3 * time.Second), ToolResults: []ToolResult{orderedResult}},
+	)
+	session, err = ConvertToOpenCodeSession(ordered, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting the ordered source: %v", err)
+	}
+	if err := json.Unmarshal(session.Data, &document); err != nil {
+		t.Fatalf("the ordered document does not parse: %v", err)
+	}
+	createds := []int64{}
+	for _, message := range document.Messages {
+		createds = append(createds, message.Time.Created)
+	}
+	// Two written messages: the prompt and the assistant turn that carries the call (the result's own
+	// record writes no message of its own -- its output travels inside that call's part).
+	if len(createds) != 2 || createds[0] != at.UnixMilli() ||
+		createds[1] != at.Add(time.Second).UnixMilli() {
+		t.Errorf("ordered message instants = %v, want the two messages' own recorded instants", createds)
+	}
+	openCodeRequireLoss(t, session, "substituted_record_instants", 0)
+}
+
 // TestOpenCodePlansNoEvidenceFromARecordItWillNotWrite pins the two passes' own consistency: the plan
 // pairs every result with its call before the walk decides which records travel, so a record the source's
 // own relations place off the conversation's line -- or a subagent's own record -- must contribute no

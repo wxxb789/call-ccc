@@ -1001,6 +1001,12 @@ func (b *codexRolloutBuilder) losses() []Loss {
 				"call and its output by id, so one was generated from the message's own position",
 		},
 		{
+			Category:    "substituted_record_instants",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.clock.substituted,
+			Detail:      substitutedRecordInstantsDetail(),
+		},
+		{
 			Category:    "tool_name_vocabulary",
 			Disposition: DispositionCarriedWithCaveat,
 			Count:       len(names),

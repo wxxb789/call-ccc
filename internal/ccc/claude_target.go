@@ -1040,6 +1040,12 @@ func (b *claudeTranscriptBuilder) losses() []Loss {
 				"counted twice",
 		},
 		{
+			Category:    "substituted_record_instants",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.clock.substituted,
+			Detail:      substitutedRecordInstantsDetail(),
+		},
+		{
 			Category:    "tool_name_vocabulary",
 			Disposition: DispositionCarriedWithCaveat,
 			Count:       len(names),

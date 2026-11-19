@@ -425,6 +425,7 @@ func TestCodexRolloutReportsEveryCategoryItKnows(t *testing.T) {
 		"tool_result_outcomes":          {1, DispositionCarriedWithCaveat},
 		"empty_tool_inputs":             {1, DispositionCarriedWithCaveat},
 		"generated_call_ids":            {0, DispositionCarriedWithCaveat},
+		"substituted_record_instants":   {0, DispositionCarriedWithCaveat},
 		"tool_name_vocabulary":          {2, DispositionCarriedWithCaveat},
 		"provider_binding":              {0, DispositionCarriedWithCaveat},
 		"inactive_branch_records":       {0, DispositionOmitted},
@@ -1475,7 +1476,13 @@ func TestCodexRolloutReportsTheSourceLinesItsReadCouldNotProduce(t *testing.T) {
 
 // TestCodexRolloutStampsRecordsInOneOrderedRun pins the envelope timestamps: a source whose messages are
 // unordered (a DAG, a replayed fork) must not produce a file whose records run backwards, because the
-// target reads the file's order.
+// target reads the file's order. The clock's substitution is also the report's: a record whose own
+// recorded instant precedes the instant already written is stamped with that instant, and the report
+// counts each written timestamp it was substituted on (substituted_record_instants), so the written
+// record cannot read as the source's own answer for its instant. The shared helper this pins is
+// entryClock (route_shared.go), which the Claude, Pi and OMP writers drive the same way; this route is
+// where the clock's own regression scenario already stands, and its writer stamps one record as several
+// entries, so the per-written-timestamp shape of the count is visible here too.
 func TestCodexRolloutStampsRecordsInOneOrderedRun(t *testing.T) {
 	conversation := testConversation(
 		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Later", Dialogue: "Later",
@@ -1498,6 +1505,51 @@ func TestCodexRolloutStampsRecordsInOneOrderedRun(t *testing.T) {
 			t.Errorf("line %d goes back in time: %s after %s", index+1, line.Timestamp, previous)
 		}
 		previous = stamp
+	}
+	// The out-of-order record's own instant (09:00:00) is not in the file: every entry the writer stamps
+	// for it carries the previous written record's instant (10:00:10) -- the response item and the view
+	// event both, because one record's stamp is one instant on all of its entries.
+	stamped := 0
+	for _, line := range lines {
+		if !strings.Contains(string(line.Payload), "Earlier") {
+			continue
+		}
+		stamped++
+		if line.Timestamp != "2026-05-05T10:00:10Z" {
+			t.Errorf("the out-of-order record's %s entry is stamped %s, want the previous written "+
+				"record's instant 2026-05-05T10:00:10Z", line.Type, line.Timestamp)
+		}
+	}
+	if stamped == 0 {
+		t.Fatal("the file holds no entry for the out-of-order record")
+	}
+	// The count is per written timestamp: the out-of-order message above is one record, but the writer
+	// stamps it as two entries (a response item and the view event), and each of those written timestamps
+	// is counted. Its detail states what the substitution did with the recorded instant.
+	loss := lossCount(t, rollout.Losses, "substituted_record_instants")
+	if loss.Count != stamped || loss.Disposition != DispositionCarriedWithCaveat {
+		t.Errorf("substituted_record_instants = %+v, want the %d written timestamp(s) of the "+
+			"out-of-order record counted as carried-with-caveat", loss, stamped)
+	}
+	if !strings.Contains(loss.Detail, "never one this build invented") {
+		t.Errorf("substituted_record_instants detail = %q, want the instant written in the recorded "+
+			"one's place named", loss.Detail)
+	}
+
+	// The control: an ordered source counts nothing, so the counter above is the order and not the
+	// clock's normal path.
+	ordered := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask",
+			Timestamp: time.Date(2026, 5, 5, 10, 0, 10, 0, time.UTC)},
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "Answer", Dialogue: "Answer",
+			Timestamp: time.Date(2026, 5, 5, 10, 0, 11, 0, time.UTC)},
+	)
+	rollout, err = ConvertToCodexRollout(ordered, testOptions())
+	if err != nil {
+		t.Fatalf("converting the ordered source: %v", err)
+	}
+	if loss := lossCount(t, rollout.Losses, "substituted_record_instants"); loss.Count != 0 {
+		t.Errorf("substituted_record_instants = %+v, want zero for an ordered source", loss)
 	}
 }
 
