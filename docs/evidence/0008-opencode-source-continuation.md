@@ -1,9 +1,10 @@
 # 0008 — Continue OpenCode history in other harnesses: evidence
 
-Contract: [`docs/goals/0008-opencode-source-continuation.md`](../goals/0008-opencode-source-continuation.md)
-(this increment leaves it in `docs/goals/` with its row marked *Implemented on
-`feat/0008-opencode-source-continuation`; awaiting operator acceptance*, per `AGENTS.md`: the goal moves to
-`docs/goals/archive/` in the increment that merges it).
+Contract: [`docs/goals/archive/0008-opencode-source-continuation.md`](../goals/archive/0008-opencode-source-continuation.md)
+(this increment left it in `docs/goals/` with its row marked *Implemented on
+`feat/0008-opencode-source-continuation`; awaiting operator acceptance* at the time, per `AGENTS.md`; the
+goal-0009 activation increment moved it to `docs/goals/archive/` with its row marked *Accepted: merged onto
+`main` as `9f17535`*, which is the increment that records the merge).
 Plan: [`docs/plans/0008-opencode-source-continuation.md`](../plans/0008-opencode-source-continuation.md).
 Citations: [`0008-citations.tsv`](0008-citations.tsv) (the machine-checked half of §6).
 Harness: OpenCode `2.2.5` (`opencode --version` prints `opencode v2.2.5`), Codex `0.170.0`
