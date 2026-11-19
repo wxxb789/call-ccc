@@ -22,10 +22,19 @@ redaction or reasoning-trace editing (0010–0013).
 
 ## 2. Measured: the ordinal space, and what real sources look like
 
-- The read assigns `Message.Ordinal` in the source's own record order, 0-based and serial
-  (`internal/parser/*.go`'s assignment sites; `internal/ccc/archive.go:580` for the archive path). It is
-  therefore the only selector that exists on every route — a Codex rollout records no per-message identity
-  while a Pi/omp session records `id`/`parentId` (`internal/ccc/conversation.go`).
+- The read supplies `Message.Ordinal`, and it is the source's own numbering as the read preserved it — not a
+  position. Most routes assign a 0-based serial counter (`internal/parser/codex.go:2118`'s
+  `NewCodexCollectingSink(0)`; `internal/parser/opencode.go:1373`'s `ordinal := 0`; Pi's own counter,
+  `internal/parser/pi.go:146`), but Shelley's assigns the source's own `sequence_id`
+  (`internal/parser/shelley.go:612` — `Ordinal: int(r.sequenceID)` — and its reader test expects ordinals
+  1..5 for five records, `internal/parser/shelley_test.go:210-212`). Both read paths carry the value
+  through unchanged (`internal/ccc/reader.go:782`, `internal/ccc/archive.go:580`), so on a Shelley-shaped
+  read `0` is an ordinal that names no record and ordinal 5 stands where the last zero-based position is 4.
+  Nothing here renumbers: the selection and the report act on the ordinal values a route supplied, and the
+  report states the space it saw (§5) so a caller writes a spec against the numbers that exist rather than
+  the positions it assumes. Ordinal values are still the only selector every route has — a Codex rollout
+  records no per-message identity while a Pi/omp session records `id`/`parentId`
+  (`internal/ccc/conversation.go`).
 - Real sessions on this host, read through `bin/ccc inspect --json` (counts only; no message content was
   read or stored). Codex is a **census** — every `rollout-*.jsonl` under `~/.codex/sessions`
   (`~/.codex/sessions/**/rollout-*.jsonl`, 25 files) — messages p50 2 / max 253, calls 467 vs results 445
@@ -41,10 +50,28 @@ redaction or reasoning-trace editing (0010–0013).
 
 ### 3.1 The selection specification
 
-`--select "0-5,9,12-"` — 0-based ordinals, inclusive ranges, comma-separated, `-` open-ended; a bare
-ordinal selects one message. Parsing and refusal live in the core (`internal/ccc`), so a caller embedding
-the core and a caller driving the CLI get the same sentence for the same mistake (`cmd/ccc/main.go`
-already forwards the core's own wording for `--verify`; the same pattern is followed).
+`--select "0-5,9,12-"` — the numbers are `Message.Ordinal` values (§2), comma-separated: a bare ordinal
+selects one record, `N-M` is a closed range inclusive of both ends, and `N-` selects ordinal `N` and every
+higher ordinal present. Gaps are legal — an ordinal a source never used simply selects nothing — so one
+spec may name a region that exists on one route and not another. Parsing and refusal live in the core
+(`internal/ccc`), so a caller embedding the core and a caller driving the CLI get the same sentence for the
+same mistake (`cmd/ccc/main.go` already forwards the core's own wording for `--verify`; the same pattern is
+followed).
+
+Refusals (D5) are defined against the **ordinal space the read produced** — the minimum, the maximum and
+the records present, the same space §5 reports — and each is its own named case:
+
+1. **Malformed syntax** — a non-numeric token, an inverted range (`5-3`), or a region that selects an
+   ordinal an earlier region already selected (`1-3,3`; the goal's *duplicated region*) → refused.
+2. **Outside the ordinal space** — a literal number below the minimum or above the maximum → refused,
+   naming the space it saw. An open `N-` carries no upper number, so its own `N` is what is checked: `N-` is
+   fine whenever `N` is within the space and selects from `N` through the highest ordinal present, while
+   `0-` on Shelley's 1..5 space is refused naming the space rather than read as "from the beginning".
+3. **Selects nothing** — a well-formed, in-space spec that matches no record at all (every ordinal it names
+   falls in a gap) → refused, naming the same space, rather than installing a session with no history.
+
+A bad selection is refused, not repaired (D5): every refusal carries the core's own sentence and the usage
+exit code, before any install.
 
 `internal/ccc/selection.go`:
 `Select(conv Conversation, spec string, strict bool) (Conversation, SelectionReport, error)` — pure, no I/O,
@@ -56,8 +83,10 @@ no clock, no globals, so its whole matrix is unit-testable.
   and lists it as a necessity (`necessities_added`), with the ordinal that pulled it in.
 - `--strict-selection`: the same selection is **refused by name** before anything is installed.
 - A call the source itself left undischarged stays as it is and is reported (`calls_undischarged`).
-- Nothing is renumbered: the selection matches the **source's** ordinals; the target writer's own numbering
-  is the writer's business and is disclosed as a transformation, not presented as the source's.
+- Nothing is renumbered: the selection matches the ordinal values the read supplied (§2;
+  `internal/ccc/reader.go:782` and `internal/ccc/archive.go:580` carry them through in both read paths);
+  the target writer's own numbering is the writer's business and is disclosed as a transformation, not
+  presented as the source's.
 
 ## 4. Verification
 
@@ -69,14 +98,17 @@ no clock, no globals, so its whole matrix is unit-testable.
   written records a reduced run has (D1) and the report section naming it (D2) — not the untouched default.
 - **Reproduction (D1):** a fixture with a known ordinal map plus a native load of the target (the level the
   route already supports), pairing each written record with its source ordinal.
-- **Refusals (D3, D5):** each refusal is a named case with a mutation that disables its branch and turns the
-  case red.
+- **Refusals (D3, D5):** each of §3.1's three refusals is a named case with a mutation that disables its
+  branch and turns the case red, and the space-based ones run over both a 0-based fixture and the
+  Shelley-shaped one (§7), so a positional reading of the space fails a case rather than passing one.
 
 ## 5. CLI and machine-readable output
 
 `--select` and `--strict-selection` appear in `continueUsage`; the report gains a selection section (human
-lines) and the same fields in `--json` (`included`, `excluded`, `necessities_added`, `calls_undischarged`),
-each with counts and the regions they name. Exit codes unchanged.
+lines) and the same fields in `--json`: `ordinal_space` (`min`, `max`, `records`, `contiguous`) — the space
+a spec is written against and the space a refusal names, so a nonzero start or a gap is visible rather than
+silent — then `included`, `excluded`, `necessities_added` and `calls_undischarged`, each with counts and the
+regions it names (ordinal values as the read supplied them). Exit codes unchanged.
 
 ## 6. Evidence plan
 
@@ -93,6 +125,11 @@ selection boundary, a call with no recorded result, a system record and a compac
 selected region. It is generated by the repository's own generator and pinned by the existing
 `TestFixturesMatchTheirGenerator` discipline.
 
+- A case whose ordinals do not start at 0 — Shelley's measured shape (§2): a `Conversation` whose
+  `Message.Ordinal` values are 1..5 as its `sequence_id` recorded them, built in the selection's own test
+  (the seam takes the read document, so no inherited reader is edited, forked or re-pinned). It pins that
+  `1-5` selects exactly those five records and that `0` and `0-` are refused naming the space.
+
 ## 8. Documentation and bookkeeping
 
 `README.md`, `AGENTS.md` (one binding bullet for the selection rule), `docs/conventions.md` (the spec's
@@ -105,7 +142,8 @@ goal-0009 activation increment that landed this plan (0008 now reads *Accepted: 
 
 Owner-approved defaults (not the lane's to change): selection applies before the target is chosen (so it
 composes with every route); `--verify resume` runs over the selected history and the verify report says the
-history was selected; regions match source ordinals, never the target's post-write numbering.
+history was selected; regions match the ordinal values the read supplied (§2), never the target's
+post-write numbering.
 
 Out of scope: compaction densities (0010), summaries (0011), redaction (0012), reasoning-trace edits
 (0013), content- or tool-name-based selection, interactive pickers, turn-level shorthand.
