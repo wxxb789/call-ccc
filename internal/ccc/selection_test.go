@@ -729,25 +729,44 @@ func regionOrdinals(t *testing.T, region string) []int {
 	return ordinals
 }
 
-// TestSelectionWritesExactlyTheSelectedOrdinals pins D1's reproduction half over every route: the written
-// document holds the evidence of exactly the selected records (and the counterparts a recorded pair
-// required) and the evidence of no excluded record, so "the selection reproduced the selected ordinals"
-// is read off the target's own bytes rather than off the conversation this build built.
+// TestSelectionWritesExactlyTheSelectedOrdinals pins D1's reproduction half over every route: the
+// written document holds the evidence of exactly the selected records (and the counterparts a recorded
+// pair required) and the evidence of no excluded record, so "the selection reproduced the selected
+// ordinals" is read off the target's own bytes rather than off the conversation this build built.
+//
+// The check is exact for every one of the five routes: each document is decoded into its ordered
+// evidence -- dialogue, calls with their ids, names and argument objects, results with the call ids they
+// pair and the texts they carry, the target's own envelopes left out -- and compared to the expected
+// slice, so multiplicity, order and every call/result link are asserted rather than a membership of
+// substrings (a duplicated tool-result entry, for one, leaves a second token no expectation holds). The
+// fixture's raw bytes are scanned for the excluded material besides, because a token the extractor knew
+// would appear in the evidence and one written into a field it does not read must both be absent.
 //
 // One shape is not the selection's to write: a call the source never answered has no state in OpenCode's
 // own format (measured on 2.2.5 -- its importer accepts only a completed or failed tool state), so that
 // route leaves the call out and counts it under its own category. The case pins both halves: the route
-// does not hold the call, and its report counts the omission by name.
+// holds no evidence of the call, and its report counts the omission by name.
 func TestSelectionWritesExactlyTheSelectedOrdinals(t *testing.T) {
 	conversation := readSelectionFixture(t)
 	type omission struct {
 		evidence string
 		category string
 	}
+	// The call argument objects in the one canonical spelling the decoded evidence is printed in (keys
+	// sorted, no HTML escaping), written out as the fixture recorded them.
+	call := func(id, name, input string) string { return "call " + id + " " + name + " " + input }
+	result := func(id, text string) string { return "result " + id + " " + text }
+	const (
+		buildInput = `{"command":"sleep 30 && echo build-ok","description":"run the long build"}`
+		readInput  = `{"file_path":"/home/user/code/awaiting/internal/retry/config.go"}`
+		capInput   = `{"command":"grep -rn maxBackoffSeconds internal/retry","description":"find where the backoff cap is configured"}`
+	)
 	cases := []struct {
-		spec   string
-		held   []string
-		absent []string
+		spec string
+		// evidence is every route's ordered evidence unless routeEvidence overrides it for one route.
+		evidence      []string
+		routeEvidence map[string][]string
+		absent        []string
 		// omitted is keyed by route: the evidence that route's own format cannot hold, with the loss
 		// category its report counts the omission under.
 		omitted map[string]omission
@@ -757,23 +776,33 @@ func TestSelectionWritesExactlyTheSelectedOrdinals(t *testing.T) {
 			// other record's words -- the first prompt, the assistant's turns, the later question and its
 			// answer -- stay out of the target.
 			spec: "2",
-			held: []string{selectionBuildCallID, selectionBuildResult},
+			evidence: []string{
+				call(selectionBuildCallID, "Bash", buildInput),
+				result(selectionBuildCallID, selectionBuildResult),
+			},
 			absent: []string{selectionQuestion, "Starting the build now.", "The build finished.",
 				selectionReadCallID, selectionCapCallID, selectionFollowup, selectionAnswer, selectionSummary},
 		},
 		{
-			// The undischarged call alone: it travels, and nothing else does.
-			spec:   "5",
-			held:   []string{selectionReadCallID},
-			absent: []string{selectionBuildCallID, selectionCapCallID, selectionFollowup, selectionAnswer},
+			// The undischarged call alone: it travels, and nothing else does -- except on OpenCode,
+			// whose importer has no state for a call the source never answered.
+			spec: "5",
+			evidence: []string{
+				call(selectionReadCallID, "Read", readInput),
+			},
+			routeEvidence: map[string][]string{TargetOpenCode: nil},
+			absent:        []string{selectionBuildCallID, selectionCapCallID, selectionFollowup, selectionAnswer},
 			omitted: map[string]omission{
 				TargetOpenCode: {evidence: selectionReadCallID, category: "unpaired_tool_calls"},
 			},
 		},
 		{
 			// A window that holds one whole pair: both halves travel, the earlier pair stays behind.
-			spec:   "7-8",
-			held:   []string{selectionCapCallID, selectionCapResult},
+			spec: "7-8",
+			evidence: []string{
+				call(selectionCapCallID, "Bash", capInput),
+				result(selectionCapCallID, selectionCapResult),
+			},
 			absent: []string{selectionBuildCallID, selectionBuildResult, selectionFollowup, selectionAnswer},
 		},
 	}
@@ -791,16 +820,17 @@ func TestSelectionWritesExactlyTheSelectedOrdinals(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s: converting the selection %q: %v", target, testCase.spec, err)
 			}
+			want := testCase.evidence
+			if override, ok := testCase.routeEvidence[target]; ok {
+				want = override
+			}
+			got := selectionEvidence(t, target, converted.Data)
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("%s: selecting %q wrote the evidence\n got: %q\nwant: %q", target, testCase.spec,
+					got, want)
+			}
 			bytes := string(converted.Data)
 			omitted := testCase.omitted[target]
-			for _, want := range testCase.held {
-				if want == omitted.evidence {
-					continue
-				}
-				if !strings.Contains(bytes, want) {
-					t.Errorf("%s: selecting %q wrote a document without %q", target, testCase.spec, want)
-				}
-			}
 			if omitted.evidence != "" {
 				if strings.Contains(bytes, omitted.evidence) {
 					t.Errorf("%s: selecting %q wrote a document holding %q, which this route's own report "+
@@ -819,6 +849,221 @@ func TestSelectionWritesExactlyTheSelectedOrdinals(t *testing.T) {
 			}
 		}
 	}
+}
+
+// selectionEvidence decodes one route's written document into the ordered evidence of the conversation
+// it holds: each dialogue text, each call with the id, name and argument object it was written with, and
+// each result with the call id it pairs and the text it carries. Each target's own envelopes -- session
+// metadata, turn contexts, model bindings, the target's notification echo of a message -- are left out;
+// a block, part or payload the extractor does not know fails the case, so a writer that adds one is a
+// failing case rather than a passing one. Multiplicity and order are the returned slice's own.
+func selectionEvidence(t *testing.T, target string, data []byte) []string {
+	t.Helper()
+	var evidence []string
+	text := func(t *testing.T, value any) {
+		t.Helper()
+		evidence = append(evidence, "text "+value.(string))
+	}
+	call := func(id, name string, input any) {
+		evidence = append(evidence, "call "+id+" "+name+" "+canonicalEvidenceJSON(t, input))
+	}
+	blockType := func(t *testing.T, block map[string]any) string {
+		t.Helper()
+		kind, _ := block["type"].(string)
+		if kind == "" {
+			t.Fatalf("%s: a content block carries no type: %v", target, block)
+		}
+		return kind
+	}
+	switch target {
+	case TargetClaude:
+		for _, record := range decodeTranscript(t, ClaudeTranscript{Data: data}) {
+			if _, ok := record["message"]; !ok {
+				continue // a record this writer owns: the compaction marker and the like
+			}
+			for _, block := range messageBlocks(t, record) {
+				switch blockType(t, block) {
+				case claudeBlockText:
+					text(t, block["text"])
+				case claudeBlockToolUse:
+					call(block["id"].(string), block["name"].(string), block["input"])
+				case claudeBlockToolResult:
+					evidence = append(evidence, "result "+block["tool_use_id"].(string)+" "+
+						evidenceText(t, target, block["content"]))
+				default:
+					t.Fatalf("%s: unhandled content block %v", target, block)
+				}
+			}
+		}
+	case TargetPi, TargetOMP:
+		for _, line := range decodePiSession(t, data) {
+			switch line.Type {
+			case "session", "title", "model_change":
+				continue // the family's own envelopes: the session header, OMP's title slot, its model binding
+			case "message":
+			default:
+				t.Fatalf("%s: unhandled entry type %q", target, line.Type)
+			}
+			var message struct {
+				Role       string          `json:"role"`
+				Content    json.RawMessage `json:"content"`
+				ToolCallID string          `json:"toolCallId"`
+			}
+			if err := json.Unmarshal(line.Message, &message); err != nil {
+				t.Fatalf("%s: decoding entry %s: %v", target, line.ID, err)
+			}
+			var plain string
+			if err := json.Unmarshal(message.Content, &plain); err == nil {
+				text(t, plain)
+				continue
+			}
+			var blocks []map[string]any
+			if err := json.Unmarshal(message.Content, &blocks); err != nil {
+				t.Fatalf("%s: entry %s holds content that is neither text nor blocks: %s", target, line.ID,
+					message.Content)
+			}
+			if message.Role == "toolResult" {
+				for _, block := range blocks {
+					switch blockType(t, block) {
+					case piBlockText:
+						evidence = append(evidence, "result "+message.ToolCallID+" "+block["text"].(string))
+					default:
+						t.Fatalf("%s: unhandled toolResult block %v", target, block)
+					}
+				}
+				continue
+			}
+			for _, block := range blocks {
+				switch blockType(t, block) {
+				case piBlockText:
+					text(t, block["text"])
+				case piBlockThinking:
+					evidence = append(evidence, "reasoning "+block["thinking"].(string))
+				case piBlockToolCall:
+					call(block["id"].(string), block["name"].(string), block["arguments"])
+				default:
+					t.Fatalf("%s: unhandled content block %v", target, block)
+				}
+			}
+		}
+	case TargetCodex:
+		for _, line := range decodeRollout(t, data) {
+			if line.Type != codexRecordResponseItem {
+				continue // session_meta, turn_context, event_msg and compacted are the target's own
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(line.Payload, &payload); err != nil {
+				t.Fatalf("%s: decoding a response item: %v", target, err)
+			}
+			switch kind, _ := payload["type"].(string); kind {
+			case codexItemMessage:
+				content, _ := payload["content"].([]any)
+				for _, raw := range content {
+					block, _ := raw.(map[string]any)
+					switch blockType(t, block) {
+					case "input_text", "output_text", "text":
+						text(t, block["text"])
+					default:
+						t.Fatalf("%s: unhandled message content %v", target, block)
+					}
+				}
+			case codexItemFunctionCall:
+				call(payload["call_id"].(string), payload["name"].(string), payload["arguments"])
+			case codexItemFunctionOutput:
+				evidence = append(evidence, "result "+payload["call_id"].(string)+" "+
+					evidenceText(t, target, payload["output"]))
+			default:
+				t.Fatalf("%s: unhandled response item %v", target, payload)
+			}
+		}
+	case TargetOpenCode:
+		var document struct {
+			Messages []struct {
+				Content []map[string]any `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(data, &document); err != nil {
+			t.Fatalf("%s: decoding the import document: %v", target, err)
+		}
+		for _, message := range document.Messages {
+			for _, part := range message.Content {
+				switch blockType(t, part) {
+				case "text":
+					text(t, part["text"])
+				case "tool":
+					state, ok := part["state"].(map[string]any)
+					if !ok {
+						t.Fatalf("%s: a tool part carries no state: %v", target, part)
+					}
+					call(part["id"].(string), part["name"].(string), state["input"])
+					content, _ := state["content"].([]any)
+					for _, raw := range content {
+						block, _ := raw.(map[string]any)
+						switch blockType(t, block) {
+						case "text":
+							evidence = append(evidence, "result "+part["id"].(string)+" "+
+								block["text"].(string))
+						default:
+							t.Fatalf("%s: unhandled tool output %v", target, block)
+						}
+					}
+				default:
+					t.Fatalf("%s: unhandled message part %v", target, part)
+				}
+			}
+		}
+	default:
+		t.Fatalf("selectionEvidence has no reader for target %q", target)
+	}
+	return evidence
+}
+
+// evidenceText answers one block or payload value as the text evidence it is: a plain string, or a
+// list of text blocks joined the way the targets' own readers join them (a block list with anything
+// but text in it is a shape the extractor does not know).
+func evidenceText(t *testing.T, target string, raw any) string {
+	t.Helper()
+	if value, ok := raw.(string); ok {
+		return value
+	}
+	blocks, ok := raw.([]any)
+	if !ok {
+		t.Fatalf("%s: a text value is neither a string nor a block list: %v", target, raw)
+	}
+	var builder strings.Builder
+	for _, entry := range blocks {
+		block, _ := entry.(map[string]any)
+		kind, _ := block["type"].(string)
+		if kind != "text" {
+			t.Fatalf("%s: a text block list holds a %q block: %v", target, kind, block)
+		}
+		if builder.Len() > 0 {
+			builder.WriteString("\n")
+		}
+		builder.WriteString(block["text"].(string))
+	}
+	return builder.String()
+}
+
+// canonicalEvidenceJSON prints one call's argument object in the one form the expectations are written
+// in: keys sorted, no HTML escaping, whatever spelling the target held it in (an object, or the JSON
+// *string* Codex's arguments field carries).
+func canonicalEvidenceJSON(t *testing.T, raw any) string {
+	t.Helper()
+	if text, ok := raw.(string); ok {
+		var decoded any
+		if err := json.Unmarshal([]byte(text), &decoded); err != nil {
+			t.Fatalf("an argument value is not JSON: %v (%q)", err, text)
+		}
+		raw = decoded
+	}
+	var buffer strings.Builder
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(raw); err != nil {
+		t.Fatalf("canonicalizing an argument object: %v", err)
+	}
+	return strings.TrimRight(buffer.String(), "\n")
 }
 
 // TestSelectionKeepsASparseWindowOnTheReadsLine pins the second half of the line rule: a tree conversion
@@ -1226,6 +1471,124 @@ func TestSelectionChainsARecordWithoutAnIdentityToItsRetainedAncestor(t *testing
 	}
 }
 
+// TestSelectionRefusesAnIdentityLessLeafChainedOffTheLine pins the leaf guard against the window the
+// identity-keyed lookup cannot see: an identity-less record whose recorded parent is a record the read's
+// own line leaves off it, carried as the window's *last* record. The direct ancestor lookup chains it to
+// that parent's entry -- before the guarded retained-ancestor and fallback places run -- so the tree
+// walks `2 → 1 → 0` and the target's loader would resume a branch the source's conversation left. The
+// guard answers by the record's own *position* (sourceLineHolds, the read's walk membership kept through
+// the selection) and through the entry's actual written ancestry, so this window is refused by name
+// before anything is installed. The controls keep the refusal about the line and not about the shape: a
+// window whose last record is on the line -- the identity-less record chained to an on-line parent, or
+// the same abandoned-branch record once the window keeps the line's own leaf -- converts.
+func TestSelectionRefusesAnIdentityLessLeafChainedOffTheLine(t *testing.T) {
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "start", Dialogue: "start", SourceUUID: "u1"},
+		Message{Ordinal: 1, Role: "assistant", Content: "the abandoned turn", Dialogue: "the abandoned turn",
+			SourceUUID: "b2", SourceParentUUID: "u1"},
+		// The record the read answered no identity for, chained to the abandoned turn: the read's line --
+		// the walk from ordinal 3 through u1 -- reaches neither record.
+		Message{Ordinal: 2, Role: "assistant", Content: "the abandoned child",
+			Dialogue: "the abandoned child", SourceUUID: "", SourceParentUUID: "b2"},
+		Message{Ordinal: 3, Role: "assistant", Content: "the active line", Dialogue: "the active line",
+			SourceUUID: "c3", SourceParentUUID: "u1"},
+	)
+	for _, testCase := range []struct {
+		spec  string
+		holds []bool
+	}{
+		// The window keeps the abandoned branch's record and its identity-less child: both are off the
+		// line the read's last record answers, and the child is the window's leaf.
+		{"0-2", []bool{true, false, false}},
+		// The identity-less child alone with the root: its retained ancestor is the root, so the chain
+		// runs the on-line way -- but the child itself is still off the read's line and would be the
+		// resumed session's beginning.
+		{"0,2", []bool{true, false}},
+	} {
+		selected, _, err := Select(conversation, testCase.spec, false)
+		if err != nil {
+			t.Fatalf("selecting %q: %v", testCase.spec, err)
+		}
+		if got := selected.sourceLineHolds; !reflect.DeepEqual(got, testCase.holds) {
+			t.Fatalf("selecting %q: sourceLineHolds = %v, want the read's own membership for the kept "+
+				"records %v: ordinal 2 is off the line the last record answers", testCase.spec, got,
+				testCase.holds)
+		}
+		for _, target := range []string{TargetClaude, TargetPi, TargetOMP} {
+			route, err := targetRouteFor(target)
+			if err != nil {
+				t.Fatalf("route %s: %v", target, err)
+			}
+			_, err = route.Convert(selected, selectionProbeOptions())
+			if !errors.Is(err, ErrUnrepresentableLeaf) {
+				t.Errorf("%s: converting %q: err = %v, want ErrUnrepresentableLeaf: the window's last "+
+					"record is the identity-less one, chained to the entry of the abandoned turn", target,
+					testCase.spec, err)
+				continue
+			}
+			for _, want := range []string{"the record at ordinal 2", "the read answered no identity for it"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("%s: the refusal for %q (%v) does not name %q", target, testCase.spec, err, want)
+				}
+			}
+		}
+	}
+
+	// The line keeps the last word: ordinal 2 is left out and the on-line leaf is the window's own end,
+	// with the abandoned branch's record present as recorded history off the walk.
+	selected, _, err := Select(conversation, "0,1,3", false)
+	if err != nil {
+		t.Fatalf("selecting 0,1,3: %v", err)
+	}
+	for _, target := range []string{TargetClaude, TargetPi, TargetOMP} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		if _, err := route.Convert(selected, selectionProbeOptions()); err != nil {
+			t.Errorf("%s: converting 0,1,3 (the line's own leaf, the abandoned record as history): %v",
+				target, err)
+		}
+	}
+
+	// The identity-less record with an explicit parent that *is* on the line: the read's own order
+	// reaches it (the last record names no parent, so the walk steps to the record before it), and the
+	// guard answers on the line. Refusing this shape would be a refusal about the identity and not about
+	// the line.
+	onLine := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "start", Dialogue: "start", SourceUUID: "u1"},
+		Message{Ordinal: 1, Role: "assistant", Content: "the word", Dialogue: "the word",
+			SourceUUID: "", SourceParentUUID: "u1"},
+		Message{Ordinal: 2, Role: "assistant", Content: "the last word", Dialogue: "the last word"},
+	)
+	if got := sourceLineMembershipForTest(onLine.Messages); !reflect.DeepEqual(got, []bool{true, true, true}) {
+		t.Fatalf("the on-line control's read membership = %v, want every record on the line: the walk "+
+			"steps from the parentless last record to the one before it", got)
+	}
+	selected, _, err = Select(onLine, "0-1", false)
+	if err != nil {
+		t.Fatalf("selecting 0-1 over the on-line identity-less record: %v", err)
+	}
+	for _, target := range []string{TargetClaude, TargetPi, TargetOMP} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		if _, err := route.Convert(selected, selectionProbeOptions()); err != nil {
+			t.Errorf("%s: converting a window whose identity-less leaf stands on the read's line: %v",
+				target, err)
+		}
+	}
+}
+
+// sourceLineMembershipForTest answers the read's own walk membership for a document no selection reduced,
+// through the same computation Select carries (inactiveSourceRecords): the test's own reader for the
+// control above, so the expected membership is the rule's answer and not a hand-counted one.
+func sourceLineMembershipForTest(messages []Message) []bool {
+	_, onLine, _ := inactiveSourceRecords(messages, "")
+	return onLine
+}
+
 // TestSelectionKeepsAnInactiveBranchesRecordedAncestry pins the ancestry rule's inactive half: a record
 // the read's own line leaves off the walk may keep an ancestor that is itself off that line. The read is
 // the shape where the two meet -- the branch 0 → 1 → 2 → 4 beside the line 0 → 3 → 5 -- and the window
@@ -1328,6 +1691,68 @@ func TestSelectionKeepsAnInactiveBranchesRecordedAncestry(t *testing.T) {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("the refusal %v does not name %s", err, want)
 			}
+		}
+	}
+
+	// The other side of the same revival check: an *off-line* record whose own parent the read does not
+	// hold has no relation to resolve, so `parentPlace` takes the entry written before it -- here an
+	// off-line entry -- and that place is recorded history, not a revival: the record itself stands off
+	// the read's line, so it is not a record the line holds chained under an abandoned entry. The window
+	// converts, the branch travels in the file as the window carried it, and the walk from the file's
+	// last entry stays the read's own line.
+	stranded := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "start", Dialogue: "start", SourceUUID: "u1"},
+		Message{Ordinal: 1, Role: "assistant", Content: "the branch parent", Dialogue: "the branch parent",
+			SourceUUID: "b2", SourceParentUUID: "u1"},
+		// The record whose own parent this read does not hold: off the line (the walk from ordinal 3
+		// through u1 reaches neither record), with no relation the writer can place.
+		Message{Ordinal: 2, Role: "assistant", Content: "the stranded record",
+			Dialogue: "the stranded record", SourceUUID: "c3", SourceParentUUID: "not-in-this-read"},
+		Message{Ordinal: 3, Role: "assistant", Content: "the active line", Dialogue: "the active line",
+			SourceUUID: "d4", SourceParentUUID: "u1"},
+	)
+	strandedWindow, _, err := Select(stranded, "0-3", false)
+	if err != nil {
+		t.Fatalf("selecting the whole stranded read: %v", err)
+	}
+	for _, target := range []string{TargetClaude, TargetPi, TargetOMP} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		if _, err := route.Convert(strandedWindow, selectionProbeOptions()); err != nil {
+			t.Errorf("%s: converting a window whose off-line record falls back to an off-line entry: %v "+
+				"want no refusal: the fallback's revival check is about a record the read's line holds",
+				target, err)
+		}
+	}
+	route, err = targetRouteFor(TargetPi)
+	if err != nil {
+		t.Fatalf("route %s: %v", TargetPi, err)
+	}
+	strandedSession, err := route.Convert(strandedWindow, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("%s: converting the stranded window: %v", TargetPi, err)
+	}
+	strandedLines := decodePiSession(t, strandedSession.Data)
+	strandedTexts := piEntryTexts(t, strandedLines)
+	strandedWalk := map[string]bool{}
+	for id := range piWalkIDs(t, strandedLines) {
+		strandedWalk[strandedTexts[id]] = true
+	}
+	for _, want := range []string{"start", "the active line"} {
+		if !strandedWalk[want] {
+			t.Errorf("the walk from the stranded file's last entry does not hold %q", want)
+		}
+	}
+	for _, unwanted := range []string{"the branch parent", "the stranded record"} {
+		if strandedWalk[unwanted] {
+			t.Errorf("the walk from the stranded file's last entry holds %q, a record the read's line "+
+				"leaves off it", unwanted)
+		}
+		if !strings.Contains(string(strandedSession.Data), unwanted) {
+			t.Errorf("the written document does not hold %q at all: it is recorded history the window "+
+				"carried, and the rule is about the walk, not the file", unwanted)
 		}
 	}
 }
@@ -2284,6 +2709,106 @@ func TestSelectionInfersAnIdLessResultOnlyToACallOnItsWrittenPath(t *testing.T) 
 	if pairedID != "toolu_two" {
 		t.Errorf("the rollout's function_call_output answers %q, want toolu_two: the eligible call's own "+
 			"id", pairedID)
+	}
+
+	// An outcome the read recorded on a *sibling* branch answers its call there and must not clear it for
+	// the id-less result on this path: A's recorded outcome stands off the walk the id-less result's entry
+	// hangs off, and B is outstanding beside A where the result stands. The inference sees two calls and
+	// names neither -- a completion set keyed by id over the whole file would read A as answered
+	// everywhere and infer the result onto B, a pairing the read never recorded, on the very path where
+	// both calls were left unanswered.
+	const siblingAnswer = "the sibling outcome"
+	sibling := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "root", Dialogue: "root", SourceUUID: "u1"},
+		Message{Ordinal: 1, Role: "assistant", Content: "call A", Dialogue: "call A",
+			SourceUUID: "a2", SourceParentUUID: "u1",
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_a", Name: "Bash", InputJSON: `{"command":"a"}`}}},
+		// A's recorded outcome, on a branch of its own: the nearest call the id records before it is A,
+		// so the read pairs it with A, and the selection carries it as A's counterpart when the window
+		// names A.
+		Message{Ordinal: 2, Role: "user", SourceUUID: "s3", SourceParentUUID: "u1",
+			ToolResults: []ToolResult{{ToolUseID: "toolu_a", ContentRaw: siblingAnswer,
+				ContentSize: len(siblingAnswer)}}},
+		Message{Ordinal: 3, Role: "assistant", Content: "the middle", Dialogue: "the middle",
+			SourceUUID: "m4", SourceParentUUID: "a2"},
+		Message{Ordinal: 4, Role: "assistant", Content: "call B", Dialogue: "call B",
+			SourceUUID: "b5", SourceParentUUID: "m4",
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_b", Name: "Bash", InputJSON: `{"command":"b"}`}}},
+		Message{Ordinal: 5, Role: "user", Content: "the ask", Dialogue: "the ask",
+			SourceUUID: "c6", SourceParentUUID: "b5",
+			ToolResults: []ToolResult{{ContentRaw: answerText, ContentSize: len(answerText)}}},
+	)
+	selected, report, err := Select(sibling, "1,3-5", false)
+	if err != nil {
+		t.Fatalf("selecting 1,3-5: %v", err)
+	}
+	if report.NecessitiesAdded.Count != 1 {
+		t.Fatalf("selecting 1,3-5: necessities = %+v, want the sibling outcome carried as A's counterpart",
+			report.NecessitiesAdded)
+	}
+	for _, target := range []string{TargetClaude, TargetPi, TargetOMP, TargetCodex, TargetOpenCode} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(selected, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the sibling-outcome window: %v", target, err)
+		}
+		if strings.Contains(string(converted.Data), answerText) {
+			t.Errorf("%s: the written document holds the id-less result: both calls on its own path were "+
+				"outstanding (A was answered only on the sibling branch), so the inference had no call to "+
+				"name", target)
+		}
+		if count := lossCount(t, converted.Losses, "unpaired_tool_results").Count; count != 1 {
+			t.Errorf("%s: unpaired_tool_results = %d, want the one result no eligible call answers",
+				target, count)
+		}
+		if count := lossCount(t, converted.Losses, "generated_call_ids").Count; count != 0 {
+			t.Errorf("%s: generated_call_ids = %d, want 0: the inference picked no call, so it minted no "+
+				"pairing either", target, count)
+		}
+	}
+	// The tree writers keep the sibling outcome in the file as recorded history off the walk -- it is the
+	// counterpart the selection carried -- while the line writers count it among the records the read's
+	// line leaves off and omit it with them. Either way the id-less result is omitted above, which is
+	// what tells the two dispositions apart: an inference reading the file-wide set wrote the result
+	// under B while this record was in the file.
+	for _, target := range []string{TargetClaude, TargetPi, TargetOMP} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(selected, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the sibling-outcome window: %v", target, err)
+		}
+		if !strings.Contains(string(converted.Data), siblingAnswer) {
+			t.Errorf("%s: the written document does not hold the sibling outcome the selection carried as "+
+				"A's counterpart", target)
+		}
+	}
+	// The default path keeps the ledger's own question -- the one call still outstanding anywhere in the
+	// file -- so the same read without a selection infers the result onto B (goal 0009's D4: the default
+	// path's answer is the one it always had). The contrast is the finding's point: the reduction's
+	// inference reads completion per occurrence and per path.
+	for _, target := range []string{TargetClaude, TargetPi, TargetOMP} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(sibling, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the read without a selection: %v", target, err)
+		}
+		if !strings.Contains(string(converted.Data), answerText) {
+			t.Errorf("%s: the unflagged conversion drops the id-less result: the ledger's file-wide set "+
+				"is the default path's answer", target)
+		}
+		if count := lossCount(t, converted.Losses, "generated_call_ids").Count; count != 1 {
+			t.Errorf("%s: unflagged generated_call_ids = %d, want the one pairing the ledger's answer "+
+				"mints", target, count)
+		}
 	}
 }
 

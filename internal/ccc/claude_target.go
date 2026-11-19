@@ -190,6 +190,7 @@ func ConvertToClaudeTranscript(conv Conversation, opts ClaudeTargetOptions) (Cla
 		pairings:         pairedCallOccurrences(conv),
 		callOwners:       map[string]struct{}{},
 		callPlaces:       map[callOccurrence]string{},
+		answeredCalls:    map[callOccurrence][]int{},
 		selectionReduced: conv.selectionReduced(),
 		opts:             opts,
 		sourceFidelity:   conv.Fidelity,
@@ -288,6 +289,13 @@ type claudeTranscriptBuilder struct {
 	// reduced document reads: the inference may name only a call that stands on the written walk of the
 	// result's record (soleResultCall).
 	callPlaces map[callOccurrence]string
+	// answeredCalls names, per call occurrence, the records whose written results answered it (each
+	// record's own position in the document): the completion a reduced document's id-less inference
+	// reads. The question is per occurrence and per path -- whether an answer stands on the written walk
+	// of the result being serialized -- because a result the window carries on another branch is recorded
+	// history there and answers nothing here, while the ledger's file-wide id set (the default path's
+	// answer) cannot say which branch an answer belongs to.
+	answeredCalls map[callOccurrence][]int
 	// selectionReduced says the document this conversion walks is one Select produced
 	// (Conversation.selectionReduced): the written-ancestry acceptance and the path-restricted inference
 	// exist for the reduction, and an unflagged run keeps the writer's earlier answers.
@@ -774,30 +782,52 @@ func (b *claudeTranscriptBuilder) resultCallWritten(paired *callOccurrence, call
 // soleResultCall answers the call an id-less result may be paired with, and whether there is exactly one
 // such call. A conversation the read returned asks the ledger's own question -- the one call still
 // outstanding anywhere in the walk. A document a selection produced asks the narrower one: the sole call
-// that is outstanding *and* stands on the written walk of the result's record
-// (sourceTree.recordOnWrittenPath). This file holds the records the read's line leaves off it as
-// recorded history, so the outstanding set can include a call on another branch; inferring the result
-// onto such a call would write an output whose invocation the resumed context cannot see, and
-// `generated_call_ids` discloses the inference rather than a placement. The inference picks no call
-// where the eligible ones do not name exactly one id, and the result is omitted and counted.
-func (b *claudeTranscriptBuilder) soleResultCall() (string, bool) {
+// occurrence that is outstanding *on the written walk of the result's record*
+// (sourceTree.recordOnWrittenPath) and that no written result standing on that walk has answered
+// (answeredOnWrittenPath). This file holds the records the read's line leaves off it as recorded history,
+// so the outstanding set can include a call on another branch; inferring the result onto such a call
+// would write an output whose invocation the resumed context cannot see, and `generated_call_ids`
+// discloses the inference rather than a placement. The inference picks no call where the eligible ones do
+// not name exactly one id, and the result is omitted and counted.
+func (b *claudeTranscriptBuilder) soleResultCall() (callOccurrence, string, bool) {
 	if !b.selectionReduced {
-		return b.solePendingCall()
+		id, ok := b.solePendingCall()
+		return callOccurrence{}, id, ok
 	}
 	found := ""
+	foundAt := callOccurrence{}
 	for occurrence, id := range b.callPlaces {
-		if _, pending := b.pendingCalls[id]; !pending {
+		if b.answeredOnWrittenPath(occurrence) {
+			// A written result on the place now being walked has answered this call occurrence: the call
+			// is not outstanding here, whatever a result on another branch did to the call's id.
 			continue
 		}
 		if !b.tree.recordOnWrittenPath(occurrence.message) {
 			continue
 		}
 		if found != "" && found != id {
-			return "", false
+			return callOccurrence{}, "", false
 		}
-		found = id
+		found, foundAt = id, occurrence
 	}
-	return found, found != ""
+	return foundAt, found, found != ""
+}
+
+// answeredOnWrittenPath answers whether a written result standing on the place now being walked has
+// already answered one call occurrence. A result the writer accepted answers its call where it stands:
+// the records whose results answered the occurrence are remembered (answeredCalls) and the question is
+// whether any of them stands on the written ancestry of the result being serialized
+// (sourceTree.recordOnWrittenPath). An answer on another branch leaves the call outstanding here, which
+// the ledger's own file-wide id set cannot express: that set is what cleared a call a sibling branch's
+// outcome had answered, so an id-less result was inferred onto a later call the read never paired it
+// with although both calls were outstanding on the result's own path.
+func (b *claudeTranscriptBuilder) answeredOnWrittenPath(occurrence callOccurrence) bool {
+	for _, record := range b.answeredCalls[occurrence] {
+		if b.tree.recordOnWrittenPath(record) {
+			return true
+		}
+	}
+	return false
 }
 
 // toolResult writes one result as a tool_result block, and answers whether it was written. paired is the
@@ -806,19 +836,32 @@ func (b *claudeTranscriptBuilder) soleResultCall() (string, bool) {
 func (b *claudeTranscriptBuilder) toolResult(paired *callOccurrence, result ToolResult, at time.Time) (claudeContentBlock, bool) {
 	callID := strings.TrimSpace(result.ToolUseID)
 	resultIDInferred := false
+	answered := callOccurrence{}
 	if callID == "" {
-		pending, ok := b.soleResultCall()
+		occurrence, pending, ok := b.soleResultCall()
 		if !ok {
 			b.lossUnpairedResults++
 			return claudeContentBlock{}, false
 		}
 		callID = pending
 		resultIDInferred = true
+		answered = occurrence
 	} else if !b.resultCallWritten(paired, callID) {
 		// The acceptance is resultCallWritten's own answer: the written ancestry the read's pairing names
 		// for a reduced document, and the id-existence check the default path has always asked.
 		b.lossUnpairedResults++
 		return claudeContentBlock{}, false
+	} else if paired != nil {
+		// A reduced document's result was accepted only through the read's pairing (resultCallWritten
+		// requires it), so the pairing names the occurrence this result answers.
+		answered = *paired
+	}
+	if b.selectionReduced {
+		// The accepted result answers its call on the place it stands at, whether or not the text below
+		// gives it a block: the recorded outcome is what leaves the outstanding set, exactly as the
+		// default path's ledger has always read it (the delete happens past the acceptance, before the
+		// text is known to be writable).
+		b.answeredCalls[answered] = append(b.answeredCalls[answered], b.messageIndex)
 	}
 	delete(b.pendingCalls, callID)
 	text, blocks := resultText(result)

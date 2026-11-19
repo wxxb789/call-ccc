@@ -223,6 +223,16 @@ type Conversation struct {
 	// source's conversation left. nil means Messages is the read itself, and a writer takes the walk over
 	// it as before.
 	sourceLineInactive []bool
+	// sourceLineHolds carries, per message of Messages, the read's own *walk membership*: whether the
+	// walk from the read's last record reached the record at that position (inactiveSourceRecords' second
+	// answer), keyed to the messages Select kept. It exists because sourceLineInactive answers off-line
+	// only for the records the read holds an identity for -- an identity-less record's flag says nothing
+	// -- while the read's answer about the line is per position: a tree writer asking whether the record
+	// its last entry stands for is on the line must read this, or an identity-less leaf chained off the
+	// line through an explicit parent would pass as unknown and the target would resume the abandoned
+	// branch. nil means Messages is the read itself (the leaf rule reads the identity then, per
+	// lastEntryLineRefusal) or the read returned no records at all.
+	sourceLineHolds []bool
 	// sourceKeptAncestor carries, per message of Messages, the selection's own ancestry answer: the
 	// *index* in Messages of the nearest ancestor the *read* holds that the selection also carries, or -1
 	// where the read answers none (the record's ancestry is all outside the window, or the read cannot

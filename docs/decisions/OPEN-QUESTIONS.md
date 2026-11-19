@@ -3091,3 +3091,31 @@ supersede it with a newer one and say which it supersedes.
   they happen).
 - **Settled by:** an operator decision between "one report vocabulary for every run" and "the default
   path's report is byte-identical, and reduction-only categories say so".
+
+## Q-0009-09 — A reduced document's id-less inference reads completion per occurrence and per written path, and the tree leaf guard answers by record position
+
+- **Status:** open (defaults taken: for a document a selection produced, a call's completion is tracked
+  per call occurrence and per written path, and a tree conversion refuses a window whose last written
+  record is off the read's line even where the read answered no identity for that record).
+- **Question:** should the default path's id-less inference ask the same stricter question (the ledger's
+  file-wide outstanding set is the answer the writers have always read), and should a tree target write an
+  identity-less leaf chained off the line rather than refuse it?
+- **Default taken:** neither default widens a rule; each completes one the surface already claimed. The
+  file-wide set made the inference depend on where a *sibling* branch's recorded outcome happened to be
+  written, so an id-less result with two calls outstanding on its own path was inferred onto the later one
+  although a recorded outcome on that path answered neither (the seventh review round's finding 1); the
+  writers now remember the records whose written results answered each occurrence
+  (`answeredOnWrittenPath`) and ask whether one stands on the result's own written ancestry, while the
+  default path keeps the ledger's question — the reduction-scoped split `resultCallWritten` already takes,
+  and a change to the flagless path's bytes would be a D4 break §4's probe measures. The identity-keyed
+  leaf check returned early on an empty source id, so a window ending on an identity-less record chained
+  off the line through its explicit parent converted and the target's loader resumed the branch the
+  source's conversation left (finding 2); the guard now answers by the record's own position through the
+  entries actually written (`Conversation.sourceLineHolds`). The rejected alternatives: making the default
+  path path-aware as well (a D4 change, above), and writing the identity-less off-line leaf — measured in
+  the round's mutation, the tree walks `2 → 1 → 0` and the resumed session continues the abandoned branch,
+  which is what `ErrUnrepresentableLeaf` exists to refuse.
+- **Settled by:** an operator decision between "the reduction asks the stricter completion question while
+  the default path keeps its own answer" and "both paths ask one question", and between "an
+  identity-less off-line leaf is refused like any other" and "a record the read gave no identity for
+  passes where the flags cannot answer".

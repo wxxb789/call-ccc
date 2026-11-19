@@ -131,11 +131,14 @@ archive's own summary of an outcome stands on the call itself, and whether the t
 hold it is that writer's answer, named in the conversion's losses. On a target whose session is a tree, a
 selection that leaves out a record's own parent hangs it off its nearest retained ancestor instead, so the
 resumed context is the read's own line and a branch the selection carried stays recorded history off that
-line (a window with no retained ancestor at all is refused by name rather than written under a branch);
+line (a window whose own end stands off that line is refused by name rather than written under a branch --
+the guard answers by record position, so a record the read gave no identity for is refused like any other
+-- and a window with no retained ancestor at all is refused the same way);
 and, on the runs that carry a selection, a result whose paired call is written but off that result's own
 walk is omitted and counted (`unpaired_tool_results`) rather than published as an output whose invocation
 the resumed context cannot see — a result with no recorded id is inferred only onto a call that stands on
-the walk its own record hangs off. The dispositions that exist for the reduction act only there: a run
+the walk its own record hangs off and that no written result on that walk has answered. The dispositions
+that exist for the reduction act only there: a run
 without the flag, and a selection applied to a document a selection already produced (refused by name),
 are what they were.
 Every run that carried a selection reports the transformation in both the human block and `--json`: the

@@ -188,8 +188,10 @@ obligation ships no citations file, rather than an empty one.
   that writer's answer, named in the conversion's losses. A call or result the source
   recorded with **no** id carries no recorded link, so the seam neither invents one nor carries candidates
   for it; the target's writer applies its own rule to the selected line and discloses the pairing it
-  inferred (`generated_call_ids`) — in a reduced document, the sole outstanding call that stands on the
-  written walk of the result's record, so an inference cannot place an output under a call the resumed
+  inferred (`generated_call_ids`) — in a reduced document, the sole call that stands on the
+  written walk of the result's record and that no written result standing on that walk has answered
+  (an outcome the window carries on another branch discharges its call there and leaves it outstanding
+  here), so an inference cannot place an output under a call the resumed
   context cannot see — and an id-less *call* is counted undischarged only where the carried
   document holds no id-less result that states an outcome at or after it (where one is carried, the call
   is left to that same disclosed inference). On a target whose session is a
@@ -201,7 +203,10 @@ obligation ships no citations file, rather than an empty one.
   position, so a record the read answered no identity for keeps
   it), so the loader's walk stays the read's own line; an off-line record may keep an off-line ancestor —
   keeping a branch off the active walk is recorded history the writer reproduces — while an on-line record
-  is never chained through one, and a window in which that
+  is never chained through one, a window ending on an off-line record is refused by name
+  (`ErrUnrepresentableLeaf`) rather than written (the check answers by the record's own position through
+  the entries actually written, so a record the read gave no identity for is refused like any other), and
+  a window in which that
   ancestry is gone entirely — the fallback would hang the record under an off-line one — is refused by
   name (`ErrUnrepresentableLeaf`) rather than written. A bad selection is refused, never repaired, with
   the core's own sentence

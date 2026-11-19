@@ -470,3 +470,40 @@ measurement that decided it, followed by the review round's own:
       revision materializes the off-path transcript at run time (`d4ProbeOffPathTranscript`) so both
       trees read identical records for it, and §4's numbers move to 1109/1234 with the 125-line
       increment fixture unchanged.
+
+13. **The seventh review round's three findings.** The review of `9242e49..dea73c0` found two P1 and one
+    P2 — the tree writers' id-less inference reading completion file-wide, the tree leaf guard passing an
+    identity-less leaf chained off the line, and the D1 citation's membership-only check — and asks for a
+    machine-checked pin per rule the touched surface claims. It leaves three departures:
+
+    * **the id-less inference asks completion per occurrence and per written path** (review 1/3, a P1):
+      the reduced writers' inference read the file-wide outstanding set, so a recorded outcome the window
+      carried on a *sibling* branch cleared a call that was still outstanding on the id-less result's own
+      path, and the result was inferred onto a later call although both were unanswered where the result
+      stood. Each writer now remembers, per call occurrence, the records whose written results answered it
+      (`answeredCalls`) and asks whether any of them stands on the result's own written ancestry
+      (`answeredOnWrittenPath`, `sourceTree.recordOnWrittenPath`); the default path keeps the ledger's
+      file-wide question (D4). The extended `TestSelectionInfersAnIdLessResultOnlyToACallOnItsWrittenPath`
+      pins the sibling-outcome arm (both routes outstanding → omitted and counted, no id minted), the
+      sibling outcome carried on the trees as recorded history, and the unflagged contrast.
+    * **the tree leaf guard answers by the record's own position** (review 2/3, a P1): the identity-keyed
+      leaf check returned early on an empty source id, so a selected window whose last record was an
+      identity-less record chained off the read's line through its *explicit parent* (the direct ancestor
+      lookup, ahead of the guarded places) converted -- the target's loader would have resumed the branch
+      the source's conversation left. `Select` now carries the read's own walk membership per kept record
+      (`Conversation.sourceLineHolds`), and `lastEntryLineRefusal` walks the entry written last up its
+      written ancestry (`sourceTree.entryPlaces`) and refuses by name where the record it resolves to is
+      not on the read's line; the identity path stays for a document the read returned.
+      `TestSelectionRefusesAnIdentityLessLeafChainedOffTheLine` pins the two windows and the two controls
+      (an identity-less leaf on the line, the abandoned branch kept as history once the line's own leaf is
+      the window's end), and `TestSelectionKeepsAnInactiveBranchesRecordedAncestry` gains the stranded
+      record's arm (an off-line record falling back to an off-line entry as recorded history, not a
+      revival) after its mutation showed that half unpinned.
+    * **the D1 pin decodes each route's evidence** (review 3/3, a P2): the cited case checked only
+      substring membership, so a duplicated tool-result entry left every assertion green. It now decodes
+      each of the five routes' documents into their ordered evidence -- dialogue, calls with id, name and
+      canonical argument object, results with their paired call id and text, target-owned envelopes
+      excluded -- and compares the exact slice, with the raw excluded-material scan kept beside it; two
+      executed mutations (a duplicated Pi result entry, a moved Codex output link) fail it.
+      `docs/evidence/0009-citations.tsv` gains the `S6-leaf` row and names the round's refinements in its
+      extended S2-idless-path and S6-inactive rows.

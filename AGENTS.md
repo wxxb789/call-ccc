@@ -301,7 +301,9 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   record the source recorded with **no** id carries no
   recorded link: the seam neither invents one nor carries candidates for it, and the writer's own rule for
   an id-less result (the sole outstanding call in the line it wrote — in a reduced document, the sole
-  outstanding call that stands on the written walk of the result's record — disclosed as
+  call that stands on the written walk of the result's record and that no written result standing on that
+  walk has answered, so an outcome the window carries on another branch discharges its call there and
+  leaves it outstanding here — disclosed as
   `generated_call_ids`) reads the selected line; an id-less *call* is counted undischarged where the carried document holds no
   id-less result that states an outcome at or after it — no outcome in the line can answer it — and where
   such a result is
@@ -315,7 +317,9 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   losses (`unpaired_tool_calls` on OpenCode). **The line is the read's own**: which records the source's relations place on the
   line its loader walks is a property of the read, and a selection neither moves a record onto that line nor
   off it — a window ending on an off-line record is refused by a tree target by name
-  (`ErrUnrepresentableLeaf`, below) rather than written as a file that resumes the branch, a record whose
+  (`ErrUnrepresentableLeaf`, below) rather than written as a file that resumes the branch (the guard
+  answers by the record's own position through the entries actually written, so a record the read gave no
+  identity for is refused like any other), a record whose
   own parent the window left out is hung off its nearest retained ancestor (the read's own relation walked
   through the excluded records, with the tool-result step the writers take where the read may project one
   — and where the answer crossed that step the relation is counted (`unresolved_source_parents`), as the

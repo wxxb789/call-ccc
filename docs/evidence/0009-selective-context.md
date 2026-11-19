@@ -480,7 +480,8 @@ this increment's own id spaces:
   the usage code before any install —
   `S3-reduced` the second-selection refusal, `D5-duplicate` the grammar's duplicate-region half; the
   report's classes and the read's own ordinal space; the line rule, with `S6` for its ancestry half,
-  `S6-inactive` for the off-line record that keeps an off-line ancestor, `S6-identity` and `S6-projection`
+  `S6-inactive` for the off-line record that keeps an off-line ancestor, `S6-leaf` for the leaf guard's
+  position-keyed answer (the seventh round's), `S6-identity` and `S6-projection`
   for the position-keyed answer and the counted projection, and `S7` for a
   call whose only recorded results state progress).
 
@@ -1361,6 +1362,125 @@ ok  	go.kenn.io/agentsview/internal/ccc	17.886s
 ok  	go.kenn.io/agentsview/cmd/ccc	4.945s
 ```
 
+### The seventh review round's findings (`dea73c0` + working tree), fixed and re-measured
+
+The review of `9242e49..dea73c0` found three items (two P1, one P2): the tree writers' id-less inference
+read completion file-wide, so a recorded outcome the window carried on a *sibling* branch cleared a call
+still outstanding on the result's own path and the result was inferred onto a later call both were
+unanswered at (finding 1); the tree leaf guard answered by identity alone, so a selected window whose last
+record was an identity-less record chained off the read's line through its *explicit* parent converted and
+the target's loader would resume the branch the source's conversation left (finding 2); and the D1
+citation's case checked substring membership, so a duplicated tool-result entry left it green (finding 3).
+This round fixes all three and follows the review's systematic close-out: every rule the touched surface
+claims was proved by **one executed mutation** — the rule's line reverted, the case that claims to pin it
+run, the failure recorded, the line restored. One mutation came out of the close-out **unpinned** and the
+round pins it: the fallback's off-line-record exemption (its mutation is silent over the then-existing
+suite; the stranded-record arm this round added is what fails it now). Eleven mutations were run in all;
+every one failed for the reason its rule names (the exemption's after its pin), and
+`grep -rn 'false &&\|&& false' internal/ccc/*.go` is empty after the restores (each mutation is quoted
+below as `M<number>`, the round's own findings-mutations `F…` first):
+
+```console
+$ # F2: lastEntryLineRefusal's position-keyed branch disabled for reduced documents
+$ go test -tags fts5 -count=1 -run TestSelectionRefusesAnIdentityLessLeafChainedOffTheLine ./internal/ccc/
+--- FAIL: TestSelectionRefusesAnIdentityLessLeafChainedOffTheLine (0.00s)
+    claude: converting "0-2": err = <nil>, want ErrUnrepresentableLeaf: the window's last record is the
+    identity-less one, chained to the entry of the abandoned turn
+    (the same for pi, omp and the "0,2" window)
+exit=1
+$ # F1: answeredOnWrittenPath answering "answered anywhere" (the file-wide set the old code read)
+$ go test -tags fts5 -count=1 -run TestSelectionInfersAnIdLessResultOnlyToACallOnItsWrittenPath ./internal/ccc/
+--- FAIL: TestSelectionInfersAnIdLessResultOnlyToACallOnItsWrittenPath (0.00s)
+    claude: the written document holds the id-less result: both calls on its own path were outstanding
+    (A was answered only on the sibling branch), so the inference had no call to name
+    claude: unpaired_tool_results = 0, want the one result no eligible call answers
+    claude: generated_call_ids = 1, want 0: the inference picked no call, so it minted no pairing either
+    (the same for pi and omp)
+exit=1
+$ # F3a: the Pi writer's writeToolEvidence writes each result entry twice
+$ go test -tags fts5 -count=1 -run TestSelectionWritesExactlyTheSelectedOrdinals ./internal/ccc/
+--- FAIL: TestSelectionWritesExactlyTheSelectedOrdinals (0.00s)
+    pi: selecting "2" wrote the evidence
+     got: ["call toolu_…01 Bash {…}" "result toolu_…01 build-ok: 3 packages compiled" "result toolu_…01 …"]
+    want: ["call toolu_…01 Bash {…}" "result toolu_…01 build-ok: 3 packages compiled"]
+    (the same for omp, and for "7-8")
+exit=1
+$ # F3b: the Codex writer's function_call_output states callID + "-wrong"
+$ go test -tags fts5 -count=1 -run TestSelectionWritesExactlyTheSelectedOrdinals ./internal/ccc/
+--- FAIL: TestSelectionWritesExactlyTheSelectedOrdinals (0.00s)
+    codex: selecting "2" wrote the evidence
+     got: ["call toolu_…01 Bash {…}" "result toolu_…01-wrong build-ok: 3 packages compiled"]
+    want: ["call toolu_…01 Bash {…}" "result toolu_…01 build-ok: 3 packages compiled"]
+exit=1
+$ # M1: soleResultCall drops the on-written-path restriction (S2-idless-path)
+$ go test -tags fts5 -count=1 -run TestSelectionInfersAnIdLessResultOnlyToACallOnItsWrittenPath ./internal/ccc/
+--- FAIL: TestSelectionInfersAnIdLessResultOnlyToACallOnItsWrittenPath (0.00s)
+    pi: the written document holds the id-less result, inferred onto the call at ordinal 1, which does not
+    stand on the walk the result's entry hangs off   (the same for omp)
+exit=1
+$ # M2: resultCallWritten's reduced branch accepts any paired occurrence (S2-path)
+$ go test -tags fts5 -count=1 -run TestSelectionOmitsAResultWhosePairedCallIsOffItsWrittenPath ./internal/ccc/
+--- FAIL: TestSelectionOmitsAResultWhosePairedCallIsOffItsWrittenPath (0.00s)
+    pi: unpaired_tool_results = 0, want the one result whose paired call is off its written ancestry
+    pi: the written document holds the result under a call that is not on its written ancestry
+    (the same for omp)
+exit=1
+$ # M3: resultToolName answers the id map's last write (S2-name)
+$ go test -tags fts5 -count=1 -run TestSelectionKeepsTheReadsPairingWhenTheWindowBreaksItsAncestry ./internal/ccc/
+--- FAIL: TestSelectionKeepsTheReadsPairingWhenTheWindowBreaksItsAncestry (0.00s)
+    pi: the result entry = {ToolCallID:toolu_reused_broken_ancestry ToolName:Write}, want the occurrence
+    the read paired with the result (…/Read), not the later sibling's Write   (the same for omp)
+exit=1
+$ # M4: resultCallWritten answers the written-ancestry question on every run (the D4 gate)
+$ go test -tags fts5 -count=1 -run TestUnflaggedFlatConversionKeepsTheIDAcceptance ./internal/ccc/
+--- FAIL: TestUnflaggedFlatConversionKeepsTheIDAcceptance (0.00s)
+    pi: the unflagged conversion drops the result: the read's pairing names an off-line occurrence, but
+    the default path's acceptance is the id a written call shares   (the same for omp)
+exit=1
+$ # M5a: fallbackPlace's off-line-record exemption removed (the stranded-record arm added this round)
+$ go test -tags fts5 -count=1 -run TestSelectionKeepsAnInactiveBranchesRecordedAncestry ./internal/ccc/
+--- FAIL: TestSelectionKeepsAnInactiveBranchesRecordedAncestry (0.00s)
+    claude: converting a window whose off-line record falls back to an off-line entry: … c3 (ordinal 2),
+    a record on the line the read's last record answers, would be chained to the entry of b2 (ordinal 1)
+    … want no refusal: the fallback's revival check is about a record the read's line holds
+    (the same for pi and omp)
+exit=1
+$ # M6: the identity-keyed leaf refusal disabled
+$ go test -tags fts5 -count=1 ./internal/ccc/
+--- FAIL: TestPiSessionRefusesASelectedLeafOffTheLine (0.00s)
+    error = <nil>, want ErrUnrepresentableLeaf: the read's leaf is the empty turn, whose line does not
+    hold the branch entry written last
+exit=1
+```
+
+(The M5b mutation — `fallbackPlace`'s revival note removed — failed three cases at once:
+`TestSelectionKeepsASparseWindowOnTheReadsLine`, `TestSelectionChainsARecordWithoutAnIdentityToItsRetainedAncestor`
+and `TestSelectionKeepsAnInactiveBranchesRecordedAncestry`, each on the arm the finding's rule names; it is
+not requoted here.) The round's verification: the two packages' cases run green (below), `0009-citations.tsv`
+moves 36 → **37** rows (the `S6-leaf` row; the `S2-idless-path` and `S6-inactive` rows extended), and the
+two packages' test files carry 450 → **451** top-level `Test…` functions (one added,
+`TestSelectionRefusesAnIdentityLessLeafChainedOffTheLine`; none removed). The D4 probe re-ran over the
+two trees (`git worktree add --detach /tmp/ccc-0009-base 9242e49b…`, the probe copied into both):
+1109 / 1234 lines, the shared-document diff silent and the 125-line increment fixture absent from the
+base run — §4's numbers reproduced with the round's changes, so no number in §4 moved.
+
+```console
+$ go test -tags fts5 -count=1 ./internal/ccc/ ./cmd/ccc/
+ok  	go.kenn.io/agentsview/internal/ccc	19.686s
+ok  	go.kenn.io/agentsview/cmd/ccc	5.991s
+$ python3 scripts/gate.py; echo "exit=$?"
+  PASS     gofmt    3627 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 442 tests in 8.917s (rc=0)
+  PASS     parity   carried: 5553 file(s) identical to the pinned revision
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009-citations.tsv: 37 row(s) verified
+  PASS     secrets  no leaks found in 196 file(s) this repository owns
+GATE: PASS
+exit=0
+```
+
 ## 7. Docs, rules and bookkeeping
 
 * `AGENTS.md` — a new binding bullet ("A conversion carries only what the caller selected …") outside the
@@ -1382,7 +1502,11 @@ ok  	go.kenn.io/agentsview/cmd/ccc	4.945s
   condition to the id-less call's count. The sixth fix round scoped the writers' sentence to a reduced
   document (the default path keeps the id acceptance its writers always had, report included), added the
   id-less inference's written walk and the paired occurrence's tool name to the seam sentence, the Codex
-  coalescing to the call-unit sentence, and `ErrSelectionReduced` to the refusal list.
+  coalescing to the call-unit sentence, and `ErrSelectionReduced` to the refusal list. The seventh fix
+  round sharpened the id-less inference's sentence (completion is per call occurrence and per written
+  path: a recorded outcome on another branch does not clear the call for a result standing here) and the
+  line sentence's leaf clause (the guard answers by the record's own position through the entries actually
+  written, so a record the read gave no identity for is refused like any other).
 * `docs/conventions.md` — the layout block names `selection.go`; a new rule under "Rules of the work"
   states the specification's grammar, the seam, the refusals and the report's classes, with the second
   round's refinements (order pairing, progress, ancestry, supplied blank) folded into the same rule, the
@@ -1393,11 +1517,12 @@ ok  	go.kenn.io/agentsview/cmd/ccc	4.945s
   pairing, the tree writers' written-ancestry check, the summary-as-outcome-evidence and the
   states-an-outcome condition) folded in beside them, and the sixth round's (the reduction-scoped
   writers' disposition with the default path's report untouched, the id-less inference's written walk,
-  the paired occurrence's tool name, the Codex coalescing and its reduction-only category, and the
-  `ErrSelectionReduced` refusal) folded in as well.
-* `docs/plans/0009-selective-context.md` — §11 records thirteen departures with the measurement behind each
-  (the third round's four in §11.12) and the fourth, fifth and sixth rounds' seven, five and six at its
-  close.
+  paired occurrence's tool name, the Codex coalescing and its reduction-only category, and the
+  `ErrSelectionReduced` refusal) folded in as well, and the seventh round's (the id-less inference's
+  per-occurrence completion and the leaf guard's position-keyed answer) folded in beside them.
+* `docs/plans/0009-selective-context.md` — §11 records the increment's numbered departures with the
+  measurement behind each (the third round's four in §11.12) and the fourth, fifth, sixth and seventh
+  rounds' seven, five, six and three at its close (the seventh's as item 13).
 * `docs/goals/README.md` — 0009's row reads *Implemented on `feat/0009-selective-context`; awaiting
   operator acceptance*, and the goal file's own `Status:` line reads the same (the form 0007 and 0008
   carried while their increments awaited acceptance); nothing else was ready to archive (0008 was archived
@@ -1414,17 +1539,22 @@ ok  	go.kenn.io/agentsview/cmd/ccc	4.945s
   on its written ancestry — a flat line that leaves the call off, a tree whose walk does not hold the
   pairing — is omitted and counted rather than refused, the default for both writer families and its
   reversal); Q-0009-07 (a selection over a document a selection already produced is refused by name, not
-  composed — the reversal preserves the answers across a second reduction); and Q-0009-08 (a reduced
+  composed — the reversal preserves the answers across a second reduction); Q-0009-08 (a reduced
   document's report carries the Codex writer's `coalesced_tool_call_projections` row and the default
   path's does not, with the whole-read-selection comparison naming that one row — the reversal makes the
-  category unconditional and moves the probe's report lines).
+  category unconditional and moves the probe's report lines); and Q-0009-09 (this round: a reduced
+  document's id-less inference reads completion per call occurrence and per written path while the default
+  path keeps the ledger's file-wide question, and a tree conversion refuses an identity-less leaf that the
+  read's line does not hold — the reversals are a path-aware default and a passing identity-less leaf).
 * `README.md` — an example line (`--select 0-3,7`, in range for its fixture), a paragraph on the flag and
   its report, and `Select` in the engine list. Unchanged by the third and fourth rounds: the paragraph's
   claims (the order pairing, the progress rule, the blank refusal, the ancestry rule) are still what the
   code does. The fifth round rewrote the paragraph sentence that names the pairing rule (the ancestry
   first, the nearest prior occurrence of the id otherwise); its other claims stand. The sixth round scoped
   the paragraph's written-ancestry sentence to the runs that carry a selection, added the id-less
-  inference's written walk and named the second-selection refusal.
+  inference's written walk and named the second-selection refusal. The seventh round extended the id-less
+  sentence (the eligible call must also be unanswered on that walk) and the tree-leaf sentence (the
+  refusal answers by record position, an identity-less end included).
 * `docs/harness.md` — unchanged: this increment adds no gate step and no knob, and the citations step it
   already requires is the one that reads the new manifest.
 * The throw-away probe file (§4) and the pre-change worktree were removed before the gate run; the probe's
@@ -1435,6 +1565,7 @@ ok  	go.kenn.io/agentsview/cmd/ccc	4.945s
   quotes (recorded identities left as recorded — `d4ProbeRecordedIDs` — with the
   `recorded-call-id-change`/`recorded-uuid-change` control lines pinning it), and the sixth with the one
   this record quotes (the off-path transcript materialized at run time, `d4ProbeOffPathTranscript`, so the
-  review's input is compared on both trees). The
+  review's input is compared on both trees); the seventh round re-ran that same revision unchanged over
+  both trees (1109/1234 lines, the shared diff silent — §4's numbers reproduced). The
   fixture generator (`internal/ccc/fixturegen`) and the committed fixture tree move together, pinned by
   the existing `TestFixturesMatchTheirGenerator`.

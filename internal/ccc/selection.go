@@ -212,11 +212,12 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 	// also carries is answered per kept record (sourceKeptAncestor): a record whose own parent the
 	// selection left out is chained to that ancestor rather than to the entry written before it, which
 	// is what keeps a reduced tree the read's own line instead of reviving a branch the window carried.
-	readLineInactive, _ := inactiveSourceRecords(conversation.Messages, conversation.Source.Provider)
+	readLineInactive, readLineHolds, _ := inactiveSourceRecords(conversation.Messages, conversation.Source.Provider)
 	keptAncestors := selectionKeptAncestors(conversation, carried)
 
 	messages := make([]Message, 0, selectedCount+len(necessities))
 	lineInactive := make([]bool, 0, selectedCount+len(necessities))
+	lineHolds := make([]bool, 0, selectedCount+len(necessities))
 	// reducedOf maps a read record's index to its position in the reduced document, -1 for a record the
 	// selection left out; readIndexes is the reverse, one entry per carried record.
 	reducedOf := make([]int, len(conversation.Messages))
@@ -237,6 +238,7 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 		readIndexes = append(readIndexes, index)
 		messages = append(messages, message)
 		lineInactive = append(lineInactive, readLineInactive[index])
+		lineHolds = append(lineHolds, readLineHolds[index])
 	}
 	// The ancestry answers are the read's own indices (selectionKeptAncestors), and the writers consult
 	// the *reduced* document's own positions, so each answer is carried across: the ancestor is carried
@@ -293,6 +295,7 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 		Messages:           messages,
 		Fidelity:           conversation.Fidelity,
 		sourceLineInactive: lineInactive,
+		sourceLineHolds:    lineHolds,
 		sourceKeptAncestor: keptAncestor,
 		sourceResultPairs:  resultPairs,
 	}
