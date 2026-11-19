@@ -466,6 +466,27 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 	// finished writing, which another conversion carries.
 	result.Warnings = append(result.Warnings, boundaryWarnings(&boundary)...)
 
+	// The selection, when the caller named one, is decided here: after the read and the boundary, because
+	// it is a transformation of the *document* (the source file's bytes are measured whole and never
+	// rewritten), and *before* the source-side leaf guard below, because a specification the read's own
+	// ordinals refuse is a statement about the caller's command line -- the usage exit code, the core's
+	// own sentence -- and must not be reported as something about the source file's leaf; the spec is
+	// read against the full read either way (Select's own ordinal space), so the order changes which
+	// refusal a run with both problems answers, not which read the answers are about. Everything
+	// downstream -- the writer, the structural read-back, the load check, the printed invocation -- is
+	// about the session that is actually written, so the reduced document is what travels on; nothing is
+	// installed before this point and a refusal returns here, so a spec this build cannot honour costs no
+	// file, no store row and no target identity.
+	conversationForWrite := conversation
+	if strings.TrimSpace(opts.Selection) != "" {
+		selected, report, err := Select(conversation, opts.Selection, opts.StrictSelection)
+		if err != nil {
+			return ContinueResult{}, err
+		}
+		conversationForWrite = selected
+		result.Selection = &report
+	}
+
 	// The record the source's own loader selects as the conversation's leaf, asked of the source file's own
 	// entries: for the Pi-family readers the read's own last record is not that answer (pi_source_leaf.go),
 	// and a conversion written from a record the file's leaf path does not reach would resume a branch the
@@ -473,7 +494,9 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 	// and the report says so rather than presenting the read's own last record as the source's leaf. The
 	// same pass counts the records on that path the read does not carry whose omission the conversion
 	// accounts for -- records the read never held, so no target writer can count them -- and those travel
-	// into the conversion's losses below.
+	// into the conversion's losses below. It is asked about the read itself, never about the reduced
+	// document: which entry the source's own loader walks from is a property of the source file and the
+	// read, and a window a selection carries neither moves it nor narrows the read's own last record.
 	leaf, err := piSourceLeafCheck(conversation, readFrom, boundary)
 	if err != nil {
 		return ContinueResult{}, err
@@ -481,22 +504,9 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 	if leaf.Warning != "" {
 		result.Warnings = append(result.Warnings, leaf.Warning)
 	}
-
-	// The selection, when the caller named one, is applied here: after the read and the boundary, because
-	// it is a transformation of the *document* (the source file's bytes are measured whole and never
-	// rewritten), and before the target's own answers are asked for -- its executable's version was
-	// already probed above, before the read -- because everything downstream -- the writer, the structural
-	// read-back, the load check, the printed invocation -- is about the session that is actually written.
-	// Nothing is installed before this point and a refusal returns here, so a spec this build cannot
-	// honour costs no file, no store row and no target identity.
-	if strings.TrimSpace(opts.Selection) != "" {
-		selected, report, err := Select(conversation, opts.Selection, opts.StrictSelection)
-		if err != nil {
-			return ContinueResult{}, err
-		}
-		conversation = selected
-		result.Selection = &report
-		result.Warnings = append(result.Warnings, selectionWarnings(&report)...)
+	if result.Selection != nil {
+		conversation = conversationForWrite
+		result.Warnings = append(result.Warnings, selectionWarnings(result.Selection)...)
 	}
 
 	// What only the target's own harness can answer (Codex: the model provider its loader checks). It is

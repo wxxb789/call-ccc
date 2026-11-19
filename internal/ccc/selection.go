@@ -192,23 +192,37 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 
 	messages := make([]Message, 0, selectedCount+len(necessities))
 	lineInactive := make([]bool, 0, selectedCount+len(necessities))
-	keptAncestor := make([]string, 0, selectedCount+len(necessities))
+	// reducedOf maps a read record's index to its position in the reduced document, -1 for a record the
+	// selection left out; readIndexes is the reverse, one entry per carried record.
+	reducedOf := make([]int, len(conversation.Messages))
+	readIndexes := make([]int, 0, selectedCount+len(necessities))
 	includedOrdinals := []int{}
 	excludedOrdinals := []int{}
 	for index, message := range conversation.Messages {
+		reducedOf[index] = -1
 		switch {
 		case selected[index]:
 			includedOrdinals = append(includedOrdinals, message.Ordinal)
-			messages = append(messages, message)
-			lineInactive = append(lineInactive, readLineInactive[index])
-			keptAncestor = append(keptAncestor, keptAncestors[index])
 		case carried[index]:
-			messages = append(messages, message)
-			lineInactive = append(lineInactive, readLineInactive[index])
-			keptAncestor = append(keptAncestor, keptAncestors[index])
 		default:
 			excludedOrdinals = append(excludedOrdinals, message.Ordinal)
+			continue
 		}
+		reducedOf[index] = len(messages)
+		readIndexes = append(readIndexes, index)
+		messages = append(messages, message)
+		lineInactive = append(lineInactive, readLineInactive[index])
+	}
+	// The ancestry answers are the read's own indices (selectionKeptAncestors), and the writers consult
+	// the *reduced* document's own positions, so each answer is carried across: the ancestor is carried
+	// by construction, and its reduced index is the position whose entry the record's entry follows.
+	keptAncestor := make([]int, len(messages))
+	for reduced, readIndex := range readIndexes {
+		ancestor := keptAncestors[readIndex]
+		if ancestor >= 0 {
+			ancestor = reducedOf[ancestor]
+		}
+		keptAncestor[reduced] = ancestor
 	}
 	sort.Slice(necessities, func(i, j int) bool {
 		if necessities[i].Ordinal != necessities[j].Ordinal {
@@ -502,17 +516,23 @@ func selectionOccurrences(conversation Conversation) []selectionOccurrence {
 	return occurrences
 }
 
-// selectionKeptAncestors answers, for every record of the read, the identity of the nearest ancestor the
-// read holds that the selection carries, or "" where there is none: the walk starts at the record's own
-// recorded parent and steps through the read's relations (SourceUUID -> SourceParentUUID) until it
+// selectionKeptAncestors answers, for every record of the read, the index of the nearest ancestor the
+// read holds that the selection carries, or -1 where there is none: the walk starts at the record's own
+// recorded parent and steps through the read's own relations (SourceUUID -> SourceParentUUID) until it
 // reaches a carried record, the read runs out of relation, or the step budget the document's own size
-// sets ends a cycle the source recorded. A record the read answered no identity for, or a record whose
-// recorded parent leads nowhere the read holds, answers "": the walk has no relation to step through, and
-// the writer keeps its own order there.
+// sets ends a cycle the source recorded. It is the walk the writer takes over the *full* read, so the
+// step through a tool result the read may project is taken -- a record the reader answers as hanging off
+// the message that made a call is chained through the result standing between them in the source's file
+// (sourceToolResultBefore, the writers' own rule) -- because that result may be exactly the carried
+// record the reduced document has to chain the record through, and resolving the raw relation alone
+// would leave it in the file and off the walk a resumed session makes. The previous-record fallback the
+// readers' own line walk takes where the read answered no relation is *not* taken here: a record whose
+// relation cannot be walked is answered no ancestor, and the writer's own fallback decides its place --
+// refusing the conversion where that place would put an off-line record on the walk.
 //
 // It is a pure function of the recorded document, like the selection itself: the relations are the
 // read's own answers, and the map is keyed by the identities the read supplied.
-func selectionKeptAncestors(conversation Conversation, carried []bool) []string {
+func selectionKeptAncestors(conversation Conversation, carried []bool) []int {
 	byIdentity := make(map[string]int, len(conversation.Messages))
 	for index, message := range conversation.Messages {
 		if id := strings.TrimSpace(message.SourceUUID); id != "" {
@@ -521,22 +541,39 @@ func selectionKeptAncestors(conversation Conversation, carried []bool) []string 
 			}
 		}
 	}
-	ancestors := make([]string, len(conversation.Messages))
-	for index, message := range conversation.Messages {
+	projected := projectedParentProvider(conversation.Source.Provider)
+	ancestors := make([]int, len(conversation.Messages))
+	for index := range ancestors {
+		ancestors[index] = -1
+	}
+	for index := range conversation.Messages {
 		if !carried[index] {
 			continue
 		}
-		parent := strings.TrimSpace(message.SourceParentUUID)
-		for steps := 0; parent != "" && steps <= len(conversation.Messages); steps++ {
-			at, ok := byIdentity[parent]
-			if !ok || at == index {
+		at := index
+		for steps := 0; steps <= len(conversation.Messages); steps++ {
+			parent := strings.TrimSpace(conversation.Messages[at].SourceParentUUID)
+			if parent == "" {
 				break
 			}
-			if carried[at] {
-				ancestors[index] = strings.TrimSpace(conversation.Messages[at].SourceUUID)
+			next := -1
+			if projected {
+				if resultAt, ok := sourceToolResultBefore(conversation.Messages, at, parent); ok {
+					next = resultAt
+				}
+			}
+			if next < 0 {
+				held, ok := byIdentity[parent]
+				if !ok || held == index {
+					break
+				}
+				next = held
+			}
+			if carried[next] {
+				ancestors[index] = next
 				break
 			}
-			parent = strings.TrimSpace(conversation.Messages[at].SourceParentUUID)
+			at = next
 		}
 	}
 	return ancestors
@@ -550,26 +587,44 @@ type selectionPair struct {
 	result int
 }
 
-// selectionPairs answers the recorded call/result pairs the document establishes, from the read's own
-// order rather than from the id alone: every recorded result pairs with the nearest call occurrence the
-// same id records *before* it, and a result the read holds with no call before it -- the call is outside
-// the read, or a reused id stands only after it -- pairs with nothing. That is the reading the inherited
-// readers' own termination check takes (internal/parser/termination.go's hasOrphanedToolCall counts only
-// results recorded after the call they answer), so a reused id does not make an earlier pair's records
-// the counterpart of a later call: the later call has no recorded result and is counted undischarged
-// (undischargedCalls) instead of pulling unrelated history in.
-func selectionPairs(conversation Conversation) []selectionPair {
+// selectionPairing is the seam's own reading of the recorded call/result links, in one walk so that the
+// closure's pairs and the report's undischarged count cannot disagree about which call a recorded result
+// answers. pairs holds every recorded result against the nearest call occurrence the same non-empty id
+// recorded *before* it -- the reading the inherited readers' own termination check takes
+// (internal/parser/termination.go's hasOrphanedToolCall counts only results recorded after the call they
+// answer), so a reused id does not make an earlier pair's records the counterpart of a later call -- and
+// answered names, per call message, the ids of the calls an *outcome* result thus answers. The pairing is
+// the read's own relation rather than a consumption: two results after one call both pair with it (a
+// streamed terminal event beside a summary), and a call the source recorded after an outcome that lies
+// before it is not answered by it.
+func selectionPairing(conversation Conversation) ([]selectionPair, map[int]map[string]bool) {
 	var pairs []selectionPair
-	mostRecentCall := map[string]int{}
+	answered := map[int]map[string]bool{}
+	mostRecent := map[string]int{}
 	for _, occurrence := range selectionOccurrences(conversation) {
 		if occurrence.call {
-			mostRecentCall[occurrence.id] = occurrence.message
+			mostRecent[occurrence.id] = occurrence.message
 			continue
 		}
-		if call, ok := mostRecentCall[occurrence.id]; ok {
-			pairs = append(pairs, selectionPair{id: occurrence.id, call: call, result: occurrence.message})
+		call, ok := mostRecent[occurrence.id]
+		if !ok {
+			continue
 		}
+		pairs = append(pairs, selectionPair{id: occurrence.id, call: call, result: occurrence.message})
+		if !resultStatesAnOutcome(occurrence.status) {
+			continue
+		}
+		if answered[call] == nil {
+			answered[call] = map[string]bool{}
+		}
+		answered[call][occurrence.id] = true
 	}
+	return pairs, answered
+}
+
+// selectionPairs answers the pairs half of selectionPairing, for the closure and the strict refusal.
+func selectionPairs(conversation Conversation) []selectionPair {
+	pairs, _ := selectionPairing(conversation)
 	return pairs
 }
 
@@ -650,49 +705,49 @@ func strictSelectionRefusal(conversation Conversation, pair selectionPair, callS
 			"necessity", ErrStrictSelection, pair.id, result.Ordinal, call.Ordinal)
 }
 
-// undischargedCalls answers the calls the source itself left undischarged among the carried records: a
-// call no later recorded result that states an outcome answers. It is the source's own state and not the
-// selection's -- the counterpart rule cannot carry a result the read never held -- so it is reported
-// rather than changed. A call the source recorded with no id is not counted: the read holds no link for
-// it either way, and calling it undischarged would assert a pairing the source never recorded.
+// undischargedCalls answers the recorded calls the source itself left undischarged among the carried
+// records: a call no later recorded outcome answers, per the seam's own pairing rule (selectionPairs: a
+// result answers the nearest call occurrence the same non-empty id records before it, so a reused id
+// does not make an earlier call's records the counterpart of a later call). It is the source's own state
+// and not the selection's -- the counterpart rule cannot carry a result the read never held -- so it is
+// reported rather than changed.
+//
+// The unit is the writers' own (distinctCalls): a message's calls sharing a non-empty id are one
+// invocation the reader projected into several rows (the inherited Codex reader expands one `apply_patch`
+// into one call per file it names), so the extra rows are not extra calls and one recorded outcome
+// discharges the invocation -- the same reading the closure takes, which pairs and carries such a message's
+// call once. A call the source recorded with no id is not counted: the read holds no link for it either
+// way, and calling it undischarged would assert a pairing the source never recorded.
 //
 // Progress is not an answer: a result whose recorded status says the call is still running (a Codex
 // subagent's `running` notification, a streamed chunk) is the read's record of a call that has not
 // finished, and counting it as an outcome would state that the source answered a call it left pending --
-// the inherited termination rule reads the same event the same way. Each outcome answers the most recent
-// call occurrence still awaiting one, the reading the readers' own rule takes for a reused id: an earlier
-// result does not resolve a later call.
+// the inherited termination rule reads the same event the same way. The answers are selectionPairing's
+// own (one walk for both the closure and this count), so no second accounting can disagree with the
+// pairing: an earlier result does not resolve a later call, and a later outcome does not retroactively
+// answer an earlier call the seam paired with nothing.
 func undischargedCalls(conversation Conversation, carried []bool) (int, []int) {
-	pending := map[string][]int{}
-	answered := map[int]int{}
-	for _, occurrence := range selectionOccurrences(conversation) {
-		if occurrence.call {
-			pending[occurrence.id] = append(pending[occurrence.id], occurrence.message)
-			continue
-		}
-		if !resultStatesAnOutcome(occurrence.status) {
-			continue
-		}
-		awaiting := pending[occurrence.id]
-		if len(awaiting) == 0 {
-			continue
-		}
-		answered[awaiting[len(awaiting)-1]]++
-		pending[occurrence.id] = awaiting[:len(awaiting)-1]
-	}
+	_, answered := selectionPairing(conversation)
 	count := 0
 	var ordinals []int
 	for index, message := range conversation.Messages {
 		if !carried[index] {
 			continue
 		}
-		calls := 0
+		units, discharged := 0, 0
+		seen := map[string]bool{}
 		for _, call := range message.ToolCalls {
-			if strings.TrimSpace(call.ToolUseID) != "" {
-				calls++
+			id := strings.TrimSpace(call.ToolUseID)
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			units++
+			if answered[index][id] {
+				discharged++
 			}
 		}
-		if undischarged := calls - answered[index]; undischarged > 0 {
+		if undischarged := units - discharged; undischarged > 0 {
 			count += undischarged
 			ordinals = append(ordinals, message.Ordinal)
 		}

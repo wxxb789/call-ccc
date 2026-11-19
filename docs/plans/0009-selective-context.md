@@ -284,3 +284,44 @@ measurement that decided it, followed by the review round's own:
       paragraph beside it states the order pairing, the progress rule, the supplied-blank refusal and the
       ancestry rule.
 
+12. **The third review round's six findings.** The review of `9242e49..7e61075` found two P1, three P2 and
+    one P3 item; this round fixes all six. The departures the plan's sections did not state are four:
+
+    * the **ancestry walk takes the writers' projection step** (review R-12): §11.11 answered a reduced
+      tree's ancestry from the read's *raw* relations, so on a Pi-family source a window naming a call and
+      the record the reader answers as hanging off it chained that record to the *call* and left the result
+      the selection had carried as a necessity in the file and off the walk the target's loader makes.
+      `selectionKeptAncestors` now follows the place the writers resolve (`sourceToolResultBefore`, the same
+      tool-result step `sourceLineParent` takes), so the carried result is the ancestor the record hangs
+      off. `TestSelectionKeepsACarriedResultOnTheWalkThroughItsCall` pins it on the committed Pi fixture;
+      `S6-projection` cites it.
+    * the **ancestry answer and the revival check travel by the record's own position** (review R-13): the
+      answer was keyed by the record's identity, so a record the read answered a `parentUuid` for but no
+      `uuid` (the inherited Claude reader preserves the two independently) lost it, and both the fallback's
+      revival check and its naming skipped the empty identity — a retained leaf could therefore hang off
+      the abandoned branch's entry with no refusal. `Conversation.sourceKeptAncestor` now holds the reduced
+      document's index of the nearest retained ancestor, the tree stamps each record's position as it walks
+      and keeps its entry and omitted place under it (`sourceTree.record`, `entryByRecord`,
+      `omittedEntryByRecord`), and the refusal names a record without an identity by its ordinal.
+      `TestSelectionChainsARecordWithoutAnIdentityToItsRetainedAncestor` pins both halves; `S6-identity`
+      cites it.
+    * the **undischarged count is the pairing's own walk in the writers' own call unit** (review R-14): the
+      count read every call row as a call and consumed outcomes one per row, so a projected invocation
+      (one `apply_patch` the Codex reader expands into one row per file) was reported undischarged while the
+      writer wrote it as one answered call, and two calls recorded before two outcomes let the second
+      outcome discharge the earlier call the seam pairs with nothing. `selectionPairing` answers the
+      closure's pairs and the outcome-answered ids in one walk, and the count uses the writers' own
+      `distinctCalls` unit. `TestSelectionCountsTheCallUnitsTheWritersCoalesceAndThePairingAnswers` covers
+      both shapes; `S2-units` cites it.
+    * the **selection is decided before the source-side leaf guard, and the D4 probe's measurement is
+      strengthened** (reviews R-16, R-15, R-17): `continueWith` now asks `Select` before `piSourceLeafCheck`
+      (the guard still runs against the read, so a spec refusal — a command-line answer, usage exit code —
+      is not reported as a statement about the source file's leaf; `Q-0009-05` records the default and its
+      reversal; `TestContinueValidatesASelectionBeforeTheSourceLeafGuard`, `D5-order`); the retained probe
+      canonicalizes identities per value instead of folding them to a class-wide placeholder and its
+      pipeline arm installs under an absent target binary and fingerprints the whole folded report and the
+      bytes the installation published (supersedes §11.11's probe again; `docs/evidence/0009-d4-probe.txt`
+      is the exact revision); and the D2 cases now assert the excluded class's own regions (the CLI's
+      `["0-1","4-10"]` and the human line, and the core case's partition check), so deleting the class's
+      values fails them.
+

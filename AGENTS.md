@@ -274,7 +274,12 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   necessity with the ordinal that pulled it in (both directions, to a fixed point, since a counterpart can
   hold another call's result), while `--strict-selection` refuses that
   by name before anything is installed instead. A reused id does not expand a selection by id alone: a
-  later call with no recorded result of its own carries nothing but itself and is counted undischarged. A
+  later call with no recorded result of its own carries nothing but itself and is counted undischarged,
+  and the count reads the call the way the writers write it — a message's calls sharing a non-empty id are
+  one invocation the reader projected into several rows (the inherited Codex reader expands one
+  `apply_patch` into one call per file it names), so one recorded outcome discharges the invocation and the
+  extra rows are not extra calls — from the *same* walk that pairs the seam (a second outcome does not
+  retroactively answer a call the pairing left unanswered). A
   record the source recorded with **no** id carries no
   recorded link: the seam neither invents one nor carries candidates for it, and the writer's own rule for
   an id-less result (the sole outstanding call in the line it wrote, disclosed as `generated_call_ids`)
@@ -287,15 +292,21 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   off it — a window ending on an off-line record is refused by a tree target by name
   (`ErrUnrepresentableLeaf`, below) rather than written as a file that resumes the branch, a record whose
   own parent the window left out is hung off its nearest retained ancestor (the read's own relation walked
-  through the excluded records), and a window in which a record's whole retained ancestry is gone — so the
-  fallback would hang it under an off-line record — is refused by name the same way; a line target
+  through the excluded records, with the tool-result step the writers take where the read may project one,
+  and the answer travels by the record's own position, so a record the read answered no identity for keeps
+  it), and a window in which a record's whole retained ancestry is gone — so the
+  fallback would hang it under an off-line record — is refused by name the same way, the check keyed by
+  the record's position rather than an identity it may never have; a line target
   omits those records and counts them (`inactive_branch_records`). A bad selection is **refused, never
   repaired**, with the core's own sentence and the usage exit code (2), before any install: a spec that is
   ill-formed, one whose region reaches outside the ordinals the read supplied (below its lowest or above its
   highest; the space, its gaps included, is spelled in the refusal), one that would carry no record at all — a
   region spanning a gap carries the records it holds — a value the caller supplied **empty** (an unset
   variable expanded into `--select "$SPEC"` is a refused request, never read as the flag's absence: an
-  automation's empty variable must not publish the whole history), and the strict refusal. The report names the
+  automation's empty variable must not publish the whole history), and the strict refusal — each answered
+  as the specification's own refusal even where the source would also refuse the conversion (the
+  Pi-family source-side leaf guard asks about the source file's own bytes, and a command line the read's
+  ordinals refuse is answered first, with the usage exit code). The report names the
   transformation on every run that had one — `selection.ordinal_space` (min/max/records/contiguous) and the
   four classes `included`, `excluded`, `necessities_added` (each addition with its puller) and
   `calls_undischarged` (a carried call the source itself left without a recorded outcome, which no

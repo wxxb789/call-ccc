@@ -2954,12 +2954,16 @@ supersede it with a newer one and say which it supersedes.
   per-record answer (`Conversation.sourceLineInactive`) and the writers consult it
   (`TestSelectionEndingOffTheReadsLine`). The same rule covers the *ancestry* of a carried record: a record
   whose recorded parent the window left out is hung off its nearest retained ancestor (the read's own
-  relation walked through the excluded records; `Conversation.sourceKeptAncestor`), so the loader's walk
+  relation walked through the excluded records -- with the tool-result step the writers take where the read
+  may project one, and keyed by the record's own position rather than an identity the read may never have
+  written, so a record the read answered no `uuid` for keeps its ancestor; `Conversation.sourceKeptAncestor`),
+  so the loader's walk
   stays the read's own line -- a window like the Pi history fixture's `0,3,5` writes the leaf under
   ordinal 0 and leaves the selected branch record at 3 off the walk as recorded history -- and a window in
   which a record's whole retained ancestry is gone (nothing to hang it on but the entry before it, which
   stands for an off-line record) is refused by name the same way
-  (`TestSelectionKeepsASparseWindowOnTheReadsLine`).
+  (`TestSelectionKeepsASparseWindowOnTheReadsLine`,
+  `TestSelectionChainsARecordWithoutAnIdentityToItsRetainedAncestor`).
 
 - **Reversal:** if the owner wants line-selection, record it as a departure, give it its own disclosed class
   (a selection-owned count/warning naming the revived branch) and drop the read-line flags from the
@@ -2968,3 +2972,27 @@ supersede it with a newer one and say which it supersedes.
   one.
 - **Settled by:** an operator decision between "a selection chooses what to carry, the read chooses the
   line" and "a selection may choose the resumed line, disclosed".
+
+## Q-0009-05 — Which refusal wins when a run's selection and its source file both refuse
+
+- **Status:** open (default taken: the specification's own refusal is answered first, with the usage exit
+  code). A run with `--select` whose specification the read's ordinals refuse (`ErrBadSelection`,
+  `ErrStrictSelection`) answers that sentence and exit code 2 even where the conversion would also have
+  been refused -- a Pi-family source whose file's own leaf path holds a record the read does not carry
+  (`piSourceLeafCheck`, `ErrUnrepresentableLeaf`, exit 1) is the measured case: the order was the guard's
+  first, so `--select 99` on the committed branch-switch fixture was reported as a statement about the
+  source file's leaf.
+- **Question:** when one command line has two reasons to be refused, which answer does the caller get?
+  The two are different kinds of statement: a specification the read's own space rejects is about the
+  *command line* the caller wrote (usage exit code, answered before anything is opened past the read),
+  while the source-side leaf guard is about the *source file's* own bytes (conversion exit code).
+- **Default taken:** the selection first. `continueWith` decides the selection before the source-side leaf
+  guard runs, and the guard is asked about the read -- not about the reduced document -- exactly as before,
+  so a run with a valid specification still meets the leaf refusal and nothing about either check moved
+  (`TestContinueValidatesASelectionBeforeTheSourceLeafGuard` pins both arms of the same fixture: with the
+  out-of-range spec the usage answer, without it the leaf error).
+- **Reversal:** one branch of `continueWith` moves the `Select` call back below the `piSourceLeafCheck`
+  call; the tests that pin the order (`TestContinueValidatesASelectionBeforeTheSourceLeafGuard`) would be
+  rewritten to the leaf-first answer.
+- **Settled by:** an operator decision between "the command line's own refusal is answered first" and "the
+  source file is measured first, so its answer wins".

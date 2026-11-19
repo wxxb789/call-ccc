@@ -107,6 +107,12 @@ func TestContinueWithASelectionCarriesTheSelectedRecordsAndReportsTheClasses(t *
 	if selection.Excluded.Count != 9 {
 		t.Errorf("excluded = %+v, want the nine records the selection left behind", selection.Excluded)
 	}
+	// The excluded class's regions are the values themselves, spelled as the specification's own grammar:
+	// the two records below the named one and the seven above it. A count alone cannot say which
+	// ordinals were left behind, and a report that lost the regions would still pass one.
+	if got := strings.Join(selection.Excluded.Regions, ","); got != "0-1,4-10" {
+		t.Errorf("excluded regions = %q, want the nine excluded records spelled 0-1,4-10", got)
+	}
 	// The call recorded at ordinal 2 is answered by a result recorded at ordinal 3: the selection named
 	// only the call, and the counterpart is carried and named with the ordinal that pulled it in.
 	if selection.NecessitiesAdded.Count != 1 || len(selection.NecessitiesAdded.Added) != 1 ||
@@ -140,7 +146,7 @@ func TestContinueWithASelectionCarriesTheSelectedRecordsAndReportsTheClasses(t *
 	for _, want := range []string{
 		"selection:    2: the read's own ordinals are 0-10 (11 record(s))",
 		"selected:     1 record(s) at ordinals 2",
-		"excluded:     9 record(s) at ordinals",
+		"excluded:     9 record(s) at ordinals 0-1,4-10",
 		"necessities:  1 record(s) added: 3 (pulled in by 2)",
 		"undischarged: 0 carried call(s) with no recorded outcome at ordinals none",
 	} {
@@ -260,6 +266,51 @@ func TestContinueRefusesABadSelectionBeforeInstalling(t *testing.T) {
 	}
 	if files := targetTreeDigest(t, targetHome); len(files) != 0 {
 		t.Errorf("the strict refusal installed %d file(s): %v", len(files), files)
+	}
+}
+
+// TestContinueValidatesASelectionBeforeTheSourceLeafGuard pins the order of the two refusals one Pi-family
+// run can reach. A specification the read's own ordinals refuse is a command line that cannot be honoured:
+// the usage exit code and the core's own sentence naming the space, never a statement about the source
+// file's leaf. The fixture is the branch-switch session, whose file's last entry is a branch summary the
+// read's own last record does not stand for -- so its whole read is refused by the source-side leaf guard
+// -- and the case runs the same command line with and without the out-of-range specification: with it the
+// answer is the selection refusal, without it the leaf error, which is what makes the case about the order
+// of the two answers rather than about either check having stopped refusing.
+func TestContinueValidatesASelectionBeforeTheSourceLeafGuard(t *testing.T) {
+	isolatedEnvironment(t)
+	home := t.TempDir()
+	const branch = "pi:01a1c337-6d1e-7f84-9b2c-4e5f6a7b8c90"
+	code, stdout, stderr := runCLI(t, "continue", branch, "--to", "pi", "--target-home", home,
+		"--target-binary", missingTargetBinary, "--select", "99", "--json")
+	if code != exitUsage {
+		t.Errorf("exit %d, want %d (stdout %q, stderr %q)", code, exitUsage, stdout, stderr)
+	}
+	if stdout != "" {
+		t.Errorf("the refused run wrote a report to stdout: %q", stdout)
+	}
+	for _, want := range []string{"99", "do not hold", "the read returned"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr %q does not hold %q", stderr, want)
+		}
+	}
+	if strings.Contains(stderr, "selects a leaf") {
+		t.Errorf("the selection refusal answers with the source-leaf error: %q", stderr)
+	}
+
+	// The control arm: the same invocation without a selection reaches the source-side leaf guard and is
+	// refused by it, with the conversion exit code (this fixture's read cannot be written as a Pi session
+	// at all).
+	code, _, stderr = runCLI(t, "continue", branch, "--to", "pi", "--target-home", home,
+		"--target-binary", missingTargetBinary, "--json")
+	if code != exitFailure {
+		t.Errorf("the control run: exit %d, want %d (stderr %q)", code, exitFailure, stderr)
+	}
+	if !strings.Contains(stderr, "selects a leaf") {
+		t.Errorf("the control run's stderr %q does not hold the source-leaf refusal", stderr)
+	}
+	if files := targetTreeDigest(t, home); len(files) != 0 {
+		t.Errorf("the refused runs left %d file(s) under the target home: %v", len(files), files)
 	}
 }
 

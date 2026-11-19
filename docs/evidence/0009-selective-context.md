@@ -23,7 +23,7 @@ the pinned AgentsView carry `83195c8a6861b8c74a4b6cb87512817fed6f8584` (reported
 | what a `subtype: hook_result` line reads as | **nothing**: the Claude reader skips the provider's own bookkeeping lines (measured on the fixture's first draft — ten records, nine messages — which is why the fixture's system record is the system-reminder promotion shape instead; plan §11.5) |
 | what a target does with an undischarged call | Codex, Claude, Pi and OMP write the call with no output; OpenCode's format has no state for a call that has not finished, so it leaves the call out and counts it (`unpaired_tool_calls`, measured on the fixture through `ConvertToOpenCodeSession`). The report's warning names both halves as the writer's own answer rather than claiming the target records the call |
 | the seam's own two dispositions | a selection that names the call of ordinal 2 alone carries the result at ordinal 3 as a `necessities_added` entry (`pulled_by` 2), and the Codex writer then holds the pair with `unpaired_tool_results = 0`; the same selection under `--strict-selection` is refused by name, before anything is written |
-| what an unflagged run writes | nothing the previous revision did not: a throw-away before/after probe over five routes × the eleven fixtures the two trees share prints the same 987 lines and the same normalized bytes on HEAD's tree and on this tree, and the increment's new fixture adds its own 121 lines with no before-run (§4; the probe's exact source is `docs/evidence/0009-d4-probe.txt`) |
+| what an unflagged run writes | nothing the previous revision did not: a throw-away before/after probe over five routes × the eleven fixtures the two trees share prints the same 1024 lines and the same normalized bytes on HEAD's tree and on this tree, and the increment's new fixture adds its own 125 lines with no before-run (§4; the probe's exact source is `docs/evidence/0009-d4-probe.txt`) |
 
 ## 1. The recorded run: a selection converts, installs and **Codex's own loader opens it**
 
@@ -210,15 +210,33 @@ fixture document** — the eleven the pre-0009 tree and this tree share (two Cla
 rollouts, three Pi sessions, three Oh My Pi sessions, one OpenCode document) *and* the increment's new
 Claude transcript — and for each document × each of the five routes it does two things:
 
-* the **writer arm** (`route.Convert` with fixed options): the sha256 of the written bytes over a
-  normalized copy (minted uuids and entry ids, the routes' `msg_`/`ses_` spellings, timestamps, the
-  scratch and checkout paths folded), the carried counts, and every non-zero loss row;
-* the **pipeline arm** (`Continue`, dry run, `--verify none`, the selection flag absent): the conversion
-  block and its rows, the installation, the target session, the verification states, the source counts and
-  the warnings, each folded the same way. The OpenCode *target*'s arm is included, unlike the earlier
-  probe's: its dry run still installs into a scratch store through the harness's own importer, and the
-  arm's lines record what the installed harness answered or refused (the run's error travels as its own
-  `error=` line).
+* the **writer arm** (`route.Convert` with fixed options): the length of the written bytes and the sha256
+  of them over a normalized copy, the carried counts, and every non-zero loss row;
+* the **pipeline arm** (`Continue`, `--verify none`, the selection flag absent, an *installing* run into a
+  scratch home under a target binary no host has): the conversion block and its rows, the installation, the
+  target session, the verification states, the source counts and the warnings, each folded the same way,
+  *plus* two measurements the earlier probe revision left out — the sha256 of the **whole folded report**
+  (every field of it, whether a line names the field or not) and the sha256 of the **bytes the installation
+  published**, so the arm is compared on what it actually wrote and not only on what the writer handed the
+  installer.
+
+  The arm runs under `ccc-no-such-target-harness` rather than letting each route find this host's harness:
+  what it compares is the conversion and its installation, and a host's installed harness would put the
+  host's own answers into the comparison — measured on one tree, two runs: a Codex app-server handshake
+  reported a timeout where its neighbour reported a closed stream, and the report digest moved by eleven
+  bytes between the two runs although every printed field agreed. Under the absent binary every route's
+  answer about the host is fixed text, the OpenCode target's arm records the refusal to run an importer as
+  its own `error=` line (`artifact=none`, nothing published), and the harness's own answers — versions,
+  model providers, importer behaviour — stay in the native sections and checks, where they are measured
+  against the harness itself.
+
+The normalized copy is folded with the identities **canonicalized** rather than replaced by a class-wide
+placeholder: every distinct uuid, Pi entry id (in a JSON `id`/`parentId`/`firstKeptEntryId` position) and
+OpenCode identity gets a token of its own — the same token for every occurrence of the same value,
+numbered by first appearance over the whole folded text — so a definition and its references still agree
+after folding while a *reparenting* from one non-null parent to another cannot fold to what it folded to
+before. The earlier probe revision's blanket placeholders could not show that difference, which is what
+the review's R-15 demonstrated.
 
 Exactly one probe revision produced every run below — the retained `.txt` is that revision — and each tree
 was run twice. The pre-0009 tree is a throw-away worktree with the identical probe file copied in:
@@ -237,41 +255,40 @@ $ diff /tmp/ccc-d4-after1/probe.txt  /tmp/ccc-d4-after2/probe.txt    # silent
 $ grep -v 'claude:c1a74e28' /tmp/ccc-d4-before1/probe.txt > /tmp/ccc-d4-before-shared.txt
 $ grep -v 'claude:c1a74e28' /tmp/ccc-d4-after1/probe.txt  > /tmp/ccc-d4-after-shared.txt
 $ wc -l /tmp/ccc-d4-before1/probe.txt /tmp/ccc-d4-after1/probe.txt
- 987 /tmp/ccc-d4-before1/probe.txt
-1108 /tmp/ccc-d4-after1/probe.txt
+1024 /tmp/ccc-d4-before1/probe.txt
+1149 /tmp/ccc-d4-after1/probe.txt
 $ diff /tmp/ccc-d4-before-shared.txt /tmp/ccc-d4-after-shared.txt   # silent
 $ grep -c 'claude:c1a74e28' /tmp/ccc-d4-after1/probe.txt
-121
+125
 ```
 
-The line counts are what the probe's own arms produce: the after tree's 1108 = 60 `PROBE-WRITE` (5 routes
-× 12 documents) + 384 `PROBE-LOSS` + 664 `PROBE-RUN`; the pre-0009 tree's 987 = 55 + 341 + 591 (5 routes ×
-11 documents), and the increment's new fixture accounts for the 121-line difference. Both stability diffs
+The line counts are what the probe's own arms produce: the after tree's 1149 = 60 `PROBE-WRITE` (5 routes
+× 12 documents) + 384 `PROBE-LOSS` + 705 `PROBE-RUN`; the pre-0009 tree's 1024 = 55 + 341 + 628 (5 routes ×
+11 documents), and the increment's new fixture accounts for the 125-line difference. Both stability diffs
 are silent, so the folded digests are a statement about the conversion rather than about the ids it mints;
-the shared-document diff is silent over all **987 lines** — every route's written bytes, every loss row,
-every report field and both OpenCode-target arms (writer and pipeline) included — so no route's conversion
-moved for a run without the flag on any document the two revisions share. The four fixtures the earlier
-probe had left out and the OpenCode target's arm are covered explicitly:
+the shared-document diff is silent over all **1024 lines** — every route's written bytes, every loss row,
+every report field, every digest of an installed artifact and both OpenCode-target arms (writer and
+pipeline) included — so no route's conversion moved for a run without the flag on any document the two
+revisions share. The pipeline arm covers 50 of its 60 runs end to end; the other ten are the branch-switch
+fixtures (`pi:01a1c337-…`, `omp:01a1c33a-…`) on all five routes, whose arm stops at the source-side leaf
+refusal before any writer runs, so their conversion block and `error=` line are compared like every other
+line. Where the installation wrote the writer's own bytes the two digests agree, which is what makes the
+artifact line a measurement of the installation rather than a restatement of the writer arm:
 
 ```console
-$ for pat in 'PROBE-WRITE pi:01a1c336-' 'PROBE-WRITE pi:01a1c337-' 'PROBE-WRITE omp:01a1c339-' \
-      'PROBE-WRITE omp:01a1c33a-'; do
-      diff <(grep -m1 "$pat" /tmp/ccc-d4-before-shared.txt) \
-           <(grep -m1 "$pat" /tmp/ccc-d4-after-shared.txt); done                 # silent
-$ diff <(grep 'claude:9f2c1d47-.* opencode' /tmp/ccc-d4-before-shared.txt) \
-       <(grep 'claude:9f2c1d47-.* opencode' /tmp/ccc-d4-after-shared.txt)       # silent
+$ grep 'pi:01a1c335-7098-71c2-a91b-b5295c0464f5 pi ' /tmp/ccc-d4-after1/probe.txt | grep 'PROBE-WRITE\|artifact'
+PROBE-WRITE pi:01a1c335-7098-71c2-a91b-b5295c0464f5 pi written=2163 folded=1886 digest=579efd7882709064202bfb3cf44a64fd3b96ab870ebea609391693085ee23b21 carried={Messages:4 UserMessages:1 AssistantMessages:3 ToolCalls:1 ToolResults:1 CompactionBoundaries:0 Turns:0 Bytes:2163}
+PROBE-RUN pi:01a1c335-7098-71c2-a91b-b5295c0464f5 pi artifact written=2163 folded=1886 digest=579efd7882709064202bfb3cf44a64fd3b96ab870ebea609391693085ee23b21
 $ grep -m1 'PROBE-WRITE pi:01a1c336-' /tmp/ccc-d4-after1/probe.txt
-PROBE-WRITE pi:01a1c336-4b02-78d3-9e15-6c7a2f0b8d41 claude bytes=2895 digest=5c01641185f9a9b50968f4e9e2c931bd85b64fd49cb3cfe2f7f8b541065dde2e carried={Messages:5 UserMessages:2 AssistantMessages:3 ToolCalls:0 ToolResults:0 CompactionBoundaries:1 Turns:0 Bytes:2895}
-$ grep 'claude:9f2c1d47-.* opencode' /tmp/ccc-d4-after1/probe.txt | head -2
-PROBE-RUN claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 opencode conversion=converted format=opencode-import-document read_from=source dry_run=true carried={Messages:7 UserMessages:2 AssistantMessages:4 ToolCalls:1 ToolResults:1 CompactionBoundaries:1 Turns:2 Bytes:2131}
-PROBE-RUN claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 opencode error=verifying the conversion: the harness's own importer could not be run: exit status 1: LocationNotFoundError: Location not found: /home/user/code/example-api at k (/$bunfs/root/chunk-hn7ztr6r.js:13:34510) … (definition) (/$bunfs/root/chunk-4wxrr8xe.…
+PROBE-WRITE pi:01a1c336-4b02-78d3-9e15-6c7a2f0b8d41 claude written=2895 folded=2060 digest=60bc0a28d91fba82a9bb0e7c96eb6e426a421c1e3c08660f2dc90280a760793d carried={Messages:5 UserMessages:2 AssistantMessages:3 ToolCalls:0 ToolResults:0 CompactionBoundaries:1 Turns:0 Bytes:2895}
+$ grep 'pi:01a1c335-7098-71c2-a91b-b5295c0464f5 opencode ' /tmp/ccc-d4-after1/probe.txt | grep -E 'error|artifact'
+PROBE-RUN pi:01a1c335-7098-71c2-a91b-b5295c0464f5 opencode error=ccc-no-such-target-harness is not on PATH, and this target's installation is the harness's own importer: exec: "ccc-no-such-target-harness": executable file not found in $PATH
+PROBE-RUN pi:01a1c335-7098-71c2-a91b-b5295c0464f5 opencode artifact=none installation=not-installed
 ```
 
-(The OpenCode target's pipeline arm is deterministic here in the same way on both trees: the *real*
-harness refuses a source whose recorded directory does not exist on this host, and the arm records that
-refusal as its own `error=` line rather than hiding it — the `…` in the last line is the record's own cut
-of a long stack, the step's answer is unedited. The four previously-uncovered fixtures' writer lines and
-the OpenCode-target greps are byte-identical before and after.)
+(The digests above are not comparable to the previous probe revision's: that revision folded every
+identity to a class-wide placeholder and digested no report and no artifact, so its numbers are a
+different measurement of the same claim. What is comparable is this revision's own before/after pair.)
 
 The flag-absent comparison cannot discharge D4 by itself and is not asked to: what the selection *does*
 when it is present is D1/D2's evidence (§1–§2 and the Go cases), and the flag-present-versus-flag-absent
@@ -296,8 +313,13 @@ read converts exactly what the unflagged run converts).
 | a value supplied blank (`--select ""`) | refused as a request that names nothing, never read as the flag's absence: an automation's empty variable must not publish the whole history | §3's third block; `TestCheckSelectionOptionsRefusesASpecificationWithoutARead`, `TestContinueRefusesABadSelectionBeforeInstalling` |
 | the source file itself | read whole, measured before and after | `source_check_state: unchanged` with the fixture copy's `sha256`, §1 |
 | a call the source left unanswered, at a target whose format has no state for it (OpenCode) | the route leaves the call out and counts it — its own limit, named by its own report rather than claimed for every target | `unpaired_tool_calls ×1`; `TestSelectionWritesExactlyTheSelectedOrdinals`'s `TargetOpenCode` arm and `TestContinueReportsUndischargedCallsOnBothSurfaces` |
-| a run without `--select` | the same conversion it was, byte for byte | §4's silent diffs over all 987 shared-document lines |
+| a run without `--select` | the same conversion it was, byte for byte | §4's silent diffs over all 1024 shared-document lines |
 | a source whose reader answers a call and its result events on the *same* record (the committed OpenCode document) | the record is carried whole with no necessity and nothing undischarged — the document already holds that structure in one unit | `TestSelectionReportsClassesThatReconcileWithTheRead`'s second arm (1 call + 2 result events on the carried record, classes partitioning the read) |
+| a call the reader projects into several rows sharing one id, with one recorded result (the committed Codex `apply_patch` fixture) | the rows are one call and the recorded result answers it: nothing is counted undischarged, and the writer coalesces the rows into the one call it writes | `calls_undischarged {count 0}`; the writer's own `coalesced_tool_call_projections ×1`, one carried call and one result; `TestSelectionCountsTheCallUnitsTheWritersCoalesceAndThePairingAnswers` |
+| two calls reusing an id, both recorded before two outcomes | both outcomes pair with the nearest call recorded before them (the later one), so the earlier call is the one the source recorded no result for | `calls_undischarged {count 1, regions ["0"]}`; the closure carries nothing for it; `TestSelectionCountsTheCallUnitsTheWritersCoalesceAndThePairingAnswers` |
+| the Pi fixture's record after a tool result, which the reader answers as naming the call while the file names the result | a window carrying the call and that record adds the result as a necessity *and* chains the record through it: the walk from the file's last entry holds the call, the result and the record | written Pi `parentId` walk (`--select 1,4 --to pi`); `TestSelectionKeepsACarriedResultOnTheWalkThroughItsCall` |
+| a record whose recorded parent the window left out while the read answered no identity for it (the Claude reader's `parentUuid` without `uuid`) | it hangs off its nearest retained ancestor — the answer travels by the record's own position — and a window with no retained ancestor is refused by name, the check keyed by position too | Claude `parentUuid` and the written Pi walk for `0,1,3`; `ErrUnrepresentableLeaf` for `1,3`; `TestSelectionChainsARecordWithoutAnIdentityToItsRetainedAncestor` |
+| a command line whose selection the read's ordinals refuse *and* whose source file the leaf guard refuses | the specification's own refusal: the core's sentence, the usage exit code, nothing installed | `TestContinueValidatesASelectionBeforeTheSourceLeafGuard` (the same fixture without `--select` still refuses with the leaf error, exit 1); `Q-0009-05` |
 
 ## 6. Gate, tests and the citations manifest
 
@@ -312,22 +334,22 @@ gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./c
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 442 tests in 8.740s (rc=0)
+  PASS     selftest Ran 442 tests in 9.017s (rc=0)
   PASS     parity   … (5553 carried file(s) identical to the pinned revision; 27 declared deviations + 1
                     generated input present as declared; 32 project-owned prefix(es); 5727 file(s) seen by git)
-  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009-citations.tsv: 19 row(s) verified
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009-citations.tsv: 23 row(s) verified
   PASS     secrets  no leaks found in 196 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 exit=0
 ```
 
 (`parity`'s detail is elided in this transcript with `…` — the step prints it as one long line, and the
-numbers this record quotes are the ones it holds. The transcript is the run of this script on the tree this
-fix stage leaves, taken after the throw-away probe file was removed; `selftest`'s duration is that run's
-own. `0009-citations.tsv`'s row count moved 15 → 19: the round's four new rows (`S6`, `S7`, `S2-reuse`,
-`D5-blank`) each cite an existing-or-new test that exists and passes. `secrets` moved 195 → 196 files
-because the retained probe recipe (`0009-d4-probe.txt`) is one more file this repository owns. `gofmt`,
-`test` and `parity` hold the counts of the previous run.)
+numbers this record quotes are the ones it holds. The transcript is the third fix round's own run, taken
+after the throw-away probe file was removed; `selftest`'s duration is that run's own.
+`0009-citations.tsv`'s row count moved 19 → 23: the round's four new rows (`S2-units`, `S6-projection`,
+`S6-identity`, `D5-order`) each cite a new test that exists and passes. `secrets` holds 196 files and
+`gofmt`, `test`, `parity` hold the counts of the previous run: this round adds no file — the probe recipe
+was already retained, and every change landed in a file the increment already carries.)
 
 `docs/evidence/0009-citations.tsv` holds one row per obligation a gate-runnable Go test discharges, in
 this increment's own id spaces:
@@ -535,6 +557,123 @@ now reads `--select 0-3,7` (the named Claude fixture reads as eight records, ord
 call/result pair inside 0-3), and the paragraph beside it names the order-based pairing, the
 progress-versus-outcome rule, the supplied-blank refusal and the ancestry rule.
 
+### The third review round's findings (`7e61075`), fixed and re-measured
+
+The review of `9242e49..7e61075` found six items (two P1, three P2, one P3): two behavioural defects in the
+ancestry accounting, one in the undischarged accounting, one in the refusal order, one measurement
+weakening and one test-coverage gap. This round fixes all six; every fix was measured against the pre-fix
+tree first — the same tree with only the four fixed source files reverted and the new/extended tests kept,
+so each test is shown to fail for the reason the finding names and pass after:
+
+```console
+$ git diff > /tmp/fix-round3.patch
+$ git checkout -- internal/ccc/conversation.go internal/ccc/selection.go internal/ccc/route_shared.go internal/ccc/continue.go
+$ go test -tags fts5 -count=1 -run 'TestSelectionKeepsACarriedResultOnTheWalkThroughItsCall|TestSelectionChainsARecordWithoutAnIdentityToItsRetainedAncestor|TestSelectionCountsTheCallUnitsTheWritersCoalesceAndThePairingAnswers' ./internal/ccc/
+--- FAIL: TestSelectionKeepsACarriedResultOnTheWalkThroughItsCall (0.00s)
+    selection_test.go:1012: the walk from the file's last entry does not hold "internal/retry/config.go:41: maxBackoffSeconds = 30", which the report names as carried (the walk holds ["The cap is 30 seconds of backoff between attempts." "I will look for the retry configuration."])
+--- FAIL: TestSelectionChainsARecordWithoutAnIdentityToItsRetainedAncestor (0.00s)
+    selection_test.go:1076: the record the read answered no identity for hangs off 74cec810-b931-4398-b262-12be1a2869c3, want its nearest retained ancestor's entry ("cbee500c-97aa-427f-b700-81663168cf09"): the identity it never had must not drop the answer and chain it to the entry written before it, which stands for the abandoned branch
+    selection_test.go:1104: pi: the walk from the file's last entry holds the abandoned branch's record: the identity-less record was chained to the entry written before it instead of to its nearest retained ancestor
+    selection_test.go:1118: converting a window with no retained ancestor: err = <nil>, want ErrUnrepresentableLeaf
+--- FAIL: TestSelectionCountsTheCallUnitsTheWritersCoalesceAndThePairingAnswers (0.00s)
+    selection_test.go:1252: calls_undischarged = {Count:1 Regions:[1]}, want none: the two rows are one call (the writer's own distinctCalls unit) and the recorded result answers it
+    selection_test.go:1283: calls_undischarged = {Count:0 Regions:[]}, want the earlier call at ordinal 0: the seam pairs both outcomes with the nearest call the id records before them (ordinal 1), so ordinal 0 is the call the source recorded no result for
+FAIL
+$ go test -tags fts5 -count=1 -run TestContinueValidatesASelectionBeforeTheSourceLeafGuard ./cmd/ccc/
+--- FAIL: TestContinueValidatesASelectionBeforeTheSourceLeafGuard (0.01s)
+    selection_route_test.go:287: exit 1, want 2 (stdout "", stderr "ccc: the source's own loader selects a leaf this conversion cannot write as the target's: the source's own file …/01a1c337-6d1e-7f84-9b2c-4e5f6a7b8c90.jsonl selects the leaf branch_summary entry e0718293, and that leaf's own path holds a branch_summary record (id e0718293, role -) which this read does not carry and whose kind this build cannot say the harness's own conversation context leaves out, so the conversation a resumed target would read is not the one the source's loader builds\n")
+FAIL
+$ git apply --include=internal/ccc/conversation.go --include=internal/ccc/selection.go --include=internal/ccc/route_shared.go --include=internal/ccc/continue.go /tmp/fix-round3.patch
+$ go test -tags fts5 -count=1 -run 'TestSelectionKeepsACarriedResult|TestSelectionChainsARecord|TestSelectionCountsTheCallUnits|TestContinueValidates' ./internal/ccc/ ./cmd/ccc/
+ok  	go.kenn.io/agentsview/internal/ccc	0.042s
+ok  	go.kenn.io/agentsview/cmd/ccc	0.041s
+```
+
+(The failure transcript is the output as it was printed; the two uuids in the second case are the ones
+that run minted, and the elided CLI path is this checkout's own fixture root.)
+
+**R-12 — a sparse selection could put an answered tool call on the active path without its result (P1),
+fixed.** `selectionKeptAncestors` walked only the read's raw relations, so on the committed Pi fixture
+`01a1c335-…` — whose reader answers the record after a tool result as hanging off the message that made
+the call, while the file runs call → result → what follows — a window naming the call and the record after
+the result answered the *call* as the record's nearest retained ancestor: the written leaf walked
+`4 → 1`, leaving the result the selection had carried as a necessity in the file and off the walk the
+target's loader makes. The ancestry walk now takes the **tool-result step the writers take where the read
+may project one** (`sourceToolResultBefore`, the same rule `sourceLineParent` and the tree writers use), so
+the result is the ancestor the reduced tree chains the record through and the walk holds all three carried
+records. Measured on the fixture (`--select 1,4 --to pi`): the walk from the file's last entry covers the
+call's entry, the result's entry and the record that follows, where before the fix it held the call and the
+record alone with the result's entry stranded. `TestSelectionKeepsACarriedResultOnTheWalkThroughItsCall`
+pins it, and the `S6-projection` row cites it.
+
+**R-13 — a retained record without an identity could reactivate an abandoned branch (P1), fixed.** A
+Claude read can answer a record's `parentUuid` with no `uuid` of its own (the inherited reader preserves
+the two fields independently), and both the ancestry answer and the revival check were keyed by identity:
+the answer was dropped in `newSourceTree` and never consulted, and the fallback's check skipped the empty
+identity, so `--select 0,1,3` chained the record to the entry written before it — the abandoned branch's —
+with no refusal. The ancestry answer is now carried and consulted **by the record's own position**:
+`Conversation.sourceKeptAncestor` holds the reduced document's index of the nearest retained ancestor (or
+-1), the tree stamps each record's position as it walks (`sourceTree.record`) and keeps its entry and
+omitted place under that position (`entryByRecord`, `omittedEntryByRecord`), and the fallback's revival
+check asks by position too, naming the record by its ordinal where it has no identity
+(`recordDescription`). Measured on a synthetic read of that shape: the window `0,1,3` writes the record
+under the root's entry (the Claude transcript's `parentUuid` and the written Pi session's walk both show
+it), and the window `1,3` — nothing retained to hang it on — is refused by name (`ErrUnrepresentableLeaf`)
+instead of accepted. `TestSelectionChainsARecordWithoutAnIdentityToItsRetainedAncestor` pins both halves,
+and the `S6-identity` row cites it.
+
+**R-14 — `calls_undischarged` used a different call identity from the pairing and the writers (P2),
+fixed.** The count treated every recorded call row as a call and consumed outcomes one per row, so the
+committed Codex `apply_patch` fixture — one invocation the reader projects into two rows sharing the id,
+with one recorded result — was reported as one undischarged call which the Claude writer coalesces into one
+*answered* call, and the two-calls-two-outcomes shape (both calls recorded before both results) let the
+second outcome discharge the earlier call the seam's own pairing never answers. The count is now derived
+from the **same walk that pairs the seam** (`selectionPairing` answers both the closure's pairs and the
+outcome-answered ids) and counted in the unit the writers write (`distinctCalls`: a message's calls
+sharing a non-empty id are one projected invocation). Measured: the patch fixture's full read reports
+`calls_undischarged 0` with the writer's own `coalesced_tool_call_projections ×1`, one carried call and
+one result; the two-calls-two-outcomes read reports the earlier call alone at ordinal 0, and the closure
+carries nothing for it. `TestSelectionCountsTheCallUnitsTheWritersCoalesceAndThePairingAnswers` pins both
+shapes, and the `S2-units` row cites it.
+
+**R-15 — the D4 probe could miss the ancestry regression it is meant to rule out (P2), fixed.** The
+retained probe replaced every Pi `parentId`, entry `id` and uuid with one class-wide placeholder, so
+reparenting an entry from one non-null parent to another folded to the same bytes, and its pipeline arm
+neither fingerprinted the report it produced nor the artifact the run published. The probe now
+*canonicalizes* identities — each distinct value gets a token of its own, the same token for every
+occurrence, numbered by first appearance, so a definition and its references still agree while a
+reparented reference cannot — and its pipeline arm is an **installing** run against a scratch home under a
+target binary no host has, whose lines carry the sha256 of the whole folded report (every report field,
+named or not) and of the bytes the installation published; for the OpenCode target, whose artifact is a
+row inside the harness's own store, the line says so instead of digesting bytes that are not the record.
+Measured (§4): both trees' two runs are byte-identical, the shared documents' 1024 lines are byte-identical
+before and after, and the increment's new fixture adds its own 125 lines.
+
+**R-16 — the Pi source-leaf guard could mask an out-of-range selection (P2), fixed.** `continueWith`
+asked the source-side leaf guard before deciding the selection, so on the committed branch-switch fixture
+`--select 99` was reported as the leaf refusal (exit 1) instead of the out-of-range sentence and the usage
+exit code. The selection is now decided **first** — a specification the read's own ordinals refuse is a
+statement about the caller's command line — and the leaf guard still runs against the *read*, before the
+reduced document is handed on, exactly as before, so a valid specification still meets it. Measured through
+the CLI: with `--select 99` the usage exit code and the space sentence; without a selection the same
+fixture still refuses with the leaf error (exit 1), nothing installed either way.
+`TestContinueValidatesASelectionBeforeTheSourceLeafGuard` pins both arms, and the `D5-order` row cites it;
+`Q-0009-05` records the default and its reversal.
+
+**R-17 — the D2 cases did not pin the excluded regions (P3), fixed.** The CLI case asserted the excluded
+*count* and a human line that stopped before the region values, and the core reconciliation case accepted
+any excluded region list (an empty one passed its presence-only loop). The CLI case now asserts
+`["0-1","4-10"]` in `--json` and `excluded: 9 record(s) at ordinals 0-1,4-10` in the human block, and the
+core case asserts that the excluded class's regions *are* the read's own records the window did not carry —
+the classes a partition of the read, the count equal to the regions' own count — so deleting
+`Excluded.Regions` fails both cited cases.
+
+The round's documentation moves are folded into §7: the control file's line sentence (the projection step
+and the position-keyed ancestry), the seam sentence (the call unit the undischarged count reads) and the
+refusal list (the selection's own answer before a source-side refusal); `docs/conventions.md`'s mirrored
+rule; the plan's §11.12; `Q-0009-04`'s ancestry detail and the new `Q-0009-05`; and the four new citation
+rows. The gate above is the round's own run: `GATE: PASS`, exit 0, `0009-citations.tsv` 23 rows.
+
 ## 7. Docs, rules and bookkeeping
 
 * `AGENTS.md` — a new binding bullet ("A conversion carries only what the caller selected …") outside the
@@ -542,11 +681,18 @@ progress-versus-outcome rule, the supplied-blank refusal and the ancestry rule.
   control file moves because this increment changes a rule an agent must follow and the core's layout. The
   second fix round rewrote the bullet's seam sentence (pairing by the read's own order), added the
   progress-is-not-an-outcome sentence, extended the line sentence with the ancestry rule, and added the
-  supplied-blank refusal to the refusal list.
+  supplied-blank refusal to the refusal list. The third fix round extended the line sentence (the ancestry
+  walk takes the tool-result step the writers take, and the answer and the revival check travel by the
+  record's own position), added the call unit the undischarged count reads to the seam sentence, and added
+  the "a bad selection's own refusal is answered even where the source would also refuse" clause to the
+  refusal list.
 * `docs/conventions.md` — the layout block names `selection.go`; a new rule under "Rules of the work"
   states the specification's grammar, the seam, the refusals and the report's classes, with the second
-  round's refinements (order pairing, progress, ancestry, supplied blank) folded into the same rule.
-* `docs/plans/0009-selective-context.md` — §11 records nine departures with the measurement behind each.
+  round's refinements (order pairing, progress, ancestry, supplied blank) folded into the same rule, and
+  the third round's (the projection step and the position-keyed ancestry, the call unit the undischarged
+  count reads, the refusal order) folded in beside them.
+* `docs/plans/0009-selective-context.md` — §11 records twelve departures with the measurement behind each
+  (the third round's four in §11.12).
 * `docs/goals/README.md` — 0009's row reads *Implemented on `feat/0009-selective-context`; awaiting
   operator acceptance*, and the goal file's own `Status:` line reads the same (the form 0007 and 0008
   carried while their increments awaited acceptance); nothing else was ready to archive (0008 was archived
@@ -555,12 +701,18 @@ progress-versus-outcome rule, the supplied-blank refusal and the ancestry rule.
 * `docs/decisions/OPEN-QUESTIONS.md` — Q-0009-01 (the strict refusal's exit code); Q-0009-02 (rewritten:
   the seam pairs a result with the nearest prior call of the same id, an id-less record carries no link);
   Q-0009-03 (rewritten: a supplied blank value is refused, not read as the flag's absence); Q-0009-04 (the
-  read's line is not the selection's to redefine, ancestry included).
+  read's line is not the selection's to redefine, ancestry included — the third round's detail names the
+  projection step and the position-keyed answer); Q-0009-05 (new: a command line whose selection the read's
+  ordinals refuse is answered as that, with the usage exit code, before a source-side refusal the same
+  command line would also meet).
 * `README.md` — an example line (`--select 0-3,7`, in range for its fixture), a paragraph on the flag and
-  its report, and `Select` in the engine list.
+  its report, and `Select` in the engine list. Unchanged by the third round: the paragraph's claims (the
+  order pairing, the progress rule, the blank refusal, the ancestry rule) are still what the code does.
 * `docs/harness.md` — unchanged: this increment adds no gate step and no knob, and the citations step it
   already requires is the one that reads the new manifest.
 * The throw-away probe file (§4) and the pre-change worktree were removed before the gate run; the probe's
-  exact source is retained beside this record (`0009-d4-probe.txt`). The
+  exact source is retained beside this record (`0009-d4-probe.txt`), and the third round replaced it with
+  the revision that printed §4's runs (canonicalized identities, the report and artifact digests of the
+  installing pipeline arm). The
   fixture generator (`internal/ccc/fixturegen`) and the committed fixture tree move together, pinned by
   the existing `TestFixturesMatchTheirGenerator`.

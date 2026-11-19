@@ -163,13 +163,18 @@ obligation ships no citations file, rather than an empty one.
   necessity with the ordinal that pulled it in (both directions, to a fixed point) unless
   `--strict-selection` refuses it by name before anything is installed. A call whose read holds no
   recorded outcome (no result at all, or only progress events such as a Codex subagent's `running`
-  notification) is counted `calls_undischarged`, and what a target's own format does with such a call is
+  notification) is counted `calls_undischarged`, read from the pairing walk itself and counted in the unit
+  the writers write: a message's calls sharing a non-empty id are one invocation the reader projected into
+  several rows, so one recorded outcome discharges it, and a second outcome does not answer a call the
+  pairing left unanswered. What a target's own format does with such a call is
   that writer's answer, named in the conversion's losses. A call or result the source
   recorded with **no** id carries no recorded link, so the seam neither invents one nor carries candidates
   for it; the target's writer applies its own rule to the selected line and discloses the pairing it
   inferred (`generated_call_ids`). On a target whose session is a tree, a carried record whose recorded
   parent the selection left out is hung off its nearest retained ancestor (the read's own relation walked
-  through the excluded records), so the loader's walk stays the read's own line; a window in which that
+  through the excluded records, with the tool-result step the writers take where the read may project one,
+  and the answer travels by the record's own position, so a record the read answered no identity for keeps
+  it), so the loader's walk stays the read's own line; a window in which that
   ancestry is gone entirely — the fallback would hang the record under an off-line one — is refused by
   name (`ErrUnrepresentableLeaf`) rather than written. A bad selection is refused, never repaired, with
   the core's own sentence
@@ -177,7 +182,9 @@ obligation ships no citations file, rather than an empty one.
   ordinals the read supplied (below its lowest or above its highest; a region spanning a gap carries the
   records it holds), a spec that would carry no record, a value the caller supplied *empty* (an unset
   variable expanded into `--select "$SPEC"` is a refusal, not the flag's absence: it must not publish the
-  whole history), and the strict refusal — and the report names the
+  whole history), and the strict refusal (each answered as the specification's own refusal even
+  where the source would also refuse the conversion, so a run whose selection the read's own ordinals
+  reject is not reported as a statement about the source file's leaf), and the report names the
   transformation on every run that had one, in the human block and in `--json`, as
   `selection.ordinal_space` (min/max/records/contiguous) and the four classes `included`, `excluded`,
   `necessities_added` and `calls_undischarged`. `included + necessities_added + excluded` is the read's own

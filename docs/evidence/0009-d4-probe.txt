@@ -12,15 +12,28 @@ package ccc
 //
 // It walks every committed fixture document (the file-backed providers' sessions, plus the OpenCode
 // document materialized as a store), converts each through every route's writer with fixed options, and
-// runs the whole pipeline (Continue, a dry run at --verify none) per route x document. Nothing it does
-// carries a selection flag: the probe measures the *default* path, and every printed line is normalized
-// (minted ids, timestamps, temp and checkout paths) so two runs of one tree are byte-identical and the
-// two trees' outputs are comparable.
+// runs the whole pipeline (Continue, an *installing* run into a scratch home at --verify none, under a
+// target binary no host has) per route x document. Nothing it does carries a selection flag: the probe
+// measures the *default* path, and the pipeline arm measures the conversion rather than this host's
+// installed harnesses (d4ProbeMissingBinary says why).
+//
+// Every printed line is normalized so two runs of one tree are byte-identical and the two trees' outputs
+// are comparable. The generated identities are *canonicalized* rather than replaced by a class
+// placeholder: each distinct uuid, Pi entry id and OpenCode id gets a token of its own, the same token
+// for every occurrence of the same value, so a folded document still distinguishes one parent from
+// another -- a blanket placeholder per class would let a reparented entry fold to the same bytes. The
+// pipeline arm measures two artifacts the earlier probe did not: the whole report, folded and digested
+// (so every field of it is compared, named by a line or not), and the bytes of the file the installation
+// published (so the pipeline is compared on what it actually wrote, not only on the writer's own bytes).
+// A target whose artifact is a row inside the harness's own store publishes no file whose bytes are the
+// record, and its line says so instead of digesting the store, whose bytes move with the harness's WAL
+// handling.
 
 import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -118,13 +131,19 @@ func d4ProbeRead(t *testing.T, doc d4ProbeDocument) (Conversation, config.Config
 	return conversation, cfg, reader
 }
 
-// d4ProbeNormalizer folds everything a conversion mints or discovers out of one printed line, so the
+// d4ProbeNormalizer folds everything a conversion mints or discovers out of one measured text, so the
 // same document and route print the same line on two runs and two trees.
 type d4ProbeNormalizer struct {
 	rules []struct {
 		re   *regexp.Regexp
 		with string
 	}
+	// idRules name the identities a conversion mints or writes into a document, each with the identity
+	// itself in its first group: a uuid (the writers' session ids and the Claude transcript's record
+	// uuids), a Pi entry id in a JSON id position, and an OpenCode identity. They are folded by
+	// canonicalIDs rather than by a per-class placeholder, so definitions and references agree after
+	// folding while two different values cannot collapse into one.
+	idRules []*regexp.Regexp
 }
 
 func newD4ProbeNormalizer(repoRoot string) *d4ProbeNormalizer {
@@ -137,23 +156,92 @@ func newD4ProbeNormalizer(repoRoot string) *d4ProbeNormalizer {
 	}
 	add(regexp.QuoteMeta(repoRoot), "<repo>")
 	add(`/tmp/[^\s"'\\]*`, "<tmp>")
-	add(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`, "<uuid>")
+	add(`"file_modified":"[^"]*"`, `"file_modified":"<mtime>"`)
 	add(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z`, "<ts>")
 	add(`"timestamp":\d+`, `"timestamp":<ms>`)
 	add(`"created":\d+`, `"created":<ms>`)
 	add(`"updated":\d+`, `"updated":<ms>`)
-	add(`"id":"[0-9a-f]{8}"`, `"id":"<entry>"`)
-	add(`"parentId":"[0-9a-f]{8}"`, `"parentId":"<entry>"`)
-	add(`"firstKeptEntryId":"[0-9a-f]{8}"`, `"firstKeptEntryId":"<entry>"`)
-	add(`(?:msg|ses)_[A-Za-z0-9_]+`, "<opencode-id>")
+	normalizer.idRules = []*regexp.Regexp{
+		regexp.MustCompile(`([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`),
+		regexp.MustCompile(`"(?:id|parentId|firstKeptEntryId)":"([0-9a-f]{8})"`),
+		regexp.MustCompile(`((?:ses|msg|call|part|prt)_[A-Za-z0-9_]+)`),
+	}
 	return normalizer
 }
 
+// canonicalIDs replaces every identity idRules names with a token of its own: the tokens are numbered by
+// first appearance over the text, and every occurrence of the same value gets the same token, so a
+// document's own definitions and the references to them still agree after folding while a change that
+// moves a reference to another identity -- an entry reparented from one non-null parent to another, a
+// parent written where the other tree wrote none -- folds to a different digest, which a per-class
+// placeholder could not show. The substitution is positional (the spans the rules matched), so a value
+// that happens to occur inside an unrelated longer string is left alone.
+func (n *d4ProbeNormalizer) canonicalIDs(text string) string {
+	type span struct{ start, end int }
+	spans := make([]span, 0, 32)
+	values := make([]string, 0, 32)
+	for _, rule := range n.idRules {
+		for _, at := range rule.FindAllStringSubmatchIndex(text, -1) {
+			spans = append(spans, span{start: at[2], end: at[3]})
+			values = append(values, text[at[2]:at[3]])
+		}
+	}
+	if len(spans) == 0 {
+		return text
+	}
+	order := make([]int, len(spans))
+	for index := range order {
+		order[index] = index
+	}
+	sort.Slice(order, func(i, j int) bool { return spans[order[i]].start < spans[order[j]].start })
+	tokens := make(map[string]string, len(spans))
+	var builder strings.Builder
+	last := 0
+	for _, index := range order {
+		at, value := spans[index], values[index]
+		if at.start < last {
+			continue
+		}
+		token, ok := tokens[value]
+		if !ok {
+			token = fmt.Sprintf("<id%d>", len(tokens)+1)
+			tokens[value] = token
+		}
+		builder.WriteString(text[last:at.start])
+		builder.WriteString(token)
+		last = at.end
+	}
+	builder.WriteString(text[last:])
+	return builder.String()
+}
+
+// fold folds one measured text: the identities are canonicalized first (their tokens are numbered by
+// appearance, so the rules have to see the text whole), then the per-text rules replace what the
+// conversion discovered rather than minted.
 func (n *d4ProbeNormalizer) fold(text string) string {
+	text = n.canonicalIDs(text)
 	for _, rule := range n.rules {
 		text = rule.re.ReplaceAllString(text, rule.with)
 	}
 	return text
+}
+
+// d4ProbeFingerprint words one measured document: the bytes as written, the folded copy's own length,
+// and the sha256 of the folded copy. Both lengths travel because they answer different questions -- the
+// written length changes when a document's byte count does, the folded one when the normalized text
+// does -- and the digest is the fingerprint a diff compares.
+func d4ProbeFingerprint(normalizer *d4ProbeNormalizer, written []byte) string {
+	return fmt.Sprintf("written=%d %s", len(written), d4ProbeFoldedFingerprint(normalizer, written))
+}
+
+// d4ProbeFoldedFingerprint words the folded copy of a text whose *written* length is not a comparable
+// number across two runs: the whole report names the scratch directories one run's own temp paths spell,
+// so its JSON length moves with the random spelling of a path although every measured field is the same.
+// What is compared is the folded text, whose paths are folded to a fixed token.
+func d4ProbeFoldedFingerprint(normalizer *d4ProbeNormalizer, written []byte) string {
+	folded := normalizer.fold(string(written))
+	digest := sha256.Sum256([]byte(folded))
+	return fmt.Sprintf("folded=%d digest=%s", len(folded), hex.EncodeToString(digest[:]))
 }
 
 // d4ProbeLine builds one output line: the document and route names are printed as they are (so a diff
@@ -183,10 +271,8 @@ func d4ProbeWriter(
 		return []string{d4ProbeLine(normalizer, "PROBE-WRITE", doc.name, routeName,
 			"error="+err.Error())}
 	}
-	folded := normalizer.fold(string(converted.Data))
-	digest := sha256.Sum256([]byte(folded))
 	lines := []string{d4ProbeLine(normalizer, "PROBE-WRITE", doc.name, routeName, fmt.Sprintf(
-		"bytes=%d digest=%s carried=%+v", len(converted.Data), hex.EncodeToString(digest[:]), converted.Carried))}
+		"%s carried=%+v", d4ProbeFingerprint(normalizer, converted.Data), converted.Carried))}
 	for _, loss := range converted.Losses {
 		if loss.Count == 0 {
 			continue
@@ -197,8 +283,26 @@ func d4ProbeWriter(
 	return lines
 }
 
-// d4ProbePipeline runs the whole conversion pipeline (Continue: read, writer, dry-run structure check,
-// no verification level) over one document and one route, and answers its lines.
+// d4ProbePipeline runs the whole conversion pipeline (Continue: read, writer, installation, structural
+// read-back, no verification level) over one document and one route, and answers its lines. The run
+// *installs* into a scratch home -- a dry run writes no artifact this probe could fingerprint -- and two
+// further measurements travel beside the named fields: the whole report, folded and digested, so every
+// field of it is compared rather than only the ones a line names, and the bytes of the file the
+// installation published, fingerprinted the way the writer arm fingerprints the writer's own bytes. A
+// target whose artifact is a row inside the harness's own store publishes no file whose bytes are the
+// record (OpenCode: the store moves with the harness's WAL handling), so its line says which artifact it
+// is instead of digesting the store.
+//
+// d4ProbeMissingBinary is the harness name the arm runs with, and it is deliberately one no host has:
+// what the arm compares is the conversion and its installation, and a host's installed harness would put
+// the host's own answers into the comparison -- measured on one tree, two runs: a Codex app-server
+// handshake reported a timeout where its neighbour reported a closed stream, and the report digest moved
+// by eleven bytes between the two runs although every printed field agreed. Naming the absent binary
+// keeps this arm the conversion's own measurement; the harness's answers about itself (a version, a
+// model provider, an importer's refusal) belong to the native checks and to the record's own native
+// sections, not to a before/after comparison of the default path.
+const d4ProbeMissingBinary = "ccc-no-such-target-harness"
+
 func d4ProbePipeline(
 	t *testing.T, doc d4ProbeDocument, cfg config.Config, reader *SourceReader,
 	routeName string, normalizer *d4ProbeNormalizer,
@@ -206,16 +310,16 @@ func d4ProbePipeline(
 	t.Helper()
 	home := filepath.Join(t.TempDir(), "d4-probe-home")
 	result, err := Continue(context.Background(), ContinueOptions{
-		Ref:         doc.ref,
-		Target:      routeName,
-		Config:      cfg,
-		Reader:      reader,
-		ArchivePath: cfg.DBPath,
-		TargetHome:  home,
-		DryRun:      true,
-		Verify:      VerifyNone,
-		Now:         d4ProbeNow,
-		Stderr:      io.Discard,
+		Ref:          doc.ref,
+		Target:       routeName,
+		Config:       cfg,
+		Reader:       reader,
+		ArchivePath:  cfg.DBPath,
+		TargetHome:   home,
+		TargetBinary: d4ProbeMissingBinary,
+		Verify:       VerifyNone,
+		Now:          d4ProbeNow,
+		Stderr:       io.Discard,
 	})
 	lines := []string{d4ProbeLine(normalizer, "PROBE-RUN", doc.name, routeName, fmt.Sprintf(
 		"conversion=%s format=%s read_from=%s dry_run=%v carried=%+v",
@@ -226,6 +330,32 @@ func d4ProbePipeline(
 	}
 	if result.Conversion.State == "" {
 		return lines
+	}
+	// The whole report: every field of it, whether a line below names the field or not.
+	if encoded, encodeErr := json.Marshal(result); encodeErr != nil {
+		lines = append(lines, d4ProbeLine(normalizer, "PROBE-RUN", doc.name, routeName,
+			"report_error="+encodeErr.Error()))
+	} else {
+		lines = append(lines, d4ProbeLine(normalizer, "PROBE-RUN", doc.name, routeName,
+			"report "+d4ProbeFoldedFingerprint(normalizer, encoded)))
+	}
+	// The artifact the run published.
+	switch path := strings.TrimSpace(result.TargetSession.Path); {
+	case path == "":
+		lines = append(lines, d4ProbeLine(normalizer, "PROBE-RUN", doc.name, routeName, fmt.Sprintf(
+			"artifact=none installation=%s", result.Installation.State)))
+	case result.Installation.Mechanism == openCodeImportMechanism:
+		lines = append(lines, d4ProbeLine(normalizer, "PROBE-RUN", doc.name, routeName, fmt.Sprintf(
+			"artifact=store path=%s (the harness's own store holds the record, so its bytes are not "+
+				"digested; the states beside this line are the harness's own answer)", path)))
+	default:
+		if data, readErr := os.ReadFile(path); readErr != nil {
+			lines = append(lines, d4ProbeLine(normalizer, "PROBE-RUN", doc.name, routeName,
+				"artifact_error="+readErr.Error()))
+		} else {
+			lines = append(lines, d4ProbeLine(normalizer, "PROBE-RUN", doc.name, routeName,
+				"artifact "+d4ProbeFingerprint(normalizer, data)))
+		}
 	}
 	for _, loss := range result.Conversion.Losses {
 		if loss.Count == 0 {

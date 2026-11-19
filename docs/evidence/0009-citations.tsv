@@ -24,6 +24,16 @@
 #           the two refinements the second fix stage added: a reused tool id does not expand a selection
 #           by id alone (the order the pair is read in decides which result answers which call), and a
 #           value supplied blank is refused rather than read as the flag's absence.
+#   S2-units, S6-projection, S6-identity, D5-order
+#           the third fix stage's refinements: the undischarged count reads the writers' own call unit
+#           (a message's calls sharing an id are one projected invocation) from the pairing's own walk,
+#           so a second outcome does not answer a call the pairing left unanswered (S2-units); the
+#           ancestry walk takes the tool-result step the writers take, so a carried result cannot be left
+#           off the walk a resumed session makes (S6-projection); the ancestry answer and the revival
+#           check travel by the record's own position, so a record the read answered no identity for
+#           keeps its ancestor and is refused where there is none (S6-identity); and a bad selection is
+#           answered as the command line's own refusal, with the usage exit code, before a source-side
+#           refusal the same command line would also meet (D5-order).
 #
 # scripts/obligation-citations.py is the arbiter: every row's cited test must exist in the named package
 # and run and pass, and the `citations` step is required — a tree that lost this file, or a citation that
@@ -62,3 +72,7 @@ S6	TestSelectionKeepsASparseWindowOnTheReadsLine	./internal/ccc	AGENTS.md §A co
 S7	TestSelectionCountsACallWithOnlyProgressEventsUndischarged	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (a call the source left without a recorded outcome was not answered: progress statuses do not discharge a call, an outcome status does)
 S2-reuse	TestSelectionPairsAReusedToolIDByRecordedOrder	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (a result pairs with the nearest prior call the same id records: a reused id's later call carries nothing but itself and is counted undischarged; strict refuses either half of the older pair)
 D5-blank	TestContinueRefusesABadSelectionBeforeInstalling	./cmd/ccc	AGENTS.md §A conversion carries only what the caller selected … (a value the caller supplied empty is refused with the core's own sentence and the usage exit code, with an installation requested and nothing written)
+D5-order	TestContinueValidatesASelectionBeforeTheSourceLeafGuard	./cmd/ccc	docs/goals/0009-selective-context.md §Done when 5 (the out-of-range arm answered with the core's sentence and the usage exit code ahead of the source-side leaf refusal the same command line would also meet, nothing installed)
+S2-units	TestSelectionCountsTheCallUnitsTheWritersCoalesceAndThePairingAnswers	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (the undischarged count reads the call unit the writers write — a message's calls sharing a non-empty id are one projected invocation — from the same walk that pairs the seam)
+S6-projection	TestSelectionKeepsACarriedResultOnTheWalkThroughItsCall	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (the ancestry walk takes the tool-result step the writers take, so a result carried as a necessity stays on the walk the target's loader makes)
+S6-identity	TestSelectionChainsARecordWithoutAnIdentityToItsRetainedAncestor	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (the ancestry answer travels by the record's own position, so a record the read answered no identity for keeps it, and the revival check refuses such a record where the window retains no ancestor)
