@@ -2,6 +2,7 @@ package ccc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strconv"
@@ -1471,6 +1472,53 @@ func TestSelectionCountsTheCallUnitsTheWritersCoalesceAndThePairingAnswers(t *te
 			transcript.Carried)
 	}
 
+	// The Codex route writes the same unit on a reduced document: one function_call per invocation and the
+	// one recorded output, with the projected rows not written counted -- writing both rows would put two
+	// invocations with the same id and one output in a file the report says holds one call. The unflagged
+	// conversion keeps the two rows the writer has always written (goal 0009's D4: the default path's
+	// bytes do not move), so the coalescing belongs to the reduction and this case pins both halves.
+	countPayloads := func(t *testing.T, rollout CodexRollout) map[string]int {
+		t.Helper()
+		counts := map[string]int{}
+		for _, line := range decodeRollout(t, rollout.Data) {
+			counts[payloadField(t, line, "type")]++
+		}
+		return counts
+	}
+	selectedRollout, err := ConvertToCodexRollout(selected, CodexTargetOptions{CLIVersion: "selection-test-0.0"})
+	if err != nil {
+		t.Fatalf("converting the whole selected read to codex: %v", err)
+	}
+	if counts := countPayloads(t, selectedRollout); counts["function_call"] != 1 ||
+		counts["function_call_output"] != 1 {
+		t.Errorf("the selected codex conversion writes %v, want one function_call and one "+
+			"function_call_output for the one invocation", counts)
+	}
+	if selectedRollout.Carried.ToolCalls != 1 || selectedRollout.Carried.ToolResults != 1 {
+		t.Errorf("the selected codex conversion carried = %+v, want the one invocation and its outcome",
+			selectedRollout.Carried)
+	}
+	if loss := lossCount(t, selectedRollout.Losses, "coalesced_tool_call_projections"); loss.Count != 1 {
+		t.Errorf("coalesced_tool_call_projections = %+v, want the one projected row the selected "+
+			"conversion coalesces into the call it writes", loss)
+	}
+	unflaggedRollout, err := ConvertToCodexRollout(patch, CodexTargetOptions{CLIVersion: "selection-test-0.0"})
+	if err != nil {
+		t.Fatalf("converting the whole read to codex without a selection: %v", err)
+	}
+	if counts := countPayloads(t, unflaggedRollout); counts["function_call"] != 2 ||
+		counts["function_call_output"] != 1 {
+		t.Errorf("the unflagged codex conversion writes %v, want the two rows and the one output the "+
+			"writer has always written: the default path is byte-identical to the same run before "+
+			"selections existed", counts)
+	}
+	for _, loss := range unflaggedRollout.Losses {
+		if loss.Category == "coalesced_tool_call_projections" {
+			t.Errorf("the unflagged codex report names %+v: no row is coalesced on the default path, "+
+				"and its report is byte-identical to the same run before selections existed", loss)
+		}
+	}
+
 	// The two-calls-two-outcomes shape: both calls are recorded before both results.
 	reused := Conversation{Messages: []Message{
 		{Ordinal: 0, Role: "assistant", ToolCalls: []ToolCall{{ToolUseID: "toolu_reused", Name: "Bash"}}},
@@ -1860,12 +1908,14 @@ func TestSelectionKeepsTheReadsPairingWhenTheWindowBreaksItsAncestry(t *testing.
 		Message{Ordinal: 0, Role: "user", Content: "start", Dialogue: "start", SourceUUID: "u1"},
 		Message{Ordinal: 1, Role: "assistant", Content: "the call", Dialogue: "the call",
 			SourceUUID: "a2", SourceParentUUID: "u1",
-			ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Bash", InputJSON: `{"command":"one"}`}}},
-		// The inactive sibling reusing the id: its parent is the root, so it is off the read's line
-		// (4 → c4 → a2 → u1), and it is the occurrence the reduced document's own order would choose.
+			ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Read", InputJSON: `{"command":"one"}`}}},
+		// The inactive sibling reusing the id -- with a different tool name, so a result that named the
+		// wrong occurrence would be caught by its name too: its parent is the root, so it is off the
+		// read's line (4 → c4 → a2 → u1), and it is the occurrence the reduced document's own order would
+		// choose.
 		Message{Ordinal: 2, Role: "assistant", Content: "the sibling", Dialogue: "the sibling",
 			SourceUUID: "b3", SourceParentUUID: "u1",
-			ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Bash", InputJSON: `{"command":"two"}`}}},
+			ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Write", InputJSON: `{"command":"two"}`}}},
 		// The record the result's recorded parent chain steps through: excluded by the window, so the
 		// reduced document cannot walk the chain.
 		Message{Ordinal: 3, Role: "assistant", Content: "the step", Dialogue: "the step",
@@ -1904,6 +1954,41 @@ func TestSelectionKeepsTheReadsPairingWhenTheWindowBreaksItsAncestry(t *testing.
 		if count := lossCount(t, converted.Losses, "unpaired_tool_results").Count; count != 0 {
 			t.Errorf("%s: unpaired_tool_results = %d, want 0: the paired call is the carried one the read "+
 				"named, not the sibling", target, count)
+		}
+	}
+
+	// The result record states the name of the occurrence the read paired the result with, not the name
+	// of the later sibling that reused the id: the family's name map is keyed by id and holds the last
+	// write, so only an occurrence-keyed answer can name the call the resumed walk actually reaches.
+	for _, target := range []string{TargetPi, TargetOMP} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(selected, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the window: %v", target, err)
+		}
+		named := false
+		for _, line := range decodePiSession(t, converted.Data) {
+			if line.Message == nil || !strings.Contains(string(line.Message), resultText) {
+				continue
+			}
+			named = true
+			var message struct {
+				ToolCallID string `json:"toolCallId"`
+				ToolName   string `json:"toolName"`
+			}
+			if err := json.Unmarshal(line.Message, &message); err != nil {
+				t.Fatalf("%s: decoding the result entry: %v", target, err)
+			}
+			if message.ToolCallID != reusedID || message.ToolName != "Read" {
+				t.Errorf("%s: the result entry = %+v, want the occurrence the read paired with the result "+
+					"(%s/Read), not the later sibling's Write", target, message, reusedID)
+			}
+		}
+		if !named {
+			t.Errorf("%s: the written session holds no result entry with %q", target, resultText)
 		}
 	}
 }
@@ -2024,6 +2109,318 @@ func TestSelectionOmitsAResultWhosePairedCallIsOffItsWrittenPath(t *testing.T) {
 			t.Error("the walk from the Pi file's last entry holds the branch call, which the read's own " +
 				"line leaves off it")
 		}
+	}
+
+	// The same read without a selection: the written-ancestry disposition belongs to the reduction (goal
+	// 0009's D4 -- a run without `--select` is byte-identical to the same run before selections existed),
+	// so the default path keeps the acceptance it always had: some written call shares the id, wherever
+	// in the file it stands, and the result answers it. The rule the window above is held to must not act
+	// here, or the unflagged run's bytes and unpaired_tool_results would move with it.
+	for _, target := range []string{TargetClaude, TargetPi, TargetOMP} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(conversation, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the read without a selection: %v", target, err)
+		}
+		if !strings.Contains(string(converted.Data), branchResult) {
+			t.Errorf("%s: the unflagged conversion does not hold the result: the default path's "+
+				"acceptance -- a written call sharing the id -- is what a run without a selection keeps",
+				target)
+		}
+		if converted.Carried.ToolResults != 1 || converted.Carried.ToolCalls != 1 {
+			t.Errorf("%s: unflagged carried = %+v, want the call and the result, as before the selection "+
+				"existed", target, converted.Carried)
+		}
+		if count := lossCount(t, converted.Losses, "unpaired_tool_results").Count; count != 0 {
+			t.Errorf("%s: unflagged unpaired_tool_results = %d, want 0", target, count)
+		}
+	}
+}
+
+// TestSelectionInfersAnIdLessResultOnlyToACallOnItsWrittenPath pins the inference a reduced document's
+// writer makes for a result the source recorded with no id: it may name only a call that stands on the
+// written walk of the result's record -- the sole outstanding call in the line it wrote. The read: a root
+// at 0, sibling calls at 1 and 2, and an id-less result at 3 whose recorded parent is the call at 2.
+// Selecting 0,1,3 leaves the call at 1 as the only call outstanding in the file, and a tree target writes
+// record 1 as history off the walk -- but the result's nearest retained ancestor is the root, so the call
+// at 1 does not stand on the walk the result's entry hangs off: inferring the result onto it would write
+// an output whose invocation the resumed context cannot see, which `generated_call_ids` does not disclose
+// (the caveat names an inference, not a placement), so the result is omitted and counted instead. The
+// positive arm -- the same window with the call whose record is on the result's own ancestry -- shows the
+// inference still fires where it can be placed, and the entry states that call's id.
+func TestSelectionInfersAnIdLessResultOnlyToACallOnItsWrittenPath(t *testing.T) {
+	const answerText = "the answer"
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "root", Dialogue: "root", SourceUUID: "u1"},
+		Message{Ordinal: 1, Role: "assistant", Content: "call one", Dialogue: "call one",
+			SourceUUID: "a2", SourceParentUUID: "u1",
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_one", Name: "Bash", InputJSON: `{"command":"one"}`}}},
+		Message{Ordinal: 2, Role: "assistant", Content: "call two", Dialogue: "call two",
+			SourceUUID: "b3", SourceParentUUID: "u1",
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_two", Name: "Bash", InputJSON: `{"command":"two"}`}}},
+		// The id-less result: its recorded parent is the call at ordinal 2, so the window's own ancestry
+		// answer is the root, and the call at 1 -- the only one left outstanding -- is a sibling of that
+		// place.
+		Message{Ordinal: 3, Role: "user", Content: "the ask", Dialogue: "the ask",
+			SourceUUID: "c4", SourceParentUUID: "b3",
+			ToolResults: []ToolResult{{ContentRaw: answerText, ContentSize: len(answerText)}}},
+	)
+
+	offPath, _, err := Select(conversation, "0,1,3", false)
+	if err != nil {
+		t.Fatalf("selecting 0,1,3: %v", err)
+	}
+	for _, target := range []string{TargetClaude, TargetPi, TargetOMP, TargetCodex, TargetOpenCode} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(offPath, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the window: %v", target, err)
+		}
+		if strings.Contains(string(converted.Data), answerText) {
+			t.Errorf("%s: the written document holds the id-less result, inferred onto the call at "+
+				"ordinal 1, which does not stand on the walk the result's entry hangs off", target)
+		}
+		if count := lossCount(t, converted.Losses, "unpaired_tool_results").Count; count != 1 {
+			t.Errorf("%s: unpaired_tool_results = %d, want the one result no eligible call answers",
+				target, count)
+		}
+		if count := lossCount(t, converted.Losses, "generated_call_ids").Count; count != 0 {
+			t.Errorf("%s: generated_call_ids = %d, want 0: the inference picked no call, so it minted no "+
+				"pairing either", target, count)
+		}
+	}
+	transcript, err := ConvertToClaudeTranscript(offPath, ClaudeTargetOptions{CLIVersion: "selection-test-0.0"})
+	if err != nil {
+		t.Fatalf("converting the window to claude: %v", err)
+	}
+	if transcript.Carried.ToolCalls != 1 || !strings.Contains(string(transcript.Data), "toolu_one") {
+		t.Errorf("the window's call at ordinal 1 is not in the transcript: it is recorded history the "+
+			"selection carried, and the rule is about the walk, not the file: %+v", transcript.Carried)
+	}
+
+	// The call whose record *is* the result's retained ancestor: the sole outstanding call the walk
+	// reaches, so the inference names it and the entry states its id.
+	onPath, _, err := Select(conversation, "0,2,3", false)
+	if err != nil {
+		t.Fatalf("selecting 0,2,3: %v", err)
+	}
+	for _, target := range []string{TargetClaude, TargetPi, TargetOMP, TargetCodex, TargetOpenCode} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(onPath, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the window: %v", target, err)
+		}
+		if !strings.Contains(string(converted.Data), answerText) {
+			t.Errorf("%s: the written document does not hold the id-less result the sole eligible call "+
+				"answers", target)
+		}
+		if count := lossCount(t, converted.Losses, "unpaired_tool_results").Count; count != 0 {
+			t.Errorf("%s: unpaired_tool_results = %d, want 0: the inference had an eligible call", target,
+				count)
+		}
+		if count := lossCount(t, converted.Losses, "generated_call_ids").Count; count != 1 {
+			t.Errorf("%s: generated_call_ids = %d, want the one pairing the inference minted", target, count)
+		}
+	}
+	transcript, err = ConvertToClaudeTranscript(onPath, ClaudeTargetOptions{CLIVersion: "selection-test-0.0"})
+	if err != nil {
+		t.Fatalf("converting the eligible window to claude: %v", err)
+	}
+	pairedID := ""
+	for _, record := range decodeTranscript(t, transcript) {
+		for _, block := range recordBlocks(record) {
+			if block["type"] == "tool_result" {
+				pairedID, _ = block["tool_use_id"].(string)
+			}
+		}
+	}
+	if pairedID != "toolu_two" {
+		t.Errorf("the transcript's tool_result block answers %q, want toolu_two: the eligible call's own "+
+			"id", pairedID)
+	}
+	piRoute, err := targetRouteFor(TargetPi)
+	if err != nil {
+		t.Fatalf("route %s: %v", TargetPi, err)
+	}
+	session, err := piRoute.Convert(onPath, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("converting the eligible window to pi: %v", err)
+	}
+	pairedID = ""
+	for _, line := range decodePiSession(t, session.Data) {
+		if line.Message == nil || !strings.Contains(string(line.Message), answerText) {
+			continue
+		}
+		var message struct {
+			ToolCallID string `json:"toolCallId"`
+		}
+		if err := json.Unmarshal(line.Message, &message); err != nil {
+			t.Fatalf("decoding the Pi result entry: %v", err)
+		}
+		pairedID = message.ToolCallID
+	}
+	if pairedID != "toolu_two" {
+		t.Errorf("the Pi result entry answers %q, want toolu_two: the eligible call's own id", pairedID)
+	}
+	rollout, err := ConvertToCodexRollout(onPath, CodexTargetOptions{CLIVersion: "selection-test-0.0"})
+	if err != nil {
+		t.Fatalf("converting the eligible window to codex: %v", err)
+	}
+	pairedID = ""
+	for _, line := range decodeRollout(t, rollout.Data) {
+		if payloadField(t, line, "type") == "function_call_output" {
+			pairedID = payloadField(t, line, "call_id")
+		}
+	}
+	if pairedID != "toolu_two" {
+		t.Errorf("the rollout's function_call_output answers %q, want toolu_two: the eligible call's own "+
+			"id", pairedID)
+	}
+}
+
+// TestUnflaggedFlatConversionKeepsTheIDAcceptance pins the same scoping on the two line targets (and the
+// shape that measures it): the read's own pairing names an off-line occurrence for the result -- so a
+// reduced document omits the result and counts it -- while a call occurrence sharing the id stands on the
+// line the unflagged walk writes. The shape is the one the line walk can produce and the readers can
+// record: record 6 (the occurrence the id's file order names) hangs off record 5 while the walk from the
+// read's last record steps 7 → 5 → 3 → 2 → 0, and record 3's recorded parent is an identity this read
+// does not hold, so the walk takes the record before it exactly as the writers' own line rule does. The
+// unflagged conversion keeps the acceptance the flat writers have always had -- some written call stands
+// under the id -- so the result travels (goal 0009's D4: the default path is byte-identical to the same
+// run before selections existed); the selection-scoped disposition is what a reduced document asks.
+func TestUnflaggedFlatConversionKeepsTheIDAcceptance(t *testing.T) {
+	const callID = "toolu_offline_occurrence"
+	const resultText = "the read output"
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "start", Dialogue: "start", SourceUUID: "n0"},
+		Message{Ordinal: 1, Role: "assistant", Content: "skipped one", Dialogue: "skipped one",
+			SourceUUID: "n1", SourceParentUUID: "n0"},
+		Message{Ordinal: 2, Role: "assistant", Content: "the call", Dialogue: "the call",
+			SourceUUID: "n2", SourceParentUUID: "n0",
+			ToolCalls: []ToolCall{{ToolUseID: callID, Name: "Bash", InputJSON: `{"command":"one"}`}}},
+		// The record whose recorded parent this read does not hold: the line walk steps to the record
+		// before it, which is what keeps records 1 and 4 off the line.
+		Message{Ordinal: 3, Role: "assistant", Content: "the step", Dialogue: "the step",
+			SourceUUID: "n3", SourceParentUUID: "not-in-this-read"},
+		Message{Ordinal: 4, Role: "assistant", Content: "skipped two", Dialogue: "skipped two",
+			SourceUUID: "n4", SourceParentUUID: "n3"},
+		Message{Ordinal: 5, Role: "assistant", Content: "the mid", Dialogue: "the mid",
+			SourceUUID: "n5", SourceParentUUID: "n3"},
+		// The occurrence the id's file order names for the result: off the walk 7 → 5 → 3 → 2 → 0.
+		Message{Ordinal: 6, Role: "assistant", Content: "the later call", Dialogue: "the later call",
+			SourceUUID: "n6", SourceParentUUID: "n5",
+			ToolCalls: []ToolCall{{ToolUseID: callID, Name: "Bash", InputJSON: `{"command":"two"}`}}},
+		Message{Ordinal: 7, Role: "user", Content: "the ask", Dialogue: "the ask",
+			SourceUUID: "n7", SourceParentUUID: "n5",
+			ToolResults: []ToolResult{{ToolUseID: callID, ContentRaw: resultText,
+				ContentSize: len(resultText)}}},
+	)
+	for _, target := range []string{TargetCodex, TargetOpenCode, TargetClaude, TargetPi, TargetOMP} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(conversation, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the read without a selection: %v", target, err)
+		}
+		if !strings.Contains(string(converted.Data), resultText) {
+			t.Errorf("%s: the unflagged conversion drops the result: the read's pairing names an "+
+				"off-line occurrence, but the default path's acceptance is the id a written call shares",
+				target)
+		}
+		if converted.Carried.ToolResults != 1 {
+			t.Errorf("%s: unflagged carried = %+v, want the result carried as before the selection "+
+				"existed", target, converted.Carried)
+		}
+		// The line targets write the one call the walk reaches; the trees also write the off-line
+		// occurrence as recorded history, and neither writer reads the pairing to decide the result.
+		wantCalls := 2
+		if target == TargetCodex || target == TargetOpenCode {
+			wantCalls = 1
+		}
+		if converted.Carried.ToolCalls != wantCalls {
+			t.Errorf("%s: unflagged carried = %+v, want %d call(s)", target, converted.Carried, wantCalls)
+		}
+		if count := lossCount(t, converted.Losses, "unpaired_tool_results").Count; count != 0 {
+			t.Errorf("%s: unflagged unpaired_tool_results = %d, want 0", target, count)
+		}
+	}
+	selected, _, err := Select(conversation, "0-", false)
+	if err != nil {
+		t.Fatalf("selecting the whole read: %v", err)
+	}
+	for _, target := range []string{TargetCodex, TargetOpenCode, TargetClaude, TargetPi, TargetOMP} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(selected, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the selection: %v", target, err)
+		}
+		if strings.Contains(string(converted.Data), resultText) {
+			t.Errorf("%s: the reduced document writes the result under the id of an occurrence the "+
+				"read's pairing does not name", target)
+		}
+		if count := lossCount(t, converted.Losses, "unpaired_tool_results").Count; count != 1 {
+			t.Errorf("%s: unpaired_tool_results = %d, want the one result whose paired occurrence the "+
+				"reduction does not carry on its line", target, count)
+		}
+	}
+}
+
+// TestSelectRefusesADocumentASelectionProduced pins the guard against reducing a reduction. The Pi
+// history fixture's ordinals 2-4 stand off the line its last record answers, so a selection that carries
+// 0-4 carries them as recorded history off the read's line, and the writers keep counting them inactive.
+// A second selection over that reduced document would re-measure the line from its own last record --
+// ordinal 4, now the walk's end -- and hand the writers a document whose branch is active again, which is
+// exactly the revival the carried line answers exist to prevent. The refusal is by name and is answered
+// before any specification is read; the document it was handed is left as it was, and the read itself was
+// never rewritten, so the caller applies the specification to the read.
+func TestSelectRefusesADocumentASelectionProduced(t *testing.T) {
+	conversation, err := NewSourceReader(fixtureConfig(t)).Read(context.Background(), piHistoryFixtureRef)
+	if err != nil {
+		t.Fatalf("reading the history fixture: %v", err)
+	}
+	selected, _, err := Select(conversation, "0-4", false)
+	if err != nil {
+		t.Fatalf("selecting 0-4: %v", err)
+	}
+	want := []bool{false, false, true, true, true}
+	if !reflect.DeepEqual(selected.sourceLineInactive, want) {
+		t.Fatalf("the first selection's line flags = %v, want %v: the fixture's ordinals 2-4 stand off "+
+			"the line its last record answers", selected.sourceLineInactive, want)
+	}
+	rollout, err := ConvertToCodexRollout(selected, CodexTargetOptions{CLIVersion: "selection-test-0.0"})
+	if err != nil {
+		t.Fatalf("converting the window: %v", err)
+	}
+	if count := lossCount(t, rollout.Losses, "inactive_branch_records").Count; count != 3 {
+		t.Fatalf("the window's inactive_branch_records = %d, want the three records the read's line "+
+			"leaves off it: the reduced document still carries the read's own line", count)
+	}
+	for _, strict := range []bool{false, true} {
+		if _, _, err := Select(selected, "0-4", strict); !errors.Is(err, ErrSelectionReduced) {
+			t.Errorf("selecting the reduction (strict=%v) = %v, want ErrSelectionReduced", strict, err)
+		}
+	}
+	if _, _, err := Select(selected, "", false); !errors.Is(err, ErrSelectionReduced) {
+		t.Errorf("selecting the reduction with an empty specification = %v, want ErrSelectionReduced: "+
+			"the input's own refusal is answered before any specification is read", err)
+	}
+	if len(selected.Messages) != 5 || !reflect.DeepEqual(selected.sourceLineInactive, want) {
+		t.Errorf("the refused call changed the document it was handed: %d message(s), line flags %v",
+			len(selected.Messages), selected.sourceLineInactive)
 	}
 }
 

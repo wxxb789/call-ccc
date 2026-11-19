@@ -3035,3 +3035,59 @@ supersede it with a newer one and say which it supersedes.
 - **Settled by:** an operator decision between "publish the representable remainder and name the
   omission" and "refuse the whole run by name" — the same question the tree targets answer the other way
   for a leaf the target's own loader would not reach.
+
+## Q-0009-07 — A selection over a selection is refused, not composed
+
+- **Status:** open (default taken: refused by name, `ErrSelectionReduced`, before any specification is
+  read). The sixth review round's finding 5 measured the alternative: applying `Select` twice to the
+  committed Pi history fixture recomputed the line from the window's own last record, so a window that
+  carried ordinals 2-4 as history *off* the read's line came back with those records active — the branch
+  revival the carried line answers exist to prevent (the second `Select` is a pure function of its input,
+  and its input's last record had become the walk's end).
+- **Question:** may the core compose selections — `Select(Select(read, "0-4"), "1")` — or is one
+  reduction per read the rule?
+- **Default taken:** refused. The per-record line answer, the nearest-retained-ancestor answers and the
+  seam's pairing are the read's own, keyed to the read's records and the walk its loader makes; nothing in
+  the reduced document tells a second reduction which deeper ancestor the first answer skipped, so
+  composing would either guess or re-derive the line from the window. The read is never rewritten, so a
+  caller that wants a different window applies the specification to the read. `Select` answers the
+  refusal as the input's own (before the specification is read, since no specification can be honoured),
+  and `TestSelectRefusesADocumentASelectionProduced` pins it (both strict arms, the empty specification,
+  and the handed document unchanged).
+- **Reversal:** `Select` instead *preserves* the answers across a second reduction — carrying
+  `sourceLineInactive` and the ancestor answers (walking the input's own answer chain where the first
+  ancestor is dropped) — or returns the input unchanged for a specification that carries everything. The
+  refused call becomes a supported composition, and the test above is rewritten to assert the composed
+  document's answers.
+- **Settled by:** an operator decision between "one reduction per read, refused by name" and "selections
+  compose, with the first reduction's answers carried through".
+
+## Q-0009-08 — A reduced document's report carries the coalesced-projection category; the default path's does not
+
+- **Status:** open (default taken: the Codex writer reports `coalesced_tool_call_projections` only on a
+  document a selection produced). Coalescing the reader's per-file `apply_patch` projections into one
+  `function_call` (the sixth review round's finding 3) is a *loss* the other four writers report on every
+  run; adding the category to the Codex writer's fixed report list unconditionally would put a zero-count
+  row in every codex report, and the D4 probe digests the whole report — the default path would no longer
+  be byte-identical (§4). The row is therefore carried only where the coalescing can act, and a run
+  without a selection keeps its own category list (its report is the pre-selection one, field for field).
+  The whole-read-selection comparison moved with it: a specification naming every record carries the same
+  records the unflagged run carries, and its report holds the unflagged run's rows *plus* that one
+  reduction-owned row — `cmd/ccc`'s case asserts exactly that ("the unflagged rows plus
+  `coalesced_tool_call_projections`"), the `S2-default`/`S2-units-codex` rows cite the Go cases, and §4's
+  probe is silent because the unflagged arm never takes the branch.
+- **Question:** should a writer's report vocabulary be one list on every run (the completeness rule
+  `lossCount` states: every category, zero counts included), or may a category that names a transformation
+  only a reduction can cause exist only on the runs where it can act?
+- **Default taken:** the category is reduction-only. D4's byte-identity (which the probe measures over the
+  whole report, not only the written file) is the harder rule, and the completeness rule holds *within*
+  each path: a reduced document's report always names the category (zero or more folded rows), and the
+  default path's report is its own unchanged list. The alternative — an unconditional zero row — was
+  measured and rejected: it moves every codex report digest by the row's folded 450 bytes on all twelve
+  documents the probe compares, which is exactly the D4 break the review's first finding is about.
+- **Reversal:** the row becomes unconditional and the D4 probe's `report` lines move with it (the
+  default-path claim would have to be restated as "the conversion, not the report"), or the count moves to
+  a non-loss surface the probe does not digest (rejected: it would leave the folded rows unnamed where
+  they happen).
+- **Settled by:** an operator decision between "one report vocabulary for every run" and "the default
+  path's report is byte-identical, and reduction-only categories say so".

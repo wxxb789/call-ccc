@@ -378,8 +378,8 @@ measurement that decided it, followed by the review round's own:
       normalizes only what a conversion discovers (the checkout root, scratch paths, the source file's
       filesystem mtime) plus the identity canonicalization, and carries `d4ProbeNormalizerControl`, whose
       printed lines show a recorded-instant change moving the digest and a minted-identity change not.
-      §4's transcript is that revision's own run; the two trees' shared 1024 lines are byte-identical with
-      recorded instants compared.
+      that revision's own run; the two trees' shared 1024 lines are byte-identical with
+      recorded instants compared (the sixth round's revision prints 1109).
     * the **D3 pins** (reviews R-25, R-26): the closure cases exercised isolated pairs and the strict case
       checked neither ordinal, so a one-pass closure and a refusal with swapped ordinals would both have
       passed. `TestSelectionClosesTheCounterpartGraphToAFixedPoint` needs a *backward* two-hop pull (a
@@ -429,5 +429,44 @@ measurement that decided it, followed by the review round's own:
       rename of a recorded Codex `call_id` preserved the written length and the folded digest — the probe
       could not see it. Each document's recorded identities (`d4ProbeRecordedIDs`) are installed on the
       normalizer and left as recorded, and two controls (`recorded-call-id-change`,
-      `recorded-uuid-change`) pin it; §4's transcript is the revised probe's own run (1024/1149/125 lines
-      unchanged, shared diff silent, the recorded-id-removal mutation failing the control).
+      `recorded-uuid-change`) pin it; that revision's own run is §4's predecessor (1024/1149/125 lines,
+      shared diff silent, the recorded-id-removal mutation failing the control), and the sixth round's
+      revision moves §4's counts to 1109/1234.
+
+    The sixth review round (`812fec9`; three P1, two P2 — the default path moving with a
+    reduction-scoped rule, the id-less inference placing a result off its walk, the Codex writer emitting
+    two invocations for one projected call, the result's tool name coming from a reused id's later
+    sibling, and a second `Select` reviving an abandoned branch) leaves six departures:
+
+    * the **reduction-scoped disposition is explicit** (review 1/5, a P1): the written-ancestry
+      acceptance of the round-5 fix acted on *every* run, so a read whose pairing names a call the
+      result's own written ancestry does not reach lost the result where the base writer kept it — a D4
+      break the committed fixtures did not cover. `Conversation.selectionReduced()` is the signal the
+      writers ask, the default path keeps the id acceptance each writer always had
+      (`resultCallWritten`/`pairedCallEntry`), and the D4 probe gains the off-path case: §4's shared diff
+      is silent over 1109 lines including it, while the mutation that removes the scoping moves exactly
+      that case's 36 lines.
+    * the **id-less inference reads the result's written path** (review 2/5, a P1): with the window's
+      last outstanding call standing on another branch, the writer inferred the id-less result onto it
+      and wrote an output whose invocation the resumed context cannot see (the file-wide outstanding set
+      held it because the *tree* writes off-line records as history). `soleResultCall` restricts the
+      candidates to the calls that stand on the walk the result's record hangs off
+      (`sourceTree.recordOnWrittenPath`), and `TestSelectionInfersAnIdLessResultOnlyToACallOnItsWrittenPath`
+      pins both arms (no eligible call → omitted and counted; exactly one → the entry states its id).
+    * the **selected Codex conversion writes the invocation unit once** (review 3/5, a P1): two
+      `function_call` records shared one id for one reported call. `projectedCalls` folds a message's
+      rows sharing an id on a reduced document (counting them under `coalesced_tool_call_projections`,
+      a category the default path's report does not carry — `Q-0009-08`), and the test asserts the one
+      call, the one output and both runs' row counts.
+    * the **result's tool name comes from the paired occurrence** (review 4/5, a P2): Pi/OMP's file-wide
+      name map answered with the last write for the reused id, so a window's result could state the
+      inactive sibling's tool. `writtenCalls` keys the name by occurrence, and the extended
+      `TestSelectionKeepsTheReadsPairingWhenTheWindowBreaksItsAncestry` gives the sibling a different
+      name and asserts the serialized entry's.
+    * a **selection over a selection is refused** (review 5/5, a P2): `ErrSelectionReduced` answers
+      before any specification is read, `TestSelectRefusesADocumentASelectionProduced` pins the three
+      arms, and `Q-0009-07` records the default and its reversal.
+    * the **D4 probe compares a case the fixture set lacked** (review 1/5, the second half): the retained
+      revision materializes the off-path transcript at run time (`d4ProbeOffPathTranscript`) so both
+      trees read identical records for it, and §4's numbers move to 1109/1234 with the 125-line
+      increment fixture unchanged.

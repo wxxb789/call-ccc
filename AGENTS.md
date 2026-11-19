@@ -277,7 +277,9 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   the counterpart and names it as a
   necessity with the ordinal that pulled it in (both directions, to a fixed point, since a counterpart can
   hold another call's result), while `--strict-selection` refuses that
-  by name before anything is installed instead. The writers write that pairing rather than an id match: on
+  by name before anything is installed instead. The writers write that pairing rather than an id match, and
+  the disposition is the reduction's — a run without a selection keeps the acceptance its writers always
+  had, so the default path's bytes and its whole report stay what they were (D4): on
   a flat target, whose document is one line and where a call the read's line leaves off it is not written
   at all, a result whose paired *occurrence* was not written is omitted and counted
   (`unpaired_tool_results`) instead of being accepted because some older call shares its id — a result
@@ -285,18 +287,22 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   whose document is a tree, the paired occurrence has to stand on the result's own written ancestry — a
   tool result under a call that is not on the walk the target's loader makes from it is the same
   invocation the source never placed there, so it is omitted and counted the same way, while the call
-  itself still travels as recorded history where the window carries it. A reused id does not
+  itself still travels as recorded history where the window carries it; and a result's record states the
+  tool name of the occurrence the read paired it with, not the last write for a reused id. A reused id does not
   expand a selection by id alone: a
   later call with no recorded result of its own carries nothing but itself and is counted undischarged,
   and the count reads the call the way the writers write it — a message's calls sharing a non-empty id are
   one invocation the reader projected into several rows (the inherited Codex reader expands one
   `apply_patch` into one call per file it names), so one recorded outcome discharges the invocation and the
-  extra rows are not extra calls — from the *same* walk that pairs the seam (a second outcome does not
+  extra rows are not extra calls — and a reduced document's Codex writer writes that unit as one
+  `function_call` (the folded rows counted `coalesced_tool_call_projections`, a category the default
+  path's report does not carry) — from the *same* walk that pairs the seam (a second outcome does not
   retroactively answer a call the pairing left unanswered). A
   record the source recorded with **no** id carries no
   recorded link: the seam neither invents one nor carries candidates for it, and the writer's own rule for
-  an id-less result (the sole outstanding call in the line it wrote, disclosed as `generated_call_ids`)
-  reads the selected line; an id-less *call* is counted undischarged where the carried document holds no
+  an id-less result (the sole outstanding call in the line it wrote — in a reduced document, the sole
+  outstanding call that stands on the written walk of the result's record — disclosed as
+  `generated_call_ids`) reads the selected line; an id-less *call* is counted undischarged where the carried document holds no
   id-less result that states an outcome at or after it — no outcome in the line can answer it — and where
   such a result is
   carried the call is left to that same disclosed inference instead of being read as answered or as
@@ -328,7 +334,10 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   already names (answered by the specification's own grammar, before any read is opened, so a missing or
   unreadable source cannot mask it as a source failure), a value the caller supplied **empty** (an unset
   variable expanded into `--select "$SPEC"` is a refused request, never read as the flag's absence: an
-  automation's empty variable must not publish the whole history), and the strict refusal — each answered
+  automation's empty variable must not publish the whole history), a document a selection already produced
+  (`ErrSelectionReduced`: the line, ancestry and pairing answers a selection carries are the read's own
+  and cannot be re-derived from the window, and the read itself is never rewritten), and the strict
+  refusal — each answered
   as the specification's own refusal even where the source would also refuse the conversion (the
   Pi-family source-side leaf guard asks about the source file's own bytes, and a command line the read's
   ordinals refuse is answered first, with the usage exit code). The report names the

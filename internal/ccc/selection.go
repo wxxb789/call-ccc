@@ -22,6 +22,18 @@ var ErrBadSelection = errors.New("the selection cannot be honoured")
 var ErrStrictSelection = errors.New(
 	"the selection separates a recorded tool call from its recorded result")
 
+// ErrSelectionReduced reports a selection asked to reduce a conversation a selection already produced:
+// the per-record line answer, the ancestry answers and the pairing a selection carries are the read's
+// own -- keyed to the read's records and to the walk its loader makes -- and a second reduction could
+// only re-derive them from the window, which is exactly how a window would revive a branch the first
+// selection left off the line (the line is measured over the read, before the document is reduced). The
+// refusal is the input's own and is answered before any specification is read, because the
+// specification cannot be honoured however well-formed it is; the caller's move is to apply it to the
+// read, which a selection never rewrites.
+var ErrSelectionReduced = errors.New(
+	"a selection cannot reduce a document a selection produced: its line, ancestry and pairing answers " +
+		"are the read's own and cannot be re-derived from the window; apply the specification to the read")
+
 // OrdinalSpace is the space a selection spec is written against and a refusal names: the ordinal values
 // the read itself supplied, which are the source's own numbering as the read preserved it rather than a
 // position in the read (a reader that assigns a serial counter produces 0..n-1, while one that preserves
@@ -144,7 +156,16 @@ func emptySelectionRefusal() error {
 // The pairing the read answered travels with the reduced document (Conversation.sourceResultPairs), so a
 // writer asking about a carried result cannot be answered by a nearer occurrence the window happened to
 // carry in place of the call the read named.
+//
+// A conversation a selection already produced is refused by name (ErrSelectionReduced), before any
+// specification is read: the answers such a document carries are the read's own, and a second reduction
+// would have to re-derive the line and the ancestry from the window -- which is how a window that ends
+// on a branch would revive it. The read itself is never rewritten, so the caller applies the
+// specification to the read.
 func Select(conversation Conversation, spec string, strict bool) (Conversation, SelectionReport, error) {
+	if conversation.selectionReduced() {
+		return Conversation{}, SelectionReport{}, ErrSelectionReduced
+	}
 	trimmed := strings.TrimSpace(spec)
 	if trimmed == "" {
 		return Conversation{}, SelectionReport{}, emptySelectionRefusal()

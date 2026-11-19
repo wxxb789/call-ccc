@@ -49,6 +49,7 @@ import (
 	"time"
 
 	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/parser"
 )
 
 // d4ProbeNow is the conversion instant every run is stamped with, so the writers' clocks are a function
@@ -60,6 +61,34 @@ type d4ProbeDocument struct {
 	name     string
 	ref      Ref
 	openCode bool
+	// offPath says this document is the probe's own synthetic transcript rather than a committed fixture:
+	// the round-5 review's finding 1 shape, materialized at run time (below) so the pre-0009 tree the
+	// probe is also run on reads the identical records.
+	offPath bool
+}
+
+// d4ProbeOffPathSessionID is the synthetic transcript's session id, and d4ProbeOffPathTranscript its
+// bytes. The shape is the one the review measured: a branch call whose record the read's own line leaves
+// off it (the walk from the last record steps 5 → 4 → 3 → 2 → 0), an active line, and a result whose
+// recorded parent chain records no such call -- so the seam's pairing answers the nearest prior
+// occurrence, the branch call, and the tree writers' pre-0009 id acceptance wrote the result under it
+// while a written-ancestry rule drops it. The last record deliberately carries no uuid: the inherited
+// Claude reader walks the parent DAG from the tip when *every* entry carries one, which would drop the
+// branch record from the read altogether (measured), and the case needs a read that carries the branch
+// as history off the line, which is what the reader's linear arm produces. The probe carries the case
+// for both arms: the finding is that the *default* path may not change, and the fixture set alone did not
+// cover this input.
+const d4ProbeOffPathSessionID = "4d1b7c2e-8a3f-4c11-9b6d-0e5f7a2c8d31"
+
+func d4ProbeOffPathTranscript() []byte {
+	const id = d4ProbeOffPathSessionID
+	return []byte(`{"cwd":"/work/project","message":{"content":"start"},"parentUuid":null,"sessionId":"` + id + `","timestamp":"2026-05-06T10:00:00.000Z","type":"user","uuid":"d4000000-0000-4000-8000-000000000001","version":"d4-probe"}
+{"message":{"content":[{"id":"toolu_d4OffPath00000000000001","input":{"command":"branch"},"name":"Bash","type":"tool_use"}]},"parentUuid":"d4000000-0000-4000-8000-000000000001","sessionId":"` + id + `","timestamp":"2026-05-06T10:00:01.000Z","type":"assistant","uuid":"d4000000-0000-4000-8000-000000000002","version":"d4-probe"}
+{"message":{"content":[{"text":"the active turn","type":"text"}]},"parentUuid":"d4000000-0000-4000-8000-000000000001","sessionId":"` + id + `","timestamp":"2026-05-06T10:00:02.000Z","type":"assistant","uuid":"d4000000-0000-4000-8000-000000000003","version":"d4-probe"}
+{"message":{"content":"the ask"},"parentUuid":"d4000000-0000-4000-8000-000000000003","sessionId":"` + id + `","timestamp":"2026-05-06T10:00:03.000Z","type":"user","uuid":"d4000000-0000-4000-8000-000000000004","version":"d4-probe"}
+{"message":{"content":[{"content":"the branch call's own output","tool_use_id":"toolu_d4OffPath00000000000001","type":"tool_result"}]},"parentUuid":"d4000000-0000-4000-8000-000000000004","sessionId":"` + id + `","timestamp":"2026-05-06T10:00:04.000Z","type":"user","uuid":"d4000000-0000-4000-8000-000000000005","version":"d4-probe"}
+{"message":{"content":"thanks"},"sessionId":"` + id + `","timestamp":"2026-05-06T10:00:05.000Z","type":"user","version":"d4-probe"}
+`)
 }
 
 // d4ProbeRepoRoot answers the working tree's own root, so paths inside it can be folded away.
@@ -112,6 +141,13 @@ func d4ProbeDocuments(t *testing.T) []d4ProbeDocument {
 		ref:      openCodeSourceFixtureRef,
 		openCode: true,
 	})
+	// The round-5 review's finding 1 case: the input the committed fixtures do not cover, carried as a
+	// materialized transcript so both trees read identical records.
+	docs = append(docs, d4ProbeDocument{
+		name:    "claude:off-path-" + d4ProbeOffPathSessionID,
+		ref:     Ref{Provider: "claude", ID: d4ProbeOffPathSessionID},
+		offPath: true,
+	})
 	sort.Slice(docs, func(i, j int) bool { return docs[i].name < docs[j].name })
 	return docs
 }
@@ -126,6 +162,20 @@ func d4ProbeRead(t *testing.T, doc d4ProbeDocument) (Conversation, config.Config
 		return readOpenCodeSourceFixture(t, root), cfg, NewSourceReader(cfg)
 	}
 	cfg := fixtureConfig(t)
+	if doc.offPath {
+		// The synthetic transcript is materialized in the layout the Claude provider discovers: the
+		// session file under the project directory its recorded cwd spells, which is what the committed
+		// fixtures' own root carries.
+		root := filepath.Join(t.TempDir(), "claude")
+		project := filepath.Join(root, ClaudeProjectDir("/work/project"))
+		if err := os.MkdirAll(project, 0o755); err != nil {
+			t.Fatalf("materializing %s: %v", doc.name, err)
+		}
+		if err := os.WriteFile(filepath.Join(project, doc.ref.ID+".jsonl"), d4ProbeOffPathTranscript(), 0o644); err != nil {
+			t.Fatalf("materializing %s: %v", doc.name, err)
+		}
+		cfg.AgentDirs[parser.AgentClaude] = []string{root}
+	}
 	reader := NewSourceReader(cfg)
 	conversation, err := reader.Read(context.Background(), doc.ref)
 	if err != nil {

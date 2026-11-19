@@ -455,18 +455,20 @@ func convertToPiFamilySession(conv Conversation, opts PiTargetOptions, family pi
 		startedAt = time.Unix(0, 0).UTC()
 	}
 	builder := &piSessionBuilder{
-		sessionID:       sessionID,
-		cwd:             conv.Source.Cwd,
-		cliVersion:      cliVersion,
-		shape:           family.Shape,
-		opts:            opts,
-		clock:           newEntryClock(startedAt, piEntryTimestampLayout),
-		headerTimestamp: startedAt.UTC().Format(piEntryTimestampLayout),
-		callNames:       map[string]string{},
-		pairings:        pairedCallOccurrences(conv),
-		ledger:          ledger{pendingCalls: map[string]struct{}{}},
-		sourceFidelity:  conv.Fidelity,
-		tree:            newSourceTree(conv),
+		sessionID:        sessionID,
+		cwd:              conv.Source.Cwd,
+		cliVersion:       cliVersion,
+		shape:            family.Shape,
+		opts:             opts,
+		clock:            newEntryClock(startedAt, piEntryTimestampLayout),
+		headerTimestamp:  startedAt.UTC().Format(piEntryTimestampLayout),
+		callNames:        map[string]string{},
+		writtenCalls:     map[callOccurrence]piWrittenCall{},
+		selectionReduced: conv.selectionReduced(),
+		pairings:         pairedCallOccurrences(conv),
+		ledger:           ledger{pendingCalls: map[string]struct{}{}},
+		sourceFidelity:   conv.Fidelity,
+		tree:             newSourceTree(conv),
 	}
 	builder.writePreamble()
 	builder.writeConversation(conv)
@@ -527,10 +529,19 @@ type piSessionBuilder struct {
 	items      []TargetItem
 	idErr      error
 	callNames  map[string]string
+	// writtenCalls names each call occurrence this walk wrote, with the id and name it was written under.
+	// A reduced document's result record states the name of the occurrence the read paired the result
+	// with: callNames is keyed by id and the last write wins, so a reused id's later occurrence -- the
+	// inactive sibling a window may carry as history -- would otherwise supply its name.
+	writtenCalls map[callOccurrence]piWrittenCall
+	// selectionReduced says the document this conversion walks is one Select produced
+	// (Conversation.selectionReduced): the written-ancestry acceptance, the path-restricted inference and
+	// the occurrence-keyed name exist for the reduction, and an unflagged run keeps the earlier answers.
+	selectionReduced bool
 	// pairings answers, per recorded result occurrence of the document this conversion walks, the call
 	// occurrence the seam's own pairing names for it (pairedCallOccurrences, or the answers the selection
-	// carried beside the reduced document). This family's files are trees, so the check a result has to
-	// pass is the written one (sourceTree.recordOnWrittenPath): the paired occurrence has to stand on the
+	// carried beside the reduced document). A document a selection produced checks that occurrence against
+	// the written walk (sourceTree.recordOnWrittenPath): the paired occurrence has to stand on the
 	// result's own written ancestry, or the file would hold a toolResult whose invocation is off the walk
 	// a resumed session makes.
 	pairings map[resultOccurrence]callOccurrence
@@ -1125,10 +1136,85 @@ func (b *piSessionBuilder) callBlock(index int, call ToolCall) piContentBlock {
 		b.lossSubagentLinks++
 	}
 	b.callNames[callID] = name
+	b.writtenCalls[callOccurrence{message: b.tree.record, call: index}] = piWrittenCall{id: callID, name: name}
 	b.pendingCalls[callID] = struct{}{}
 	b.carried.ToolCalls++
 	b.items = append(b.items, TargetItem{Kind: ItemToolCall, CallID: callID, ToolName: name, InputJSON: arguments})
 	return piContentBlock{Type: piBlockToolCall, ID: callID, Name: name, Arguments: json.RawMessage(arguments)}
+}
+
+// piWrittenCall is one call occurrence this writer has written: the id it stands under and the name it
+// was written with, keyed by the call's own occurrence in the document. A result under a reused id needs
+// the name of the occurrence it answers, which the file-wide name map cannot give (it holds the last
+// write for the id).
+type piWrittenCall struct {
+	id   string
+	name string
+}
+
+// resultCallWritten answers whether a recorded result that names a call may be written under that call's
+// id. A document a selection produced asks the seam's own pairing: the call occurrence the read answers
+// for the result has to stand on the result's own written ancestry (sourceTree.recordOnWrittenPath), or
+// the file would hold a toolResult whose invocation is off the walk a resumed session makes -- the
+// reduction's window is what can leave the paired call off that walk, and accepting the id because some
+// other written call shares it would present this result as that call's outcome. A conversation the read
+// returned asks the question this writer has always asked -- whether any written call stands under the
+// id -- so a run without a selection is byte-identical to the same run before selections existed (goal
+// 0009's D4).
+func (b *piSessionBuilder) resultCallWritten(paired *callOccurrence, callID string) bool {
+	if b.selectionReduced {
+		return paired != nil && b.tree.recordOnWrittenPath(paired.message)
+	}
+	_, ok := b.callNames[callID]
+	return ok
+}
+
+// soleResultCall answers the call an id-less result may be paired with, with the name its result record
+// states, and whether there is exactly one such call. A conversation the read returned asks the ledger's
+// own question -- the one call still outstanding anywhere in the walk. A document a selection produced
+// asks the narrower one: the sole call that is outstanding *and* stands on the written walk of the
+// result's record (sourceTree.recordOnWrittenPath). This family's files hold the records the read's line
+// leaves off it as recorded history, so the outstanding set can include a call on another branch;
+// inferring the result onto such a call would write an outcome whose invocation the resumed context
+// cannot see, and `generated_call_ids` discloses the inference rather than a placement. The inference
+// picks no call where the eligible ones do not name exactly one id, and the result is omitted and
+// counted.
+func (b *piSessionBuilder) soleResultCall() (piWrittenCall, bool) {
+	if !b.selectionReduced {
+		id, ok := b.solePendingCall()
+		if !ok {
+			return piWrittenCall{}, false
+		}
+		return piWrittenCall{id: id, name: b.callNames[id]}, true
+	}
+	found := piWrittenCall{}
+	foundAny := false
+	for occurrence, written := range b.writtenCalls {
+		if _, pending := b.pendingCalls[written.id]; !pending {
+			continue
+		}
+		if !b.tree.recordOnWrittenPath(occurrence.message) {
+			continue
+		}
+		if foundAny && found.id != written.id {
+			return piWrittenCall{}, false
+		}
+		found, foundAny = written, true
+	}
+	return found, foundAny
+}
+
+// resultToolName answers the tool name a result record states for a result that names a call. A document
+// a selection produced takes it from the call occurrence the read paired the result with -- the
+// occurrence whose invocation the target's own walk reaches -- while the default path keeps the answer
+// its id map has always given (the last write for the id).
+func (b *piSessionBuilder) resultToolName(paired *callOccurrence, callID string) string {
+	if b.selectionReduced && paired != nil {
+		if written, ok := b.writtenCalls[*paired]; ok {
+			return written.name
+		}
+	}
+	return b.callNames[callID]
 }
 
 // writeToolResult writes one result as a toolResult entry, and answers whether it was written.
@@ -1140,24 +1226,22 @@ func (b *piSessionBuilder) callBlock(index int, call ToolCall) piContentBlock {
 func (b *piSessionBuilder) writeToolResult(paired *callOccurrence, result ToolResult, at time.Time, carrierRecord string) bool {
 	callID := strings.TrimSpace(result.ToolUseID)
 	resultIDInferred := false
+	toolName := ""
 	if callID == "" {
-		pending, ok := b.solePendingCall()
+		written, ok := b.soleResultCall()
 		if !ok {
 			b.lossUnpaired++
 			return false
 		}
-		callID = pending
+		callID, toolName = written.id, written.name
 		resultIDInferred = true
-	} else if paired == nil || !b.tree.recordOnWrittenPath(paired.message) {
-		// The result names a call, and the seam's own pairing answers which call occurrence it answers:
-		// that occurrence has to stand on the result's own written ancestry. It does not when the read's
-		// line leaves the call off it, when the reduced document a selection produced left the call or the
-		// records between them out, or when the record carrying the call brings no entry here -- this
-		// family's files are trees, and a toolResult written under a call that is not on the walk the
-		// loader makes from the result states an invocation the source never placed there. Accepting the
-		// id because *some* written call shares it would present this result as that call's outcome.
+	} else if !b.resultCallWritten(paired, callID) {
+		// The acceptance is resultCallWritten's own answer: the written ancestry the read's pairing names
+		// for a reduced document, and the id-existence check the default path has always asked.
 		b.lossUnpaired++
 		return false
+	} else {
+		toolName = b.resultToolName(paired, callID)
 	}
 	delete(b.pendingCalls, callID)
 	text, blocks := resultText(result)
@@ -1196,7 +1280,7 @@ func (b *piSessionBuilder) writeToolResult(paired *callOccurrence, result ToolRe
 		Role:       piRoleToolResult,
 		Content:    []piContentBlock{{Type: piBlockText, Text: text}},
 		ToolCallID: callID,
-		ToolName:   b.callNames[callID],
+		ToolName:   toolName,
 		Timestamp:  piMessageMillis(at),
 	}
 	if strings.TrimSpace(result.Status) != "" {

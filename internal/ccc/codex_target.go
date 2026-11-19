@@ -260,14 +260,16 @@ func ConvertToCodexRollout(conv Conversation, opts CodexTargetOptions) (CodexRol
 	}
 
 	builder := &codexRolloutBuilder{
-		sessionID:      sessionID,
-		cwd:            source.Cwd,
-		cliVersion:     cliVersion,
-		clock:          newEntryClock(startedAt, time.RFC3339Nano),
-		gitBranch:      source.GitBranch,
-		gitRemote:      source.GitRemote,
-		opts:           opts,
-		sourceFidelity: conv.Fidelity,
+		sessionID:        sessionID,
+		cwd:              source.Cwd,
+		cliVersion:       cliVersion,
+		clock:            newEntryClock(startedAt, time.RFC3339Nano),
+		gitBranch:        source.GitBranch,
+		gitRemote:        source.GitRemote,
+		callOwners:       map[string]struct{}{},
+		selectionReduced: conv.selectionReduced(),
+		opts:             opts,
+		sourceFidelity:   conv.Fidelity,
 	}
 	// One encoder writes every line: JSONL is one object per line, and the encoder's own newline is
 	// what separates them. HTML escaping is off because the target stores the conversation's text as it
@@ -328,13 +330,22 @@ type codexRolloutBuilder struct {
 	messageIndex int
 	// pairings answers, per recorded result occurrence of the document this conversion walks, the call
 	// occurrence the seam's own order pairs it with (pairedCallOccurrences), and writtenCalls names the
-	// call occurrences whose entries this walk wrote. This target's log is one line of records with no
-	// parent relation, so a call the walk leaves off the line is not in the file at all: a result whose
-	// paired occurrence is not written is omitted and counted (unpaired_tool_results) rather than written
-	// under an older call that happens to share its id, which would present this result as that call's
-	// outcome.
+	// call occurrences whose entries this walk wrote. A document a selection produced checks the paired
+	// occurrence against that set: this target's log is one line of records with no parent relation, so a
+	// call the walk leaves off the line is not in the file at all, and a result whose paired occurrence is
+	// not written is omitted and counted (unpaired_tool_results) rather than written under an older call
+	// that happens to share its id, which would present this result as that call's outcome.
 	pairings     map[resultOccurrence]callOccurrence
 	writtenCalls map[callOccurrence]bool
+	// callOwners names every call id this walk wrote, which is the acceptance a document that is not a
+	// selection's asks of a recorded result (resultCallWritten): the writer accepted a result when some
+	// written call shared the id, and that default path is byte-identical to the same run before
+	// selections existed (goal 0009's D4).
+	callOwners map[string]struct{}
+	// selectionReduced says the document this conversion walks is one Select produced
+	// (Conversation.selectionReduced): the paired-occurrence acceptance and the row coalescing
+	// (projectedCalls) exist for the reduction, and an unflagged run keeps the writer's earlier answers.
+	selectionReduced bool
 
 	// sourceFidelity is the completeness and the provider's own classification of the read itself.
 	// Lines the provider's reader could not turn into a message never reach this writer as evidence at
@@ -361,6 +372,7 @@ type codexRolloutBuilder struct {
 	lossPreBoundary         int
 	lossEmptyInputs         int
 	lossGeneratedIDs        int
+	lossCoalesced           int
 	lossSubagentLinks       int
 	lossResultFallbacks     int
 	lossResultInstants      int
@@ -577,15 +589,16 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 // target and dropping real evidence silently is what the report exists to prevent. A record with no
 // tool evidence contributes nothing here.
 func (b *codexRolloutBuilder) writeToolEvidence(message Message) {
-	for index, call := range message.ToolCalls {
-		b.toolCall(index, call, message.Timestamp)
+	calls := b.projectedCalls(message)
+	for _, entry := range calls {
+		b.toolCall(entry.index, entry.call, message.Timestamp)
 	}
 	for index, result := range message.ToolResults {
 		// The pairing the seam reads, keyed by the result's own place: a result with a recorded id
 		// answers the call occurrence the read's own ancestry establishes where it does, else the one the
 		// id records nearest before it, and none where the read holds no such occurrence. nil is passed
-		// for the latter, which the writer counts as an unpaired result unless the recorded id is empty
-		// and the sole outstanding call answers it below.
+		// for the latter, which resultCallWritten counts as an unpaired result on a reduced document
+		// unless the recorded id is empty and the sole outstanding call answers it below.
 		var paired *callOccurrence
 		if place, ok := b.pairings[resultOccurrence{message: b.messageIndex, result: index}]; ok {
 			paired = &place
@@ -595,12 +608,14 @@ func (b *codexRolloutBuilder) writeToolEvidence(message Message) {
 	// An archive read carries a call's outcome both as the result events the archive kept on the call
 	// and as the summary it holds in ResultContent. That summary is derived from those same events by
 	// the inherited write path (internal/db stores it only when it is not the sole content-bearing
-	// event's text, and restores it from that event when the column was cleared), so it is a view of
-	// the recorded evidence rather than another outcome recorded beside it -- writing it too would
-	// present a normalized display aggregate as a separately recorded tool output. Every event is
-	// written above; the summary is written only when the call has no recorded result of its own,
-	// where it is the only evidence the read holds of that outcome.
-	for index, call := range message.ToolCalls {
+	// event's text, and restores it from that event when the column was cleared), so beside them it is
+	// a view of the recorded evidence rather than another outcome recorded there -- writing it too would
+	// present a normalized display aggregate as a separately recorded tool output. Every row written
+	// above is walked here too (calls), so a coalesced projection's summary is not written twice; the
+	// summary is written only when the call has no recorded result of its own, where it is the only
+	// evidence the read holds of that outcome.
+	for _, entry := range calls {
+		call := entry.call
 		result, ok := derivedResultSummary(call, call.ToolUseID)
 		if !ok {
 			continue
@@ -608,11 +623,39 @@ func (b *codexRolloutBuilder) writeToolEvidence(message Message) {
 		if callHasRecordedResult(message.ToolResults, call.ToolUseID) {
 			continue
 		}
-		// The summary is the call's own evidence, so it is paired with the call the walk just wrote
-		// rather than with a document occurrence: there is no recorded result here.
-		place := callOccurrence{message: b.messageIndex, call: index}
+		// The summary is the call's own evidence, so it is paired with the call occurrence the walk just
+		// wrote rather than with a document occurrence: there is no recorded result here.
+		place := callOccurrence{message: b.messageIndex, call: entry.index}
 		b.toolResult(&place, result, message.Timestamp)
 	}
+}
+
+// codexProjectedCall is one call this writer writes, with the place it holds in its source message: the
+// occurrence the seam's pairing and writtenCalls are keyed by.
+type codexProjectedCall struct {
+	index int
+	call  ToolCall
+}
+
+// projectedCalls answers one record's calls as this conversion writes them. A document that is not a
+// selection's writes every row, exactly as it did before selections existed (goal 0009's D4). A document
+// a selection produced writes one row per invocation: the inherited Codex reader projects one
+// `apply_patch` into one call per file it names, every row sharing the call's id and input, and the
+// selection's own accounting already reads those rows as one call (distinctCalls) -- the committed patch
+// fixture is the measured shape. Writing every row here would put two function_call records with one id
+// and one output in the file for a single invocation the report counts once; the rows not written are
+// counted (coalesced_tool_call_projections).
+func (b *codexRolloutBuilder) projectedCalls(message Message) []codexProjectedCall {
+	if !b.selectionReduced {
+		calls := make([]codexProjectedCall, 0, len(message.ToolCalls))
+		for index, call := range message.ToolCalls {
+			calls = append(calls, codexProjectedCall{index: index, call: call})
+		}
+		return calls
+	}
+	return distinctCalls(message, func(index int, call ToolCall) codexProjectedCall {
+		return codexProjectedCall{index: index, call: call}
+	}, &b.lossCoalesced)
 }
 
 // derivedResultSummary answers the archive read's own summary of one call as the ToolResult a writer may
@@ -772,8 +815,10 @@ func (b *codexRolloutBuilder) toolCall(index int, call ToolCall, at time.Time) {
 		},
 	})
 	// The occurrence, not the id: a later result is paired by the read's own answer about *which* call
-	// occurrence it names, and this is the one whose entry stands here.
+	// occurrence it names, and this is the one whose entry stands here. The id set beside it is the
+	// acceptance a document that is not a selection's asks (resultCallWritten).
 	b.writtenCalls[callOccurrence{message: b.messageIndex, call: index}] = true
+	b.callOwners[callID] = struct{}{}
 	if b.pendingCalls == nil {
 		b.pendingCalls = map[string]struct{}{}
 	}
@@ -803,14 +848,9 @@ func (b *codexRolloutBuilder) toolResult(paired *callOccurrence, result ToolResu
 		}
 		callID = pending
 		resultIDInferred = true
-	} else if paired == nil || !b.writtenCalls[*paired] {
-		// The result names a call, and the seam's own order answers which call occurrence it answers:
-		// that occurrence's entry has to be in this file. It is not when the read's line leaves the call
-		// off it, when the selection left it out, or when the record carrying it brings no tool evidence
-		// here -- this target's log is one line, so such a call is not in the file at all. Accepting the
-		// id because some *written* call shares it would present this result as that call's outcome, an
-		// invocation the source never recorded; a result whose call preceded the source's boundary, or
-		// whose call is not in the read at all, is the same answer.
+	} else if !b.resultCallWritten(paired, callID) {
+		// The acceptance is resultCallWritten's own answer: the paired occurrence's written entry for a
+		// reduced document, and the id-existence check the default path has always asked.
 		b.lossUnpairedResults++
 		return
 	}
@@ -882,6 +922,23 @@ func (b *codexRolloutBuilder) toolResult(paired *callOccurrence, result ToolResu
 	})
 	b.carried.ToolResults++
 	b.items = append(b.items, TargetItem{Kind: ItemToolResult, CallID: callID, Text: text})
+}
+
+// resultCallWritten answers whether a recorded result that names a call may be written under that call's
+// id. A document a selection produced asks the seam's own order: the call occurrence the read answers for
+// the result has to have its entry in this file (writtenCalls). It does not when the read's line leaves
+// the call off it, when the selection left it out, or when the record carrying it brings no tool
+// evidence here -- this target's log is one line, so such a call is not in the file at all, and
+// accepting the id because some other written call shares it would present this result as that call's
+// outcome, an invocation the source never recorded. A conversation the read returned asks the question
+// this writer has always asked -- whether any written call stands under the id -- so a run without a
+// selection is byte-identical to the same run before selections existed (goal 0009's D4).
+func (b *codexRolloutBuilder) resultCallWritten(paired *callOccurrence, callID string) bool {
+	if b.selectionReduced {
+		return paired != nil && b.writtenCalls[*paired]
+	}
+	_, ok := b.callOwners[callID]
+	return ok
 }
 
 // codexUnestablishedOutcome is this route's own answer for a record whose dialogue was not established
@@ -991,7 +1048,7 @@ func (b *codexRolloutBuilder) losses() []Loss {
 	// word or count a state differently from another.
 	losses = append(losses, dialogueLossRows(b.lossUnresolvedDialogue, b.lossUnprojectedDialogue,
 		codexUnestablishedOutcome)...)
-	return append(losses, []Loss{
+	losses = append(losses, []Loss{
 		{
 			Category:    "whitespace_only_dialogue",
 			Disposition: DispositionOmitted,
@@ -1190,6 +1247,27 @@ func (b *codexRolloutBuilder) losses() []Loss {
 			Detail:      needsRetryDetail,
 		},
 	}...)
+	// The coalesced-projection category exists only where the coalescing can act. The writer's own
+	// completeness rule -- every category on every run -- would put a zero row in every codex report, and
+	// a run without a selection is byte-identical to the same run before selections existed (goal 0009's
+	// D4), whole report included: the row is therefore carried by a document a selection produced, whose
+	// reduction is the only thing that can drop a projected row, and an unflagged report keeps its own
+	// category list unchanged. The count is zero on a reduced document with no projected rows, so within
+	// the selection surface the completeness rule holds as the other writers' does.
+	if b.selectionReduced {
+		losses = append(losses, Loss{
+			Category:    "coalesced_tool_call_projections",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.lossCoalesced,
+			Detail: "the source read recorded these calls once for every file they touched (the " +
+				"inherited Codex reader projects one apply_patch into one call per file, every " +
+				"projection sharing the call's id and input); a document a selection produced writes " +
+				"one function_call per invocation -- the unit the selection's own accounting reads " +
+				"(distinctCalls), so one recorded output discharges it -- and what has no field is " +
+				"the per-file attribution of the projections not written",
+		})
+	}
+	return losses
 }
 
 // flagCount reports a state of the read or of the run as the count a loss entry carries: one entry when

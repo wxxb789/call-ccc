@@ -183,14 +183,17 @@ func ConvertToClaudeTranscript(conv Conversation, opts ClaudeTargetOptions) (Cla
 	}
 
 	builder := &claudeTranscriptBuilder{
-		sessionID:      sessionID,
-		cwd:            cwd,
-		cliVersion:     cliVersion,
-		clock:          newEntryClock(startedAt, time.RFC3339Nano),
-		pairings:       pairedCallOccurrences(conv),
-		opts:           opts,
-		sourceFidelity: conv.Fidelity,
-		tree:           newSourceTree(conv),
+		sessionID:        sessionID,
+		cwd:              cwd,
+		cliVersion:       cliVersion,
+		clock:            newEntryClock(startedAt, time.RFC3339Nano),
+		pairings:         pairedCallOccurrences(conv),
+		callOwners:       map[string]struct{}{},
+		callPlaces:       map[callOccurrence]string{},
+		selectionReduced: conv.selectionReduced(),
+		opts:             opts,
+		sourceFidelity:   conv.Fidelity,
+		tree:             newSourceTree(conv),
 	}
 	builder.encoder = json.NewEncoder(&builder.buffer)
 	builder.encoder.SetEscapeHTML(false)
@@ -271,11 +274,24 @@ type claudeTranscriptBuilder struct {
 	carried Carried
 	// pairings answers, per recorded result occurrence of the document this conversion walks, the call
 	// occurrence the seam's own pairing names for it (pairedCallOccurrences, or the answers the selection
-	// carried beside the reduced document). This target is a tree, so the check a result has to pass is
-	// the written one (sourceTree.recordOnWrittenPath): the paired occurrence has to stand on the
+	// carried beside the reduced document). A document a selection produced checks that occurrence against
+	// the written walk (sourceTree.recordOnWrittenPath): the paired occurrence has to stand on the
 	// result's own written ancestry, or the file would hold an output whose invocation is off the walk a
 	// resumed session makes.
 	pairings map[resultOccurrence]callOccurrence
+	// callOwners names every call id this walk wrote anywhere in the file, which is the acceptance a
+	// document that is not a selection's asks of a recorded result (resultCallWritten): the writer
+	// accepted a result when some written call shared the id, and that default path is byte-identical to
+	// the same run before selections existed (goal 0009's D4).
+	callOwners map[string]struct{}
+	// callPlaces names the occurrence each written call id stands at, which is what an id-less result of a
+	// reduced document reads: the inference may name only a call that stands on the written walk of the
+	// result's record (soleResultCall).
+	callPlaces map[callOccurrence]string
+	// selectionReduced says the document this conversion walks is one Select produced
+	// (Conversation.selectionReduced): the written-ancestry acceptance and the path-restricted inference
+	// exist for the reduction, and an unflagged run keeps the writer's earlier answers.
+	selectionReduced bool
 	// messageIDs maps a source message's place in the document to the message id every assistant record
 	// written for it carries, so the target's two readers put that message's blocks back together.
 	messageIDs map[int]string
@@ -729,8 +745,59 @@ func (b *claudeTranscriptBuilder) toolCall(index int, call ToolCall, at time.Tim
 		b.pendingCalls = map[string]struct{}{}
 	}
 	b.pendingCalls[callID] = struct{}{}
+	// The two answers a recorded result reads back: the id is written anywhere in this file (the default
+	// path's acceptance), and the occurrence the id stands at (the walk a reduced document's inference
+	// has to read).
+	b.callOwners[callID] = struct{}{}
+	b.callPlaces[callOccurrence{message: b.messageIndex, call: index}] = callID
 	b.carried.ToolCalls++
 	b.items = append(b.items, TargetItem{Kind: ItemToolCall, CallID: callID, ToolName: name, InputJSON: input})
+}
+
+// resultCallWritten answers whether a recorded result that names a call may be written under that call's
+// id. A document a selection produced asks the seam's own pairing: the call occurrence the read answers
+// for the result has to stand on the result's own written ancestry (sourceTree.recordOnWrittenPath), or
+// the file would hold a tool_result whose invocation is off the walk a resumed session makes -- the
+// reduction's window is what can leave the paired call off that walk, and accepting the id because some
+// other written call shares it would present this result as that call's outcome. A conversation the read
+// returned asks the question this writer has always asked -- whether any written call stands under the
+// id -- so a run without a selection is byte-identical to the same run before selections existed (goal
+// 0009's D4).
+func (b *claudeTranscriptBuilder) resultCallWritten(paired *callOccurrence, callID string) bool {
+	if b.selectionReduced {
+		return paired != nil && b.tree.recordOnWrittenPath(paired.message)
+	}
+	_, ok := b.callOwners[callID]
+	return ok
+}
+
+// soleResultCall answers the call an id-less result may be paired with, and whether there is exactly one
+// such call. A conversation the read returned asks the ledger's own question -- the one call still
+// outstanding anywhere in the walk. A document a selection produced asks the narrower one: the sole call
+// that is outstanding *and* stands on the written walk of the result's record
+// (sourceTree.recordOnWrittenPath). This file holds the records the read's line leaves off it as
+// recorded history, so the outstanding set can include a call on another branch; inferring the result
+// onto such a call would write an output whose invocation the resumed context cannot see, and
+// `generated_call_ids` discloses the inference rather than a placement. The inference picks no call
+// where the eligible ones do not name exactly one id, and the result is omitted and counted.
+func (b *claudeTranscriptBuilder) soleResultCall() (string, bool) {
+	if !b.selectionReduced {
+		return b.solePendingCall()
+	}
+	found := ""
+	for occurrence, id := range b.callPlaces {
+		if _, pending := b.pendingCalls[id]; !pending {
+			continue
+		}
+		if !b.tree.recordOnWrittenPath(occurrence.message) {
+			continue
+		}
+		if found != "" && found != id {
+			return "", false
+		}
+		found = id
+	}
+	return found, found != ""
 }
 
 // toolResult writes one result as a tool_result block, and answers whether it was written. paired is the
@@ -740,21 +807,16 @@ func (b *claudeTranscriptBuilder) toolResult(paired *callOccurrence, result Tool
 	callID := strings.TrimSpace(result.ToolUseID)
 	resultIDInferred := false
 	if callID == "" {
-		pending, ok := b.solePendingCall()
+		pending, ok := b.soleResultCall()
 		if !ok {
 			b.lossUnpairedResults++
 			return claudeContentBlock{}, false
 		}
 		callID = pending
 		resultIDInferred = true
-	} else if paired == nil || !b.tree.recordOnWrittenPath(paired.message) {
-		// The result names a call, and the seam's own pairing answers which call occurrence it answers:
-		// that occurrence has to stand on the result's own written ancestry. It does not when the read's
-		// line leaves the call off it, when the reduced document a selection produced left the call or the
-		// records between them out, or when the record carrying the call brings no entry here -- this
-		// target is a tree, and a tool_result written under a call that is not on the walk the loader
-		// makes from the result states an invocation the source never placed there. Accepting the id
-		// because *some* written call shares it would present this result as that call's outcome.
+	} else if !b.resultCallWritten(paired, callID) {
+		// The acceptance is resultCallWritten's own answer: the written ancestry the read's pairing names
+		// for a reduced document, and the id-existence check the default path has always asked.
 		b.lossUnpairedResults++
 		return claudeContentBlock{}, false
 	}

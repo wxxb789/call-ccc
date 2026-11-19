@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -408,8 +409,9 @@ func TestContinueWithoutASelectionReportsNoSelection(t *testing.T) {
 	}
 
 	// A specification that names every record of the read carries the same document: the same carried
-	// counts and the same loss rows as the unflagged run, with every record in the included class and none
-	// added as a necessity.
+	// counts as the unflagged run, with every record in the included class and none added as a necessity
+	// -- and its report is the unflagged run's rows plus the reduction's own coalesced-projection row
+	// (the assertion below names that one difference).
 	code, selectedStdout, stderr := runCLI(t, continueArgs(sessionID, "--select", "0-10", "--dry-run", "--json")...)
 	if code != exitOK {
 		t.Fatalf("the whole-read selection: exit %d (stderr %q)", code, stderr)
@@ -426,11 +428,29 @@ func TestContinueWithoutASelectionReportsNoSelection(t *testing.T) {
 		t.Errorf("the whole-read selection = %+v, want every record included and none elsewhere",
 			selected.Selection)
 	}
-	if selected.Conversion.Carried != document.Conversion.Carried ||
-		len(selected.Conversion.Losses) != len(document.Conversion.Losses) {
-		t.Errorf("the whole-read selection converted %+v with %d loss row(s), want the unflagged run's "+
-			"%+v with %d", selected.Conversion.Carried, len(selected.Conversion.Losses),
-			document.Conversion.Carried, len(document.Conversion.Losses))
+	if selected.Conversion.Carried != document.Conversion.Carried {
+		t.Errorf("the whole-read selection converted %+v, want the unflagged run's %+v",
+			selected.Conversion.Carried, document.Conversion.Carried)
+	}
+	// The reduction's own writer vocabulary: the Codex writer reports the coalesced-projection category
+	// only on a document a selection produced (the default path's report is byte-identical to the same run
+	// before selections existed -- goal 0009's D4 -- so a zero row cannot be added to every codex report).
+	// The whole-read selection's report therefore holds exactly that one extra row, and every other row is
+	// the unflagged run's own; the test names the difference instead of requiring none, so a second
+	// reduction-only row would fail here as well.
+	if len(selected.Conversion.Losses) != len(document.Conversion.Losses)+1 {
+		t.Errorf("the whole-read selection reports %d loss row(s), want the unflagged run's %d plus the "+
+			"reduction's own coalesced_tool_call_projections row", len(selected.Conversion.Losses),
+			len(document.Conversion.Losses))
+	}
+	for _, loss := range selected.Conversion.Losses {
+		if loss.Category == "coalesced_tool_call_projections" {
+			continue
+		}
+		if !slices.Contains(document.Conversion.Losses, loss) {
+			t.Errorf("the whole-read selection's loss row %+v is not one of the unflagged run's own: the "+
+				"reduction adds the coalesced row and nothing else", loss)
+		}
 	}
 	if selected.Verification.Structure.State != document.Verification.Structure.State {
 		t.Errorf("the whole-read selection's structural read-back is %q, want the unflagged run's %q",

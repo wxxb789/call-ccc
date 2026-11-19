@@ -248,6 +248,17 @@ type Conversation struct {
 	sourceResultPairs map[resultOccurrence]callOccurrence
 }
 
+// selectionReduced answers whether this conversation is a document a selection produced rather than the
+// read itself: the per-record line answer only Select sets (sourceLineInactive) is the signal, and it is
+// the same one the routes' line rule asks (sourceLineAnswers). A writer consults it before applying a
+// rule that belongs to the reduction -- a result whose paired call has to stand on the result's own
+// written ancestry, an id-less result inferable only to a call on the line it wrote -- because a
+// conversation the read returned keeps the acceptance the writer had before selections existed, which is
+// what goal 0009's D4 requires byte for byte.
+func (c Conversation) selectionReduced() bool {
+	return c.sourceLineInactive != nil
+}
+
 // keptAncestorAnswer is one record's ancestry answer from a selection (Conversation.sourceKeptAncestor):
 // the position in the reduced document of the nearest ancestor the read holds that the selection carries,
 // or -1 where there is none, and whether resolving the answer crossed the ambiguous tool-result

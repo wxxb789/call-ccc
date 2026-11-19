@@ -743,11 +743,20 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 // pairing: the call occurrence the read's own ancestry establishes where it does, else the occurrence the
 // result's id records nearest before it -- or, for an event that
 // recorded no id, the sole call still awaiting a result, where the source's own relation leaves no
-// other call it could mean (the writers' disclosed inference). An event whose paired occurrence this
-// plan does not carry answers nothing, which is the same answer the plan gives such an event: it is
-// counted rather than paired with a call that merely shares the id.
+// other call it could mean (the writers' disclosed inference).
+//
+// A document a selection produced asks the seam's own pairing and requires the paired occurrence to be in
+// this plan: the read's line leaves the occurrence off the line, the selection left it out, or the record
+// carrying it is not planned here, and writing the result under an older call that happens to share its
+// id would state that call's outcome the source never recorded. A conversation the read returned asks the
+// question this writer has always asked -- whether a planned call stands under the id -- so a run without
+// a selection is byte-identical to the same run before selections existed (goal 0009's D4).
 func (c *openCodeConverter) pairedCallEntry(result ToolResult, place resultOccurrence) (*openCodeCall, bool) {
 	if id := strings.TrimSpace(result.ToolUseID); id != "" {
+		if !c.conv.selectionReduced() {
+			entry, ok := c.calls[id]
+			return entry, ok
+		}
 		call, ok := c.pairings[place]
 		if !ok {
 			return nil, false

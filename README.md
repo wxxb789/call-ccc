@@ -132,9 +132,12 @@ hold it is that writer's answer, named in the conversion's losses. On a target w
 selection that leaves out a record's own parent hangs it off its nearest retained ancestor instead, so the
 resumed context is the read's own line and a branch the selection carried stays recorded history off that
 line (a window with no retained ancestor at all is refused by name rather than written under a branch);
-and a carried result whose paired call is written but off that result's own walk is omitted and counted
-(`unpaired_tool_results`) rather than published as an output whose invocation the resumed context cannot
-see.
+and, on the runs that carry a selection, a result whose paired call is written but off that result's own
+walk is omitted and counted (`unpaired_tool_results`) rather than published as an output whose invocation
+the resumed context cannot see — a result with no recorded id is inferred only onto a call that stands on
+the walk its own record hangs off. The dispositions that exist for the reduction act only there: a run
+without the flag, and a selection applied to a document a selection already produced (refused by name),
+are what they were.
 Every run that carried a selection reports the transformation in both the human block and `--json`: the
 space the spec was written against, the included and excluded records, the necessities added and the
 undischarged calls, each with counts and the ordinals it names — so a caller can see exactly which recorded

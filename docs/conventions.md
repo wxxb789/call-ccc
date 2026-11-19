@@ -165,12 +165,18 @@ obligation ships no citations file, rather than an empty one.
   whole or not at all: a selection that would split a pair carries the counterpart and names it a
   necessity with the ordinal that pulled it in (both directions, to a fixed point) unless
   `--strict-selection` refuses it by name before anything is installed. The writers write that pairing
-  rather than an id match: on a flat target, where a call the read's line leaves off it is not written at
+  rather than an id match, and the disposition belongs to the reduction (a run without a selection keeps
+  the acceptance its writers always had, so the default path's bytes and whole report do not move): on a
+  flat target, where a call the read's line leaves off it is not written at
   all, a result whose paired *occurrence* was not written is omitted and counted (`unpaired_tool_results`)
   instead of being accepted because some older call shares its id; on a tree target the paired occurrence
   has to stand on the result's own written ancestry — a result under a call that is not on the walk the
   loader makes from it is omitted and counted the same way, while the call still travels as recorded
-  history where the window carries it. A call whose read holds no
+  history where the window carries it; a result's record states the tool name of the occurrence the read
+  paired it with, not the last write for a reused id; and the Codex writer writes the one invocation the
+  count reads, folding a message's projected rows sharing an id into one `function_call` and reporting
+  `coalesced_tool_call_projections` — a category a reduced document's report carries and the default
+  path's does not. A call whose read holds no
   recorded outcome (no result at all, only progress events such as a Codex subagent's `running`
   notification, or an id-less progress event) is counted `calls_undischarged`, read from the pairing walk
   itself and counted in the unit
@@ -182,7 +188,9 @@ obligation ships no citations file, rather than an empty one.
   that writer's answer, named in the conversion's losses. A call or result the source
   recorded with **no** id carries no recorded link, so the seam neither invents one nor carries candidates
   for it; the target's writer applies its own rule to the selected line and discloses the pairing it
-  inferred (`generated_call_ids`), and an id-less *call* is counted undischarged only where the carried
+  inferred (`generated_call_ids`) — in a reduced document, the sole outstanding call that stands on the
+  written walk of the result's record, so an inference cannot place an output under a call the resumed
+  context cannot see — and an id-less *call* is counted undischarged only where the carried
   document holds no id-less result that states an outcome at or after it (where one is carried, the call
   is left to that same disclosed inference). On a target whose session is a
   tree, a carried record whose recorded
@@ -201,7 +209,10 @@ obligation ships no citations file, rather than an empty one.
   ordinals the read supplied (below its lowest or above its highest; a region spanning a gap carries the
   records it holds), a spec that would carry no record, a region that names an ordinal another region
   already names (the specification's own grammar, answered before any read is opened so a missing source
-  cannot mask it), a value the caller supplied *empty* (an unset
+  cannot mask it), a document a selection already produced (`ErrSelectionReduced`: the line, ancestry and
+  pairing answers a selection carries are the read's own and cannot be re-derived from the window, so a
+  second reduction would revive a branch the first left off the line; the read itself is never rewritten),
+  a value the caller supplied *empty* (an unset
   variable expanded into `--select "$SPEC"` is a refusal, not the flag's absence: it must not publish the
   whole history), and the strict refusal (each answered as the specification's own refusal even
   where the source would also refuse the conversion, so a run whose selection the read's own ordinals
