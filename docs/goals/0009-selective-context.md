@@ -1,6 +1,6 @@
 # 0009 — Select which recorded context crosses a harness boundary
 
-**Status:** Refined 2026-11-19 (owner approved the refinement the same day; prerequisite accepted); ready to activate  
+**Status:** Implemented on `feat/0009-selective-context`; awaiting operator acceptance  
 **Prerequisite:** [0003 — Continue a Codex session in Claude Code](archive/0003-codex-to-claude-continuation.md).
 
 ## Intended advance

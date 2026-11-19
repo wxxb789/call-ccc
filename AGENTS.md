@@ -258,13 +258,42 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   from a provider's silence, and the record offsets are claimed only where the provider's own declarations
   say its source is a transcript of appended lines *and* the file's own bytes can be one — a compressed
   container of records is reported by its digest and size with no offset claimed for it.
+- **A conversion carries only what the caller selected, and the selection is a disclosed transformation of
+  the read.** `ccc continue … --select <spec>` (goal 0009) hands the target writer a *subset* of the read:
+  the specification is comma-separated regions of the read's own ordinal **values** (`5`, `3-7`, `12-` —
+  `Message.Ordinal`, which is the source's own numbering where a reader preserves one, never a position and
+  never the target's post-write numbering), and the run without the flag is the same conversion it was
+  before the option existed, byte for byte. The step lives in the core (`internal/ccc/selection.go`), is a
+  pure function of the recorded document (no file, no Git, no model, no clock), and runs after the read and
+  after the source boundary — the source file is measured whole and never rewritten — and before the target
+  harness is asked anything; nothing is installed before a refusal. **A recorded call and its recorded
+  result are one structure**: the two records whose `ToolUseID` is the same non-empty value, and every
+  record holding either, are carried together or not at all — a selection that would split a pair carries
+  the counterpart and names it as a necessity with the ordinal that pulled it in (both directions, to a
+  fixed point, since a counterpart can hold another call's result), and `--strict-selection` refuses that
+  by name before anything is installed instead. A record the source recorded with **no** id carries no
+  recorded link: the seam neither invents one nor carries candidates for it, and the writer's own rule for
+  an id-less result (the sole outstanding call in the line it wrote, disclosed as `generated_call_ids`)
+  reads the selected line. A bad selection is **refused, never repaired**, with the core's own sentence and
+  the usage exit code (2), before any install: a spec that is ill-formed or names an ordinal the read's own
+  space does not hold (the space, its gaps included, is spelled in the refusal), one that would carry no
+  record at all, and the strict refusal. The report names the transformation on every run that had one —
+  `selection.ordinal_space` (min/max/records/contiguous) and the four classes `included`, `excluded`,
+  `necessities_added` (each addition with its puller) and `calls_undischarged` (a carried call the source
+  itself left unanswered, which no counterpart rule can discharge), in both the human block and `--json`,
+  where `included + necessities_added + excluded` is exactly the read's own record count and the counts are
+  the conversion's own vocabulary. `ccc formats`-style capability listing aside, nothing else about the
+  document changes: the selection renumbers nothing, adds no message of its own, and never touches the
+  source or an existing target session.
+
 - Out of scope by design: Git/worktree management, process or environment migration, credentials,
   fleet orchestration, and any second session index for the existing archive.
 
 ## How to work here
 
 - The continuation core and its per-harness target writers live in `internal/ccc` — the route table
-  `targets.go`, the install/verify/probe machinery the routes share (`route_shared.go`), and the
+  `targets.go`, the install/verify/probe machinery the routes share (`route_shared.go`), the selection the
+  read may be reduced by before a writer sees it (`selection.go`, goal 0009), and the
   writers/installers/verifiers `codex_target.go`, `codex_install.go`,
   `codex_verify.go`, `claude_target.go`, `claude_install.go`, `claude_verify.go`, `pi_target.go`,
   `pi_install.go`, `pi_verify.go`, `omp_target.go`, `omp_install.go`,

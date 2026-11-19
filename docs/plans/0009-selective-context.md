@@ -157,5 +157,71 @@ enforces both since 2026-11-19).
 
 ## 11. Where the implementation departed from this plan, and why
 
-None yet: this plan was written before the implementation, and each departure is recorded here rather than
-in a rewritten section (0007 §6.1's habit).
+Each departure is recorded here rather than in a rewritten section (0007 §6.1's habit), with the
+measurement that decided it.
+
+1. **`CheckSelectionOptions` separates the half of the grammar that needs no read.** The plan put every
+   refusal in `Select`. The syntax half (`parseSelectionSpec`) needs nothing but the string, so it is
+   exposed as its own checker beside `CheckVerifyOptions`, called by the CLI before the read and by
+   `Continue` — which is what gives a caller embedding the core and one driving the CLI *the same
+   sentence* for the same mistake (§3.1's own requirement) and lets a malformed spec fail before any
+   session is opened. The space-based refusals stay in `Select`, because only a read can answer them, and
+   the CLI maps their sentinel to the usage exit code.
+
+2. **The strict refusal's exit code is the usage code (2), and it is a default taken here.** D3 asks for a
+   refusal by name before anything is installed; D5 fixes the usage code for the ill-formed arms and says
+   nothing about the strict one. Both are a command line that cannot be honoured as written, refused
+   before any file exists, so both exit 2 and the help page's exit-code paragraph says so. It is
+   reversible in one branch of `cmd/ccc/main.go` and is recorded in `docs/decisions/OPEN-QUESTIONS.md`.
+
+3. **The seam pairs by recorded id only.** §3.2 said "a recorded call and its recorded result"; the only
+   link a *document* carries is a non-empty `ToolUseID`, so the closure is over those ids, in both
+   directions, to a fixed point (a counterpart can itself hold another call's result). A call or a result
+   the source recorded with **no** id carries no recorded link at all, and the seam neither invents one nor
+   carries candidates for it: each writer's own rule for an id-less result (the sole outstanding call it
+   wrote) reads the selected line, and that rule is *already* disclosed — a written result whose id was
+   inferred is counted (`generated_call_ids`, "the id it is written under is the pairing with the one call
+   that was outstanding"). Deciding this in the seam instead would mean re-implementing five writers' own
+   inferences in a target-agnostic function.
+
+4. **The D4 probe drives the pipeline as well as the writers.** The plan's §4 asked for "one test file
+   converting documents through the five routes"; the insertion point the change actually adds is
+   `continueWith`, so the probe prints both: the writers' own arm (35 route × document conversions, each
+   with its normalized bytes, item lines and non-zero loss rows) *and* a pipeline arm per route × document
+   (`continueWith`, dry run, the selection flag absent, seven normalized report lines each), which is what
+   would catch a defect that filtered a document without the flag. The pipeline arm skips the OpenCode
+   target: that route's installation *is* the harness's own importer, which a dry run still runs, so its
+   unflagged path is covered by the standalone runs in the record's own sections.
+
+5. **The awkward-shape fixture is a fourth Claude transcript, and one of its records is not the `system`
+   subtype.** The plan asked for "a system record"; the first draft used Claude's `subtype: hook_result`
+   line, and the read of that draft **dropped it entirely** (measured: ten records, nine messages) — the
+   Claude reader skips the provider's own bookkeeping lines, so a selection could not have carried it and
+   nothing would have been pinned. The fixture therefore carries the shape the read *does* hold as a
+   system record: a tool result written on a record whose whole text block is a `<system-reminder>`, which
+   the inherited parser promotes to `IsSystem` with its `ToolResults` populated (the tooling fixture's own
+   shape, reused). That record is also the second split pair's half, so one record pins both the system
+   record and the second necessity arm.
+
+6. **The report spells its classes as regions, not as a list of ordinals** (§5's "regions it names"): a
+   contiguous run is `a-b`, a lone value `n`, ascending and each value once, using the specification's own
+   grammar, so a report of a large selection stays bounded and a reader can paste a region back into
+   `--select`. The space is reported as min/max/records/contiguous, and the *refusals* spell the read's
+   actual values (with their gaps), which is what a caller needs to write the next spec.
+
+7. **The report's own two warnings.** The plan asked for the transformation to be named in the human block
+   and the JSON; the run also carries it on the report's warning channel (the selection and its counts, and
+   a second warning when a carried call has no recorded result), so a caller that reads only the exit code
+   or the human block's head cannot take the conversion for the whole read.
+
+8. **The CLI case for "selects nothing" names an arm the fixture cannot produce.** Every ordinal of the
+   fixture's space is present, so a well-formed spec that selects nothing is not expressible against it;
+   the arm is pinned by the Go case over a gappy read, and the CLI case's own table pins the refusals the
+   read can reach (syntax, duplicate, out-of-space, both strict arms) with "nothing was written" as the
+   shared assertion.
+
+9. **`scripts/evidence`'s claim reader and this record.** The run this increment records is a **load**-level
+   conversion (no turn was run), so its record quotes no resumed turn's answer and §5's cells avoid the
+   word "answer" where they quote inline code; the record is deliberately not added to
+   `test_evidence_claims.py`'s `ROUTE_DOCUMENTS`, which requires §5 to credit a resumed run's answer.
+

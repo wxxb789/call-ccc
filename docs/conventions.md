@@ -28,6 +28,7 @@ internal/ccc/       continuation core: conversation document, readers, archive a
                     claude_verify.go, pi_target.go, pi_install.go, pi_verify.go, omp_target.go,
                     omp_install.go, omp_verify.go, opencode_target.go, opencode_install.go,
                     opencode_verify.go, continue.go),
+                    the read's opt-in reduction before a writer sees it (selection.go),
                     and the install/verify/probe machinery the routes share (route_shared.go)
 internal/ccc/parity the canonical dump and the oracle a pristine checkout runs too
 internal/ccc/opencodefixture  the store a test builds when it needs one the inherited OpenCode reader
@@ -146,6 +147,31 @@ obligation ships no citations file, rather than an empty one.
   native check seeds its provider configuration only into the scratch home it made itself: a home the
   caller named is read, never written to, because replacing a configuration there (and the credential
   references in it) is a change no session digest would show.
+- **A selection reduces what a conversion carries, and says so.** `ccc continue … --select <spec>`
+  (goal 0009) is an opt-in, disclosed transformation of the *document*: the specification is
+  comma-separated regions of the read's own ordinal values — `5`, `3-7` (closed), `12-` (that value and
+  every higher one the read holds) — and a run without the flag behaves exactly as it did before the
+  option existed (proven by a before/after probe over every route × fixture, not by argument). The
+  ordinals are the values the read supplied (`Message.Ordinal`): most readers assign a 0-based counter,
+  while a reader that preserves a source field (Shelley's `sequence_id`) produces the source's own
+  numbers, so `0-` on a 1..5 space is refused naming the space rather than read as "from the beginning".
+  The seam is the core's own (`internal/ccc/selection.go`, a pure function of the document): a recorded
+  call and its recorded result are one structure, paired by the `ToolUseID` the two records share, carried
+  whole or not at all — a selection that would split a pair carries the counterpart and names it a
+  necessity with the ordinal that pulled it in (both directions, to a fixed point) unless
+  `--strict-selection` refuses it by name before anything is installed. A call or result the source
+  recorded with **no** id carries no recorded link, so the seam neither invents one nor carries candidates
+  for it; the target's writer applies its own rule to the selected line and discloses the pairing it
+  inferred (`generated_call_ids`). A bad selection is refused, never repaired, with the core's own sentence
+  and the usage exit code (2), before any install — ill-formed grammar, an ordinal the read's space does
+  not hold, a spec that would carry no record, and the strict refusal — and the report names the
+  transformation on every run that had one, in the human block and in `--json`, as
+  `selection.ordinal_space` (min/max/records/contiguous) and the four classes `included`, `excluded`,
+  `necessities_added` and `calls_undischarged`. `included + necessities_added + excluded` is the read's own
+  record count, and the counts use the conversion's own vocabulary: the classes count records (and, for
+  `calls_undischarged`, calls), the regions spell the read's ordinals as `a-b`/`n`, and nothing is
+  renumbered — a report names the values a caller wrote the spec with.
+
 - **A conversion is a snapshot at a stated boundary, and repeating it is the same operation.** A source
   that grew is read again and written as *another* fresh target session: no run merges later source
   history into a session an agent may already have continued, and no run rewrites the source or an

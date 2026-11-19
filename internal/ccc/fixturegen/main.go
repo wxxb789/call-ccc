@@ -40,6 +40,29 @@ const (
 	claudeToolingProject   = "-home-user-code-tooling"
 	claudeToolingCwd       = "/home/user/code/tooling"
 
+	// The third Claude fixture is the shape a selection has to decide about, which is why it carries all
+	// four of them: one tool call whose result the source recorded in a *later* message than the call (a
+	// selection boundary between the two separates a recorded call/result pair), one tool call the source
+	// never answered (a call no selection can discharge), a compaction summary standing for the turns
+	// before it, and a provider system record beside the summary -- so a selection naming a region around
+	// them carries a boundary and a system record inside the carried window. Every string is invented.
+	claudeSelectionSessionID = "c1a74e28-3b0d-4f91-8d27-6e5b90c4a183"
+	claudeSelectionProject   = "-home-user-code-awaiting"
+	claudeSelectionCwd       = "/home/user/code/awaiting"
+
+	// The three calls' recorded ids, and the two results the source recorded (the read call has none,
+	// which is the state `calls_undischarged` counts).
+	claudeSelectionBuildCallID = "toolu_09Selection0000000000000001"
+	claudeSelectionReadCallID  = "toolu_09Selection0000000000000002"
+	claudeSelectionCapCallID   = "toolu_09Selection0000000000000003"
+	claudeSelectionBuildResult = "build-ok: 3 packages compiled"
+	claudeSelectionCapResult   = "internal/retry/config.go:41: maxBackoffSeconds = 30"
+
+	claudeSelectionQuestion = "Start the long build, then tell me where the retry cap lives."
+	claudeSelectionAnswer   = "The cap is maxBackoffSeconds = 30, in internal/retry/config.go."
+	claudeSelectionSummary  = "Summary: the build succeeded and the retry configuration is being read."
+	claudeSelectionFollowup = "And the cap?"
+
 	codexSessionID = "0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812"
 	codexRollout   = "rollout-2026-05-04T09-15-00-" + codexSessionID
 	codexCwd       = "/home/user/code/example-api"
@@ -589,13 +612,14 @@ func openCodeSession() map[string]any {
 // fixtureFiles maps a path relative to the fixtures root onto its content.
 func fixtureFiles() map[string]string {
 	return map[string]string{
-		filepath.Join("claude", claudeProject, claudeSessionID+".jsonl"):               canonicalJSONL(claudeSession()),
-		filepath.Join("claude", claudeToolingProject, claudeToolingSessionID+".jsonl"): canonicalJSONL(claudeToolingSession()),
-		filepath.Join("codex", "2026", "05", "04", codexRollout+".jsonl"):              canonicalJSONL(codexSession()),
-		filepath.Join("codex", "2026", "05", "06", codexPatchRollout+".jsonl"):         canonicalJSONL(codexPatchSession()),
-		filepath.Join("pi", piSessionID+".jsonl"):                                      canonicalJSONL(piSession()),
-		filepath.Join("pi", piHistorySessionID+".jsonl"):                               canonicalJSONL(piHistorySession()),
-		filepath.Join("pi", piBranchSwitchSessionID+".jsonl"):                          canonicalJSONL(piBranchSwitchSession()),
+		filepath.Join("claude", claudeProject, claudeSessionID+".jsonl"):                   canonicalJSONL(claudeSession()),
+		filepath.Join("claude", claudeToolingProject, claudeToolingSessionID+".jsonl"):     canonicalJSONL(claudeToolingSession()),
+		filepath.Join("claude", claudeSelectionProject, claudeSelectionSessionID+".jsonl"): canonicalJSONL(claudeSelectionSession()),
+		filepath.Join("codex", "2026", "05", "04", codexRollout+".jsonl"):                  canonicalJSONL(codexSession()),
+		filepath.Join("codex", "2026", "05", "06", codexPatchRollout+".jsonl"):             canonicalJSONL(codexPatchSession()),
+		filepath.Join("pi", piSessionID+".jsonl"):                                          canonicalJSONL(piSession()),
+		filepath.Join("pi", piHistorySessionID+".jsonl"):                                   canonicalJSONL(piHistorySession()),
+		filepath.Join("pi", piBranchSwitchSessionID+".jsonl"):                              canonicalJSONL(piBranchSwitchSession()),
 		// An OMP session is filed one project directory below the sessions root, and the provider's own
 		// discovery requires that level: measured, a file sitting directly in the root -- which the Pi
 		// provider accepts -- is not discovered for OMP. The directory names here are the spelling OMP
@@ -796,6 +820,98 @@ func claudeToolingUser(text, timestamp string) string {
 		"version":   claudeVersion,
 		"sessionId": claudeToolingSessionID,
 		"cwd":       claudeToolingCwd,
+		"message":   map[string]any{"content": text},
+	})
+}
+
+// claudeSelectionSession is the third Claude fixture: the shape a selection has to decide about.
+//
+// Its ten records are the four shapes the selection's own rules need. The build call is answered by a
+// result the source recorded in a *later* message than the call, so a selection whose boundary falls
+// between the two separates a recorded call/result pair (the call is at one ordinal, its result at the
+// next). The read call is never answered: it is the state a selection must leave exactly as it is and
+// report (`calls_undischarged`), because the counterpart rule cannot carry a result the read never held.
+// A compaction summary stands for the turns before it, and the cap call's result is written on a record
+// the provider marked system-injected (its `<system-reminder>` text is the whole text block), so a
+// selection naming a region around them carries a compaction boundary and a system record inside a
+// carried window -- and that system record is itself the second split pair's half, since its tool result
+// answers the call of the record before it. Every string is invented, like every other fixture's.
+func claudeSelectionSession() string {
+	buildCall := []map[string]any{{
+		"type": "tool_use",
+		"id":   claudeSelectionBuildCallID,
+		"name": "Bash",
+		"input": map[string]any{
+			"command":     "sleep 30 && echo build-ok",
+			"description": "run the long build",
+		},
+	}}
+	readCall := []map[string]any{{
+		"type": "tool_use",
+		"id":   claudeSelectionReadCallID,
+		"name": "Read",
+		"input": map[string]any{
+			"file_path": path.Join(claudeSelectionCwd, "internal/retry/config.go"),
+		},
+	}}
+	capCall := []map[string]any{{
+		"type": "tool_use",
+		"id":   claudeSelectionCapCallID,
+		"name": "Bash",
+		"input": map[string]any{
+			"command":     "grep -rn maxBackoffSeconds internal/retry",
+			"description": "find where the backoff cap is configured",
+		},
+	}}
+	return testjsonl.NewSessionBuilder().
+		AddRaw(claudeSelectionUser(claudeSelectionQuestion, "2026-05-08T08:00:00.000Z")).
+		AddClaudeAssistantWithUUID(
+			"2026-05-08T08:00:02.000Z",
+			"Starting the build now.",
+			"cccccccc-0000-4000-8000-000000000001",
+			"",
+		).
+		AddRaw(claudeToolUse(buildCall, "2026-05-08T08:00:04.000Z", "cccccccc-0000-4000-8000-000000000002")).
+		AddRaw(testjsonl.ClaudeToolResultUserJSON(
+			claudeSelectionBuildCallID,
+			claudeSelectionBuildResult,
+			"2026-05-08T08:00:34.000Z",
+		)).
+		AddClaudeAssistantWithUUID(
+			"2026-05-08T08:00:36.000Z",
+			"The build finished. Reading the retry configuration.",
+			"cccccccc-0000-4000-8000-000000000003",
+			"",
+		).
+		AddRaw(claudeToolUse(readCall, "2026-05-08T08:00:38.000Z", "cccccccc-0000-4000-8000-000000000004")).
+		AddClaudeMetaUser("2026-05-08T08:05:00.000Z", claudeSelectionSummary, false, true).
+		AddRaw(claudeToolUse(capCall, "2026-05-08T08:05:04.000Z", "cccccccc-0000-4000-8000-000000000005")).
+		AddRaw(claudeSystemReminderToolResult(
+			claudeSelectionCapCallID,
+			claudeSelectionCapResult,
+			"2026-05-08T08:05:05.000Z",
+			"cccccccc-0000-4000-8000-000000000006",
+			"cccccccc-0000-4000-8000-000000000005",
+		)).
+		AddRaw(claudeSelectionUser(claudeSelectionFollowup, "2026-05-08T08:06:00.000Z")).
+		AddClaudeAssistantWithUUID(
+			"2026-05-08T08:06:04.000Z",
+			claudeSelectionAnswer,
+			"cccccccc-0000-4000-8000-000000000007",
+			"",
+		).
+		String()
+}
+
+// claudeSelectionUser is a user line of the selection fixture: the version, sessionId and cwd members a
+// Claude Code transcript's own user records carry, with this fixture's identity.
+func claudeSelectionUser(text, timestamp string) string {
+	return marshal(map[string]any{
+		"type":      "user",
+		"timestamp": timestamp,
+		"version":   claudeVersion,
+		"sessionId": claudeSelectionSessionID,
+		"cwd":       claudeSelectionCwd,
 		"message":   map[string]any{"content": text},
 	})
 }

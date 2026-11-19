@@ -125,6 +125,21 @@ continuation options:
                      one real turn in it and needs --resume-prompt
   --resume-prompt T  the turn --verify resume runs; call/ccc never writes a prompt of its own into a
                      session
+  --select SPEC      carry only the read's own records the specification names, as ordinal values and
+                     regions separated by commas: "5" is one record, "3-7" a closed range, "12-" that
+                     ordinal and every higher one the read holds (for example "0-5,9,12-"). The ordinals
+                     are the values the read supplied -- printed by the run's own selection block, whose
+                     "selection:" line states the space a specification is written against -- never a
+                     position and never the target's post-write numbering. A record the source recorded a
+                     tool call or a result on is carried with the recorded counterpart of that call or
+                     result (a selection never separates one from the other), and each record carried
+                     this way is named in the report as a necessity. An ill-formed specification, one
+                     naming an ordinal the read does not hold and one that would carry no record at all
+                     are refused, with nothing written; an empty value is read as the flag's absence,
+                     and the run without the flag is unchanged.
+  --strict-selection refuse, by name and before anything is installed, a selection that would carry a
+                     recorded tool call without its recorded result (or the reverse) instead of carrying
+                     the counterpart as a necessity. It needs --select.
 
 inspection options:
   --json             write the inspection as one JSON object on stdout (diagnostics stay on stderr)
@@ -136,7 +151,9 @@ exit codes:
      installed nothing for it to load
   1  nothing was found, the reference was ambiguous, the conversion or installation failed, or a
      requested verification ran and failed
-  2  the command line could not be understood
+  2  the command line could not be understood, or the selection it names cannot be honoured (a
+     specification that is ill-formed, one naming an ordinal the read does not hold, one that would
+     carry no record, or the --strict-selection refusal)
 `
 
 const (
@@ -351,7 +368,7 @@ func splitFlags(args []string) (optionArgs, operands []string, err error) {
 // misspelled option is refused by the flag set instead of swallowing the reference.
 func takesValue(name string) bool {
 	switch name {
-	case "data-dir", "to", "target-home", "target-binary", "verify", "resume-prompt":
+	case "data-dir", "to", "target-home", "target-binary", "verify", "resume-prompt", "select":
 		return true
 	default:
 		return false
@@ -441,7 +458,8 @@ func writeHuman(out io.Writer, inspection ccc.Inspection) {
 // missing operand.
 const continueUsage = "usage: ccc continue <provider>:<session-id-or-path> --to codex|claude|pi|omp|opencode [--json] [--dry-run]\n" +
 	"                         [--target-home DIR] [--target-binary PATH] [--data-dir DIR]\n" +
-	"                         [--verify none|load|resume] [--resume-prompt TEXT]\n"
+	"                         [--verify none|load|resume] [--resume-prompt TEXT]\n" +
+	"                         [--select SPEC] [--strict-selection]\n"
 
 func runContinue(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("continue", flag.ContinueOnError)
@@ -453,6 +471,8 @@ func runContinue(args []string, stdout, stderr io.Writer) int {
 	dataDir := flags.String("data-dir", "", "data directory whose sessions.db is consulted")
 	verify := flags.String("verify", ccc.VerifyLoad, "verification level: none, load or resume")
 	resumePrompt := flags.String("resume-prompt", "", "the turn a resume verification runs")
+	selectSpec := flags.String("select", "", "which of the read's records to carry, as ordinals and regions")
+	strictSelection := flags.Bool("strict-selection", false, "refuse a selection that separates a call from its result")
 	operands, code, handled := parseCommandLine(flags, continueUsage, args, stdout, stderr)
 	if handled {
 		return code
@@ -477,6 +497,13 @@ func runContinue(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "ccc: %v\n", err)
 		return exitUsage
 	}
+	// The core owns the wording of a refused selection too, for the same reason: the specification's
+	// grammar is the core's, and the refusals that need the read (an ordinal the read's own space does
+	// not hold, a spec that selects nothing) come back from the conversion below with the same sentence.
+	if err := ccc.CheckSelectionOptions(*selectSpec, *strictSelection); err != nil {
+		fmt.Fprintf(stderr, "ccc: %v\n", err)
+		return exitUsage
+	}
 	ref, err := parseRef(operands[0])
 	if err != nil {
 		fmt.Fprintf(stderr, "ccc: %v\n", err)
@@ -490,17 +517,19 @@ func runContinue(args []string, stdout, stderr io.Writer) int {
 	}
 
 	result, err := continueRun(context.Background(), ccc.ContinueOptions{
-		Ref:          ref,
-		Target:       *target,
-		Config:       cfg,
-		Reader:       ccc.NewSourceReader(cfg),
-		ArchivePath:  cfg.DBPath,
-		TargetHome:   *targetHome,
-		TargetBinary: *targetBinary,
-		DryRun:       *dryRun,
-		Verify:       *verify,
-		ResumePrompt: *resumePrompt,
-		Stderr:       stderr,
+		Ref:             ref,
+		Target:          *target,
+		Config:          cfg,
+		Reader:          ccc.NewSourceReader(cfg),
+		ArchivePath:     cfg.DBPath,
+		TargetHome:      *targetHome,
+		TargetBinary:    *targetBinary,
+		DryRun:          *dryRun,
+		Selection:       *selectSpec,
+		StrictSelection: *strictSelection,
+		Verify:          *verify,
+		ResumePrompt:    *resumePrompt,
+		Stderr:          stderr,
 	})
 	if err != nil {
 		// A run that failed after the conversion is not a run without an answer: the report it came back
@@ -514,6 +543,13 @@ func runContinue(args []string, stdout, stderr io.Writer) int {
 			writeWarnings(stderr, result.Warnings)
 		}
 		fmt.Fprintf(stderr, "ccc: %v\n", err)
+		// A selection this build refuses is a command line that cannot be honoured -- a specification
+		// naming ordinals the read does not hold, one that selects nothing, or a strict refusal of a
+		// selection that separates a recorded call from its recorded result -- and it was refused before
+		// anything was installed, so the exit code says "command line" rather than "conversion failed".
+		if errors.Is(err, ccc.ErrBadSelection) || errors.Is(err, ccc.ErrStrictSelection) {
+			return exitUsage
+		}
 		return exitFailure
 	}
 
@@ -617,6 +653,7 @@ func writeContinuation(out io.Writer, result ccc.ContinueResult) {
 		}
 		writeBoundary(out, source.Boundary)
 	}
+	writeSelection(out, result.Selection)
 	carried := result.Conversion.Carried
 	fmt.Fprintf(out, "  converted:    %s, %d bytes: %d message(s), %d tool call(s), %d tool result(s), %d boundary(ies), %d turn(s)\n",
 		result.Conversion.Format, carried.Bytes, carried.Messages, carried.ToolCalls, carried.ToolResults,
@@ -686,6 +723,73 @@ func writeContinuation(out io.Writer, result ccc.ContinueResult) {
 		fmt.Fprintf(out, "  warning:      %s\n", oneLine(warning))
 	}
 	writeCarried(out)
+}
+
+// writeSelection prints what a selection did to the read, in the four classes the goal names, so a
+// caller reading the human block can see which records crossed without opening the JSON. The counts and
+// the ordinals are the report's own: the specification it applied, the space it was written against, the
+// records it selected, the records it left behind, the counterparts a recorded call/result pair pulled in
+// (each with the ordinal that pulled it in), and the calls the source itself left undischarged. A run
+// with no selection prints nothing here, which is what makes the flag's absence visible as the absence
+// of a transformation rather than as a selection that happened to carry everything.
+func writeSelection(out io.Writer, selection *ccc.SelectionReport) {
+	if selection == nil {
+		return
+	}
+	space := selection.Space
+	fmt.Fprintf(out, "  selection:    %s: the read's own ordinals are %s (%d record(s))%s\n",
+		selection.Spec, spellSpace(space), space.Records, contiguitySuffix(space))
+	fmt.Fprintf(out, "  selected:     %d record(s) at ordinals %s\n",
+		selection.Included.Count, regionsOrNone(selection.Included.Regions))
+	fmt.Fprintf(out, "  excluded:     %d record(s) at ordinals %s\n",
+		selection.Excluded.Count, regionsOrNone(selection.Excluded.Regions))
+	fmt.Fprintf(out, "  necessities:  %d record(s) added: %s\n",
+		selection.NecessitiesAdded.Count, spellNecessities(selection.NecessitiesAdded))
+	fmt.Fprintf(out, "  undischarged: %d carried call(s) with no recorded result at ordinals %s\n",
+		selection.CallsUndischarged.Count, regionsOrNone(selection.CallsUndischarged.Regions))
+	if selection.Strict {
+		fmt.Fprintf(out, "  strict:       yes (a selection that would separate a recorded call from its "+
+			"recorded result is refused, never carried)\n")
+	}
+}
+
+// spellSpace names the space a specification was written against: the values it holds as one range,
+// because a report line states the bounds the read produced rather than repeating every value.
+func spellSpace(space ccc.OrdinalSpace) string {
+	if space.Max <= space.Min {
+		return fmt.Sprintf("%d", space.Min)
+	}
+	return fmt.Sprintf("%d-%d", space.Min, space.Max)
+}
+
+// regionsOrNone spells a class's regions, saying "none" where the class is empty rather than leaving a
+// gap a reader would take for an elision.
+func regionsOrNone(regions []string) string {
+	if len(regions) == 0 {
+		return "none"
+	}
+	return strings.Join(regions, ",")
+}
+
+// spellNecessities spells the necessity class: each added record with the ordinal that pulled it in.
+func spellNecessities(necessities ccc.SelectionNecessities) string {
+	if necessities.Count == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(necessities.Added))
+	for _, added := range necessities.Added {
+		parts = append(parts, fmt.Sprintf("%d (pulled in by %d)", added.Ordinal, added.PulledBy))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// contiguitySuffix states whether the space the specification was written against has a gap, so a
+// nonzero start or a gap is visible rather than silently assumed away.
+func contiguitySuffix(space ccc.OrdinalSpace) string {
+	if space.Contiguous {
+		return ""
+	}
+	return fmt.Sprintf(" (min %d, max %d: the read's own values are not contiguous)", space.Min, space.Max)
 }
 
 // sourceCheckLine is the human spelling of the installation's source check: the goal asks the run to

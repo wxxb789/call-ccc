@@ -2868,3 +2868,65 @@ supersede it with a newer one and say which it supersedes.
   remember to run it.
 - **Settled by:** an operator instruction, or a CI change that adds (or deliberately refuses) a floor leg --
   the pin itself needs no decision.
+
+## Q-0009-01 — The strict selection refusal's exit code
+
+- **Status:** open (default taken: the usage exit code, 2).
+- **Question:** goal 0009's D5 fixes the usage exit code for the ill-formed selection arms (an ill-formed
+  specification, an ordinal the read does not hold, a specification that would carry no record) and says
+  nothing about D3's other arm, where `--strict-selection` refuses a selection that separates a recorded
+  call from its recorded result. Both refusals happen before anything is installed, so both are "a command
+  line that cannot be honoured as written" -- but a strict refusal is a property of the *source* + the
+  spec together (the same line with a different region works), while the D5 arms are the spec alone.
+- **Default taken:** exit 2 for both, with the core's own sentence, and the help page's exit-code paragraph
+  says so ("the command line could not be understood, or the selection it names cannot be honoured"). The
+  alternative -- exit 1, "the conversion failed" -- would fold a refusal that wrote nothing into the state
+  a caller reads as "something was attempted and failed", which is why 2 was chosen.
+- **Reversal:** one `errors.Is(err, ccc.ErrStrictSelection)` branch in `cmd/ccc/main.go` (`runContinue`'s
+  error mapping), plus that help line and this record's §-level statements in `AGENTS.md` and
+  `docs/conventions.md`.
+- **Settled by:** an operator preference between "the command line was refused" and "the conversion
+  failed" for a well-formed command line the source's own structure cannot satisfy.
+
+## Q-0009-02 — The selection pairs a call with its result by recorded id alone
+
+- **Status:** open (default taken: the seam pairs by a non-empty `ToolUseID`; an id-less record carries no
+  recorded link).
+- **Question:** the seam carries a recorded call and its recorded result together (both directions, to a
+  fixed point). The document's only recorded link between the two is a non-empty `ToolUseID`. A call or a
+  result the source recorded with **no** id (a Codex `wait` output event, a subagent notification) carries
+  no link at all; each *writer* then pairs an id-less result with the sole outstanding call of the line it
+  wrote, and a selection can change which call that is (or make an ambiguous result unambiguous). The
+  alternatives are: reproduce each writer's own inference inside the target-agnostic seam (five writers'
+  rules, in a function that is supposed to be a pure, target-independent transformation); refuse a
+  selection over any conversation holding an id-less call or result (usable only on sources that always
+  record ids); or pair by ids only and disclose the writer's inference where it happens.
+- **Default taken:** ids only, disclosed where it happens. The writer's inferred pairing is **already**
+  counted on every run (`generated_call_ids`: "the result recorded no id of its own, so the id it is written
+  under is the pairing with the one call that was outstanding"), so a selected line's inference is a
+  disclosed reading rather than a silent claim, and `unpaired_tool_results` / `unpaired_tool_calls` count
+  what the writer then refuses to pair. The seam neither invents a link nor carries candidates the caller
+  did not name.
+- **Reversal:** add an id-less pairing walk to `internal/ccc/selection.go` that reproduces one writer's rule
+  (or a shared one the writers would have to adopt), which makes the seam target-aware; or refuse such a
+  selection by name in `Select`, naming the records.
+- **Settled by:** a measured case on a real source where a selection's own line pairs an id-less result
+  differently from the source's line, or an operator instruction that the seam should refuse that shape.
+
+## Q-0009-03 — An empty `--select` value is read as the flag's absence
+
+- **Status:** open (default taken: `--select ""` (or whitespace) is the same request as omitting the flag).
+- **Question:** the core refuses an *empty* specification (`Select(conv, "", …)` answers "the specification
+  is empty: name the ordinal values to carry …"), because a selection that names nothing is a mistake. The
+  CLI, however, cannot tell `--select ""` from an absent flag through the option's value alone (it could
+  through `flag.Visit`), so `ccc continue … --select "$SPEC"` with an empty `SPEC` today carries the whole
+  read and prints no selection section -- the pre-0009 behaviour, silently.
+- **Default taken:** the empty value is documented as the flag's absence (the help text says so) rather than
+  refused, so the CLI's contract stays "the value names a selection, or there is no selection" and the core
+  keeps its own refusal for a caller that passes an empty spec *to the core*. Nothing is repaired silently:
+  the run's own report shows no selection block, which is exactly the run a caller asked for by naming no
+  specification.
+- **Reversal:** read `flag.Visit` in `runContinue` and refuse a set-but-empty `--select` with the core's own
+  sentence (one branch, one extra call), which turns the footgun into a refusal.
+- **Settled by:** an operator preference between "an empty value means 'no selection'" and "an empty value
+  is refused by name".

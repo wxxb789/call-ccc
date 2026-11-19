@@ -1,0 +1,663 @@
+package ccc
+
+import (
+	"context"
+	"errors"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+)
+
+// The selection fixture's own recorded ids and strings, spelled here rather than read out of the read:
+// the cases assert that the *fixture's* words and call ids are what crossed, so a conversion that mangled
+// either cannot pass by agreeing with the read it produced.
+const (
+	selectionBuildCallID = "toolu_09Selection0000000000000001"
+	selectionReadCallID  = "toolu_09Selection0000000000000002"
+	selectionCapCallID   = "toolu_09Selection0000000000000003"
+	selectionBuildResult = "build-ok: 3 packages compiled"
+	selectionCapResult   = "internal/retry/config.go:41: maxBackoffSeconds = 30"
+
+	selectionQuestion = "Start the long build"
+	selectionAnswer   = "The cap is maxBackoffSeconds = 30"
+	selectionSummary  = "Summary: the build succeeded"
+	selectionFollowup = "And the cap?"
+)
+
+// selectionProbeOptions is what the selection cases hand each route's writer: fixed answers, so a written
+// document is a function of the carried conversation alone.
+func selectionProbeOptions() targetConvertInput {
+	return targetConvertInput{
+		CLIVersion: "selection-test-0.0",
+		Provider:   "selection-test-provider",
+		Model:      "selection-test-model",
+		Now:        time.Date(2026, 5, 8, 8, 0, 0, 0, time.UTC),
+	}
+}
+
+// readSelectionFixture reads the third Claude fixture, the shape the selection's rules are pinned on.
+func readSelectionFixture(t *testing.T) Conversation {
+	t.Helper()
+	conversation, err := NewSourceReader(fixtureConfig(t)).Read(context.Background(), claudeSelectionFixtureRef)
+	if err != nil {
+		t.Fatalf("reading the selection fixture: %v", err)
+	}
+	return conversation
+}
+
+// selectionOrdinals answers the ordinal values a conversation's records hold, in read order.
+func selectionOrdinals(conversation Conversation) []int {
+	ordinals := make([]int, 0, len(conversation.Messages))
+	for _, message := range conversation.Messages {
+		ordinals = append(ordinals, message.Ordinal)
+	}
+	return ordinals
+}
+
+// TestSelectionMatchesTheOrdinalValuesTheReadSupplied pins the selector's whole space: a specification
+// names the ordinal *values* the read supplied, never a position, and every refusal is decided against
+// that space. The Shelley-shaped document is the measured shape that makes the difference visible
+// (internal/parser/shelley.go assigns the source's own `sequence_id`, so five records carry ordinals
+// 1..5 and a positional reading of `0-` would silently select a different conversation).
+func TestSelectionMatchesTheOrdinalValuesTheReadSupplied(t *testing.T) {
+	shelley := Conversation{Messages: []Message{
+		{Ordinal: 1, Role: "user", Content: "one"},
+		{Ordinal: 2, Role: "assistant", Content: "two"},
+		{Ordinal: 3, Role: "user", Content: "three"},
+		{Ordinal: 4, Role: "assistant", Content: "four"},
+		{Ordinal: 5, Role: "user", Content: "five"},
+	}}
+
+	selected, report, err := Select(shelley, "1-5", false)
+	if err != nil {
+		t.Fatalf("selecting 1-5: %v", err)
+	}
+	if got := selectionOrdinals(selected); len(got) != 5 || got[0] != 1 || got[4] != 5 {
+		t.Errorf("carried ordinals = %v, want all five records", got)
+	}
+	if report.Space != (OrdinalSpace{Min: 1, Max: 5, Records: 5, Contiguous: true}) {
+		t.Errorf("space = %+v, want the read's own values 1..5", report.Space)
+	}
+	if report.Included.Count != 5 || len(report.Included.Regions) != 1 || report.Included.Regions[0] != "1-5" {
+		t.Errorf("included = %+v, want the five records as one region", report.Included)
+	}
+	if report.Excluded.Count != 0 || report.NecessitiesAdded.Count != 0 || report.CallsUndischarged.Count != 0 {
+		t.Errorf("report = %+v, want no exclusion, no necessity and no undischarged call", report)
+	}
+
+	// An open region runs from its own value through the highest the read holds.
+	selected, report, err = Select(shelley, "3-", false)
+	if err != nil {
+		t.Fatalf("selecting 3-: %v", err)
+	}
+	if got := selectionOrdinals(selected); len(got) != 3 || got[0] != 3 || got[2] != 5 {
+		t.Errorf("carried ordinals = %v, want 3,4,5", got)
+	}
+	if report.Excluded.Count != 2 {
+		t.Errorf("excluded = %+v, want the two records below 3", report.Excluded)
+	}
+
+	// A value the space does not hold is refused naming the space, and an open region checks its own
+	// first value -- `0-` on this space is not read as "from the beginning".
+	for _, spec := range []string{"0", "0-", "6", "0-5"} {
+		if _, _, err := Select(shelley, spec, false); !errors.Is(err, ErrBadSelection) {
+			t.Errorf("selecting %q on a 1..5 space: err = %v, want a refusal", spec, err)
+		} else if !strings.Contains(err.Error(), "ordinals 1-5") {
+			t.Errorf("selecting %q: %v does not name the space the read supplied", spec, err)
+		}
+	}
+
+	// A space with gaps: an in-space value that names no record selects nothing, while a region that
+	// reaches across a gap carries the records it does hold.
+	gappy := Conversation{Messages: []Message{
+		{Ordinal: 0, Role: "user", Content: "zero"},
+		{Ordinal: 2, Role: "assistant", Content: "two"},
+		{Ordinal: 5, Role: "user", Content: "five"},
+	}}
+	_, report, err = Select(gappy, "0-5", false)
+	if err != nil {
+		t.Fatalf("selecting 0-5 on a gappy space: %v", err)
+	}
+	if report.Space.Contiguous || report.Space.Records != 3 {
+		t.Errorf("space = %+v, want three records that are not contiguous", report.Space)
+	}
+	if len(report.Included.Regions) != 3 {
+		t.Errorf("included regions = %v, want the read's own values spelled one by one", report.Included.Regions)
+	}
+	selected, _, err = Select(gappy, "2-4", false)
+	if err != nil {
+		t.Fatalf("selecting 2-4 on a gappy space: %v", err)
+	}
+	if got := selectionOrdinals(selected); len(got) != 1 || got[0] != 2 {
+		t.Errorf("carried ordinals = %v, want the one record the region holds", got)
+	}
+	if _, _, err := Select(gappy, "1", false); !errors.Is(err, ErrBadSelection) {
+		t.Errorf("selecting a value that falls in the gap: err = %v, want a refusal", err)
+	} else if !strings.Contains(err.Error(), "falls between") {
+		t.Errorf("selecting a value that falls in the gap: %v, want the sentence that names the gap", err)
+	}
+}
+
+// TestSelectionRefusesABadSpecificationBySentence pins D5: an ill-formed specification is refused with the
+// core's own sentence and nothing is carried, instead of being repaired into a spec the caller did not
+// write. Every case names the substring the sentence has to hold, so a refusal that lost its reason is a
+// failing case rather than a passing one.
+func TestSelectionRefusesABadSpecificationBySentence(t *testing.T) {
+	conversation := readSelectionFixture(t)
+	cases := []struct {
+		spec string
+		want string
+	}{
+		{"", "the specification is empty"},
+		{"   ", "the specification is empty"},
+		{"1,", "empty region"},
+		{"a", "is not an ordinal value"},
+		{"1-x", "is not an ordinal value"},
+		{"-3", "is not an ordinal value"},
+		{"1.5", "is not an ordinal value"},
+		{"5-3", "runs backwards"},
+		{"1-2-3", "is not a region"},
+		{"1-3,3", "already names"},
+		{"1-3,2-", "already names"},
+		{"11", "do not hold"},
+		{"3-11", "do not hold"},
+		{"11-", "do not hold"},
+	}
+	for _, testCase := range cases {
+		_, _, err := Select(conversation, testCase.spec, false)
+		if !errors.Is(err, ErrBadSelection) {
+			t.Errorf("selecting %q: err = %v, want ErrBadSelection", testCase.spec, err)
+			continue
+		}
+		if !strings.Contains(err.Error(), testCase.want) {
+			t.Errorf("selecting %q: %v does not hold %q", testCase.spec, err, testCase.want)
+		}
+	}
+
+	// The specifications a caller actually writes are accepted, gaps and all: a region's values do not
+	// have to be a read's own.
+	for _, spec := range []string{"0", "0-3", "0-3,5", "2-3,5-6", "5-", "10", "0-10"} {
+		if _, _, err := Select(conversation, spec, false); err != nil {
+			t.Errorf("selecting %q: err = %v, want it honoured", spec, err)
+		}
+	}
+}
+
+// TestCheckSelectionOptionsRefusesASpecificationWithoutARead pins the half of the grammar that needs no
+// read: a caller embedding the core and one driving the CLI are told the same thing about the same
+// command line, before anything is opened.
+func TestCheckSelectionOptionsRefusesASpecificationWithoutARead(t *testing.T) {
+	if err := CheckSelectionOptions("", false); err != nil {
+		t.Errorf("no selection: err = %v, want it accepted (the flag is absent)", err)
+	}
+	if err := CheckSelectionOptions("0-5", false); err != nil {
+		t.Errorf("a well-formed spec: err = %v, want it accepted", err)
+	}
+	if err := CheckSelectionOptions("5-3", false); !errors.Is(err, ErrBadSelection) {
+		t.Errorf("an inverted region: err = %v, want ErrBadSelection", err)
+	}
+	err := CheckSelectionOptions("", true)
+	if !errors.Is(err, ErrBadSelection) {
+		t.Errorf("--strict-selection without a selection: err = %v, want a refusal", err)
+	} else if !strings.Contains(err.Error(), "--strict-selection") {
+		t.Errorf("--strict-selection without a selection: %v does not name the flag", err)
+	}
+}
+
+// TestSelectionCarriesTheCounterpartOfASeparatedCallAndResult pins the seam's default arm in both
+// directions: a selection that carries a recorded call without its recorded result (or a recorded result
+// without its recorded call) carries the counterpart instead, names it with the ordinal that pulled it in,
+// and the target writer then holds the pair -- not a call whose output stayed behind, and not a tool
+// result the writer could only count as unpaired.
+func TestSelectionCarriesTheCounterpartOfASeparatedCallAndResult(t *testing.T) {
+	conversation := readSelectionFixture(t)
+	cases := []struct {
+		spec      string
+		carried   []int
+		necessity SelectionNecessity
+	}{
+		// The call is selected and its result is not (the result's record is the very next one).
+		{"2", []int{2, 3}, SelectionNecessity{Ordinal: 3, PulledBy: 2}},
+		// The result is selected and its call is not.
+		{"3", []int{2, 3}, SelectionNecessity{Ordinal: 2, PulledBy: 3}},
+		// The second pair straddles a record the provider marked system-injected.
+		{"8", []int{7, 8}, SelectionNecessity{Ordinal: 7, PulledBy: 8}},
+		{"7", []int{7, 8}, SelectionNecessity{Ordinal: 8, PulledBy: 7}},
+	}
+	for _, testCase := range cases {
+		selected, report, err := Select(conversation, testCase.spec, false)
+		if err != nil {
+			t.Fatalf("selecting %q: %v", testCase.spec, err)
+		}
+		if got := selectionOrdinals(selected); len(got) != len(testCase.carried) {
+			t.Errorf("selecting %q: carried ordinals = %v, want %v", testCase.spec, got, testCase.carried)
+		} else {
+			for index, want := range testCase.carried {
+				if got[index] != want {
+					t.Errorf("selecting %q: carried ordinal %d = %d, want %d", testCase.spec, index, got[index], want)
+				}
+			}
+		}
+		if report.NecessitiesAdded.Count != 1 || len(report.NecessitiesAdded.Added) != 1 ||
+			report.NecessitiesAdded.Added[0] != testCase.necessity {
+			t.Errorf("selecting %q: necessities = %+v, want %+v", testCase.spec,
+				report.NecessitiesAdded, testCase.necessity)
+		}
+		if report.Included.Count != 1 {
+			t.Errorf("selecting %q: included = %+v, want the one record the spec named", testCase.spec, report.Included)
+		}
+	}
+
+	// The pair reaches the target as a pair: the writer holds the call and one output for it, and counts
+	// no unpaired result.
+	selected, _, err := Select(conversation, "2", false)
+	if err != nil {
+		t.Fatalf("selecting 2: %v", err)
+	}
+	for _, target := range Targets() {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(selected, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the selection: %v", target, err)
+		}
+		if converted.Carried.ToolCalls != 1 || converted.Carried.ToolResults != 1 {
+			t.Errorf("%s: carried = %+v, want the call and the one result the necessity carried",
+				target, converted.Carried)
+		}
+		if count := lossCount(t, converted.Losses, "unpaired_tool_results").Count; count != 0 {
+			t.Errorf("%s: unpaired_tool_results = %d, want 0: the counterpart rule carried the call the "+
+				"result answers", target, count)
+		}
+		bytes := string(converted.Data)
+		for _, want := range []string{selectionBuildCallID, selectionBuildResult} {
+			if !strings.Contains(bytes, want) {
+				t.Errorf("%s: the written document does not hold %q", target, want)
+			}
+		}
+	}
+}
+
+// TestSelectionCarriesASystemRecordAndReportsUndischargedCalls pins the two dispositions the seam does not
+// change: a compaction boundary and a system record the selection names travel as the records they are,
+// and a call the source itself left undischarged stays exactly as it is and is counted -- the counterpart
+// rule cannot carry a result the read never held.
+func TestSelectionCarriesASystemRecordAndReportsUndischargedCalls(t *testing.T) {
+	conversation := readSelectionFixture(t)
+
+	// The undischarged call alone: it is carried, and the report names it.
+	selected, report, err := Select(conversation, "5", false)
+	if err != nil {
+		t.Fatalf("selecting 5: %v", err)
+	}
+	if got := selectionOrdinals(selected); len(got) != 1 || got[0] != 5 {
+		t.Errorf("carried ordinals = %v, want the record that made the call", got)
+	}
+	if report.CallsUndischarged.Count != 1 || strings.Join(report.CallsUndischarged.Regions, ",") != "5" {
+		t.Errorf("calls_undischarged = %+v, want the one call the source never answered, at ordinal 5",
+			report.CallsUndischarged)
+	}
+	if report.NecessitiesAdded.Count != 0 {
+		t.Errorf("necessities = %+v, want none: the read holds no result for that call",
+			report.NecessitiesAdded)
+	}
+	rollout, err := ConvertToCodexRollout(selected, CodexTargetOptions{CLIVersion: "selection-test-0.0"})
+	if err != nil {
+		t.Fatalf("converting the undischarged call: %v", err)
+	}
+	if rollout.Carried.ToolCalls != 1 || rollout.Carried.ToolResults != 0 {
+		t.Errorf("carried = %+v, want the call alone", rollout.Carried)
+	}
+	if !strings.Contains(string(rollout.Data), selectionReadCallID) {
+		t.Error("the written document does not hold the undischarged call's own id")
+	}
+
+	// A window that holds the boundary, the second pair and the system record: everything the window names
+	// travels, the undischarged call inside it is still counted, and nothing is added.
+	selected, report, err = Select(conversation, "5-10", false)
+	if err != nil {
+		t.Fatalf("selecting 5-10: %v", err)
+	}
+	if got := selectionOrdinals(selected); len(got) != 6 {
+		t.Errorf("carried ordinals = %v, want the six records of the window", got)
+	}
+	if report.CallsUndischarged.Count != 1 {
+		t.Errorf("calls_undischarged = %+v, want the one call inside the window", report.CallsUndischarged)
+	}
+	if report.NecessitiesAdded.Count != 0 || report.Excluded.Count != 5 {
+		t.Errorf("report = %+v, want no necessity and the five records before the window excluded", report)
+	}
+	for _, target := range Targets() {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(selected, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the window: %v", target, err)
+		}
+		if converted.Carried.CompactionBoundaries != 1 {
+			t.Errorf("%s: carried = %+v, want the one compaction boundary inside the window",
+				target, converted.Carried)
+		}
+		// Both calls inside the window reach the target, and the one result the read holds for them: the
+		// read call is the call the source never answered. OpenCode's own format is the exception, and its
+		// own report says why: the harness's importer accepts only a completed or failed tool state, so a
+		// call with no outcome has no shape there and is left out and counted (unpaired_tool_calls).
+		wantCalls, wantResults := 2, 1
+		if target == TargetOpenCode {
+			wantCalls = 1
+		}
+		if converted.Carried.ToolCalls != wantCalls || converted.Carried.ToolResults != wantResults {
+			t.Errorf("%s: carried = %+v, want %d call(s) with the %d result(s) the read holds for them",
+				target, converted.Carried, wantCalls, wantResults)
+		}
+		if target == TargetOpenCode {
+			if count := lossCount(t, converted.Losses, "unpaired_tool_calls").Count; count != 1 {
+				t.Errorf("%s: unpaired_tool_calls = %d, want the undischarged call counted by the route "+
+					"whose format has no state for it", target, count)
+			}
+		}
+		bytes := string(converted.Data)
+		held := []string{selectionCapCallID, selectionCapResult}
+		if target != TargetOpenCode {
+			held = append(held, selectionReadCallID)
+		}
+		for _, want := range held {
+			if !strings.Contains(bytes, want) {
+				t.Errorf("%s: the written document does not hold %q", target, want)
+			}
+		}
+		if target == TargetOpenCode && strings.Contains(bytes, selectionReadCallID) {
+			t.Errorf("%s: the written document holds the undischarged call's id, which this route's own "+
+				"report says it cannot write", target)
+		}
+		// The system record's own text is not dialogue: the target writes its tool evidence and the record
+		// itself travels as the system record it is (or is counted), so the case asserts the *record*, not
+		// a text every format family renders differently.
+		for _, unwanted := range []string{selectionQuestion, selectionBuildResult} {
+			if strings.Contains(bytes, unwanted) {
+				t.Errorf("%s: the written document holds %q, which the selection excluded", target, unwanted)
+			}
+		}
+	}
+}
+
+// TestSelectionRefusesASeparatedPairUnderStrictSelection pins D3's second direction: the same selection
+// with --strict-selection is refused by name, naming the calls and both ordinals, before anything is
+// carried -- and a selection that separates nothing is honoured with the flag set.
+func TestSelectionRefusesASeparatedPairUnderStrictSelection(t *testing.T) {
+	conversation := readSelectionFixture(t)
+	cases := []struct {
+		spec string
+		call string
+		want string
+	}{
+		{"2", selectionBuildCallID, "is selected and its recorded result"},
+		{"3", selectionBuildCallID, "is selected and the call itself"},
+		{"7", selectionCapCallID, "is selected and its recorded result"},
+		{"8", selectionCapCallID, "is selected and the call itself"},
+	}
+	for _, testCase := range cases {
+		selected, report, err := Select(conversation, testCase.spec, true)
+		if !errors.Is(err, ErrStrictSelection) {
+			t.Errorf("strictly selecting %q: err = %v, want ErrStrictSelection", testCase.spec, err)
+			continue
+		}
+		for _, want := range []string{testCase.call, testCase.want, "--strict-selection"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("strictly selecting %q: %v does not hold %q", testCase.spec, err, want)
+			}
+		}
+		if len(selected.Messages) != 0 || report.Spec != "" {
+			t.Errorf("strictly selecting %q: a refused selection answered a conversation and a report",
+				testCase.spec)
+		}
+	}
+
+	// A selection that separates nothing is honoured, and the report says which arm ran.
+	selected, report, err := Select(conversation, "2-3", true)
+	if err != nil {
+		t.Fatalf("strictly selecting an unseparated pair: %v", err)
+	}
+	if got := selectionOrdinals(selected); len(got) != 2 {
+		t.Errorf("carried ordinals = %v, want both records of the pair", got)
+	}
+	if !report.Strict {
+		t.Error("the report does not say the strict arm ran")
+	}
+	// The whole session, and a window that holds every pair, are unseparated too.
+	for _, spec := range []string{"0-10", "5-10", "2-3,7-8"} {
+		if _, _, err := Select(conversation, spec, true); err != nil {
+			t.Errorf("strictly selecting %q: err = %v, want it honoured", spec, err)
+		}
+	}
+}
+
+// TestSelectionReportsClassesThatReconcileWithTheRead pins D2's arithmetic: the three record classes are a
+// partition of the read's own records, each necessity names the ordinal that pulled it in, and the
+// conversation the writer is handed holds exactly the included records and the necessities. It runs over
+// two source shapes on purpose: the Claude fixture, whose call and result live in different records (so the
+// necessity machinery is exercised), and the committed OpenCode document, whose reader answers a call and
+// its result events on the *same* record (so the seam's unit -- the record -- keeps a structure the
+// document already holds whole).
+func TestSelectionReportsClassesThatReconcileWithTheRead(t *testing.T) {
+	conversation := readSelectionFixture(t)
+	present := map[int]bool{}
+	for _, message := range conversation.Messages {
+		present[message.Ordinal] = true
+	}
+	for _, spec := range []string{"0", "2", "3", "5-10", "0-3,7-8", "0-10"} {
+		selected, report, err := Select(conversation, spec, false)
+		if err != nil {
+			t.Fatalf("selecting %q: %v", spec, err)
+		}
+		if got := report.Included.Count + report.NecessitiesAdded.Count + report.Excluded.Count; got != len(conversation.Messages) {
+			t.Errorf("selecting %q: %d + %d + %d = %d, want the read's %d record(s)", spec,
+				report.Included.Count, report.NecessitiesAdded.Count, report.Excluded.Count, got,
+				len(conversation.Messages))
+		}
+		if got := len(selected.Messages); got != report.Included.Count+report.NecessitiesAdded.Count {
+			t.Errorf("selecting %q: the writer was handed %d record(s), want the %d included plus the %d "+
+				"necessit%s", spec, got, report.Included.Count, report.NecessitiesAdded.Count,
+				map[bool]string{true: "y", false: "ies"}[report.NecessitiesAdded.Count == 1])
+		}
+		carried := map[int]bool{}
+		for _, message := range selected.Messages {
+			carried[message.Ordinal] = true
+		}
+		for _, added := range report.NecessitiesAdded.Added {
+			if !present[added.Ordinal] || !present[added.PulledBy] {
+				t.Errorf("selecting %q: necessity %+v names an ordinal the read does not hold",
+					spec, added)
+			}
+		}
+		for _, regions := range []SelectionClass{report.Included, report.Excluded, report.CallsUndischarged} {
+			for _, region := range regions.Regions {
+				for _, ordinal := range regionOrdinals(t, region) {
+					if !present[ordinal] {
+						t.Errorf("selecting %q: the report names ordinal %d, which the read does not hold",
+							spec, ordinal)
+					}
+				}
+			}
+		}
+		// Every included ordinal and every necessity is carried, and nothing else is.
+		included := map[int]bool{}
+		for _, region := range report.Included.Regions {
+			for _, ordinal := range regionOrdinals(t, region) {
+				included[ordinal] = true
+			}
+		}
+		for _, added := range report.NecessitiesAdded.Added {
+			included[added.Ordinal] = true
+		}
+		if len(included) != len(carried) {
+			t.Errorf("selecting %q: carried ordinals = %v, want the included and necessary records %v",
+				spec, carried, included)
+		}
+		for ordinal := range carried {
+			if !included[ordinal] {
+				t.Errorf("selecting %q: ordinal %d was carried and no class names it", spec, ordinal)
+			}
+		}
+	}
+
+	// The second shape: the OpenCode document's own read, whose tool-bearing record holds the call *and*
+	// both of its result events (the reader's progress event and the terminal one). A selection naming that
+	// record carries the whole structure without a necessity, because the document already holds it in one
+	// record -- and the classes still partition the read.
+	source := readOpenCodeSourceFixture(t, openCodeSourceStore(t, openCodeSourceFixtureDocument(t)))
+	if len(source.Messages) < 2 {
+		t.Fatalf("the OpenCode fixture read holds %d message(s), want the documented conversation",
+			len(source.Messages))
+	}
+	toolRecord := -1
+	for index, message := range source.Messages {
+		if len(message.ToolCalls) > 0 || len(message.ToolResults) > 0 {
+			toolRecord = index
+		}
+	}
+	if toolRecord < 0 {
+		t.Fatal("the OpenCode fixture read holds no tool evidence: the arm would check nothing")
+	}
+	selected, report, err := Select(source, strconv.Itoa(source.Messages[toolRecord].Ordinal), false)
+	if err != nil {
+		t.Fatalf("selecting the OpenCode read's tool record: %v", err)
+	}
+	if len(selected.Messages) != 1 {
+		t.Errorf("carried %d record(s) of the OpenCode read, want the one the specification named",
+			len(selected.Messages))
+	}
+	if report.NecessitiesAdded.Count != 0 {
+		t.Errorf("necessities = %+v, want none: the read holds that call and its results in one record",
+			report.NecessitiesAdded)
+	}
+	if report.CallsUndischarged.Count != 0 {
+		t.Errorf("calls_undischarged = %+v, want none: the record's call has its recorded results with it",
+			report.CallsUndischarged)
+	}
+	if carried := len(selected.Messages[0].ToolCalls) + len(selected.Messages[0].ToolResults); carried != 3 {
+		t.Errorf("the carried record holds %d piece(s) of tool evidence, want the call and its two result "+
+			"events", carried)
+	}
+	if report.Included.Count+report.NecessitiesAdded.Count+report.Excluded.Count != len(source.Messages) {
+		t.Errorf("the OpenCode read's classes account for %d of its %d records",
+			report.Included.Count+report.NecessitiesAdded.Count+report.Excluded.Count, len(source.Messages))
+	}
+}
+
+// regionOrdinals reads one spelled region back into the ordinal values it names, so a case can check a
+// report's own spelling rather than compare strings the report happens to produce.
+func regionOrdinals(t *testing.T, region string) []int {
+	t.Helper()
+	regions, err := parseSelectionSpec(region)
+	if err != nil {
+		t.Fatalf("the report spells %q, which the specification's own grammar does not read: %v", region, err)
+	}
+	var ordinals []int
+	for _, parsed := range regions {
+		if parsed.open {
+			t.Fatalf("the report spells an open region %q, which names no bounded set of ordinals", region)
+		}
+		for value := parsed.first; value <= parsed.last; value++ {
+			ordinals = append(ordinals, value)
+		}
+	}
+	return ordinals
+}
+
+// TestSelectionWritesExactlyTheSelectedOrdinals pins D1's reproduction half over every route: the written
+// document holds the evidence of exactly the selected records (and the counterparts a recorded pair
+// required) and the evidence of no excluded record, so "the selection reproduced the selected ordinals"
+// is read off the target's own bytes rather than off the conversation this build built.
+//
+// One shape is not the selection's to write: a call the source never answered has no state in OpenCode's
+// own format (measured on 2.2.5 -- its importer accepts only a completed or failed tool state), so that
+// route leaves the call out and counts it under its own category. The case pins both halves: the route
+// does not hold the call, and its report counts the omission by name.
+func TestSelectionWritesExactlyTheSelectedOrdinals(t *testing.T) {
+	conversation := readSelectionFixture(t)
+	type omission struct {
+		evidence string
+		category string
+	}
+	cases := []struct {
+		spec   string
+		held   []string
+		absent []string
+		// omitted is keyed by route: the evidence that route's own format cannot hold, with the loss
+		// category its report counts the omission under.
+		omitted map[string]omission
+	}{
+		{
+			// The call alone: the result's own record is the necessity that travels with it, and every
+			// other record's words -- the first prompt, the assistant's turns, the later question and its
+			// answer -- stay out of the target.
+			spec: "2",
+			held: []string{selectionBuildCallID, selectionBuildResult},
+			absent: []string{selectionQuestion, "Starting the build now.", "The build finished.",
+				selectionReadCallID, selectionCapCallID, selectionFollowup, selectionAnswer, selectionSummary},
+		},
+		{
+			// The undischarged call alone: it travels, and nothing else does.
+			spec:   "5",
+			held:   []string{selectionReadCallID},
+			absent: []string{selectionBuildCallID, selectionCapCallID, selectionFollowup, selectionAnswer},
+			omitted: map[string]omission{
+				TargetOpenCode: {evidence: selectionReadCallID, category: "unpaired_tool_calls"},
+			},
+		},
+		{
+			// A window that holds one whole pair: both halves travel, the earlier pair stays behind.
+			spec:   "7-8",
+			held:   []string{selectionCapCallID, selectionCapResult},
+			absent: []string{selectionBuildCallID, selectionBuildResult, selectionFollowup, selectionAnswer},
+		},
+	}
+	for _, testCase := range cases {
+		selected, _, err := Select(conversation, testCase.spec, false)
+		if err != nil {
+			t.Fatalf("selecting %q: %v", testCase.spec, err)
+		}
+		for _, target := range Targets() {
+			route, err := targetRouteFor(target)
+			if err != nil {
+				t.Fatalf("route %s: %v", target, err)
+			}
+			converted, err := route.Convert(selected, selectionProbeOptions())
+			if err != nil {
+				t.Fatalf("%s: converting the selection %q: %v", target, testCase.spec, err)
+			}
+			bytes := string(converted.Data)
+			omitted := testCase.omitted[target]
+			for _, want := range testCase.held {
+				if want == omitted.evidence {
+					continue
+				}
+				if !strings.Contains(bytes, want) {
+					t.Errorf("%s: selecting %q wrote a document without %q", target, testCase.spec, want)
+				}
+			}
+			if omitted.evidence != "" {
+				if strings.Contains(bytes, omitted.evidence) {
+					t.Errorf("%s: selecting %q wrote a document holding %q, which this route's own report "+
+						"says it cannot write", target, testCase.spec, omitted.evidence)
+				}
+				if count := lossCount(t, converted.Losses, omitted.category).Count; count == 0 {
+					t.Errorf("%s: selecting %q does not count the %q omission under %q", target,
+						testCase.spec, omitted.evidence, omitted.category)
+				}
+			}
+			for _, unwanted := range testCase.absent {
+				if strings.Contains(bytes, unwanted) {
+					t.Errorf("%s: selecting %q wrote a document holding %q, which the selection excluded",
+						target, testCase.spec, unwanted)
+				}
+			}
+		}
+	}
+}

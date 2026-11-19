@@ -26,6 +26,8 @@ bin/ccc continue pi:01a1c335-7098-71c2-a91b-b5295c0464f5 --to omp         # Pi �
 bin/ccc continue omp:01a1c338-9e4f-7c21-8f3d-2b6a05e1d7a4 --to claude     # Oh My Pi → Claude Code
 bin/ccc continue claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to opencode # Claude Code → OpenCode
 bin/ccc continue opencode:ses_5f2a1c47d9e34b6a8f0c1d2e3b4a5c6d --to codex # OpenCode → Codex
+bin/ccc continue claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to codex \
+  --select 0-2,7-9                            # carry only these records of the read
 # resume the Claude session this installed, from the directory its loader discovers it in:
 cd <session working directory> && CLAUDE_CONFIG_DIR=<installed home> claude --resume <new session id>
 # and the Pi one, from the directory that harness resolves a session id through:
@@ -115,6 +117,20 @@ asked and the verification ran — or the spelling given here when it found none
 keep the spelling given here (or `codex`), because only the invocations that change into the session's
 working directory need a path that cannot be re-resolved from there.
 
+`--select SPEC` carries only the records of the read the specification names, as ordinal values and
+regions separated by commas (`5`, `3-7`, `12-` — the last from that value through every higher one the
+read holds): the ordinals are the values the *read* supplied, printed by the run's own `selection:` line,
+never a position and never the target's post-write numbering. A recorded tool call and its recorded result
+are one structure — a selection that would split a pair carries the counterpart instead and names it a
+necessity with the ordinal that pulled it in — and `--strict-selection` refuses such a selection by name
+before anything is installed instead. A call the source itself never answered stays as it is and is
+counted (`calls_undischarged`). Every run that carried a selection reports the transformation in both the
+human block and `--json`: the space the spec was written against, the included and excluded records, the
+necessities added and the undischarged calls, each with counts and the ordinals it names — so a caller can
+see exactly which recorded context crossed and which stayed behind. An ill-formed specification, one naming
+an ordinal the read does not hold and one that would carry no record at all are refused with the core's own
+sentence and exit code 2, before anything is written; a run without the flag is unchanged.
+
 A conversion is a snapshot of the source at one moment, and it says where that moment is: the result
 names the boundary it covers — the source file's `sha256` and size, whether the file is still the size
 the read's own snapshot recorded (a size match, not a byte-identity check), and, for a transcript whose
@@ -137,8 +153,9 @@ Conversation document,
 target writer, `ConvertToCodexRollout`/`ConvertToClaudeTranscript`/`ConvertToPiSession`/`ConvertToOMPSession`/
 `ConvertToOpenCodeSession`
 convert into the five target formats (a Codex rollout, a Claude Code transcript, the Pi family's two: a
-Pi session and an Oh My Pi session, and OpenCode's own import document), and `Inspect` is what the
-`inspect` command calls. Further targets
+Pi session and an Oh My Pi session, and OpenCode's own import document), `Inspect` is what the
+`inspect` command calls, and `Select` is the opt-in reduction `--select` applies between the read and the
+writer. Further targets
 (GitHub Copilot CLI, …) arrive with the goals that specify them.
 
 - Design and scope: [`docs/core-design/README.md`](docs/core-design/README.md)

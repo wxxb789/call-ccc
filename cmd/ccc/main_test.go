@@ -778,6 +778,38 @@ type reportedContinueDocument struct {
 			UnterminatedTailBytes     int64  `json:"unterminated_tail_bytes"`
 		} `json:"boundary"`
 	} `json:"source"`
+	// Selection is the report's own section for a run that carried a selection; a run without the flag
+	// has no section at all, which is the shape a consumer tells the two apart by (the member is a
+	// pointer for exactly that reason).
+	Selection *struct {
+		Spec         string `json:"spec"`
+		Strict       bool   `json:"strict"`
+		OrdinalSpace struct {
+			Min        int  `json:"min"`
+			Max        int  `json:"max"`
+			Records    int  `json:"records"`
+			Contiguous bool `json:"contiguous"`
+		} `json:"ordinal_space"`
+		Included struct {
+			Count   int      `json:"count"`
+			Regions []string `json:"regions"`
+		} `json:"included"`
+		Excluded struct {
+			Count   int      `json:"count"`
+			Regions []string `json:"regions"`
+		} `json:"excluded"`
+		NecessitiesAdded struct {
+			Count int `json:"count"`
+			Added []struct {
+				Ordinal  int `json:"ordinal"`
+				PulledBy int `json:"pulled_by"`
+			} `json:"added"`
+		} `json:"necessities_added"`
+		CallsUndischarged struct {
+			Count   int      `json:"count"`
+			Regions []string `json:"regions"`
+		} `json:"calls_undischarged"`
+	} `json:"selection"`
 	Conversion struct {
 		State    string `json:"state"`
 		Format   string `json:"format"`

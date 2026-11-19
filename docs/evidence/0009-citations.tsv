@@ -1,0 +1,49 @@
+# Obligation citations — goal 0009 (select which recorded context crosses a harness boundary).
+#
+# One row per rule of this increment that a gate-runnable Go test discharges, in the four id spaces the
+# increment's rules come from:
+#   D1–D5   the goal's five `Done when` clauses, in order (docs/goals/0009-selective-context.md).
+#           D5's arms are split so each refusal shape has its own row and its own test (an ill-formed
+#           specification; the grammar half answered without a read; the usage exit code and "nothing was
+#           written" asserted through the CLI), and D3's two arms (the counterpart carried, the strict
+#           refusal) are two rows as well, because the goal proves them "in both directions";
+#   B1–B2   the goal's two `Bounds` clauses, in order;
+#   S1–S4   the rules of AGENTS.md's selection paragraph ("A conversion carries only what the caller
+#           selected …"), in the paragraph's own order — the opt-in flag with the untouched default path
+#           and the read's own ordinal space; the recorded-link seam (a call and its result carried
+#           together, the counterpart named with the ordinal that pulled it in); the refusals (the core's
+#           own sentence, the usage exit code, nothing installed) and the strict arm; the report's four
+#           classes with the transformation named in both surfaces.
+#
+# scripts/obligation-citations.py is the arbiter: every row's cited test must exist in the named package
+# and run and pass, and the `citations` step is required — a tree that lost this file, or a citation that
+# went stale, fails the gate instead of passing partially. Columns: rule_id, test, package, artifact.
+# Tab-separated; `#` comments and blank lines are ignored; a rule id appears once.
+#
+# Deliberately not covered, with the reason (form-based: a row is one Go test in a package
+# scripts/gate-targets.txt covers, so a rule whose gate evidence is a throw-away probe, a native harness
+# run, or a python case the required `selftest` step runs cannot hold one):
+#   D4 — "a run without a selection flag is byte-identical to the same run before the change". Its evidence
+#          is the throw-away before/after probe docs/evidence/0009-selective-context.md §4 quotes: one test
+#          file converting documents through the five routes and through the pipeline itself, the flag
+#          absent in every run, run on HEAD's tree and on this one, with the two runs' printed lines and
+#          normalized written bytes diffed. A probe that must exist only between two revisions is not a
+#          gate step's subject, which is the same form-based carve-out 0007 and 0008's manifests state.
+#   D1's native half — "the target is natively loadable": the evidence is the recorded run's
+#          `verification.load: verified` (Codex's own app server, `thread/resume`, quoted with its version
+#          in the record's §1). A native harness run is deliberately not a gate step.
+rule_id	test	package	artifact
+D1	TestSelectionWritesExactlyTheSelectedOrdinals	./internal/ccc	0009-selective-context.md §Done when 1 (the selected ordinals and the disclosed necessity are exactly what each of the five routes writes; the native load result is the recorded run, named above)
+D2	TestContinueWithASelectionCarriesTheSelectedRecordsAndReportsTheClasses	./cmd/ccc	0009-selective-context.md §Done when 2 (the four classes with counts and regions in `--json` and in the human block)
+D2-reconcile	TestSelectionReportsClassesThatReconcileWithTheRead	./internal/ccc	0009-selective-context.md §Done when 2 (the classes are a partition of the read's own records and the writer is handed exactly the included ones plus the necessities)
+D3-counterpart	TestSelectionCarriesTheCounterpartOfASeparatedCallAndResult	./internal/ccc	0009-selective-context.md §Done when 3 (the default arm: the counterpart is carried in both directions and named with its puller, and the target holds the pair)
+D3-strict	TestSelectionRefusesASeparatedPairUnderStrictSelection	./internal/ccc	0009-selective-context.md §Done when 3 (the strict arm: the same selection is refused by name, naming the call and both ordinals)
+D5-syntax	TestSelectionRefusesABadSpecificationBySentence	./internal/ccc	0009-selective-context.md §Done when 5 (the ill-formed arms — non-numeric, inverted, duplicated, empty — each refused with the core's own sentence)
+D5-space	TestCheckSelectionOptionsRefusesASpecificationWithoutARead	./internal/ccc	0009-selective-context.md §Done when 5 (the grammar half is answered without a read, so a caller embedding the core and one driving the CLI get the same sentence)
+D5-no-install	TestContinueRefusesABadSelectionBeforeInstalling	./cmd/ccc	0009-selective-context.md §Done when 5 (the usage exit code, the core's sentence and "nothing was written" asserted through the CLI for every refusal arm)
+B1	TestSelectionMatchesTheOrdinalValuesTheReadSupplied	./internal/ccc	0009-selective-context.md §Bounds 1 (the selector is a pure function of the recorded document: the read's own ordinal values, nothing renumbered, gaps and all)
+B2	TestSelectionCarriesASystemRecordAndReportsUndischargedCalls	./internal/ccc	0009-selective-context.md §Bounds 2 (a call the source left undischarged keeps its shape and is counted instead of a result being invented, and a boundary/system record travels as the records they are)
+S1	TestContinueWithoutASelectionReportsNoSelection	./cmd/ccc	AGENTS.md §A conversion carries only what the caller selected … (the flag is opt-in: an unflagged run has no selection section and a specification naming every record converts what it converts)
+S2	TestSelectionCarriesTheCounterpartOfASeparatedCallAndResult	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (the recorded-link seam; an id-less record carries no link, so the writer's own disclosed inference reads the selected line)
+S3	TestContinueRefusesABadSelectionBeforeInstalling	./cmd/ccc	AGENTS.md §A conversion carries only what the caller selected … (a bad selection is refused, never repaired, before any install, with the usage exit code)
+S4	TestSelectionMatchesTheOrdinalValuesTheReadSupplied	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (the report's classes and the space a specification is written against, from the read's own values)

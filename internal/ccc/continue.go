@@ -232,6 +232,15 @@ type ContinueOptions struct {
 
 	// DryRun converts and reports without installing anything.
 	DryRun bool
+	// Selection names which of the read's own records to carry, as a specification of ordinal values and
+	// regions ("0-5,9,12-"); empty means the whole read, exactly as a conversion behaved before the
+	// option existed. The ordinals are the values the read supplied (Message.Ordinal), never a position,
+	// and a record the spec did not name is carried when a recorded call or result it is paired with is
+	// (Select).
+	Selection string
+	// StrictSelection refuses a selection that would carry a recorded call without its recorded result
+	// (or the reverse), by name and before anything is installed, instead of carrying the counterpart.
+	StrictSelection bool
 	// Verify is "none", "load" (default) or "resume".
 	Verify string
 	// ResumePrompt is the turn a "resume" verification runs. It is required for that level, because the
@@ -338,6 +347,7 @@ type ContinueResult struct {
 	Ref           Ref                `json:"ref"`
 	Target        string             `json:"target"`
 	Source        *SessionReport     `json:"source,omitempty"`
+	Selection     *SelectionReport   `json:"selection,omitempty"`
 	Conversion    ConversionReport   `json:"conversion"`
 	TargetSession TargetReport       `json:"target_session"`
 	Installation  InstallationReport `json:"installation"`
@@ -379,6 +389,9 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 		return ContinueResult{}, err
 	}
 	if err := CheckVerifyOptions(opts.Verify, opts.ResumePrompt); err != nil {
+		return ContinueResult{}, err
+	}
+	if err := CheckSelectionOptions(opts.Selection, opts.StrictSelection); err != nil {
 		return ContinueResult{}, err
 	}
 	level := strings.ToLower(strings.TrimSpace(opts.Verify))
@@ -461,6 +474,22 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 	}
 	if leaf.Warning != "" {
 		result.Warnings = append(result.Warnings, leaf.Warning)
+	}
+
+	// The selection, when the caller named one, is applied here: after the read and the boundary, because
+	// it is a transformation of the *document* (the source file's bytes are measured whole and never
+	// rewritten), and before the target's own harness is asked anything, because everything downstream --
+	// the writer, the structural read-back, the load check, the printed invocation -- is about the
+	// session that is actually written. Nothing is installed before this point and a refusal returns here,
+	// so a spec this build cannot honour costs no file, no store row and no target identity.
+	if strings.TrimSpace(opts.Selection) != "" {
+		selected, report, err := Select(conversation, opts.Selection, opts.StrictSelection)
+		if err != nil {
+			return ContinueResult{}, err
+		}
+		conversation = selected
+		result.Selection = &report
+		result.Warnings = append(result.Warnings, selectionWarnings(&report)...)
 	}
 
 	// What only the target's own harness can answer (Codex: the model provider its loader checks). It is
