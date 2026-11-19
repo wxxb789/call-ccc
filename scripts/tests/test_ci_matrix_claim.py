@@ -12,12 +12,41 @@ a section naming a runner the matrix does not hold, a trigger or a step that nar
 claims, or a section that stops stating the gap.
 
 The reader fails closed: it reads a workflow structurally — the trigger block, the one matrix (its
-``os:`` list and every ``include:``/``exclude:`` entry, combined as ``os ∪ include − exclude`` whatever
-their order), each job's ``runs-on: ${{ matrix.os }}``, each job's steps, and every step's own ``run:``
-value — and refuses, as a failing case naming the shape, everything it does not read exactly: another
-spelling or value of ``runs-on``, a block scalar, a quoted or block label list, a step-level
-``if:``/``continue-on-error:``, a trigger block outside the shape §CI states, a second ``matrix:``, a
-job, step or matrix key it does not know. Reading past such a shape would pass this pin without holding
+``os:`` list with every ``include:``/``exclude:`` entry), each job's ``runs-on: ${{ matrix.os }}``,
+each job's steps, and every step's own ``run:`` value — and refuses, as a failing case naming the
+shape, everything it does not read exactly. What it reads, it reads as GitHub's own documented
+semantics:
+
+- **the matrix's legs are ``(os − exclude) ∪ include``, key order irrelevant.** ``exclude:`` entries
+  remove the base ``os:`` labels they name, and every ``include:`` entry is processed *after* them (the
+  workflow-syntax reference, ``strategy.matrix.exclude``: "All ``include`` combinations are processed
+  after ``exclude``. This allows you to use ``include`` to add back combinations that were previously
+  excluded."), so a label both excluded and included is a leg GitHub runs. A label named twice on the
+  adding side — twice in ``os:``, or by an ``include:`` entry that is already a leg — is refused: the
+  combination count GitHub schedules then no longer matches the set of runners this pin reads, and
+  GitHub's merge rule for a repeated label has one spelling that adds no job and one that adds another.
+- **``runs-on:``** is exactly the matrix reference, read as the one-line scalar it is.
+- **each step's ``run:``** is its whole one-line scalar, so the gate command is compared character for
+  character.
+- **the trigger block**: ``pull_request:`` bare, and ``push:`` whose ``branches:`` list holds the
+  literal pattern ``main``. GitHub's branch patterns are ordered and globbed — "the order that you
+  define patterns matters", and a ``!`` pattern after a positive match removes it — so a
+  ``!``-prefixed pattern and a pattern with a glob character are refused rather than approximated;
+  with only literal patterns, ``main``'s presence is exactly GitHub's answer.
+- **quotes are YAML's syntax only where they enclose a whole scalar**: ``'ubuntu-latest'`` is the label
+  ``ubuntu-latest``, while ``windows-'latest'`` is a plain scalar whose quote characters are literal —
+  the label GitHub receives — and a quoted form the pin cannot read (a YAML escape, a quote left open,
+  text after the close, an empty quoted item) is refused.
+- **the Markdown claim side**: a runner named in §CI is read as GitHub's own docs spell one — the
+  hosted ``ubuntu``/``windows``/``macos`` families with a version, ``latest`` or ``slim``, and the
+  ``self-hosted`` class — and the section's set must be exactly the matrix's runners; a custom label
+  string is not a spelling this pin reads (stated here, not hidden).
+
+Everything else it can meet is refused by name — a block scalar or block value where a one-line scalar
+stands, another spelling or value of ``runs-on``, a step-level or job-level ``if:``/
+``continue-on-error:``, a ``pull_request:`` filter, a ``push:`` key other than ``branches:``, a trigger
+it does not read, a second job or ``matrix:``, a job, step or matrix key it does not know, a key spelled
+with a quote or a space before its colon. Reading past such a shape would pass this pin without holding
 the claim it exists for.
 
 Two limits are the pin's own, stated rather than hidden. It reads raw text, so it cannot see Markdown
@@ -72,10 +101,12 @@ RETIRED_RUNNER = "macos-latest"
 #: not their line.
 NO_MACOS_RUNNER = "macOS is not verified on a runner"
 
-#: A runner label, as GitHub's own hosted labels are spelled: a family (``ubuntu``/``windows``/
-#: ``macos``) with a version or ``latest``. Both families a matrix could name — ``macos-14`` as much as
-#: ``macos-latest`` — are read, so a document sentence naming one the matrix does not hold is caught.
-_RUNNER_LABEL = re.compile(r"\b(?:ubuntu|windows|macos)-(?:latest|[0-9][0-9.]*)\b")
+#: A runner label, as GitHub's own docs spell one: a hosted family (``ubuntu``/``windows``/``macos``)
+#: with a version, ``latest`` or ``slim``, or the ``self-hosted`` label class. A document sentence
+#: naming a runner the matrix does not hold must be caught — ``macos-14`` as much as ``macos-latest`` —
+#: so the check reads every family a matrix could name; a label spelled outside these (a custom label
+#: string) is not a spelling this pin reads, and that boundary is stated in its docstring.
+_RUNNER_LABEL = re.compile(r"\b(?:ubuntu|windows|macos)-(?:latest|slim|[0-9][0-9.]*)\b|\bself-hosted\b")
 
 #: The markers a §Platform sentence naming a runner the matrix does not hold must carry: the mention is
 #: then the history it is (a leg's own red at a past head, the repair it forced), not a present-tense
@@ -102,10 +133,18 @@ _READ_KEYS = frozenset({
 #: it meets one, because the text under it is not the one-line value every check here reads.
 _BLOCK_SCALAR = re.compile(r"[|>][0-9]*[+-]?")
 
-#: A runner label's own spelling, after quotes are stripped: alphanumerics with ``.`` and ``-``. A token
-#: holding a comma, a space, a bracket or any other character is refused — a quoted scalar that GitHub
-#: would take for one unrecognized label must not be read as two.
+#: A runner label's own spelling: alphanumerics with ``.`` and ``-``. A token holding a comma, a space,
+#: a quote or any other character is refused — a quoted scalar that GitHub would take for one
+#: unrecognized label must not be read as two, and ``windows-'latest'`` is a plain scalar's spelling,
+#: whose quotes are literal characters of the label GitHub receives.
 _LABEL_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+#: The characters GitHub's branch-pattern globs use — ``*``, ``**``, ``?``, ``+``, ``[…]`` character
+#: ranges, and ``\`` escapes (the workflow-syntax reference's filter-pattern cheat sheet). A pattern
+#: holding one is refused: the pin's proof that a push to ``main`` runs the gate is the literal pattern
+#: ``main``, and a glob would need GitHub's own matcher. A ``!``-prefixed pattern is refused beside
+#: this, against GitHub's ordered rule ("The order that you define patterns matters").
+_BRANCH_GLOB = re.compile(r"[*?\[\]+\\]")
 
 
 def _key(body: str) -> tuple[str, str] | None:
@@ -119,9 +158,11 @@ class UnreadableWorkflow(AssertionError):
 
     Refusing fails the pin; guessing would pass it without holding the claim it exists for. The reader
     refuses every shape it cannot enumerate exactly — a second job or matrix, an ``os:`` it cannot place
-    or parse, a block scalar, a trigger block beyond the accepted shape, a job or step key it does not
-    know, a ``runs-on`` spelled or valued otherwise, a quoted or block label list — and every refusal
-    names the line and the shape, so a mutation that reaches one fails the case that covers it.
+    or parse, a block scalar, a trigger block beyond the accepted shape, a negated or glob branch
+    pattern, a job or step key it does not know, a ``runs-on`` spelled or valued otherwise, a label
+    list in a spelling it cannot read (a block list, or a quote that does not enclose a whole label) —
+    and every refusal names the line and the shape, so a mutation that reaches one fails the case that
+    covers it.
     """
 
 
@@ -156,7 +197,7 @@ class Workflow:
     """What this pin reads out of one workflow file."""
 
     path: Path
-    legs: tuple[str, ...]  # the matrix's effective legs: os ∪ include − exclude, in order
+    legs: tuple[str, ...]  # the matrix's effective legs: (os − exclude) ∪ include, in order
     runs: tuple[str, ...]  # every step's whole `run:` value, in the job's own order
 
 
@@ -221,7 +262,8 @@ class _WorkflowReader:
                 parsed = _key(body.group("body").strip())
                 item = parsed is not None
         if parsed is not None:
-            if parsed[0] == "runs-on" and parsed[1].strip() != MATRIX_REFERENCE:
+            if parsed[0] == "runs-on" and self.unquote(
+                    line.number, parsed[1].strip(), "a `runs-on:` value") != MATRIX_REFERENCE:
                 self.refuse(line.number, (
                     f"a `runs-on:` that is not exactly `{MATRIX_REFERENCE}` ({parsed[1].strip()!r}) — "
                     f"§CI's claim is about the runners the matrix's legs name, and a job whose runner is "
@@ -263,8 +305,36 @@ class _WorkflowReader:
         first = Child(item.number, item.index, item.index + 1, item.key, item.value, False)
         return [first, *self.block_children(item, context)]
 
+    def unquote(self, number: int, value: str, what: str) -> str:
+        """A one-line scalar's text: a fully quoted scalar's own contents, otherwise ``value``.
+
+        Quotes are YAML's syntax only where they enclose the whole scalar (``'ubuntu-latest'`` is the
+        text ``ubuntu-latest``; in ``windows-'latest'`` the quotes are literal characters of a plain
+        scalar). A quoted form this pin cannot read exactly — a quote left open, text after the close,
+        or a YAML escape inside (a doubled ``''``, a backslash) — is refused rather than unquoted: the
+        text GitHub receives is not the text this pin would then hold.
+        """
+        if not value or value[0] not in "'\"":
+            return value
+        quote = value[0]
+        if len(value) < 2 or value[-1] != quote:
+            self.refuse(number, (
+                f"{what} this pin cannot read ({value!r}) — a quoted scalar whose quotes do not enclose "
+                f"the whole value (a quote left open, or text after its close)"))
+        inner = value[1:-1]
+        if quote in inner or (quote == '"' and "\\" in inner):
+            self.refuse(number, (
+                f"{what} this pin cannot read ({value!r}) — a quoted scalar holding a YAML escape (a "
+                f"doubled quote, a backslash): the pin reads quotes as syntax only where they enclose "
+                f"the whole scalar, and does not model a quoted scalar's escapes"))
+        return inner
+
     def scalar(self, entry: Child, what: str) -> str:
-        """A key this pin reads as one inline scalar; refuses a block scalar or a block value."""
+        """A key this pin reads as one inline scalar; refuses a block scalar or a block value.
+
+        The value is read through ``unquote``, so a scalar spelled as a fully quoted string is the text
+        GitHub receives and a plain scalar's quote characters are literal.
+        """
         value = entry.value.strip()
         if _BLOCK_SCALAR.fullmatch(value):
             self.refuse(entry.number, (
@@ -275,15 +345,62 @@ class _WorkflowReader:
                 f"{what} with a block value — the pin reads an inline scalar (`{entry.key}: <value>`)"))
         if not value:
             self.refuse(entry.number, f"a `{entry.key}:` with no value — {what} must be a scalar")
-        return value
+        return self.unquote(entry.number, value, what)
+
+    def flow_items(self, text: str, entry: Child, what: str, value: str) -> list[tuple[str, bool]]:
+        """One flow sequence's items as ``(text, quoted)`` each, refusing YAML's other spellings.
+
+        One scan reads the items: a comma ends an item; a quote that opens an item — the item's first
+        non-space character — opens a quoted scalar closed by its own quote at the item's end, whose
+        contents are the text GitHub receives; and a quote anywhere else is a plain item's literal
+        character, so ``windows-'latest'`` stays the single plain scalar GitHub receives, quotes and
+        all. An item opening a quote must close it at the item's end: text after the close, a quote
+        left open, a doubled quote or backslash escape inside it, is refused by name — each is a
+        spelling whose GitHub text this pin will not guess at.
+        """
+        items: list[tuple[str, bool]] = []
+        buf, quoted, closed = "", False, False
+        open_quote: str | None = None
+        for index, char in enumerate(text):
+            if open_quote is not None:
+                if char == open_quote:
+                    if text[index + 1:index + 2] == open_quote:
+                        self.refuse(entry.number, (
+                            f"{what} this pin cannot read ({value!r}) — a doubled quote inside a quoted "
+                            f"scalar is a YAML escape the pin does not model"))
+                    open_quote, closed = None, True
+                elif char == "\\" and open_quote == '"':
+                    self.refuse(entry.number, (
+                        f"{what} this pin cannot read ({value!r}) — a backslash escape inside a quoted "
+                        f"scalar is not modelled: the text GitHub receives would not be the text here"))
+                else:
+                    buf += char
+                continue
+            if char == ",":
+                items.append((buf, quoted))
+                buf, quoted, closed = "", False, False
+                continue
+            if char in "'\"" and not buf.strip() and not closed:
+                open_quote, quoted, buf = char, True, ""
+                continue
+            if closed and not char.isspace():
+                self.refuse(entry.number, (
+                    f"{what} this pin cannot read ({value!r}) — text after a quoted scalar's close: the "
+                    f"pin reads a quote as the whole scalar's, not a piece of one"))
+            buf += char
+        if open_quote is not None:
+            self.refuse(entry.number, f"{what} this pin cannot read ({value!r}) — a quote in it is never closed")
+        items.append((buf, quoted))
+        return items
 
     def inline_tokens(self, entry: Child, what: str) -> list[str]:
-        """An inline ``[a, b]`` list's tokens, split respecting quotes; refuses any other form.
+        """An inline ``[a, b]`` list's scalars, read as YAML reads a flow sequence; refuses other forms.
 
-        Quotes are removed from each token, so a token holding a comma is the one token GitHub would
-        read as one label — the caller validates its spelling — and a quoted scalar holding a comma is
-        never silently split into two. A quote that is never closed is refused, as is any value that is
-        not the inline list form.
+        Each item is a fully quoted scalar (``'ubuntu-latest'``: the label GitHub receives is the text
+        inside) or a plain scalar (quotes in it are literal characters, as YAML's own grammar has it).
+        An item holding no text is read only where it is the trailing comma's own — ``[main, ]`` is
+        YAML's spelling of one label — and an empty item elsewhere (a doubled or leading comma) or an
+        empty quoted item (``''``) is refused: no check here can certify an empty label or pattern.
         """
         value = entry.value.strip()
         match = re.fullmatch(r"\[(?P<items>.*)\]", value)
@@ -291,31 +408,27 @@ class _WorkflowReader:
             self.refuse(entry.number, (
                 f"{what} this pin cannot read ({value!r}) — the pin reads the inline list form "
                 f"(`[label, …]`), and refuses a block list or another spelling"))
-        tokens, quote, buf = [], None, ""
-        for char in match.group("items"):
-            if quote is not None:
-                if char == quote:
-                    quote = None
-                else:
-                    buf += char
-            elif char in "'\"":
-                quote = char
-            elif char == ",":
-                tokens.append(buf)
-                buf = ""
-            else:
-                buf += char
-        if quote is not None:
-            self.refuse(entry.number, f"{what} this pin cannot read ({value!r}) — a quote in it is never closed")
-        tokens.append(buf)
-        return [token.strip() for token in tokens if token.strip()]
+        items = self.flow_items(match.group("items"), entry, what, value)
+        tokens: list[str] = []
+        for index, (text, quoted) in enumerate(items):
+            token = text if quoted else text.strip()  # a quoted scalar's contents are kept exactly
+            if token:
+                tokens.append(token)
+                continue
+            if quoted:
+                self.refuse(entry.number, f"{what} this pin cannot read ({value!r}) — an empty quoted item")
+            if index != len(items) - 1:
+                self.refuse(entry.number, (
+                    f"{what} this pin cannot read ({value!r}) — an empty item (a doubled or leading comma)"))
+        return tokens
 
     def label_token(self, entry: Child, token: str, what: str) -> str:
         """A list token as a runner label's own spelling, or a refusal naming the token."""
         if not _LABEL_TOKEN.fullmatch(token):
             self.refuse(entry.number, (
-                f"{what} this pin cannot read ({token!r}) — a quoted scalar holding a comma or a space, "
-                f"or any other spelling outside a label's own characters, is refused"))
+                f"{what} this pin cannot read ({token!r}) — a scalar holding a comma, a space, a quote "
+                f"or any other character outside a label's own spelling is refused: the pin has no "
+                f"answer for what GitHub would name as the runner"))
         return token
 
     def read(self) -> Workflow:
@@ -355,11 +468,14 @@ class _WorkflowReader:
     def read_triggers(self, on_key: Child) -> None:
         """``on:`` — the trigger shape §CI's sentence states: every pull request, every push to main.
 
-        The pin reads the block form with exactly ``pull_request:`` (bare) and ``push:`` (whose
-        ``branches:`` list must hold ``main``). A filter under either trigger — ``paths-ignore:``,
-        ``branches-ignore:``, an inline value — narrows a claim §CI states as universal, so it is
-        refused rather than read as if it changed nothing; any other trigger is a shape the pin does not
-        read.
+        The pin reads the block form with exactly ``pull_request:`` (bare) and ``push:`` whose
+        ``branches:`` list holds the literal pattern ``main``. A filter under either trigger —
+        ``paths``, ``paths-ignore``, ``branches-ignore``, an inline value — narrows a claim §CI states
+        as universal, so it is refused rather than read as if it changed nothing; any other trigger is a
+        shape the pin does not read. GitHub's branch patterns are ordered and globbed, so a
+        ``!``-prefixed pattern (a later negative pattern removes ``main`` again) and a pattern with a
+        glob character are refused rather than approximated: with literal patterns only, the presence
+        of ``main`` in the list is exactly GitHub's answer for a push to ``main``.
         """
         if on_key.value.strip():
             self.refuse(on_key.number, (
@@ -405,6 +521,21 @@ class _WorkflowReader:
                     f"[main, …]` and nothing else under `push:`"))
             seen_branches = True
             branches = self.inline_tokens(entry, "a `push:` `branches:` list")
+            for pattern in branches:
+                if pattern.startswith("!"):
+                    self.refuse(entry.number, (
+                        f"a `!`-prefixed branch pattern ({pattern!r}) — GitHub's branch patterns are "
+                        f"ordered and a negative pattern removes the match a positive one made (the "
+                        f"workflow-syntax reference: \"The order that you define patterns matters\"); "
+                        f"`branches: [main, '!main']` excludes `main` again, and the pin refuses a "
+                        f"negation it would have to evaluate rather than read the list's `main` as "
+                        f"coverage"))
+                if _BRANCH_GLOB.search(pattern):
+                    self.refuse(entry.number, (
+                        f"a branch pattern with a glob character ({pattern!r}) — the pin's proof that a "
+                        f"push to `main` runs the gate is the literal pattern `main`; GitHub's glob "
+                        f"semantics (`*`, `**`, `?`, `+`, `[…]`, `\\` escapes) are refused rather than "
+                        f"approximated"))
             if "main" not in branches:
                 self.refuse(entry.number, (
                     f"a `push:` whose `branches:` list does not hold `main` ({branches!r}) — §CI says "
@@ -507,11 +638,20 @@ class _WorkflowReader:
         return self.read_matrix(keys["matrix"])
 
     def read_matrix(self, matrix: Child) -> tuple[str, ...]:
-        """The matrix's legs: ``os:``, ``include:`` and ``exclude:`` combined order-independently.
+        """The matrix's legs, in GitHub's own order: ``exclude`` first, then ``include`` back.
 
-        YAML mappings are unordered, so the three keys are collected wherever they stand and combined
-        semantically — ``(os ∪ include) − exclude``, an exclude winning over an include of the same
-        label — instead of applied in the order the lines happen to hold.
+        The workflow-syntax reference states the order under ``strategy.matrix.exclude`` — "All
+        ``include`` combinations are processed after ``exclude``. This allows you to use ``include`` to
+        add back combinations that were previously excluded." — so each ``exclude:`` entry removes the
+        base ``os:`` labels it names and every ``include:`` entry is processed after them: the legs are
+        ``(os − exclude) ∪ include``, and a label both excluded and included is one GitHub runs. YAML
+        mappings are unordered, so the three keys are collected wherever the lines hold them.
+
+        A repeat is refused rather than read as a leg: a label named twice in ``os:`` schedules one
+        combination per occurrence, and an ``include:`` entry naming a label that is already a leg is a
+        merge GitHub may add no job for or another combination for (an ``include`` combination is never
+        a later ``include`` entry's merge target) — either way the pin's set of runners would stop
+        matching what GitHub schedules.
         """
         if matrix.value.strip():
             self.refuse(matrix.number, (
@@ -523,6 +663,7 @@ class _WorkflowReader:
         seen: dict[str, Child] = {}
         os_labels: list[str] = []
         includes: list[str] = []
+        include_key: Child | None = None
         excludes: list[str] = []
         for entry in entries:
             if entry.item:
@@ -538,28 +679,38 @@ class _WorkflowReader:
                 os_labels = self.read_os(entry)
             elif entry.key in ("include", "exclude"):
                 labels = self.read_legs(entry)
-                (includes if entry.key == "include" else excludes).extend(labels)
+                if entry.key == "include":
+                    includes, include_key = labels, entry
+                else:
+                    excludes = labels
             else:
                 self.refuse(entry.number, (
                     f"a key inside the matrix this pin does not read (`{entry.key}:`) — the pin reads "
                     f"`os:`, `include:` and `exclude:`"))
         if "os" not in seen:
             self.refuse(matrix.number, "a `matrix:` with no `os:` — the pin reads the legs from it and refuses one it cannot enumerate")
-        legs: list[str] = []
-        for label in [*os_labels, *includes]:
-            if label not in legs:
-                legs.append(label)
-        for label in excludes:
+        legs = [label for label in os_labels if label not in excludes]
+        for label in includes:
             if label in legs:
-                legs.remove(label)
+                self.refuse(include_key.number, (
+                    f"an `include:` naming a runner that is already a leg ({label!r}) — GitHub merges a "
+                    f"repeat like this into the combination it matches (adding no job) but an `include` "
+                    f"combination is never a later `include` entry's merge target (adding another), so "
+                    f"the pin reads the legs as the runners it certifies and refuses the repeat"))
+            legs.append(label)
         if not legs:
             self.refuse(matrix.number, (
                 "a matrix whose effective legs are empty — an `exclude:` removed every leg the `os:` "
-                "list and the `include:` entries name"))
+                "list names and no `include:` entry added one back"))
         return tuple(legs)
 
     def read_os(self, os_key: Child) -> list[str]:
-        """An ``os: [label, …]`` list's legs, deduplicated in order; refuses any other form."""
+        """An ``os: [label, …]`` list's labels, each one once; refuses any other form.
+
+        A label named twice in the list is refused: GitHub schedules one combination per occurrence,
+        so the job list would run the runner twice while this pin reads the set of runners the claim is
+        about.
+        """
         if os_key.end > os_key.index + 1 or not os_key.value.strip():
             self.refuse(os_key.number, (
                 f"an `os:` this pin cannot read ({os_key.value.strip()!r}) — the pin reads the inline "
@@ -568,6 +719,12 @@ class _WorkflowReader:
         if not labels:
             self.refuse(os_key.number, (
                 f"an `os:` this pin cannot read ({os_key.value.strip()!r}) — the list holds no label"))
+        for index, label in enumerate(labels):
+            if label in labels[:index]:
+                self.refuse(os_key.number, (
+                    f"an `os:` list naming a runner twice ({label!r}) — GitHub schedules one combination "
+                    f"per occurrence, and the pin reads the legs as the runners: a repeat is refused "
+                    f"rather than read as one leg"))
         return labels
 
     def read_legs(self, block: Child) -> list[str]:
@@ -733,11 +890,11 @@ class CiMatrixAndThePlatformClaim(unittest.TestCase):
         gate = self.workflows[WORKFLOW]
         self.assertEqual(
             list(gate.legs), list(RUNNERS),
-            "the matrix's legs are the platforms docs/harness.md §CI claims: the `os:` list and every "
-            "`include:`/`exclude:` entry are read and combined order-independently (`os ∪ include − "
-            "exclude`), so the two files move in the same increment (owner decision 2026-11-18 removed "
-            "the macOS leg), or this check and the docs/plans/harness-ci-matrix.md decision change "
-            "together")
+            "the matrix's legs are the platforms docs/harness.md §CI claims: the `os:` list with every "
+            "`include:`/`exclude:` entry is read in GitHub's own order (`(os − exclude) ∪ include`: "
+            "`exclude` removes, then `include` adds back), so the two files move in the same increment "
+            "(owner decision 2026-11-18 removed the macOS leg), or this check and the "
+            "docs/plans/harness-ci-matrix.md decision change together")
         for path, workflow in sorted(self.workflows.items()):
             if path == WORKFLOW:
                 continue
@@ -816,17 +973,40 @@ class CiMatrixAndThePlatformClaim(unittest.TestCase):
                     "        include:\n          - os: macos-latest\n"
                     "        exclude:\n          - os: ubuntu-latest\n")),
                 ("windows-latest", "macos-latest")),
+            "an `exclude:` and an `include:` naming the same label (GitHub runs it: the include is "
+            "processed after the exclude)": (
+                workflow_text(matrix=(
+                    "        os: [ubuntu-latest, macos-latest, windows-latest]\n"
+                    "        exclude:\n          - os: macos-latest\n"
+                    "        include:\n          - os: macos-latest\n")),
+                ("ubuntu-latest", "windows-latest", "macos-latest")),
+            "the same overlap with `include:` written before `exclude:` (key order does not matter)": (
+                workflow_text(matrix=(
+                    "        include:\n          - os: macos-latest\n"
+                    "        exclude:\n          - os: macos-latest\n"
+                    "        os: [ubuntu-latest, macos-latest, windows-latest]\n")),
+                ("ubuntu-latest", "windows-latest", "macos-latest")),
             "a quoted label list": (
                 workflow_text(matrix="        os: ['ubuntu-latest', \"windows-latest\"]\n"),
                 RUNNERS),
             "a `push:` trigger whose `branches:` list holds `main` beside another branch": (
                 workflow_text(triggers="  pull_request:\n  push:\n    branches: [release/x, main]\n"),
                 RUNNERS),
+            "a `push:` trigger whose `branches:` list quotes `main`": (
+                workflow_text(triggers="  pull_request:\n  push:\n    branches: ['main']\n"),
+                RUNNERS),
+            "the gate command spelled as a fully quoted scalar": (
+                workflow_text(steps="      - name: Gate\n        run: \"python scripts/gate.py\"\n"),
+                RUNNERS),
+            "the `runs-on:` reference as a fully quoted scalar": (
+                workflow_text().replace("    runs-on: ${{ matrix.os }}\n",
+                                        "    runs-on: \"${{ matrix.os }}\"\n"),
+                RUNNERS),
             "a `uses:` step with its `with:` block, beside the gate step": (
                 workflow_text(steps=(
                     "      - uses: actions/setup-go@v5\n"
                     "        with:\n"
-                    "          go-version-file: go.mod\n"
+                    "          go-version-file: \"go.mod\"\n"
                     "      - name: Gate\n"
                     "        run: python scripts/gate.py\n")),
                 RUNNERS),
@@ -886,6 +1066,15 @@ class CiMatrixAndThePlatformClaim(unittest.TestCase):
             "a `push:` whose `branches:` list does not hold `main`": (
                 workflow_text(triggers="  pull_request:\n  push:\n    branches: [dev]\n"),
                 "does not hold `main`"),
+            "a `push:` whose `branches:` list takes `main` back with a `!` pattern": (
+                workflow_text(triggers="  pull_request:\n  push:\n    branches: [main, '!main']\n"),
+                "a `!`-prefixed branch pattern ('!main')"),
+            "a `push:` whose `branches:` list holds a glob pattern": (
+                workflow_text(triggers="  pull_request:\n  push:\n    branches: ['releases/**', main]\n"),
+                "a branch pattern with a glob character ('releases/**')"),
+            "a `push:` `branches:` list whose only pattern is a glob (no literal `main` at all)": (
+                workflow_text(triggers="  pull_request:\n  push:\n    branches: [ma*]\n"),
+                "a branch pattern with a glob character ('ma*')"),
             "a `push:` key this pin does not read": (
                 workflow_text(triggers="  pull_request:\n  push:\n    branches: [main]\n    tags: ['v*']\n"),
                 "a `push:` key this pin does not read"),
@@ -978,6 +1167,28 @@ class CiMatrixAndThePlatformClaim(unittest.TestCase):
             "a label spelling outside a label's own characters": (
                 workflow_text(matrix="        os: [ubuntu latest]\n"),
                 "this pin cannot read ('ubuntu latest')"),
+            "an `os:` label whose quotes are literal characters of a plain scalar (`windows-'latest'`)": (
+                workflow_text(matrix="        os: [ubuntu-latest, windows-'latest']\n"),
+                "this pin cannot read (\"windows-'latest'\")"),
+            "an `os:` list with an empty quoted item": (
+                workflow_text(matrix="        os: [ubuntu-latest, '']\n"),
+                "an empty quoted item"),
+            "an `os:` list with a doubled comma": (
+                workflow_text(matrix="        os: [ubuntu-latest,, windows-latest]\n"),
+                "an empty item (a doubled or leading comma)"),
+            "an `os:` list naming a runner twice": (
+                workflow_text(matrix="        os: [ubuntu-latest, ubuntu-latest, windows-latest]\n"),
+                "an `os:` list naming a runner twice ('ubuntu-latest')"),
+            "an `include:` entry naming a runner that is already a leg": (
+                workflow_text(matrix=(
+                    "        os: [ubuntu-latest, windows-latest]\n"
+                    "        include:\n          - os: windows-latest\n")),
+                "an `include:` naming a runner that is already a leg ('windows-latest')"),
+            "an `include:` entry whose label only an earlier `include:` entry added": (
+                workflow_text(matrix=(
+                    "        os: [ubuntu-latest]\n"
+                    "        include:\n          - os: macos-latest\n          - os: macos-latest\n")),
+                "an `include:` naming a runner that is already a leg ('macos-latest')"),
             "an inline `include:`": (
                 workflow_text(matrix="        os: [ubuntu-latest]\n        include: [{os: macos-latest}]\n"),
                 "an inline `include:`"),

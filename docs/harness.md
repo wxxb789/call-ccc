@@ -262,12 +262,13 @@ says so.
   `test_gate_transcript_claims.py`: a record's quoted `parity` line is the gate's own rendering — its end
   is the checker's own — and the elision limit a record states is the gate's own call;
   `test_ci_matrix_claim.py`: the workflow's matrix and the CI section below are one statement — the
-  matrix's legs (its `os:` list with every `include:`/`exclude:` entry, combined order-independently as
-  `os ∪ include − exclude`) are exactly the runner labels the section names, every job of the gate
+  matrix's legs (its `os:` list with every `include:`/`exclude:` entry, read in GitHub's own order as
+  `(os − exclude) ∪ include`) are exactly the runner labels the section names, every job of the gate
   workflow runs the gate file as a whole step command that no `if:`/`continue-on-error:` can skip or
-  ignore, the workflow's triggers are read (a filter on `pull_request:` is refused), the macOS-gap
-  sentence must stand while the matrix stays two-legged, and the reader fails closed — a shape it does
-  not read exactly, from a `runs-on` spelled otherwise to a second matrix, is refused with a failing
+  ignore, the workflow's triggers are read (a filter on `pull_request:`, a `!`-negated or glob branch
+  pattern under `push:` is refused), the macOS-gap sentence must stand while the matrix stays
+  two-legged, and the reader fails closed — a shape it does not read exactly, from a `runs-on` spelled
+  otherwise to a second matrix, is refused with a failing
   case naming it. The pin's own two limits and the constraint it puts on future workflows are stated in
   §CI below; and
   `test_codex_native_check.py`'s `RecordStatesTheChecksOwnOrder`: the record's claim about *when* the
@@ -753,17 +754,20 @@ empty-`PATH` child, the forced Windows-without-compiler probe, the
 green run may therefore be read as the whole gate passing on Linux and on Windows, and not as evidence
 about macOS. `scripts/tests/test_ci_matrix_claim.py` (the `selftest` step) holds this section and the
 matrix together as one statement: the runners named here are exactly the matrix's legs (the `os:` list
-and every `include:`/`exclude:` entry, combined order-independently as `os ∪ include − exclude`), every
-job of the workflow runs the gate file itself as a whole step command that no `if:` or
-`continue-on-error:` can skip or ignore, the trigger block is read (the gate runs for every pull request
-and every push to `main`, and a filter under `pull_request:` is refused rather than read as if it
-changed nothing), and the sentence above cannot be dropped while the matrix stays two-legged.
+with every `include:`/`exclude:` entry, read in GitHub's own order — `exclude` removes base labels and
+every `include` is processed after it, so a label both excluded and included is a leg, and the legs are
+`(os − exclude) ∪ include`) — every job of the workflow runs the gate file itself as a whole step
+command that no `if:` or `continue-on-error:` can skip or ignore, the trigger block is read (the gate
+runs for every pull request and every push to `main`, and a filter under `pull_request:`, a `!`-negated
+branch pattern or a glob pattern under `push:` is refused rather than read as if it changed nothing),
+and the sentence above cannot be dropped while the matrix stays two-legged.
 
 The pin's reader fails closed: every workflow shape it does not read exactly — a `runs-on` spelled or
-valued otherwise, a block scalar, a quoted or block label list, a job-level or step-level `if:`, a
-`continue-on-error:`, a trigger block outside the shape above, a second matrix or job, a job or step key
-it does not know — is refused by a failing case that names the shape, never read past. The same stance
-binds future workflows: every file under `.github/workflows/` must keep its job on `${{ matrix.os }}`
+valued otherwise, a block scalar, a label list in a spelling it cannot read (a block list, or a quote
+that does not enclose a whole label), a job-level or step-level `if:`, a `continue-on-error:`, a trigger
+block outside the shape above, a second matrix or job, a job or step key it does not know — is refused
+by a failing case that names the shape, never read past. The same stance binds future workflows: every
+file under `.github/workflows/` must keep its job on `${{ matrix.os }}`
 with the matrix's legs inside the runners this section names, or the pin refuses the file instead of
 certifying it. Two limits are stated rather than hidden: the pin reads raw text, so it cannot see
 Markdown rendering — wrapping these claims in an HTML comment satisfies every case while the rendered
