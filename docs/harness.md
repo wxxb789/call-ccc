@@ -261,9 +261,15 @@ says so.
   output holds;
   `test_gate_transcript_claims.py`: a record's quoted `parity` line is the gate's own rendering — its end
   is the checker's own — and the elision limit a record states is the gate's own call;
-  `test_ci_matrix_claim.py`: the workflow's matrix and the CI section above are one statement — the
-  matrix's legs are exactly the runner labels the section names, no job runs outside the matrix, the
-  job runs the gate file, and the macOS-gap sentence must stand while the matrix stays two-legged; and
+  `test_ci_matrix_claim.py`: the workflow's matrix and the CI section below are one statement — the
+  matrix's legs (its `os:` list with every `include:`/`exclude:` entry, combined order-independently as
+  `os ∪ include − exclude`) are exactly the runner labels the section names, every job of the gate
+  workflow runs the gate file as a whole step command that no `if:`/`continue-on-error:` can skip or
+  ignore, the workflow's triggers are read (a filter on `pull_request:` is refused), the macOS-gap
+  sentence must stand while the matrix stays two-legged, and the reader fails closed — a shape it does
+  not read exactly, from a `runs-on` spelled otherwise to a second matrix, is refused with a failing
+  case naming it. The pin's own two limits and the constraint it puts on future workflows are stated in
+  §CI below; and
   `test_codex_native_check.py`'s `RecordStatesTheChecksOwnOrder`: the record's claim about *when* the
   comparison taken where the copy grows runs is read against the positions of the native check's own
   calls, so a record that drifts back to a placement the script does not have fails there), run by the
@@ -746,8 +752,24 @@ empty-`PATH` child, the forced Windows-without-compiler probe, the
 `platform_name`/`symlink_target`/path-flavour seams — which run wherever the `selftest` step runs. A
 green run may therefore be read as the whole gate passing on Linux and on Windows, and not as evidence
 about macOS. `scripts/tests/test_ci_matrix_claim.py` (the `selftest` step) holds this section and the
-matrix together as one statement: the runners named here are exactly the matrix's legs, the job runs
-the gate file itself, and the sentence above cannot be dropped while the matrix stays two-legged.
+matrix together as one statement: the runners named here are exactly the matrix's legs (the `os:` list
+and every `include:`/`exclude:` entry, combined order-independently as `os ∪ include − exclude`), every
+job of the workflow runs the gate file itself as a whole step command that no `if:` or
+`continue-on-error:` can skip or ignore, the trigger block is read (the gate runs for every pull request
+and every push to `main`, and a filter under `pull_request:` is refused rather than read as if it
+changed nothing), and the sentence above cannot be dropped while the matrix stays two-legged.
+
+The pin's reader fails closed: every workflow shape it does not read exactly — a `runs-on` spelled or
+valued otherwise, a block scalar, a quoted or block label list, a job-level or step-level `if:`, a
+`continue-on-error:`, a trigger block outside the shape above, a second matrix or job, a job or step key
+it does not know — is refused by a failing case that names the shape, never read past. The same stance
+binds future workflows: every file under `.github/workflows/` must keep its job on `${{ matrix.os }}`
+with the matrix's legs inside the runners this section names, or the pin refuses the file instead of
+certifying it. Two limits are stated rather than hidden: the pin reads raw text, so it cannot see
+Markdown rendering — wrapping these claims in an HTML comment satisfies every case while the rendered
+page loses them — and nothing in the suite pins the pin's own existence (the `selftest` step discovers
+`test_*.py`, so deleting or renaming the pin leaves the gate green), because no case's subject is the
+suite's own module inventory; this file and the increment's record carry that residue instead.
 
 Its step spells the interpreter `python`, the name both runners have — the Windows runner has no
 `python3` — while the file is `#!`-tagged `python3` for the hosts where that is the only name. CI

@@ -29,11 +29,20 @@ green CI run should mean what a reader thinks it means.
    and keeps those rules: a macOS host running the gate still treats a missing Go toolchain or C
    compiler as a failure, and the `macos-latest` failures the section records stay as history.
 3. `scripts/tests/test_ci_matrix_claim.py` — **the pin** (run by the `selftest` step). Before this
-   increment the platform claim had no check at all, which is what this increment exists to fix. Four
-   cases read the two shipped files and fail when either moves alone: the matrix's legs are exactly
-   `ubuntu-latest` + `windows-latest`; the job runs the gate file itself; no job bypasses the matrix
-   with a literal `runs-on:`; §CI names exactly the matrix's runner labels; and §CI states
-   `macOS is not verified on a runner` while the matrix stays two-legged.
+   increment the platform claim had no check at all, which is what this increment exists to fix. Seven
+   cases ship on this branch — four in the plan's first cut, extended by the apply round (the
+   simplification review's accepted findings) and by the fix round (the code review's findings), both
+   recorded in `docs/evidence/harness-ci-matrix.md` — and they read the two shipped files and fail when
+   either moves alone: the matrix's legs are exactly `ubuntu-latest` + `windows-latest` (its `os:` list
+   and every `include:`/`exclude:` entry, combined order-independently, read from every workflow file);
+   every job of the gate workflow runs the gate file itself as a whole step's `run:` value; §CI names
+   exactly the matrix's runner labels; §CI states `macOS is not verified on a runner` while the matrix
+   stays two-legged; the §Platform boundary paragraph is the claim's other live copy (a retired-runner
+   mention needs a history marker); and the reader's contract — the shapes it accepts, and every shape
+   it refuses, one named case per branch. The reader reads the workflow structurally and fails closed: a
+   shape it does not read exactly (a `runs-on` spelled or valued otherwise, a block scalar, a quoted or
+   block label list, a step-level or job-level `if:`, a trigger block outside the accepted shape, a
+   second matrix) is refused by a failing case naming it rather than read past.
 4. `docs/evidence/0001-agentsview-parity-and-inspection.md` — the two present-tense CI claims in that
    record's residual-risk section ("CI runs the same gate on all three", "CI has it on all three
    runners") now state what holds. Historical rows are untouched: what a past round ran, and the
@@ -65,6 +74,7 @@ green CI run should mean what a reader thinks it means.
   matrix's runners, states the macOS gap, and the matrix cannot regain a leg without the section (and
   the decision record) moving with it.
 - `python3 scripts/gate.py` → `GATE: PASS`, with the `selftest` and `citations` lines reported verbatim
-  with their counts (the `selftest` count grows by this increment's four cases).
+  with their counts (the `selftest` count grows by this increment's own cases — four in the plan's first
+  cut, seven as shipped, the extensions recorded in `docs/evidence/harness-ci-matrix.md`).
 - Each of the pin's rules shown to fail when broken, by a temporary mutation and a byte-identical
   restore (recorded in `docs/evidence/harness-ci-matrix.md`).
