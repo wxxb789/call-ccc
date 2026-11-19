@@ -2643,3 +2643,221 @@ supersede it with a newer one and say which it supersedes.
   onto `Message`; named reader ∧ a trace was recorded as existing ∧ no trace text → `dialogueUnestablished`,
   verified reader by reader) is **not** authorized by this letter and belongs to 0008. Options (B) (do it inside
   0007) and (C) (a new upstream pin first) were offered in the same form and not taken.
+
+## Q-0008-01 — The dialogue arm for a reader that renders a trace without recording it (Q-0007-12's deferred mechanism arm)
+
+- **Status:** resolved (unattended default taken; Q-0007-12's status names the mechanism arm as deferred
+  to goal 0008)
+- **Question:** Q-0007-12's resolution deferred its *mechanism arm* to goal 0008: carry
+  `parser.ParsedMessage.HasThinking` onto `Message` and treat (named rendering reader ∧ a trace was recorded
+  as existing ∧ no trace text) as `dialogueUnestablished` — writing nothing for the record and counting it
+  `unresolved_dialogue` — verified reader by reader. Goal 0008 is the increment where that becomes live,
+  because OpenCode is read as a *source*: the OpenCode v2 reader renders a `reasoning` part into the
+  record's `Content` and records no trace text, so every one of its records carries a rendering.
+- **Default taken:** the shipped arm, unchanged for this increment. The rendering travels as the record's
+  text and is counted `unprojected_dialogue` (carried-with-caveat) on both target routes — measured on the
+  committed fixture: 4 of 4 carried messages, and the target's own records hold the rendering byte for byte.
+  Two reasons, one of them measured: the mechanism arm cannot be a blanket rule (Q-0007-12's own finding:
+  `internal/parser`'s Goose reader sets `HasThinking` from `redactedThinking` with no block and no text, so
+  "a trace was recorded as existing but its text is empty" is not evidence that `Content` holds a rendering),
+  and for this route it would *omit* the record's own words — the answer text a reader of a resumed session
+  needs — where the shipped arm carries them with the caveat disclosed per run. Goal 0008's own clauses ask
+  that available content survive where supported and that unsupported content be reported rather than
+  silently omitted; the shipped arm does both, and the report names the state on every run.
+- **Reversal:** carry `HasThinking` onto `Message` and ask the rendering arm as (reader named ∧ trace
+  recorded as existing ∧ `Thinking == ""`), after verifying per reader that its empty-`HasThinking` shape is
+  the rendering one — one clause in `dialogueOf` plus the per-reader evidence Q-0007-12 requires.
+- **Settled by:** an owner letter authorizing the mechanism arm (with the per-reader verification), or an
+  upstream reader change that records the trace's own text for these readers.
+
+## Q-0008-02 — The native direction verifies Codex, and the Claude half rests on the accepted route
+
+- **Status:** resolved (unattended default taken)
+- **Question:** goal 0008's first clause allows a continued OpenCode session to be verified against **Claude
+  Code or Codex**. Which target does the native direction drive?
+- **Default taken:** Codex (`scripts/opencode-native-check.py --direction opencode-to-codex`). Measured on
+  this host: Codex 0.170.0 is installed and its own loader (`codex app-server`'s `thread/resume`) opens the
+  converted session offline — an actual target-native **load** result — while no Claude Code binary exists
+  here at all (a direction that drove it would end `RESULT: INCOMPLETE` on every run of this host). The
+  Claude half is covered where it already is: both targets are exercised offline by the Go cases (conversion,
+  installation, the inherited reader's structural read-back over the installed transcript), and 0003's
+  accepted native check drives Claude Code's own loader on a host that has the binary.
+- **Reversal:** add the symmetric `opencode-to-claude` direction (the pipeline is identical; only the target
+  binary and the printed line differ) when a host has Claude Code installed.
+- **Settled by:** the operator's own host inventory or an instruction to prefer the Claude direction.
+
+## Q-0008-03 — The OpenCode fixture is the harness's own export document, not a store
+
+- **Status:** resolved (unattended default taken)
+- **Question:** an OpenCode session is a row in the harness's SQLite store, so what does a committed fixture
+  look like?
+- **Default taken:** the harness's own **export document**
+  (`internal/ccc/testdata/fixtures/opencode/<session>.json`, written by `internal/ccc/fixturegen` from the
+  shape a real `session export` writes on 2.2.5, one canonical compact encoding). A committed *store* is not
+  an option — only the harness writes one — and the document is the harness's own interchange format: the
+  Go cases and `cmd/ccc`'s route cases materialise it through `internal/ccc/opencodefixture`, and the native
+  check plants it through the harness's own `session import`, which also validates the shape against the
+  real importer on every native run (measured: the import accepts it, and the store's own reader returns the
+  document member for member apart from `info.projectID`, `info.location.directory` and
+  `info.time.updated`).
+- **Reversal:** none needed; the fixture is one file and its consumers are two constructors.
+- **Settled by:** nothing pending; recorded because it changes the rule `docs/conventions.md` stated when
+  OpenCode was a target only ("no fixture directory of its own").
+
+## Q-0008-04 — No parity/oracle case is added for the OpenCode source
+
+- **Status:** resolved (unattended default taken)
+- **Question:** `internal/ccc/parity`'s oracle compares a read against a pristine checkout at the pin over
+  *file*-shaped fixture roots. Should this increment add an OpenCode case?
+- **Default taken:** no. An OpenCode source is a store, and the oracle's fixture mechanism reads a file per
+  case; making it materialise a store would extend the oracle (a separate change with its own evidence).
+  What covers the goal's third clause instead: the gate's required `parity` step proves the carried reader,
+  provider and schema are the pin's bytes, and the native direction reads a store the harness itself wrote —
+  the strongest available statement that the inherited reader reads *that* harness's rows.
+- **Reversal:** teach the oracle to materialise a store for a case (`internal/ccc/opencodefixture` exists and
+  could be borrowed) and record a dump from a pristine checkout.
+- **Settled by:** a later increment that wants byte-level cross-tree evidence for the OpenCode reader (0001's
+  argument for Pi applied to this provider).
+
+## Q-0008-05 — A requested turn on a host whose Codex store holds no credential is recorded, not worked around
+
+- **Status:** resolved (unattended default taken)
+- **Question:** `--resume-prompt` asks for one real turn in the installed session. Measured on this host: a
+  Codex turn under a **scratch** `CODEX_HOME` answers `401 Unauthorized` — the credential lives in the
+  caller's own `~/.codex/auth.json`, and this build never copies a credential or login store — while the same
+  boundary is already disclosed by `scripts/codex-native-check.py`'s own turn (0007's record quotes it). May
+  the check seed the scratch home from the caller's, or drive the turn in the caller's own home, to obtain a
+  turn?
+- **Default taken:** no. The check runs its one turn through the report's own vector with its own isolation
+  flags and records what the harness answered; on this host that is a **failed** check naming the harness's
+  own words (never a pass, never a skip the verdict ignores), and the load half — Codex's own `thread/resume`
+  through the app server, offline — is what the PASS run verifies. Seeding a credential into a scratch home
+  is forbidden by the design's own rule; installing into a caller-named home to reach their credential is
+  what the repository's rules reserve for the caller to do deliberately (`--target-home`).
+- **Reversal:** run the check with `--target-home` naming a home that holds the caller's own credential (the
+  printed resume line then names exactly that home), or seed a provider whose authentication is
+  environment-backed (`env_key`) into the scratch home once such a provider is configured.
+- **Settled by:** an operator instruction to spend a turn in their own Codex home, or a host whose scratch
+  home can authenticate without a copied credential.
+
+## Q-0008-06 — The source-direction comparison refuses a `shell` record rather than compare a subset
+
+- **Status:** resolved (unattended default taken)
+- **Question:** `scripts/opencode-native-check.py`'s source direction compares a source document's members
+  (user texts, tool call names, recorded inputs, recorded result texts, assistant renderings) with a
+  target's own records. The inherited reader answers a `shell` message as **both** a user record (the
+  command) and tool evidence (a call and the recorded output), and the comparison holds no member for
+  either — should it model the kind (mirroring the reader's `shell` arm, including `gjson`'s `.Str` reads
+  of the recorded `output` member) or refuse a document that carries one? (The review round that found the
+  comparison's other unread rules — empty `text` blocks, a result's error message, a user record's
+  attachments — named both dispositions as acceptable.)
+- **Default taken:** **refuse**, by name, before the harness is asked to import anything (exit 2). The
+  modelling arm needs the reader's own `gjson` semantics for a member no fixture here records
+  (`internal/ccc/testdata/growth/` has no OpenCode fragment and no store-shaped fixture can carry one),
+  so it cannot be measured on this host, while a refusal is measured, disclosed and reversible; comparing a
+  document by dropping a member a target holds would be exactly the class of claim the review was about.
+  The committed fixture carries no `shell` record, so the default run is unaffected.
+- **Reversal:** model the `shell` arm as a `user` text (the command), a call (`bash` with the recorded
+  `callID`, or `shell` with the recorded `shellID`) and one result (the recorded `output`, its `output`
+  member where `shellID` is set, the status raised by a nonzero `exit`), then lift the refusal and pin the
+  arm with cases; or, if a host with the OpenCode binary measures the importer's own treatment of the kind,
+  decide from that measurement.
+- **Settled by:** an operator instruction, or a measurement against an installed harness that makes the
+  modelling arm's rules measurable.
+
+## Q-0008-07 — The mixed-record disposition in the source-direction comparison: modelled, not refused
+
+- **Status:** resolved (unattended default taken)
+- **Question:** `scripts/opencode-native-check.py`'s source direction compares an OpenCode document with
+  the installed Codex rollout over members both sides are read into. An assistant record that carries a
+  text part **beside** a tool part (a shape a caller's `--source` document may hold; the committed fixture
+  does not) contributes text to the document's own reading, while the read establishes no dialogue for such
+  a record — the OpenCode reader renders a persisted reasoning trace into `Content` and records no trace
+  text and no projection, so nothing separates the rendering from the record's own words — every writer
+  omits the text and counts it `unresolved_dialogue`, and the call and its recorded result travel on their
+  own. The second review round's first finding (P2) named both dispositions as acceptable: model the
+  conversion's disposition in the target expectation, or explicitly refuse the shape (as the comparison
+  already refuses a `shell` record, Q-0008-06). Which one?
+- **Default taken:** **model** it, in a second reading (`opencode_written_evidence`) beside the document's
+  own (`opencode_document_evidence`). Measured on this host through the carried reader and the route's own
+  writer (a throw-away Go probe, deleted again): the read answers `Content` = the text, `Thinking` empty,
+  no projection and one call; the rollout holds the `function_call` and its `function_call_output` and **no**
+  assistant message for the record, and the loss table names `unresolved_dialogue = 1` (the record with a
+  reasoning part and no call beside it keeps its rendering as its own text, counted `unprojected_dialogue`).
+  The expectation therefore holds no text for such a record, and because the comparison is by equality the
+  omission is *pinned* rather than excused: a target that wrote the rendering holds an assistant text the
+  source's read never established and is a difference. The planting's own comparison — document against
+  document — keeps the stricter reading, so a store whose assistant record lost a part stays a difference.
+  A refusal was rejected because mixed records are the common shape in a real session: refusing would make
+  `--source` unusable on the documents this direction exists to compare, while the modelled reading keeps
+  every member the read does establish under comparison.
+- **Reversal:** refuse the shape by name before anything is planted — the finding's other named disposition
+  (the `OPENCODE_UNMODELLED_MESSAGE_KINDS` arm's shape), at the cost of refusing a real session's common
+  shape; or drop the assistant-text member for such a document, which is reversible but no longer pins the
+  omission.
+- **Settled by:** an operator instruction, or a measurement against an installed harness whose reader
+  records the record's trace text (or projects a dialogue) for a call-bearing record — that would make the
+  text established and the reading here too narrow; the reader is carried (`internal/parser`), so the
+  measurement belongs to an upstream revision bump.
+
+## Q-0008-08 — The file-bearing-result disposition in the source-direction comparison: mirrored, not refused
+
+- **Status:** resolved (unattended default taken)
+- **Question:** `scripts/opencode-native-check.py`'s source direction compares a caller's document (or the
+  committed fixture) with the installed Codex rollout. A completed tool part whose `state.content` carries a
+  `file` block makes the carried parser answer the part's text as its own JSON **block array**
+  (`internal/parser`'s `openCodeV2ToolCall` marshals its blocks there), each writer writes those bytes
+  verbatim (the read hands the encoding on as decoded text), and an expectation that held no text for such
+  a part reported the rollout's own output as a difference — the fourth review round's finding (P2,
+  `review-findings-r3.md`). The finding named both dispositions: make the expectation follow the source-read
+  path, or explicitly refuse the shape before planting it (as the comparison refuses a `shell` record,
+  Q-0008-06). Which one?
+- **Default taken:** **mirror** it — `opencode_result_block_json` plus a mirror of the carried encoder
+  (`go_json_string`/`opencode_go_json`). The encoding is fully determined by the document (the blocks in the
+  content's own order, each object's members in their names' byte order, the parser's one member rewrite for
+  an inline `data:image/…` file, the structured text and error message appended as text blocks), and every
+  rule was measured rather than assumed: the encoder's spellings over every code point below `0x20` and over
+  `0x7f`/HTML characters/`U+2028`/`U+2029`/non-ASCII through a throw-away Go probe, and the finished
+  comparison end to end on this host (OpenCode 2.2.5 + Codex 0.170.0): a planted document holding three
+  file-bearing results converts and the run ends `RESULT: PASS — 18 check(s), none failed`, where the
+  pre-fix expectation ended `RESULT: FAIL — 1 check(s) failed` naming the rollout's encoded output as the
+  source's own empty reading. Q-0008-07's reasoning applies to this shape too (such results are a real
+  session's shape, and refusing would make `--source` unusable on the documents the direction exists for),
+  and the mirror keeps every member the read establishes under comparison instead of skipping it — the
+  planting's document-against-document reading included, so a store whose part lost its block is a
+  difference.
+- **Reversal:** refuse the shape by name before anything is planted (the `OPENCODE_UNMODELLED_MESSAGE_KINDS`
+  arm's shape), at the cost of refusing a real session's shape; or hold no text for such a part again, which
+  is reversible but reports a faithful conversion as a difference.
+- **Settled by:** an operator instruction, or an upstream revision that changes the carried parser's answer
+  for block-bearing results (the encoding, the member rewrite, or whether the read hands it on as decoded
+  text) — the mirror belongs to the carried revision's own rules, so the measurement belongs to an upstream
+  revision bump, and an operator who prefers refusal for this shape can say so.
+
+## Q-0008-09 — The Python-minor floor is pinned in the suite; whether CI also runs the gate under it is the operator's call
+
+- **Status:** open (default taken: the floor is pinned in the suite and the floor run is this increment's
+  evidence on the authoring host; the CI matrix keeps its two 3.13 legs).
+- **Question:** the docs bind the suite -- and, from this round, the shipped `scripts/**/*.py` -- to the
+  oldest Python they name (3.11), and the fourth review round found that binding unenforced: a 3.12-only
+  f-string in the suite made `selftest` unimportable under 3.11 (measured: `python3.11 -m unittest discover`
+  reported the module broken before any case ran) while CI's pinned 3.13 stayed green. The fix adds
+  `scripts/tests/test_python_floor.py` (the running parser constrained to the floor via `feature_version`,
+  plus the four PEP 701 f-string relaxations that constraint cannot see). That pin runs wherever the suite
+  runs and needs no host tool -- but CI's matrix never runs a floor interpreter, and the matrix and the CI
+  section of `docs/harness.md` are one statement held together by `scripts/tests/test_ci_matrix_claim.py`
+  (which refuses a matrix key it does not read), so adding a floor leg is a deliberate change to a pinned
+  artifact, not a step this round could take inside its own scope.
+- **Default taken:** no CI change. The residual gap is disclosed rather than hidden: the pin's four rules
+  cover the measured PEP 701 set, and a relaxation outside it (PEP 701's implicit parentheses around a
+  field's expression, say) is caught only where the interpreter at the floor itself parses the file -- which
+  is why the floor run is recorded as evidence: `python3.11 -m unittest discover -s scripts/tests
+  -p 'test_*.py'` answers `Ran 442 tests ... OK` on the authoring host (and `python3.11 scripts/gate.py`
+  was run for the same record).
+- **Reversal:** add a `python-version` dimension (or one `include:` leg) to `.github/workflows/gate.yml`,
+  extend `scripts/tests/test_ci_matrix_claim.py`'s reader and the §CI/§Platform-boundary statement with it,
+  and let CI hold the floor; the cost is one more job per run, the benefit is the *behavioural* half of the
+  3.11 claim (the suite's `pathlib`-style differences, not only its parses) checked where nobody has to
+  remember to run it.
+- **Settled by:** an operator instruction, or a CI change that adds (or deliberately refuses) a floor leg --
+  the pin itself needs no decision.

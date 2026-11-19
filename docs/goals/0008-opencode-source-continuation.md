@@ -1,7 +1,7 @@
 # 0008 — Continue OpenCode history in other harnesses
 
-**Status:** Ready  
-**Prerequisites:** [0007 — Continue supported conversations in OpenCode](0007-opencode-target-continuation.md) and [0003 — Continue a Codex session in Claude Code](archive/0003-codex-to-claude-continuation.md).
+**Status:** Implemented on `feat/0008-opencode-source-continuation`; awaiting operator acceptance  
+**Prerequisites:** [0007 — Continue supported conversations in OpenCode](archive/0007-opencode-target-continuation.md) and [0003 — Continue a Codex session in Claude Code](archive/0003-codex-to-claude-continuation.md).
 
 ## Intended advance
 

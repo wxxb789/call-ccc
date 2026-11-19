@@ -183,6 +183,37 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   as often as it is published, because a check that left its fixture behind would make every later run's
   planting meet `Session already exists` (measured: the pre-fix check ended `RESULT: FAIL` there and the
   fixture stayed).
+- **OpenCode is a source whose session is a row in that harness's own store.** A reference
+  (`opencode:<session id>` under the provider's configured root — `OPENCODE_DIR`, the configuration's
+  `opencode_dirs`, else `~/.local/share/opencode`, the directory holding `opencode.db` — or the provider's
+  own virtual path `<database>#<session id>`) is resolved by the inherited AgentsView OpenCode provider
+  and read by its reader: this build adds no SQL reader, no second parser and no store writer of its own,
+  and a caller who wants to convert an OpenCode session names the root it lives in, exactly as the other
+  sources name `CLAUDE_PROJECTS_DIR`/`CODEX_SESSIONS_DIR`/… . What one read answers is the reader's own, and
+  the routes report it as such: the OpenCode v2 reader renders a `reasoning` part into the record's
+  `Content` (`[Thinking]\n<trace>\n[/Thinking]`, joined with the record's `text` parts) and records **no**
+  trace text and **no** dialogue projection, so every written message is carried-with-caveat
+  (`unprojected_dialogue`) and nothing is removed from `Content` by inference; a `completed` tool part
+  yields the part's own `time.ran` as a textless **progress event** beside the terminal event that carries
+  its recorded content, so the writers leave the progress event out and count it
+  (`empty_tool_results` on the Codex and Claude routes) while the terminal event's text is what the target
+  holds; and the store's session controls (an `idle` marker, agent and model switches) are not messages the
+  reader returns, so nothing is counted for them — the read never held them. A member of that store is a
+  **container** member: `source.boundary` is `not-taken` naming the store and the member,
+  `installation.source_check_state` is `not-verified`, and "the source is unchanged" is measured on the
+  harness's own *records* (`session export` before and after), never on the database file's bytes, which
+  move with the harness's WAL handling. Its committed fixture is therefore a **document**, not a store
+  (`internal/ccc/testdata/fixtures/opencode/<session>.json`, written by `internal/ccc/fixturegen` from the
+  shape a real `session export` writes, one canonical encoding, compact so the tool input's JSON value is
+  the one the store holds) — a store can only be written by the harness, so tests materialise one through
+  `internal/ccc/opencodefixture` and the native check plants the same document through the harness's own
+  importer. `scripts/opencode-native-check.py --direction opencode-to-codex` is that direction: it plants
+  the fixture, converts through the CLI at the **load** level, reads the installed Codex rollout's own
+  records against the fixture's own bytes (prompts, call name, recorded input value, recorded result text —
+  one output per call — and the reader's rendering of the reasoning record), reads the printed Codex line as
+  a POSIX invocation naming `CODEX_HOME` and the session, and — with `--resume-prompt` — runs one real turn
+  through the report's own vector, recording what the harness answered (a refused turn is a failed check,
+  never a skip).
 - **A conversion writes a fresh native identity and replaces nothing.** The install is exclusive, the
   source is never opened for writing, no credential or login store is copied, and a target data
   directory nobody named is an error rather than a directory invented here. Tests and demos use
@@ -241,12 +272,16 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   parameterized by `piFamilyShape`), and the OpenCode target's `opencode_target.go`, `opencode_install.go`
   and `opencode_verify.go` (whose store a test builds through `internal/ccc/opencodefixture` — a fixture
   package, because a real OpenCode session exists only inside the harness's own store); its committed
-  native-shaped fixtures are `internal/ccc/testdata/fixtures/` and the growth fragments a run appends to
+  native-shaped fixtures are `internal/ccc/testdata/fixtures/` — one provider directory per source, except
+  `fixtures/opencode/`, which holds the harness's own **export document** for one session rather than a
+  source root, because that provider's session is a row in a store only the harness writes — and the growth
+  fragments a run appends to
   a *copy* of one (`internal/ccc/testdata/growth/`, written by the same `internal/ccc/fixturegen` and
   pinned against it) are what makes one source session grow; `cmd/ccc` adds
   argument handling and presentation only, and a target-side native harness
   (`scripts/codex-native-check.py`, `scripts/claude-native-check.py`, `scripts/pi-native-check.py`,
-  `scripts/omp-native-check.py`, `scripts/opencode-native-check.py`) is
+  `scripts/omp-native-check.py`, `scripts/opencode-native-check.py`, whose two directions are
+  0007's `claude-to-opencode` and 0008's `opencode-to-codex`) is
   registered in `docs/harness.md`, re-runnable, and deliberately not a gate step. A target whose own
   loader resolves a session id through the process's working directory — Claude Code, and Pi — is
   installed under the project spelling of the source read's recorded working directory, and a source that
@@ -296,15 +331,24 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
 - The harness's own tests are part of that contract: an assertion under `scripts/tests/` must fail
   when the rule it names is broken, and must hold on every platform and every Python 3 the docs name
   — no hard-coded separators, no POSIX-only tool behaviour, no assumption that a tool is installed,
-  no reliance on a `pathlib` behaviour that differs between Python minors, and no expectation that
-  only holds on the platform or the `PATH` the case happens to run on: a case's stub bin answers the
-  host probes it is not about, and the suite re-runs itself in a child whose `PATH` holds no tools and,
-  once, with the platform probe answering Windows-without-a-compiler, so a host-dependent case fails
-  on this host ([`docs/conventions.md`](docs/conventions.md)). The Go suites the gate's `test` step
+  no reliance on a `pathlib` behaviour that differs between Python minors, no grammar above the oldest
+  minor the docs name (`scripts/tests/test_python_floor.py` holds every `scripts/**/*.py` to it: the
+  running parser constrained to 3.11, plus the four PEP 701 f-string relaxations `feature_version`
+  cannot see), and no expectation that only holds on the platform or the `PATH` the case happens to
+  run on: a case's stub bin answers the host probes it is not about, and the suite re-runs itself in
+  a child whose `PATH` holds no tools and, once, with the platform probe answering
+  Windows-without-a-compiler, so a host-dependent case fails on this host
+  ([`docs/conventions.md`](docs/conventions.md)). The Go suites the gate's `test` step
   runs are held to the same rule: a case whose subject is what a check makes of a target harness's
   answer drives that harness through the check's own seam and answers the executable lookup the same
   way, instead of needing the harness installed on the machine running the suite — a case that *is*
-  about a missing binary pins a `PATH` that holds no harness.
+  about a missing binary pins a `PATH` that holds no harness. Two shapes of that rule were measured on
+  the `windows-latest` leg and are binding: a case that asserts a path the CLI reports builds its
+  expectation with the rule the CLI resolves that path by — a configured session root is resolved
+  before discovery reads it (`pathutil.ResolveAbsolute`: absolute, symlinks resolved), which spells a
+  short-named Windows temp path by its long name — and a case that asserts a rendered resume line
+  spells it the way the renderer does, with a home a POSIX shell would act on so the quoted arm holds
+  on every host ([`cmd/ccc/main_test.go`](cmd/ccc/main_test.go)'s `shellUnsafeHome`).
 - Stage order for an increment: implement → verify (gate) → simplify (report only) → apply (accepted
   findings only) → review (report only) → fix → gate → PR. Report stages must not edit the tree.
 - One goal ≈ one branch ≈ one pull request, squash-merged onto a linear `main`. Do not commit, push

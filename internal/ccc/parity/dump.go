@@ -77,7 +77,10 @@ var Cases = []Case{
 // Options describes one comparison run.
 type Options struct {
 	// Fixtures is a directory holding one subdirectory per provider, each of which is that
-	// provider's configured source root.
+	// provider's configured source root -- with one exception the oracle never reads: `opencode/`
+	// holds the OpenCode provider's export document rather than a source root, because a session of
+	// that provider is a row in a store only its own harness writes (internal/ccc/opencodefixture
+	// materialises it for tests). A case for it would ask the reader for a store, not a path.
 	Fixtures string
 	// WorkDir holds the isolated archive this run writes through the inherited sync engine.
 	WorkDir string

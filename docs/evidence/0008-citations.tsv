@@ -1,0 +1,51 @@
+# Obligation citations — goal 0008 (OpenCode source continuation).
+#
+# One row per rule of this increment that a gate-runnable Go test discharges, in the four id spaces the
+# increment's rules come from:
+#   D1–D4   the goal's four `Done when` clauses, in order
+#           (docs/goals/0008-opencode-source-continuation.md);
+#   B1–B2   the goal's two `Bounds` clauses, in order;
+#   S1–S6   the rules of AGENTS.md's OpenCode-source paragraph ("OpenCode is a source whose session is a row
+#           in that harness's own store"), in the paragraph's own order — the inherited provider and its two
+#           reference forms; the read's own answers (the rendering, no trace text, no dialogue projection);
+#           the progress event beside the terminal one; the session controls the read does not hold; the
+#           container-member boundary; the committed fixture document;
+#   E1      the failure half of the same interface (the goal's fourth clause asks for the error answer too:
+#           an OpenCode reference the provider cannot resolve is the established not-found failure).
+#
+# scripts/obligation-citations.py is the arbiter: every row's cited test must exist in the named package
+# and run and pass, and the `citations` step is required — a tree that lost this file, or a citation that
+# went stale, fails the gate instead of passing partially. Columns: rule_id, test, package, artifact.
+# Tab-separated; `#` comments and blank lines are ignored; a rule id appears once.
+#
+# Deliberately not covered, with the reason (form-based: a row is one Go test in a package
+# scripts/gate-targets.txt covers, so a rule whose gate evidence is a python case the required `selftest`
+# step runs, or a native harness run, cannot hold one):
+#   S7 — the native direction's own discipline (the harness's own importer plants the fixture; the CLI is
+#          driven at the *load* level; the installed Codex rollout's own records are compared with the
+#          fixture document's own bytes, one output per call; the printed Codex line is read as a POSIX
+#          invocation; a requested turn is recorded as what the harness answered). Its evidence is the
+#          native run scripts/opencode-native-check.py and the python cases
+#          scripts/tests/test_opencode_native_check.py the `selftest` step runs — a native harness run and a
+#          python case, not a Go test.
+# Two evidence halves belong to clauses whose rows hold their Go-test half; they are named here rather than
+# dropped: D1's "provide an actual target native load/resume result" is the native run's `verification.load`
+# (Codex's own `thread/resume`, quoted in the record), and D3's "source-side AgentsView packages and SQLite
+# schema are unchanged" is the gate's required `parity` step (scripts/upstream-parity.py), while its
+# "the accepted OpenCode-target route and prior Claude/Codex routes remain correct" half is the accepted
+# routes' own suites the gate's `test` step runs (D3's row cites the OpenCode-target route's own case, and
+# the record's §4 quotes the two native checks' runs).
+rule_id	test	package	artifact
+D1	TestContinueFromOpenCodeThroughTheCommonModel	./internal/ccc	0008-opencode-source-continuation.md §Done when 1 (the pipeline and structural read-back for both targets; the native load result is the native run, named above)
+D2	TestOpenCodeSourceToolEvidenceReachesEachTarget	./internal/ccc	0008-opencode-source-continuation.md §Done when 2
+D3	TestContinueIntoOpenCodeConvertsInstallsAndReadsBack	./internal/ccc	0008-opencode-source-continuation.md §Done when 3 (the accepted OpenCode-target route's own case; parity is the gate step named above)
+D4	TestContinueFromOpenCodeWritesTheEstablishedReport	./cmd/ccc	0008-opencode-source-continuation.md §Done when 4
+E1	TestContinueFromAnUnknownOpenCodeSessionFailsWithoutWriting	./cmd/ccc	0008-opencode-source-continuation.md §Done when 4 (the error half: the reference the provider cannot resolve)
+B1	TestOpenCodeSourceReadAnswersItsOwnProviderAndRecords	./internal/ccc	0008-opencode-source-continuation.md §Bounds 1 (the read resolves through the inherited provider and reports its own identity; no reader of this build's exists to cite)
+B2	TestOpenCodeSourceToolEvidenceReachesEachTarget	./internal/ccc	0008-opencode-source-continuation.md §Bounds 2 (the recorded text is written byte for byte; nothing is rewritten to make a format match)
+S1	TestOpenCodeSourceResolvesByIdentifierAndByItsOwnPath	./internal/ccc	AGENTS.md §OpenCode is a source … (the provider's two reference forms)
+S2	TestOpenCodeSourceReadAnswersItsOwnProviderAndRecords	./internal/ccc	AGENTS.md §OpenCode is a source … (the read's own answers: the rendering, no trace text, no projection)
+S3	TestContinueFromOpenCodeThroughTheCommonModel	./internal/ccc	AGENTS.md §OpenCode is a source … (the progress event beside the terminal one, counted)
+S4	TestOpenCodeSourceReadAnswersItsOwnProviderAndRecords	./internal/ccc	AGENTS.md §OpenCode is a source … (the session controls the read does not hold)
+S5	TestOpenCodeSourceBoundaryStatesTheContainerItCannotMeasure	./internal/ccc	AGENTS.md §OpenCode is a source … (the container-member boundary and the source comparison that does not run)
+S6	TestFixturesMatchTheirGenerator	./internal/ccc	AGENTS.md §OpenCode is a source … (the committed fixture document is what internal/ccc/fixturegen writes)

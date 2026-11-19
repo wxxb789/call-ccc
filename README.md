@@ -8,8 +8,10 @@ Today the repository carries the **actual AgentsView source tree** at a pinned r
 ([`docs/upstream.md`](docs/upstream.md)) and ships three working capabilities on top of it: inspecting
 an existing agent session through AgentsView's own discovery, parsers and archive read path, and
 continuing a session between harnesses — a Claude Code session as a new, natively resumable **Codex**,
-**Claude Code**, **Pi**, **Oh My Pi** or **OpenCode** session, a Codex session as a Claude Code one, and a
-**Pi** or **Oh My Pi** session as a Claude Code, Codex or Pi one.
+**Claude Code**, **Pi**, **Oh My Pi** or **OpenCode** session, a Codex session as a Claude Code one, a
+**Pi** or **Oh My Pi** session as a Claude Code, Codex or Pi one, and an **OpenCode** session — a row
+inside that harness's own SQLite store, read through the inherited reader — as a Codex or Claude Code
+one.
 
 ```bash
 go build -tags fts5 -o bin/ccc ./cmd/ccc   # CGO_ENABLED=1; -tags fts5 is what upstream ships
@@ -23,6 +25,7 @@ bin/ccc continue claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to pi    # Claude
 bin/ccc continue pi:01a1c335-7098-71c2-a91b-b5295c0464f5 --to omp         # Pi → Oh My Pi
 bin/ccc continue omp:01a1c338-9e4f-7c21-8f3d-2b6a05e1d7a4 --to claude     # Oh My Pi → Claude Code
 bin/ccc continue claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to opencode # Claude Code → OpenCode
+bin/ccc continue opencode:ses_5f2a1c47d9e34b6a8f0c1d2e3b4a5c6d --to codex # OpenCode → Codex
 # resume the Claude session this installed, from the directory its loader discovers it in:
 cd <session working directory> && CLAUDE_CONFIG_DIR=<installed home> claude --resume <new session id>
 # and the Pi one, from the directory that harness resolves a session id through:
@@ -55,7 +58,20 @@ the `sessions` root above it answers that no such session is installed.
 `ccc inspect` locates a session with the provider's own reader, parses it, and reports its identity,
 agent, source, conversation shape (counts, tool calls, compaction boundaries, malformed lines) and —
 when a data directory holds one — what the SQLite archive holds for the same session. It never writes:
-the source transcript and any archive are read only.
+the source transcript and any archive are read only. A source is found through the provider's own
+configured root — the environment variable that names it (`CLAUDE_PROJECTS_DIR`,
+`CODEX_SESSIONS_DIR`, `PI_DIR`, `OPENCODE_DIR`, …), else the same key in the AgentsView configuration
+(`claude_project_dirs`, …), else that provider's default directory. An **OpenCode source** is a row
+inside that harness's own SQLite store (`<root>/opencode.db`) rather than a file, and it is read through
+the inherited reader like every other source — this build adds no SQL reader and never writes into that
+store. Two consequences the report states rather than hides: the *boundary* block is `not-taken` for a
+member of a store — the container's bytes hold every member, and the harness's own writes move them with
+its WAL handling — so the report answers `source_check_state: not-verified` for it and never claims the
+database file was re-measured; what shows the source's own *records* unchanged is the direction's native
+check, which reads them back through the harness's own reader around the run
+(`scripts/opencode-native-check.py --direction opencode-to-codex`). And a source record the reader renders
+rather than quotes (a persisted reasoning trace it folds into the record's text as
+`[Thinking]…[/Thinking]`) travels as that rendering with the caveat counted (`unprojected_dialogue`).
 
 `ccc continue` reads that session through the same inherited reader, writes it as a **new** session of
 the requested target (a Codex rollout under the target's own `sessions/` tree with `--to codex`, a
@@ -115,7 +131,8 @@ the read carried it is left to the read's own answer rather than claimed either 
 the file is written reads it again.
 
 The continuation engine itself lives in [`internal/ccc`](internal/ccc) and is callable without the
-CLI: `SourceReader` reads a native session into a typed, transient Conversation document,
+CLI: `SourceReader` reads a native session — an OpenCode one included — into a typed, transient
+Conversation document,
 `Archive`/`Ingestor` cover the inherited read and write paths, `targets.go` routes `Continue` to the
 target writer, `ConvertToCodexRollout`/`ConvertToClaudeTranscript`/`ConvertToPiSession`/`ConvertToOMPSession`/
 `ConvertToOpenCodeSession`

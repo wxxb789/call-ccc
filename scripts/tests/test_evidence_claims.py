@@ -54,6 +54,7 @@ ROUTE_DOCUMENTS = (
     "0005-pi-continuation.md",
     "0006-omp-continuation.md",
     "0007-opencode-target-continuation.md",
+    "0008-opencode-source-continuation.md",
 )
 
 #: The harness increment's record: the first evidence record whose name is outside the ``*continuation*``

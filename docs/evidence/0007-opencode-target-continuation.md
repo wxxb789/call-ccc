@@ -1,8 +1,9 @@
 # 0007 — Continue supported conversations in OpenCode: evidence
 
-Contract: [`docs/goals/0007-opencode-target-continuation.md`](../goals/0007-opencode-target-continuation.md)
+Contract: [`docs/goals/archive/0007-opencode-target-continuation.md`](../goals/archive/0007-opencode-target-continuation.md)
 (this increment leaves it in `docs/goals/` with its row marked *Implemented … awaiting operator
-acceptance*, per `AGENTS.md`: the goal moves to `docs/goals/archive/` in the increment that merges it).
+acceptance* at the time, per `AGENTS.md`; increment 0008 moved it to `docs/goals/archive/` with its row
+marked *Accepted: merged onto `main` as `e68f18a`*, which is the increment that records the merge).
 Plan: [`docs/plans/0007-opencode-target-continuation.md`](../plans/0007-opencode-target-continuation.md).
 Harness: OpenCode `2.2.5` (`opencode --version` prints `opencode v2.2.5`), the pinned AgentsView carry
 `83195c8a6861b8c74a4b6cb87512817fed6f8584` (reported by every run's `carried:` line).

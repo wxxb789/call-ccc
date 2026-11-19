@@ -42,7 +42,15 @@ suite must hold on every Python 3 the docs allow and not only on CI's pinned 3.1
 Python 3, and no case may depend on a `pathlib` behaviour that moved between minor versions —
 `PurePath` parses its constructor arguments in `__new__` before 3.12 and in `__init__` from 3.12 on,
 which is why the suite's Windows-flavoured root is a plain object holding `PureWindowsPath` children
-instead of a `PureWindowsPath` subclass.
+instead of a `PureWindowsPath` subclass. The *shipped* Python is held to that floor by a case, not
+only by review: `scripts/tests/test_python_floor.py` parses every `scripts/**/*.py` with the running
+parser constrained to the oldest minor the docs name (`ast.parse(..., feature_version=(3, 11))`) and
+reads the four PEP 701 f-string relaxations that constraint cannot see from the token structure of
+each literal (a backslash, a comment, the literal's own quote, a field inside two format specs — the
+rule set measured against CPython 3.11.14's own verdicts, its corpus committed). Review round 4 of
+goal 0008 found the pin was missing the hard way: one 3.12-only f-string in the suite made discovery
+fail on 3.11, so the required `selftest` step broke on the interpreter the docs allow while CI's
+3.13 pinned leg stayed green.
 
 The same step must not depend on the *host* either, so two of its cases re-run the whole suite in a
 child process — once with `PATH` pointing at a directory that holds no tools at all, once with the
@@ -511,10 +519,13 @@ says so.
   script builds `ccc` into `bin/ccc-native-check-omp` (`.gitignore` covers `bin/`), takes the same
   `--resume-prompt`/`--expect`/`--keep`/`--json` flags as its siblings, and prints the turn's own answer
   under `TURN_OUTPUT_MARKER`.
-- `scripts/opencode-native-check.py` — the target-side native verification for goal 0007, and
+- `scripts/opencode-native-check.py` — the native verification for both OpenCode routes: goal 0007's
+  target direction (`claude-to-opencode`, this paragraph) and goal 0008's source direction
+  (`opencode-to-codex`, below). It is
   **deliberately not a gate step** for the same reason the others are not: it needs the OpenCode binary
-  installed (this route's installation *is* that harness's own importer, so a host without it has no
-  offline half to verify at all — the run ends as `RESULT: INCOMPLETE`, exit 2, before any check) and, for
+  installed (that target route's installation *is* that harness's own importer, so a host without it has no
+  offline half to verify at all — the run ends as `RESULT: INCOMPLETE`, exit 2, before any check; the
+  source direction needs both harnesses and names whichever is absent) and, for
   a real turn, model access. It takes a **copy** of the committed Claude fixture with only its recorded
   working directory rewritten mechanically to a directory the run owns — measured: the harness's importer
   refuses a session whose `location.directory` does not exist (`LocationNotFoundError`) — plants an
@@ -578,8 +589,80 @@ says so.
   directory, and a spelling that means different programs in the two is refused by the report's vector
   reading, which names both words. The script builds `ccc` into
   `bin/ccc-native-check-opencode` (`.gitignore` covers `bin/`),
-  takes `--opencode`/`--source`/`--target-home`/`--resume-prompt`/`--expect`/`--keep`/`--json`, and prints
+  takes `--opencode`/`--source`/`--target-home`/`--resume-prompt`/`--expect`/`--keep`/`--json` (and
+  `--codex` for the source direction), and prints
   each check's own state.
+  Its **second direction**, `--direction opencode-to-codex` (goal 0008), is the same product from the
+  source side, and it needs both binaries: the OpenCode binary writes the *source* store (a session is a
+  row inside it, so only that harness's own importer can plant the session the run converts) and Codex is
+  the target whose own loader answers. It plants the committed fixture document
+  (`internal/ccc/testdata/fixtures/opencode/<session>.json`, the harness's own export shape) through the
+  harness's own `session import … --directory <workspace>` — no working directory is rewritten, because
+  `--directory` is what places the session, and the importer (measured) rewrites only `info.projectID`,
+  `info.location.directory` and `info.time.updated` — reads it back with the harness's own `session export`
+  and compares the two documents over the members this comparison reads — the user texts (each user record
+  as the inherited reader renders it: the message's own text and its recorded attachments, admitted only
+  where it survives the reader's own `strings.TrimSpace`), each tool part's name, its recorded input value,
+  its terminal text under the call the part *is* (every content text block, an empty one included, the
+  recorded `state.error.message` where the reader's own errored branch appends one, and — for a part whose
+  content carries a `file` block, where the reader moves the part's text into *blocks* instead — the
+  parser's own block **encoding**: the JSON array of `text`/`file` objects the read hands on as the event's
+  content and every writer writes verbatim, each object's members in their names' order, a file block with
+  `uri`/`mime` and a `name` only where recorded, an inline `data:image/…` file rewritten to
+  `input_image`/`image_url` with its `uri` member dropped, and the structured text and error message
+  following as text blocks. The check mirrors that encoder byte for byte — measured against the writer on
+  this host, where *skipping* the member was the pre-fix bug (an expectation holding no text for such a
+  part reported the rollout's own encoded output as a difference) — and the planting's
+  document-against-document reading carries the same member, so a store whose part lost its block is a
+  difference. The pairing is carried as the call's place in the walk, so a document whose result texts were
+  reassigned to the wrong calls is a difference rather than the same evidence), and each record's rendered
+  text (a text member is admitted only where it survives that same trimming — *Go's* set: a text of, say,
+  the single information separator `\x1c`, which Python's own trimming would drop, is a member and a
+  whitespace-only one is not; a store holding another conversation is reported, not converted; a document
+  carrying a `shell` message — the one kind the reader answers as both a user record and tool evidence while
+  this comparison holds no member for either — is refused by name, exit 2, before the harness is asked to
+  import anything) — converts through
+  the CLI **at the load level** (`ccc continue opencode:<id> --to codex
+  --verify load --json`, `OPENCODE_DIR` naming the scratch root), and then reads the *installed Codex
+  rollout's own records* against the *fixture document's own bytes*: the user texts, each tool call's name,
+  its recorded input value (canonicalized — a rollout writes the arguments as a JSON string and the store
+  keeps the parsed value) and its recorded result text, **each output under the call it answers** (the
+  file's own pairing, read by `call_id` — the textless progress event a completed OpenCode tool part
+  produces is not a second output, and a same-count reassignment of the recorded texts to the wrong calls,
+  which leaves the detached lists identical, is a difference), and the assistant texts the conversion
+  *writes*: the inherited reader's own **rendering** of a record that carries a persisted reasoning trace
+  (`[Thinking]\n<trace>\n[/Thinking]` + the record's text), and **no** text for a record that carries a tool
+  call — the read establishes no dialogue for such a record (the reader renders the trace into `Content` and
+  records no trace text and no projection, so nothing separates the rendering from the record's own words),
+  every writer omits its text and counts it `unresolved_dialogue`, and the equality comparison reports a
+  target that wrote it. The assistant texts are compared byte for byte, never by containment, so a target
+  that dropped the trace — or published a text the source's read never established — is a difference; a
+  rendering that survives no trimming is no member at all (the reader's own filter and the writer's
+  whitespace rule leave such a record out, so a target holding no message for it is faithful); the
+  planting's own comparison, document against document, keeps the record's text for the mixed shape too and
+  would report a store whose assistant record lost a part.
+  It records the container-member boundary the report
+  can and cannot state (`not-taken`, the store and member named, `source_check_state: not-verified`), asks
+  the harness's own reader for an id nothing installed (the control arm), reads both printed Codex lines
+  against this run's own home and session as a POSIX shell reads them (the `CODEX_HOME` assignment first
+  and unquoted — a quoted assignment is the *program* to a shell) **and both argument vectors** against the
+  harness this run probed and the session it converted, in the load-only run too (with no
+  `--resume-prompt` no turn reads them: the printed-line checks alone compare a line with the report's own
+  vector, so a consistently rendered pair naming another program would otherwise pass for a session nothing
+  has shown resumable), and re-reads the source's own records
+  afterwards (`session export`, byte-identical) — never the database file's bytes, which move with the
+  harness's WAL handling. `--codex` names the target harness (default `codex` on `PATH`), and
+  `--target-home` is that direction's **Codex** home; the OpenCode side is always the run's own scratch
+  store, because the harness's own importer is what writes it. With `--resume-prompt` it runs one real turn
+  itself, through the report's own `exec_resume_arguments` read against the harness this run probed and the
+  session it converted (plus its own isolation flags: no git repository, a read-only sandbox, no
+  approvals), and records what the harness answered — the answer printed under `TURN_OUTPUT_MARKER`, the
+  rollout's own records grown, the conversion's own records unchanged, and the prompt in what the file now
+  holds; a refused turn is a **failed** check naming the harness's own words, never a pass and never a skip.
+  Measured on this host: a Codex turn in a *scratch* home answers `401 Unauthorized` (its credential is the
+  caller's own store and this build copies no credential), the same boundary the Codex route's own check
+  shows — the load half is what is verified here, and the INCOMPLETE verdict (exit 2, zero checks) names
+  whichever of the two harnesses is absent.
 - `scripts/native_check_common.py` — the mechanism the native checks share, so none keeps its own
   copy of it: the file digests (`sha256`, `tree_digest`), the check recorder (`record`, `RESULTS`), the
   subprocess runner (`run`, which a check can hand a command's *whole* environment instead of an overlay
@@ -699,6 +782,14 @@ not the one the rule is about:
   scripts/tests` (executed; head `1a476e0`'s own file prints `FAILED (failures=4)` there — the two cases
   plus the two self-check cases that read the red child, over the same two child names CI printed — and
   the repaired one `OK`, 153 cases).
+  The OpenCode-source route's two cases write the same shape from the other side: the python case that
+  drives a stubbed report reads that report's printed Codex lines the way a shell does and hand-spelled
+  them bare from its own real home, and the Go case asserted the published line held the unquoted
+  substring `CODEX_HOME=<home>`. Both failed `gate (windows-latest)` at head `6fe0f14` against a renderer
+  that had quoted the home correctly — the quote is there for the backslashes on that host, where a POSIX
+  path of the same shape stands bare — and both now build those lines the way the route's renderer does
+  (`scripts/tests/test_opencode_native_check.py`'s `codex_invocation`) and with a home whose name holds a
+  space (`cmd/ccc/opencode_source_route_test.go`).
 - a path is spelled by the platform that reads it: `pathlib` answers `\tmp\x` for `Path('/tmp/x')` on
   Windows where POSIX answers `/tmp/x`, so a rule whose two sides are "the word a shell reads a rendered
   line back as" and "the home *this host* spells" cannot be pinned by a fixture spelled for one of them.
@@ -727,6 +818,17 @@ not the one the rule is about:
   discover -s scripts/tests` (executed; the unresolved spelling is `FAILED (failures=4)` there — the two
   cases plus the two self-check cases that read the red child, CI's own number — and the repaired one
   `OK`, 153 cases).
+  The OpenCode source's own round met both halves of this rule at head `6fe0f14`: the python case
+  `SourceInvocationReading` hand-spelled its line `CODEX_HOME=/home/x` while handing the reading
+  `Path('/home/x')` — two spellings of one path, since that host spells the second `\home\x` — so the
+  reading answered False for a line it was right to refuse (no renderer writes that word for that home;
+  the case had compared what it wrote against what it passed). It now builds the line with the quoting
+  `shellQuote` applies and drives both flavours (`PATH_FLAVOURS`), which exercises that arm on every
+  host, and the Go CLI cases spelled their expectation from the raw throw-away root they passed while the
+  read had resolved it — for a *configured source root* the configuration resolves it before discovery
+  reads it (`internal/parser.ResolveProviderRoot`'s `pathutil.ResolveAbsolute`), so that runner's
+  `t.TempDir()` spelled `…\RUNNER~1\…` while the report answered `…\runneradmin\…` — and they now take
+  the store through that same rule (`cmd/ccc/opencode_source_route_test.go`'s `openCodeSourceStore`).
 - a path is absolute by the **platform's** own answer, not by its spelling: on Windows `filepath.IsAbs`
   answers false for a POSIX-absolute word like `/opt/tools/claude`, because its volume test wants a drive
   letter, a device prefix or a `\\host\share` UNC form (in the toolchain this tree builds with,

@@ -95,6 +95,37 @@ const (
 	piBranchSwitchCwd       = "/home/user/code/archive"
 	piBranchSwitchStamp     = "2026-05-07T08:30:00.000Z"
 
+	// The OpenCode fixture. Its shape is not a file a harness appends to but the harness's own **export
+	// document**, because an OpenCode session is a row in the harness's SQLite store: the store can only
+	// be written by the harness (`opencode session import`), so the committed artifact is the document
+	// that harness's own `session export` produces, and every consumer materialises a store from it --
+	// `internal/ccc/opencodefixture` for the Go cases, the harness's own importer for the native check.
+	//
+	// The members and their shapes are the ones measured on OpenCode 2.2.5 (a `user` message with `text`;
+	// an `assistant` message whose `content` holds a `tool` part with a `completed` `state` and its own
+	// `time` -- which the reader answers as a `started` progress event beside the terminal one; a
+	// `reasoning` part beside a `text` part, which the reader renders into the record's `Content`; and an
+	// `idle` record, a session control the reader keeps out of the conversation). A `text` part carries no
+	// `time` member, because the importer drops one (measured), so the fixture carries a shape the harness
+	// itself produces rather than one it normalizes away. Every string is invented, like every other
+	// fixture string.
+	openCodeSessionID = "ses_0008opencodefixture00000001"
+	openCodeCwd       = "/home/user/code/example-api"
+	openCodeProject   = "0000open0000000000000000000000example000000"
+	openCodeModel     = "example-model"
+	openCodeProvider  = "example-proxy"
+	// The conversation's own instants, in Unix milliseconds as the harness records them: 2026-05-08
+	// 09:15:00Z and the offsets of one tool-calling turn and one plain one.
+	openCodeStart = int64(1778231700000)
+	// The one fact this fixture records, quoted by the evidence record's native run: which file holds the
+	// retry cap and what the cap is.
+	openCodeQuestion   = "Which file holds the retry cap, and what is the cap?"
+	openCodeToolResult = "Read file /home/user/code/example-api/internal/retry/config.go, lines 38-42\n" +
+		"38: // policy.go\n40: const maxAttempts = 4\n41: const maxBackoffSeconds = 30\n42: "
+	openCodeAnswer         = "The cap is `maxBackoffSeconds = 30` in internal/retry/config.go."
+	openCodeFollowup       = "And how many attempts does the policy allow?"
+	openCodeFollowupAnswer = "Four attempts, and thirty seconds of backoff between them."
+
 	// The growth fragment's own entries: one further turn, chained onto the committed session's last
 	// entry so a copy that grew by it is one session rather than two roots.
 	piGrowthUserID          = "a1b2c3d4"
@@ -434,6 +465,127 @@ func codexGrowthTurn() string {
 	)
 }
 
+// openCodeSession is the OpenCode fixture: the harness's own export document for one invented
+// conversation -- two turns, the first of which read a file, with a persisted reasoning trace beside the
+// answer's text.
+//
+// It is returned as the document's own value, and `fixtureFiles` serializes it with the one canonical
+// encoding every fixture line goes through: measured, the harness's importer stores a tool part's
+// `state.input` as a parsed value and drops the recorded whitespace, so a fixture written compact is the
+// document *the harness's own store holds* -- a pretty-printed one would make a store built from it
+// answer a tool input spelling no harness store ever holds.
+func openCodeSession() map[string]any {
+	const (
+		userID          = "msg_0008opencodefixture0000a01"
+		toolCallID      = "call_0008opencodefixture000b01"
+		toolMessageID   = "msg_0008opencodefixture0000a02"
+		answerMessageID = "msg_0008opencodefixture0000a03"
+		followupID      = "msg_0008opencodefixture0000a04"
+		followupAnswer  = "msg_0008opencodefixture0000a05"
+		idleID          = "msg_0008opencodefixture0000a06"
+	)
+	return map[string]any{
+		"info": map[string]any{
+			"id":        openCodeSessionID,
+			"projectID": openCodeProject,
+			"cost":      0.00182073,
+			"tokens": map[string]any{
+				"input": 15349, "output": 58, "reasoning": 15,
+				"cache": map[string]any{"read": 15296, "write": 0},
+			},
+			"outcome": "succeeded",
+			"time": map[string]any{
+				"created": openCodeStart, "updated": openCodeStart + 12000,
+				"busy": openCodeStart + 200, "idle": openCodeStart + 12200,
+			},
+			"title":    "Retry cap in internal/retry/config.go",
+			"location": map[string]any{"directory": openCodeCwd},
+		},
+		"messages": []any{
+			map[string]any{
+				"id":    userID,
+				"time":  map[string]any{"created": openCodeStart + 240},
+				"text":  openCodeQuestion,
+				"files": []any{},
+				"type":  "user",
+			},
+			// The tool-calling assistant record: one `tool` part whose `state` is the terminal
+			// `completed` one, with the part's own `time` -- `ran` is what the reader answers as the
+			// progress event, `completed` as the terminal one.
+			map[string]any{
+				"id":    toolMessageID,
+				"time":  map[string]any{"created": openCodeStart + 260, "streamed": openCodeStart + 900, "completed": openCodeStart + 1000},
+				"type":  "assistant",
+				"agent": "build",
+				"model": map[string]any{"id": openCodeModel, "providerID": openCodeProvider, "variant": "max"},
+				"content": []any{
+					map[string]any{
+						"type":     "tool",
+						"id":       toolCallID,
+						"name":     "read",
+						"executed": false,
+						"time": map[string]any{
+							"created": openCodeStart + 700, "ran": openCodeStart + 850, "completed": openCodeStart + 900,
+						},
+						"state": map[string]any{
+							"status": "completed",
+							"input": map[string]any{
+								"path": openCodeCwd + "/internal/retry/config.go",
+							},
+							"content":  []any{map[string]any{"type": "text", "text": openCodeToolResult}},
+							"metadata": map[string]any{"truncated": false},
+						},
+					},
+				},
+			},
+			// The answer's own record: a `reasoning` part the reader renders into the record's `Content`
+			// (with the provider-native payload it keeps as its own artifact) and the `text` part beside
+			// it. The reader records no trace text, which is what makes this record's dialogue
+			// unprojected and its rendering travel with that caveat counted.
+			map[string]any{
+				"id":    answerMessageID,
+				"time":  map[string]any{"created": openCodeStart + 1100, "streamed": openCodeStart + 1500, "completed": openCodeStart + 1600},
+				"type":  "assistant",
+				"agent": "build",
+				"model": map[string]any{"id": openCodeModel, "providerID": openCodeProvider, "variant": "max"},
+				"content": []any{
+					map[string]any{
+						"type":   "reasoning",
+						"text":   "The grep hit is maxBackoffSeconds = 30 in internal/retry/config.go.",
+						"native": map[string]any{"reasoningField": "reasoning_content"},
+						"time":   map[string]any{"created": openCodeStart + 1200, "completed": openCodeStart + 1400},
+					},
+					map[string]any{"type": "text", "text": openCodeAnswer},
+				},
+			},
+			map[string]any{
+				"id":    followupID,
+				"time":  map[string]any{"created": openCodeStart + 10000},
+				"text":  openCodeFollowup,
+				"files": []any{},
+				"type":  "user",
+			},
+			map[string]any{
+				"id":    followupAnswer,
+				"time":  map[string]any{"created": openCodeStart + 10200, "streamed": openCodeStart + 11100, "completed": openCodeStart + 11200},
+				"type":  "assistant",
+				"agent": "build",
+				"model": map[string]any{"id": openCodeModel, "providerID": openCodeProvider, "variant": "max"},
+				"content": []any{
+					map[string]any{"type": "text", "text": openCodeFollowupAnswer},
+				},
+			},
+			// The session control a completed turn leaves behind: not a message, and not in the read.
+			map[string]any{
+				"id":      idleID,
+				"time":    map[string]any{"created": openCodeStart + 12000},
+				"type":    "idle",
+				"outcome": "succeeded",
+			},
+		},
+	}
+}
+
 // fixtureFiles maps a path relative to the fixtures root onto its content.
 func fixtureFiles() map[string]string {
 	return map[string]string{
@@ -453,6 +605,12 @@ func fixtureFiles() map[string]string {
 		filepath.Join("omp", "--home-user-code-example-api--", ompSessionID+".jsonl"):    canonicalJSONL(ompSession()),
 		filepath.Join("omp", "--home-user-code-history--", ompHistorySessionID+".jsonl"): canonicalJSONL(ompHistorySession()),
 		filepath.Join("omp", "--home-user-code-archive--", ompBranchSessionID+".jsonl"):  canonicalJSONL(ompBranchSession()),
+		// The OpenCode entry is a *document*, not a source root: this provider's session is a row in the
+		// harness's own SQLite store, so the only file-shaped native artifact it has is the export
+		// document its own reader answers (`opencode session export`), and a consumer materialises a
+		// store from it (internal/ccc/opencodefixture in tests, the harness's own `session import` in the
+		// native check). One line, one canonical encoding, like every other fixture.
+		filepath.Join("opencode", openCodeSessionID+".json"): canonicalJSONL(marshal(openCodeSession())),
 	}
 }
 
