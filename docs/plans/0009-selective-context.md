@@ -325,3 +325,63 @@ measurement that decided it, followed by the review round's own:
       `["0-1","4-10"]` and the human line, and the core case's partition check), so deleting the class's
       values fails them.
 
+
+    The fourth review round (`10f8096`; two P1, three P2, three P3 — one P2 and one P3 on the evidence
+    itself) leaves seven departures of its own:
+
+    * the **writers write the seam's pairing, not an id match** (review R-19, a P1): a flat target's
+      document is one line, a call the read's line leaves off it is not written there at all, and both flat
+      writers accepted a result by looking its id up in the calls they had written — so in a window where
+      the seam pairs a result with an *inactive* call reusing the same id, the Codex rollout wrote the
+      result as another output of an older call with that id, and OpenCode filed it as a second outcome for
+      that call. `pairedCallOccurrences` answers the seam's pairing at occurrence granularity (the unit
+      `distinctCalls` writes), `Select`'s closure and `selectionPairing` read the same walk, and each flat
+      writer asks whether the paired *occurrence* was written/planned: a result whose paired call cannot
+      travel is omitted and counted (`unpaired_tool_results`) instead of rebound by id.
+      `TestSelectionDoesNotRebindAResultToAnotherCallSharingItsID` pins both flat writers.
+    * the **identity-less parentless fallback goes through the revival guard** (review R-18, a P1):
+      `parentPlace` sent a record with neither an identity nor a parent straight to the entry written before
+      it, so a window whose previous entry stood for an off-line record chained it there and the leaf guard
+      skipped it (an empty identity is not a line answer). The fallback's own check (`fallbackPlace`) now
+      runs for that place too, so the tree `3 → 1 → 0` the review traced is refused by name instead of
+      reviving the branch; the count stays the read's own (an identity-less record's place invents
+      nothing). The extended `TestSelectionChainsARecordWithoutAnIdentityToItsRetainedAncestor` pins both
+      the refusal and the window that excludes the abandoned sibling.
+    * the **inactive ancestor answers for an off-line record** (review R-20): `keptAncestorEntry` rejected
+      an *inactive* retained ancestor unconditionally, so a sparse window rewrote an off-line record's
+      recorded ancestry to the entry written before it (a record of another branch). An off-line record now
+      keeps an off-line ancestor — keeping a branch off the active walk is recorded history the writer
+      reproduces — while an *on-line* record is still refused through one, which
+      `TestSelectionKeepsAnInactiveBranchesRecordedAncestry` pins on both arms.
+    * the **projection the ancestry answer crossed is counted** (review R-21): `selectionKeptAncestors`
+      takes the tool-result step the writers take, but the answer did not carry that step, so the writer
+      consumed it as uncounted. `keptAncestorAnswer` now names it and `parentPlace` counts it
+      (`unresolved_source_parents`), as the writers count the projection they resolve themselves; the
+      extended `TestSelectionKeepsACarriedResultOnTheWalkThroughItsCall` asserts the count on the window
+      that isolates the projection and beside the unflagged conversion of the same read.
+    * the **undischarged count's id-less arm** (review R-22): the count skipped every call the source
+      recorded with no id, so an id-less call in a read with no results at all was reported by no surface
+      while OpenCode's own report counted it `unpaired_tool_calls`. It is now counted where the carried
+      document holds no id-less result at or after it (no outcome in the line can answer it), and left to
+      the writers' disclosed inference where one is carried.
+      `TestSelectionCountsAnIdLessCallWithNoRecordedOutcome` pins all three shapes.
+    * the **duplicate-region refusal is the grammar's own** (review R-23): overlap was checked only after a
+      successful read, so `--select 1,1` against a missing session was reported as a source failure instead
+      of the usage refusal. `parseSelectionSpec` checks it (`checkSelectionOverlap`), which
+      `CheckSelectionOptions` runs before the read.
+      `TestCheckSelectionOptionsRefusesASpecificationWithoutARead` and
+      `TestContinueRefusesADuplicateRegionWithoutAReadableSource` pin the core and CLI halves.
+    * the **D4 probe compares recorded instants** (review R-24, with the probe's own control): the
+      normalizer replaced every RFC 3339 instant and every numeric `timestamp`/`created`/`updated` with a
+      placeholder, so a same-length change to a source-recorded time folded to the same digest — the probe
+      could not establish D4's byte-preservation claim for recorded instants. The retained revision
+      normalizes only what a conversion discovers (the checkout root, scratch paths, the source file's
+      filesystem mtime) plus the identity canonicalization, and carries `d4ProbeNormalizerControl`, whose
+      printed lines show a recorded-instant change moving the digest and a minted-identity change not.
+      §4's transcript is that revision's own run; the two trees' shared 1024 lines are byte-identical with
+      recorded instants compared.
+    * the **D3 pins** (reviews R-25, R-26): the closure cases exercised isolated pairs and the strict case
+      checked neither ordinal, so a one-pass closure and a refusal with swapped ordinals would both have
+      passed. `TestSelectionClosesTheCounterpartGraphToAFixedPoint` needs a *backward* two-hop pull (a
+      record the window pulled in carries a result of another call), and the strict case asserts each
+      sentence half with the ordinal of the side it names.

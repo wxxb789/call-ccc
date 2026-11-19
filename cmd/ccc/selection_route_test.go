@@ -314,6 +314,45 @@ func TestContinueValidatesASelectionBeforeTheSourceLeafGuard(t *testing.T) {
 	}
 }
 
+// TestContinueRefusesADuplicateRegionWithoutAReadableSource pins the duplicate-region refusal's own half
+// of D5 through the CLI: `--select 1,1` is a property of the caller's command line and of nothing the
+// read holds, so a source that cannot be read at all must not mask it as a source failure. The answer is
+// the core's own sentence and the usage exit code, with nothing installed; the control arm -- the same
+// missing source without the flag -- still reports the source failure, which is what makes this an
+// ordering claim rather than a claim that either check stopped refusing.
+func TestContinueRefusesADuplicateRegionWithoutAReadableSource(t *testing.T) {
+	isolatedEnvironment(t)
+	home := t.TempDir()
+	const missing = "00000000-0000-4000-8000-000000000000"
+	args := []string{"continue", "claude:" + missing, "--to", "codex", "--target-home", home,
+		"--target-binary", missingTargetBinary}
+
+	code, stdout, stderr := runCLI(t, append(append([]string(nil), args...), "--select", "1,1")...)
+	if code != exitUsage {
+		t.Errorf("exit %d, want %d (stdout %q, stderr %q)", code, exitUsage, stdout, stderr)
+	}
+	if stdout != "" {
+		t.Errorf("the refused run wrote a report to stdout: %q", stdout)
+	}
+	if !strings.Contains(stderr, "already names") {
+		t.Errorf("stderr %q does not name the duplicate region", stderr)
+	}
+	if strings.Contains(stderr, "session not found") {
+		t.Errorf("the duplicate-region refusal was answered as a source failure: %q", stderr)
+	}
+	if files := targetTreeDigest(t, home); len(files) != 0 {
+		t.Errorf("the refused run left %d file(s) under the target home: %v", len(files), files)
+	}
+
+	code, _, stderr = runCLI(t, args...)
+	if code != exitFailure {
+		t.Errorf("the control run: exit %d, want %d (stderr %q)", code, exitFailure, stderr)
+	}
+	if !strings.Contains(stderr, "session not found") {
+		t.Errorf("the control run's stderr %q does not report the missing source", stderr)
+	}
+}
+
 // TestContinueWithoutASelectionReportsNoSelection pins the default path's report shape: a run that names
 // no selection carries the whole read and has no selection section at all, in the JSON and in the human
 // block -- which is how a consumer tells "no transformation ran" from "a transformation carried

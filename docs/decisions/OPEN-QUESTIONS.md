@@ -2996,3 +2996,24 @@ supersede it with a newer one and say which it supersedes.
   rewritten to the leaf-first answer.
 - **Settled by:** an operator decision between "the command line's own refusal is answered first" and "the
   source file is measured first, so its answer wins".
+
+## Q-0009-06 — A result whose paired call the line leaves off is omitted, not refused
+
+- **Status:** open (default taken: the result is omitted and counted, `unpaired_tool_results`). A flat
+  target's document is one line of records with no parent relation, so a call the read's own line leaves
+  off it is not written at all; when the read's own order pairs a carried result with such a call (an
+  inactive sibling reusing the id is the measured shape), the conversion cannot write the result under any
+  call without stating an invocation the source never recorded.
+- **Question:** does such a conversion refuse by name (the way a tree target refuses an unrepresentable
+  leaf, `ErrUnrepresentableLeaf`) or write the rest of the window and count the omission?
+- **Default taken:** omit and count. The window is otherwise representable, the omission is named in its
+  own loss row with the call's own category, and the source session keeps the bytes so a later conversion
+  can read them; a refusal would withhold a conversion the caller can act on for a defect in one pair.
+  `TestSelectionDoesNotRebindAResultToAnotherCallSharingItsID` pins the omission, the count and the
+  absence of the result's text on both flat routes (Codex and OpenCode).
+- **Reversal:** both flat writers' pairing checks become refusals (`ErrUnrepresentableLeaf` or a new
+  named error) instead of omissions; the two routes' loss categories lose their `unpaired_tool_results`
+  rows for the shape.
+- **Settled by:** an operator decision between "publish the representable remainder and name the
+  omission" and "refuse the whole run by name" — the same question the tree targets answer the other way
+  for a leaf the target's own loader would not reach.

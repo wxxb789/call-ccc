@@ -347,6 +347,14 @@ type openCodePlan struct {
 	calls []*openCodeCall
 }
 
+// openCodePlannedCall is one call the plan carries beside the place it holds in its source message:
+// the message's calls are coalesced (distinctCalls), and the place is what the seam's pairing answers
+// with, so the planned entry has to be filed under the occurrence rather than under the message alone.
+type openCodePlannedCall struct {
+	index int
+	call  ToolCall
+}
+
 // openCodeConverter is one conversion in progress: the document being built, the report's counters, and
 // the paired-call plan the two passes share.
 type openCodeConverter struct {
@@ -361,6 +369,14 @@ type openCodeConverter struct {
 
 	plan  []openCodePlan
 	calls map[string]*openCodeCall
+	// pairings answers, per recorded result occurrence of the document this conversion walks, the call
+	// occurrence the seam's own order pairs it with (pairedCallOccurrences), and plannedCalls names the
+	// call occurrences this plan carries. This target's message list is one line with no parent relation,
+	// so a call the read's line leaves off it is not written at all: a result whose paired occurrence is
+	// not planned is omitted and counted (unpaired_tool_results) rather than paired with an older call
+	// that happens to share its id, which would state an outcome the source never recorded for it.
+	pairings     map[resultOccurrence]callOccurrence
+	plannedCalls map[callOccurrence]*openCodeCall
 	// usedCallIDs is the namespace a minted id must stay out of: every tool-use id the read recorded
 	// (each call's and each result's, reserved by reserveRecordedCallIDs before the plan mints anything)
 	// plus every id already minted for an id-less call. The pairing map and the pending set are keyed by
@@ -511,6 +527,12 @@ func newOpenCodeConverter(
 		ledger:    ledger{pendingCalls: map[string]struct{}{}},
 		plan:      make([]openCodePlan, len(conv.Messages)),
 	}
+	// The seam's pairing is resolved over the whole document, before the plan drops the records the
+	// read's line leaves off it: which call occurrence a recorded result answers is a property of the
+	// read's own order, and the plan has to ask that answer rather than accept any carried call sharing
+	// the id.
+	converter.pairings = pairedCallOccurrences(conv)
+	converter.plannedCalls = map[callOccurrence]*openCodeCall{}
 	converter.clock.lastMessage = start.UnixMilli()
 	converter.clock.lastInstant = start.UnixMilli()
 	converter.document = openCodeDocument{
@@ -599,8 +621,11 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 		if inactive[index] || message.IsSidechain {
 			continue
 		}
-		calls := distinctCalls(message, func(_ int, call ToolCall) ToolCall { return call }, &c.lossCoalesced)
-		for _, call := range calls {
+		calls := distinctCalls(message, func(callIndex int, call ToolCall) openCodePlannedCall {
+			return openCodePlannedCall{index: callIndex, call: call}
+		}, &c.lossCoalesced)
+		for _, planned := range calls {
+			call := planned.call
 			id := strings.TrimSpace(call.ToolUseID)
 			madeID := false
 			if id == "" {
@@ -610,9 +635,11 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 			entry := &openCodeCall{ID: id, Source: call, At: message.Timestamp, generatedID: madeID}
 			c.plan[index].calls = append(c.plan[index].calls, entry)
 			c.calls[id] = entry
+			c.plannedCalls[callOccurrence{message: index, call: planned.index}] = entry
 			c.ledger.pendingCalls[id] = struct{}{}
 		}
-		for _, result := range message.ToolResults {
+		for resultIndex, result := range message.ToolResults {
+			place := resultOccurrence{message: index, result: resultIndex}
 			if !resultStatesAnOutcome(result.Status) {
 				// The read records a call's progress as events of the call's own as well as its outcome
 				// (internal/parser/termination.go's rule reads the same events: a Codex subagent's
@@ -620,17 +647,18 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 				// arrives). The harness's tool states are `completed` and `error`, so a progress event is
 				// no outcome this target may write -- and it must not consume the call's pending slot
 				// either, or the terminal event that follows would read as a repeat of an outcome that
-				// was never recorded. It is still marked on the call it names (through the same id rules
-				// a terminal event's pairing uses), because the archive's derived summary of that call is
-				// a view of this event rather than an outcome recorded beside it.
-				if entry, ok := c.calls[c.callNamedByResult(result)]; ok {
+				// was never recorded. It is still marked on the call it names -- through the same pairing
+				// a terminal event's own plan uses -- because the archive's derived summary of that call
+				// is a view of this event rather than an outcome recorded beside it.
+				if entry, ok := c.pairedCallEntry(result, place); ok {
 					entry.recordedEvents = true
 				}
 				c.lossNonterminal++
 				continue
 			}
-			id := strings.TrimSpace(result.ToolUseID)
 			inferred := false
+			id := strings.TrimSpace(result.ToolUseID)
+			var entry *openCodeCall
 			if id == "" {
 				sole, ok := c.solePendingCall()
 				if !ok {
@@ -641,9 +669,21 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 				}
 				id = sole
 				inferred = true
+				entry = c.calls[id]
+			} else {
+				var ok bool
+				entry, ok = c.pairedCallEntry(result, place)
+				if !ok {
+					// The read's own order pairs the result with a call occurrence, and that occurrence
+					// is not in the line this plan carries: the read's line leaves it off, the selection
+					// left it out, or the record carrying it is not planned here. Writing the result
+					// under an older call that happens to share its id would state that call's outcome
+					// the source never recorded.
+					c.lossUnpairedResults++
+					continue
+				}
 			}
-			entry, ok := c.calls[id]
-			if !ok {
+			if entry == nil {
 				c.lossUnpairedResults++
 				continue
 			}
@@ -699,17 +739,27 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 	}
 }
 
-// callNamedByResult answers the id of the carried call one recorded result event names, through the same
-// pairing a terminal event's own plan uses: the id the event recorded, or -- for an event that recorded
-// none -- the sole call still awaiting a result, where the source's own relation leaves no other call it
-// could mean. An event naming a call this conversion does not carry answers an id the caller's own map
-// lookup will not hold, which is the same answer the plan gives such an event.
-func (c *openCodeConverter) callNamedByResult(result ToolResult) string {
+// pairedCallEntry answers the planned call one recorded result event names, through the seam's own
+// pairing: the call occurrence the result's id records nearest before it, or -- for an event that
+// recorded no id -- the sole call still awaiting a result, where the source's own relation leaves no
+// other call it could mean (the writers' disclosed inference). An event whose paired occurrence this
+// plan does not carry answers nothing, which is the same answer the plan gives such an event: it is
+// counted rather than paired with a call that merely shares the id.
+func (c *openCodeConverter) pairedCallEntry(result ToolResult, place resultOccurrence) (*openCodeCall, bool) {
 	if id := strings.TrimSpace(result.ToolUseID); id != "" {
-		return id
+		call, ok := c.pairings[place]
+		if !ok {
+			return nil, false
+		}
+		entry, ok := c.plannedCalls[call]
+		return entry, ok
 	}
-	id, _ := c.solePendingCall()
-	return id
+	id, ok := c.solePendingCall()
+	if !ok {
+		return nil, false
+	}
+	entry, ok := c.calls[id]
+	return entry, ok
 }
 
 // writeConversation walks the document once and writes every message it can express. inactive is the

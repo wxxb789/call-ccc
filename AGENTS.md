@@ -273,7 +273,12 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   recorded after it), and a selection that would split a pair carries the counterpart and names it as a
   necessity with the ordinal that pulled it in (both directions, to a fixed point, since a counterpart can
   hold another call's result), while `--strict-selection` refuses that
-  by name before anything is installed instead. A reused id does not expand a selection by id alone: a
+  by name before anything is installed instead. The writers write that pairing rather than an id match: on
+  a flat target, whose document is one line and where a call the read's line leaves off it is not written
+  at all, a result whose paired *occurrence* was not written is omitted and counted
+  (`unpaired_tool_results`) instead of being accepted because some older call shares its id — a result
+  presented as another call's outcome is an invocation the source never recorded. A reused id does not
+  expand a selection by id alone: a
   later call with no recorded result of its own carries nothing but itself and is counted undischarged,
   and the count reads the call the way the writers write it — a message's calls sharing a non-empty id are
   one invocation the reader projected into several rows (the inherited Codex reader expands one
@@ -283,7 +288,10 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   record the source recorded with **no** id carries no
   recorded link: the seam neither invents one nor carries candidates for it, and the writer's own rule for
   an id-less result (the sole outstanding call in the line it wrote, disclosed as `generated_call_ids`)
-  reads the selected line. **A call the source left without a recorded outcome was not answered**: a
+  reads the selected line; an id-less *call* is counted undischarged where the carried document holds no
+  id-less result at or after it — no outcome in the line can answer it — and where such a result is
+  carried the call is left to that same disclosed inference instead of being read as answered or as
+  undischarged. **A call the source left without a recorded outcome was not answered**: a
   result whose recorded status says the call is still running (a Codex subagent's `running` notification,
   a streamed chunk) is progress, not an outcome, so such a call is counted undischarged; whether a
   target's own format can hold a call with no outcome is that writer's answer, named in the conversion's
@@ -292,16 +300,22 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   off it — a window ending on an off-line record is refused by a tree target by name
   (`ErrUnrepresentableLeaf`, below) rather than written as a file that resumes the branch, a record whose
   own parent the window left out is hung off its nearest retained ancestor (the read's own relation walked
-  through the excluded records, with the tool-result step the writers take where the read may project one,
-  and the answer travels by the record's own position, so a record the read answered no identity for keeps
-  it), and a window in which a record's whole retained ancestry is gone — so the
+  through the excluded records, with the tool-result step the writers take where the read may project one
+  — and where the answer crossed that step the relation is counted (`unresolved_source_parents`), as the
+  writers count the projection they resolve themselves — and the answer travels by the record's own
+  position, so a record the read answered no identity for keeps
+  it; an off-line record may keep an off-line ancestor, since keeping a branch off the active walk is
+  recorded history the writer reproduces, but an on-line record is never chained through one), and a
+  window in which a record's whole retained ancestry is gone — so the
   fallback would hang it under an off-line record — is refused by name the same way, the check keyed by
   the record's position rather than an identity it may never have; a line target
   omits those records and counts them (`inactive_branch_records`). A bad selection is **refused, never
   repaired**, with the core's own sentence and the usage exit code (2), before any install: a spec that is
   ill-formed, one whose region reaches outside the ordinals the read supplied (below its lowest or above its
   highest; the space, its gaps included, is spelled in the refusal), one that would carry no record at all — a
-  region spanning a gap carries the records it holds — a value the caller supplied **empty** (an unset
+  region spanning a gap carries the records it holds — a region that names an ordinal another region
+  already names (answered by the specification's own grammar, before any read is opened, so a missing or
+  unreadable source cannot mask it as a source failure), a value the caller supplied **empty** (an unset
   variable expanded into `--select "$SPEC"` is a refused request, never read as the flag's absence: an
   automation's empty variable must not publish the whole history), and the strict refusal — each answered
   as the specification's own refusal even where the source would also refuse the conversion (the

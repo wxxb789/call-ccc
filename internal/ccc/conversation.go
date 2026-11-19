@@ -223,20 +223,32 @@ type Conversation struct {
 	// source's conversation left. nil means Messages is the read itself, and a writer takes the walk over
 	// it as before.
 	sourceLineInactive []bool
-	// sourceKeptAncestor carries, per message of Messages, the *index* in Messages of the nearest
-	// ancestor the *read* holds that the selection also carries, or -1 where the read answers none (the
-	// record's ancestry is all outside the window, or the read cannot walk it at all). An index rather
-	// than an identity, because the read answers no identity for some records -- the inherited Claude
-	// reader preserves `parentUuid` and `uuid` independently -- and such a record's ancestry answer must
-	// survive the reduction all the same: the writers consult this by the record's own walk position, not
-	// by a key the record may not have. It is what keeps a reduced tree representable: a target that is
-	// itself a tree writes each entry under the entry of the record the source named, and where a
-	// selection left that record out the writer chains the entry to the nearest retained ancestor instead
-	// of the entry written before it -- a relation the source's own line holds, so the walk a resumed
-	// session makes stays the read's line rather than reviving an abandoned branch the window happened to
-	// carry. nil means Messages is the read itself: no gap was made, and the writers walk the record's own
-	// parent as before.
-	sourceKeptAncestor []int
+	// sourceKeptAncestor carries, per message of Messages, the selection's own ancestry answer: the
+	// *index* in Messages of the nearest ancestor the *read* holds that the selection also carries, or -1
+	// where the read answers none (the record's ancestry is all outside the window, or the read cannot
+	// walk it at all), beside whether resolving that answer crossed the ambiguous tool-result projection
+	// the read may answer (keptAncestorAnswer). An index rather than an identity, because the read answers
+	// no identity for some records -- the inherited Claude reader preserves `parentUuid` and `uuid`
+	// independently -- and such a record's ancestry answer must survive the reduction all the same: the
+	// writers consult this by the record's own walk position, not by a key the record may not have. It is
+	// what keeps a reduced tree representable: a target that is itself a tree writes each entry under the
+	// entry of the record the source named, and where a selection left that record out the writer chains
+	// the entry to the nearest retained ancestor instead of the entry written before it -- a relation the
+	// source's own line holds, so the walk a resumed session makes stays the read's line rather than
+	// reviving an abandoned branch the window happened to carry. nil means Messages is the read itself: no
+	// gap was made, and the writers walk the record's own parent as before.
+	sourceKeptAncestor []keptAncestorAnswer
+}
+
+// keptAncestorAnswer is one record's ancestry answer from a selection (Conversation.sourceKeptAncestor):
+// the position in the reduced document of the nearest ancestor the read holds that the selection carries,
+// or -1 where there is none, and whether resolving the answer crossed the ambiguous tool-result
+// projection the writers take where the read may answer one (selectionKeptAncestors). The projection is
+// what makes the answer a relation this conversion resolved rather than one the read named, so the writer
+// counts it (unresolved_source_parents) exactly where it counts the projection it resolves itself.
+type keptAncestorAnswer struct {
+	index     int
+	projected bool
 }
 
 // fidelityWarnings names what the provider itself said about the completeness of one read, in the words

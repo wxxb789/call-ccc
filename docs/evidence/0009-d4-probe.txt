@@ -157,16 +157,55 @@ func newD4ProbeNormalizer(repoRoot string) *d4ProbeNormalizer {
 	add(regexp.QuoteMeta(repoRoot), "<repo>")
 	add(`/tmp/[^\s"'\\]*`, "<tmp>")
 	add(`"file_modified":"[^"]*"`, `"file_modified":"<mtime>"`)
-	add(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z`, "<ts>")
-	add(`"timestamp":\d+`, `"timestamp":<ms>`)
-	add(`"created":\d+`, `"created":<ms>`)
-	add(`"updated":\d+`, `"updated":<ms>`)
+	// Only what a conversion discovers rather than records is folded here: the checkout's own root and
+	// scratch paths and the source file's filesystem mtime. Recorded instants are *not* normalized -- the
+	// earlier revision replaced every RFC 3339 instant and every numeric `timestamp`/`created`/`updated`
+	// with a placeholder, which silently masked a same-length change to a source-recorded time -- so the
+	// probe's own control (d4ProbeNormalizerControl) pins both halves: a recorded instant change moves the
+	// folded digest, and a minted identity change does not.
 	normalizer.idRules = []*regexp.Regexp{
 		regexp.MustCompile(`([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`),
 		regexp.MustCompile(`"(?:id|parentId|firstKeptEntryId)":"([0-9a-f]{8})"`),
 		regexp.MustCompile(`((?:ses|msg|call|part|prt)_[A-Za-z0-9_]+)`),
 	}
 	return normalizer
+}
+
+// d4ProbeNormalizerControl is the probe's own control for the normalizer, so the normalizer's claims are
+// measured in the same run as the lines they fold. Three texts are folded: two that differ only in a
+// source-recorded RFC 3339 instant and two that differ only in a source-recorded numeric millisecond
+// field must fold to *different* digests (the change has to be visible in the comparison -- the earlier
+// revision's blanket instant replacement silently masked it), and two that differ only in a minted uuid
+// must fold to the *same* digest (the canonicalization is what makes two runs and two trees comparable
+// while a reparented reference still cannot fold to what it folded to before). Each answer is printed,
+// so the retained output carries the control beside the lines it vouches for.
+func d4ProbeNormalizerControl(t *testing.T, normalizer *d4ProbeNormalizer) {
+	t.Helper()
+	moved := func(before, after string) bool {
+		t.Helper()
+		return d4ProbeFoldedFingerprint(normalizer, []byte(before)) !=
+			d4ProbeFoldedFingerprint(normalizer, []byte(after))
+	}
+	instantMoved := moved(`{"at":"2026-05-04T09:15:01.000Z"}`, `{"at":"2026-05-04T09:15:02.000Z"}`)
+	millisecondMoved := moved(`{"time":{"created":1750000000000}}`, `{"time":{"created":1750000000001}}`)
+	identityMoved := moved(
+		`{"id":"0b8f9a12-1111-4444-8888-abcdefabcdef"}`,
+		`{"id":"7c2d3e44-2222-4555-9999-fedcbafedcba"}`)
+	fmt.Printf("PROBE-CONTROL recorded-instant-change moves-digest=%v\n", instantMoved)
+	fmt.Printf("PROBE-CONTROL recorded-millisecond-change moves-digest=%v\n", millisecondMoved)
+	fmt.Printf("PROBE-CONTROL minted-identity-change moves-digest=%v\n", identityMoved)
+	if !instantMoved {
+		t.Error("the normalizer folds two different recorded RFC 3339 instants to the same bytes: a " +
+			"source-recorded instant change has to move the digest")
+	}
+	if !millisecondMoved {
+		t.Error("the normalizer folds two different recorded millisecond fields to the same bytes: a " +
+			"source-recorded time has to move the digest")
+	}
+	if identityMoved {
+		t.Error("the normalizer does not canonicalize minted identities: two values a conversion minted " +
+			"have to fold to the same token, or two runs of one tree are not comparable")
+	}
 }
 
 // canonicalIDs replaces every identity idRules names with a token of its own: the tokens are numbered by
@@ -394,6 +433,7 @@ func TestZZD4Probe(t *testing.T) {
 		t.Skip("CCC_D4_PROBE_OUT is not set: the D4 before/after probe runs only when asked")
 	}
 	normalizer := newD4ProbeNormalizer(d4ProbeRepoRoot(t))
+	d4ProbeNormalizerControl(t, normalizer)
 	docs := d4ProbeDocuments(t)
 	routes := Targets()
 	sort.Strings(routes)

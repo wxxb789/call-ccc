@@ -264,7 +264,6 @@ func ConvertToCodexRollout(conv Conversation, opts CodexTargetOptions) (CodexRol
 		cwd:            source.Cwd,
 		cliVersion:     cliVersion,
 		clock:          newEntryClock(startedAt, time.RFC3339Nano),
-		callOwners:     map[string]struct{}{},
 		gitBranch:      source.GitBranch,
 		gitRemote:      source.GitRemote,
 		opts:           opts,
@@ -321,13 +320,21 @@ type codexRolloutBuilder struct {
 	gitBranch  string
 	gitRemote  string
 
-	items      []TargetItem
-	carried    Carried
-	callOwners map[string]struct{}
+	items   []TargetItem
+	carried Carried
 	// messageIndex is the place of the message being written in the document's walk. It keys the id
 	// generated for a call that recorded none (toolCall): a message's own ordinal is not unique when an
 	// embedding caller never assigned one, and two calls sharing a generated id would read as one call.
 	messageIndex int
+	// pairings answers, per recorded result occurrence of the document this conversion walks, the call
+	// occurrence the seam's own order pairs it with (pairedCallOccurrences), and writtenCalls names the
+	// call occurrences whose entries this walk wrote. This target's log is one line of records with no
+	// parent relation, so a call the walk leaves off the line is not in the file at all: a result whose
+	// paired occurrence is not written is omitted and counted (unpaired_tool_results) rather than written
+	// under an older call that happens to share its id, which would present this result as that call's
+	// outcome.
+	pairings     map[resultOccurrence]callOccurrence
+	writtenCalls map[callOccurrence]bool
 
 	// sourceFidelity is the completeness and the provider's own classification of the read itself.
 	// Lines the provider's reader could not turn into a message never reach this writer as evidence at
@@ -417,6 +424,12 @@ func (b *codexRolloutBuilder) sessionMeta(startedAt time.Time) {
 func (b *codexRolloutBuilder) writeConversation(conv Conversation) {
 	inactive, unresolved := sourceLineAnswers(conv)
 	b.lossUnresolvedParents = unresolved
+	// The pairing the seam reads (pairedCallOccurrences) is resolved over the whole document this
+	// conversion walks, before the walk drops the records the read's line leaves off it: which call
+	// occurrence a recorded result answers is a property of the read's own order, and the walk has to
+	// ask that answer rather than accept any written call that shares the id.
+	b.pairings = pairedCallOccurrences(conv)
+	b.writtenCalls = map[callOccurrence]bool{}
 	for index, message := range conv.Messages {
 		b.messageIndex = index
 		if inactive[index] {
@@ -567,8 +580,16 @@ func (b *codexRolloutBuilder) writeToolEvidence(message Message) {
 	for index, call := range message.ToolCalls {
 		b.toolCall(index, call, message.Timestamp)
 	}
-	for _, result := range message.ToolResults {
-		b.toolResult(result, message.Timestamp)
+	for index, result := range message.ToolResults {
+		// The pairing the seam reads, keyed by the result's own place: a result with a recorded id
+		// answers the call occurrence the id records nearest before it, and none where the read holds no
+		// such occurrence. nil is passed for the latter, which the writer counts as an unpaired result
+		// unless the recorded id is empty and the sole outstanding call answers it below.
+		var paired *callOccurrence
+		if place, ok := b.pairings[resultOccurrence{message: b.messageIndex, result: index}]; ok {
+			paired = &place
+		}
+		b.toolResult(paired, result, message.Timestamp)
 	}
 	// An archive read carries a call's outcome both as the result events the archive kept on the call
 	// and as the summary it holds in ResultContent. That summary is derived from those same events by
@@ -578,7 +599,7 @@ func (b *codexRolloutBuilder) writeToolEvidence(message Message) {
 	// present a normalized display aggregate as a separately recorded tool output. Every event is
 	// written above; the summary is written only when the call has no recorded result of its own,
 	// where it is the only evidence the read holds of that outcome.
-	for _, call := range message.ToolCalls {
+	for index, call := range message.ToolCalls {
 		result, ok := derivedResultSummary(call, call.ToolUseID)
 		if !ok {
 			continue
@@ -586,7 +607,10 @@ func (b *codexRolloutBuilder) writeToolEvidence(message Message) {
 		if callHasRecordedResult(message.ToolResults, call.ToolUseID) {
 			continue
 		}
-		b.toolResult(result, message.Timestamp)
+		// The summary is the call's own evidence, so it is paired with the call the walk just wrote
+		// rather than with a document occurrence: there is no recorded result here.
+		place := callOccurrence{message: b.messageIndex, call: index}
+		b.toolResult(&place, result, message.Timestamp)
 	}
 }
 
@@ -746,7 +770,9 @@ func (b *codexRolloutBuilder) toolCall(index int, call ToolCall, at time.Time) {
 			CallID:    callID,
 		},
 	})
-	b.callOwners[callID] = struct{}{}
+	// The occurrence, not the id: a later result is paired by the read's own answer about *which* call
+	// occurrence it names, and this is the one whose entry stands here.
+	b.writtenCalls[callOccurrence{message: b.messageIndex, call: index}] = true
 	if b.pendingCalls == nil {
 		b.pendingCalls = map[string]struct{}{}
 	}
@@ -755,7 +781,11 @@ func (b *codexRolloutBuilder) toolCall(index int, call ToolCall, at time.Time) {
 	b.items = append(b.items, TargetItem{Kind: ItemToolCall, CallID: callID, ToolName: name, InputJSON: input})
 }
 
-func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time) {
+// toolResult writes one tool result. paired is the call occurrence the seam's own order pairs the result
+// with: the pairing the read recorded, keyed by the result's place in the document
+// (pairedCallOccurrences), or the call a derived summary came from. It is nil where the read holds no
+// call occurrence the result's id records before it.
+func (b *codexRolloutBuilder) toolResult(paired *callOccurrence, result ToolResult, at time.Time) {
 	callID := strings.TrimSpace(result.ToolUseID)
 	// resultIDInferred says the pairing below is the only id this result has: the source recorded none of
 	// its own. The counter it feeds is incremented past the omission guards, together with the written
@@ -772,11 +802,14 @@ func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time) {
 		}
 		callID = pending
 		resultIDInferred = true
-	} else if _, ok := b.callOwners[callID]; !ok {
-		// The result names a call this conversion did not write (the call preceded the source's
-		// boundary, or the provider recorded a result whose call is not in the read). A
-		// function_call_output without its call is not a pair, and inventing the call would fabricate
-		// a tool invocation.
+	} else if paired == nil || !b.writtenCalls[*paired] {
+		// The result names a call, and the seam's own order answers which call occurrence it answers:
+		// that occurrence's entry has to be in this file. It is not when the read's line leaves the call
+		// off it, when the selection left it out, or when the record carrying it brings no tool evidence
+		// here -- this target's log is one line, so such a call is not in the file at all. Accepting the
+		// id because some *written* call shares it would present this result as that call's outcome, an
+		// invocation the source never recorded; a result whose call preceded the source's boundary, or
+		// whose call is not in the read at all, is the same answer.
 		b.lossUnpairedResults++
 		return
 	}

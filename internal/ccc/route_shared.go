@@ -309,12 +309,13 @@ type sourceTree struct {
 	// started, so each startRecord stamps the record's own position.
 	record  int
 	records int
-	// keptAncestor carries the selection's own answer, per record of the document this conversion walks:
-	// the position of the nearest ancestor the read holds that the selection also carried, or -1. It is
-	// empty for a read that was not reduced, and reduced says whether the document is one a selection
-	// produced -- which is also what gates the revived-branch check below, so an unflagged conversion
-	// keeps the writers' long-standing answer for a relation the read cannot place.
-	keptAncestor []int
+	// keptAncestor carries the selection's own ancestry answer, per record of the document this conversion
+	// walks: the position of the nearest ancestor the read holds that the selection also carried (or -1),
+	// beside whether resolving it crossed the ambiguous tool-result projection. It is empty for a read that
+	// was not reduced, and reduced says whether the document is one a selection produced -- which is also
+	// what gates the revived-branch check below, so an unflagged conversion keeps the writers'
+	// long-standing answer for a relation the read cannot place.
+	keptAncestor []keptAncestorAnswer
 	reduced      bool
 	// offLineEntry maps each entry written for a record the read's line leaves off it to that record's own
 	// identity, and revivedChild/revivedParent name the first relation the fallback resolved from a record
@@ -492,10 +493,17 @@ func (t *sourceTree) wrote(id string) {
 //     under the outcome.
 //   - the nearest retained ancestor a selection answered for the record (sourceKeptAncestor): the
 //     record's own relation steps through records the window left out to an ancestor the window carries,
-//     and the entry hangs off that ancestor's place. Not counted: the ancestors and the exclusion are the
-//     read's own answers, disclosed by the selection report, and this is the place a reduced tree hangs a
-//     record whose own parent the selection left out -- without it the entry would follow the entry before
-//     it and could put a branch the conversation left on the walk.
+//     and the entry hangs off that ancestor's place. Not counted where the answer rests on the read's own
+//     relations alone -- the ancestors and the exclusion are the read's own answers, disclosed by the
+//     selection report -- but counted where resolving the answer crossed the ambiguous tool-result
+//     projection (keptAncestorAnswer.projected), exactly as the place above is counted: the read answers a
+//     record under a call and one under that call's result the same way, so the chain the writer hangs
+//     there is a relation this conversion resolved rather than one the read named. This is the place a
+//     reduced tree hangs a record whose own parent the selection left out -- without it the entry would
+//     follow the entry before it and could put a branch the conversation left on the walk. An inactive
+//     ancestor answers only for a record the read's own line also leaves off it: keeping a branch off the
+//     active walk is recorded history the writer reproduces, but chaining an *on-line* record through an
+//     off-line ancestor is the revival the fallback's check refuses.
 //   - the entry written before it (priorEntry), counted when a relation was recorded but could not be
 //     placed -- a record outside the read, a relation no walk can complete -- or when the record named no
 //     parent and is not the conversation's first. A record that names no parent at all is read as the
@@ -503,15 +511,21 @@ func (t *sourceTree) wrote(id string) {
 //     one whose identity or parent the provider did not write, and chaining it to the entry before it
 //     keeps a record the read *did* carry visible, where a written null could cut the conversation into
 //     pieces the target's loader never walks. A reduced document whose selection left a record's whole
-//     ancestry out takes this place too, and where that entry stands for an off-line record the relation
-//     is noted as the revived branch the guard refuses (fallbackPlace).
+//     ancestry out takes this place too -- a record the read answered no identity for included, because
+//     the guard asks by the record's own position -- and where that entry stands for an off-line record
+//     the relation is noted as the revived branch the guard refuses (fallbackPlace).
 func (t *sourceTree) parentPlace(id, parent string) (*string, bool) {
 	parent = strings.TrimSpace(parent)
 	if parent == "" {
-		if id == "" || t.lastEntryID == nil {
-			return t.priorEntry(), false
-		}
-		return t.fallbackPlace(), true
+		// The record named no parent: the entry written before it is the read's own order, and the
+		// fallback's own check decides whether that place is usable at all -- for a record the read
+		// answered no identity for exactly as for any other, because on a reduced document a record whose
+		// whole retained ancestry the selection left out would otherwise be chained to the entry of an
+		// off-line record and put that branch back on the walk a resumed session makes. Only the count
+		// differs: a record the read gave an identity but no parent is a relation this conversion invented
+		// (counted where an entry was already written), while an identity-less record's place is the
+		// read's own order, which invents nothing.
+		return t.fallbackPlace(), id != "" && t.lastEntryID != nil
 	}
 	if entry, ok := t.toolResultEntry[parent]; ok {
 		return &entry, true
@@ -519,37 +533,47 @@ func (t *sourceTree) parentPlace(id, parent string) (*string, bool) {
 	if entry, ok := t.writtenAncestor(parent); ok {
 		return &entry, false
 	}
-	if entry, ok := t.keptAncestorEntry(); ok {
-		return &entry, false
+	if entry, projected, ok := t.keptAncestorEntry(); ok {
+		return &entry, projected
 	}
 	return t.fallbackPlace(), true
 }
 
 // keptAncestorEntry answers the written place of the nearest retained ancestor a selection answered for
-// the record being walked (Conversation.sourceKeptAncestor, keyed by the record's own position): the
-// ancestor's own entry, or the place resolved for an ancestor the target omitted (a record that produced
-// no entry of its own). It answers nothing for a read that was not reduced (the answers are not carried
-// then), for a record the read answered no ancestor for, and for an ancestor the read's own line leaves
-// off it -- hanging the record there would put an off-line record on the walk a resumed session makes,
-// and the fallback's own check then answers whether the entry before it is usable at all.
-func (t *sourceTree) keptAncestorEntry() (string, bool) {
+// the record being walked (Conversation.sourceKeptAncestor, keyed by the record's own position), whether
+// that place is a relation this conversion resolved rather than one the read named (the walk crossed the
+// ambiguous tool-result projection), and whether it answers at all. It answers nothing for a read that
+// was not reduced (the answers are not carried then), for a record the read answered no ancestor for, and
+// for an ancestor the read's own line leaves off it where the record being walked is *on* that line --
+// hanging the record there would put an off-line record on the walk a resumed session makes, and the
+// fallback's own check then answers whether the entry before it is usable at all. A record the line
+// leaves off the walk may keep such an ancestor: the branch it hangs off is the read's own recorded
+// history, and rewriting it to another entry would change a relation the source did record.
+func (t *sourceTree) keptAncestorEntry() (string, bool, bool) {
 	if t.record < 0 || t.record >= len(t.keptAncestor) {
-		return "", false
+		return "", false, false
 	}
-	ancestor := t.keptAncestor[t.record]
-	if ancestor < 0 || ancestor >= len(t.keptAncestor) {
-		return "", false
+	answer := t.keptAncestor[t.record]
+	if answer.index < 0 || answer.index >= len(t.keptAncestor) {
+		return "", false, false
 	}
-	if ancestor < len(t.inactive) && t.inactive[ancestor] {
-		return "", false
+	if t.inactiveAt(answer.index) && !t.inactiveAt(t.record) {
+		return "", false, false
 	}
-	if entry, ok := t.entryByRecord[ancestor]; ok {
-		return entry, true
+	if entry, ok := t.entryByRecord[answer.index]; ok {
+		return entry, answer.projected, true
 	}
-	if entry, ok := t.omittedEntryByRecord[ancestor]; ok {
-		return entry, true
+	if entry, ok := t.omittedEntryByRecord[answer.index]; ok {
+		return entry, answer.projected, true
 	}
-	return "", false
+	return "", false, false
+}
+
+// inactiveAt answers whether the read's own line leaves the record at one position of the document this
+// conversion walks off it (sourceLineFlags, the read's answer kept through a selection). A position
+// outside the document answers false: there is no record there for the line to place.
+func (t *sourceTree) inactiveAt(index int) bool {
+	return index >= 0 && index < len(t.inactive) && t.inactive[index]
 }
 
 // fallbackPlace takes the entry written before the record and, on a reduced document, notes the first

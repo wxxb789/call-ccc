@@ -161,7 +161,10 @@ obligation ships no citations file, rather than an empty one.
   an earlier pair the counterpart of a later call — carried
   whole or not at all: a selection that would split a pair carries the counterpart and names it a
   necessity with the ordinal that pulled it in (both directions, to a fixed point) unless
-  `--strict-selection` refuses it by name before anything is installed. A call whose read holds no
+  `--strict-selection` refuses it by name before anything is installed. The writers write that pairing
+  rather than an id match: on a flat target, where a call the read's line leaves off it is not written at
+  all, a result whose paired *occurrence* was not written is omitted and counted (`unpaired_tool_results`)
+  instead of being accepted because some older call shares its id. A call whose read holds no
   recorded outcome (no result at all, or only progress events such as a Codex subagent's `running`
   notification) is counted `calls_undischarged`, read from the pairing walk itself and counted in the unit
   the writers write: a message's calls sharing a non-empty id are one invocation the reader projected into
@@ -170,17 +173,26 @@ obligation ships no citations file, rather than an empty one.
   that writer's answer, named in the conversion's losses. A call or result the source
   recorded with **no** id carries no recorded link, so the seam neither invents one nor carries candidates
   for it; the target's writer applies its own rule to the selected line and discloses the pairing it
-  inferred (`generated_call_ids`). On a target whose session is a tree, a carried record whose recorded
+  inferred (`generated_call_ids`), and an id-less *call* is counted undischarged only where the carried
+  document holds no id-less result at or after it (where one is carried, the call is left to that same
+  disclosed inference). On a target whose session is a
+  tree, a carried record whose recorded
   parent the selection left out is hung off its nearest retained ancestor (the read's own relation walked
   through the excluded records, with the tool-result step the writers take where the read may project one,
-  and the answer travels by the record's own position, so a record the read answered no identity for keeps
-  it), so the loader's walk stays the read's own line; a window in which that
+  and where the answer crossed that step the relation is counted (`unresolved_source_parents`) as the
+  writers count the projection they resolve themselves, and the answer travels by the record's own
+  position, so a record the read answered no identity for keeps
+  it), so the loader's walk stays the read's own line; an off-line record may keep an off-line ancestor —
+  keeping a branch off the active walk is recorded history the writer reproduces — while an on-line record
+  is never chained through one, and a window in which that
   ancestry is gone entirely — the fallback would hang the record under an off-line one — is refused by
   name (`ErrUnrepresentableLeaf`) rather than written. A bad selection is refused, never repaired, with
   the core's own sentence
   and the usage exit code (2), before any install — ill-formed grammar, a region reaching outside the
   ordinals the read supplied (below its lowest or above its highest; a region spanning a gap carries the
-  records it holds), a spec that would carry no record, a value the caller supplied *empty* (an unset
+  records it holds), a spec that would carry no record, a region that names an ordinal another region
+  already names (the specification's own grammar, answered before any read is opened so a missing source
+  cannot mask it), a value the caller supplied *empty* (an unset
   variable expanded into `--select "$SPEC"` is a refusal, not the flag's absence: it must not publish the
   whole history), and the strict refusal (each answered as the specification's own refusal even
   where the source would also refuse the conversion, so a run whose selection the read's own ordinals

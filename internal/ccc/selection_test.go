@@ -3,6 +3,7 @@ package ccc
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -196,6 +197,17 @@ func TestCheckSelectionOptionsRefusesASpecificationWithoutARead(t *testing.T) {
 	}
 	if err := CheckSelectionOptions("5-3", false, false); !errors.Is(err, ErrBadSelection) {
 		t.Errorf("an inverted region: err = %v, want ErrBadSelection", err)
+	}
+	// The duplicate-region half needs no read either: `--select 1,1` is the caller's own command line, and
+	// a missing or unreadable source must not mask it as a source failure. The check is decided on the
+	// specification's own regions (an open one included), never on the ordinals a read happens to hold.
+	for _, spec := range []string{"1,1", "1-3,3", "1,1-", "1-2,2-3"} {
+		err := CheckSelectionOptions(spec, false, false)
+		if !errors.Is(err, ErrBadSelection) {
+			t.Errorf("a region named twice (%q): err = %v, want ErrBadSelection", spec, err)
+		} else if !strings.Contains(err.Error(), "already names") {
+			t.Errorf("a region named twice (%q): %v does not name the duplicate region", spec, err)
+		}
 	}
 	// A value the caller supplied but left blank is a refused request, not the flag's absence: an unset
 	// shell variable expanded into --select "$SPEC" must not publish the whole history.
@@ -511,12 +523,20 @@ func TestSelectionRefusesASeparatedPairUnderStrictSelection(t *testing.T) {
 	cases := []struct {
 		spec string
 		call string
-		want string
+		// want holds the sentence halves the refusal has to state, each with the ordinal of the side it
+		// names: the refusal has to say which record the selection named and which one it left behind, so
+		// a case that checked only the id and the sentence's shape would pass a refusal that swapped the
+		// two ordinals or dropped them.
+		want []string
 	}{
-		{"2", selectionBuildCallID, "is selected and its recorded result"},
-		{"3", selectionBuildCallID, "is selected and the call itself"},
-		{"7", selectionCapCallID, "is selected and its recorded result"},
-		{"8", selectionCapCallID, "is selected and the call itself"},
+		{"2", selectionBuildCallID, []string{
+			"recorded at ordinal 2 is selected", "its recorded result at ordinal 3 is not"}},
+		{"3", selectionBuildCallID, []string{
+			"recorded at ordinal 3 is selected", "the call itself at ordinal 2 is not"}},
+		{"7", selectionCapCallID, []string{
+			"recorded at ordinal 7 is selected", "its recorded result at ordinal 8 is not"}},
+		{"8", selectionCapCallID, []string{
+			"recorded at ordinal 8 is selected", "the call itself at ordinal 7 is not"}},
 	}
 	for _, testCase := range cases {
 		selected, report, err := Select(conversation, testCase.spec, true)
@@ -524,7 +544,7 @@ func TestSelectionRefusesASeparatedPairUnderStrictSelection(t *testing.T) {
 			t.Errorf("strictly selecting %q: err = %v, want ErrStrictSelection", testCase.spec, err)
 			continue
 		}
-		for _, want := range []string{testCase.call, testCase.want, "--strict-selection"} {
+		for _, want := range append([]string{testCase.call, "--strict-selection"}, testCase.want...) {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("strictly selecting %q: %v does not hold %q", testCase.spec, err, want)
 			}
@@ -1013,6 +1033,44 @@ func TestSelectionKeepsACarriedResultOnTheWalkThroughItsCall(t *testing.T) {
 				"carried (the walk holds %q)", want, walkTexts)
 		}
 	}
+	// The chain the writer hung there crossed the read's own tool-result projection: the record names the
+	// call while a result of that call stands between them, so which of the two the source placed the
+	// record under is not answerable from the read, and the relation is counted. Two places are counted on
+	// this window -- the record's excluded ancestor (ordinal 0, the read's on-line root, which the window
+	// 1,4 leaves out) and the projection -- and the count has to name both, because a window that lost
+	// the projection's own place would present a relation this conversion resolved as the read's own.
+	unresolved := lossCount(t, session.Losses, "unresolved_source_parents")
+	if unresolved.Count != 2 || unresolved.Disposition != DispositionCarriedWithCaveat {
+		t.Errorf("unresolved_source_parents = %+v, want the two places the window's walk could not answer: "+
+			"the excluded root and the read's tool-result projection", unresolved)
+	}
+	if !strings.Contains(unresolved.Detail, "visible ancestor") {
+		t.Errorf("the detail does not name the projection the count stands for: %q", unresolved.Detail)
+	}
+	// The window that also carries the root isolates the projection: every other relation resolves to a
+	// record the window holds, so the one count is the chain that crossed the tool-result step -- exactly
+	// the count the unflagged conversion of the whole read reports for the same place, which is what makes
+	// the window's number the read's own answer rather than one the reduction invented.
+	rooted, _, err := Select(conversation, "0,1,4", false)
+	if err != nil {
+		t.Fatalf("selecting 0,1,4: %v", err)
+	}
+	rootedSession, err := route.Convert(rooted, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("%s: converting the 0,1,4 window: %v", TargetPi, err)
+	}
+	if got := lossCount(t, rootedSession.Losses, "unresolved_source_parents"); got.Count != 1 {
+		t.Errorf("the 0,1,4 window counts unresolved_source_parents = %+v, want the one relation the "+
+			"read's projection left unanswerable", got)
+	}
+	whole, err := route.Convert(conversation, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("converting the whole read: %v", err)
+	}
+	if got := lossCount(t, whole.Losses, "unresolved_source_parents"); got.Count != 1 {
+		t.Errorf("the unflagged conversion counts unresolved_source_parents = %+v, want the one place "+
+			"the read's projection leaves open (the 0,1,4 window reports the same place)", got)
+	}
 }
 
 // TestSelectionChainsARecordWithoutAnIdentityToItsRetainedAncestor pins the ancestry answer for a record
@@ -1118,6 +1176,154 @@ func TestSelectionChainsARecordWithoutAnIdentityToItsRetainedAncestor(t *testing
 		t.Errorf("converting a window with no retained ancestor: err = %v, want ErrUnrepresentableLeaf", err)
 	} else {
 		for _, want := range []string{"the record at ordinal 3", "the read answered no identity for it", "b2"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal %v does not name %s", err, want)
+			}
+		}
+	}
+
+	// The parentless variant of the same shape: the final record carries no identity *and* names no
+	// parent, so `parentPlace` has nothing to resolve and the read's own order is its place. On this
+	// window that place is the entry written before it -- the abandoned child's -- and the fallback's
+	// revival check has to refuse it all the same: an identity-less record's place is the read's own
+	// order, but it must not put an off-line record on the walk a resumed session makes (`--select 0,1,3`
+	// would write the tree 3 → 1 → 0 and revive ordinal 1, which the full read's own walk 3 → 2 → 0
+	// leaves off it).
+	parentless := conversation
+	parentless.Messages = append([]Message(nil), conversation.Messages...)
+	parentless.Messages[3].SourceParentUUID = ""
+	selected, _, err = Select(parentless, "0,1,3", false)
+	if err != nil {
+		t.Fatalf("selecting 0,1,3 over the parentless record: %v", err)
+	}
+	_, err = ConvertToClaudeTranscript(selected, ClaudeTargetOptions{})
+	if !errors.Is(err, ErrUnrepresentableLeaf) {
+		t.Errorf("converting a window whose identity-less last record has no parent: err = %v, want "+
+			"ErrUnrepresentableLeaf: the fallback would chain it to the entry of the abandoned child", err)
+	} else {
+		for _, want := range []string{"the record at ordinal 3", "the read answered no identity for it", "b2"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal %v does not name %s", err, want)
+			}
+		}
+	}
+	// The control: the same parentless record with the abandoned child left out of the window hangs off
+	// the root's entry -- the entry written before it is on the read's own line -- and the walk from the
+	// file's last entry holds the root and the record alone.
+	selected, _, err = Select(parentless, "0,3", false)
+	if err != nil {
+		t.Fatalf("selecting 0,3 over the parentless record: %v", err)
+	}
+	transcript, err = ConvertToClaudeTranscript(selected, ClaudeTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting the 0,3 window: %v", err)
+	}
+	records = decodeTranscript(t, transcript)
+	if got := parentOf("the last word"); got != uuidOf("start") {
+		t.Errorf("the parentless, identity-less record hangs off %v, want the entry of the record "+
+			"before it on the read's own line (%q)", got, uuidOf("start"))
+	}
+}
+
+// TestSelectionKeepsAnInactiveBranchesRecordedAncestry pins the ancestry rule's inactive half: a record
+// the read's own line leaves off the walk may keep an ancestor that is itself off that line. The read is
+// the shape where the two meet -- the branch 0 → 1 → 2 → 4 beside the line 0 → 3 → 5 -- and the window
+// 0-1,3-5 leaves ordinal 2 out, so ordinal 4's nearest retained ancestor is ordinal 1. Both are off the
+// read's line, keeping a branch off the active walk is recorded history the writer reproduces, and the
+// entry has to hang where the source recorded it: rewriting ordinal 4 under the entry written before it
+// (ordinal 3, a record of the other branch) would change a relation the source did record. The guard's
+// other half still refuses the shape it exists for: a window whose *on-line* record would land under an
+// off-line entry (1,5 here) is refused by name.
+func TestSelectionKeepsAnInactiveBranchesRecordedAncestry(t *testing.T) {
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "start", Dialogue: "start", SourceUUID: "u1"},
+		Message{Ordinal: 1, Role: "assistant", Content: "the branch parent", Dialogue: "the branch parent",
+			SourceUUID: "b2", SourceParentUUID: "u1"},
+		Message{Ordinal: 2, Role: "assistant", Content: "the branch child", Dialogue: "the branch child",
+			SourceUUID: "c3", SourceParentUUID: "b2"},
+		Message{Ordinal: 3, Role: "assistant", Content: "the line child", Dialogue: "the line child",
+			SourceUUID: "d4", SourceParentUUID: "u1"},
+		Message{Ordinal: 4, Role: "assistant", Content: "the branch grandchild",
+			Dialogue: "the branch grandchild", SourceUUID: "e5", SourceParentUUID: "c3"},
+		Message{Ordinal: 5, Role: "assistant", Content: "the last word", Dialogue: "the last word",
+			SourceUUID: "f6", SourceParentUUID: "d4"},
+	)
+	selected, _, err := Select(conversation, "0-1,3-5", false)
+	if err != nil {
+		t.Fatalf("selecting 0-1,3-5: %v", err)
+	}
+	route, err := targetRouteFor(TargetPi)
+	if err != nil {
+		t.Fatalf("route %s: %v", TargetPi, err)
+	}
+	session, err := route.Convert(selected, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("%s: converting the window: %v", TargetPi, err)
+	}
+	lines := decodePiSession(t, session.Data)
+	texts := piEntryTexts(t, lines)
+	entryOf := func(text string) piLine {
+		t.Helper()
+		for _, line := range lines {
+			if texts[line.ID] == text {
+				return line
+			}
+		}
+		t.Fatalf("no entry carries the text %q", text)
+		return piLine{}
+	}
+	parentTextOf := func(text string) string {
+		t.Helper()
+		line := entryOf(text)
+		if line.ParentID == nil {
+			return ""
+		}
+		return texts[*line.ParentID]
+	}
+	if got := parentTextOf("the branch grandchild"); got != "the branch parent" {
+		t.Errorf("the off-line grandchild hangs off %q, want its recorded ancestor \"the branch parent\": "+
+			"the entry written before it stands for a record of the other branch, and rewriting the "+
+			"branch's own relation would change history the source did record", got)
+	}
+	// The walk from the file's last entry is the read's own line: the branch's three records are in the
+	// file as recorded history and off that walk.
+	onPath := piWalkIDs(t, lines)
+	walked := map[string]bool{}
+	for id := range onPath {
+		walked[texts[id]] = true
+	}
+	for _, want := range []string{"start", "the line child", "the last word"} {
+		if !walked[want] {
+			t.Errorf("the walk from the file's last entry does not hold %q", want)
+		}
+	}
+	for _, unwanted := range []string{"the branch parent", "the branch grandchild"} {
+		if walked[unwanted] {
+			t.Errorf("the walk from the file's last entry holds %q, a record the read's line leaves off it",
+				unwanted)
+		}
+		if !strings.Contains(string(session.Data), unwanted) {
+			t.Errorf("the written document does not hold %q at all: it is recorded history the selection "+
+				"carried, and the rule is about the walk, not the file", unwanted)
+		}
+	}
+	if strings.Contains(string(session.Data), "the branch child") {
+		t.Error("the written document holds the excluded record's words: the window 0-1,3-5 does not " +
+			"carry ordinal 2")
+	}
+
+	// The guard's other half: a window in which the *on-line* record's own ancestry is gone entirely, so
+	// the fallback would chain it to the entry of an off-line record, is refused by name.
+	noAncestor, _, err := Select(conversation, "1,5", false)
+	if err != nil {
+		t.Fatalf("selecting 1,5: %v", err)
+	}
+	_, err = route.Convert(noAncestor, selectionProbeOptions())
+	if !errors.Is(err, ErrUnrepresentableLeaf) {
+		t.Errorf("converting a window whose on-line record would hang under an off-line entry: err = %v, "+
+			"want ErrUnrepresentableLeaf", err)
+	} else {
+		for _, want := range []string{"f6 (ordinal 5)", "b2 (ordinal 1)"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("the refusal %v does not name %s", err, want)
 			}
@@ -1344,5 +1550,219 @@ func TestSelectionCountsACallWithOnlyProgressEventsUndischarged(t *testing.T) {
 			t.Errorf("the %q event: calls_undischarged = %+v, want none: the read holds an outcome",
 				status, report.CallsUndischarged)
 		}
+	}
+}
+
+// TestSelectionDoesNotRebindAResultToAnotherCallSharingItsID pins the pairing through the flat targets'
+// branch filtering: their document is one line of records, a call the read's own line leaves off it is
+// not written there at all, and a result whose *paired call occurrence* was not written has to be
+// omitted and counted rather than accepted because an older call shares its id. The read: a call A
+// answered by its result, a later call B, an inactive sibling C reusing the id, and B's result. The
+// seam's own order pairs B's result with C (the nearest occurrence the id records before it), so the
+// window that names A and B's result carries C as the counterpart and leaves B behind -- and an id-blind
+// check would then write B's result as another output of A, an invocation the source never recorded.
+func TestSelectionDoesNotRebindAResultToAnotherCallSharingItsID(t *testing.T) {
+	const (
+		reusedID    = "toolu_reused_across_occurrences"
+		resultAText = "the first call's own output"
+		resultBText = "the later call's own output"
+	)
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "start", SourceUUID: "u1"},
+		Message{Ordinal: 1, Role: "assistant", SourceUUID: "a2", SourceParentUUID: "u1",
+			ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Bash", InputJSON: `{"command":"one"}`}}},
+		Message{Ordinal: 2, Role: "user", SourceUUID: "r3", SourceParentUUID: "a2",
+			ToolResults: []ToolResult{{ToolUseID: reusedID, ContentRaw: resultAText, ContentSize: len(resultAText)}}},
+		Message{Ordinal: 3, Role: "assistant", SourceUUID: "b4", SourceParentUUID: "r3",
+			ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Bash", InputJSON: `{"command":"two"}`}}},
+		// The inactive sibling: the read's own line is the walk from the last record (5 → b4 → r3 → a2 →
+		// u1), so this record -- whose parent is r3 like B's -- never stands on it. It reuses the id and
+		// is the occurrence B's result pairs with.
+		Message{Ordinal: 4, Role: "assistant", SourceUUID: "c5", SourceParentUUID: "r3",
+			ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Bash", InputJSON: `{"command":"three"}`}}},
+		Message{Ordinal: 5, Role: "user", SourceUUID: "e6", SourceParentUUID: "b4",
+			ToolResults: []ToolResult{{ToolUseID: reusedID, ContentRaw: resultBText, ContentSize: len(resultBText)}}},
+	)
+	selected, report, err := Select(conversation, "1,5", false)
+	if err != nil {
+		t.Fatalf("selecting 1,5: %v", err)
+	}
+	// The window's own reading, restated: A and B's result are what the specification named, A's result
+	// and the inactive sibling C are the counterparts the seam's pairing pulls in, and B -- the call the
+	// id-blind reading would have credited the result to -- stays behind.
+	if got := selectionOrdinals(selected); len(got) != 4 || got[0] != 1 || got[1] != 2 || got[2] != 4 || got[3] != 5 {
+		t.Fatalf("carried ordinals = %v, want the window's 1,5 with the counterparts 2 (A's result) and "+
+			"4 (the call B's result pairs with)", got)
+	}
+	wantNecessities := []SelectionNecessity{{Ordinal: 2, PulledBy: 1}, {Ordinal: 4, PulledBy: 5}}
+	if report.NecessitiesAdded.Count != 2 ||
+		!reflect.DeepEqual(report.NecessitiesAdded.Added, wantNecessities) {
+		t.Errorf("necessities = %+v, want %+v", report.NecessitiesAdded, wantNecessities)
+	}
+
+	rollout, err := ConvertToCodexRollout(selected, CodexTargetOptions{CLIVersion: "selection-test-0.0"})
+	if err != nil {
+		t.Fatalf("converting to codex: %v", err)
+	}
+	if rollout.Carried.ToolCalls != 1 || rollout.Carried.ToolResults != 1 {
+		t.Errorf("codex carried = %+v, want A's call and A's result: C is off the read's line and B's "+
+			"result's paired call is C", rollout.Carried)
+	}
+	data := string(rollout.Data)
+	if !strings.Contains(data, resultAText) {
+		t.Errorf("the rollout does not hold A's own recorded output:\n%s", data)
+	}
+	if strings.Contains(data, resultBText) {
+		t.Errorf("the rollout holds B's result, whose paired call occurrence (ordinal 4) the read's line "+
+			"leaves off it: the id-blind reading would present it as another output of A:\n%s", data)
+	}
+	if count := lossCount(t, rollout.Losses, "unpaired_tool_results").Count; count != 1 {
+		t.Errorf("codex unpaired_tool_results = %d, want the one carried result whose paired call is not "+
+			"in the written document", count)
+	}
+	if count := lossCount(t, rollout.Losses, "inactive_branch_records").Count; count != 1 {
+		t.Errorf("codex inactive_branch_records = %d, want the one off-line record the window carried",
+			count)
+	}
+
+	session, err := ConvertToOpenCodeSession(selected, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting to opencode: %v", err)
+	}
+	if session.Carried.ToolCalls != 1 || session.Carried.ToolResults != 1 {
+		t.Errorf("opencode carried = %+v, want A's call and A's result", session.Carried)
+	}
+	if strings.Contains(string(session.Data), resultBText) {
+		t.Errorf("the OpenCode document holds B's result, whose paired call occurrence the plan does not "+
+			"carry:\n%s", session.Data)
+	}
+	if !strings.Contains(string(session.Data), resultAText) {
+		t.Errorf("the OpenCode document does not hold A's own recorded output:\n%s", session.Data)
+	}
+	openCodeRequireLoss(t, session, "unpaired_tool_results", 1)
+	openCodeRequireLoss(t, session, "inactive_branch_records", 1)
+	// Not a second outcome of A: the id-blind lookup would file B's result as a repeated outcome for
+	// the call whose id A wrote, a statement about A the source never recorded.
+	openCodeRequireLoss(t, session, "repeated_tool_results", 0)
+}
+
+// TestSelectionCountsAnIdLessCallWithNoRecordedOutcome pins the id-less arm of calls_undischarged: the
+// source recorded a call with no id, so it holds no link for it either way -- and where the carried
+// document holds no id-less result that a writer's own inference could pair with it, no outcome in the
+// line can answer it and the call is counted, with the target's own report agreeing (OpenCode has no
+// state for a call that has not finished and counts it unpaired_tool_calls). Where such a result *is*
+// carried, which call it answers is the writers' disclosed inference rather than the read's, and the
+// count does not assert an outcome the source never recorded: the call is left to that report. A result
+// recorded *before* the call cannot answer it under the writers' own rule (their inference reads the
+// outstanding call the line wrote), so that shape is counted too.
+func TestSelectionCountsAnIdLessCallWithNoRecordedOutcome(t *testing.T) {
+	call := func(ordinal int) Message {
+		return Message{Ordinal: ordinal, Role: "assistant",
+			ToolCalls: []ToolCall{{Name: "Read", InputJSON: `{"file_path":"/x"}`}}}
+	}
+	result := func(ordinal int, raw string) Message {
+		return Message{Ordinal: ordinal, Role: "user",
+			ToolResults: []ToolResult{{ContentRaw: raw, ContentSize: len(raw)}}}
+	}
+
+	// No result anywhere in the read: the call is undischarged, and the target whose format cannot hold
+	// a call with no outcome agrees by counting it under its own category.
+	alone := openCodeTestConversation(call(0))
+	selected, report, err := Select(alone, "0", false)
+	if err != nil {
+		t.Fatalf("selecting the id-less call: %v", err)
+	}
+	if report.CallsUndischarged.Count != 1 ||
+		strings.Join(report.CallsUndischarged.Regions, ",") != "0" {
+		t.Errorf("calls_undischarged = %+v, want the one id-less call: the carried document holds no "+
+			"result that could answer it", report.CallsUndischarged)
+	}
+	if report.NecessitiesAdded.Count != 0 {
+		t.Errorf("necessities = %+v, want none: the read recorded no counterpart to carry",
+			report.NecessitiesAdded)
+	}
+	session, err := ConvertToOpenCodeSession(selected, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting the id-less call: %v", err)
+	}
+	if session.Carried.ToolCalls != 0 {
+		t.Errorf("opencode carried = %+v, want no call: this route's format has no state for one with no "+
+			"outcome", session.Carried)
+	}
+	openCodeRequireLoss(t, session, "unpaired_tool_calls", 1)
+
+	// An id-less result *after* the call: the writers' inference may pair the two (the sole outstanding
+	// call in the line it wrote), so the count does not state either disposition and the writer's own
+	// report names the inference instead.
+	withResult := openCodeTestConversation(call(0), result(1, "the read output"))
+	selected, report, err = Select(withResult, "0-1", false)
+	if err != nil {
+		t.Fatalf("selecting the call with its id-less result: %v", err)
+	}
+	if report.CallsUndischarged.Count != 0 {
+		t.Errorf("calls_undischarged = %+v, want none: an id-less result the carried line holds may answer "+
+			"the call, and whether it does is the writer's own disclosed inference", report.CallsUndischarged)
+	}
+	rollout, err := ConvertToCodexRollout(selected, CodexTargetOptions{CLIVersion: "selection-test-0.0"})
+	if err != nil {
+		t.Fatalf("converting the id-less pair: %v", err)
+	}
+	// The disclosure the ambiguity is left to: the writer names the generated id it minted for the call
+	// and the inferred pairing it wrote the result under (generated_call_ids), so the ambiguity travels
+	// with the conversion instead of the report asserting a pairing the source never recorded.
+	if rollout.Carried.ToolCalls != 1 || rollout.Carried.ToolResults != 1 {
+		t.Errorf("codex carried = %+v, want the call and the result the writer's own inference paired with it",
+			rollout.Carried)
+	}
+	if count := lossCount(t, rollout.Losses, "generated_call_ids").Count; count != 2 {
+		t.Errorf("generated_call_ids = %d, want the minted call id and the inferred pairing counted",
+			count)
+	}
+
+	// A result recorded *before* the call cannot answer it: the writers' inference reads the outstanding
+	// call the line wrote, so a result the line already passed is not a candidate, and the call is counted.
+	before := openCodeTestConversation(result(0, "an earlier tool output"), call(1))
+	_, report, err = Select(before, "0-1", false)
+	if err != nil {
+		t.Fatalf("selecting the result before the call: %v", err)
+	}
+	if report.CallsUndischarged.Count != 1 ||
+		strings.Join(report.CallsUndischarged.Regions, ",") != "1" {
+		t.Errorf("calls_undischarged = %+v, want the call at ordinal 1: the id-less result stands before "+
+			"it in the line and cannot be paired with it", report.CallsUndischarged)
+	}
+}
+
+// TestSelectionClosesTheCounterpartGraphToAFixedPoint pins D3's default arm as a fixed point rather than
+// one forward pass: a counterpart can itself hold a pair whose other half lies outside the window (a
+// record carrying one call's result and the next call), so a record a *newly added* record pulled in can
+// pull in a second counterpart behind the walk's cursor. Selecting ordinal 2 alone must carry all three
+// records, each named with its own puller; a single in-order pass would carry ordinal 1 and leave ordinal
+// 0 -- the call whose result ordinal 1 also carries -- behind, writing a result without its call.
+func TestSelectionClosesTheCounterpartGraphToAFixedPoint(t *testing.T) {
+	conversation := Conversation{Messages: []Message{
+		{Ordinal: 0, Role: "assistant",
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_first", Name: "Read", InputJSON: `{"file_path":"/a"}`}}},
+		{Ordinal: 1, Role: "assistant",
+			ToolCalls:   []ToolCall{{ToolUseID: "toolu_second", Name: "Read", InputJSON: `{"file_path":"/b"}`}},
+			ToolResults: []ToolResult{{ToolUseID: "toolu_first", ContentRaw: "the first output"}}},
+		{Ordinal: 2, Role: "user",
+			ToolResults: []ToolResult{{ToolUseID: "toolu_second", ContentRaw: "the second output"}}},
+	}}
+	selected, report, err := Select(conversation, "2", false)
+	if err != nil {
+		t.Fatalf("selecting 2: %v", err)
+	}
+	if got := selectionOrdinals(selected); !reflect.DeepEqual(got, []int{0, 1, 2}) {
+		t.Fatalf("carried ordinals = %v, want the whole chain 0,1,2: the record the window pulled in "+
+			"carries a result of the first call", got)
+	}
+	want := []SelectionNecessity{{Ordinal: 0, PulledBy: 1}, {Ordinal: 1, PulledBy: 2}}
+	if report.NecessitiesAdded.Count != 2 || !reflect.DeepEqual(report.NecessitiesAdded.Added, want) {
+		t.Errorf("necessities = %+v, want %+v: each addition names the record that pulled it in",
+			report.NecessitiesAdded, want)
+	}
+	if report.Included.Count != 1 || report.Excluded.Count != 0 {
+		t.Errorf("report = %+v, want the one included record and no exclusion", report)
 	}
 }
