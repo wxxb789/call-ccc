@@ -1019,8 +1019,10 @@ supersede it with a newer one and say which it supersedes.
 - **Status:** resolved (owner, 2026-11-19 — the default taken stands). This entry takes a
   **new** id because `Q-0002-01` is already the provider-binding entry above; nothing about this entry
   rewrites or supersedes it, and `Q-0000-01` (merge authority) is untouched.
-- **Confirmed (owner, 2026-11-19):** the ordinary budget's exhaustion behaviour stands, including the two
-  self-continued audit rounds.
+- **Confirmed (owner, 2026-11-19):** no change to the existing behaviour. The ordinary budget's exhaustion
+  behaviour is unchanged (stop → cross-family consult → design fork to the owner), and the Stop condition
+  below governs as written; this confirmation neither amends it nor endorses any particular count of past
+  audit rounds.
 - **Question:** twelve ordinary machine-review rounds have run on goal 0002's pull request
   (`feat/0002-claude-to-codex-continuation`) and **every one of them returned findings** —
   8 · 3 · 4 · 1 · 2 · 2 · 2 · 3 · 2 · 2 · 2 · 2 = **33 findings**, all closed, **no clean ordinary

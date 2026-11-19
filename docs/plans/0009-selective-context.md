@@ -23,14 +23,19 @@ redaction or reasoning-trace editing (0010–0013).
 ## 2. Measured: the ordinal space, and what real sources look like
 
 - The read assigns `Message.Ordinal` in the source's own record order, 0-based and serial
-  (`internal/parser/*.go`'s assignment sites; `internal/ccc/archive.go:579` for the archive path). It is
+  (`internal/parser/*.go`'s assignment sites; `internal/ccc/archive.go:580` for the archive path). It is
   therefore the only selector that exists on every route — a Codex rollout records no per-message identity
   while a Pi/omp session records `id`/`parentId` (`internal/ccc/conversation.go`).
 - Real sessions on this host, read through `bin/ccc inspect --json` (counts only; no message content was
-  read or stored): pi 8 recent sessions — messages p50 52 / max 172, calls 352 = results 352; omp 8 recent —
-  p50 116 / max 365, calls 645 = results 645; codex all 25 on disk — p50 2 / max 253, calls 467 vs
-  results 445 (**4 sessions with a call the source never discharged**); opencode 5 recent — 2 messages
-  each, no calls. Long sessions are real, and an undischarged call is a state the formats carry.
+  read or stored). Codex is a **census** — every `rollout-*.jsonl` under `~/.codex/sessions`
+  (`~/.codex/sessions/**/rollout-*.jsonl`, 25 files) — messages p50 2 / max 253, calls 467 vs results 445
+  (**4 sessions with a call the source never discharged**, 22 calls without a recorded result). OpenCode is
+  the store's **five sessions with the newest `time_updated`** (`~/.local/share/opencode/opencode.db`,
+  `session_v2`) — messages p50 2 / max 2 / sum 8, no calls. Pi and omp are each a **sample of 8 sessions
+  inspected during the refinement**: its "8 recent" selection was not recorded, so these are that sample's
+  counts and not the output of a rule a later run repeats — pi messages p50 52 / max 172, calls 352 =
+  results 352; omp p50 116 / max 365, calls 645 = results 645. Long sessions are real, and an undischarged
+  call is a state the formats carry.
 
 ## 3. The interface and the seam (the owner's decision)
 
@@ -56,8 +61,12 @@ no clock, no globals, so its whole matrix is unit-testable.
 
 ## 4. Verification
 
-- **Byte-identical default (D4):** the existing frozen-byte probe pattern — run N conversions through the
-  five routes with and without the flag absent, compare digests of the written bytes and item lines.
+- **Byte-identical default (D4):** the throw-away before/after probe 0007 and 0008 used — one test file
+  converting documents through the five routes, **the flag absent in every run**, run on the tree before and
+  after the change; each run prints every written file's digest (over a normalized copy, the minted ids
+  differing run to run), every item line and the non-zero report rows, and the two runs' outputs are diffed.
+  Flag-present versus flag-absent cannot discharge it; that comparison is the selection's own claim — the
+  written records a reduced run has (D1) and the report section naming it (D2) — not the untouched default.
 - **Reproduction (D1):** a fixture with a known ordinal map plus a native load of the target (the level the
   route already supports), pairing each written record with its source ordinal.
 - **Refusals (D3, D5):** each refusal is a named case with a mutation that disables its branch and turns the
@@ -72,7 +81,9 @@ each with counts and the regions they name. Exit codes unchanged.
 ## 6. Evidence plan
 
 `docs/evidence/0009-selective-context.md` (the record, sections as its siblings have them), the counts it
-maintains, the mutation table for every refusal, and the D4 probe's verbatim output;
+maintains, the mutation table for every refusal, and the D4 probe's verbatim output (the probe is the
+throw-away before/after file: added, run, quoted, removed — its output is the evidence, and the citations
+manifest's header names D4 instead of holding a row);
 `docs/evidence/0009-citations.tsv` at close-out.
 
 ## 7. Fixture plan

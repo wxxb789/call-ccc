@@ -40,8 +40,10 @@ memory.
 
 `docs/evidence/0009-citations.tsv` — one row per clause a gate-runnable Go test discharges, authored at
 close-out (the repository's own rule, and what the conductor now requires before an audit or a merge). D4's
-frozen-byte probe is a Python case the required `selftest` step runs and is named in the record rather than
-given a row (the carve-out 0007 and 0008 both state).
+evidence is the throw-away before/after probe 0007 and 0008 used — a test file added, run, quoted in the
+record, then removed — so the record's verbatim output is the evidence and the manifest header names D4 with
+that reason instead of carrying a row (the form-based carve-out 0007 and 0008's manifests both state: a row
+is one gate-runnable Go test, so evidence a gate step does not run cannot hold one).
 
 ## Stop and report
 
