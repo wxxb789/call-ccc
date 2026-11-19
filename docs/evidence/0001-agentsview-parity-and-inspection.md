@@ -1106,8 +1106,11 @@ indexed query while a source is there.
 - **Bytes, not behaviour, for the rest of the tree.** `parity` proves the carried files are the pin's;
   behaviour is covered for the parse → sync → archive-read path by the oracle comparison and the
   call/ccc tests, not for every inherited package.
-- **Windows and macOS were not exercised on this host.** CI runs the same gate on all three; the
-  Windows C-compiler boundary and the absent POSIX mode bits are disclosed in `docs/harness.md`.
+- **Windows and macOS were not exercised on this host.** CI runs the same gate on `ubuntu-latest` and
+  `windows-latest`; macOS is not verified on a runner, and the gate's platform rules are pinned by the
+  suite's executed host simulations instead (`docs/harness.md` §CI states the claim as the workflow's
+  matrix does — the owner decision of 2026-11-18 removed that leg); the Windows C-compiler boundary
+  and the absent POSIX mode bits are disclosed in `docs/harness.md`.
 - **Upstream's own test suites do not run in this gate** (measurements above).
 - **The leak scan does not read the carried tree** (decision recorded in
   [`docs/decisions/OPEN-QUESTIONS.md`](../decisions/OPEN-QUESTIONS.md), Q-0001-03).
@@ -1141,7 +1144,7 @@ indexed query while a source is there.
   copy rather than a repository, leaves the file-list, ignore and generated-input index rules unasked, so
   the step reports `INCOMPLETE` and exits 2 instead of the pass with a disclosure inside its detail line
   it used to print; the required-step machinery in `scripts/gate.py` rejects any non-zero outcome. A host
-  that needs a full pass therefore needs git — CI has it on all three runners — and the report a run
+  that needs a full pass therefore needs git — CI has it on both runners — and the report a run
   prints names the rules it did not check.
 - **The ambiguity branch is exercised, and what it still does not cover.** `AmbiguousError` and the
   CLI's "pass one of those session ids instead of a guess" line are implemented and pinned by tests —

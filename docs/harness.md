@@ -260,7 +260,10 @@ says so.
   a §5 comparison cell that credits a recorded run's answer may only quote words that run's recorded
   output holds;
   `test_gate_transcript_claims.py`: a record's quoted `parity` line is the gate's own rendering — its end
-  is the checker's own — and the elision limit a record states is the gate's own call; and
+  is the checker's own — and the elision limit a record states is the gate's own call;
+  `test_ci_matrix_claim.py`: the workflow's matrix and the CI section above are one statement — the
+  matrix's legs are exactly the runner labels the section names, no job runs outside the matrix, the
+  job runs the gate file, and the macOS-gap sentence must stand while the matrix stays two-legged; and
   `test_codex_native_check.py`'s `RecordStatesTheChecksOwnOrder`: the record's claim about *when* the
   comparison taken where the copy grows runs is read against the positions of the native check's own
   calls, so a record that drifts back to a placement the script does not have fails there), run by the
@@ -623,6 +626,18 @@ suite answers it from the case's own stub bin and exercises the boundary itself 
 platform probe to its Windows answer (see the `selftest` section): no verdict in the suite depends on
 which platform is running it.
 
+Where each answer is *verified* is narrower than where it applies. `ubuntu-latest` and `windows-latest`
+run the whole gate on real runners; **macOS is not verified on a runner** — the workflow's matrix has no
+macOS leg, by the owner decision of 2026-11-18 that the plan beside this file records
+([`docs/plans/harness-ci-matrix.md`](plans/harness-ci-matrix.md)): the job was repeatedly starved of a
+runner, and a job that fails slowly with zero executed steps is infrastructure, not a verdict. A macOS
+host running `scripts/gate.py` still gets the answers above — a missing Go toolchain or a missing C
+compiler is a failure there, not a boundary — and the rules whose shape matters on macOS are pinned on
+every host by the suite's own executed host simulations and seams (the empty-`PATH` child, the forced
+Windows-without-compiler probe, `platform_name`, `symlink_target`, the path-flavour cases below), never
+by a runner. The `macos-latest` failures recorded below as history are what those rules were repaired
+against while the leg ran; nothing in this file claims a macOS runner today.
+
 Windows has no POSIX mode bits, so `parity` declines to check a carried file's — or a stored-byte
 deviation's — working-tree owner-executable bit there and says so in its output instead of failing every
 executable file; the *stored* mode still comes from git's own index, which records it on every
@@ -723,13 +738,22 @@ not the one the rule is about:
 
 ## CI
 
-`.github/workflows/gate.yml` runs the same `scripts/gate.py` on `ubuntu-latest`, `macos-latest` and
-`windows-latest` for every pull request and every push to `main`. Its step spells the interpreter
-`python`, the name all three runners have — the Windows runner has no `python3` — while the file is
-`#!`-tagged `python3` for the hosts where that is the only name. CI installs Go and gitleaks; a CI job
-with fewer tools than another is the boundary above, not a different gate. The Go toolchain comes
-from `go.mod` (`go-version-file`), so the workflow and the module cannot disagree about the version
-the tree builds with.
+`.github/workflows/gate.yml` runs the same `scripts/gate.py` on `ubuntu-latest` and `windows-latest`
+for every pull request and every push to `main`. **macOS is not verified on a runner**: the matrix has
+no macOS leg (the owner decision of 2026-11-18 stated with the platform rules above), so a
+macOS-shaped rule is answered in CI only by the suite's own executed host simulations — the
+empty-`PATH` child, the forced Windows-without-compiler probe, the
+`platform_name`/`symlink_target`/path-flavour seams — which run wherever the `selftest` step runs. A
+green run may therefore be read as the whole gate passing on Linux and on Windows, and not as evidence
+about macOS. `scripts/tests/test_ci_matrix_claim.py` (the `selftest` step) holds this section and the
+matrix together as one statement: the runners named here are exactly the matrix's legs, the job runs
+the gate file itself, and the sentence above cannot be dropped while the matrix stays two-legged.
+
+Its step spells the interpreter `python`, the name both runners have — the Windows runner has no
+`python3` — while the file is `#!`-tagged `python3` for the hosts where that is the only name. CI
+installs Go and gitleaks; a CI job with fewer tools than another is the boundary above, not a different
+gate. The Go toolchain comes from `go.mod` (`go-version-file`), so the workflow and the module cannot
+disagree about the version the tree builds with.
 
 ## Growth policy
 
