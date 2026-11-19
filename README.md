@@ -121,15 +121,20 @@ working directory need a path that cannot be re-resolved from there.
 regions separated by commas (`5`, `3-7`, `12-` — the last from that value through every higher one the
 read holds): the ordinals are the values the *read* supplied, printed by the run's own `selection:` line,
 never a position and never the target's post-write numbering. A recorded tool call and the recorded result
-that answers it — the nearest call the same id records before it — are one structure: a selection that
+that answers it — the call the read's own recorded ancestry establishes where it does, else the nearest
+call the same id records before it — are one structure: a selection that
 would split a pair carries the counterpart instead and names it a necessity with the ordinal that pulled
 it in, while `--strict-selection` refuses such a selection by name before anything is installed. A call
-whose read holds no recorded outcome — no result at all, or only progress events that say it is still
-running — stays as it is and is counted (`calls_undischarged`), and whether the target's own format can
+whose read holds no recorded outcome — no result at all, only progress events that say it is still
+running, or an id-less progress event — stays as it is and is counted (`calls_undischarged`) unless the
+archive's own summary of an outcome stands on the call itself, and whether the target's own format can
 hold it is that writer's answer, named in the conversion's losses. On a target whose session is a tree, a
 selection that leaves out a record's own parent hangs it off its nearest retained ancestor instead, so the
 resumed context is the read's own line and a branch the selection carried stays recorded history off that
-line (a window with no retained ancestor at all is refused by name rather than written under a branch).
+line (a window with no retained ancestor at all is refused by name rather than written under a branch);
+and a carried result whose paired call is written but off that result's own walk is omitted and counted
+(`unpaired_tool_results`) rather than published as an output whose invocation the resumed context cannot
+see.
 Every run that carried a selection reports the transformation in both the human block and `--json`: the
 space the spec was written against, the included and excluded records, the necessities added and the
 undischarged calls, each with counts and the ordinals it names — so a caller can see exactly which recorded

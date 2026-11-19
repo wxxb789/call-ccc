@@ -156,26 +156,35 @@ obligation ships no citations file, rather than an empty one.
   while a reader that preserves a source field (Shelley's `sequence_id`) produces the source's own
   numbers, so `0-` on a 1..5 space is refused naming the space rather than read as "from the beginning".
   The seam is the core's own (`internal/ccc/selection.go`, a pure function of the document): a recorded
-  call and the recorded result that answers it are one structure, paired from the read's own order — a
-  result pairs with the nearest call the same `ToolUseID` records before it, so a reused id does not make
+  call and the recorded result that answers it are one structure, paired from the read's own relations —
+  a result pairs with the call the read's own recorded ancestry establishes where it does (the call the
+  read holds on the result's own parent chain that records the same id), else with the nearest call the
+  same `ToolUseID` records before it, so a reused id does not override the call the source placed the
+  result under and does not make
   an earlier pair the counterpart of a later call — carried
   whole or not at all: a selection that would split a pair carries the counterpart and names it a
   necessity with the ordinal that pulled it in (both directions, to a fixed point) unless
   `--strict-selection` refuses it by name before anything is installed. The writers write that pairing
   rather than an id match: on a flat target, where a call the read's line leaves off it is not written at
   all, a result whose paired *occurrence* was not written is omitted and counted (`unpaired_tool_results`)
-  instead of being accepted because some older call shares its id. A call whose read holds no
-  recorded outcome (no result at all, or only progress events such as a Codex subagent's `running`
-  notification) is counted `calls_undischarged`, read from the pairing walk itself and counted in the unit
+  instead of being accepted because some older call shares its id; on a tree target the paired occurrence
+  has to stand on the result's own written ancestry — a result under a call that is not on the walk the
+  loader makes from it is omitted and counted the same way, while the call still travels as recorded
+  history where the window carries it. A call whose read holds no
+  recorded outcome (no result at all, only progress events such as a Codex subagent's `running`
+  notification, or an id-less progress event) is counted `calls_undischarged`, read from the pairing walk
+  itself and counted in the unit
   the writers write: a message's calls sharing a non-empty id are one invocation the reader projected into
   several rows, so one recorded outcome discharges it, and a second outcome does not answer a call the
-  pairing left unanswered. What a target's own format does with such a call is
+  pairing left unanswered — while an archive read's own summary of an outcome on the call itself
+  (`ToolCall.ResultContent`) is outcome evidence where the read holds no recorded result event of the
+  call, so that shape is not counted. What a target's own format does with such a call is
   that writer's answer, named in the conversion's losses. A call or result the source
   recorded with **no** id carries no recorded link, so the seam neither invents one nor carries candidates
   for it; the target's writer applies its own rule to the selected line and discloses the pairing it
   inferred (`generated_call_ids`), and an id-less *call* is counted undischarged only where the carried
-  document holds no id-less result at or after it (where one is carried, the call is left to that same
-  disclosed inference). On a target whose session is a
+  document holds no id-less result that states an outcome at or after it (where one is carried, the call
+  is left to that same disclosed inference). On a target whose session is a
   tree, a carried record whose recorded
   parent the selection left out is hung off its nearest retained ancestor (the read's own relation walked
   through the excluded records, with the tool-result step the writers take where the read may project one,

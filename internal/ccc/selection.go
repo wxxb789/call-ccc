@@ -130,16 +130,20 @@ func emptySelectionRefusal() error {
 // that line is refused by a tree target's leaf guard and omitted and counted by a line target's walk.
 //
 // One structure is carried whole or not at all: a recorded call and the recorded result that answers it
-// are paired from the read's own order -- a result answers the nearest recorded call the same non-empty
-// id records before it (selectionPairs), the rule the inherited readers' own termination check takes --
-// and a selection that would carry one without the other carries the counterpart instead, named in
-// NecessitiesAdded with the ordinal that pulled it in. A reused id does not make an earlier pair's
-// records the counterpart of a later call: the later call has no recorded result and is counted
-// undischarged, not expanded by id alone. A record the source recorded with no id is not such a
-// structure -- the document holds no link for it -- and the selection neither invents one nor carries a
-// counterpart the read never recorded; the target's writer then reads the selected line with its own rule
-// for an id-less result, which it discloses as the pairing it inferred. Strict refuses the separated
-// structure by name instead of carrying the counterpart.
+// are paired from the read's own relations -- a result answers the call the read's own recorded ancestry
+// names where it names one (the call the read holds on the result's own parent chain that records the
+// same non-empty id), and otherwise the nearest recorded call the same non-empty id records before it
+// (pairedCallOccurrences), the rule the inherited readers' own termination check takes -- and a selection
+// that would carry one without the other carries the counterpart instead, named in NecessitiesAdded with
+// the ordinal that pulled it in. A reused id does not make an earlier pair's records the counterpart of a
+// later call: the later call has no recorded result and is counted undischarged, not expanded by id alone.
+// A record the source recorded with no id is not such a structure -- the document holds no link for it --
+// and the selection neither invents one nor carries a counterpart the read never recorded; the target's
+// writer then reads the selected line with its own rule for an id-less result, which it discloses as the
+// pairing it inferred. Strict refuses the separated structure by name instead of carrying the counterpart.
+// The pairing the read answered travels with the reduced document (Conversation.sourceResultPairs), so a
+// writer asking about a carried result cannot be answered by a nearer occurrence the window happened to
+// carry in place of the call the read named.
 func Select(conversation Conversation, spec string, strict bool) (Conversation, SelectionReport, error) {
 	trimmed := strings.TrimSpace(spec)
 	if trimmed == "" {
@@ -224,6 +228,19 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 		}
 		keptAncestor[reduced] = answer
 	}
+	// The seam's own pairing travels beside them, in the reduced document's positions: the writers have
+	// to ask the walk the closure asked, not re-read the window -- a record the window left out can be
+	// one the read's ancestry walk stepped through, and the same id occurring nearer in the reduced
+	// document would then pair a result with a call the read did not name for it.
+	readPairs := pairedCallOccurrences(conversation)
+	resultPairs := make(map[resultOccurrence]callOccurrence, len(readPairs))
+	for place, call := range readPairs {
+		if reducedOf[place.message] < 0 || reducedOf[call.message] < 0 {
+			continue
+		}
+		resultPairs[resultOccurrence{message: reducedOf[place.message], result: place.result}] =
+			callOccurrence{message: reducedOf[call.message], call: call.call}
+	}
 	sort.Slice(necessities, func(i, j int) bool {
 		if necessities[i].Ordinal != necessities[j].Ordinal {
 			return necessities[i].Ordinal < necessities[j].Ordinal
@@ -256,6 +273,7 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 		Fidelity:           conversation.Fidelity,
 		sourceLineInactive: lineInactive,
 		sourceKeptAncestor: keptAncestor,
+		sourceResultPairs:  resultPairs,
 	}
 	return selectedConversation, report, nil
 }
@@ -513,20 +531,82 @@ type resultOccurrence struct {
 }
 
 // pairedCallOccurrences answers the seam's own pairing at occurrence granularity: for every recorded
-// result that names an id, the call occurrence the same non-empty id records nearest before it, in the
-// read's own order -- the reading the inherited readers' termination check takes
-// (internal/parser/termination.go's hasOrphanedToolCall), so a reused id does not make an earlier pair's
-// records the counterpart of a later call. Within one message the calls are walked before the results
-// (the order every writer's own ledger takes), and the occurrence the answer names is the *unit* the
-// writers write: a message's calls sharing an id are one invocation the reader projected into several
-// rows (distinctCalls), so the first row of such a group is the occurrence that stands for the unit,
-// exactly as the message-level pairing names the message. It is selectionPairing's rule at the place
-// granularity the flat targets' writers need: their document is one line of records, a call the line
-// leaves off it is not written at all, and a result whose *paired occurrence* was not written has to be
-// omitted and counted rather than written under an older call that happens to share its id. A call or
-// result the source recorded with no id is not an occurrence: the document holds no link for it, and the
-// writers' own inference for an id-less result reads the selected line (disclosed as generated_call_ids).
+// result that names an id, the call occurrence the result's own recorded relations name where they do --
+// the call the read holds on the result's own ancestry chain (its own record, else the nearest record its
+// recorded parent walk reaches) that records the same non-empty id, so a reused id later in file order
+// cannot override the call the source placed the result under -- and otherwise the call occurrence the
+// same non-empty id records nearest before it, in the read's own order, the reading the inherited
+// readers' termination check takes (internal/parser/termination.go's hasOrphanedToolCall). The answer is
+// the seam's own: the closure's pairs, the report's undischarged count and the writers cannot disagree
+// about which call a recorded result answers.
+//
+// A conversation a selection produced carries the pairing its own read answered
+// (Conversation.sourceResultPairs), in the reduced document's positions: the window may have left the
+// records the ancestry walk steps through out of the document, and re-reading the pairing over it would
+// let a nearer carried occurrence override the answer the read gave -- the flat writers would then write
+// the result under a call the read did not pair it with. A conversation the read returned carries no
+// such answers (nil), and this walk resolves them.
+//
+// Within one message the calls are walked before the results (the order every writer's own ledger
+// takes), and the occurrence the answer names is the *unit* the writers write: a message's calls sharing
+// an id are one invocation the reader projected into several rows (distinctCalls), so the first row of
+// such a group is the occurrence that stands for the unit, exactly as the message-level pairing names
+// the message. It is the granularity the flat targets' writers need: their document is one line of
+// records, a call the line leaves off it is not written at all, and a result whose *paired occurrence*
+// was not written has to be omitted and counted rather than written under an older call that happens to
+// share its id. A call or result the source recorded with no id is not an occurrence: the document holds
+// no link for it, and the writers' own inference for an id-less result reads the selected line
+// (disclosed as generated_call_ids).
 func pairedCallOccurrences(conversation Conversation) map[resultOccurrence]callOccurrence {
+	if conversation.sourceResultPairs != nil {
+		return conversation.sourceResultPairs
+	}
+	byIdentity := make(map[string]int, len(conversation.Messages))
+	for index, message := range conversation.Messages {
+		if id := strings.TrimSpace(message.SourceUUID); id != "" {
+			if _, seen := byIdentity[id]; !seen {
+				byIdentity[id] = index
+			}
+		}
+	}
+	// firstCallOn answers the occurrence that stands for the call a record records under one non-empty
+	// id: the first row of the group, because a message's calls sharing an id are one invocation the
+	// reader projected into several rows (distinctCalls).
+	firstCallOn := func(index int, id string) (callOccurrence, bool) {
+		for callIndex, call := range conversation.Messages[index].ToolCalls {
+			if strings.TrimSpace(call.ToolUseID) == id {
+				return callOccurrence{message: index, call: callIndex}, true
+			}
+		}
+		return callOccurrence{}, false
+	}
+	// ancestryCall answers the call occurrence the result's recorded ancestry establishes: the nearest
+	// record on the walk from the result's own record (itself first, where the read folded the outcome
+	// onto the call's own message) through the recorded parent relations that records the same id. The
+	// walk steps through the identities the read answered and the records it holds -- an identity the
+	// read does not hold ends it -- and is bounded by the document's own size so a cycle a source
+	// recorded cannot keep it going.
+	ancestryCall := func(index int, id string) (callOccurrence, bool) {
+		if call, ok := firstCallOn(index, id); ok {
+			return call, true
+		}
+		at := index
+		for steps := 0; steps <= len(conversation.Messages); steps++ {
+			parent := strings.TrimSpace(conversation.Messages[at].SourceParentUUID)
+			if parent == "" {
+				return callOccurrence{}, false
+			}
+			next, ok := byIdentity[parent]
+			if !ok || next >= at {
+				return callOccurrence{}, false
+			}
+			if call, ok := firstCallOn(next, id); ok {
+				return call, true
+			}
+			at = next
+		}
+		return callOccurrence{}, false
+	}
 	mostRecent := map[string]callOccurrence{}
 	paired := map[resultOccurrence]callOccurrence{}
 	for index, message := range conversation.Messages {
@@ -544,8 +624,13 @@ func pairedCallOccurrences(conversation Conversation) map[resultOccurrence]callO
 			if id == "" {
 				continue
 			}
+			place := resultOccurrence{message: index, result: resultIndex}
+			if call, ok := ancestryCall(index, id); ok {
+				paired[place] = call
+				continue
+			}
 			if call, ok := mostRecent[id]; ok {
-				paired[resultOccurrence{message: index, result: resultIndex}] = call
+				paired[place] = call
 			}
 		}
 	}
@@ -638,13 +723,15 @@ type selectionPair struct {
 // selectionPairing is the seam's own reading of the recorded call/result links, in one walk
 // (pairedCallOccurrences) so that the closure's pairs, the report's undischarged count and the flat
 // targets' writers cannot disagree about which call a recorded result answers. pairs holds every recorded
-// result against the nearest call occurrence the same non-empty id recorded *before* it -- the reading
-// the inherited readers' own termination check takes (internal/parser/termination.go's hasOrphanedToolCall
-// counts only results recorded after the call they answer), so a reused id does not make an earlier
-// pair's records the counterpart of a later call -- and answered names, per call message, the ids of the
-// calls an *outcome* result thus answers. The pairing is the read's own relation rather than a
-// consumption: two results after one call both pair with it (a streamed terminal event beside a summary),
-// and a call the source recorded after an outcome that lies before it is not answered by it.
+// result against the call the read's own recorded ancestry names where it does, else the nearest call
+// occurrence the same non-empty id recorded *before* it -- the reading the inherited readers' own
+// termination check takes
+// (internal/parser/termination.go's hasOrphanedToolCall counts only results recorded after the call it
+// answers), so a reused id does not make an earlier pair's records the counterpart of a later call -- and
+// answered names, per call message, the ids of the calls an *outcome* result thus answers. The pairing is
+// the read's own relation rather than a consumption: two results after one call both pair with it (a
+// streamed terminal event beside a summary), and a call the source recorded after an outcome that lies
+// before it is not answered by it.
 func selectionPairing(conversation Conversation) ([]selectionPair, map[int]map[string]bool) {
 	paired := pairedCallOccurrences(conversation)
 	var pairs []selectionPair
@@ -756,36 +843,59 @@ func strictSelectionRefusal(conversation Conversation, pair selectionPair, callS
 }
 
 // undischargedCalls answers the recorded calls the source itself left undischarged among the carried
-// records: a call no later recorded outcome answers, per the seam's own pairing rule (selectionPairs: a
-// result answers the nearest call occurrence the same non-empty id records before it, so a reused id
-// does not make an earlier call's records the counterpart of a later call). It is the source's own state
-// and not the selection's -- the counterpart rule cannot carry a result the read never held -- so it is
-// reported rather than changed.
+// records: a call no later recorded outcome answers, per the seam's own pairing rule (selectionPairing:
+// a result answers the call occurrence the read's own ancestry establishes where it does, else the
+// nearest call occurrence the same non-empty id records before it, so a reused id does not make an
+// earlier call's records the counterpart of a later call). It is the source's own state and not the
+// selection's -- the counterpart rule cannot carry a result the read never held -- so it is reported
+// rather than changed.
 //
 // The unit is the writers' own (distinctCalls): a message's calls sharing a non-empty id are one
 // invocation the reader projected into several rows (the inherited Codex reader expands one `apply_patch`
 // into one call per file it names), so the extra rows are not extra calls and one recorded outcome
 // discharges the invocation -- the same reading the closure takes, which pairs and carries such a message's
 // call once. A call the source recorded with no id has no recorded link either way, and it is counted
-// where the carried document holds no id-less result at or after it: no outcome in the line could be
-// paired with it by any rule, so it is a call the source left undischarged and the count says so. Where
-// the carried document does hold such a result, which call it answers is the writers' own disclosed
-// inference (the sole outstanding call in the line it wrote, counted as generated_call_ids) rather than
-// a link the read recorded, and the call is left to that report instead of being read as answered -- or
-// as undischarged -- by a guess in the other direction.
+// where the carried document holds no id-less result that states an outcome at or after it: no outcome in
+// the line could be paired with it by any rule, so it is a call the source left undischarged and the count
+// says so. Where the carried document does hold such a result, which call it answers is the writers' own
+// disclosed inference (the sole outstanding call in the line it wrote, counted as generated_call_ids)
+// rather than a link the read recorded, and the call is left to that report instead of being read as
+// answered -- or as undischarged -- by a guess in the other direction.
+//
+// An archive read's own summary of a call is outcome evidence too: where the call carries one and the
+// read holds no recorded result of its own for it (callHasRecordedResult, the writers' own guard, under
+// which they write that summary as the call's outcome), the source recorded the outcome -- in the
+// archive's derived column rather than as a result event -- and the call is not among the undischarged,
+// exactly as the routes that write the summary do not leave it out. Where a recorded result event does
+// stand for the call, the summary is a view of it and the call's disposition follows that event, not the
+// column.
 //
 // Progress is not an answer: a result whose recorded status says the call is still running (a Codex
 // subagent's `running` notification, a streamed chunk) is the read's record of a call that has not
 // finished, and counting it as an outcome would state that the source answered a call it left pending --
-// the inherited termination rule reads the same event the same way. The answers are selectionPairing's
-// own (one walk for both the closure and this count), so no second accounting can disagree with the
-// pairing: an earlier result does not resolve a later call, and a later outcome does not retroactively
-// answer an earlier call the seam paired with nothing.
+// the inherited termination rule reads the same event the same way, an id-less progress event cannot
+// establish an outcome either, and the writers that refuse to write such an event as an outcome count the
+// call on their own side (unpaired_tool_calls on OpenCode). The answers are selectionPairing's own (one
+// walk for both the closure and this count), so no second accounting can disagree with the pairing: an
+// earlier result does not resolve a later call, and a later outcome does not retroactively answer an
+// earlier call the seam paired with nothing.
 func undischargedCalls(conversation Conversation, carried []bool) (int, []int) {
 	_, answered := selectionPairing(conversation)
+	// summaryDischarges answers whether the archive's own summary of a call is the outcome evidence the
+	// read holds for it: the summary exists (ResultContent) and the read holds no recorded result of its
+	// own for the call, which is exactly where the writers carry the summary as the call's outcome rather
+	// than treating it as a view of a recorded event (callHasRecordedResult).
+	summaryDischarges := func(call ToolCall, results []ToolResult, id string) bool {
+		if _, ok := derivedResultSummary(call, id); !ok {
+			return false
+		}
+		return !callHasRecordedResult(results, id)
+	}
 	// idLessResultAfter answers, per message position, whether the carried document holds an id-less
-	// result at or after it: the writers' inference (the sole outstanding call in the line it wrote) can
-	// reach a call from a result that follows it in the line, never from one recorded before it.
+	// result that states an outcome at or after it: the writers' inference (the sole outstanding call in
+	// the line it wrote) can reach a call from a result that follows it in the line, never from one
+	// recorded before it -- and a progress event does not state an outcome, so it cannot establish one
+	// for the call either.
 	idLessResultAfter := make([]bool, len(conversation.Messages)+1)
 	for index := len(conversation.Messages) - 1; index >= 0; index-- {
 		idLessResultAfter[index] = idLessResultAfter[index+1]
@@ -793,7 +903,7 @@ func undischargedCalls(conversation Conversation, carried []bool) (int, []int) {
 			continue
 		}
 		for _, result := range conversation.Messages[index].ToolResults {
-			if strings.TrimSpace(result.ToolUseID) == "" {
+			if strings.TrimSpace(result.ToolUseID) == "" && resultStatesAnOutcome(result.Status) {
 				idLessResultAfter[index] = true
 				break
 			}
@@ -810,7 +920,7 @@ func undischargedCalls(conversation Conversation, carried []bool) (int, []int) {
 		for _, call := range message.ToolCalls {
 			id := strings.TrimSpace(call.ToolUseID)
 			if id == "" {
-				if !idLessResultAfter[index] {
+				if !idLessResultAfter[index] && !summaryDischarges(call, message.ToolResults, "") {
 					units++
 				}
 				continue
@@ -820,7 +930,7 @@ func undischargedCalls(conversation Conversation, carried []bool) (int, []int) {
 			}
 			seen[id] = true
 			units++
-			if answered[index][id] {
+			if answered[index][id] || summaryDischarges(call, message.ToolResults, id) {
 				discharged++
 			}
 		}

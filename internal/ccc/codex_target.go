@@ -582,9 +582,10 @@ func (b *codexRolloutBuilder) writeToolEvidence(message Message) {
 	}
 	for index, result := range message.ToolResults {
 		// The pairing the seam reads, keyed by the result's own place: a result with a recorded id
-		// answers the call occurrence the id records nearest before it, and none where the read holds no
-		// such occurrence. nil is passed for the latter, which the writer counts as an unpaired result
-		// unless the recorded id is empty and the sole outstanding call answers it below.
+		// answers the call occurrence the read's own ancestry establishes where it does, else the one the
+		// id records nearest before it, and none where the read holds no such occurrence. nil is passed
+		// for the latter, which the writer counts as an unpaired result unless the recorded id is empty
+		// and the sole outstanding call answers it below.
 		var paired *callOccurrence
 		if place, ok := b.pairings[resultOccurrence{message: b.messageIndex, result: index}]; ok {
 			paired = &place

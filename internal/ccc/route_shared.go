@@ -328,6 +328,25 @@ type sourceTree struct {
 	offLineEntry  map[string]string
 	revivedChild  int
 	revivedParent string
+	// entryPlaces is where each written entry stands: the entry it hangs off -- the place its record's
+	// first entry resolved, else the entry written before it, entryParent's own answer -- and the position
+	// of the record it was written for (-1 for an entry a family writes before the conversation). It is
+	// what lets a writer show a recorded tool result's paired call on the result's written ancestry
+	// (recordOnWrittenPath): the chain of parents an entry's place names is the walk the target's loader
+	// makes from it.
+	entryPlaces map[string]writtenEntryPlace
+	// recordPlace is the place each walked record hangs off, keyed by the record's own position
+	// (startRecord's own resolution): pending.parentID is cleared by the record's first written entry, so
+	// a check asked later in the record's own walk -- recordOnWrittenPath, from a result written after the
+	// record's dialogue entry -- still needs the place it started from.
+	recordPlace map[int]string
+}
+
+// writtenEntryPlace is one written entry's place in the target's own tree: the entry it hangs off (empty
+// for an entry nothing chains to) and the position of the source record it was written for.
+type writtenEntryPlace struct {
+	parent string
+	record int
 }
 
 func newSourceTree(conversation Conversation) sourceTree {
@@ -339,6 +358,8 @@ func newSourceTree(conversation Conversation) sourceTree {
 		entryByRecord:        map[int]string{},
 		omittedEntryByRecord: map[int]string{},
 		offLineEntry:         map[string]string{},
+		entryPlaces:          map[string]writtenEntryPlace{},
+		recordPlace:          map[int]string{},
 		inactive:             sourceLineFlags(conversation),
 		keptAncestor:         conversation.sourceKeptAncestor,
 		projectedParents:     projectedParentProvider(conversation.Source.Provider),
@@ -368,6 +389,9 @@ func (t *sourceTree) startRecord(id, parent string) {
 	parentID, counted := t.parentPlace(id, parent)
 	if counted {
 		t.unresolved++
+	}
+	if parentID != nil {
+		t.recordPlace[t.record] = *parentID
 	}
 	t.pending = sourceRecordOrigin{sourceID: id, sourceParent: parent, parentID: parentID}
 }
@@ -449,6 +473,16 @@ func (t *sourceTree) priorEntry() *string {
 // same; an entry a family writes before the conversation (its preamble or header) has no position of its
 // own and registers under none.
 func (t *sourceTree) wrote(id string) {
+	// The entry's place is recorded before the walk advances: the entry it hangs off -- the place the
+	// record's first entry resolved, else the entry written before it, which is entryParent's own answer,
+	// taken here before lastEntryID moves -- and the position of the record it was written for.
+	parent := ""
+	if t.pending.parentID != nil {
+		parent = *t.pending.parentID
+	} else if prior := t.priorEntry(); prior != nil {
+		parent = *prior
+	}
+	t.entryPlaces[id] = writtenEntryPlace{parent: parent, record: t.record}
 	t.lastEntryID = &id
 	if t.record >= 0 {
 		t.entryByRecord[t.record] = id
@@ -627,6 +661,47 @@ func (t *sourceTree) writtenAncestor(sourceID string) (string, bool) {
 		sourceID = next
 	}
 	return "", false
+}
+
+// recordOnWrittenPath answers whether the record at one position of the document being written stands on
+// the written ancestry of the record now being walked: the walk starts at the place the current record's
+// first entry hangs off (startRecord's own resolution, pending.parentID) and steps up the entries this
+// conversion wrote (entryPlaces), asking at each entry whether it was written for that record. A call and
+// a result on one record are one place, so the record being walked answers for itself; a record the
+// target wrote no entry for -- a subagent turn, a record whose kind has no message here, a window the
+// target left out -- is on no walk at all, and a call it recorded answers false exactly as the flat
+// targets' occurrence check answers a call their line left off. This is the check the tree writers ask
+// before accepting a recorded result under the id of the call the seam paired it with: a result whose
+// paired call stands on another branch would otherwise be written as that call's outcome while the walk a
+// resumed session makes holds only the output, never the invocation.
+func (t *sourceTree) recordOnWrittenPath(record int) bool {
+	if record < 0 || t.record < 0 {
+		return false
+	}
+	if record == t.record {
+		return true
+	}
+	place := t.pending.parentID
+	if place == nil {
+		if resolved, ok := t.recordPlace[t.record]; ok {
+			place = &resolved
+		}
+	}
+	for steps := 0; place != nil && steps <= len(t.entryPlaces); steps++ {
+		at, ok := t.entryPlaces[*place]
+		if !ok {
+			break
+		}
+		if at.record == record {
+			return true
+		}
+		if at.parent == "" {
+			break
+		}
+		parent := at.parent
+		place = &parent
+	}
+	return false
 }
 
 // inactiveSourceRecords answers, for every message of a read, whether the source's own relations place

@@ -1553,15 +1553,69 @@ func TestSelectionCountsACallWithOnlyProgressEventsUndischarged(t *testing.T) {
 	}
 }
 
-// TestSelectionDoesNotRebindAResultToAnotherCallSharingItsID pins the pairing through the flat targets'
-// branch filtering: their document is one line of records, a call the read's own line leaves off it is
-// not written there at all, and a result whose *paired call occurrence* was not written has to be
-// omitted and counted rather than accepted because an older call shares its id. The read: a call A
-// answered by its result, a later call B, an inactive sibling C reusing the id, and B's result. The
-// seam's own order pairs B's result with C (the nearest occurrence the id records before it), so the
-// window that names A and B's result carries C as the counterpart and leaves B behind -- and an id-blind
-// check would then write B's result as another output of A, an invocation the source never recorded.
-func TestSelectionDoesNotRebindAResultToAnotherCallSharingItsID(t *testing.T) {
+// claudeWalkRecords answers the records one written transcript's walk covers: the path from the file's
+// last record back through parentUuid, which is what the target's own loader follows. A case uses it to
+// name the records a resumed conversation would see -- and the ones it would not.
+func claudeWalkRecords(t *testing.T, records []map[string]any) []map[string]any {
+	t.Helper()
+	byUUID := map[string]map[string]any{}
+	for _, record := range records {
+		if id, _ := record["uuid"].(string); id != "" {
+			byUUID[id] = record
+		}
+	}
+	var walked []map[string]any
+	seen := map[string]bool{}
+	if len(records) == 0 {
+		return walked
+	}
+	cursor, _ := records[len(records)-1]["uuid"].(string)
+	for cursor != "" && !seen[cursor] {
+		seen[cursor] = true
+		record, ok := byUUID[cursor]
+		if !ok {
+			break
+		}
+		walked = append(walked, record)
+		parent, _ := record["parentUuid"].(string)
+		cursor = parent
+	}
+	return walked
+}
+
+// claudeRecordHoldsInput answers whether one written record holds a tool_use block with the id and the
+// recorded command, and claudeRecordHoldsResult whether it holds a tool_result block with the text: the
+// two halves a case walks a written tree for.
+func claudeRecordHoldsInput(record map[string]any, callID, command string) bool {
+	for _, block := range recordBlocks(record) {
+		if block["type"] != "tool_use" || block["id"] != callID {
+			continue
+		}
+		if input, ok := block["input"].(map[string]any); ok && input["command"] == command {
+			return true
+		}
+	}
+	return false
+}
+
+func claudeRecordHoldsResult(record map[string]any, text string) bool {
+	for _, block := range recordBlocks(record) {
+		if block["type"] == "tool_result" && block["content"] == text {
+			return true
+		}
+	}
+	return false
+}
+
+// TestSelectionPairsAResultByItsRecordedAncestry pins the pairing's ancestry arm and the tree writers'
+// own check of it: the result at ordinal 5 names the call at ordinal 3 as its recorded parent, while an
+// inactive sibling at ordinal 4 reuses the id later in file order. The read's own answer decides -- the
+// window 1,5 carries the call the source placed the result under, not the later occurrence -- the strict
+// arm is honoured for the pair, selecting the sibling alone counts its own call undischarged, and every
+// route writes the result under the call it answers: on the trees, both halves stand on the walk the
+// target's loader makes from the result. The same tree without a selection keeps the call's output too:
+// the sibling is off the read's line and the result still answers the call the source recorded.
+func TestSelectionPairsAResultByItsRecordedAncestry(t *testing.T) {
 	const (
 		reusedID    = "toolu_reused_across_occurrences"
 		resultAText = "the first call's own output"
@@ -1576,74 +1630,401 @@ func TestSelectionDoesNotRebindAResultToAnotherCallSharingItsID(t *testing.T) {
 		Message{Ordinal: 3, Role: "assistant", SourceUUID: "b4", SourceParentUUID: "r3",
 			ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Bash", InputJSON: `{"command":"two"}`}}},
 		// The inactive sibling: the read's own line is the walk from the last record (5 → b4 → r3 → a2 →
-		// u1), so this record -- whose parent is r3 like B's -- never stands on it. It reuses the id and
-		// is the occurrence B's result pairs with.
+		// u1), so this record -- whose parent is r3 like B's -- never stands on it. It reuses the id, and
+		// it is the occurrence the id's file order would credit the last result to.
 		Message{Ordinal: 4, Role: "assistant", SourceUUID: "c5", SourceParentUUID: "r3",
 			ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Bash", InputJSON: `{"command":"three"}`}}},
 		Message{Ordinal: 5, Role: "user", SourceUUID: "e6", SourceParentUUID: "b4",
 			ToolResults: []ToolResult{{ToolUseID: reusedID, ContentRaw: resultBText, ContentSize: len(resultBText)}}},
 	)
-	selected, report, err := Select(conversation, "1,5", false)
+
+	// The result pulls in the call its recorded parent names, not the later sibling occurrence.
+	selected, report, err := Select(conversation, "5", false)
+	if err != nil {
+		t.Fatalf("selecting 5: %v", err)
+	}
+	if got := selectionOrdinals(selected); len(got) != 2 || got[0] != 3 || got[1] != 5 {
+		t.Errorf("carried ordinals = %v, want 3,5: the result names the call at ordinal 3 as its parent",
+			got)
+	}
+	if report.NecessitiesAdded.Count != 1 ||
+		report.NecessitiesAdded.Added[0] != (SelectionNecessity{Ordinal: 3, PulledBy: 5}) {
+		t.Errorf("necessities = %+v, want the call at ordinal 3 pulled in by the result",
+			report.NecessitiesAdded)
+	}
+
+	// The window: A and B's result are what the specification named, A's result and B are the
+	// counterparts the seam's pairing pulls in, and the inactive sibling stays behind.
+	selected, report, err = Select(conversation, "1,5", false)
 	if err != nil {
 		t.Fatalf("selecting 1,5: %v", err)
 	}
-	// The window's own reading, restated: A and B's result are what the specification named, A's result
-	// and the inactive sibling C are the counterparts the seam's pairing pulls in, and B -- the call the
-	// id-blind reading would have credited the result to -- stays behind.
-	if got := selectionOrdinals(selected); len(got) != 4 || got[0] != 1 || got[1] != 2 || got[2] != 4 || got[3] != 5 {
+	if got := selectionOrdinals(selected); len(got) != 4 || got[0] != 1 || got[1] != 2 || got[2] != 3 || got[3] != 5 {
 		t.Fatalf("carried ordinals = %v, want the window's 1,5 with the counterparts 2 (A's result) and "+
-			"4 (the call B's result pairs with)", got)
+			"3 (the call the last result answers)", got)
 	}
-	wantNecessities := []SelectionNecessity{{Ordinal: 2, PulledBy: 1}, {Ordinal: 4, PulledBy: 5}}
+	wantNecessities := []SelectionNecessity{{Ordinal: 2, PulledBy: 1}, {Ordinal: 3, PulledBy: 5}}
 	if report.NecessitiesAdded.Count != 2 ||
 		!reflect.DeepEqual(report.NecessitiesAdded.Added, wantNecessities) {
 		t.Errorf("necessities = %+v, want %+v", report.NecessitiesAdded, wantNecessities)
 	}
+	if report.Excluded.Count != 2 || strings.Join(report.Excluded.Regions, ",") != "0,4" {
+		t.Errorf("excluded = %+v, want the start record and the inactive sibling", report.Excluded)
+	}
+	if report.CallsUndischarged.Count != 0 {
+		t.Errorf("calls_undischarged = %+v, want none: both results answer the calls the source recorded",
+			report.CallsUndischarged)
+	}
 
+	// The strict arm: the pair the source recorded together is not a separation, and either the sibling
+	// or the result alone still is.
+	if _, _, err := Select(conversation, "3,5", true); err != nil {
+		t.Errorf("strictly selecting 3,5: err = %v, want it honoured: the pair is whole", err)
+	}
+	if _, _, err := Select(conversation, "5", true); !errors.Is(err, ErrStrictSelection) {
+		t.Errorf("strictly selecting 5: err = %v, want ErrStrictSelection for the pair 3,5", err)
+	} else if !strings.Contains(err.Error(), reusedID) {
+		t.Errorf("strictly selecting 5: %v does not name the reused id", err)
+	}
+	// The sibling's own call has no recorded result: the reused id does not discharge it.
+	selected, report, err = Select(conversation, "4", false)
+	if err != nil {
+		t.Fatalf("selecting the sibling: %v", err)
+	}
+	if got := selectionOrdinals(selected); len(got) != 1 || got[0] != 4 {
+		t.Errorf("carried ordinals = %v, want the sibling alone", got)
+	}
+	if report.CallsUndischarged.Count != 1 || strings.Join(report.CallsUndischarged.Regions, ",") != "4" {
+		t.Errorf("calls_undischarged = %+v, want the sibling's own call counted: the result at ordinal 5 "+
+			"answers the call its recorded parent names", report.CallsUndischarged)
+	}
+
+	// The flat routes: the read's own pairing is what the occurrence checks are asked, so both outputs of
+	// the reused id travel and the excluded sibling's input does not. The sibling's own record is off the
+	// read's line, so the flat writers carry nothing of it and count the branch; its own call -- which no
+	// recorded result answers -- is the count the report names.
 	rollout, err := ConvertToCodexRollout(selected, CodexTargetOptions{CLIVersion: "selection-test-0.0"})
 	if err != nil {
-		t.Fatalf("converting to codex: %v", err)
+		t.Fatalf("converting the sibling: %v", err)
 	}
-	if rollout.Carried.ToolCalls != 1 || rollout.Carried.ToolResults != 1 {
-		t.Errorf("codex carried = %+v, want A's call and A's result: C is off the read's line and B's "+
-			"result's paired call is C", rollout.Carried)
-	}
-	data := string(rollout.Data)
-	if !strings.Contains(data, resultAText) {
-		t.Errorf("the rollout does not hold A's own recorded output:\n%s", data)
-	}
-	if strings.Contains(data, resultBText) {
-		t.Errorf("the rollout holds B's result, whose paired call occurrence (ordinal 4) the read's line "+
-			"leaves off it: the id-blind reading would present it as another output of A:\n%s", data)
-	}
-	if count := lossCount(t, rollout.Losses, "unpaired_tool_results").Count; count != 1 {
-		t.Errorf("codex unpaired_tool_results = %d, want the one carried result whose paired call is not "+
-			"in the written document", count)
+	if rollout.Carried.ToolCalls != 0 || rollout.Carried.ToolResults != 0 {
+		t.Errorf("converting the sibling alone: carried = %+v, want nothing: the record is off the read's "+
+			"line", rollout.Carried)
 	}
 	if count := lossCount(t, rollout.Losses, "inactive_branch_records").Count; count != 1 {
-		t.Errorf("codex inactive_branch_records = %d, want the one off-line record the window carried",
+		t.Errorf("converting the sibling alone: inactive_branch_records = %d, want the off-line record "+
+			"counted", count)
+	}
+	selectedWindow, _, err := Select(conversation, "1,5", false)
+	if err != nil {
+		t.Fatalf("selecting 1,5: %v", err)
+	}
+	for _, target := range []string{TargetCodex, TargetOpenCode} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(selectedWindow, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the window: %v", target, err)
+		}
+		if converted.Carried.ToolCalls != 2 || converted.Carried.ToolResults != 2 {
+			t.Errorf("%s: carried = %+v, want both calls and both results of the window",
+				target, converted.Carried)
+		}
+		data := string(converted.Data)
+		for _, want := range []string{resultAText, resultBText} {
+			if !strings.Contains(data, want) {
+				t.Errorf("%s: the written document does not hold %q", target, want)
+			}
+		}
+		if strings.Contains(data, `"command":"three"`) {
+			t.Errorf("%s: the written document holds the excluded sibling's input", target)
+		}
+		if count := lossCount(t, converted.Losses, "unpaired_tool_results").Count; count != 0 {
+			t.Errorf("%s: unpaired_tool_results = %d, want 0: each result's paired call is in the window",
+				target, count)
+		}
+	}
+
+	// The same document without a selection: the sibling is off the read's line and is dropped, and the
+	// last result still answers the call the source recorded -- the base conversion's own behaviour.
+	unflagged, err := ConvertToCodexRollout(conversation, CodexTargetOptions{CLIVersion: "selection-test-0.0"})
+	if err != nil {
+		t.Fatalf("converting the whole read: %v", err)
+	}
+	if unflagged.Carried.ToolCalls != 2 || unflagged.Carried.ToolResults != 2 {
+		t.Errorf("the unflagged codex conversion carries %+v, want both calls and both results",
+			unflagged.Carried)
+	}
+	if !strings.Contains(string(unflagged.Data), resultBText) {
+		t.Errorf("the unflagged rollout does not hold the last result's own output:\n%s", unflagged.Data)
+	}
+	if count := lossCount(t, unflagged.Losses, "unpaired_tool_results").Count; count != 0 {
+		t.Errorf("unflagged codex unpaired_tool_results = %d, want 0: the result answers the call on the "+
+			"read's line, not the sibling the line leaves off it", count)
+	}
+	if count := lossCount(t, unflagged.Losses, "inactive_branch_records").Count; count != 1 {
+		t.Errorf("unflagged codex inactive_branch_records = %d, want the one off-line record",
 			count)
 	}
 
-	session, err := ConvertToOpenCodeSession(selected, openCodeTargetTestOptions())
+	// The tree routes: the result is written under the call the source recorded, and both stand on the
+	// walk the target's loader makes from the last record; the dropped sibling is nowhere in the file.
+	for _, target := range []string{TargetClaude, TargetPi, TargetOMP} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(selectedWindow, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the window: %v", target, err)
+		}
+		data := string(converted.Data)
+		if !strings.Contains(data, resultBText) {
+			t.Errorf("%s: the written document does not hold the last result's output", target)
+		}
+		if strings.Contains(data, `"command":"three"`) {
+			t.Errorf("%s: the written document holds the excluded sibling's input", target)
+		}
+		if count := lossCount(t, converted.Losses, "unpaired_tool_results").Count; count != 0 {
+			t.Errorf("%s: unpaired_tool_results = %d, want 0: the result's paired call is written on its "+
+				"own ancestry", target, count)
+		}
+	}
+	transcript, err := ConvertToClaudeTranscript(selectedWindow, ClaudeTargetOptions{CLIVersion: "selection-test-0.0"})
 	if err != nil {
-		t.Fatalf("converting to opencode: %v", err)
+		t.Fatalf("converting the window to claude: %v", err)
 	}
-	if session.Carried.ToolCalls != 1 || session.Carried.ToolResults != 1 {
-		t.Errorf("opencode carried = %+v, want A's call and A's result", session.Carried)
+	callOnWalk, resultOnWalk := false, false
+	for _, record := range claudeWalkRecords(t, decodeTranscript(t, transcript)) {
+		if claudeRecordHoldsInput(record, reusedID, "two") {
+			callOnWalk = true
+		}
+		if claudeRecordHoldsResult(record, resultBText) {
+			resultOnWalk = true
+		}
 	}
-	if strings.Contains(string(session.Data), resultBText) {
-		t.Errorf("the OpenCode document holds B's result, whose paired call occurrence the plan does not "+
-			"carry:\n%s", session.Data)
+	if !callOnWalk || !resultOnWalk {
+		t.Errorf("the walk from the transcript's last record holds the call = %v and the result = %v, "+
+			"want both: a resumed session reads the output only under the invocation it answers",
+			callOnWalk, resultOnWalk)
 	}
-	if !strings.Contains(string(session.Data), resultAText) {
-		t.Errorf("the OpenCode document does not hold A's own recorded output:\n%s", session.Data)
+	piRoute, err := targetRouteFor(TargetPi)
+	if err != nil {
+		t.Fatalf("route %s: %v", TargetPi, err)
 	}
-	openCodeRequireLoss(t, session, "unpaired_tool_results", 1)
-	openCodeRequireLoss(t, session, "inactive_branch_records", 1)
-	// Not a second outcome of A: the id-blind lookup would file B's result as a repeated outcome for
-	// the call whose id A wrote, a statement about A the source never recorded.
-	openCodeRequireLoss(t, session, "repeated_tool_results", 0)
+	session, err := piRoute.Convert(selectedWindow, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("converting the window to pi: %v", err)
+	}
+	lines := decodePiSession(t, session.Data)
+	texts := piEntryTexts(t, lines)
+	onPath := piWalkIDs(t, lines)
+	resultID := ""
+	for id, text := range texts {
+		if text == resultBText {
+			resultID = id
+		}
+	}
+	if resultID == "" {
+		t.Fatalf("the written Pi session holds no entry with the last result's text:\n%s", session.Data)
+	}
+	if !onPath[resultID] {
+		t.Errorf("the walk from the Pi file's last entry does not hold the last result's entry")
+	}
+	callOnWalk = false
+	for _, line := range lines[1:] {
+		if onPath[line.ID] && strings.Contains(string(line.Message), `{"command":"two"}`) {
+			callOnWalk = true
+		}
+	}
+	if !callOnWalk {
+		t.Errorf("the walk from the Pi file's last entry holds no record of the call the result answers:\n%s",
+			session.Data)
+	}
+}
+
+// TestSelectionKeepsTheReadsPairingWhenTheWindowBreaksItsAncestry pins the seam's pairing travelling
+// with the reduced document. The read: a call C at ordinal 1 answered (its recorded parent chain runs
+// through the excluded record at 3) by the result at 4, and an inactive sibling S at ordinal 2 reusing
+// the id. Selecting S and the result carries C, S and the result -- and the reduced document no longer
+// holds the records the result's ancestry walk steps through, so a writer re-reading the pairing over
+// the window would fall back to the nearest carried occurrence, S, and drop the result the read paired
+// with C (S is off the read's line). The pairing the read answered travels beside the window
+// (Conversation.sourceResultPairs), so every route writes the result under the call the read named.
+func TestSelectionKeepsTheReadsPairingWhenTheWindowBreaksItsAncestry(t *testing.T) {
+	const reusedID = "toolu_reused_broken_ancestry"
+	const resultText = "the answered call's own output"
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "start", Dialogue: "start", SourceUUID: "u1"},
+		Message{Ordinal: 1, Role: "assistant", Content: "the call", Dialogue: "the call",
+			SourceUUID: "a2", SourceParentUUID: "u1",
+			ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Bash", InputJSON: `{"command":"one"}`}}},
+		// The inactive sibling reusing the id: its parent is the root, so it is off the read's line
+		// (4 → c4 → a2 → u1), and it is the occurrence the reduced document's own order would choose.
+		Message{Ordinal: 2, Role: "assistant", Content: "the sibling", Dialogue: "the sibling",
+			SourceUUID: "b3", SourceParentUUID: "u1",
+			ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Bash", InputJSON: `{"command":"two"}`}}},
+		// The record the result's recorded parent chain steps through: excluded by the window, so the
+		// reduced document cannot walk the chain.
+		Message{Ordinal: 3, Role: "assistant", Content: "the step", Dialogue: "the step",
+			SourceUUID: "c4", SourceParentUUID: "a2"},
+		Message{Ordinal: 4, Role: "user", SourceUUID: "d5", SourceParentUUID: "c4",
+			ToolResults: []ToolResult{{ToolUseID: reusedID, ContentRaw: resultText,
+				ContentSize: len(resultText)}}},
+	)
+	selected, report, err := Select(conversation, "2,4", false)
+	if err != nil {
+		t.Fatalf("selecting 2,4: %v", err)
+	}
+	if got := selectionOrdinals(selected); len(got) != 3 || got[0] != 1 || got[1] != 2 || got[2] != 4 {
+		t.Fatalf("carried ordinals = %v, want the window's 2,4 with the call at ordinal 1 as the result's "+
+			"counterpart", got)
+	}
+	if report.NecessitiesAdded.Count != 1 ||
+		report.NecessitiesAdded.Added[0] != (SelectionNecessity{Ordinal: 1, PulledBy: 4}) {
+		t.Errorf("necessities = %+v, want the call at ordinal 1 pulled in by the result",
+			report.NecessitiesAdded)
+	}
+	for _, target := range []string{TargetCodex, TargetOpenCode, TargetClaude, TargetPi, TargetOMP} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(selected, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the window: %v", target, err)
+		}
+		if !strings.Contains(string(converted.Data), resultText) {
+			t.Errorf("%s: the written document does not hold the result the read paired with the call at "+
+				"ordinal 1: re-reading the pairing over the window falls back to the carried sibling, "+
+				"which the read's line leaves off it", target)
+		}
+		if count := lossCount(t, converted.Losses, "unpaired_tool_results").Count; count != 0 {
+			t.Errorf("%s: unpaired_tool_results = %d, want 0: the paired call is the carried one the read "+
+				"named, not the sibling", target, count)
+		}
+	}
+}
+
+// TestSelectionOmitsAResultWhosePairedCallIsOffItsWrittenPath pins the tree writers' own half of the
+// pairing. The read establishes no call for the result by ancestry -- its recorded parent's chain
+// records no such id -- so the seam's own answer is the nearest prior occurrence, and that call stands
+// on another branch: off the walk the target's loader makes from the result. The flat targets' line
+// leaves the call off and they omit and count the result; the tree targets have to do the same rather
+// than accept it through the file-wide id, because a tool_result written under a call that is not on its
+// written ancestry states an invocation the source never placed there. The call itself still travels:
+// it is recorded history the selection carried, in the file and off the walk.
+func TestSelectionOmitsAResultWhosePairedCallIsOffItsWrittenPath(t *testing.T) {
+	const branchResult = "the branch call's own output"
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "start", Dialogue: "start", SourceUUID: "u1"},
+		Message{Ordinal: 1, Role: "assistant", Content: "the branch turn", Dialogue: "the branch turn",
+			SourceUUID: "a2", SourceParentUUID: "u1",
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_branch", Name: "Bash",
+				InputJSON: `{"command":"branch"}`}}},
+		Message{Ordinal: 2, Role: "assistant", Content: "the active turn", Dialogue: "the active turn",
+			SourceUUID: "c3", SourceParentUUID: "u1"},
+		Message{Ordinal: 3, Role: "user", Content: "the ask", Dialogue: "the ask",
+			SourceUUID: "d4", SourceParentUUID: "c3"},
+		// The result whose recorded parent's chain records no such id: the seam falls back to the nearest
+		// prior occurrence, the call at ordinal 1 -- a sibling of the window's own line.
+		Message{Ordinal: 4, Role: "user", SourceUUID: "e5", SourceParentUUID: "d4",
+			ToolResults: []ToolResult{{ToolUseID: "toolu_branch", ContentRaw: branchResult,
+				ContentSize: len(branchResult)}}},
+	)
+	selected, report, err := Select(conversation, "0,3-4", false)
+	if err != nil {
+		t.Fatalf("selecting 0,3-4: %v", err)
+	}
+	if got := selectionOrdinals(selected); len(got) != 4 || got[0] != 0 || got[1] != 1 || got[2] != 3 || got[3] != 4 {
+		t.Fatalf("carried ordinals = %v, want the window's 0,3,4 with the call at ordinal 1 as the "+
+			"result's counterpart", got)
+	}
+	if report.NecessitiesAdded.Count != 1 ||
+		report.NecessitiesAdded.Added[0] != (SelectionNecessity{Ordinal: 1, PulledBy: 4}) {
+		t.Errorf("necessities = %+v, want the call at ordinal 1 pulled in by the result",
+			report.NecessitiesAdded)
+	}
+
+	for _, target := range []string{TargetCodex, TargetOpenCode} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(selected, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the window: %v", target, err)
+		}
+		if count := lossCount(t, converted.Losses, "unpaired_tool_results").Count; count != 1 {
+			t.Errorf("%s: unpaired_tool_results = %d, want the one result whose paired call the line "+
+				"leaves off", target, count)
+		}
+		if count := lossCount(t, converted.Losses, "inactive_branch_records").Count; count != 1 {
+			t.Errorf("%s: inactive_branch_records = %d, want the one off-line record the window carried",
+				target, count)
+		}
+		if strings.Contains(string(converted.Data), branchResult) {
+			t.Errorf("%s: the written document holds the result, whose paired call is not on the line it "+
+				"writes", target)
+		}
+	}
+
+	for _, target := range []string{TargetClaude, TargetPi, TargetOMP} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(selected, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the window: %v", target, err)
+		}
+		if count := lossCount(t, converted.Losses, "unpaired_tool_results").Count; count != 1 {
+			t.Errorf("%s: unpaired_tool_results = %d, want the one result whose paired call is off its "+
+				"written ancestry", target, count)
+		}
+		data := string(converted.Data)
+		if !strings.Contains(data, "the branch turn") {
+			t.Errorf("%s: the written document does not hold the carried branch call at all: it is "+
+				"recorded history the selection carried, and the rule is about the walk, not the file",
+				target)
+		}
+		if strings.Contains(data, branchResult) {
+			t.Errorf("%s: the written document holds the result under a call that is not on its written "+
+				"ancestry", target)
+		}
+	}
+	transcript, err := ConvertToClaudeTranscript(selected, ClaudeTargetOptions{CLIVersion: "selection-test-0.0"})
+	if err != nil {
+		t.Fatalf("converting the window to claude: %v", err)
+	}
+	walkedBranchCall := false
+	for _, record := range claudeWalkRecords(t, decodeTranscript(t, transcript)) {
+		if claudeRecordHoldsInput(record, "toolu_branch", "branch") {
+			walkedBranchCall = true
+		}
+	}
+	if walkedBranchCall {
+		t.Error("the walk from the transcript's last record holds the branch call, which the read's own " +
+			"line leaves off it")
+	}
+	piRoute, err := targetRouteFor(TargetPi)
+	if err != nil {
+		t.Fatalf("route %s: %v", TargetPi, err)
+	}
+	session, err := piRoute.Convert(selected, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("converting the window to pi: %v", err)
+	}
+	lines := decodePiSession(t, session.Data)
+	onPath := piWalkIDs(t, lines)
+	for _, line := range lines[1:] {
+		if onPath[line.ID] && strings.Contains(string(line.Message), `{"command":"branch"}`) {
+			t.Error("the walk from the Pi file's last entry holds the branch call, which the read's own " +
+				"line leaves off it")
+		}
+	}
 }
 
 // TestSelectionCountsAnIdLessCallWithNoRecordedOutcome pins the id-less arm of calls_undischarged: the
@@ -1654,7 +2035,9 @@ func TestSelectionDoesNotRebindAResultToAnotherCallSharingItsID(t *testing.T) {
 // carried, which call it answers is the writers' disclosed inference rather than the read's, and the
 // count does not assert an outcome the source never recorded: the call is left to that report. A result
 // recorded *before* the call cannot answer it under the writers' own rule (their inference reads the
-// outstanding call the line wrote), so that shape is counted too.
+// outstanding call the line wrote), so that shape is counted too -- and so is an id-less result whose own
+// recorded status says the call is still running: progress is not an outcome, and the outcome-status
+// control shows the same event's other arm.
 func TestSelectionCountsAnIdLessCallWithNoRecordedOutcome(t *testing.T) {
 	call := func(ordinal int) Message {
 		return Message{Ordinal: ordinal, Role: "assistant",
@@ -1730,6 +2113,123 @@ func TestSelectionCountsAnIdLessCallWithNoRecordedOutcome(t *testing.T) {
 		strings.Join(report.CallsUndischarged.Regions, ",") != "1" {
 		t.Errorf("calls_undischarged = %+v, want the call at ordinal 1: the id-less result stands before "+
 			"it in the line and cannot be paired with it", report.CallsUndischarged)
+	}
+
+	// An id-less *progress* event is not an outcome either: the result says the call is still running, so
+	// the count cannot be left to the writers' inference -- the call is counted, exactly as an id-bearing
+	// progress-only call is, and the same event with an outcome status leaves the count to that inference.
+	progress := openCodeTestConversation(call(0), Message{Ordinal: 1, Role: "user",
+		ToolResults: []ToolResult{{Status: "running", ContentRaw: "Still working",
+			ContentSize: len("Still working")}}})
+	_, report, err = Select(progress, "0-1", false)
+	if err != nil {
+		t.Fatalf("selecting the call with an id-less progress event: %v", err)
+	}
+	if report.CallsUndischarged.Count != 1 ||
+		strings.Join(report.CallsUndischarged.Regions, ",") != "0" {
+		t.Errorf("calls_undischarged = %+v, want the call counted: an id-less progress event states no "+
+			"outcome", report.CallsUndischarged)
+	}
+	outcome := openCodeTestConversation(call(0), Message{Ordinal: 1, Role: "user",
+		ToolResults: []ToolResult{{Status: "completed", ContentRaw: "the read output",
+			ContentSize: len("the read output")}}})
+	_, report, err = Select(outcome, "0-1", false)
+	if err != nil {
+		t.Fatalf("selecting the call with an id-less outcome event: %v", err)
+	}
+	if report.CallsUndischarged.Count != 0 {
+		t.Errorf("calls_undischarged = %+v, want none: an id-less outcome event the carried line holds "+
+			"may answer the call, and whether it does is the writer's own disclosed inference",
+			report.CallsUndischarged)
+	}
+}
+
+// TestSelectionCountsASummaryOnlyCallAsAnswered pins calls_undischarged against the archive's own
+// outcome column. The read holds a call whose only evidence of an outcome is the summary the archive
+// stores on the call itself (ToolCall.ResultContent), and the routes write that summary as the call's
+// completed outcome (derivedResultSummary) -- so the call is answered, and the count must not warn that
+// the read held no outcome for it. Where a recorded result event stands for the call, the summary is a
+// view of that event and the call's disposition follows it: an outcome answers, and a progress event
+// still does not, because the writers refuse to present progress as an outcome.
+func TestSelectionCountsASummaryOnlyCallAsAnswered(t *testing.T) {
+	const summary = "summary-only outcome"
+	summaryOnly := openCodeTestConversation(
+		Message{Role: "assistant", Dialogue: "reading", DialogueProjected: true, Content: "reading",
+			ToolCalls: []ToolCall{{ToolUseID: "call_summary", Name: "Read",
+				InputJSON: `{"file_path":"/x"}`, ResultContent: summary, ResultContentSize: len(summary)}}},
+	)
+	selected, report, err := Select(summaryOnly, "0", false)
+	if err != nil {
+		t.Fatalf("selecting the summary-only call: %v", err)
+	}
+	if report.CallsUndischarged.Count != 0 {
+		t.Errorf("calls_undischarged = %+v, want none: the archive's own summary of the call is the "+
+			"outcome evidence the read holds", report.CallsUndischarged)
+	}
+	// The routes agree: the summary is written as the call's completed outcome, so a warning that the
+	// read held no outcome would contradict what the conversion itself published.
+	rollout, err := ConvertToCodexRollout(selected, CodexTargetOptions{CLIVersion: "selection-test-0.0"})
+	if err != nil {
+		t.Fatalf("converting the summary-only call: %v", err)
+	}
+	if rollout.Carried.ToolCalls != 1 || rollout.Carried.ToolResults != 1 {
+		t.Errorf("codex carried = %+v, want the call with its summary as the outcome", rollout.Carried)
+	}
+	if !strings.Contains(string(rollout.Data), summary) {
+		t.Error("the rollout does not hold the archive's summary of the call's outcome")
+	}
+	session, err := ConvertToOpenCodeSession(selected, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting the summary-only call to opencode: %v", err)
+	}
+	openCodeRequireLoss(t, session, "unpaired_tool_calls", 0)
+	openCodeRequireLoss(t, session, "unpaired_tool_results", 0)
+
+	// The progress arm: the summary beside a `running` event is a view of that event, the writers refuse
+	// to present it as an outcome, and the count follows them.
+	progress := openCodeTestConversation(
+		Message{Role: "assistant", Dialogue: "spawning", DialogueProjected: true, Content: "spawning",
+			ToolCalls: []ToolCall{{ToolUseID: "call_pending", Name: "spawn_agent",
+				InputJSON: `{"agent_type":"awaiter"}`, ResultContent: "Still working",
+				ResultContentSize: len("Still working")}},
+			ToolResults: []ToolResult{{ToolUseID: "call_pending", Status: "running",
+				ContentRaw: "Still working", ContentSize: len("Still working"), ContentDecoded: true}}},
+	)
+	_, report, err = Select(progress, "0", false)
+	if err != nil {
+		t.Fatalf("selecting the progress-only call: %v", err)
+	}
+	if report.CallsUndischarged.Count != 1 ||
+		strings.Join(report.CallsUndischarged.Regions, ",") != "0" {
+		t.Errorf("calls_undischarged = %+v, want the call counted: its only recorded event is progress, "+
+			"and the summary is that event's own text", report.CallsUndischarged)
+	}
+
+	// The id-less variant of the summary-only shape: the archive row recorded no call id, and the writers
+	// carry the summary under the id they mint for the call (the sole outstanding call of the line), so
+	// the count must not warn about an outcome the conversion writes.
+	idless := openCodeTestConversation(
+		Message{Role: "assistant", Dialogue: "reading", DialogueProjected: true, Content: "reading",
+			ToolCalls: []ToolCall{{Name: "Read", InputJSON: `{"file_path":"/x"}`,
+				ResultContent: summary, ResultContentSize: len(summary)}}},
+	)
+	selected, report, err = Select(idless, "0", false)
+	if err != nil {
+		t.Fatalf("selecting the id-less summary-only call: %v", err)
+	}
+	if report.CallsUndischarged.Count != 0 {
+		t.Errorf("calls_undischarged = %+v, want none: the archive's summary is the outcome evidence the "+
+			"read holds for the id-less call too", report.CallsUndischarged)
+	}
+	rollout, err = ConvertToCodexRollout(selected, CodexTargetOptions{CLIVersion: "selection-test-0.0"})
+	if err != nil {
+		t.Fatalf("converting the id-less summary-only call: %v", err)
+	}
+	if rollout.Carried.ToolCalls != 1 || rollout.Carried.ToolResults != 1 {
+		t.Errorf("codex carried = %+v, want the call with its summary as the outcome", rollout.Carried)
+	}
+	if !strings.Contains(string(rollout.Data), summary) {
+		t.Error("the rollout does not hold the archive's summary of the id-less call's outcome")
 	}
 }
 

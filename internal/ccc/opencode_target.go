@@ -740,8 +740,9 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 }
 
 // pairedCallEntry answers the planned call one recorded result event names, through the seam's own
-// pairing: the call occurrence the result's id records nearest before it, or -- for an event that
-// recorded no id -- the sole call still awaiting a result, where the source's own relation leaves no
+// pairing: the call occurrence the read's own ancestry establishes where it does, else the occurrence the
+// result's id records nearest before it -- or, for an event that
+// recorded no id, the sole call still awaiting a result, where the source's own relation leaves no
 // other call it could mean (the writers' disclosed inference). An event whose paired occurrence this
 // plan does not carry answers nothing, which is the same answer the plan gives such an event: it is
 // counted rather than paired with a call that merely shares the id.

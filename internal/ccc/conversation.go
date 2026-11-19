@@ -238,6 +238,14 @@ type Conversation struct {
 	// reviving an abandoned branch the window happened to carry. nil means Messages is the read itself: no
 	// gap was made, and the writers walk the record's own parent as before.
 	sourceKeptAncestor []keptAncestorAnswer
+	// sourceResultPairs carries the seam's own pairing for the document a selection produced: each
+	// recorded result occurrence against the call occurrence the *read* pairs it with
+	// (pairedCallOccurrences, resolved over the read before the reduction), both keyed by their positions
+	// in the reduced document. It is what keeps a writer from re-reading the pairing over the window: a
+	// result whose recorded ancestry the window left out would fall back to a nearer occurrence the
+	// window happened to carry, and the writer would claim a pairing the read never recorded. nil means
+	// Messages is the read itself, and the writers resolve the pairing over it (pairedCallOccurrences).
+	sourceResultPairs map[resultOccurrence]callOccurrence
 }
 
 // keptAncestorAnswer is one record's ancestry answer from a selection (Conversation.sourceKeptAncestor):

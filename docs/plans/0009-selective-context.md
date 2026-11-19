@@ -385,3 +385,49 @@ measurement that decided it, followed by the review round's own:
       passed. `TestSelectionClosesTheCounterpartGraphToAFixedPoint` needs a *backward* two-hop pull (a
       record the window pulled in carries a result of another call), and the strict case asserts each
       sentence half with the ordinal of the side it names.
+
+    The fifth review round (`dfe5a90`; two P1, two P2 — one P1 and one P2 on the seam's pairing, one P1
+    on the tree writers, one P2 on the undischarged accounting, one P2 on the D4 probe itself) leaves
+    five departures:
+
+    * the **pairing honors the read's own recorded ancestry where it establishes the call** (review 1/4, a
+      P1): the seam paired a result with the nearest prior call the id records, so a result whose recorded
+      parent named its call was paired with an *inactive sibling* reusing the id later in file order —
+      strict refused a pair the source recorded together, a window naming the result pulled in the
+      sibling's arguments instead of the call's, and the round-4 occurrence checks then dropped a result
+      the base writers retained (a D4 break). `pairedCallOccurrences` now walks the result's recorded
+      parent chain (its own record first, the identities the read holds, bounded) and pairs with the call
+      the walk names; the nearest-prior-occurrence rule stands only where the ancestry establishes none.
+      `TestSelectionPairsAResultByItsRecordedAncestry` pins the window, the strict pair, the sibling's own
+      undischarged call and every route's written output, with and without a selection.
+    * the **seam's pairing travels with the reduced document** (review 1/4, a P1, second half): a window
+      that left out the records the ancestry walk steps through made a writer re-reading the pairing fall
+      back to a nearer *carried* occurrence the read never named. `Select` carries its answers in the
+      reduced document's positions (`Conversation.sourceResultPairs`), so the writers ask the walk the
+      closure asked. `TestSelectionKeepsTheReadsPairingWhenTheWindowBreaksItsAncestry` pins it on all
+      five routes (without the carried answers the result is dropped and counted on the flat targets and
+      the tree route refuses the window outright).
+    * the **tree writers validate the paired occurrence against the result's written ancestry** (review
+      2/4, a P1): Claude, Pi and OMP accepted a result through a file-wide id map, so a result whose
+      paired call stood on another branch was written as that call's outcome while the walk the target's
+      loader makes held only the output. The tree now records each written entry's place and the record
+      it was written for (`sourceTree.entryPlaces`, `recordPlace`) and answers
+      `recordOnWrittenPath`; a result whose paired occurrence is not on its own written ancestry is
+      omitted and counted (`unpaired_tool_results`), and the call still travels as recorded history where
+      the window carried it. `TestSelectionOmitsAResultWhosePairedCallIsOffItsWrittenPath` pins both
+      writer families; `Q-0009-06` records the disposition for both.
+    * the **undischarged count reads the archive's own summary and the id-less status** (review 3/4, a
+      P2): a call whose only outcome evidence is the summary the archive stores on it
+      (`ToolCall.ResultContent`, which the routes write as its completed outcome) was counted
+      undischarged and warned about, and an id-less *progress* event suppressed the id-less call's count
+      although it states no outcome. `summaryDischarges` mirrors the writers' own guard
+      (`derivedResultSummary` beside `callHasRecordedResult`), and the id-less scan asks
+      `resultStatesAnOutcome`. `TestSelectionCountsASummaryOnlyCallAsAnswered` and the extended
+      `TestSelectionCountsAnIdLessCallWithNoRecordedOutcome` pin both arms.
+    * the **D4 probe folds only identities a conversion mints** (review 4/4, a P2): the normalizer folded
+      every uuid and every `call_…`/`ses_…`/`msg_…` token by class shape, so a consistent same-length
+      rename of a recorded Codex `call_id` preserved the written length and the folded digest — the probe
+      could not see it. Each document's recorded identities (`d4ProbeRecordedIDs`) are installed on the
+      normalizer and left as recorded, and two controls (`recorded-call-id-change`,
+      `recorded-uuid-change`) pin it; §4's transcript is the revised probe's own run (1024/1149/125 lines
+      unchanged, shared diff silent, the recorded-id-removal mutation failing the control).

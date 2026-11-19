@@ -2888,30 +2888,41 @@ supersede it with a newer one and say which it supersedes.
 - **Settled by:** an operator preference between "the command line was refused" and "the conversion
   failed" for a well-formed command line the source's own structure cannot satisfy.
 
-## Q-0009-02 — The selection pairs a call with its result by recorded order, and an id-less record pairs nowhere
+## Q-0009-02 — The selection pairs a call with its result by the read's recorded ancestry, else by recorded order, and an id-less record pairs nowhere
 
-- **Status:** open (default taken: the seam pairs a result with the nearest call the same non-empty
-  `ToolUseID` records *before* it; an id-less record carries no recorded link; a reused id's later call
+- **Status:** open (default taken: the seam pairs a result with the call the read's own recorded ancestry
+  establishes where it does — the call on the result's recorded parent chain that records the same
+  non-empty `ToolUseID` — and otherwise with the nearest call the same id records *before* it; an id-less
+  record carries no recorded link; a reused id's later call
   with no result of its own stands alone and is counted undischarged).
 - **Question:** the seam carries a recorded call and the recorded result that answers it together (both
   directions, to a fixed point). The document's only recorded link between the two is a non-empty
   `ToolUseID`, and a source may reuse one: `internal/parser/termination_test.go`'s regression records a
   call at 0 answered by a result at 1 and a later call at 2 reusing the id. Grouping by id alone made the
-  later call pull the older pair in as its "counterparts"; the review demonstrated it. A call or a
+  later call pull the older pair in as its "counterparts"; the review demonstrated it. Order alone is not
+  the source's answer either where the read records ancestry: the fourth review round measured a result
+  whose recorded parent names its call while an *inactive sibling* later in file order reuses the id, and
+  the order-based seam paired the result with the sibling — refusing a pair the source recorded together
+  under `--strict-selection`, importing the sibling's arguments, and dropping the result the base writers
+  retained on a flat target. A call or a
   result the source recorded with **no** id (a Codex `wait` output event, a subagent notification) carries
   no link at all; each *writer* then pairs an id-less result with the sole outstanding call of the line it
   wrote, and a selection can change which call that is (or make an ambiguous result unambiguous).
-- **Default taken:** the recorded order decides, the same reading the inherited readers' own termination
-  check takes (`hasOrphanedToolCall` counts only results recorded after the call they answer): a result
-  pairs with the nearest prior call the same id records (so a later result never answers an earlier call's
-  partner twice, and a reused id's later call has no pair), the walk runs to a fixed point, and a record
+- **Default taken:** the ancestry decides where it establishes the call, and the recorded order otherwise —
+  the same reading the inherited readers' own termination check takes for the fallback
+  (`hasOrphanedToolCall` counts only results recorded after the call it answers): a result pairs with the
+  nearest prior call the same id records (so a later result never answers an earlier call's
+  partner twice, and a reused id's later call has no pair), the walk runs to a fixed point, the pairing
+  the read answered travels with a reduced document (`sourceResultPairs`) so a window cannot substitute a
+  nearer carried occurrence, and a record
   with no id still carries no link through the seam. The writer's inferred pairing for an id-less result
   stays **disclosed** where it happens (`generated_call_ids`), and `unpaired_tool_results` /
   `unpaired_tool_calls` count what the writer then refuses to pair.
 - **Reversal:** reproduce each writer's own inference inside the target-agnostic seam (five writers' rules
   in a function that is supposed to be a pure, target-independent transformation); or refuse a selection
   over any conversation holding an id-less call or result (usable only on sources that always record ids);
-  or carry every occurrence of a reused id together, as the first implementation did.
+  or carry every occurrence of a reused id together, as the first implementation did; or drop the ancestry
+  arm and keep the order alone, as the first four rounds did.
 - **Settled by:** a measured case on a real source where a selection's own line pairs an id-less result
   differently from the source's line, or an operator instruction that the seam should refuse that shape.
 
@@ -2997,22 +3008,29 @@ supersede it with a newer one and say which it supersedes.
 - **Settled by:** an operator decision between "the command line's own refusal is answered first" and "the
   source file is measured first, so its answer wins".
 
-## Q-0009-06 — A result whose paired call the line leaves off is omitted, not refused
+## Q-0009-06 — A result whose paired call is not on its written ancestry is omitted, not refused
 
 - **Status:** open (default taken: the result is omitted and counted, `unpaired_tool_results`). A flat
   target's document is one line of records with no parent relation, so a call the read's own line leaves
-  off it is not written at all; when the read's own order pairs a carried result with such a call (an
-  inactive sibling reusing the id is the measured shape), the conversion cannot write the result under any
-  call without stating an invocation the source never recorded.
+  off it is not written at all; when the seam pairs a carried result with such a call (an inactive sibling
+  reusing the id is the measured shape), the conversion cannot write the result under any call without
+  stating an invocation the source never recorded. A tree target's document is a tree, so a result whose
+  paired call occurrence is written but *off the result's own written ancestry* (a call on another branch
+  that reuses the id, the read's own answer having fallen back to it because the result's recorded parent
+  chain records no such call) is the same statement and gets the same answer: the result is omitted and
+  counted, and the call still travels as recorded history where the window carried it.
 - **Question:** does such a conversion refuse by name (the way a tree target refuses an unrepresentable
   leaf, `ErrUnrepresentableLeaf`) or write the rest of the window and count the omission?
 - **Default taken:** omit and count. The window is otherwise representable, the omission is named in its
-  own loss row with the call's own category, and the source session keeps the bytes so a later conversion
-  can read them; a refusal would withhold a conversion the caller can act on for a defect in one pair.
-  `TestSelectionDoesNotRebindAResultToAnotherCallSharingItsID` pins the omission, the count and the
-  absence of the result's text on both flat routes (Codex and OpenCode).
-- **Reversal:** both flat writers' pairing checks become refusals (`ErrUnrepresentableLeaf` or a new
-  named error) instead of omissions; the two routes' loss categories lose their `unpaired_tool_results`
+  own loss row, and the source session keeps the bytes so a later conversion can read them; a refusal
+  would withhold a conversion the caller can act on for a defect in one pair.
+  `TestSelectionOmitsAResultWhosePairedCallIsOffItsWrittenPath` pins the omission, the count and the
+  absence of the result's text on both writer families (Codex and OpenCode; Claude, Pi and OMP), with the
+  call itself asserted present in the tree files and off the walk from the file's last entry; the ancestry
+  arm that keeps a recorded pair together is
+  `TestSelectionPairsAResultByItsRecordedAncestry`.
+- **Reversal:** the writers' pairing checks become refusals (`ErrUnrepresentableLeaf` or a new
+  named error) instead of omissions; the routes' loss categories lose their `unpaired_tool_results`
   rows for the shape.
 - **Settled by:** an operator decision between "publish the representable remainder and name the
   omission" and "refuse the whole run by name" — the same question the tree targets answer the other way

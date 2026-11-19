@@ -463,6 +463,7 @@ func convertToPiFamilySession(conv Conversation, opts PiTargetOptions, family pi
 		clock:           newEntryClock(startedAt, piEntryTimestampLayout),
 		headerTimestamp: startedAt.UTC().Format(piEntryTimestampLayout),
 		callNames:       map[string]string{},
+		pairings:        pairedCallOccurrences(conv),
 		ledger:          ledger{pendingCalls: map[string]struct{}{}},
 		sourceFidelity:  conv.Fidelity,
 		tree:            newSourceTree(conv),
@@ -526,6 +527,13 @@ type piSessionBuilder struct {
 	items      []TargetItem
 	idErr      error
 	callNames  map[string]string
+	// pairings answers, per recorded result occurrence of the document this conversion walks, the call
+	// occurrence the seam's own pairing names for it (pairedCallOccurrences, or the answers the selection
+	// carried beside the reduced document). This family's files are trees, so the check a result has to
+	// pass is the written one (sourceTree.recordOnWrittenPath): the paired occurrence has to stand on the
+	// result's own written ancestry, or the file would hold a toolResult whose invocation is off the walk
+	// a resumed session makes.
+	pairings map[resultOccurrence]callOccurrence
 	ledger
 	lastModel      string
 	sourceFidelity Fidelity
@@ -1041,8 +1049,16 @@ func (b *piSessionBuilder) writeCarriedCalls(message Message) {
 // (writeCarriedCalls); either way the call is registered before this runs, so its result has a pair.
 // What is left here is the results.
 func (b *piSessionBuilder) writeToolEvidence(message Message, calls []piProjectedCall) {
-	for _, result := range message.ToolResults {
-		b.writeToolResult(result, message.Timestamp, toolResultCarrierRecord(message))
+	// The pairing is keyed by the record's own position in the document, which the tree stamps as the
+	// record is started (one startRecord per message, so the walk position is that key): writtenMessages
+	// counts written entries instead, and a record that writes several entries would move it.
+	record := b.tree.record
+	for index, result := range message.ToolResults {
+		var paired *callOccurrence
+		if place, ok := b.pairings[resultOccurrence{message: record, result: index}]; ok {
+			paired = &place
+		}
+		b.writeToolResult(paired, result, message.Timestamp, toolResultCarrierRecord(message))
 	}
 	for _, entry := range calls {
 		call := entry.call
@@ -1053,7 +1069,11 @@ func (b *piSessionBuilder) writeToolEvidence(message Message, calls []piProjecte
 		if callHasRecordedResult(message.ToolResults, call.ToolUseID) {
 			continue
 		}
-		b.writeToolResult(result, message.Timestamp, toolResultCarrierRecord(message))
+		// The summary is the call's own evidence and the call was written just above, within this very
+		// record: the pairing to hand the writer is that occurrence, so the ancestry check asks about the
+		// one place the pair really stands at.
+		place := callOccurrence{message: record, call: entry.index}
+		b.writeToolResult(&place, result, message.Timestamp, toolResultCarrierRecord(message))
 	}
 }
 
@@ -1114,8 +1134,10 @@ func (b *piSessionBuilder) callBlock(index int, call ToolCall) piContentBlock {
 // writeToolResult writes one result as a toolResult entry, and answers whether it was written.
 // carrierRecord is the source record a record hanging off this outcome would read as its parent
 // (toolResultCarrierRecord): it is given to the tree so a later record naming that source record can be
-// chained through this entry rather than off the walk the target's loader makes.
-func (b *piSessionBuilder) writeToolResult(result ToolResult, at time.Time, carrierRecord string) bool {
+// chained through this entry rather than off the walk the target's loader makes. paired is the call
+// occurrence the seam's own pairing names for the result (pairedCallOccurrences), or the call a derived
+// summary came from; nil where the read holds no call occurrence for it.
+func (b *piSessionBuilder) writeToolResult(paired *callOccurrence, result ToolResult, at time.Time, carrierRecord string) bool {
 	callID := strings.TrimSpace(result.ToolUseID)
 	resultIDInferred := false
 	if callID == "" {
@@ -1126,9 +1148,14 @@ func (b *piSessionBuilder) writeToolResult(result ToolResult, at time.Time, carr
 		}
 		callID = pending
 		resultIDInferred = true
-	} else if _, ok := b.callNames[callID]; !ok {
-		// The result names a call this conversion did not write: a result without its call is not a
-		// pair, and inventing the call would fabricate a tool invocation.
+	} else if paired == nil || !b.tree.recordOnWrittenPath(paired.message) {
+		// The result names a call, and the seam's own pairing answers which call occurrence it answers:
+		// that occurrence has to stand on the result's own written ancestry. It does not when the read's
+		// line leaves the call off it, when the reduced document a selection produced left the call or the
+		// records between them out, or when the record carrying the call brings no entry here -- this
+		// family's files are trees, and a toolResult written under a call that is not on the walk the
+		// loader makes from the result states an invocation the source never placed there. Accepting the
+		// id because *some* written call shares it would present this result as that call's outcome.
 		b.lossUnpaired++
 		return false
 	}

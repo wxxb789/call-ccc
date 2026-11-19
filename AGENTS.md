@@ -268,16 +268,24 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   after the source boundary — the source file is measured whole and never rewritten — and before the target
   harness's own answers are asked for (its executable's version is probed earlier, before the read); nothing
   is installed before a refusal. **A recorded call and the recorded result that answers it are one
-  structure**: the result is paired with the nearest call the same non-empty `ToolUseID` records *before*
-  it (the reading the inherited readers' own termination check takes — a result never answers a call
-  recorded after it), and a selection that would split a pair carries the counterpart and names it as a
+  structure**: the result is paired with the call the read's own recorded relations establish where they
+  do — the call the read holds on the result's own ancestry chain (its own record, else the nearest record
+  its recorded parent walk reaches) that records the same non-empty `ToolUseID` — and otherwise with the
+  nearest call the same id records *before* it (the reading the inherited readers' own termination check
+  takes — a result never answers a call recorded after it), so a reused id later in file order does not
+  override the call the source placed the result under; and a selection that would split a pair carries
+  the counterpart and names it as a
   necessity with the ordinal that pulled it in (both directions, to a fixed point, since a counterpart can
   hold another call's result), while `--strict-selection` refuses that
   by name before anything is installed instead. The writers write that pairing rather than an id match: on
   a flat target, whose document is one line and where a call the read's line leaves off it is not written
   at all, a result whose paired *occurrence* was not written is omitted and counted
   (`unpaired_tool_results`) instead of being accepted because some older call shares its id — a result
-  presented as another call's outcome is an invocation the source never recorded. A reused id does not
+  presented as another call's outcome is an invocation the source never recorded; and on a tree target,
+  whose document is a tree, the paired occurrence has to stand on the result's own written ancestry — a
+  tool result under a call that is not on the walk the target's loader makes from it is the same
+  invocation the source never placed there, so it is omitted and counted the same way, while the call
+  itself still travels as recorded history where the window carries it. A reused id does not
   expand a selection by id alone: a
   later call with no recorded result of its own carries nothing but itself and is counted undischarged,
   and the count reads the call the way the writers write it — a message's calls sharing a non-empty id are
@@ -289,11 +297,14 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   recorded link: the seam neither invents one nor carries candidates for it, and the writer's own rule for
   an id-less result (the sole outstanding call in the line it wrote, disclosed as `generated_call_ids`)
   reads the selected line; an id-less *call* is counted undischarged where the carried document holds no
-  id-less result at or after it — no outcome in the line can answer it — and where such a result is
+  id-less result that states an outcome at or after it — no outcome in the line can answer it — and where
+  such a result is
   carried the call is left to that same disclosed inference instead of being read as answered or as
   undischarged. **A call the source left without a recorded outcome was not answered**: a
   result whose recorded status says the call is still running (a Codex subagent's `running` notification,
-  a streamed chunk) is progress, not an outcome, so such a call is counted undischarged; whether a
+  a streamed chunk) is progress, not an outcome, so such a call is counted undischarged — and an archive
+  read's own summary of an outcome on the call itself (`ToolCall.ResultContent`) is outcome evidence where
+  the read holds no recorded result event of the call, so that shape is not counted; whether a
   target's own format can hold a call with no outcome is that writer's answer, named in the conversion's
   losses (`unpaired_tool_calls` on OpenCode). **The line is the read's own**: which records the source's relations place on the
   line its loader walks is a property of the read, and a selection neither moves a record onto that line nor

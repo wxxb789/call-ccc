@@ -187,7 +187,7 @@ func ConvertToClaudeTranscript(conv Conversation, opts ClaudeTargetOptions) (Cla
 		cwd:            cwd,
 		cliVersion:     cliVersion,
 		clock:          newEntryClock(startedAt, time.RFC3339Nano),
-		callOwners:     map[string]struct{}{},
+		pairings:       pairedCallOccurrences(conv),
 		opts:           opts,
 		sourceFidelity: conv.Fidelity,
 		tree:           newSourceTree(conv),
@@ -267,9 +267,15 @@ type claudeTranscriptBuilder struct {
 	clock      *entryClock
 	opts       ClaudeTargetOptions
 
-	items      []TargetItem
-	carried    Carried
-	callOwners map[string]struct{}
+	items   []TargetItem
+	carried Carried
+	// pairings answers, per recorded result occurrence of the document this conversion walks, the call
+	// occurrence the seam's own pairing names for it (pairedCallOccurrences, or the answers the selection
+	// carried beside the reduced document). This target is a tree, so the check a result has to pass is
+	// the written one (sourceTree.recordOnWrittenPath): the paired occurrence has to stand on the
+	// result's own written ancestry, or the file would hold an output whose invocation is off the walk a
+	// resumed session makes.
+	pairings map[resultOccurrence]callOccurrence
 	// messageIDs maps a source message's place in the document to the message id every assistant record
 	// written for it carries, so the target's two readers put that message's blocks back together.
 	messageIDs map[int]string
@@ -591,8 +597,12 @@ func (b *claudeTranscriptBuilder) writeToolEvidence(message Message) {
 		// into one message.
 		b.toolCall(entry.index, entry.call, message.Timestamp)
 	}
-	for _, result := range message.ToolResults {
-		block, ok := b.toolResult(result, message.Timestamp)
+	for index, result := range message.ToolResults {
+		var paired *callOccurrence
+		if place, ok := b.pairings[resultOccurrence{message: b.messageIndex, result: index}]; ok {
+			paired = &place
+		}
+		block, ok := b.toolResult(paired, result, message.Timestamp)
 		if ok {
 			pending = append(pending, block)
 		}
@@ -613,7 +623,11 @@ func (b *claudeTranscriptBuilder) writeToolEvidence(message Message) {
 		if callHasRecordedResult(message.ToolResults, call.ToolUseID) {
 			continue
 		}
-		block, ok := b.toolResult(result, message.Timestamp)
+		// The summary is the call's own evidence and the call was written just above, on this very
+		// record: the pairing to hand the writer is that occurrence, so the ancestry check asks about the
+		// one place the pair really stands at.
+		place := callOccurrence{message: b.messageIndex, call: entry.index}
+		block, ok := b.toolResult(&place, result, message.Timestamp)
 		if ok {
 			pending = append(pending, block)
 		}
@@ -711,7 +725,6 @@ func (b *claudeTranscriptBuilder) toolCall(index int, call ToolCall, at time.Tim
 			}}),
 		},
 	})
-	b.callOwners[callID] = struct{}{}
 	if b.pendingCalls == nil {
 		b.pendingCalls = map[string]struct{}{}
 	}
@@ -720,8 +733,10 @@ func (b *claudeTranscriptBuilder) toolCall(index int, call ToolCall, at time.Tim
 	b.items = append(b.items, TargetItem{Kind: ItemToolCall, CallID: callID, ToolName: name, InputJSON: input})
 }
 
-// toolResult writes one result as a tool_result block, and answers whether it was written.
-func (b *claudeTranscriptBuilder) toolResult(result ToolResult, at time.Time) (claudeContentBlock, bool) {
+// toolResult writes one result as a tool_result block, and answers whether it was written. paired is the
+// call occurrence the seam's own pairing names for the result (pairedCallOccurrences), or the call a
+// derived summary came from; nil where the read holds no call occurrence for it.
+func (b *claudeTranscriptBuilder) toolResult(paired *callOccurrence, result ToolResult, at time.Time) (claudeContentBlock, bool) {
 	callID := strings.TrimSpace(result.ToolUseID)
 	resultIDInferred := false
 	if callID == "" {
@@ -732,9 +747,14 @@ func (b *claudeTranscriptBuilder) toolResult(result ToolResult, at time.Time) (c
 		}
 		callID = pending
 		resultIDInferred = true
-	} else if _, ok := b.callOwners[callID]; !ok {
-		// The result names a call this conversion did not write: a tool_result without its call is not a
-		// pair, and inventing the call would fabricate a tool invocation.
+	} else if paired == nil || !b.tree.recordOnWrittenPath(paired.message) {
+		// The result names a call, and the seam's own pairing answers which call occurrence it answers:
+		// that occurrence has to stand on the result's own written ancestry. It does not when the read's
+		// line leaves the call off it, when the reduced document a selection produced left the call or the
+		// records between them out, or when the record carrying the call brings no entry here -- this
+		// target is a tree, and a tool_result written under a call that is not on the walk the loader
+		// makes from the result states an invocation the source never placed there. Accepting the id
+		// because *some* written call shares it would present this result as that call's outcome.
 		b.lossUnpairedResults++
 		return claudeContentBlock{}, false
 	}

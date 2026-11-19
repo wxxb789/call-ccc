@@ -21,13 +21,16 @@ package ccc
 // are comparable. The generated identities are *canonicalized* rather than replaced by a class
 // placeholder: each distinct uuid, Pi entry id and OpenCode id gets a token of its own, the same token
 // for every occurrence of the same value, so a folded document still distinguishes one parent from
-// another -- a blanket placeholder per class would let a reparented entry fold to the same bytes. The
-// pipeline arm measures two artifacts the earlier probe did not: the whole report, folded and digested
-// (so every field of it is compared, named by a line or not), and the bytes of the file the installation
-// published (so the pipeline is compared on what it actually wrote, not only on the writer's own bytes).
-// A target whose artifact is a row inside the harness's own store publishes no file whose bytes are the
-// record, and its line says so instead of digesting the store, whose bytes move with the harness's WAL
-// handling.
+// another -- a blanket placeholder per class would let a reparented entry fold to the same bytes. Only
+// identities a conversion *mints* are folded: the identities the read itself carries
+// (d4ProbeRecordedIDs) are left exactly as the document recorded them, so a probe whose normalizer
+// folded a source-recorded call id could not see that id change -- measured by the recorded-id controls
+// this revision prints. The pipeline arm measures two artifacts the earlier probe did not: the whole
+// report, folded and digested (so every field of it is compared, named by a line or not), and the bytes
+// of the file the installation published (so the pipeline is compared on what it actually wrote, not
+// only on the writer's own bytes). A target whose artifact is a row inside the harness's own store
+// publishes no file whose bytes are the record, and its line says so instead of digesting the store,
+// whose bytes move with the harness's WAL handling.
 
 import (
 	"context"
@@ -131,6 +134,35 @@ func d4ProbeRead(t *testing.T, doc d4ProbeDocument) (Conversation, config.Config
 	return conversation, cfg, reader
 }
 
+// d4ProbeRecordedIDs answers every identity the read itself carries: the record identities, the tool
+// ids, and the session's own ids. They are the document, not something a conversion minted, so the
+// normalizer has to leave them exactly as recorded -- folding them by class shape would mask a change to
+// a source-recorded id behind the fold's own token (the review of the previous revision measured a
+// consistent same-length rename of a recorded `call_…` id surviving a digest that claimed to compare the
+// bytes). The returned set is installed on the normalizer for the document being measured.
+func d4ProbeRecordedIDs(conversation Conversation) map[string]bool {
+	recorded := map[string]bool{}
+	add := func(value string) {
+		if value = strings.TrimSpace(value); value != "" {
+			recorded[value] = true
+		}
+	}
+	add(conversation.Source.SessionID)
+	add(conversation.Source.RawSessionID)
+	for _, message := range conversation.Messages {
+		add(message.SourceUUID)
+		add(message.SourceParentUUID)
+		for _, call := range message.ToolCalls {
+			add(call.ToolUseID)
+			add(call.SubagentSessionID)
+		}
+		for _, result := range message.ToolResults {
+			add(result.ToolUseID)
+		}
+	}
+	return recorded
+}
+
 // d4ProbeNormalizer folds everything a conversion mints or discovers out of one measured text, so the
 // same document and route print the same line on two runs and two trees.
 type d4ProbeNormalizer struct {
@@ -144,10 +176,14 @@ type d4ProbeNormalizer struct {
 	// canonicalIDs rather than by a per-class placeholder, so definitions and references agree after
 	// folding while two different values cannot collapse into one.
 	idRules []*regexp.Regexp
+	// recorded names the values that are the source document's own identities rather than a
+	// conversion's (d4ProbeRecordedIDs). canonicalIDs leaves them exactly as recorded: a fold that
+	// replaced them would make a change to a source-recorded id invisible to the digest.
+	recorded map[string]bool
 }
 
 func newD4ProbeNormalizer(repoRoot string) *d4ProbeNormalizer {
-	normalizer := &d4ProbeNormalizer{}
+	normalizer := &d4ProbeNormalizer{recorded: map[string]bool{}}
 	add := func(pattern, with string) {
 		normalizer.rules = append(normalizer.rules, struct {
 			re   *regexp.Regexp
@@ -161,8 +197,8 @@ func newD4ProbeNormalizer(repoRoot string) *d4ProbeNormalizer {
 	// scratch paths and the source file's filesystem mtime. Recorded instants are *not* normalized -- the
 	// earlier revision replaced every RFC 3339 instant and every numeric `timestamp`/`created`/`updated`
 	// with a placeholder, which silently masked a same-length change to a source-recorded time -- so the
-	// probe's own control (d4ProbeNormalizerControl) pins both halves: a recorded instant change moves the
-	// folded digest, and a minted identity change does not.
+	// probe's own control (d4ProbeNormalizerControl) pins every half: a recorded instant change moves the
+	// folded digest, a recorded call id change moves it, and a minted identity change does not.
 	normalizer.idRules = []*regexp.Regexp{
 		regexp.MustCompile(`([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`),
 		regexp.MustCompile(`"(?:id|parentId|firstKeptEntryId)":"([0-9a-f]{8})"`),
@@ -172,13 +208,15 @@ func newD4ProbeNormalizer(repoRoot string) *d4ProbeNormalizer {
 }
 
 // d4ProbeNormalizerControl is the probe's own control for the normalizer, so the normalizer's claims are
-// measured in the same run as the lines they fold. Three texts are folded: two that differ only in a
-// source-recorded RFC 3339 instant and two that differ only in a source-recorded numeric millisecond
-// field must fold to *different* digests (the change has to be visible in the comparison -- the earlier
-// revision's blanket instant replacement silently masked it), and two that differ only in a minted uuid
-// must fold to the *same* digest (the canonicalization is what makes two runs and two trees comparable
-// while a reparented reference still cannot fold to what it folded to before). Each answer is printed,
-// so the retained output carries the control beside the lines it vouches for.
+// measured in the same run as the lines they fold. Five texts are folded: two that differ only in a
+// source-recorded RFC 3339 instant, two that differ only in a source-recorded numeric millisecond field,
+// two that differ only in a source-recorded call id (the shape of a Codex function call's `call_id`,
+// renamed consistently in the call and its output -- the recorded-id fold the previous revision's
+// class-wide rule could not see), and two that differ only in a source-recorded uuid must fold to
+// *different* digests; two that differ only in a minted uuid must fold to the *same* digest (the
+// canonicalization is what makes two runs and two trees comparable while a reparented reference still
+// cannot fold to what it folded to before). Each answer is printed, so the retained output carries the
+// control beside the lines it vouches for.
 func d4ProbeNormalizerControl(t *testing.T, normalizer *d4ProbeNormalizer) {
 	t.Helper()
 	moved := func(before, after string) bool {
@@ -191,8 +229,29 @@ func d4ProbeNormalizerControl(t *testing.T, normalizer *d4ProbeNormalizer) {
 	identityMoved := moved(
 		`{"id":"0b8f9a12-1111-4444-8888-abcdefabcdef"}`,
 		`{"id":"7c2d3e44-2222-4555-9999-fedcbafedcba"}`)
+	// The recorded side: the two call ids a document recorded, and the two uuids it recorded, are in the
+	// normalizer's recorded set exactly as the per-document fold installs them; a consistent rename has to
+	// move the digest, or the probe's byte comparison could not see a converted document that renamed a
+	// source identity.
+	recordedNormalizer := *normalizer
+	recordedNormalizer.recorded = map[string]bool{
+		"call_01Recorded00000000000000000":     true,
+		"call_01Recorded00000000000000001":     true,
+		"4f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10": true,
+		"5a3d2e58-0d4b-5f9f-8b5b-8c2f6d3e7a21": true,
+	}
+	recordedCallMoved := d4ProbeFoldedFingerprint(&recordedNormalizer, []byte(
+		`{"call":{"call_id":"call_01Recorded00000000000000000"},"out":{"call_id":"call_01Recorded00000000000000000"}}`)) !=
+		d4ProbeFoldedFingerprint(&recordedNormalizer, []byte(
+			`{"call":{"call_id":"call_01Recorded00000000000000001"},"out":{"call_id":"call_01Recorded00000000000000001"}}`))
+	recordedUUIDMoved := d4ProbeFoldedFingerprint(&recordedNormalizer, []byte(
+		`{"uuid":"4f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10","parentUuid":"4f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10"}`)) !=
+		d4ProbeFoldedFingerprint(&recordedNormalizer, []byte(
+			`{"uuid":"5a3d2e58-0d4b-5f9f-8b5b-8c2f6d3e7a21","parentUuid":"5a3d2e58-0d4b-5f9f-8b5b-8c2f6d3e7a21"}`))
 	fmt.Printf("PROBE-CONTROL recorded-instant-change moves-digest=%v\n", instantMoved)
 	fmt.Printf("PROBE-CONTROL recorded-millisecond-change moves-digest=%v\n", millisecondMoved)
+	fmt.Printf("PROBE-CONTROL recorded-call-id-change moves-digest=%v\n", recordedCallMoved)
+	fmt.Printf("PROBE-CONTROL recorded-uuid-change moves-digest=%v\n", recordedUUIDMoved)
 	fmt.Printf("PROBE-CONTROL minted-identity-change moves-digest=%v\n", identityMoved)
 	if !instantMoved {
 		t.Error("the normalizer folds two different recorded RFC 3339 instants to the same bytes: a " +
@@ -202,25 +261,38 @@ func d4ProbeNormalizerControl(t *testing.T, normalizer *d4ProbeNormalizer) {
 		t.Error("the normalizer folds two different recorded millisecond fields to the same bytes: a " +
 			"source-recorded time has to move the digest")
 	}
+	if !recordedCallMoved {
+		t.Error("the normalizer folds two different recorded call ids to the same bytes: a " +
+			"source-recorded tool id change has to move the digest")
+	}
+	if !recordedUUIDMoved {
+		t.Error("the normalizer folds two different recorded uuids to the same bytes: a source-recorded " +
+			"record identity change has to move the digest")
+	}
 	if identityMoved {
 		t.Error("the normalizer does not canonicalize minted identities: two values a conversion minted " +
 			"have to fold to the same token, or two runs of one tree are not comparable")
 	}
 }
 
-// canonicalIDs replaces every identity idRules names with a token of its own: the tokens are numbered by
-// first appearance over the text, and every occurrence of the same value gets the same token, so a
-// document's own definitions and the references to them still agree after folding while a change that
-// moves a reference to another identity -- an entry reparented from one non-null parent to another, a
-// parent written where the other tree wrote none -- folds to a different digest, which a per-class
-// placeholder could not show. The substitution is positional (the spans the rules matched), so a value
-// that happens to occur inside an unrelated longer string is left alone.
+// canonicalIDs replaces every minted identity idRules names with a token of its own: the tokens are
+// numbered by first appearance over the text, and every occurrence of the same value gets the same
+// token, so a document's own definitions and the references to them still agree after folding while a
+// change that moves a reference to another identity -- an entry reparented from one non-null parent to
+// another, a parent written where the other tree wrote none -- folds to a different digest, which a
+// per-class placeholder could not show. A value in the normalizer's recorded set is skipped: that value
+// is the source document's own identity, not a conversion's, and leaving it as recorded is what keeps a
+// change to it visible in the digest. The substitution is positional (the spans the rules matched), so a
+// value that happens to occur inside an unrelated longer string is left alone.
 func (n *d4ProbeNormalizer) canonicalIDs(text string) string {
 	type span struct{ start, end int }
 	spans := make([]span, 0, 32)
 	values := make([]string, 0, 32)
 	for _, rule := range n.idRules {
 		for _, at := range rule.FindAllStringSubmatchIndex(text, -1) {
+			if n.recorded[text[at[2]:at[3]]] {
+				continue
+			}
 			spans = append(spans, span{start: at[2], end: at[3]})
 			values = append(values, text[at[2]:at[3]])
 		}
@@ -441,6 +513,7 @@ func TestZZD4Probe(t *testing.T) {
 	var lines []string
 	for _, doc := range docs {
 		conversation, cfg, reader := d4ProbeRead(t, doc)
+		normalizer.recorded = d4ProbeRecordedIDs(conversation)
 		for _, routeName := range routes {
 			route, err := targetRouteFor(routeName)
 			if err != nil {
@@ -452,6 +525,7 @@ func TestZZD4Probe(t *testing.T) {
 			lines = append(lines, runLines...)
 		}
 	}
+	normalizer.recorded = map[string]bool{}
 	if err := os.WriteFile(out, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatalf("writing %s: %v", out, err)
 	}
