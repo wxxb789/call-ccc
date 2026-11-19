@@ -2739,3 +2739,28 @@ supersede it with a newer one and say which it supersedes.
   environment-backed (`env_key`) into the scratch home once such a provider is configured.
 - **Settled by:** an operator instruction to spend a turn in their own Codex home, or a host whose scratch
   home can authenticate without a copied credential.
+
+## Q-0008-06 — The source-direction comparison refuses a `shell` record rather than compare a subset
+
+- **Status:** resolved (unattended default taken)
+- **Question:** `scripts/opencode-native-check.py`'s source direction compares a source document's members
+  (user texts, tool call names, recorded inputs, recorded result texts, assistant renderings) with a
+  target's own records. The inherited reader answers a `shell` message as **both** a user record (the
+  command) and tool evidence (a call and the recorded output), and the comparison holds no member for
+  either — should it model the kind (mirroring the reader's `shell` arm, including `gjson`'s `.Str` reads
+  of the recorded `output` member) or refuse a document that carries one? (The review round that found the
+  comparison's other unread rules — empty `text` blocks, a result's error message, a user record's
+  attachments — named both dispositions as acceptable.)
+- **Default taken:** **refuse**, by name, before the harness is asked to import anything (exit 2). The
+  modelling arm needs the reader's own `gjson` semantics for a member no fixture here records
+  (`internal/ccc/testdata/growth/` has no OpenCode fragment and no store-shaped fixture can carry one),
+  so it cannot be measured on this host, while a refusal is measured, disclosed and reversible; comparing a
+  document by dropping a member a target holds would be exactly the class of claim the review was about.
+  The committed fixture carries no `shell` record, so the default run is unaffected.
+- **Reversal:** model the `shell` arm as a `user` text (the command), a call (`bash` with the recorded
+  `callID`, or `shell` with the recorded `shellID`) and one result (the recorded `output`, its `output`
+  member where `shellID` is set, the status raised by a nonzero `exit`), then lift the refusal and pin the
+  arm with cases; or, if a host with the OpenCode binary measures the importer's own treatment of the kind,
+  decide from that measurement.
+- **Settled by:** an operator instruction, or a measurement against an installed harness that makes the
+  modelling arm's rules measurable.

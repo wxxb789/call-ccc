@@ -261,7 +261,7 @@ three.
 ## 11. Where the implementation departed from this plan, and why
 
 Three changes were made while implementing, each recorded here rather than in a rewritten plan (0007 §6.1's
-habit):
+habit), followed by the review round's own:
 
 1. **The requested turn is the check's own, run through the report's own vector** — not the CLI's resume
    level (planned in §4.1 step 6). Two measured reasons: the CLI's resume level would have written a turn's
@@ -278,3 +278,13 @@ habit):
 3. **The container-member boundary assertions were split into their own Go case**
    (`TestOpenCodeSourceBoundaryStatesTheContainerItCannotMeasure`) so the obligation-citation manifest cites
    one test per rule rather than the same pipeline case twice.
+
+4. **The review round's fix made the expectation read the reader's rules whole, and refuse one kind.** §9's
+   out-of-scope note ("attachments/errored calls") is about a second *fixture*, not about the comparison's
+   rules: the expectation now builds a tool result's text (every `text` block, empty ones included), a
+   recorded `state.error.message` where the reader's own errored branch appends one, and a user record's
+   attachments exactly as the carried reader does, and the direction refuses a document carrying a `shell`
+   message — the one kind the reader answers as both a user record and tool evidence — by name, before
+   anything is planted, rather than comparing a subset (Q-0008-06). The `TestOpenCodeSourceResolvesBy…`
+   case's store also gained a second session, so "the store's only session" cannot answer the reference
+   form it is about (the review's P3).

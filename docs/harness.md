@@ -592,9 +592,14 @@ says so.
   harness's own `session import … --directory <workspace>` — no working directory is rewritten, because
   `--directory` is what places the session, and the importer (measured) rewrites only `info.projectID`,
   `info.location.directory` and `info.time.updated` — reads it back with the harness's own `session export`
-  and compares the two documents over the members this comparison reads — the user texts, each tool part's
-  name, its recorded input value, its terminal text, and each record's rendered text (a store holding
-  another conversation is reported, not converted) — converts through the CLI **at the load level** (`ccc continue opencode:<id> --to codex
+  and compares the two documents over the members this comparison reads — the user texts (each user record
+  as the inherited reader renders it: the message's own text and its recorded attachments), each tool part's
+  name, its recorded input value, its terminal text (every content text block, an empty one included, and
+  the recorded `state.error.message` where the reader's own errored branch appends one), and each record's
+  rendered text (a store holding another conversation is reported, not converted; a document carrying a
+  `shell` message — the one kind the reader answers as both a user record and tool evidence while this
+  comparison holds no member for either — is refused by name, exit 2, before the harness is asked to import
+  anything) — converts through the CLI **at the load level** (`ccc continue opencode:<id> --to codex
   --verify load --json`, `OPENCODE_DIR` naming the scratch root), and then reads the *installed Codex
   rollout's own records* against the *fixture document's own bytes*: the user texts, each tool call's name,
   its recorded input value (canonicalized — a rollout writes the arguments as a JSON string and the store

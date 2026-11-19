@@ -3,6 +3,7 @@ package ccc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -40,6 +41,15 @@ const (
 	openCodeSourceToolResult   = "Read file /home/user/code/example-api/internal/retry/config.go, lines 38-42\n" +
 		"38: // policy.go\n40: const maxAttempts = 4\n41: const maxBackoffSeconds = 30\n42: "
 	openCodeSourceCwd = "/home/user/code/example-api"
+	// The store's *second* session, which the reference-form case plants beside the fixture's: a store
+	// holding one session cannot show that the provider's virtual-path spelling resolves the member it
+	// names rather than the store's only one, so the case reads this session's own question through its own
+	// path spelling. `openCodeSourceSecondInstant` is its record instant, after every instant the fixture
+	// records; the document it is planted from is built from the fixture's own bytes (the helper below).
+	openCodeSourceSecondSessionID = "ses_0008opencodefixture00000002"
+	openCodeSourceSecondMessageID = "msg_0008opencodefixture0000a09"
+	openCodeSourceSecondQuestion  = "And which file holds the cap in this other session?"
+	openCodeSourceSecondInstant   = int64(1778231713000)
 )
 
 // openCodeSourceFixtureRef is the fixture as a reference: the provider's own identifier and the session id
@@ -78,6 +88,37 @@ func openCodeSourceStore(t *testing.T, document []byte) string {
 		t.Fatalf("the store is at %s, want %s", path, want)
 	}
 	return root
+}
+
+// openCodeSourceSecondDocument is a second session for one store: the committed fixture's own document --
+// its project, its recorded directory, its instants and the members the store's session row carries --
+// with a different identity and a single question of its own, so a read of the store can tell the member
+// it names from its neighbour. The message is the fixture's own user-message shape (one `text` and an
+// empty `files` list), written with this helper's own id and instant; the store's message rows key on the
+// id, so the two sessions' messages cannot collide.
+func openCodeSourceSecondDocument(t *testing.T) []byte {
+	t.Helper()
+	var fixture map[string]any
+	if err := json.Unmarshal(openCodeSourceFixtureDocument(t), &fixture); err != nil {
+		t.Fatalf("parsing the committed fixture document: %v", err)
+	}
+	info, ok := fixture["info"].(map[string]any)
+	if !ok {
+		t.Fatalf("the committed fixture carries no info object: %v", fixture["info"])
+	}
+	info["id"] = openCodeSourceSecondSessionID
+	fixture["messages"] = []any{map[string]any{
+		"id":    openCodeSourceSecondMessageID,
+		"type":  "user",
+		"text":  openCodeSourceSecondQuestion,
+		"files": []any{},
+		"time":  map[string]any{"created": openCodeSourceSecondInstant},
+	}}
+	encoded, err := json.Marshal(fixture)
+	if err != nil {
+		t.Fatalf("marshalling the second session's document: %v", err)
+	}
+	return encoded
 }
 
 // openCodeSourceConfig points the inherited providers at one OpenCode root beside the committed fixtures'
@@ -228,23 +269,31 @@ func TestOpenCodeSourceReadAnswersItsOwnProviderAndRecords(t *testing.T) {
 }
 
 // TestOpenCodeSourceResolvesByIdentifierAndByItsOwnPath pins that both questions the provider itself
-// answers name the same session: a caller who knows only the store's path can pass the provider's own
+// answers name the same *member*: a caller who knows only the store's path can pass the provider's own
 // virtual-path spelling (`<database>#<session id>`) and reach the same conversation as a caller who names
-// the session id under a configured root.
+// the session id under a configured root. The store holds a second session beside the fixture's, so the
+// path form cannot be answered by "the store's only session": that second member is read through its own
+// path spelling and has to answer its own conversation, and a member the store does not hold answers the
+// provider's own refusal rather than another session's conversation.
 func TestOpenCodeSourceResolvesByIdentifierAndByItsOwnPath(t *testing.T) {
 	document := openCodeSourceFixtureDocument(t)
 	root := openCodeSourceStore(t, document)
-	cfg := openCodeSourceConfig(t, root)
-	reader := NewSourceReader(cfg)
+	if _, id, err := opencodefixture.Store(root, openCodeSourceSecondDocument(t)); err != nil {
+		t.Fatalf("planting the store's second session: %v", err)
+	} else if id != openCodeSourceSecondSessionID {
+		t.Fatalf("the store's second session is %s, want %s", id, openCodeSourceSecondSessionID)
+	}
+	reader := NewSourceReader(openCodeSourceConfig(t, root))
+	virtual := func(sessionID string) string {
+		return parser.VirtualSourcePath(filepath.Join(root, opencodefixture.StoreName), sessionID)
+	}
 
 	byID, err := reader.Read(context.Background(), openCodeSourceFixtureRef)
 	if err != nil {
 		t.Fatalf("reading by session id: %v", err)
 	}
 	byPath, err := reader.Read(context.Background(), Ref{
-		Provider: "opencode",
-		ID:       parser.VirtualSourcePath(filepath.Join(root, opencodefixture.StoreName), openCodeSourceSessionID),
-	})
+		Provider: "opencode", ID: virtual(openCodeSourceSessionID)})
 	if err != nil {
 		t.Fatalf("reading by the provider's own virtual path: %v", err)
 	}
@@ -253,6 +302,27 @@ func TestOpenCodeSourceResolvesByIdentifierAndByItsOwnPath(t *testing.T) {
 	}
 	if got, want := Summarize(byPath.Messages), Summarize(byID.Messages); got != want {
 		t.Errorf("the two reference forms read %+v and %+v", got, want)
+	}
+
+	// The second member, read through the same path form: its own identity and its own single question,
+	// never the first member's conversation.
+	second, err := reader.Read(context.Background(), Ref{
+		Provider: "opencode", ID: virtual(openCodeSourceSecondSessionID)})
+	if err != nil {
+		t.Fatalf("reading the store's second session by its own virtual path: %v", err)
+	}
+	if want := "opencode:" + openCodeSourceSecondSessionID; second.Source.SessionID != want {
+		t.Errorf("the second member's session id = %q, want %q", second.Source.SessionID, want)
+	}
+	if len(second.Messages) != 1 || second.Messages[0].Content != openCodeSourceSecondQuestion {
+		t.Errorf("the second member's messages = %+v, want its own single question %q",
+			second.Messages, openCodeSourceSecondQuestion)
+	}
+
+	// A member the store does not hold is the provider's own refusal, never a neighbour's conversation.
+	if _, err := reader.Read(context.Background(), Ref{
+		Provider: "opencode", ID: virtual("ses_0008opencodefixture00000009")}); !errors.Is(err, ErrNotFound) {
+		t.Errorf("reading a member the store does not hold = %v, want a not-found refusal", err)
 	}
 }
 

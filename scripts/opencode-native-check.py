@@ -92,10 +92,14 @@ the target whose own loader opens what the conversion installed. It:
    rewrites exactly three members -- ``info.projectID``, ``info.location.directory`` and
    ``info.time.updated`` -- while every message comes back as the document wrote it;
 2. reads the planted session back with the harness's own reader (``session export``) and compares what *it*
-   holds with the fixture document's own bytes over the members this comparison reads -- the user texts, each
-   tool part's name, its recorded input value, its terminal text, and each record's rendered text: the
-   planting answers for the conversation this run converts, and a store holding something else is reported
-   rather than converted;
+   holds with the fixture document's own bytes over the members this comparison reads -- each user record as
+   the reader renders it (the message's own text and its recorded attachments), each tool part's name, its
+   recorded input value, its terminal text (every content text block, an empty one included, and the
+   recorded error message where the reader's own errored branch appends one), and each record's rendered
+   text: the planting answers for the conversation this run converts, and a store holding something else is
+   reported rather than converted. A document carrying a message kind the comparison does not model (a
+   ``shell`` record, whose command and tool evidence a target holds and no member here reads) is refused by
+   name, exit 2, before the harness is asked to import anything;
 3. converts through the CLI (``ccc continue opencode:<id> --to codex --target-home <codex home>
    --target-binary <codex> --verify load --json``, ``OPENCODE_DIR`` naming the scratch root), reading the
    report's three states rather than trusting them -- the **load** level only: the one real turn a
@@ -125,9 +129,11 @@ direction.
 from __future__ import annotations
 
 import argparse
+import base64
 import copy
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -197,6 +203,29 @@ CODEX_HOME_ENV = "CODEX_HOME"
 #: is committed and the harness's own importer materialises the store from it.
 OPENCODE_SOURCE_FIXTURE = Path("opencode", "ses_0008opencodefixture00000001.json")
 OPENCODE_SOURCE_SESSION = "ses_0008opencodefixture00000001"
+
+#: The message kinds the source-direction comparison *refuses* rather than compares as a subset: the kinds
+#: the inherited reader turns into a conversation record that this comparison holds no member for.
+#: ``shell`` is the one such kind -- the reader answers its command as a user record and the call and its
+#: output as tool evidence, all three of which a target holds and none of which the comparison reads -- so
+#: a document carrying it is refused by name before anything is planted. The kinds the reader does turn
+#: into records need no refusal: ``user`` and ``assistant`` are the comparison's own members, ``system``,
+#: ``synthetic`` and ``skill`` are records the writers count and never write as dialogue, ``compaction``
+#: is a compact boundary rather than a message, and a kind the reader's switch does not name (``idle``, an
+#: agent or model switch) produces no record at all.
+OPENCODE_UNMODELLED_MESSAGE_KINDS = ("shell",)
+
+#: The spellings a recorded ``exit`` member may carry as a *string*, the way the reader's own ``gjson``
+#: ``Int()`` reads one: an integer spelling first, a float spelling as the fallback, and zero for anything
+#: else. A member encoded as a JSON number needs no spelling rule (see ``opencode_exit_is_nonzero``).
+DECIMAL_INTEGER_TEXT = re.compile(r"[+-]?[0-9]+")
+DECIMAL_FLOAT_TEXT = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+
+#: The Latin-1 characters the reader's own ``strings.TrimSpace`` (Go's ``unicode.IsSpace``) strips, spelled
+#: out because Python's ``str.isspace`` is a wider set *there* only: measured over every code point, the two
+#: agree exactly outside the information separators ``\x1c``-``\x1f``, which Python counts as space and Go
+#: does not. Beyond Latin-1 both read Unicode's ``White_Space`` property, which ``str.isspace`` tracks.
+LATIN1_SPACE = "\t\n\v\f\r \x85\xa0"
 
 #: The names the harness resolves its store under, below the data root.
 OPENCODE_DATA_DIR = "opencode"
@@ -1331,11 +1360,45 @@ def opencode_tool_call_input(part: dict) -> str:
     return "{}" if raw in (None, "") else canonical_json_value(raw)
 
 
+def opencode_exit_is_nonzero(value: object) -> bool:
+    """One recorded ``exit`` member read as nonzero, the way the reader's own ``gjson`` ``Int()`` reads it:
+    a JSON number truncated toward zero, ``true``, or a plain integer/float spelling; anything else --
+    absent, null, false, a non-numeric string -- answers zero, which is the reader's own answer for a
+    member it cannot read."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return int(value) != 0
+    if isinstance(value, str):
+        if DECIMAL_INTEGER_TEXT.fullmatch(value):
+            return int(value) != 0
+        if DECIMAL_FLOAT_TEXT.fullmatch(value):
+            return float(value) != 0
+    return False
+
+
+def opencode_result_errored(part: dict, state: dict) -> bool:
+    """Whether the reader's own terminal branch marks one part's result errored
+    (``internal/parser``'s ``openCodeV2ToolCall``): the recorded status is ``error``, or the part is the
+    ``shell``/``bash`` tool and the exit code its ``metadata`` or ``structured`` records is nonzero --
+    the reader's own ``shellFailed`` arm, which is why a *completed* part can still be an errored
+    result. The message such a branch appends is read beside this answer, never instead of it."""
+    if str(state.get("status") or "") == "error":
+        return True
+    if str(part.get("name") or "") not in ("shell", "bash"):
+        return False
+    return any(opencode_exit_is_nonzero(member.get("exit"))
+               for member in (state.get("metadata"), state.get("structured"))
+               if isinstance(member, dict))
+
+
 def opencode_tool_state_text(part: dict) -> str:
-    """The text a conversion writes for one tool part's terminal state: its ``content`` blocks' own text
-    joined with newlines, and -- for the ``read`` tool alone -- the structured UTF-8 content the part
-    carries, which is the rule the inherited reader applies (``internal/parser``'s ``openCodeV2ToolCall``
-    appends that member only where the part's name is ``read`` and its encoding is ``utf8``).
+    """The text a conversion writes for one tool part's terminal state, built the way the inherited reader
+    builds it (``internal/parser``'s ``openCodeV2ToolCall``): its ``content`` blocks' own text joined with
+    newlines -- *every* ``text`` block, an empty one included, because the reader appends each one
+    verbatim -- then, for the ``read`` tool alone, the structured UTF-8 content the part carries (only
+    where that content is non-empty), and then the recorded ``error.message`` of a part the reader's own
+    branch marks errored (``opencode_result_errored``).
 
     A part whose content carries a ``file`` block answers no text: the reader turns the part's text into
     result *blocks* there, which the target writers hold no field for and count
@@ -1347,13 +1410,86 @@ def opencode_tool_state_text(part: dict) -> str:
     if any(block.get("type") == "file" for block in content):
         return ""
     texts = [block["text"] for block in content
-             if block.get("type") == "text" and isinstance(block.get("text"), str) and block["text"]]
+             if block.get("type") == "text" and isinstance(block.get("text"), str)]
     structured = state.get("structured")
     if (str(part.get("name") or "") == "read" and isinstance(structured, dict)
             and structured.get("encoding") == "utf8"
             and isinstance(structured.get("content"), str) and structured["content"]):
         texts.append(structured["content"])
+    if opencode_result_errored(part, state):
+        error = state.get("error")
+        message = error.get("message") if isinstance(error, dict) else None
+        if isinstance(message, str) and message:
+            texts.append(message)
     return "\n".join(texts)
+
+
+def opencode_is_space(character: str) -> bool:
+    """Whether the reader's own ``strings.TrimSpace`` reads one character as space (Go's ``unicode.IsSpace``:
+    the Latin-1 set ``LATIN1_SPACE`` names, Unicode's ``White_Space`` property beyond it)."""
+    return character in LATIN1_SPACE if ord(character) <= 0xFF else character.isspace()
+
+
+def opencode_trimmed(text: str) -> str:
+    """``text`` with its ends stripped the way the reader's own ``strings.TrimSpace`` strips them -- the
+    reader's filter asks its own trimming of a record's content, so the expectation has to ask the same
+    question of the text it built."""
+    start, end = 0, len(text)
+    while start < end and opencode_is_space(text[start]):
+        start += 1
+    while end > start and opencode_is_space(text[end - 1]):
+        end -= 1
+    return text[start:end]
+
+
+def opencode_base64_text(value: object) -> str | None:
+    """The text one attachment's ``data`` member decodes to, or ``None`` where the reader would carry
+    none: the reader decodes the member as standard base64 (which ignores line breaks and accepts no other
+    character outside the alphabet, measured) and keeps the result only where it is non-empty valid UTF-8
+    (``base64.StdEncoding.DecodeString`` and ``utf8.Valid``)."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        decoded = base64.b64decode(value.replace("\r", "").replace("\n", ""), validate=True)
+    except ValueError:
+        return None
+    if not decoded:
+        return None
+    try:
+        return decoded.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def opencode_user_text(message: dict) -> str:
+    """The text the inherited reader answers for one OpenCode ``user`` message, built the way the reader
+    builds it (``internal/parser``'s ``loadOpenCodeV2Messages``): the message's own ``text``, then every
+    recorded attachment as the reader's ``[Attachment: <name>]`` line -- the name falling back to the
+    recorded MIME type -- with a ``text/*`` payload's decoded text under it where the reader can decode
+    one, each joined with a newline where the text already holds something.
+
+    The reader's own filter is part of the rule: a rendered text that holds nothing but whitespace is not a
+    record the read answers (the filter drops a record whose content ``strings.TrimSpace`` empties and that
+    carries neither tool use nor a compaction boundary, and a user record carries neither), so a conversion
+    writes no prompt for it and the comparison holds no member -- with the trimming read the way the reader
+    reads it (``opencode_trimmed``), never by Python's own wider ``str.strip``."""
+    text = message.get("text") if isinstance(message.get("text"), str) else ""
+    for file in message.get("files") or []:
+        if not isinstance(file, dict):
+            continue
+        name = file.get("name") if isinstance(file.get("name"), str) else ""
+        mime = file.get("mime") if isinstance(file.get("mime"), str) else ""
+        if not name:
+            name = mime
+        attachment = "[Attachment: " + name + "]"
+        if mime.startswith("text/"):
+            decoded = opencode_base64_text(file.get("data"))
+            if decoded is not None:
+                attachment += "\n" + decoded
+        if text:
+            text += "\n"
+        text += attachment
+    return text
 
 
 def opencode_reader_text(message: dict) -> str:
@@ -1383,20 +1519,32 @@ def opencode_document_evidence(document: dict) -> dict[str, list[str]]:
     assistant records' texts -- the reader's own rendering of each record, as a target holds it.
 
     Every member is the value a conversion *writes* for the document, read through the reader's own rules
-    (``opencode_tool_call_input``, ``opencode_tool_state_text``): the tool input is canonicalized -- the
-    harness's own importer stores it as the parsed value and each target's writer encodes the value its own
-    way -- and a result contributes a member only where its text is one the writers write, because a
-    textless, block-only or whitespace-only result is counted and left out of the target rather than written
-    as an empty output."""
+    (``opencode_user_text``, ``opencode_tool_call_input``, ``opencode_tool_state_text``): each user record
+    as the reader renders it -- the message's own text and its recorded attachments -- and only where the
+    reader's own filter keeps the record, the tool input canonicalized (the harness's own importer stores
+    it as the parsed value and each target's writer encodes the value its own way), and a result contributes
+    a member only where its text is one the writers write, because a textless, block-only or whitespace-only
+    result is counted and left out of the target rather than written as an empty output.
+
+    A document carrying a message kind this comparison does not model is refused, never compared as a
+    subset: the kinds in ``OPENCODE_UNMODELLED_MESSAGE_KINDS`` produce records a target holds that no
+    member of this comparison carries, and a refusal names the kind before anything is planted."""
     evidence: dict[str, list[str]] = {"user_texts": [], "call_names": [], "call_inputs": [],
                                       "call_results": [], "assistant_texts": []}
     for message in document.get("messages") or []:
         if not isinstance(message, dict):
             continue
         kind = message.get("type")
+        if kind in OPENCODE_UNMODELLED_MESSAGE_KINDS:
+            raise SystemExit(
+                f"the document records a {kind!r} message, a kind this comparison does not model: the "
+                f"inherited reader answers its command as a user record and its call and recorded output "
+                f"as tool evidence, and no member here holds them -- refused rather than compared as a "
+                f"subset, before anything is planted")
         if kind == "user":
-            if isinstance(message.get("text"), str) and message["text"]:
-                evidence["user_texts"].append(message["text"])
+            text = opencode_user_text(message)
+            if opencode_trimmed(text):
+                evidence["user_texts"].append(text)
             continue
         if kind != "assistant":
             continue
@@ -1550,7 +1698,12 @@ def run_source_direction(args: argparse.Namespace, repo: Path, go: str, opencode
         return refuse(f"the committed fixture {fixture} names {session_id}, not "
                       f"{OPENCODE_SOURCE_SESSION}: internal/ccc/fixturegen and this check's own identity "
                       f"have drifted apart, and the run would plant a session it does not know")
-    expected = opencode_document_evidence(source)
+    try:
+        expected = opencode_document_evidence(source)
+    except SystemExit as exc:
+        # The comparison refuses a document carrying a message kind it does not model, naming the kind;
+        # the refusal stands before the planting, so nothing is published for a document it will not read.
+        return refuse(str(exc))
 
     workspace = scratch / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -1604,7 +1757,13 @@ def run_source_direction(args: argparse.Namespace, repo: Path, go: str, opencode
                 f"{len(planted.get('messages') or [])} message(s)")
     if planted is None:
         return stop()
-    planting_differences = evidence_differences(expected, opencode_document_evidence(planted))
+    try:
+        planting_differences = evidence_differences(expected, opencode_document_evidence(planted))
+    except SystemExit as exc:
+        # The comparison's own refusal, on the store's answer this time: a faithful importer round trip
+        # carries the document's kinds through, so this is the planting check's own failure -- recorded
+        # rather than raised, because the run's cleanup and its final line have to stay reachable.
+        planting_differences = [str(exc)]
     record("the store holds the fixture document's own conversation",
            not planting_differences,
            bounded("; ".join(planting_differences) if planting_differences

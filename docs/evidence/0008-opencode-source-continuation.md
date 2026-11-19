@@ -312,10 +312,12 @@ for both targets; the container-member boundary; the tool evidence in each targe
 never opened for writing) and `cmd/ccc/opencode_source_route_test.go` (the report shape, the inspection,
 the not-found failure). The fixture is pinned against its generator
 (`internal/ccc/fixtures_test.go`'s `TestFixturesMatchTheirGenerator`), and the python cases for the new
-direction live in `scripts/tests/test_opencode_native_check.py` — 89 cases, run by the `selftest` step,
-among them the six that pin the expectation's own rules (an open call's blanked input, a non-`read` part's
-structured content, a part carrying a file block, an errored result, a textless one) and the refusal of a
-default fixture whose identity drifted. The obligation-citation manifest is `docs/evidence/0008-citations.tsv`
+direction live in `scripts/tests/test_opencode_native_check.py` — 95 cases, run by the `selftest` step,
+among them the expectation's own rules (an open call's blanked input, a non-`read` part's structured
+content, a part carrying a file block, an empty text block a target holds verbatim, a recorded result's
+error message, a user record's attachments, an errored result and a textless one) and the refusals (a
+document that names no session, a default fixture whose identity drifted, and a document carrying a message
+kind the comparison does not model). The obligation-citation manifest is `docs/evidence/0008-citations.tsv`
 (§ below).
 
 `python3 scripts/obligation-citations.py`:
@@ -340,7 +342,104 @@ flags and its verdicts); `README.md` (the capability sentence, the `OpenCode →
 roots, the OpenCode-source paragraph, `SourceReader`'s note); `docs/goals/README.md` (goal **0007** archived
 with its row — its implementation is merged onto `main` as `e68f18a` — every link to it moved, and 0008's
 row marked *Implemented … awaiting operator acceptance*); goal `0007-opencode-target-continuation.md`
-moved to `docs/goals/archive/`; and `docs/decisions/OPEN-QUESTIONS.md` (Q-0008-01 … Q-0008-05).
+moved to `docs/goals/archive/`; and `docs/decisions/OPEN-QUESTIONS.md` (Q-0008-01 … Q-0008-06).
+
+### The review round's findings (`54f7643` + working tree), fixed and re-measured
+
+The review of `79595de..54f7643` found two items and this round fixes both; the tree these measurements ran
+on is `54f7643` plus this round's working tree. The reviewer's own gate run (on the pre-fix tree) printed
+the same steps with `selftest` at 417 tests; this tree's run is quoted below.
+
+**REV-1 — the expectation builder did not read every rule from the document (P2).**
+`scripts/opencode-native-check.py`'s `opencode_tool_state_text` dropped empty `text` blocks and held neither
+a part's recorded `state.error.message` nor a user record's `files` rendering, while the carried reader
+appends *every* `type=="text"` block verbatim (`internal/parser/opencode_v2.go`:371-372), appends the error
+message on its errored branch (`:399-403`, whose trigger is an `error` status *or* a `shell`/`bash` part
+with a nonzero recorded exit), renders a user record's attachments (`:257-271`: `[Attachment: <name>]`
+with the name falling back to the MIME type, a `text/*` payload's decoded text under it, each joined with a
+newline where the text already holds something) and keeps a record only where its content survives its own
+`strings.TrimSpace` filter (`:330`). That last rule's trimming is Go's set, not Python's: measured over every
+code point, Go's space set is Python's `str.isspace` set minus the information separators `\x1c`-`\x1f`, so
+the builder trims through an explicit mirror (`opencode_trimmed`/`opencode_is_space`, whose Latin-1 set is
+spelled out for exactly those four separators).
+
+Measured cross-language on this host, without the OpenCode binary (absent here — the native direction exits
+2 naming it, so neither this round nor the reviewer's could drive the installed harness on this machine): a
+throw-away Go probe (removed afterwards; `go test` over `internal/ccc`, `PROBE_OUT` naming a scratch
+directory) planted one document through `internal/ccc/opencodefixture` and read it through
+`NewSourceReader`. The document's `read` part records `state.content =
+[{"type":"text","text":""},{"type":"text","text":"read 12 lines"}]`, its completed `bash` part records
+`metadata.exit = 1` with `error.message = "boom"`, its user records carry four attachments (a `text/plain`
+payload `aGVsZA==`, a non-text MIME, invalid base64, and an empty payload with no name and no MIME), a
+whitespace-only text, and a text that is the single separator `\u001c`. The carried reader answered:
+
+```
+reader:  {"user_texts": ["look at these\n[Attachment: notes.txt]\nheld\n[Attachment: application/pdf]\n[Attachment: broken.txt]\n[Attachment: ]", "\u001c"], "call_names": ["read", "bash"], "call_inputs": ["{\"path\":\"/x\"}", "{\"command\":\"false\"}"], "call_results": ["\nread 12 lines", "exit 1\nboom"], "assistant_texts": []}
+```
+
+`git show HEAD:scripts/opencode-native-check.py`'s builder, on the same document, held
+`call_results = ["read 12 lines", "exit 1"]` and `user_texts = ["look at these", "   ", "\u001c"]` — no
+attachments rendering, and the whitespace-only record kept as a member the reader had dropped, while the
+reader's separator record was one the pre-fix filter and the reader agreed on — and `evidence_differences`
+answered the reviewer's measured false FAIL for both members (the comparison's other three members agreed;
+the two lines below are the check's own words, joined here with ` || `):
+
+```
+the user text(s) are ["look at these\n[Attachment: notes.txt]\nheld\n[Attachment: application/pdf]\n[Attachment: broken.txt]\n[Attachment: ]", "\u001c"], the source recorded ["look at these", "   ", "\u001c"] || the recorded tool result(s) are ["\nread 12 lines", "exit 1\nboom"], the source recorded ["read 12 lines", "exit 1"]
+```
+
+The fixed builder's members are byte-identical to the reader's (`evidence_differences` → `[]`), and it
+refuses — exit 2, before the harness is asked to import anything — a document carrying a `shell` message,
+the one kind the reader answers as both a user record (the command) and tool evidence (the call and its
+recorded output) while the comparison holds no member for either; comparing such a document silently as a
+subset is what the refusal replaces. Six new cases in `scripts/tests/test_opencode_native_check.py` pin the
+rules (the empty text block, the error message with its nonzero-exit arm, the attachments rendering, the
+whitespace-only record the reader's own filter drops beside the separator one it keeps, and the refusal at
+the comparison and at the whole-run level); run against the pre-fix script in a scratch copy of `scripts/`,
+every one of the five comparison cases fails — the empty-block case differing exactly as the reviewer
+measured (`['read 12 lines']` vs `['\nread 12 lines']`) — and the run-level refusal case errors instead
+(its refusal never fires and the run reaches for the harness that is not installed: `FileNotFoundError:
+'opencode'`).
+
+**REV-2 — the two reference forms could not be told apart (P3, test strength).**
+`TestOpenCodeSourceResolvesByIdentifierAndByItsOwnPath` now plants a **second** session in the same store
+(the committed fixture's own document with its own identity and a single question of its own,
+`internal/ccc/continue_opencode_source_test.go`'s `openCodeSourceSecondDocument`) and asserts that the
+provider's virtual-path spelling resolves the member it names — that member's own session id and its own
+single question — and that a member the store does not hold answers a not-found refusal. Measured with a
+throw-away `go test -overlay` mutation of the carried provider (the path form forced to answer the
+fixture's session whatever member it was asked about; the overlay and its inputs were scratch files,
+removed afterwards): the **old** case (with its one-session store, at `HEAD`) passes under the mutation,
+while the new case fails on both new assertions — `the second member's messages = …` holding the fixture's
+five-message conversation, and `reading a member the store does not hold = <nil>`. That is the
+distinguishing input the review said was missing.
+
+Gate, re-run on this tree (`GATE: PASS`, exit 0):
+
+```
+$ python3 scripts/gate.py
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3624 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 423 tests in 7.706s (rc=0)
+  PASS     parity   (the step's detail is §6's own rendering: 5553 carried file(s) identical to the pinned
+                    revision, 27 declared deviations + 1 generated input, 4 symlinks by link target; git saw
+                    5718 file(s) in this tree, 1 fewer than §6's run — that counter includes untracked
+                    non-ignored files, which the reviewer observed too)
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified
+  PASS     secrets  no leaks found in 174 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The `selftest` step's count moved 417 → 423 with the six new cases (the module's own count moved 89 → 95);
+the `citations` rows are unchanged — no cited test was renamed, added or removed — and the Go suites are the
+same ones §6 names, with the reference-form case's assertions strengthened in place. `AGENTS.md` does not
+move with this round: the fix changes no layout, gate step, command, read order or rule an agent follows —
+it makes the check's comparison read the reader's own rules (and refuse what it cannot read) and strengthens
+one test's input.
 
 ## 7. Residual limits and boundaries named rather than hidden
 

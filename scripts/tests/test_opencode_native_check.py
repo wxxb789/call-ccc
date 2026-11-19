@@ -1556,6 +1556,34 @@ class SourceDirectionFraming(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 NATIVE_CHECK.fixture_document(path)
 
+    def test_a_document_with_an_unmodelled_message_kind_is_refused_before_planting(self) -> None:
+        """The comparison's own refusal, driven through the direction: a document carrying a ``shell``
+        record -- a kind whose command and tool evidence the comparison holds no member for -- stops the run
+        at exit 2 naming the kind, with the harness never asked to import anything (so no session this run
+        would have to remove is ever published)."""
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            (root / "opencode").mkdir()
+            (root / "opencode" / "shell.json").write_text(json.dumps({
+                "info": {"id": NATIVE_CHECK.OPENCODE_SOURCE_SESSION, "time": {"created": 1, "updated": 1}},
+                "messages": [{"id": "msg_1", "type": "shell", "command": "ls",
+                              "callID": "call_1", "time": {"completed": 1}}]}), encoding="utf-8")
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with mock.patch.object(NATIVE_CHECK, "FIXTURE_ROOT", "."), \
+                 mock.patch.object(NATIVE_CHECK, "OPENCODE_SOURCE_FIXTURE", "opencode/shell.json"), \
+                 mock.patch.object(NATIVE_CHECK, "ask_opencode") as ask, \
+                 recorded() as results, \
+                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                code = NATIVE_CHECK.run_source_direction(
+                    mock.Mock(direction=NATIVE_CHECK.SOURCE_DIRECTION, source=None, target_home=None,
+                              resume_prompt=None, expect=None),
+                    root, "/usr/local/bin/go", "opencode", "codex", root / "scratch")
+            self.assertEqual(code, 2, stderr.getvalue())
+            self.assertIn("'shell'", stderr.getvalue())
+            self.assertEqual(list(results), [],
+                             "a document the comparison refuses must be refused before any check runs")
+            ask.assert_not_called()
+
     def test_a_planting_that_the_readers_own_answer_does_not_confirm_is_not_published(self) -> None:
         refused = completed(stderr=f"Session not found: {NATIVE_CHECK.OPENCODE_SOURCE_SESSION}\n",
                             returncode=1)
@@ -1708,6 +1736,85 @@ class SourceEvidence(unittest.TestCase):
                       "content": [{"type": "text", "text": "exit status 1"}]}}]}]}
         evidence = NATIVE_CHECK.opencode_document_evidence(document)
         self.assertEqual(evidence["call_results"], ["exit status 1"])
+
+    def test_an_empty_text_block_is_part_of_the_recorded_result(self) -> None:
+        """The reader appends *every* ``text`` block of a part's terminal content, an empty one included
+        (``internal/parser``'s ``openCodeV2ToolCall`` calls its own ``appendText`` unconditionally), and a
+        conversion writes that joined text verbatim: measured on this host through the carried reader, a
+        document whose part records ``[{"type":"text","text":""},{"type":"text","text":"read 12 lines"}]``
+        makes the reader answer ``"\\nread 12 lines"`` (the reviewer measured the same shape end to end
+        through the installed harness). An expectation that dropped the empty block would report a
+        faithful conversion as a difference."""
+        document = {"messages": [{"type": "assistant", "content": [{
+            "type": "tool", "name": "read",
+            "state": {"status": "completed", "input": {"path": "/x"},
+                      "content": [{"type": "text", "text": ""},
+                                  {"type": "text", "text": "read 12 lines"}]}}]}]}
+        evidence = NATIVE_CHECK.opencode_document_evidence(document)
+        self.assertEqual(evidence["call_results"], ["\nread 12 lines"])
+        settled = {"user_texts": [], "call_names": ["read"], "call_inputs": ['{"path":"/x"}'],
+                   "call_results": ["\nread 12 lines"], "assistant_texts": []}
+        self.assertEqual(NATIVE_CHECK.evidence_differences(evidence, settled), [])
+
+    def test_the_error_message_is_part_of_an_errored_result(self) -> None:
+        """The reader's own errored branch appends the part's recorded ``state.error.message`` to the
+        result text, and a ``shell``/``bash`` part whose recorded exit is nonzero takes that branch even
+        when its status is ``completed`` (the reader's own ``shellFailed`` arm): both are text a target
+        holds, so the expectation holds them; an exit that reads as zero cites no message."""
+        def part(**state: object) -> dict:
+            state.setdefault("input", {"command": "false"})
+            return {"type": "tool", "name": "bash", "state": state}
+
+        document = {"messages": [{"type": "assistant", "content": [
+            part(status="error", content=[{"type": "text", "text": "exit 1"}], error={"message": "boom"}),
+            part(status="completed", metadata={"exit": 1}, error={"message": "still boom"}),
+            part(status="completed", metadata={"exit": 0}, error={"message": "not cited"}),
+            part(status="completed", metadata={"exit": 1}),
+            part(status="completed", structured={"exit": "2"}, error={"message": "from structured"})]}]}
+        evidence = NATIVE_CHECK.opencode_document_evidence(document)
+        self.assertEqual(evidence["call_results"], ["exit 1\nboom", "still boom", "from structured"])
+
+    def test_a_user_message_with_files_is_expected_as_the_reader_renders_it(self) -> None:
+        """The reader renders a user record's ``files`` into its own text -- ``[Attachment: <name>]`` with
+        the name falling back to the recorded MIME type, and a ``text/*`` payload's decoded text under it
+        where the member decodes to non-empty valid UTF-8 -- and a conversion carries that rendering as the
+        prompt (measured: ``aGVsZA==`` decodes to ``held``; invalid base64 and an empty payload add
+        nothing): an expectation holding only the message's own ``text`` would report a faithful conversion
+        as a difference."""
+        document = {"messages": [
+            {"type": "user", "text": "look at these", "files": [
+                {"name": "notes.txt", "mime": "text/plain", "data": "aGVsZA=="},
+                {"name": "", "mime": "application/pdf", "data": "AAAA"},
+                {"name": "broken.txt", "mime": "text/plain", "data": "not base64!!"}]},
+            {"type": "user", "text": "", "files": [
+                {"name": "solo", "mime": "text/plain", "data": ""}]},
+        ]}
+        evidence = NATIVE_CHECK.opencode_document_evidence(document)
+        self.assertEqual(evidence["user_texts"], [
+            "look at these\n[Attachment: notes.txt]\nheld\n[Attachment: application/pdf]\n"
+            "[Attachment: broken.txt]",
+            "[Attachment: solo]"])
+
+    def test_a_whitespace_only_user_text_is_expected_with_no_prompt(self) -> None:
+        """The reader's own filter drops a record whose content ``strings.TrimSpace`` empties and that
+        carries neither tool use nor a compaction boundary -- a user record carries neither -- so the read
+        answers no record and a conversion writes no prompt. The trimming is the reader's own and not
+        Python's wider ``str.strip``: measured over every code point, Go's space set is Python's
+        ``str.isspace`` set minus the information separators ``\\x1c``-``\\x1f``, so a record whose whole
+        text is ``"\\x1c"`` *is* a record the read keeps, and the prompt a target holds."""
+        document = {"messages": [{"type": "user", "text": "   ", "files": []},
+                                 {"type": "user", "text": "\x1c", "files": []}]}
+        self.assertEqual(NATIVE_CHECK.opencode_document_evidence(document)["user_texts"], ["\x1c"])
+
+    def test_a_document_with_an_unmodelled_message_kind_is_refused(self) -> None:
+        """A ``shell`` record is the kind the reader answers as both a user record (the command) and tool
+        evidence (the call and its recorded output) while this comparison holds no member for either: it is
+        refused by name rather than compared as a subset."""
+        document = {"messages": [{"id": "msg_1", "type": "shell", "command": "ls",
+                                  "callID": "call_1", "time": {"completed": 1}}]}
+        with self.assertRaises(SystemExit) as raised:
+            NATIVE_CHECK.opencode_document_evidence(document)
+        self.assertIn("'shell'", str(raised.exception))
 
     def test_a_textless_or_whitespace_only_result_is_expected_with_no_output(self) -> None:
         """A result whose text is empty or whitespace only is counted and left out of the target
