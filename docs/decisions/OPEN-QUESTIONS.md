@@ -2799,3 +2799,37 @@ supersede it with a newer one and say which it supersedes.
   records the record's trace text (or projects a dialogue) for a call-bearing record — that would make the
   text established and the reading here too narrow; the reader is carried (`internal/parser`), so the
   measurement belongs to an upstream revision bump.
+
+## Q-0008-08 — The file-bearing-result disposition in the source-direction comparison: mirrored, not refused
+
+- **Status:** resolved (unattended default taken)
+- **Question:** `scripts/opencode-native-check.py`'s source direction compares a caller's document (or the
+  committed fixture) with the installed Codex rollout. A completed tool part whose `state.content` carries a
+  `file` block makes the carried parser answer the part's text as its own JSON **block array**
+  (`internal/parser`'s `openCodeV2ToolCall` marshals its blocks there), each writer writes those bytes
+  verbatim (the read hands the encoding on as decoded text), and an expectation that held no text for such
+  a part reported the rollout's own output as a difference — the fourth review round's finding (P2,
+  `review-findings-r3.md`). The finding named both dispositions: make the expectation follow the source-read
+  path, or explicitly refuse the shape before planting it (as the comparison refuses a `shell` record,
+  Q-0008-06). Which one?
+- **Default taken:** **mirror** it — `opencode_result_block_json` plus a mirror of the carried encoder
+  (`go_json_string`/`opencode_go_json`). The encoding is fully determined by the document (the blocks in the
+  content's own order, each object's members in their names' byte order, the parser's one member rewrite for
+  an inline `data:image/…` file, the structured text and error message appended as text blocks), and every
+  rule was measured rather than assumed: the encoder's spellings over every code point below `0x20` and over
+  `0x7f`/HTML characters/`U+2028`/`U+2029`/non-ASCII through a throw-away Go probe, and the finished
+  comparison end to end on this host (OpenCode 2.2.5 + Codex 0.170.0): a planted document holding three
+  file-bearing results converts and the run ends `RESULT: PASS — 18 check(s), none failed`, where the
+  pre-fix expectation ended `RESULT: FAIL — 1 check(s) failed` naming the rollout's encoded output as the
+  source's own empty reading. Q-0008-07's reasoning applies to this shape too (such results are a real
+  session's shape, and refusing would make `--source` unusable on the documents the direction exists for),
+  and the mirror keeps every member the read establishes under comparison instead of skipping it — the
+  planting's document-against-document reading included, so a store whose part lost its block is a
+  difference.
+- **Reversal:** refuse the shape by name before anything is planted (the `OPENCODE_UNMODELLED_MESSAGE_KINDS`
+  arm's shape), at the cost of refusing a real session's shape; or hold no text for such a part again, which
+  is reversible but reports a faithful conversion as a difference.
+- **Settled by:** an operator instruction, or an upstream revision that changes the carried parser's answer
+  for block-bearing results (the encoding, the member rewrite, or whether the read hands it on as decoded
+  text) — the mirror belongs to the carried revision's own rules, so the measurement belongs to an upstream
+  revision bump, and an operator who prefers refusal for this shape can say so.

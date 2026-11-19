@@ -595,15 +595,25 @@ says so.
   and compares the two documents over the members this comparison reads — the user texts (each user record
   as the inherited reader renders it: the message's own text and its recorded attachments, admitted only
   where it survives the reader's own `strings.TrimSpace`), each tool part's name, its recorded input value,
-  its terminal text under the call the part *is* (every content text block, an empty one included, and the
-  recorded `state.error.message` where the reader's own errored branch appends one — the pairing is carried
-  as the call's place in the walk, so a document whose result texts were reassigned to the wrong calls is a
-  difference rather than the same evidence), and each record's rendered text (a text member is admitted only
-  where it survives that same trimming — *Go's* set: a text of, say, the single information separator
-  `\x1c`, which Python's own trimming would drop, is a member and a whitespace-only one is not; a store
-  holding another conversation is reported, not converted; a document carrying a `shell` message — the one
-  kind the reader answers as both a user record and tool evidence while this comparison holds no member for
-  either — is refused by name, exit 2, before the harness is asked to import anything) — converts through
+  its terminal text under the call the part *is* (every content text block, an empty one included, the
+  recorded `state.error.message` where the reader's own errored branch appends one, and — for a part whose
+  content carries a `file` block, where the reader moves the part's text into *blocks* instead — the
+  parser's own block **encoding**: the JSON array of `text`/`file` objects the read hands on as the event's
+  content and every writer writes verbatim, each object's members in their names' order, a file block with
+  `uri`/`mime` and a `name` only where recorded, an inline `data:image/…` file rewritten to
+  `input_image`/`image_url` with its `uri` member dropped, and the structured text and error message
+  following as text blocks. The check mirrors that encoder byte for byte — measured against the writer on
+  this host, where *skipping* the member was the pre-fix bug (an expectation holding no text for such a
+  part reported the rollout's own encoded output as a difference) — and the planting's
+  document-against-document reading carries the same member, so a store whose part lost its block is a
+  difference. The pairing is carried as the call's place in the walk, so a document whose result texts were
+  reassigned to the wrong calls is a difference rather than the same evidence), and each record's rendered
+  text (a text member is admitted only where it survives that same trimming — *Go's* set: a text of, say,
+  the single information separator `\x1c`, which Python's own trimming would drop, is a member and a
+  whitespace-only one is not; a store holding another conversation is reported, not converted; a document
+  carrying a `shell` message — the one kind the reader answers as both a user record and tool evidence while
+  this comparison holds no member for either — is refused by name, exit 2, before the harness is asked to
+  import anything) — converts through
   the CLI **at the load level** (`ccc continue opencode:<id> --to codex
   --verify load --json`, `OPENCODE_DIR` naming the scratch root), and then reads the *installed Codex
   rollout's own records* against the *fixture document's own bytes*: the user texts, each tool call's name,

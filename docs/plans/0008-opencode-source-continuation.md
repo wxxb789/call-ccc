@@ -315,3 +315,20 @@ habit), followed by the review round's own:
    `call_id`, the next unmatched call record under that id), and every text membership uses
    `opencode_trimmed`. Both are pinned by cases that fail on the pre-fix script (the wrong-owner reassignment
    and the two whitespace memberships, unit and driven).
+
+7. **The source-side expectation models the parser's own block *encoding* for a file-bearing result.**
+   The r3 round found the expectation's other unsound arm: for a part whose content carries a `file` block
+   it held no text (with a docstring claiming the blocks are counted by the writers), while the read answers
+   the part's text as the parser's own JSON **block array** (`internal/parser`'s `openCodeV2ToolCall`
+   marshals its blocks when a file block is present) and hands it on as decoded text
+   (`internal/ccc/reader.go`'s result events), so every writer writes those bytes verbatim — measured end to
+   end on this host through the real conversion (`internal/ccc`'s own writer) and through the planted
+   harness (OpenCode 2.2.5 + Codex 0.170.0), where the pre-fix expectation made the installed-rollout
+   comparison FAIL on a faithful conversion. The expectation now mirrors that encoder byte for byte
+   (`opencode_result_block_json` + the Go-encoder mirror `go_json_string`/`opencode_go_json`), rather than
+   refusing the shape: a document with such a result is one this direction exists to compare, and the
+   encoding is fully determined by the document (its members, their order in the content, and the encoder's
+   own rules — all measured, not assumed). Q-0008-08 records the disposition; the cases pin the encoding,
+   the members (including the inline-image rewrite `input_image`/`image_url` with `uri` dropped and
+   `mime`/`name` kept) and the encoder's escapes, each failing under an executed mutation of the line it
+   claims.

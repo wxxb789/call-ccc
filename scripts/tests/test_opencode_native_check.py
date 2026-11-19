@@ -1836,21 +1836,137 @@ class SourceEvidence(unittest.TestCase):
                            "assistant_texts": []}
                 self.assertEqual(NATIVE_CHECK.evidence_differences(evidence, settled), [])
 
-    def test_a_part_carrying_a_file_block_is_expected_with_no_text(self) -> None:
-        """The reader turns a part's text into result *blocks* when its content carries a ``file`` block,
-        and the target writers hold no field for those (counted ``unrepresentable_result_blocks``): the
-        text never reaches the target, so the expectation holds none and a target without an output for
-        that call is not a difference."""
+    def test_a_part_carrying_a_file_block_is_expected_as_the_parsers_own_encoding(self) -> None:
+        """A part whose content carries a ``file`` block is answered by the carried parser as its own block
+        *encoding*: the blocks' text moves into a JSON array, the event carries that array as its content,
+        the read hands it on as decoded text (``internal/ccc/reader.go``'s result events) and every writer
+        writes those bytes verbatim -- measured end to end on this host against OpenCode 2.2.5 and Codex
+        0.170.0: a planted document of exactly this shape installs a rollout whose
+        ``function_call_output`` holds this encoding, byte for byte.
+
+        The expectation holds the same bytes (``opencode_result_block_json``), which is what makes a
+        faithful conversion *not* a difference -- the pre-fix expectation held no text there and reported
+        the rollout's own output as one -- and what makes a conversion that wrote a text of its own (or
+        nothing) a difference. Both readings of the document hold it: what the document records and what a
+        conversion writes are the same member for this shape, and the planting's document-against-document
+        comparison uses it too."""
         document = {"messages": [{"type": "assistant", "content": [{
             "type": "tool", "name": "read",
             "state": {"status": "completed", "input": {"path": "/x"},
                       "content": [{"type": "file", "uri": "file:///x", "mime": "text/plain"},
                                   {"type": "text", "text": "the file's lines"}]}}]}]}
-        evidence = NATIVE_CHECK.opencode_document_evidence(document)
-        self.assertEqual(evidence["call_results"], [])
+        encoded = ('[{"mime":"text/plain","type":"file","uri":"file:///x"},'
+                   '{"text":"the file\'s lines","type":"text"}]')
+        for reading in (NATIVE_CHECK.opencode_document_evidence, NATIVE_CHECK.opencode_written_evidence):
+            with self.subTest(reading=reading.__name__):
+                self.assertEqual(reading(document)["call_results"], [encoded],
+                                 "the expectation does not hold the parser's own encoding")
         settled = {"user_texts": [], "call_names": ["read"], "call_inputs": ['{"path":"/x"}'],
-                   "call_results": [], "call_result_owners": [], "assistant_texts": []}
-        self.assertEqual(NATIVE_CHECK.evidence_differences(evidence, settled), [])
+                   "call_results": [encoded], "call_result_owners": ["0"], "assistant_texts": []}
+        self.assertEqual(NATIVE_CHECK.evidence_differences(NATIVE_CHECK.opencode_written_evidence(document),
+                                                           settled), [],
+                         "a conversion holding the parser's own encoding was reported as a difference")
+        for broken in ({"call_results": ["the file's lines"], "call_result_owners": ["0"]},
+                       {"call_results": [], "call_result_owners": []}):
+            with self.subTest(case=broken["call_results"]):
+                self.assertTrue(NATIVE_CHECK.evidence_differences(
+                    NATIVE_CHECK.opencode_written_evidence(document), {**settled, **broken}),
+                    "a target that did not hold the encoding was reported as identical")
+
+    def test_the_planting_comparison_reads_the_encoding_too(self) -> None:
+        """The planting's document-against-document comparison carries the same member, so it compares the
+        encoding's bytes rather than skipping the part: a store whose part records a different text inside
+        the block encoding -- the harness's own importer is a store's only writer -- is a difference, and so
+        is a store whose part lost its file block and answers a plain text instead. An expectation that
+        answered no text for such a part would hold two empty members here and report both as identical."""
+        def document(content: list[dict]) -> dict:
+            return {"messages": [{"type": "assistant", "content": [{
+                "type": "tool", "name": "read",
+                "state": {"status": "completed", "input": {"path": "/x"}, "content": content}}]}]}
+
+        file_block = {"type": "file", "uri": "file:///x", "mime": "text/plain"}
+        checked = document([file_block, {"type": "text", "text": "the file's lines"}])
+        self.assertEqual(NATIVE_CHECK.evidence_differences(
+            NATIVE_CHECK.opencode_document_evidence(checked),
+            NATIVE_CHECK.opencode_document_evidence(checked)), [])
+        for case, other in {
+            "a text inside the encoding": document([file_block, {"type": "text", "text": "another line"}]),
+            "a lost file block": document([{"type": "text", "text": "the file's lines"}]),
+        }.items():
+            with self.subTest(case=case):
+                self.assertTrue(NATIVE_CHECK.evidence_differences(
+                    NATIVE_CHECK.opencode_document_evidence(checked),
+                    NATIVE_CHECK.opencode_document_evidence(other)),
+                    f"{case} was not reported as a difference")
+
+    def test_the_encoding_mirrors_the_parsers_own_json_bytes(self) -> None:
+        """The mirror of the carried parser's own ``json.Marshal(blocks, json.Deterministic(true))``
+        (``internal/parser``'s ``openCodeV2ToolCall``), pinned against the bytes measured on this host
+        through that call rather than against Python's encoder: every code point below ``0x20`` -- ``\\b``,
+        ``\\t``, ``\\n``, ``\\f``, ``\\r`` by their short escapes and the remaining twenty-seven as
+        lowercase ``\\u00xx`` -- and then a space, ``\\x7f``, ``<``, ``>``, ``&``, ``U+2028``, ``U+2029``
+        and non-ASCII literal, because that encoder escapes neither HTML nor DEL. Python's own ``json.dumps``
+        differs on exactly these bytes (it writes ``\\b``/``\\f`` as ``\\u0008``/``\\u000c`` and escapes
+        ``<``/``>``/``&``), which is why the expectation carries its own encoder; the members' order is the
+        encoder's own too -- byte-lexicographic by name, measured as ``{"":"e","A":"a","a":"b","a-":"c",
+        "a1":"d",...}` -- and the array carries no whitespace."""
+        short = {0x08: "\\b", 0x09: "\\t", 0x0A: "\\n", 0x0C: "\\f", 0x0D: "\\r"}
+        for code in range(0x20):
+            with self.subTest(code=code):
+                self.assertEqual(NATIVE_CHECK.go_json_string(chr(code)),
+                                 f'"{short.get(code, f"\\u{code:04x}")}"')
+        for character in (" ", "\x7f", "<", ">", "&", "'", "\u2028", "\u2029", "\u00e9", "\u4e2d",
+                          "\U0001F600"):
+            with self.subTest(character=character):
+                self.assertEqual(NATIVE_CHECK.go_json_string(character), f'"{character}"')
+        self.assertEqual(NATIVE_CHECK.opencode_go_json(
+            [{"uri": "u", "type": "file", "mime": "m", "name": "n"}]),
+            '[{"mime":"m","name":"n","type":"file","uri":"u"}]',
+            "the block's members are not in their names' own order")
+
+    def test_an_inline_image_block_is_encoded_in_the_readers_own_members(self) -> None:
+        """A ``file`` block whose uri carries the ``data:image/`` prefix is the one shape the parser
+        rewrites before encoding it: ``type`` becomes ``input_image`` and ``image_url`` the uri, with the
+        ``uri`` member gone -- and *nothing else* moves, because the rewrite is those two members alone
+        (``internal/parser``'s ``openCodeV2ToolCall``): a recorded ``mime`` and ``name`` stay on the block.
+        The prefix is compared the way the parser's ``strings.EqualFold`` compares it (case-insensitively),
+        and a uri that only looks like one (an image MIME with a plain uri) keeps the file shape."""
+        def encoded(uri: str, name: str = "", mime: str = "image/png") -> str:
+            content: dict = {"type": "file", "uri": uri, "mime": mime}
+            if name:
+                content["name"] = name
+            return NATIVE_CHECK.opencode_tool_state_text({"type": "tool", "name": "read", "state": {
+                "status": "completed", "input": {"path": "/x"}, "content": [content]}})
+
+        self.assertEqual(encoded("DATA:IMAGE/png;base64,AAAA", "shot.png"),
+                         '[{"image_url":"DATA:IMAGE/png;base64,AAAA","mime":"image/png",'
+                         '"name":"shot.png","type":"input_image"}]')
+        self.assertEqual(encoded("data:image/jpeg;base64,BBBB"),
+                         '[{"image_url":"data:image/jpeg;base64,BBBB","mime":"image/png",'
+                         '"type":"input_image"}]',
+                         "the image shape must not be reshaped into other members")
+        self.assertEqual(encoded("file:///x", "shot.png"),
+                         '[{"mime":"image/png","name":"shot.png","type":"file","uri":"file:///x"}]')
+        self.assertEqual(encoded("", "shot.png"),
+                         '[{"mime":"image/png","name":"shot.png","type":"file","uri":""}]')
+
+    def test_the_structured_content_and_error_message_follow_as_text_blocks(self) -> None:
+        """The parser appends the ``read`` tool's structured UTF-8 content and an errored part's recorded
+        ``error.message`` through the same ``appendText`` the content's own blocks go through, so with a
+        ``file`` block present both arrive as *text blocks* after the content's own blocks, in that order --
+        not as the joined text the file-less shape answers. Measured limit of this case's own arm: the
+        harness's importer refuses a document carrying an errored tool part (`Failed to import session: Bad
+        Request`, measured on 2.2.5), so a planted run cannot carry this shape and the ordering here is
+        pinned at the expectation's level, like the other reader rules this comparison mirrors."""
+        part = {"type": "tool", "name": "read", "state": {
+            "status": "error", "input": {"path": "/x"},
+            "content": [{"type": "file", "uri": "file:///x", "mime": "text/plain"}],
+            "structured": {"encoding": "utf8", "content": "38: // policy.go"},
+            "error": {"message": "boom"}}}
+        self.assertEqual(
+            NATIVE_CHECK.opencode_tool_state_text(part),
+            '[{"mime":"text/plain","type":"file","uri":"file:///x"},'
+            '{"text":"38: // policy.go","type":"text"},{"text":"boom","type":"text"}]')
 
     def test_an_errored_result_is_expected_because_the_writers_write_its_text(self) -> None:
         """The reader answers a result for an errored part as well as a completed one (its own switch) and

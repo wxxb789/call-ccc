@@ -787,6 +787,136 @@ comparison's own already-claimed rules ("one output per call" and the reader's f
 default was taken. No goal file moves: 0008 is still the increment on its branch, awaiting operator
 acceptance.
 
+### The fourth review round's findings (`r3`, on `f56be51` + working tree), fixed and re-measured
+
+`review-findings-r3.md` carried one P2 finding, about `scripts/opencode-native-check.py`'s source direction
+and established by the reviewer's static trace. It was **reproduced before anything was changed**, end to
+end, with both real harnesses on this host — OpenCode `2.2.5`
+(`/home/azureuser/.npm-global/bin/opencode`) and Codex `0.170.0` — by planting a document of the finding's
+shape through the harness's own importer (`--source /tmp/ccc-fileblock-doc.json`, a copy of the committed
+fixture whose first tool part's `state.content` is a `file` block beside a `text` block, plus two further
+file-bearing parts described below). The pre-fix run's rollout comparison, in the check's own words (exit 1):
+
+```
+PASS: the store holds the fixture document's own conversation — 6 message(s), 3 tool call(s) and their recorded results compared with the fixture's own bytes
+FAIL: the installed rollout holds what a conversion writes of the fixture's own prompts, tool call, result text and texts — the recorded tool result(s) are ["[{\"mime\":\"text/plain\",\"name\":\"config.go\",\"type\":\"file\",\"uri\":\"file:///home/user/code/example-api/internal/retry/config.go\"},{\"text\":\"Read f …[the rest of this output was dropped], the source recorded []; the recorded tool result owner(s) are ["0", "1", "2"], the source recorded []
+RESULT: FAIL — 1 check(s) failed: the installed rollout holds what a conversion writes of the fixture's own prompts, tool call, result text and texts
+```
+
+**R3-1 — a file-bearing result: the expectation held no text where the conversion writes the parser's own
+encoding (P2).** The finding's trace is exact: for a part whose `state.content` carries a `file` block the
+carried parser moves the part's text into *blocks* and marshals them
+(`internal/parser/opencode_v2.go`: `json.Marshal(blocks, json.Deterministic(true))`), the event it answers
+carries that encoding as its content, the read hands it on as decoded text
+(`internal/ccc/reader.go`'s result events, `ContentDecoded: true`) and `codex_target.go`'s `resultText`
+therefore writes it verbatim, counting no `unrepresentable_result_blocks` — while the expectation's own
+builder returned `""` for the shape, so a faithful conversion was reported as a difference and the case
+`test_a_part_carrying_a_file_block_is_expected_with_no_text` pinned the wrong reading.
+
+Measured cross-language before the fix, through a throw-away Go probe (removed afterwards; one document
+planted through `internal/ccc/opencodefixture`, read through `NewSourceReader` and written by both target
+writers, on four file-bearing shapes) — the Go conversion's own bytes for each part, which the fixed
+expectation now answers identically (the Python mirror was compared against these lines byte for byte):
+
+```
+part 1 (file + text):       [{"mime":"text/plain","name":"config.go","type":"file","uri":"file:///home/user/code/example-api/internal/retry/config.go"},{"text":"Read file /home/user/code/example-api/internal/retry/config.go, lines 38-42\n38: // policy.go","type":"text"}]
+part 2 (inline image):      [{"image_url":"DATA:IMAGE/png;base64,AAAB","mime":"image/png","name":"shot.png","type":"input_image"}]
+part 3 (control chars):     [{"mime":"application/octet-stream","type":"file","uri":"file:///ctl"},{"text":"ctl\u0001\u001c<&>é中😀\n\tend","type":"text"}]
+part 4 (structured+error):  [{"mime":"text/plain","name":"policy.go","type":"file","uri":"file:///policy"},{"text":"38: // policy.go","type":"text"},{"text":"boom","type":"text"}]
+```
+
+(The same four lines are what the Claude route's `tool_result` block holds — the encoding is the *read's*
+answer, and both writers write it verbatim; measured on the same probe. Part 4's shape cannot be planted:
+this harness's importer refuses a document carrying an errored tool part — `Failed to import session: Bad
+Request`, measured on 2.2.5 — which is why the ordering it pins is a case at the expectation's level, and
+why the planted document above carries parts 1–3.)
+
+The encoder's own rules were measured, not assumed: through a throw-away Go probe over every code point
+below `0x20`, plus `0x7f`, `<>&'`, `U+2028`/`U+2029`, `U+FFFD` and non-ASCII,
+`json.Marshal(map[string]string{"k": …}, json.Deterministic(true))` answered the short escapes
+`\b \t \n \f \r` for those five, `\u00xx` for the other twenty-seven control characters
+(`01:{"k":"\u0001"} … 1f:{"k":"\u001f"}`), and every other character written literally (`20:{"k":" "}`,
+`7f` raw — its own byte between the quotes, DEL unescaped — and `U+2028`, `<`, `&`, `é`, `中`, `😀` raw:
+no HTML escaping), with map members in byte-lexicographic name order
+(measured: `{"":"e","A":"a","a":"b","a-":"c","a1":"d",…}`). Python's own `json.dumps` differs on exactly
+those bytes (`\b`→`\u0008`, `\f`→`\u000c`, HTML escaping), so the expectation carries its own encoder
+mirror (`go_json_string`/`opencode_go_json`).
+
+The fix follows the source-read path rather than refusing the shape (the disposition Q-0008-08 records, on
+Q-0008-07's reasoning): `opencode_result_block_json` builds the blocks exactly as the parser does — every
+`text` block, a `file` block with `uri`/`mime` and a `name` only where recorded, an inline `data:image/…`
+file rewritten to `input_image`/`image_url` with `uri` dropped and `mime`/`name` kept (the parser rewrites
+those two members and nothing else), the `read` tool's structured content and an errored part's
+`error.message` appended as text blocks after the content's own blocks — and the same member is what both
+readings carry, so the planting's document-against-document comparison reads the encoding too (a store whose
+part lost its block is a difference rather than two empty members).
+
+**Every rule pinned by an executed mutation.** Each rule of the new surface was reverted, in a scratch copy
+of `scripts/` (the pre-fix line, and one reversed line per encoder member rule), the case that claims the
+rule was run, and the line restored — the observed failures:
+
+| Rule | Mutation (one line, reverted and restored) | Observed |
+| --- | --- | --- |
+| a file-bearing part answers the parser's encoding | `return opencode_result_block_json(part, state)` → `return ""` (the pre-fix line) | both new cases FAIL: `Lists differ: [] != ['[{"mime":"text/plain","type":"file","uri…` and `[] is not true : a text inside the encoding was not reported as a difference` |
+| control characters escape as `\u00xx` | `out.append(f"\\u{ord(character):04x}")` → `out.append(character)` | FAIL: `'"\x00"' != '"\\u0000"'` |
+| `\b` keeps its short escape | the `"\b": "\\b"` table entry dropped | FAIL: `'"\\u0008"' != '"\\b"'` |
+| `0x20` is not escaped | `character < " "` → `character <= " "` | FAIL: `'"\\u0020"' != '" "'` |
+| an image block drops its `uri` | `del entry["uri"]` → (removed) | FAIL: `…,"type":"input_image","uri":"DATA:IMAGE/png;base64,AAAA"}]' != …` |
+| the image prefix is compared case-insensitively | `.lower() == IMAGE_URI_PREFIX` → `== IMAGE_URI_PREFIX` | FAIL: `'[{"mime":"image/png","name":"shot.png","type…' != '[{"image_url":"DATA:IMAGE/png;base64,AAAA",…` |
+| members are written in name order | `for name in sorted(block)` → `for name in block` | FAIL: `'[{"uri":"u","type":"file","mime":"m","name":"n"}]' != '[{"mime":"m","name":"n","type":"file","uri":"u"}]'` |
+| the structured content is appended as a text block | `append_text(structured["content"])` → `append_text("WRONG")` | FAIL: `…"xt":"WRONG","type":"text"},{"text":"boom","type":"text"}]' != …` |
+| an errored part's message is appended | the `append_text(message)` guard negated | FAIL: the expected `{"text":"boom","type":"text"}` block is missing |
+
+(One measurement caveat, recorded because it bit this round: the case module imports the shipped script by
+path, and `importlib`'s bytecode cache keys on the source's mtime and size, so two scratch mutations within
+one second that happen to share a size can serve stale bytecode — the first pass reported two rules as
+unpinned and re-measuring with the cache cleared showed both failing. The shipped cases are unaffected: the
+module is not rewritten under a test run.)
+
+Re-measured on this tree: the check's own suite 105 → 109 cases (`Ran 109 tests`, `OK`) — the pre-fix case
+replaced by five (`…is_expected_as_the_parsers_own_encoding`, `…planting_comparison_reads_the_encoding_too`,
+`…encoding_mirrors_the_parsers_own_json_bytes`, `…inline_image_block_is_encoded_in_the_readers_own_members`,
+`…structured_content_and_error_message_follow_as_text_blocks`) — and the `selftest` step 433 → 437
+(`Ran 437 tests`, `rc=0`); the source direction re-run on this host against OpenCode `2.2.5` and Codex
+`0.170.0`, at the load level, over the three-shape planted document:
+
+```console
+$ python3 scripts/opencode-native-check.py --direction opencode-to-codex \
+    --opencode /home/azureuser/.npm-global/bin/opencode \
+    --codex /home/azureuser/.local/share/mise/installs/codex/latest/bin/codex \
+    --source /tmp/ccc-fileblock-doc.json
+…
+PASS: the store holds the fixture document's own conversation — 6 message(s), 3 tool call(s) and their recorded results compared with the fixture's own bytes
+PASS: the installed rollout holds what a conversion writes of the fixture's own prompts, tool call, result text and texts — 18 record(s); 2 prompt(s), 3 call(s) and their recorded results compared with the fixture's own bytes
+…
+RESULT: PASS — 18 check(s), none failed
+```
+
+Gate, re-run on this tree (`GATE: PASS`, exit 0):
+
+```console
+$ python3 scripts/gate.py
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3624 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 437 tests in 8.099s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5718 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified
+  PASS     secrets  no leaks found in 174 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+`AGENTS.md` does not move with this round: it changes no layout, gate step, command, read order or rule an
+agent follows — its OpenCode-source bullet's wording ("the terminal event's text is what the target holds")
+is what the fixed expectation now honours, and the check's registration in `docs/harness.md` carries the
+rule this round added (the parser's own block encoding for a file-bearing result, mirrored byte for byte).
+The plan's §11 gained its seventh departure note and the decision record a new entry (Q-0008-08, the
+disposition between mirroring and refusing). No goal file moves: 0008 is still the increment on its branch,
+awaiting operator acceptance.
+
 ## 7. Residual limits and boundaries named rather than hidden
 
 - **The real turn on this host.** §2 and §4: a Codex turn in a scratch home answers `401 Unauthorized`; the

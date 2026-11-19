@@ -234,6 +234,13 @@ DECIMAL_FLOAT_TEXT = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+
 #: does not. Beyond Latin-1 both read Unicode's ``White_Space`` property, which ``str.isspace`` tracks.
 LATIN1_SPACE = "\t\n\v\f\r \x85\xa0"
 
+#: The uri prefix the carried parser rewrites a *file* block's shape by (see ``opencode_result_block_json``):
+#: an inline image is handed to storage's own keep/drop policy in the shared image representation
+#: (``input_image``/``image_url``) instead of as a file reference, and the prefix is compared the way the
+#: parser's own ``strings.EqualFold`` compares it -- case-insensitively, which for this ASCII prefix is
+#: ``str.lower``'s own answer.
+IMAGE_URI_PREFIX = "data:image/"
+
 #: The owner a result is read under where no call record in the file answers its recorded ``call_id``: the
 #: file's own answer (an output whose call the file does not hold), never a call this comparison picked for
 #: it.
@@ -1412,15 +1419,19 @@ def opencode_tool_state_text(part: dict) -> str:
     where that content is non-empty), and then the recorded ``error.message`` of a part the reader's own
     branch marks errored (``opencode_result_errored``).
 
-    A part whose content carries a ``file`` block answers no text: the reader turns the part's text into
-    result *blocks* there, which the target writers hold no field for and count
-    (``unrepresentable_result_blocks``), so the text does not reach the target at all. Every rule is read
-    from the document here, so the comparison asks what a target can hold rather than what a conversion's
-    own reading of one document happened to answer."""
+    A part whose content carries a ``file`` block answers the parser's own *block* encoding instead
+    (``opencode_result_block_json``): the reader moves the part's text into result blocks rather than into a
+    text, and the event it answers carries that encoding as its content, which the read hands on as decoded
+    text (``internal/ccc/reader.go``'s result events) -- so the writers write those bytes verbatim and the
+    target holds them (measured end to end on this host: the installed rollout's
+    ``function_call_output`` holds the encoding, byte for byte). An expectation holding no text there would
+    report a faithful conversion as a difference. Every rule is read from the document here, so the
+    comparison asks what a target holds rather than what a conversion's own reading of one document happened
+    to answer."""
     state = part.get("state") if isinstance(part.get("state"), dict) else {}
     content = [block for block in state.get("content") or [] if isinstance(block, dict)]
     if any(block.get("type") == "file" for block in content):
-        return ""
+        return opencode_result_block_json(part, state)
     texts = [block["text"] for block in content
              if block.get("type") == "text" and isinstance(block.get("text"), str)]
     structured = state.get("structured")
@@ -1434,6 +1445,98 @@ def opencode_tool_state_text(part: dict) -> str:
         if isinstance(message, str) and message:
             texts.append(message)
     return "\n".join(texts)
+
+
+def opencode_result_block_json(part: dict, state: dict) -> str:
+    """The bytes the carried parser writes for one part whose content carries a ``file`` block
+    (``internal/parser``'s ``openCodeV2ToolCall``): the part's blocks as a JSON array, in the content's own
+    order, encoded by ``opencode_go_json``.
+
+    The blocks are built exactly as the parser builds them: every ``text`` block as
+    ``{"type":"text","text":<its text, empty where it records none>}``; every ``file`` block as
+    ``{"type":"file","uri":<uri>,"mime":<mime>}`` with ``name`` beside them only where it records one, and,
+    where its uri carries the ``data:image/`` prefix (compared case-insensitively, the parser's own
+    ``strings.EqualFold``), the block is the same object with ``type`` rewritten to ``input_image``,
+    ``image_url`` set to the uri and no ``uri`` member -- ``mime`` and a recorded ``name`` stay, because
+    the parser hands an inline image to storage's own keep/drop policy in the shared image shape by
+    rewriting those two members and nothing else; the ``read`` tool's structured UTF-8 content (where the
+    reader appends it) and the recorded ``error.message`` of an errored part (``opencode_result_errored``)
+    follow the content's own blocks as text blocks, which is the order ``appendText`` writes them in."""
+    blocks: list[dict[str, str]] = []
+
+    def append_text(text: str) -> None:
+        blocks.append({"type": "text", "text": text})
+
+    for block in state.get("content") or []:
+        if not isinstance(block, dict):
+            continue
+        kind = block.get("type")
+        if kind == "text":
+            text = block.get("text")
+            append_text(text if isinstance(text, str) else "")
+        elif kind == "file":
+            uri = block.get("uri") if isinstance(block.get("uri"), str) else ""
+            mime = block.get("mime") if isinstance(block.get("mime"), str) else ""
+            name = block.get("name") if isinstance(block.get("name"), str) else ""
+            entry = {"type": "file", "uri": uri, "mime": mime}
+            if name:
+                entry["name"] = name
+            if uri[:len(IMAGE_URI_PREFIX)].lower() == IMAGE_URI_PREFIX:
+                entry["type"] = "input_image"
+                entry["image_url"] = uri
+                del entry["uri"]
+            blocks.append(entry)
+    structured = state.get("structured")
+    if (str(part.get("name") or "") == "read" and isinstance(structured, dict)
+            and structured.get("encoding") == "utf8"
+            and isinstance(structured.get("content"), str) and structured["content"]):
+        append_text(structured["content"])
+    if opencode_result_errored(part, state):
+        error = state.get("error")
+        message = error.get("message") if isinstance(error, dict) else None
+        if isinstance(message, str) and message:
+            append_text(message)
+    return opencode_go_json(blocks)
+
+
+#: The escapes Go's own JSON encoder writes for the characters it does not carry literally: ``"`` and ``\``,
+#: the five control characters with a short spelling (``\b \t \n \f \r``) and, for every other character of
+#: the C0 set, a lowercase ``\u00xx``. Measured on this host through the carried parser's own
+#: ``json.Marshal(blocks, json.Deterministic(true))`` (``internal/parser/opencode_v2.go``) over every code
+#: point below ``0x20``, plus ``0x7f``, ``<``/``>``/``&``, ``U+2028``/``U+2029`` and non-ASCII: every
+#: character outside the C0 set is written literally -- no HTML escaping and no escaping of ``0x7f``, where
+#: Python's own ``json.dumps`` escapes both.
+GO_JSON_SHORT_ESCAPES = {'"': '\\"', "\\": "\\\\", "\b": "\\b", "\t": "\\t", "\n": "\\n",
+                         "\f": "\\f", "\r": "\\r"}
+
+
+def go_json_string(value: str) -> str:
+    """One JSON string as Go's own encoder spells it (``GO_JSON_SHORT_ESCAPES``)."""
+    out = ['"']
+    for character in value:
+        escape = GO_JSON_SHORT_ESCAPES.get(character)
+        if escape is not None:
+            out.append(escape)
+        elif character < " ":
+            out.append(f"\\u{ord(character):04x}")
+        else:
+            out.append(character)
+    out.append('"')
+    return "".join(out)
+
+
+def opencode_go_json(blocks: list[dict[str, str]]) -> str:
+    """One block list as the carried parser's own encoding writes it: a JSON array with no whitespace, each
+    object's members in their names' byte order (the parser's ``json.Deterministic``), each string through
+    ``go_json_string``. The key order is measured, not assumed: ``json.Marshal(map[string]string{…},
+    json.Deterministic(true))`` answered ``{"":"e","A":"a","a":"b","a-":"c","a1":"d",…}`` on this host --
+    byte-lexicographic ascending, which for the fixed member names of a block is ``sorted``'s own order."""
+    encoded = []
+    for block in blocks:
+        members = ",".join(f"{go_json_string(name)}:{go_json_string(block[name])}"
+                           for name in sorted(block))
+        encoded.append("{" + members + "}")
+    return "[" + ",".join(encoded) + "]"
 
 
 def opencode_is_space(character: str) -> bool:
