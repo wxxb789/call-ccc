@@ -1535,6 +1535,8 @@ class SourceDirectionFraming(unittest.TestCase):
         evidence = NATIVE_CHECK.opencode_document_evidence(document)
         self.assertEqual(evidence["call_names"], ["read"])
         self.assertEqual(len(evidence["call_results"]), 1)
+        self.assertEqual(evidence["call_result_owners"], ["0"],
+                         "the fixture's one result is not read under its own call")
         self.assertEqual(len(evidence["user_texts"]), 2)
         # The assistant side is the reader's own rendering of each record, byte for byte: a fixture edit
         # that dropped the reasoning part, or an extractor that stopped building the rendering, fails here.
@@ -1638,6 +1640,7 @@ class SourceEvidence(unittest.TestCase):
     def expected(self) -> dict:
         return {"user_texts": ["a prompt"], "call_names": ["read"],
                 "call_inputs": ['{"path":"/x"}'], "call_results": ["the file's lines"],
+                "call_result_owners": ["0"],
                 "assistant_texts": ["[Thinking]\nthe cap is thirty\n[/Thinking]\nthe cap is thirty",
                                     "four attempts"]}
 
@@ -1654,6 +1657,7 @@ class SourceEvidence(unittest.TestCase):
             "a tool name": {"call_names": ["grep"]},
             "a recorded input": {"call_inputs": ['{"path":"/y"}']},
             "a recorded result": {"call_results": ["something else"]},
+            "a reassigned result": {"call_result_owners": ["1"]},
             "a user text": {"user_texts": ["another prompt"]},
             "an assistant text": {"assistant_texts": ["four attempts"]},
             "a dropped assistant record": {"assistant_texts": []},
@@ -1700,14 +1704,15 @@ class SourceEvidence(unittest.TestCase):
                          "the planting's own reading dropped a text the document records")
         self.assertEqual(written["assistant_texts"], [rendering],
                          "the written reading kept the text of a record that carries a call")
-        for member in ("call_names", "call_inputs", "call_results"):
+        for member in ("call_names", "call_inputs", "call_results", "call_result_owners"):
             self.assertEqual(written[member], recorded[member],
                              f"the two readings differ in {member}, which they must not")
 
         # A conversion's own answer for the document: the call, its recorded result, and the second
         # record's text -- and no message for the mixed record's text.
         rollout = {"user_texts": [], "call_names": ["read"], "call_inputs": ['{"path":"/x"}'],
-                   "call_results": ["the file's lines"], "assistant_texts": [rendering]}
+                   "call_results": ["the file's lines"], "call_result_owners": ["0"],
+                   "assistant_texts": [rendering]}
         self.assertEqual(NATIVE_CHECK.evidence_differences(written, rollout), [],
                          "a conversion that omits the unestablished text was reported as a difference")
         self.assertTrue(NATIVE_CHECK.evidence_differences(
@@ -1722,6 +1727,58 @@ class SourceEvidence(unittest.TestCase):
         a target that wrote it as another output holds a tool output the source never recorded."""
         self.assertTrue(self.differences(call_results=["the file's lines", ""]),
                         "a textless progress event written as a second output was not reported")
+
+    def test_an_output_reassigned_to_another_call_is_a_difference(self) -> None:
+        """The finding the detached result list could not see: a two-call document whose target reassigns
+        the recorded outputs to the wrong calls. **Same count, same order, same texts** -- only the
+        ``call_id`` each output is written under moves -- so a comparison of detached result lists answers
+        "identical", and the pairing member (``call_result_owners``) is what reports it. Both extractors are
+        driven, not a hand-built dict: the document through ``opencode_written_evidence`` and the rollout
+        through ``rollout_records_of``/``rollout_evidence``, which is the pairing a reader of the file
+        makes."""
+        document = {"messages": [
+            {"type": "user", "text": "a prompt", "files": []},
+            {"type": "assistant", "content": [
+                {"type": "tool", "id": "call_a", "name": "read",
+                 "state": {"status": "completed", "input": {"path": "/a"},
+                           "content": [{"type": "text", "text": "A's lines"}]}},
+                {"type": "tool", "id": "call_b", "name": "grep",
+                 "state": {"status": "completed", "input": {"pattern": "x"},
+                           "content": [{"type": "text", "text": "B's lines"}]}}]}]}
+        expected = NATIVE_CHECK.opencode_written_evidence(document)
+        records = rollout_records_of(document)
+        self.assertEqual(expected["call_result_owners"], ["0", "1"],
+                         "the source's own reading does not pair each result with its call")
+        self.assertEqual(NATIVE_CHECK.evidence_differences(expected, NATIVE_CHECK.rollout_evidence(records)),
+                         [], "the case's own rollout is not what a conversion writes")
+
+        def with_owners(owners: list[str]) -> list[dict]:
+            """The same records, each output written under the call ``owners`` names at its place -- the
+            order, the texts and the count are the ones the conversion wrote."""
+            mutated: list[dict] = []
+            index = 0
+            for record in records:
+                payload = dict(record["payload"])
+                if payload.get("type") == "function_call_output":
+                    payload["call_id"] = owners[index]
+                    index += 1
+                mutated.append({**record, "payload": payload})
+            return mutated
+
+        for case, owners in {"both outputs claimed by the first call": ["call_a", "call_a"],
+                             "the two outputs' owners swapped": ["call_b", "call_a"]}.items():
+            with self.subTest(case=case):
+                got = NATIVE_CHECK.rollout_evidence(with_owners(owners))
+                self.assertEqual(got["call_results"], expected["call_results"],
+                                 "the case moved a text, not only the ownership")
+                self.assertEqual(got["call_names"], expected["call_names"])
+                differences = NATIVE_CHECK.evidence_differences(expected, got)
+                self.assertTrue(any("owner" in difference for difference in differences),
+                                f"{case} was not reported: {differences}")
+        self.assertEqual(
+            NATIVE_CHECK.rollout_evidence(with_owners(["call_a", "call_a"]))["call_result_owners"],
+            ["0", NATIVE_CHECK.CALL_RESULT_UNOWNED],
+            "an output no unmatched call record answers is not read as unowned")
 
     def test_a_document_that_lost_the_reasoning_part_is_a_difference(self) -> None:
         """The planting's own comparison is document against document: a store whose assistant record lost
@@ -1754,7 +1811,7 @@ class SourceEvidence(unittest.TestCase):
         self.assertEqual(evidence["call_inputs"], ["{}"])
         self.assertEqual(evidence["call_results"], [])
         settled = {"user_texts": [], "call_names": ["read"], "call_inputs": ["{}"],
-                   "call_results": [], "assistant_texts": []}
+                   "call_results": [], "call_result_owners": [], "assistant_texts": []}
         self.assertEqual(NATIVE_CHECK.evidence_differences(evidence, settled), [],
                          "the empty object a writer holds for an open call was reported as a difference")
 
@@ -1775,7 +1832,8 @@ class SourceEvidence(unittest.TestCase):
                 evidence = NATIVE_CHECK.opencode_document_evidence(document)
                 self.assertEqual(evidence["call_results"], [expected_text])
                 settled = {"user_texts": [], "call_names": [name], "call_inputs": ['{"path":"/x"}'],
-                           "call_results": [expected_text], "assistant_texts": []}
+                           "call_results": [expected_text], "call_result_owners": ["0"],
+                           "assistant_texts": []}
                 self.assertEqual(NATIVE_CHECK.evidence_differences(evidence, settled), [])
 
     def test_a_part_carrying_a_file_block_is_expected_with_no_text(self) -> None:
@@ -1791,7 +1849,7 @@ class SourceEvidence(unittest.TestCase):
         evidence = NATIVE_CHECK.opencode_document_evidence(document)
         self.assertEqual(evidence["call_results"], [])
         settled = {"user_texts": [], "call_names": ["read"], "call_inputs": ['{"path":"/x"}'],
-                   "call_results": [], "assistant_texts": []}
+                   "call_results": [], "call_result_owners": [], "assistant_texts": []}
         self.assertEqual(NATIVE_CHECK.evidence_differences(evidence, settled), [])
 
     def test_an_errored_result_is_expected_because_the_writers_write_its_text(self) -> None:
@@ -1820,7 +1878,8 @@ class SourceEvidence(unittest.TestCase):
         evidence = NATIVE_CHECK.opencode_document_evidence(document)
         self.assertEqual(evidence["call_results"], ["\nread 12 lines"])
         settled = {"user_texts": [], "call_names": ["read"], "call_inputs": ['{"path":"/x"}'],
-                   "call_results": ["\nread 12 lines"], "assistant_texts": []}
+                   "call_results": ["\nread 12 lines"], "call_result_owners": ["0"],
+                   "assistant_texts": []}
         self.assertEqual(NATIVE_CHECK.evidence_differences(evidence, settled), [])
 
     def test_the_error_message_is_part_of_an_errored_result(self) -> None:
@@ -1873,6 +1932,19 @@ class SourceEvidence(unittest.TestCase):
                                  {"type": "user", "text": "\x1c", "files": []}]}
         self.assertEqual(NATIVE_CHECK.opencode_document_evidence(document)["user_texts"], ["\x1c"])
 
+    def test_a_whitespace_only_assistant_text_is_expected_with_no_message(self) -> None:
+        """An assistant record whose rendered text is only whitespace is not a message a conversion writes:
+        the reader's own ``strings.TrimSpace`` filter drops the record where nothing else keeps it, and
+        where token usage keeps it the writer's own whitespace rule still leaves the message out
+        (``whitespace_only_dialogue``) -- because the target's own reader would read a blank-after-trimming
+        message as no message at all. The membership is that same trimming, Go's own set and not Python's
+        wider ``str.strip``: a record whose whole text is the separator ``\x1c`` *is* one the read carries
+        and the writer writes, so it is a member."""
+        document = {"messages": [
+            {"type": "assistant", "content": [{"type": "text", "text": "   "}]},
+            {"type": "assistant", "content": [{"type": "text", "text": "\x1c"}]}]}
+        self.assertEqual(NATIVE_CHECK.opencode_written_evidence(document)["assistant_texts"], ["\x1c"])
+
     def test_a_document_with_an_unmodelled_message_kind_is_refused(self) -> None:
         """A ``shell`` record is the kind the reader answers as both a user record (the command) and tool
         evidence (the call and its recorded output) while this comparison holds no member for either: it is
@@ -1894,7 +1966,22 @@ class SourceEvidence(unittest.TestCase):
         evidence = NATIVE_CHECK.opencode_document_evidence(document)
         self.assertEqual(evidence["call_results"], [])
         settled = {"user_texts": [], "call_names": ["read", "read"], "call_inputs": ["{}", "{}"],
-                   "call_results": [], "assistant_texts": []}
+                   "call_results": [], "call_result_owners": [], "assistant_texts": []}
+        self.assertEqual(NATIVE_CHECK.evidence_differences(evidence, settled), [])
+
+    def test_a_result_whose_text_is_only_the_separator_is_expected(self) -> None:
+        """The result membership asks the same Go-compatible predicate: ``\\x1c`` is not space to the
+        reader's ``strings.TrimSpace`` (Go keeps the information separators Python's ``str.strip`` removes),
+        so a result whose text is that one byte is one the writer writes -- dropping it, as the pre-fix
+        Python trimming did, reports a faithful conversion as a difference."""
+        document = {"messages": [{"type": "assistant", "content": [
+            {"type": "tool", "name": "read", "state": {
+                "status": "completed", "input": {},
+                "content": [{"type": "text", "text": "\x1c"}]}}]}]}
+        evidence = NATIVE_CHECK.opencode_document_evidence(document)
+        self.assertEqual(evidence["call_results"], ["\x1c"])
+        settled = {"user_texts": [], "call_names": ["read"], "call_inputs": ["{}"],
+                   "call_results": ["\x1c"], "call_result_owners": ["0"], "assistant_texts": []}
         self.assertEqual(NATIVE_CHECK.evidence_differences(evidence, settled), [])
 
 
@@ -2283,6 +2370,39 @@ class SourceDirectionRun(unittest.TestCase):
             states["the installed rollout holds what a conversion writes of the fixture's own prompts, "
                    "tool call, result text and texts"], "PASS")
 
+    def test_a_whitespace_only_assistant_record_converts_without_a_false_difference(self) -> None:
+        """The r2 round's whitespace finding, driven through the flow: a caller's ``--source`` document may
+        hold an assistant record whose text is only whitespace. The reader's own filter drops it, and where
+        token usage keeps it the writer's whitespace rule still writes no message -- so the run must expect
+        no message for it and report the conversion as the conversion it is. The fabricated rollout here is
+        the measured writer's own rule (``rollout_records_of``: no message for the blank record), which is
+        what the pre-fix expectation (truthy on any non-empty rendering) would have reported as a missing
+        assistant text."""
+        root = Path(__file__).resolve().parents[2]
+        fixture = json.loads((root / NATIVE_CHECK.FIXTURE_ROOT
+                              / NATIVE_CHECK.OPENCODE_SOURCE_FIXTURE).read_text(encoding="utf-8"))
+        blank = {"id": "msg_blank00000000000000000000001", "type": "assistant", "agent": "build",
+                 "model": {"id": "example-model", "providerID": "example-proxy"},
+                 "time": {"created": 1778231710900, "completed": 1778231711000},
+                 "content": [{"type": "text", "text": "   "}]}
+        document = {**fixture, "messages": [*fixture["messages"], blank]}
+        records = rollout_records_of(document)
+        self.assertNotIn("   ", [block.get("text") for record in records
+                                 for block in (record.get("payload") or {}).get("content") or []
+                                 if isinstance(block, dict)],
+                         "the fabricated rollout holds a message the writer writes none of")
+        with tempfile.TemporaryDirectory() as directory:
+            document_path = Path(directory) / "blank-document.json"
+            document_path.write_text(json.dumps(document), encoding="utf-8")
+            code, states, _, printed, _, _ = self.drive(document, document_path=document_path)
+
+        difference = [name for name, state in states.items() if state == "FAIL"]
+        self.assertEqual(difference, [], f"a check failed on a correctly disclosed conversion: {printed[-800:]}")
+        self.assertEqual(code, 0, printed[-800:])
+        self.assertEqual(
+            states["the installed rollout holds what a conversion writes of the fixture's own prompts, "
+                   "tool call, result text and texts"], "PASS")
+
     def test_a_load_only_run_reads_the_printed_vectors_and_fails_on_another_program(self) -> None:
         """Finding 2 of the round's review, driven through the flow: with no ``--resume-prompt`` no turn
         runs, so the report's argument vectors are read by ``record_codex_invocation`` alone -- the
@@ -2309,15 +2429,23 @@ def rollout_records_of(document: dict) -> list[dict]:
     conversion writes (``opencode_written_evidence``). Used by the driven cases above, which need a target
     file without a conversion.
 
+    Every membership is the comparison's own rule, read through the same functions (``opencode_user_text``
+    and ``opencode_trimmed``, ``opencode_reader_text``, ``opencode_tool_state_text``): a user record's
+    rendered text and a tool result contribute a record only where the text survives the reader's own
+    ``strings.TrimSpace``, and a whitespace-only assistant rendering is not written (the writer's
+    ``whitespace_only_dialogue``), because the target's own reader would read a blank message as no message.
+
     A record that carries a tool call contributes its ``function_call`` and, where the recorded text is one
     the writers write, its ``function_call_output`` -- and *no* assistant message, whatever text parts the
     document gives it: the read establishes no dialogue for a record carrying calls, so no writer writes
     its text (measured on the writer; see the comparison's own case)."""
     records = [{"type": "session_meta", "payload": {"id": "x"}}]
     for message in document.get("messages") or []:
-        if message.get("type") == "user" and message.get("text"):
-            records.append({"type": "response_item", "payload": {"type": "message", "role": "user",
-                                                                 "content": [{"text": message["text"]}]}})
+        if message.get("type") == "user":
+            text = NATIVE_CHECK.opencode_user_text(message)
+            if NATIVE_CHECK.opencode_trimmed(text):
+                records.append({"type": "response_item", "payload": {
+                    "type": "message", "role": "user", "content": [{"text": text}]}})
         elif message.get("type") == "assistant":
             carries_call = False
             for part in message.get("content") or []:
@@ -2328,12 +2456,12 @@ def rollout_records_of(document: dict) -> list[dict]:
                         "arguments": NATIVE_CHECK.opencode_tool_call_input(part),
                         "call_id": part.get("id")}})
                     text = NATIVE_CHECK.opencode_tool_state_text(part)
-                    if text.strip():
+                    if NATIVE_CHECK.opencode_trimmed(text):
                         records.append({"type": "response_item", "payload": {
                             "type": "function_call_output", "call_id": part.get("id"),
                             "output": text}})
             rendering = NATIVE_CHECK.opencode_reader_text(message)
-            if rendering and not carries_call:
+            if NATIVE_CHECK.opencode_trimmed(rendering) and not carries_call:
                 records.append({"type": "response_item", "payload": {
                     "type": "message", "role": "assistant", "content": [{"text": rendering}]}})
     return records

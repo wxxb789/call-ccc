@@ -234,6 +234,11 @@ DECIMAL_FLOAT_TEXT = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+
 #: does not. Beyond Latin-1 both read Unicode's ``White_Space`` property, which ``str.isspace`` tracks.
 LATIN1_SPACE = "\t\n\v\f\r \x85\xa0"
 
+#: The owner a result is read under where no call record in the file answers its recorded ``call_id``: the
+#: file's own answer (an output whose call the file does not hold), never a call this comparison picked for
+#: it.
+CALL_RESULT_UNOWNED = "no call"
+
 #: The names the harness resolves its store under, below the data root.
 OPENCODE_DATA_DIR = "opencode"
 OPENCODE_STORE = "opencode.db"
@@ -1572,9 +1577,25 @@ def _opencode_evidence(document: dict, *, as_a_conversion_writes: bool) -> dict[
     """Both readings of one document's members, in one walk so the members cannot drift apart: the reading
     the document records (``opencode_document_evidence``) and the reading a conversion writes
     (``opencode_written_evidence``), told apart by ``as_a_conversion_writes`` -- the text of a record that
-    carries a tool call, which the document records and no target holds."""
+    carries a tool call, which the document records and no target holds.
+
+    Membership is part of every text member's rule, and it is the reader's own: a rendered text or a result
+    text whose ``opencode_trimmed`` is empty is *not* a member, because the reader's own ``strings.TrimSpace``
+    filter drops the record where nothing else keeps it, and where token usage keeps the record the writers'
+    own whitespace rule still leaves the message or output out (``whitespace_only_dialogue``,
+    ``whitespace_only_tool_results``) -- the target's own reader would read a blank-after-trimming record as
+    no record at all. The trimming is the reader's own set (``opencode_trimmed``), never Python's wider
+    ``str.strip``.
+
+    A result is carried beside the call it answers (``call_result_owners``): the read answers each result on
+    the part that recorded its call, so the owner is that call's position in the walk. The recorded id
+    itself is not compared -- the source's ids are not the wire's to preserve (each writer trims a recorded
+    one, and generates one for a call that recorded none) -- but the *association* is: a target that wrote
+    the recorded texts under the wrong calls is a difference even where the count, the order and the texts
+    are unchanged."""
     evidence: dict[str, list[str]] = {"user_texts": [], "call_names": [], "call_inputs": [],
-                                      "call_results": [], "assistant_texts": []}
+                                      "call_results": [], "call_result_owners": [],
+                                      "assistant_texts": []}
     for message in document.get("messages") or []:
         if not isinstance(message, dict):
             continue
@@ -1603,7 +1624,7 @@ def _opencode_evidence(document: dict, *, as_a_conversion_writes: bool) -> dict[
         # source's own read never established, and that is a difference.
         if not (as_a_conversion_writes and carries_call):
             rendering = opencode_reader_text(message)
-            if rendering:
+            if opencode_trimmed(rendering):
                 evidence["assistant_texts"].append(rendering)
         for part in parts:
             if not isinstance(part, dict) or part.get("type") != "tool":
@@ -1615,18 +1636,28 @@ def _opencode_evidence(document: dict, *, as_a_conversion_writes: bool) -> dict[
             # the writers write an output only where the text is one they can write.
             if str(state.get("status") or "") in ("completed", "error"):
                 text = opencode_tool_state_text(part)
-                if text.strip():
+                if opencode_trimmed(text):
                     evidence["call_results"].append(text)
+                    evidence["call_result_owners"].append(str(len(evidence["call_names"]) - 1))
     return evidence
 
 
 def rollout_evidence(records: list[dict]) -> dict[str, list[str]]:
     """What one installed Codex rollout records, in the same members the OpenCode side is read by: its
-    message items' texts and each ``function_call``'s name, recorded arguments and ``function_call_output``
-    text. A record that is not a ``response_item`` payload (a ``turn_context``, an ``event_msg``, the
+    message items' texts, each ``function_call``'s name and recorded arguments, and each
+    ``function_call_output``'s text together with the call it is written for (``call_result_owners``).
+
+    The owner is read the way the file itself pairs the two: an output's recorded ``call_id`` names its
+    call, and where several call records carry one id the next one no earlier output claimed answers it. An
+    output whose id no unmatched call record answers is owned by no call (``CALL_RESULT_UNOWNED``). A
+    comparison of detached result texts would report a same-count reassignment of outputs to the wrong calls
+    as identical -- the review round measured exactly that -- so the pairing is read here and compared. A
+    record that is not a ``response_item`` payload (a ``turn_context``, an ``event_msg``, the
     ``session_meta`` line) carries no member this comparison asks about and is skipped."""
     evidence: dict[str, list[str]] = {"user_texts": [], "call_names": [], "call_inputs": [],
-                                      "call_results": [], "assistant_texts": []}
+                                      "call_results": [], "call_result_owners": [],
+                                      "assistant_texts": []}
+    unmatched: dict[str, list[int]] = {}
     for record in records:
         payload = record.get("payload")
         if not isinstance(payload, dict):
@@ -1642,8 +1673,12 @@ def rollout_evidence(records: list[dict]) -> dict[str, list[str]]:
         elif kind == "function_call":
             evidence["call_names"].append(str(payload.get("name") or ""))
             evidence["call_inputs"].append(canonical_json_value(payload.get("arguments")))
+            unmatched.setdefault(str(payload.get("call_id") or ""), []).append(
+                len(evidence["call_names"]) - 1)
         elif kind == "function_call_output":
+            queue = unmatched.get(str(payload.get("call_id") or ""))
             evidence["call_results"].append(str(payload.get("output") or ""))
+            evidence["call_result_owners"].append(str(queue.pop(0) if queue else CALL_RESULT_UNOWNED))
     return evidence
 
 
@@ -1653,17 +1688,20 @@ def evidence_differences(expected: dict[str, list[str]], got: dict[str, list[str
     Both sides are read into the same members (``opencode_written_evidence`` for the source document -- what
     a conversion writes for it -- and ``rollout_evidence`` for an installed Codex rollout, or
     ``opencode_document_evidence`` on both sides for the planting's document-against-document one), so every
-    member is compared member for member: the user texts, each tool call's name, its recorded input value
-    and its recorded result text -- one result per call, because the textless progress event a completed
-    OpenCode tool part produces beside its terminal one is not a second output -- and the assistant texts,
-    the reader's own rendering of a persisted reasoning trace among them, and the text of a record that
-    carries a call where the document has one and no target may hold it (``opencode_written_evidence``).
-    Nothing is compared by containment: a target that wrote the record's own words where the source's read
-    carries the rendering has dropped the trace, and a target that wrote a record's text where the read
-    established no dialogue has published what the source never recorded -- both are differences."""
+    member is compared member for member: the user texts, each tool call's name, its recorded input value and
+    its recorded result text, each result *under the call it answers* (``call_result_owners`` -- one result
+    per call, because the textless progress event a completed OpenCode tool part produces beside its terminal
+    one is not a second output, and a same-count reassignment of the recorded outputs to the wrong calls is a
+    difference rather than the same evidence), and the assistant texts, the reader's own rendering of a
+    persisted reasoning trace among them, and the text of a record that carries a call where the document has
+    one and no target may hold it (``opencode_written_evidence``). Nothing is compared by containment: a
+    target that wrote the record's own words where the source's read carries the rendering has dropped the
+    trace, and a target that wrote a record's text where the read established no dialogue has published what
+    the source never recorded -- both are differences."""
     differences: list[str] = []
     for key, label in (("user_texts", "user text"), ("call_names", "tool name"),
                        ("call_inputs", "recorded tool input"), ("call_results", "recorded tool result"),
+                       ("call_result_owners", "recorded tool result owner"),
                        ("assistant_texts", "assistant text")):
         if expected[key] != got[key]:
             differences.append(f"the {label}(s) are {bounded(json.dumps(got[key]), 160)}, the source "

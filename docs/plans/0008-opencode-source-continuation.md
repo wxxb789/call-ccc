@@ -303,3 +303,15 @@ habit), followed by the review round's own:
    `--resume-prompt` no turn reads them, so the load-only run accepted a consistently rendered pair naming
    another program. Both are pinned by cases in `scripts/tests/test_opencode_native_check.py` (a mixed
    document driven through the flow, and a load-only flow whose report names another program).
+
+6. **The source-side comparison carries each result's ownership, and reads every text membership through
+   the reader's own trimming.** The review's r2 round measured the two gaps: the evidence held detached
+   lists, so a same-count reassignment of the recorded outputs to the wrong calls (every list element
+   identical) passed as "one output per call"; and the assistant-text and result-text memberships used
+   Python's truthiness/`str.strip`, which admits a whitespace-only rendering the reader's `strings.TrimSpace`
+   filter (or, when token usage keeps the record, the writer's whitespace rule) leaves out, and *drops* a
+   text of the information separators `\x1c`-`\x1f` that Go keeps. Every result is now read under the call it
+   answers (`call_result_owners`: the call's place in the source walk; the rollout's own pairing by
+   `call_id`, the next unmatched call record under that id), and every text membership uses
+   `opencode_trimmed`. Both are pinned by cases that fail on the pre-fix script (the wrong-owner reassignment
+   and the two whitespace memberships, unit and driven).

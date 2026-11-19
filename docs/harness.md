@@ -593,25 +593,34 @@ says so.
   `--directory` is what places the session, and the importer (measured) rewrites only `info.projectID`,
   `info.location.directory` and `info.time.updated` — reads it back with the harness's own `session export`
   and compares the two documents over the members this comparison reads — the user texts (each user record
-  as the inherited reader renders it: the message's own text and its recorded attachments), each tool part's
-  name, its recorded input value, its terminal text (every content text block, an empty one included, and
-  the recorded `state.error.message` where the reader's own errored branch appends one), and each record's
-  rendered text (a store holding another conversation is reported, not converted; a document carrying a
-  `shell` message — the one kind the reader answers as both a user record and tool evidence while this
-  comparison holds no member for either — is refused by name, exit 2, before the harness is asked to import
-  anything) — converts through the CLI **at the load level** (`ccc continue opencode:<id> --to codex
+  as the inherited reader renders it: the message's own text and its recorded attachments, admitted only
+  where it survives the reader's own `strings.TrimSpace`), each tool part's name, its recorded input value,
+  its terminal text under the call the part *is* (every content text block, an empty one included, and the
+  recorded `state.error.message` where the reader's own errored branch appends one — the pairing is carried
+  as the call's place in the walk, so a document whose result texts were reassigned to the wrong calls is a
+  difference rather than the same evidence), and each record's rendered text (a text member is admitted only
+  where it survives that same trimming — *Go's* set: a text of, say, the single information separator
+  `\x1c`, which Python's own trimming would drop, is a member and a whitespace-only one is not; a store
+  holding another conversation is reported, not converted; a document carrying a `shell` message — the one
+  kind the reader answers as both a user record and tool evidence while this comparison holds no member for
+  either — is refused by name, exit 2, before the harness is asked to import anything) — converts through
+  the CLI **at the load level** (`ccc continue opencode:<id> --to codex
   --verify load --json`, `OPENCODE_DIR` naming the scratch root), and then reads the *installed Codex
   rollout's own records* against the *fixture document's own bytes*: the user texts, each tool call's name,
   its recorded input value (canonicalized — a rollout writes the arguments as a JSON string and the store
-  keeps the parsed value) and its recorded result text, one output per call (the textless progress event a
-  completed OpenCode tool part produces is not a second output), and the assistant texts the conversion
+  keeps the parsed value) and its recorded result text, **each output under the call it answers** (the
+  file's own pairing, read by `call_id` — the textless progress event a completed OpenCode tool part
+  produces is not a second output, and a same-count reassignment of the recorded texts to the wrong calls,
+  which leaves the detached lists identical, is a difference), and the assistant texts the conversion
   *writes*: the inherited reader's own **rendering** of a record that carries a persisted reasoning trace
   (`[Thinking]\n<trace>\n[/Thinking]` + the record's text), and **no** text for a record that carries a tool
   call — the read establishes no dialogue for such a record (the reader renders the trace into `Content` and
   records no trace text and no projection, so nothing separates the rendering from the record's own words),
   every writer omits its text and counts it `unresolved_dialogue`, and the equality comparison reports a
   target that wrote it. The assistant texts are compared byte for byte, never by containment, so a target
-  that dropped the trace — or published a text the source's read never established — is a difference; the
+  that dropped the trace — or published a text the source's read never established — is a difference; a
+  rendering that survives no trimming is no member at all (the reader's own filter and the writer's
+  whitespace rule leave such a record out, so a target holding no message for it is faithful); the
   planting's own comparison, document against document, keeps the record's text for the mixed shape too and
   would report a store whose assistant record lost a part.
   It records the container-member boundary the report

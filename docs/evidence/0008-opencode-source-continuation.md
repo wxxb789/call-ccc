@@ -648,6 +648,145 @@ agent follows — the check's own registration in `docs/harness.md` carries the 
 (the comparison's mixed-record reading and the load-only reading of both vectors), and the plan's §11 gained
 its fifth departure note.
 
+### The third review round's findings (`r2`, on `45be503` + working tree), fixed and re-measured
+
+`review-findings-r2.md` carried two P2 findings, both about `scripts/opencode-native-check.py`'s
+source-direction comparison and both established by the reviewer's static trace. Each was reproduced here
+before anything was changed, in-process against the shipped module and over the check's *own* extractors
+rather than over hand-built dicts (the two-call document below through `opencode_written_evidence`, the
+records a conversion writes for it through `rollout_evidence`). Four cases were added to
+`scripts/tests/test_opencode_native_check.py`; run against the pre-fix script (a scratch copy of `scripts/`
+with `git show HEAD:scripts/opencode-native-check.py` in place of the fixed one, the new test file kept),
+seven cases fail — the list and the behaviours below — and the check's own suite passes 105/105 on this
+tree.
+
+**R2-1 — the comparison read detached lists, so no call/result association was compared (P2).**
+`_opencode_evidence` carried every call's own `id` in no member and `rollout_evidence` dropped every
+`call_id`, so a same-count reassignment of the recorded outputs to the wrong calls left every compared
+list identical. Reproduced: a two-call document (a `read` part and a `grep` part, each with one recorded
+result) whose rollout writes both calls and both outputs with the two outputs' `call_id`s swapped — the
+count, the order and the texts are the conversion's own:
+
+```
+pre-fix  expected: {"assistant_texts": [], "call_inputs": ["{\"path\":\"/a\"}", "{\"pattern\":\"x\"}"], "call_names": ["read", "grep"], "call_results": ["A's lines", "B's lines"], "user_texts": []}
+pre-fix  got     : {"assistant_texts": [], "call_inputs": ["{\"path\":\"/a\"}", "{\"pattern\":\"x\"}"], "call_names": ["read", "grep"], "call_results": ["A's lines", "B's lines"], "user_texts": []}
+pre-fix  differences: []
+fixed    expected: {"assistant_texts": [], "call_inputs": ["{\"path\":\"/a\"}", "{\"pattern\":\"x\"}"], "call_names": ["read", "grep"], "call_result_owners": ["0", "1"], "call_results": ["A's lines", "B's lines"], "user_texts": []}
+fixed    got     : {"assistant_texts": [], "call_inputs": ["{\"path\":\"/a\"}", "{\"pattern\":\"x\"}"], "call_names": ["read", "grep"], "call_result_owners": ["no call", "0"], "call_results": ["A's lines", "B's lines"], "user_texts": []}
+fixed    differences: ['the recorded tool result owner(s) are ["no call", "0"], the source recorded ["0", "1"]']
+```
+
+Every result is now carried under the call it answers (`call_result_owners`): on the source side the
+call's place in the walk (the read answers each result on the part that recorded its call), on the rollout
+side the file's own pairing — an output's recorded `call_id` names its call, the next unmatched call
+record under that id where several carry one, and `no call` where no unmatched call record answers it
+(measured on the swapped file above: the first output names `call_b` before that call's record is written,
+so it answers no call yet; the second output claims the first call, whose own output it is not). The
+recorded id itself is deliberately not compared: the source's ids are not the wire's to preserve (a
+conversion trims a recorded one and generates one for a call that recorded none, so an id-less part's
+expectation cannot know the generated spelling), while the association is what "one output per call" means.
+Pinned by `SourceEvidence.test_an_output_reassigned_to_another_call_is_a_difference` (both mutations —
+both outputs claimed by the first call, and the owners swapped — with the detached members asserted
+unchanged so the pairing member is what catches them),
+`test_a_target_that_mangled_the_call_or_a_prompt_is_a_difference`'s reassigned-result arm,
+`test_a_record_carrying_a_call_is_expected_with_no_text`'s member loop, and
+`SourceDirectionFraming.test_the_committed_fixture_is_the_source_document`'s owner assertion.
+
+**R2-2 — the membership predicate was Python's, not the reader's (P2).** The assistant-text and
+result-text membership tests used `if rendering:` and `text.strip()`, where the rule is the reader's own
+`strings.TrimSpace`: a whitespace-only rendering is not a message a conversion writes (the reader's filter
+drops the record where nothing else keeps it, and where token usage keeps it the writer's whitespace rule
+still leaves the message out, because the target's own reader would read a blank message as no message),
+and a text of the information separators `\x1c`-`\x1f` *is* written (Go keeps them where Python's
+`str.strip` removes them). Reproduced:
+
+```
+pre-fix  blank assistant_texts : ['   ']      (the writer writes no message for it)
+pre-fix  separator call_results: []           (the writer writes "\x1c")
+fixed    blank assistant_texts : []
+fixed    separator call_results: ['\x1c']
+```
+
+Both memberships now ask `opencode_trimmed` (the reader's own set, already spelled for the user-text
+member). Pinned by `test_a_whitespace_only_assistant_text_is_expected_with_no_message`,
+`test_a_result_whose_text_is_only_the_separator_is_expected`, and, through the whole flow,
+`SourceDirectionRun.test_a_whitespace_only_assistant_record_converts_without_a_false_difference` — whose
+fabricated rollout is the measured writer's rule (`rollout_records_of`, which now reads every membership
+through the same functions) and which fails on the pre-fix script with the check's own false difference
+(`the installed rollout holds what a conversion writes of the fixture's own prompts, tool call, result
+text and texts`).
+
+The pre-fix run of the new test file against the old script (`FAILED (failures=4, errors=3)`):
+
+```
+FAIL: test_a_result_whose_text_is_only_the_separator_is_expected (test_opencode_native_check.SourceEvidence.test_a_result_whose_text_is_only_the_separator_is_expected)
+FAIL: test_a_target_that_mangled_the_call_or_a_prompt_is_a_difference (test_opencode_native_check.SourceEvidence.test_a_target_that_mangled_the_call_or_a_prompt_is_a_difference) (case='a reassigned result')
+FAIL: test_a_whitespace_only_assistant_record_converts_without_a_false_difference (test_opencode_native_check.SourceDirectionRun.test_a_whitespace_only_assistant_record_converts_without_a_false_difference)
+FAIL: test_a_whitespace_only_assistant_text_is_expected_with_no_message (test_opencode_native_check.SourceEvidence.test_a_whitespace_only_assistant_text_is_expected_with_no_message)
+ERROR: test_a_record_carrying_a_call_is_expected_with_no_text (test_opencode_native_check.SourceEvidence.test_a_record_carrying_a_call_is_expected_with_no_text)
+ERROR: test_an_output_reassigned_to_another_call_is_a_difference (test_opencode_native_check.SourceEvidence.test_an_output_reassigned_to_another_call_is_a_difference)
+ERROR: test_the_committed_fixture_is_the_source_document (test_opencode_native_check.SourceDirectionFraming.test_the_committed_fixture_is_the_source_document)
+```
+
+(The `ERROR`s are the cases whose *members* the pre-fix extractors do not carry at all; the `FAIL`s are
+the behavioural ones, the reassigned-result arm — the finding's own shape — and the two whitespace
+memberships among them.)
+
+Re-measured: the check's own suite 101 -> 105 cases (`Ran 105 tests`, `OK`) and the `selftest` step
+429 -> 433 (`Ran 433 tests`, `rc=0`); the source direction re-run on this host against OpenCode `2.2.5`
+and Codex `0.170.0`, at the load level — the strengthened rollout comparison passes over the file the
+real writer installs:
+
+```console
+$ python3 scripts/opencode-native-check.py --direction opencode-to-codex \
+    --opencode /home/azureuser/.npm-global/bin/opencode
+…
+PASS: the installed rollout holds what a conversion writes of the fixture's own prompts, tool call, result text and texts — 14 record(s); 2 prompt(s), 1 call(s) and their recorded results compared with the fixture's own bytes
+PASS: the target harness's own loader verified the installed session — the harness's loader answered with this session's own id and path; opening a session makes the harness record its own settings in it (measured: one thread_settings_applied record), and no session other than the one it opened is touched
+…
+RESULT: PASS — 18 check(s), none failed
+```
+
+and with a turn requested, the arm §2 discloses is unchanged — every other line passing, the installed
+rollout's comparison included, and the turn failing on the same boundary:
+
+and with a turn requested (the same command plus `--resume-prompt "Reply with exactly:
+OPENCODE-SOURCE-OK" --expect OPENCODE-SOURCE-OK`), the arm §2 discloses is unchanged — every other line
+passing, the installed rollout's comparison included, and the turn failing on the same boundary:
+
+```console
+…
+FAIL: a real turn continues from the installed session — exit 1, session 3804 -> 109185 bytes
+FAIL: the turn's answer contains 'OPENCODE-SOURCE-OK'
+PASS: the turn was appended to the installed session — 14 record(s) before the turn, 28 after; the records the conversion wrote are unchanged; the prompt is in the records it now holds
+RESULT: FAIL — 2 check(s) failed: a real turn continues from the installed session, the turn's answer contains 'OPENCODE-SOURCE-OK'
+```
+
+Gate, re-run on this tree (`GATE: PASS`, exit 0):
+
+```console
+$ python3 scripts/gate.py
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3624 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 433 tests in 7.887s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5718 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified
+  PASS     secrets  no leaks found in 174 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+`AGENTS.md` does not move with this round: it changes no layout, gate step, command, read order or rule an
+agent follows — the check's own registration in `docs/harness.md` carries the two rules this round added
+(each result read under the call it answers; every text membership read through the reader's own trimming),
+and the plan's §11 gained its sixth departure note. No new OPEN-QUESTIONS entry: both findings are the
+comparison's own already-claimed rules ("one output per call" and the reader's filter), so no owner-only
+default was taken. No goal file moves: 0008 is still the increment on its branch, awaiting operator
+acceptance.
+
 ## 7. Residual limits and boundaries named rather than hidden
 
 - **The real turn on this host.** §2 and §4: a Codex turn in a scratch home answers `401 Unauthorized`; the
