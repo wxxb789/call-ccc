@@ -1625,12 +1625,17 @@ func TestOpenCodeParallelToolSpansKeepTheirOwnInstants(t *testing.T) {
 	}
 	openCodeRequireLoss(t, session, "unpaired_tool_calls", 0)
 	openCodeRequireLoss(t, session, "repeated_tool_results", 0)
+	// Every part of an ordered source keeps the pair the read answered, so nothing is counted as an
+	// adjustment here: a counter that fired on any part would show up as a claim of a rewrite that did
+	// not happen.
+	openCodeRequireLoss(t, session, "result_completion_adjustments", 0)
 
 	// The one adjustment the pair may take: a source whose records are out of order -- here the call's
 	// record carries the later instant and the result's record the earlier one, while the read's own order
 	// is the one the document keeps -- cannot write a part whose end precedes its start. The part's whole
-	// span is then the message's own instant, which the comment on the clock's own span and the plan's
-	// timestamps row disclose; nothing else about the recorded pair is rewritten.
+	// span is then the message's own instant, and the report counts the part under its own row
+	// (result_completion_adjustments) rather than leaving the raised instant to read as the one the
+	// result's record carried; nothing else about the recorded pair is rewritten.
 	unordered := openCodeTestConversation(
 		Message{Role: "assistant", Dialogue: "later call", DialogueProjected: true, Content: "later call",
 			Timestamp: at.Add(time.Second),
@@ -1659,6 +1664,53 @@ func TestOpenCodeParallelToolSpansKeepTheirOwnInstants(t *testing.T) {
 		t.Errorf("call-late time = %+v, want the message's own instant %d twice: the result's record "+
 			"precedes the call's, so the part may not end before it starts",
 			span, at.Add(time.Second).UnixMilli())
+	}
+	// This part's read answered no instant of the result's own record -- the arm's result carries none --
+	// and even the instant it fell back to (the record that carried the result) precedes the call's own
+	// record, so both rows count it: the fallback names *which* instant the read answered, the adjustment
+	// names that the answer was not written. A reader of one row alone would take the part's instant for
+	// the read's own answer.
+	openCodeRequireLoss(t, session, "result_completion_fallbacks", 1)
+	openCodeRequireLoss(t, session, "result_completion_adjustments", 1)
+
+	// The raise is counted where the read *did* answer an instant of the result's own record, which is the
+	// shape the review's finding named: the result's record carries `at` and the call's record `at+1s`, so
+	// the instant the read answered is not what the document holds. The report counts it under the
+	// adjustment row rather than filing it as a fallback -- the read held an instant -- and rather than
+	// leaving the part's own start to read as the result's recorded completion.
+	stampedResult := openCodeTestResult("call-stamped", "completed", `"d"`)
+	stampedResult.Timestamp = at
+	stamped := openCodeTestConversation(
+		Message{Role: "assistant", Dialogue: "later call", DialogueProjected: true, Content: "later call",
+			Timestamp: at.Add(time.Second),
+			ToolCalls: []ToolCall{openCodeTestCall("call-stamped", "Read", `{"file_path":"/d"}`)}},
+		Message{Role: "user", Timestamp: at, ToolResults: []ToolResult{stampedResult}},
+	)
+	session, err = ConvertToOpenCodeSession(stamped, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting an unordered source whose result records its own instant: %v", err)
+	}
+	if err := json.Unmarshal(session.Data, &document); err != nil {
+		t.Fatalf("the document does not parse: %v", err)
+	}
+	span = nil
+	for _, message := range document.Messages {
+		for _, part := range message.Content {
+			if part.Type == openCodePartTool && part.ID == "call-stamped" {
+				span = part.Time
+			}
+		}
+	}
+	if span == nil || span.Created != at.Add(time.Second).UnixMilli() ||
+		span.Completed != at.Add(time.Second).UnixMilli() {
+		t.Errorf("call-stamped time = %+v, want the call's own instant %d twice: the result's record "+
+			"carries %d, which precedes the call's, so the part may not end before it starts",
+			span, at.Add(time.Second).UnixMilli(), at.UnixMilli())
+	}
+	openCodeRequireLoss(t, session, "result_completion_adjustments", 1)
+	openCodeRequireLoss(t, session, "result_completion_fallbacks", 0)
+	if detail := openCodeLossDetail(t, session, "result_completion_adjustments"); !strings.Contains(detail, "raised to the part's `created`") {
+		t.Errorf("result_completion_adjustments detail = %q, want the raise and the instant written named", detail)
 	}
 }
 

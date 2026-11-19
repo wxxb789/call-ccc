@@ -2672,15 +2672,121 @@ The required lines, verbatim with their own return codes, from that run over thi
 and two grown lists are not cited). A later run on the final tree reprinted every step line and every count,
 differing only in the `selftest` line's duration, and exited 0.
 
+### The PR #9 machine review's second finding (`857fc4a` + working tree), applied
+
+The cross-family machine review of PR #9 (`review-lane.py`, round 1, gpt-6.1-sol) returned two findings
+against the head it was handed (`8ad094d`). Its first was a stale-head artifact — that head's
+`internal/ccc/pi_target.go` had been reverted to its pre-fix content by an operator step — and the Pi half
+of STD-A02 is restored on this head; re-derived here, `go test -count=1 -tags fts5 -run
+'TestPiSessionReportsEveryLossCategory|TestEveryRouteCountsWhatTheReadCouldNotEstablish' ./internal/ccc/`
+printed `ok  	go.kenn.io/agentsview/internal/ccc	0.028s` and exited 0. The second finding is this round's
+edit.
+
+**The tool-span clock's raise was disclosed by no category.** The review's own words:
+
+> For a call recorded at `t+1` whose result has its own nonzero timestamp at `t`, `span` replaces the
+> recorded completion with `t+1`. The planner marks `resultCompletionFallback` only when the result
+> timestamp is absent, so this rewrite produces no timestamp-loss count; the report continues to describe
+> completion as the result's recorded instant. The unordered-source arm of
+> `TestOpenCodeParallelToolSpansKeepTheirOwnInstants` already exercises this adjustment, but asserts only
+> the rewritten bytes. Count and disclose adjusted timestamps in `conversion.losses[]`, including when the
+> original timestamp was present. A code comment or plan description does not disclose which conversions
+> changed recorded spans.
+
+Re-derived on this tree: `openCodeClock.span` (`internal/ccc/opencode_target.go:466-476`) raises
+`completed` to the part's `created` whenever the instant the read answered for the result precedes it, and
+the only row that counted a substituted completion was `result_completion_fallbacks`, whose condition —
+the planner's `resultCompletionFallback`, set at `opencode_target.go:647-652` — is the *absent* instant, so
+the raise of a present one was silent and a reader took the part's own start for the result's recorded
+completion. The reviewed arm's result carries no instant of its own, so what it re-derives there is the
+containing record's instant (the fallback read), not the result's own record as the finding's words say;
+the raise fires on both readings, which is why the count is the raise itself and the two rows stay apart,
+and the case now pins both.
+
+**What changed.** The raise is counted per written part, past every omission guard, under
+`result_completion_adjustments` (`opencode_target.go`: the counter at :404, the count at :1089, and the row
+at :1581 beside `result_completion_fallbacks` at :1565), and the two rows are kept apart on purpose: the
+fallback row answers *which* instant the read answered (the containing record's, where it held none of the
+result's own), the adjustment row answers whether that answer was written. A part whose fallback instant
+itself precedes the call's own record takes both rows — the fallback row's detail says so — while a result
+whose record holds no instant at all stays the fallback read alone. No written byte moves for any source:
+the diff is a counter, its increment and one row of the report, `span`'s own arithmetic is untouched, and
+the pair the existing arms assert is what it was — so the load-level runs of §§1–2 still describe what this
+route writes and no native check was re-run. The plan's timestamps row and its `tool_part_times` /
+`result_completion_fallbacks` / `result_completion_adjustments` row now state the clock's whole rule, the
+control file's OpenCode clause names the raise beside the fallback (a rule an agent must follow, so it
+moved in the same increment), and the report names 42 rows on this route (40 literal + the two shared
+dialogue rows; the recorded runs of §§1–2 hold `result_completion_adjustments ×0`, their sources being
+ordered).
+
+**The pin.** `TestOpenCodeParallelToolSpansKeepTheirOwnInstants` asserted the rewritten bytes of the raise
+and nothing about the report; it now asserts the row on both readings, and the assertions are not vacuous:
+each mutation below was made in a throw-away copy (`/tmp/cccfix-p2`, restored from the tree and deleted
+afterwards) and each ran `go test -count=1 -tags fts5 -run
+'TestOpenCodeParallelToolSpansKeepTheirOwnInstants' ./internal/ccc/`, which failed there:
+
+| what the case pins | the mutation | the failure it produced |
+| --- | --- | --- |
+| the raise is counted | `opencode_target.go:1089`: the condition disabled (`false && …`) | `opencode_target_test.go:1674: result_completion_adjustments = 0, want 1`; `:1710: result_completion_adjustments = 0, want 1` |
+| the two rows are separate reads | `opencode_target.go:1090`: the raise counted as `lossResultCompletionFallbacks` (the rows merged) | `:1673: result_completion_fallbacks = 2, want 1`; `:1674: result_completion_adjustments = 0, want 1`; `:1710: result_completion_adjustments = 0, want 1`; `:1711: result_completion_fallbacks = 1, want 0` |
+| the row says what was rewritten | the row's phrase `raised to the` changed to `follows the` | `:1713: result_completion_adjustments detail = "the document's message order is the read's own, … result_completion_fallbacks", want the raise and the instant written named` (the message quotes the row's sentence whole; this record elides its middle) |
+
+The arms the case grew: the unordered arm now asserts `result_completion_fallbacks ×1` beside
+`result_completion_adjustments ×1` (its result recorded no instant of its own, and even the fallback
+instant precedes the call's record), and a new arm — the finding's own shape — carries the result's *own*
+instant `at` on a record standing before its call's `at+1s` and asserts `result_completion_adjustments ×1`,
+`result_completion_fallbacks ×0`, the pair `at+1s` twice, and the row's detail. The ordered arm asserts
+`result_completion_adjustments ×0`, so a counter that fired on any part fails there too.
+`docs/evidence/0007-citations.tsv` gains one row for the control file's new clause — R10, this case — which
+the `citations` step verifies with the rest (28 rows in that file). The narrowed suites' test functions
+still count 402 (`^func Test` over the test files git lists under `cmd/ccc` and `internal/ccc`): no case was
+added, deleted, renamed or weakened — one case grew two arms and two assertions moved into it — and `gofmt`
+still counts 3622 `*.go` files.
+
+**The sibling class, reported and not fixed.** The same shape — a recorded instant silently replaced by
+another — stands outside this round's edit, and each is a finding for the operator rather than an edit
+here: `entryClock.next` (`internal/ccc/route_shared.go:57-64`) raises an absent-or-earlier entry instant to
+the previous written record's for the Codex, Claude, Pi and OMP routes (call sites
+`codex_target.go:636-809`, `claude_target.go:370-694`, `pi_target.go:822-1170`), with no category naming
+it; and this route's own message floor, `openCodeClock.next` (`opencode_target.go:439-450`, read for
+`created` at :880), raises a message's own instant the same way — the unordered arm above reaches it, its
+user record at `at` written with `created = at+1s` and the report counting nothing for the raise. Both sit
+outside `span`, whose raise is this round's subject; a fix would have to decide what each route's report
+says about a raised record instant, and for the shared clock what all four routes say.
+
+`python3 scripts/gate.py`, exit code 0, on this round's final tree:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3622 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 384 tests in 8.675s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5709 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 28 row(s) verified
+  PASS     secrets  no leaks found in 163 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The required lines, verbatim with their own return codes, from that run over this round's code and tests
+(before this section's prose settled): `selftest` printed
+`  PASS     selftest Ran 384 tests in 8.675s (rc=0)` and `citations` printed
+`  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 28 row(s) verified`
+(0002 unchanged at 36 rows; 0007 at 28 — the round's own added row, verified with the rest, and no row's
+test was renamed). A later run on the final tree reprinted every step line and every count, differing only
+in the `selftest` line's duration, and exited 0.
+
 ## 5. What travels, source side and target side
 
 | Source evidence | Target side, and the run that recorded it |
 | --- | --- |
 | a Claude Code conversation with a tool call, its result and a compaction boundary (the fixture's own bytes record no persisted reasoning trace, so no run in §1–§2 imports one: §6 names that boundary) | converted into a 7-message OpenCode document (`converted: opencode-import-document, 2312 bytes: 7 message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies), 2 turn(s)`, §1) and materialised by the harness's own importer as a store session (§2: `the store's own document holds 10 message(s); the conversion carried 7`, the extra three being the turn's own records) |
-| the source read's own omissions and rewrites | named, counted and per-category: `empty_user_messages ×1`, `tool_name_vocabulary ×1`, `message_model_attribution ×4`, `usage_zeroed ×1`, `target_model_id_attribution ×2`, `compaction_reason ×1`, `assistant_completion_instant ×4`, `unresolved_source_parents ×1`, `pre_compaction_history ×4`, `malformed_source_lines ×1` (§1), out of the 41 categories the report names on every run (§2's recorded run named 35: the first review round added `coalesced_tool_call_projections`, which the committed multi-file patch fixture exercises, the second added `nonterminal_tool_events`, the twelfth added `result_completion_fallbacks`, the root-fix round added the two dialogue rows, and the round-17 fix added `non_assistant_reasoning`, §4) |
+| the source read's own omissions and rewrites | named, counted and per-category: `empty_user_messages ×1`, `tool_name_vocabulary ×1`, `message_model_attribution ×4`, `usage_zeroed ×1`, `target_model_id_attribution ×2`, `compaction_reason ×1`, `assistant_completion_instant ×4`, `unresolved_source_parents ×1`, `pre_compaction_history ×4`, `malformed_source_lines ×1` (§1), out of the 42 categories the report names on every run (§2's recorded run named 35: the first review round added `coalesced_tool_call_projections`, which the committed multi-file patch fixture exercises, the second added `nonterminal_tool_events`, the twelfth added `result_completion_fallbacks`, the root-fix round added the two dialogue rows, the round-17 fix added `non_assistant_reasoning`, and the PR #9 machine review's second finding added `result_completion_adjustments`, §4) |
 | the assistant message's own completion instant the importer requires | written for every assistant message from the record's own instant, `×4` in §1 — the member whose absence the harness accepts and then drops the message over (§0), disclosed as `assistant_completion_instant`; the read-back is the check that caught it |
 | the tool call with its recorded arguments and result text | `toolu_01Example0000000000000000 Read [completed] input {"file_path": "/home/user/code/example-api/internal/retry/policy.go"} result 'package retry\n\nconst MaxAttempts = 4'` in the harness's own document (§4's fourth round) — the same call id and name the source recorded, with its recorded arguments and the result's own text, compared part by part with the **source fixture's own bytes**, so a store holding different arguments or different output fails the check instead of passing on its identity |
-| a tool part's pair of instants | the part's `created` is the call's record's instant and its `completed` the **result's own record's** instant — the committed Codex fixture records its shell call at `09:15:05` and its output at `09:15:06`, so the part states that one-second span (§4's twelfth round) — carried per result through `ToolResult.Timestamp`; a read holding no instant of the result's own record (a provider event without a timestamp, the archive's derived summary on the call's row) falls back to the containing record's instant and is counted (`result_completion_fallbacks`) rather than presented as recorded |
+| a tool part's pair of instants | the part's `created` is the call's record's instant and its `completed` the **result's own record's** instant — the committed Codex fixture records its shell call at `09:15:05` and its output at `09:15:06`, so the part states that one-second span (§4's twelfth round) — carried per result through `ToolResult.Timestamp`; a read holding no instant of the result's own record (a provider event without a timestamp, the archive's derived summary on the call's row) falls back to the containing record's instant and is counted (`result_completion_fallbacks`) rather than presented as recorded; and where the instant the read holds for the result precedes the part's own `created` (an out-of-order source, whose result record stands before the record that carried the call), `completed` is raised to the call's own recorded start and the part is counted (`result_completion_adjustments`), so a raised instant is never presented as the result's recorded completion either |
 | the compaction boundary | `{"type": "compaction", … "status": "completed", "reason": "auto", "summary": "Summary: the retry policy caps attempts at four…` (§2) — the source's own summary, with the harness's own `reason` vocabulary (`auto`) disclosed as `compaction_reason` |
 | the model binding a resumed turn runs under | the **target home's** own configured pair, asked of the harness's own `debug agents` listing — `tencent-litellm/deepseek-v4.1-flash-fast` (§2), written as the document's `info.model` and named by `target_model_binding` (§1) — never the source's model |
 | the directory a session is filed under | the session's recorded working directory, and the harness's own lookup resolves the session from it: `['ses_7utczOHDIjpwHab8vubyl0UDVt']` listed from that directory and not from another (§2), which is why the printed line changes into it |
@@ -2715,12 +2821,13 @@ block (`scripts/tests/test_evidence_claims.py`, which this record is registered 
 - **The user count of a read-back includes the compaction row.** The inherited reader reads a compaction row as
   a system record under the user role, so a read-back of a 7-message document reports
   `user_messages: 3`; the boundary count names the same row, and the comparison itself is itemwise.
-- **The 41 loss categories are the writer's own vocabulary, not a claim about the harness's behaviour.** A
+- **The 42 loss categories are the writer's own vocabulary, not a claim about the harness's behaviour.** A
   category whose count is zero is still named (that is what makes a missing category a defect), and each
   non-zero one is disclosed with its own sentence. (They were 35 when this record's runs in §1–§3 were
   made; the first review round added `coalesced_tool_call_projections`, the second added
   `nonterminal_tool_events`, the twelfth added `result_completion_fallbacks`, the root-fix round the two
-  dialogue rows and the round-17 fix `non_assistant_reasoning`.)
+  dialogue rows, the round-17 fix `non_assistant_reasoning`, and the PR #9 machine review's second finding
+  `result_completion_adjustments`.)
 - **§1–§3 quote the runs they name, at the tree they ran on.** Their transcripts are those runs' own bytes:
   the printed resume line in them names the data root alone, because the store's database was pinned beside
   it later (§4's review round), and their check counts (27 offline, 31 with a turn) are that round's step

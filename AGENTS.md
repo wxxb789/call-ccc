@@ -130,10 +130,15 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   (`ToolResult.Timestamp`: a result event's own envelope instant, which may be later than the record that
   carried its call) and only where the read holds none is the containing record's instant written — the
   report counts that substitution (`result_completion_fallbacks`) rather than presenting it as recorded,
-  because the call's own instant stated twice turns a recorded span into one the source never recorded. The
-  floor a message's own `created` is taken against is the messages' own records and nothing else: a part's
-  completion raises only the instant the session's `time.updated` is read for, so an earlier call's result
-  does not move a later, overlapping call's recorded start up to itself (round 15's finding).
+  because the call's own instant stated twice turns a recorded span into one the source never recorded; and
+  where the instant the read answered — the result's own record, or that containing-record fallback —
+  precedes the part's own `created` (an out-of-order source, whose result record stands before the record
+  that carried the call), `completed` rises to the call's recorded start and the part is counted
+  (`result_completion_adjustments`): a row of its own, because an absent instant and an out-of-order one
+  are different reads and a fallback that was raised too takes both. The floor a message's own `created`
+  is taken against is the messages' own records and nothing else: a part's completion raises only the
+  instant the session's `time.updated` is read for, so an earlier call's result does not move a later,
+  overlapping call's recorded start up to itself (round 15's finding).
   The load level asks the harness's own
   `session export`, never `run`: `run` *creates* a session for an id the store does not hold. The
   directory a session is resolved from is the one its own document records, and the model

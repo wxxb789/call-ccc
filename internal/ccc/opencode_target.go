@@ -374,43 +374,44 @@ type openCodeConverter struct {
 	ledger
 
 	// Loss counters, one per category the report names (see losses()).
-	lossCoalesced                 int
-	lossInactiveBranch            int
-	lossUnresolvedParent          int
-	lossSidechain                 int
-	lossSystemRecords             int
-	lossToolRoles                 int
-	lossUnclassified              int
-	lossEmptyUser                 int
-	lossEmptyAssistant            int
-	lossNonDialogue               int
-	lossWhitespace                int
-	lossUnresolvedDialogue        int
-	lossUnprojectedDialogue       int
-	lossReasoning                 int
-	lossNonAssistantReasoning     int
-	lossUnpairedCalls             int
-	lossUnpairedResults           int
-	lossRepeatedResults           int
-	lossNonterminal               int
-	lossEmptyResults              int
-	lossWhitespaceRes             int
-	lossResultBlocks              int
-	lossUnresolved                int
-	lossStatuses                  int
-	lossEmptyInputs               int
-	lossGeneratedIDs              int
-	lossResultCompletionFallbacks int
-	lossSyntheticCalls            int
-	lossPreBoundary               int
-	lossEmptySummaries            int
-	lossMessageModels             int
-	lossModelFromTarget           int
-	lossModelUnnamed              int
-	lossGeneratedAgent            int
-	lossCompactionReason          int
-	lossCompletion                int
-	sawBoundary                   bool
+	lossCoalesced                   int
+	lossInactiveBranch              int
+	lossUnresolvedParent            int
+	lossSidechain                   int
+	lossSystemRecords               int
+	lossToolRoles                   int
+	lossUnclassified                int
+	lossEmptyUser                   int
+	lossEmptyAssistant              int
+	lossNonDialogue                 int
+	lossWhitespace                  int
+	lossUnresolvedDialogue          int
+	lossUnprojectedDialogue         int
+	lossReasoning                   int
+	lossNonAssistantReasoning       int
+	lossUnpairedCalls               int
+	lossUnpairedResults             int
+	lossRepeatedResults             int
+	lossNonterminal                 int
+	lossEmptyResults                int
+	lossWhitespaceRes               int
+	lossResultBlocks                int
+	lossUnresolved                  int
+	lossStatuses                    int
+	lossEmptyInputs                 int
+	lossGeneratedIDs                int
+	lossResultCompletionFallbacks   int
+	lossResultCompletionAdjustments int
+	lossSyntheticCalls              int
+	lossPreBoundary                 int
+	lossEmptySummaries              int
+	lossMessageModels               int
+	lossModelFromTarget             int
+	lossModelUnnamed                int
+	lossGeneratedAgent              int
+	lossCompactionReason            int
+	lossCompletion                  int
+	sawBoundary                     bool
 }
 
 // openCodeClock hands out message timestamps that never go backwards, and remembers the highest instant
@@ -456,9 +457,12 @@ func (c *openCodeClock) next(at time.Time) int64 {
 // start up to that completion, silently rewriting a duration the source recorded. The pair is adjusted in
 // the one way the document's own order allows -- a source whose records are out of order cannot write a
 // part whose end precedes its start, so `completed` rises to the message's own instant -- and nothing
-// else about it is rewritten. The span raises the document's highest instant, and never the floor the
-// document's messages are ordered by: a completion that follows a later call's own start leaves that
-// call's start where the source recorded it.
+// else about it is rewritten. That rise rewrites an instant the read answered, so the part that took it
+// is counted (`result_completion_adjustments`): the fallback row answers which instant the read answered
+// where it held none of the result's own, and this one answers whether the answer was written, so a
+// raised instant is never left to read as the recorded one. The span raises the document's highest
+// instant, and never the floor the document's messages are ordered by: a completion that follows a later
+// call's own start leaves that call's start where the source recorded it.
 func (c *openCodeClock) span(floor int64, resultAt time.Time) (int64, int64) {
 	created := floor
 	completed := resultAt.UTC().UnixMilli()
@@ -1074,6 +1078,17 @@ func (c *openCodeConverter) toolPart(call *openCodeCall, floor int64) (openCodeP
 	// instant as the floor, so a sibling's completion cannot move this call's recorded start and an
 	// unordered source still cannot write a part whose end precedes its start.
 	created, completed := c.clock.span(floor, call.ResultAt)
+	// The span's one adjustment is counted here, past every omission guard above and only for a part that
+	// is written: where the read answered a non-zero instant for the result that precedes the part's own
+	// `created` (an out-of-order source: the result's record before the call's), `completed` was raised to
+	// the call's recorded start and the read's answer is not what the document holds. The row is kept
+	// apart from result_completion_fallbacks on purpose -- that one answers *which* instant the read
+	// answered (the containing record's, where it held none of the result's own), this one answers whether
+	// the answer was written -- so a part whose result had no instant of its own and whose fallback was
+	// raised too is counted in both, and a reader can tell the two reads apart.
+	if at := call.ResultAt.UTC().UnixMilli(); !call.ResultAt.IsZero() && at < created {
+		c.lossResultCompletionAdjustments++
+	}
 	return openCodePart{
 		Type:  openCodePartTool,
 		ID:    call.ID,
@@ -1558,7 +1573,23 @@ func (c *openCodeConverter) losses() []Loss {
 				"summary, which is stored on the call's own row -- the instant of the record that " +
 				"carried the result is written (for a folded event, the call's own record), so the " +
 				"part states the call's instant twice rather than one this build invented; only parts " +
-				"that were written are counted here",
+				"that were written are counted here, and a fallback instant that itself precedes the " +
+				"call's own record is raised to it and counted beside this row " +
+				"(result_completion_adjustments)",
+		},
+		{
+			Category:    "result_completion_adjustments",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       c.lossResultCompletionAdjustments,
+			Detail: "the document's message order is the read's own, and a tool part may not end " +
+				"before it starts: where the instant the read answered for the carried result " +
+				"precedes the part's own `created` -- an out-of-order source, whose result record " +
+				"stands before the record that carried the call -- `completed` is raised to the " +
+				"part's `created`, the call's own recorded start, and the read's answer is not what " +
+				"the document holds. The instant written is a recorded one (the call's start), never " +
+				"one this build invented, and this row counts each written part that took the " +
+				"raise; a result whose record holds no instant at all is the other read, counted " +
+				"as result_completion_fallbacks",
 		},
 		{
 			Category:    "tool_name_vocabulary",
