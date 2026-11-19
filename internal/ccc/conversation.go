@@ -223,6 +223,16 @@ type Conversation struct {
 	// source's conversation left. nil means Messages is the read itself, and a writer takes the walk over
 	// it as before.
 	sourceLineInactive []bool
+	// sourceKeptAncestor carries, per message of Messages, the identity of the nearest ancestor the
+	// *read* holds that the selection also carries, or "" where the read answers none (the record's
+	// ancestry is all outside the window, or the read cannot walk it at all). It is what keeps a reduced
+	// tree representable: a target that is itself a tree writes each entry under the entry of the record
+	// the source named, and where a selection left that record out the writer chains the entry to the
+	// nearest retained ancestor instead of the entry written before it -- a relation the source's own
+	// line holds, so the walk a resumed session makes stays the read's line rather than reviving an
+	// abandoned branch the window happened to carry. nil means Messages is the read itself: no gap was
+	// made, and the writers walk the record's own parent as before.
+	sourceKeptAncestor []string
 }
 
 // fidelityWarnings names what the provider itself said about the completeness of one read, in the words

@@ -182,7 +182,9 @@ measurement that decided it, followed by the review round's own:
    wrote) reads the selected line, and that rule is *already* disclosed — a written result whose id was
    inferred is counted (`generated_call_ids`, "the id it is written under is the pairing with the one call
    that was outstanding"). Deciding this in the seam instead would mean re-implementing five writers' own
-   inferences in a target-agnostic function.
+   inferences in a target-agnostic function. **Superseded by §11.11**: the second review round changed the
+   closure to pairing by the read's own order (a repeated `ToolUseID` does not expand a selection by id
+   alone), and the same round separated "answered" from "progress" in the undischarged count.
 
 4. **The D4 probe drives the pipeline as well as the writers.** The plan's §4 asked for "one test file
    converting documents through the five routes"; the insertion point the change actually adds is
@@ -191,7 +193,10 @@ measurement that decided it, followed by the review round's own:
    (`continueWith`, dry run, the selection flag absent, seven normalized report lines each), which is what
    would catch a defect that filtered a document without the flag. The pipeline arm skips the OpenCode
    target: that route's installation *is* the harness's own importer, which a dry run still runs, so its
-   unflagged path is covered by the standalone runs in the record's own sections.
+   unflagged path is covered by the standalone runs in the record's own sections. **Superseded by
+   §11.11**: the second review round's probe covers the OpenCode target's arm too (its dry run installs
+   into a scratch store and the arm records the harness's own answer or refusal), and walks every
+   committed fixture rather than seven.
 
 5. **The awkward-shape fixture is a fourth Claude transcript, and one of its records is not the `system`
    subtype.** The plan asked for "a system record"; the first draft used Claude's `subtype: hook_result`
@@ -241,4 +246,41 @@ measurement that decided it, followed by the review round's own:
     anything" (its executable's version is probed earlier, before the read), strengthened the B2 case to
     assert the system record's own disposition rather than naming it in the row, and dropped the CLI case
     that had claimed — without asserting — the "selects nothing" arm (§11.8's own reason).
+
+11. **The second review round's six findings.** The review of `9242e49..fc05ac4` found two P1, three P2
+    and one P3 item; this round fixes all six, and the changes are departures the plan's sections did not
+    state:
+
+    * the **nearest retained ancestor** answers a reduced tree's ancestry: §3.2 said the seam carries a
+      call/result structure, and §10's line rule (§11.10) covered the *leaf*, but neither said what a
+      record hangs off when the window left its own parent out. A sparse window could therefore chain the
+      leaf to the entry written before it and make an off-line branch record an ancestor of the resumed
+      conversation (the review's R-06, demonstrated on the Pi history fixture: `--select 0,3,5`). `Select`
+      now walks the read's own relations through the excluded records and carries, per kept record, the
+      nearest ancestor the window also carries (`Conversation.sourceKeptAncestor`); the tree writers chain
+      the entry there (`parentPlace`, `keptAncestorEntry`); and a window where that ancestry is gone —
+      the fallback would land under an off-line record — is refused by name (`ErrUnrepresentableLeaf`,
+      gated to reduced documents so the unflagged path is unchanged, as §4's probe shows). `Q-0009-04`
+      records the default and `TestSelectionKeepsASparseWindowOnTheReadsLine` pins both halves by walking
+      the written `parentId` chain.
+    * the **supplied-blank refusal**: §3.1 said the CLI's contract is "the value names a selection, or
+      there is no selection", and the first implementation read `--select ""` as the flag's absence. The
+      review's R-07: an automation's unset variable must not publish the whole history. The CLI now reads
+      `flag.Visit`, `ContinueOptions.SelectionSupplied` carries the answer into the core, and a supplied
+      blank is refused with `CheckSelectionOptions`' own sentence and exit 2, before the read; `Q-0009-03`
+      records the default.
+    * the **order-based pairing** and the **progress-versus-outcome** count: §11.3's id-only closure is
+      superseded (see above). A result now pairs with the nearest prior call of the same id
+      (`selectionPairs`, the reading `internal/parser/termination.go`'s `hasOrphanedToolCall` takes), so a
+      reused id's later call carries nothing but itself; and `undischargedCalls` discharges a call only
+      where a result that states an outcome follows it (`resultStatesAnOutcome`, shared with the OpenCode
+      writer), so a `running` notification is not read as an answer. The undischarged warning no longer
+      claims every target records the call: it names the writer's own answer, and the OpenCode route's
+      `unpaired_tool_calls` is what the CLI case asserts beside a nonzero count on both report surfaces.
+    * the **D4 probe's coverage** is superseded (see §11.4 above): every committed fixture × five routes,
+      writer *and* pipeline arms, the OpenCode target included, with the exact probe revision retained as
+      `docs/evidence/0009-d4-probe.txt`.
+    * the **README example** now names `--select 0-3,7` (in range for its eight-record fixture) and the
+      paragraph beside it states the order pairing, the progress rule, the supplied-blank refusal and the
+      ancestry rule.
 

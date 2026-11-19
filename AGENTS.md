@@ -267,27 +267,39 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   pure function of the recorded document (no file, no Git, no model, no clock), and runs after the read and
   after the source boundary — the source file is measured whole and never rewritten — and before the target
   harness's own answers are asked for (its executable's version is probed earlier, before the read); nothing
-  is installed before a refusal. **A recorded call and its recorded result are one structure**: the two
-  records whose `ToolUseID` is the same non-empty value, and every record holding either, are carried
-  together or not at all — a selection that would split a pair carries the counterpart and names it as a
+  is installed before a refusal. **A recorded call and the recorded result that answers it are one
+  structure**: the result is paired with the nearest call the same non-empty `ToolUseID` records *before*
+  it (the reading the inherited readers' own termination check takes — a result never answers a call
+  recorded after it), and a selection that would split a pair carries the counterpart and names it as a
   necessity with the ordinal that pulled it in (both directions, to a fixed point, since a counterpart can
-  hold another call's result), and `--strict-selection` refuses that
-  by name before anything is installed instead. A record the source recorded with **no** id carries no
+  hold another call's result), while `--strict-selection` refuses that
+  by name before anything is installed instead. A reused id does not expand a selection by id alone: a
+  later call with no recorded result of its own carries nothing but itself and is counted undischarged. A
+  record the source recorded with **no** id carries no
   recorded link: the seam neither invents one nor carries candidates for it, and the writer's own rule for
   an id-less result (the sole outstanding call in the line it wrote, disclosed as `generated_call_ids`)
-  reads the selected line. **The line is the read's own**: which records the source's relations place on the
+  reads the selected line. **A call the source left without a recorded outcome was not answered**: a
+  result whose recorded status says the call is still running (a Codex subagent's `running` notification,
+  a streamed chunk) is progress, not an outcome, so such a call is counted undischarged; whether a
+  target's own format can hold a call with no outcome is that writer's answer, named in the conversion's
+  losses (`unpaired_tool_calls` on OpenCode). **The line is the read's own**: which records the source's relations place on the
   line its loader walks is a property of the read, and a selection neither moves a record onto that line nor
   off it — a window ending on an off-line record is refused by a tree target by name
-  (`ErrUnrepresentableLeaf`, below) rather than written as a file that resumes the branch, and a line target
+  (`ErrUnrepresentableLeaf`, below) rather than written as a file that resumes the branch, a record whose
+  own parent the window left out is hung off its nearest retained ancestor (the read's own relation walked
+  through the excluded records), and a window in which a record's whole retained ancestry is gone — so the
+  fallback would hang it under an off-line record — is refused by name the same way; a line target
   omits those records and counts them (`inactive_branch_records`). A bad selection is **refused, never
   repaired**, with the core's own sentence and the usage exit code (2), before any install: a spec that is
   ill-formed, one whose region reaches outside the ordinals the read supplied (below its lowest or above its
-  highest; the space, its gaps included, is spelled in the refusal) or that would carry no record at all — a
-  region spanning a gap carries the records it holds — and the strict refusal. The report names the
+  highest; the space, its gaps included, is spelled in the refusal), one that would carry no record at all — a
+  region spanning a gap carries the records it holds — a value the caller supplied **empty** (an unset
+  variable expanded into `--select "$SPEC"` is a refused request, never read as the flag's absence: an
+  automation's empty variable must not publish the whole history), and the strict refusal. The report names the
   transformation on every run that had one — `selection.ordinal_space` (min/max/records/contiguous) and the
   four classes `included`, `excluded`, `necessities_added` (each addition with its puller) and
-  `calls_undischarged` (a carried call the source itself left unanswered, which no counterpart rule can
-  discharge), in both the human block and `--json`,
+  `calls_undischarged` (a carried call the source itself left without a recorded outcome, which no
+  counterpart rule can discharge), in both the human block and `--json`,
   where `included + necessities_added + excluded` is exactly the read's own record count and the counts are
   the conversion's own vocabulary. `ccc formats`-style capability listing aside, nothing else about the
   document changes: the selection renumbers nothing, adds no message of its own, and never touches the

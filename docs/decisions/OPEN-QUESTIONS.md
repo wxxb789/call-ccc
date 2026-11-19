@@ -2888,48 +2888,52 @@ supersede it with a newer one and say which it supersedes.
 - **Settled by:** an operator preference between "the command line was refused" and "the conversion
   failed" for a well-formed command line the source's own structure cannot satisfy.
 
-## Q-0009-02 — The selection pairs a call with its result by recorded id alone
+## Q-0009-02 — The selection pairs a call with its result by recorded order, and an id-less record pairs nowhere
 
-- **Status:** open (default taken: the seam pairs by a non-empty `ToolUseID`; an id-less record carries no
-  recorded link).
-- **Question:** the seam carries a recorded call and its recorded result together (both directions, to a
-  fixed point). The document's only recorded link between the two is a non-empty `ToolUseID`. A call or a
+- **Status:** open (default taken: the seam pairs a result with the nearest call the same non-empty
+  `ToolUseID` records *before* it; an id-less record carries no recorded link; a reused id's later call
+  with no result of its own stands alone and is counted undischarged).
+- **Question:** the seam carries a recorded call and the recorded result that answers it together (both
+  directions, to a fixed point). The document's only recorded link between the two is a non-empty
+  `ToolUseID`, and a source may reuse one: `internal/parser/termination_test.go`'s regression records a
+  call at 0 answered by a result at 1 and a later call at 2 reusing the id. Grouping by id alone made the
+  later call pull the older pair in as its "counterparts"; the review demonstrated it. A call or a
   result the source recorded with **no** id (a Codex `wait` output event, a subagent notification) carries
   no link at all; each *writer* then pairs an id-less result with the sole outstanding call of the line it
-  wrote, and a selection can change which call that is (or make an ambiguous result unambiguous). The
-  alternatives are: reproduce each writer's own inference inside the target-agnostic seam (five writers'
-  rules, in a function that is supposed to be a pure, target-independent transformation); refuse a
-  selection over any conversation holding an id-less call or result (usable only on sources that always
-  record ids); or pair by ids only and disclose the writer's inference where it happens.
-- **Default taken:** ids only, disclosed where it happens. The writer's inferred pairing is **already**
-  counted on every run (`generated_call_ids`: "the result recorded no id of its own, so the id it is written
-  under is the pairing with the one call that was outstanding"), so a selected line's inference is a
-  disclosed reading rather than a silent claim, and `unpaired_tool_results` / `unpaired_tool_calls` count
-  what the writer then refuses to pair. The seam neither invents a link nor carries candidates the caller
-  did not name.
-- **Reversal:** add an id-less pairing walk to `internal/ccc/selection.go` that reproduces one writer's rule
-  (or a shared one the writers would have to adopt), which makes the seam target-aware; or refuse such a
-  selection by name in `Select`, naming the records.
+  wrote, and a selection can change which call that is (or make an ambiguous result unambiguous).
+- **Default taken:** the recorded order decides, the same reading the inherited readers' own termination
+  check takes (`hasOrphanedToolCall` counts only results recorded after the call they answer): a result
+  pairs with the nearest prior call the same id records (so a later result never answers an earlier call's
+  partner twice, and a reused id's later call has no pair), the walk runs to a fixed point, and a record
+  with no id still carries no link through the seam. The writer's inferred pairing for an id-less result
+  stays **disclosed** where it happens (`generated_call_ids`), and `unpaired_tool_results` /
+  `unpaired_tool_calls` count what the writer then refuses to pair.
+- **Reversal:** reproduce each writer's own inference inside the target-agnostic seam (five writers' rules
+  in a function that is supposed to be a pure, target-independent transformation); or refuse a selection
+  over any conversation holding an id-less call or result (usable only on sources that always record ids);
+  or carry every occurrence of a reused id together, as the first implementation did.
 - **Settled by:** a measured case on a real source where a selection's own line pairs an id-less result
   differently from the source's line, or an operator instruction that the seam should refuse that shape.
 
-## Q-0009-03 — An empty `--select` value is read as the flag's absence
+## Q-0009-03 — A supplied-but-empty `--select` value is refused
 
-- **Status:** open (default taken: `--select ""` (or whitespace) is the same request as omitting the flag).
+- **Status:** open (default taken: `--select ""` (or whitespace) is refused with the core's own sentence and
+  the usage exit code, before anything is read or installed).
 - **Question:** the core refuses an *empty* specification (`Select(conv, "", …)` answers "the specification
   is empty: name the ordinal values to carry …"), because a selection that names nothing is a mistake. The
-  CLI, however, cannot tell `--select ""` from an absent flag through the option's value alone (it could
-  through `flag.Visit`), so `ccc continue … --select "$SPEC"` with an empty `SPEC` today carries the whole
-  read and prints no selection section -- the pre-0009 behaviour, silently.
-- **Default taken:** the empty value is documented as the flag's absence (the help text says so) rather than
-  refused, so the CLI's contract stays "the value names a selection, or there is no selection" and the core
-  keeps its own refusal for a caller that passes an empty spec *to the core*. Nothing is repaired silently:
-  the run's own report shows no selection block, which is exactly the run a caller asked for by naming no
-  specification.
-- **Reversal:** read `flag.Visit` in `runContinue` and refuse a set-but-empty `--select` with the core's own
-  sentence (one branch, one extra call), which turns the footgun into a refusal.
-- **Settled by:** an operator preference between "an empty value means 'no selection'" and "an empty value
-  is refused by name".
+  CLI could not tell `--select ""` from an absent flag through the option's value alone, so
+  `ccc continue … --select "$SPEC"` with an empty `SPEC` carried the whole read and printed no selection
+  section -- the pre-0009 behaviour, silently, and the review's finding: an automation's unset variable must
+  not turn a guarded command into one that publishes the whole history. The CLI *can* tell the two apart
+  (`flag.Visit`), and `ContinueOptions.SelectionSupplied` carries the answer into the core.
+- **Default taken:** a supplied blank value is refused, with the same sentence `Select` answers a blank spec
+  with (`CheckSelectionOptions` owns it, so an embedder and the CLI get one sentence), exit 2, before any
+  read or install. An omitted flag still means the whole read and no selection block, which is what keeps
+  the default path unchanged.
+- **Reversal:** read a blank value as the flag's absence (the pre-fix behaviour), which is a one-line
+  branch in `CheckSelectionOptions`.
+- **Settled by:** an operator preference between "an empty value means 'no selection'" and "a supplied empty
+  value is refused by name"; the review settled the default toward the refusal.
 
 ## Q-0009-04 — A selection window that ends off the read's own line
 
@@ -2948,9 +2952,19 @@ supersede it with a newer one and say which it supersedes.
   read ("a selection neither moves a record onto that line nor off it"), and the goal's bounds say a
   selection never turns a recorded structure into a false one; `Select` therefore carries the read's own
   per-record answer (`Conversation.sourceLineInactive`) and the writers consult it
-  (`TestSelectionEndingOffTheReadsLine`).
+  (`TestSelectionEndingOffTheReadsLine`). The same rule covers the *ancestry* of a carried record: a record
+  whose recorded parent the window left out is hung off its nearest retained ancestor (the read's own
+  relation walked through the excluded records; `Conversation.sourceKeptAncestor`), so the loader's walk
+  stays the read's own line -- a window like the Pi history fixture's `0,3,5` writes the leaf under
+  ordinal 0 and leaves the selected branch record at 3 off the walk as recorded history -- and a window in
+  which a record's whole retained ancestry is gone (nothing to hang it on but the entry before it, which
+  stands for an off-line record) is refused by name the same way
+  (`TestSelectionKeepsASparseWindowOnTheReadsLine`).
+
 - **Reversal:** if the owner wants line-selection, record it as a departure, give it its own disclosed class
   (a selection-owned count/warning naming the revived branch) and drop the read-line flags from the
-  writers.
+  writers; for the ancestry, the alternative is to carry the excluded ancestor records themselves (which
+  would widen what `included` and `necessities_added` claim) instead of chaining to the nearest retained
+  one.
 - **Settled by:** an operator decision between "a selection chooses what to carry, the read chooses the
   line" and "a selection may choose the resumed line, disclosed".

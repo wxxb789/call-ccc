@@ -142,7 +142,7 @@ func TestContinueWithASelectionCarriesTheSelectedRecordsAndReportsTheClasses(t *
 		"selected:     1 record(s) at ordinals 2",
 		"excluded:     9 record(s) at ordinals",
 		"necessities:  1 record(s) added: 3 (pulled in by 2)",
-		"undischarged: 0 carried call(s) with no recorded result at ordinals none",
+		"undischarged: 0 carried call(s) with no recorded outcome at ordinals none",
 	} {
 		if !strings.Contains(human, want) {
 			t.Errorf("the human block does not hold %q:\n%s", want, human)
@@ -207,6 +207,11 @@ func TestContinueRefusesABadSelectionBeforeInstalling(t *testing.T) {
 			"an ordinal the read does not hold",
 			[]string{"--select", "42"},
 			"do not hold",
+		},
+		{
+			"a value supplied blank",
+			[]string{"--select", ""},
+			"the specification is empty",
 		},
 		{
 			"the strict arm without a selection",
@@ -286,22 +291,20 @@ func TestContinueWithoutASelectionReportsNoSelection(t *testing.T) {
 		t.Errorf("the unflagged run carried no message at all: %+v", document.Conversion.Carried)
 	}
 
-	// The empty value is the flag's absence (Q-0009-03): `ccc continue … --select "$SPEC"` with an empty
-	// SPEC is the run without the flag, so the same document comes back with no selection section.
+	// A value the caller supplied but left blank is not the flag's absence: it is refused with the
+	// core's sentence and the usage code, is pinned with an installation requested in
+	// TestContinueRefusesABadSelectionBeforeInstalling, and never reaches the report -- an unset shell
+	// variable must not turn `--select "$SPEC"` into the whole history.
 	code, emptyStdout, stderr := runCLI(t, continueArgs(sessionID, "--select", "", "--dry-run", "--json")...)
-	if code != exitOK {
-		t.Fatalf("the empty selection: exit %d (stderr %q)", code, stderr)
+	if code != exitUsage {
+		t.Fatalf("the empty selection: exit %d, want %d (stdout %q, stderr %q)", code, exitUsage,
+			emptyStdout, stderr)
 	}
-	var empty reportedContinueDocument
-	if err := json.Unmarshal([]byte(emptyStdout), &empty); err != nil {
-		t.Fatalf("the empty selection is not one JSON object: %v\n%s", err, emptyStdout)
+	if !strings.Contains(stderr, "the specification is empty") {
+		t.Errorf("the empty selection: stderr %q does not name the empty specification", stderr)
 	}
-	if empty.Selection != nil || strings.Contains(emptyStdout, `"selection"`) {
-		t.Errorf("the empty selection reported a selection section:\n%s", emptyStdout)
-	}
-	if empty.Conversion.Carried != document.Conversion.Carried {
-		t.Errorf("the empty selection carried %+v, want the unflagged run's %+v",
-			empty.Conversion.Carried, document.Conversion.Carried)
+	if emptyStdout != "" {
+		t.Errorf("the empty selection wrote a report to stdout: %q", emptyStdout)
 	}
 
 	code, human, stderr := runCLI(t, continueArgs(sessionID, "--dry-run")...)
@@ -345,6 +348,89 @@ func TestContinueWithoutASelectionReportsNoSelection(t *testing.T) {
 	}
 }
 
+// TestContinueReportsUndischargedCallsOnBothSurfaces pins D2's nonzero arm: --select 5 carries the call
+// the source never answered, and both report surfaces count it -- the --json selection block and the
+// human block's undischarged line. Beside it, the target writer's own answer names what it did with the
+// call: the OpenCode route's report counts it unpaired_tool_calls (its format has no state for a call
+// with no outcome), which is the writer's report rather than the warning's claim.
+func TestContinueReportsUndischargedCallsOnBothSurfaces(t *testing.T) {
+	continueEnvironment(t)
+	sessionID, _ := selectionFixture(t)
+
+	code, stdout, stderr := runCLI(t, continueArgs(sessionID, "--select", "5", "--dry-run", "--json")...)
+	if code != exitOK {
+		t.Fatalf("exit %d, want %d (stderr %q)", code, exitOK, stderr)
+	}
+	var document reportedContinueDocument
+	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
+	}
+	if document.Selection == nil {
+		t.Fatalf("the report carries no selection section:\n%s", stdout)
+	}
+	if document.Selection.CallsUndischarged.Count != 1 ||
+		strings.Join(document.Selection.CallsUndischarged.Regions, ",") != "5" {
+		t.Errorf("calls_undischarged = %+v, want the one call the source never answered, at ordinal 5",
+			document.Selection.CallsUndischarged)
+	}
+	if document.Conversion.Carried.ToolCalls != 1 || document.Conversion.Carried.ToolResults != 0 {
+		t.Errorf("carried = %+v, want the call alone: no result was invented for it",
+			document.Conversion.Carried)
+	}
+
+	// The human block says the same thing, and its warning defers to the writer instead of claiming the
+	// target records a call it may have no shape for.
+	code, human, stderr := runCLI(t, continueArgs(sessionID, "--select", "5", "--dry-run")...)
+	if code != exitOK {
+		t.Fatalf("human run: exit %d (stderr %q)", code, stderr)
+	}
+	for _, want := range []string{
+		"undischarged: 1 carried call(s) with no recorded outcome at ordinals 5",
+		"1 carried call(s) at ordinals 5 have no recorded result that states an outcome anywhere in the read",
+		"the conversion's losses name what the writer left out",
+	} {
+		if !strings.Contains(human, want) {
+			t.Errorf("the human block does not hold %q:\n%s", want, human)
+		}
+	}
+
+	// The OpenCode route's own report answers what became of the call: the writer leaves it out (its
+	// format has no state for a call that has not finished) and counts it unpaired_tool_calls. The run
+	// installs into a throw-away home through the stub binary the route's other cases use; the window
+	// 5-10 keeps the later records too, because a target document holding no message at all is a shape
+	// this route's own store cannot be read back from.
+	home := openCodeHomeFor(t)
+	binary := stubOpenCodeBinary(t)
+	code, stdout, stderr = runCLI(t, "continue", "claude:"+sessionID, "--to", "opencode",
+		"--target-home", home, "--target-binary", binary,
+		"--select", "5-10", "--verify", "none", "--json")
+	if code != exitOK {
+		t.Fatalf("opencode run: exit %d, want %d (stderr %q)\n%s", code, exitOK, stderr, stdout)
+	}
+	var openCode reportedContinueDocument
+	if err := json.Unmarshal([]byte(stdout), &openCode); err != nil {
+		t.Fatalf("opencode stdout is not one JSON object: %v\n%s", err, stdout)
+	}
+	if openCode.Selection == nil || openCode.Selection.CallsUndischarged.Count != 1 {
+		t.Errorf("opencode selection = %+v, want the one undischarged call reported beside the target's "+
+			"own answer", openCode.Selection)
+	}
+	found := false
+	for _, loss := range openCode.Conversion.Losses {
+		if loss.Category == "unpaired_tool_calls" {
+			found = loss.Count == 1
+		}
+	}
+	if !found {
+		t.Errorf("the OpenCode route does not count the undischarged call under unpaired_tool_calls; "+
+			"losses = %+v", openCode.Conversion.Losses)
+	}
+	if openCode.Conversion.Carried.ToolCalls != 1 {
+		t.Errorf("the OpenCode route carried %d call(s), want the window's one answered call: the "+
+			"undischarged call is the omission its report names", openCode.Conversion.Carried.ToolCalls)
+	}
+}
+
 // TestWriteSelectionSpellsAGappySpace pins the human selection line's non-contiguous arm, which no CLI
 // case reaches: the one committed fixture's space has no gap, so the suffix that states one has to be
 // exercised over a report of its own. The space is spelled once as its bounds; the suffix states the gap
@@ -363,7 +449,7 @@ func TestWriteSelectionSpellsAGappySpace(t *testing.T) {
 		"  selected:     2 record(s) at ordinals 1,5\n",
 		"  excluded:     1 record(s) at ordinals 3\n",
 		"  necessities:  0 record(s) added: none\n",
-		"  undischarged: 0 carried call(s) with no recorded result at ordinals none\n",
+		"  undischarged: 0 carried call(s) with no recorded outcome at ordinals none\n",
 	} {
 		if !strings.Contains(block, want) {
 			t.Errorf("the gappy space's block does not hold %q:\n%s", want, block)

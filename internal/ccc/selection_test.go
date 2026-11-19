@@ -188,16 +188,26 @@ func TestSelectionRefusesABadSpecificationBySentence(t *testing.T) {
 // read: a caller embedding the core and one driving the CLI are told the same thing about the same
 // command line, before anything is opened.
 func TestCheckSelectionOptionsRefusesASpecificationWithoutARead(t *testing.T) {
-	if err := CheckSelectionOptions("", false); err != nil {
+	if err := CheckSelectionOptions("", false, false); err != nil {
 		t.Errorf("no selection: err = %v, want it accepted (the flag is absent)", err)
 	}
-	if err := CheckSelectionOptions("0-5", false); err != nil {
+	if err := CheckSelectionOptions("0-5", false, false); err != nil {
 		t.Errorf("a well-formed spec: err = %v, want it accepted", err)
 	}
-	if err := CheckSelectionOptions("5-3", false); !errors.Is(err, ErrBadSelection) {
+	if err := CheckSelectionOptions("5-3", false, false); !errors.Is(err, ErrBadSelection) {
 		t.Errorf("an inverted region: err = %v, want ErrBadSelection", err)
 	}
-	err := CheckSelectionOptions("", true)
+	// A value the caller supplied but left blank is a refused request, not the flag's absence: an unset
+	// shell variable expanded into --select "$SPEC" must not publish the whole history.
+	for _, spec := range []string{"", "   "} {
+		err := CheckSelectionOptions(spec, false, true)
+		if !errors.Is(err, ErrBadSelection) {
+			t.Errorf("a supplied blank value (%q): err = %v, want ErrBadSelection", spec, err)
+		} else if !strings.Contains(err.Error(), "the specification is empty") {
+			t.Errorf("a supplied blank value (%q): %v does not name the empty specification", spec, err)
+		}
+	}
+	err := CheckSelectionOptions("", true, false)
 	if !errors.Is(err, ErrBadSelection) {
 		t.Errorf("--strict-selection without a selection: err = %v, want a refusal", err)
 	} else if !strings.Contains(err.Error(), "--strict-selection") {
@@ -765,6 +775,303 @@ func TestSelectionWritesExactlyTheSelectedOrdinals(t *testing.T) {
 						target, testCase.spec, unwanted)
 				}
 			}
+		}
+	}
+}
+
+// TestSelectionKeepsASparseWindowOnTheReadsLine pins the second half of the line rule: a tree conversion
+// must not make a record the read's line leaves off it an ancestor of the resumed conversation. On the
+// Pi history fixture, `--select 0,3,5` keeps an off-line branch record (ordinal 3) and the on-line leaf
+// (ordinal 5) while leaving out ordinal 1, the leaf's own recorded parent. The selection answers the
+// nearest retained ancestor for each -- ordinal 0, whose entry both hang off -- so the tree routes write
+// it and the walk from the file's last entry reaches ordinals 5 and 0 alone: ordinal 3 stays in the file
+// as recorded history, off the walk, never an ancestor. A window whose records have no retained ancestor
+// at all (3,5) cannot hang the leaf on the line -- the fallback would put the off-line record's entry
+// under it -- and the tree routes refuse by name before anything is installed. A line route writes the
+// on-line records and counts the off-line record it omits.
+func TestSelectionKeepsASparseWindowOnTheReadsLine(t *testing.T) {
+	conversation, err := NewSourceReader(fixtureConfig(t)).Read(context.Background(), piHistoryFixtureRef)
+	if err != nil {
+		t.Fatalf("reading the history fixture: %v", err)
+	}
+	if len(conversation.Messages) != 6 {
+		t.Fatalf("the fixture's read holds %d record(s), want the six its file carries",
+			len(conversation.Messages))
+	}
+	textAt := func(ordinal int) string {
+		t.Helper()
+		for _, message := range conversation.Messages {
+			if message.Ordinal == ordinal {
+				return message.Content
+			}
+		}
+		t.Fatalf("the read holds no ordinal %d", ordinal)
+		return ""
+	}
+	leafText := textAt(5)
+	abandonedTexts := []string{textAt(2), textAt(3), textAt(4)}
+
+	// The mixed window: the branch record is selected and carried, the leaf's recorded parent is not.
+	// The selection's own ancestry answer hangs both under ordinal 0 (their nearest retained ancestor),
+	// so every tree route writes it -- and the walk from the file's last entry must reach the two on-line
+	// records alone, with the branch record present in the file as recorded history and off that walk.
+	selected, report, err := Select(conversation, "0,3,5", false)
+	if err != nil {
+		t.Fatalf("selecting 0,3,5: %v", err)
+	}
+	if report.Included.Count != 3 || report.Excluded.Count != 3 {
+		t.Errorf("selecting 0,3,5: included %d, excluded %d, want the three selected records and the "+
+			"three left behind", report.Included.Count, report.Excluded.Count)
+	}
+	for _, target := range []string{TargetPi, TargetOMP, TargetClaude} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		if _, err := route.Convert(selected, selectionProbeOptions()); err != nil {
+			t.Errorf("%s: converting a window whose recorded ancestry the selection answers: %v",
+				target, err)
+		}
+	}
+	piRoute, err := targetRouteFor(TargetPi)
+	if err != nil {
+		t.Fatalf("route %s: %v", TargetPi, err)
+	}
+	session, err := piRoute.Convert(selected, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("%s: converting the window: %v", TargetPi, err)
+	}
+	lines := decodePiSession(t, session.Data)
+	texts := piEntryTexts(t, lines)
+	onPath := piWalkIDs(t, lines)
+	if len(onPath) != 2 {
+		t.Errorf("the walk from the file's last entry covers %d entry(ies), want the two on-line records "+
+			"(the chain is %v)", len(onPath), onPath)
+	}
+	var walked []string
+	for id := range onPath {
+		walked = append(walked, texts[id])
+	}
+	joined := strings.Join(walked, "\n")
+	for _, want := range []string{textAt(0), leafText} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("the walk from the file's last entry does not hold %q; it holds:\n%s", want, joined)
+		}
+	}
+	for _, unwanted := range abandonedTexts {
+		if strings.Contains(joined, unwanted) {
+			t.Errorf("the walk from the file's last entry holds %q, a record the read's line leaves off "+
+				"it (the chain is %v)", unwanted, onPath)
+		}
+	}
+	if !strings.Contains(string(session.Data), textAt(3)) {
+		t.Error("the written document does not hold the selected branch record at all: it is recorded " +
+			"history the selection carried, and the rule is about the walk, not the file")
+	}
+
+	// A window with no retained ancestor at all: nothing in it can hang the leaf on the read's line, and
+	// the fallback would put the off-line record's entry under it. Every tree route refuses by name,
+	// before anything is installed; the line route writes the on-line record and counts the one it omits.
+	selected, _, err = Select(conversation, "3,5", false)
+	if err != nil {
+		t.Fatalf("selecting 3,5: %v", err)
+	}
+	for _, target := range []string{TargetPi, TargetOMP, TargetClaude} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		_, err = route.Convert(selected, selectionProbeOptions())
+		if !errors.Is(err, ErrUnrepresentableLeaf) {
+			t.Errorf("%s: converting a window whose records have no retained ancestor: err = %v, want "+
+				"ErrUnrepresentableLeaf", target, err)
+			continue
+		}
+		for _, want := range []string{"5566cc77", "0011aa22"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: the refusal %v does not name %s", target, err, want)
+			}
+		}
+	}
+	route, err := targetRouteFor(TargetCodex)
+	if err != nil {
+		t.Fatalf("route %s: %v", TargetCodex, err)
+	}
+	converted, err := route.Convert(selected, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("%s: converting the selection: %v", TargetCodex, err)
+	}
+	if count := lossCount(t, converted.Losses, "inactive_branch_records").Count; count != 1 {
+		t.Errorf("%s: inactive_branch_records = %d, want the one off-line record the window names",
+			TargetCodex, count)
+	}
+	bytes := string(converted.Data)
+	if !strings.Contains(bytes, leafText) {
+		t.Errorf("%s: the written document does not hold the record on the read's line", TargetCodex)
+	}
+	for _, unwanted := range abandonedTexts {
+		if strings.Contains(bytes, unwanted) {
+			t.Errorf("%s: the written document holds %q, a record the read's line leaves off it",
+				TargetCodex, unwanted)
+		}
+	}
+
+	// The smallest sparse window of the same shape -- ordinal 0 and the leaf alone -- converts too.
+	selected, _, err = Select(conversation, "0,5", false)
+	if err != nil {
+		t.Fatalf("selecting 0,5: %v", err)
+	}
+	for _, target := range []string{TargetPi, TargetOMP, TargetClaude} {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		if _, err := route.Convert(selected, selectionProbeOptions()); err != nil {
+			t.Errorf("%s: converting the sparse window 0,5: %v", target, err)
+		}
+	}
+}
+
+// TestSelectionPairsAReusedToolIDByRecordedOrder pins the seam against an id the source reused: the
+// inherited readers' own regression (internal/parser/termination_test.go's "earlier matching result does
+// not resolve final orphan") records a call at ordinal 0 answered by a result at ordinal 1, then a later
+// call at ordinal 2 reusing the id with no result. Selecting the later call carries it alone -- expanding
+// by id alone would import the earlier pair as if it were this call's counterpart -- and the report
+// counts the later call undischarged. The strict arm is honoured for the later call and refuses either
+// half of the older pair by name.
+func TestSelectionPairsAReusedToolIDByRecordedOrder(t *testing.T) {
+	reused := Conversation{Messages: []Message{
+		{Ordinal: 0, Role: "assistant", ToolCalls: []ToolCall{{ToolUseID: "toolu_reused", Name: "Bash"}}},
+		{Ordinal: 1, Role: "user", ToolResults: []ToolResult{{ToolUseID: "toolu_reused", ContentRaw: "one"}}},
+		{Ordinal: 2, Role: "assistant", ToolCalls: []ToolCall{{ToolUseID: "toolu_reused", Name: "Bash"}}},
+	}}
+
+	selected, report, err := Select(reused, "2", false)
+	if err != nil {
+		t.Fatalf("selecting the later call: %v", err)
+	}
+	if got := selectionOrdinals(selected); len(got) != 1 || got[0] != 2 {
+		t.Errorf("carried ordinals = %v, want the later call alone: the earlier pair is not its counterpart",
+			got)
+	}
+	if report.NecessitiesAdded.Count != 0 {
+		t.Errorf("necessities = %+v, want none: the later call has no recorded result of its own",
+			report.NecessitiesAdded)
+	}
+	if report.CallsUndischarged.Count != 1 || strings.Join(report.CallsUndischarged.Regions, ",") != "2" {
+		t.Errorf("calls_undischarged = %+v, want the later call counted as the source left it",
+			report.CallsUndischarged)
+	}
+
+	// The older pair still pairs in both directions.
+	for _, testCase := range []struct {
+		spec      string
+		necessity SelectionNecessity
+	}{
+		{"0", SelectionNecessity{Ordinal: 1, PulledBy: 0}},
+		{"1", SelectionNecessity{Ordinal: 0, PulledBy: 1}},
+	} {
+		selected, report, err := Select(reused, testCase.spec, false)
+		if err != nil {
+			t.Fatalf("selecting %q: %v", testCase.spec, err)
+		}
+		if got := selectionOrdinals(selected); len(got) != 2 || got[0] != 0 || got[1] != 1 {
+			t.Errorf("selecting %q: carried ordinals = %v, want the older pair 0,1", testCase.spec, got)
+		}
+		if report.NecessitiesAdded.Count != 1 || report.NecessitiesAdded.Added[0] != testCase.necessity {
+			t.Errorf("selecting %q: necessities = %+v, want %+v", testCase.spec,
+				report.NecessitiesAdded, testCase.necessity)
+		}
+	}
+
+	// Strict: the later call separates nothing, either half of the older pair is refused by name.
+	if _, _, err := Select(reused, "2", true); err != nil {
+		t.Errorf("strictly selecting the later call: err = %v, want it honoured (no pair is separated)", err)
+	}
+	for _, spec := range []string{"0", "1"} {
+		if _, _, err := Select(reused, spec, true); !errors.Is(err, ErrStrictSelection) {
+			t.Errorf("strictly selecting %q: err = %v, want ErrStrictSelection", spec, err)
+		} else if !strings.Contains(err.Error(), "toolu_reused") {
+			t.Errorf("strictly selecting %q: %v does not name the reused id", spec, err)
+		}
+	}
+
+	// Two calls, one later result: the result answers the nearest preceding call, so the earlier call is
+	// not answered by it and is not pulled into a selection of the result.
+	twoCalls := Conversation{Messages: []Message{
+		{Ordinal: 0, Role: "assistant", ToolCalls: []ToolCall{{ToolUseID: "toolu_reused", Name: "Bash"}}},
+		{Ordinal: 1, Role: "assistant", Content: "between"},
+		{Ordinal: 2, Role: "assistant", ToolCalls: []ToolCall{{ToolUseID: "toolu_reused", Name: "Bash"}}},
+		{Ordinal: 3, Role: "user", ToolResults: []ToolResult{{ToolUseID: "toolu_reused", ContentRaw: "two"}}},
+	}}
+	selected, report, err = Select(twoCalls, "0", false)
+	if err != nil {
+		t.Fatalf("selecting the earlier call: %v", err)
+	}
+	if got := selectionOrdinals(selected); len(got) != 1 || got[0] != 0 {
+		t.Errorf("carried ordinals = %v, want the earlier call alone: the result answers the later call",
+			got)
+	}
+	if report.CallsUndischarged.Count != 1 || strings.Join(report.CallsUndischarged.Regions, ",") != "0" {
+		t.Errorf("calls_undischarged = %+v, want the earlier call counted", report.CallsUndischarged)
+	}
+	selected, report, err = Select(twoCalls, "3", false)
+	if err != nil {
+		t.Fatalf("selecting the result: %v", err)
+	}
+	if got := selectionOrdinals(selected); len(got) != 2 || got[0] != 2 || got[1] != 3 {
+		t.Errorf("carried ordinals = %v, want the later call and its result", got)
+	}
+	if report.NecessitiesAdded.Count != 1 ||
+		report.NecessitiesAdded.Added[0] != (SelectionNecessity{Ordinal: 2, PulledBy: 3}) {
+		t.Errorf("necessities = %+v, want the later call pulled in by the result", report.NecessitiesAdded)
+	}
+}
+
+// TestSelectionCountsACallWithOnlyProgressEventsUndischarged pins the source side of calls_undischarged
+// against the inherited readers' own shape: a call whose recorded result event still says it is running
+// (the Codex subagent notification internal/parser/codex_parser_test.go's "running-only wait output is
+// preserved as a result event" case records) has not been answered, and the count must not read the
+// progress as an outcome. The same event with an outcome status answers it, the event itself still
+// travels with its call, and the status words the readers write for a streamed chunk are progress too.
+func TestSelectionCountsACallWithOnlyProgressEventsUndischarged(t *testing.T) {
+	withStatus := func(status string) Conversation {
+		return Conversation{Messages: []Message{{
+			Ordinal:   0,
+			Role:      "assistant",
+			ToolCalls: []ToolCall{{ToolUseID: "call_wait", Name: "wait"}},
+			ToolResults: []ToolResult{{
+				ToolUseID: "call_wait", Status: status, ContentRaw: "Still working",
+			}},
+		}}}
+	}
+	for _, status := range []string{"running", "pending", "streaming", "started", "in_progress"} {
+		selected, report, err := Select(withStatus(status), "0", false)
+		if err != nil {
+			t.Fatalf("selecting a call whose only result is %q: %v", status, err)
+		}
+		if got := selectionOrdinals(selected); len(got) != 1 || got[0] != 0 {
+			t.Errorf("the %q event: carried ordinals = %v, want the record with its evidence",
+				status, got)
+		}
+		if len(selected.Messages[0].ToolCalls) != 1 || len(selected.Messages[0].ToolResults) != 1 {
+			t.Errorf("the %q event: the carried record lost its call or its recorded event: %+v",
+				status, selected.Messages[0])
+		}
+		if report.CallsUndischarged.Count != 1 ||
+			strings.Join(report.CallsUndischarged.Regions, ",") != "0" {
+			t.Errorf("the %q event: calls_undischarged = %+v, want the call counted: progress is not an "+
+				"outcome", status, report.CallsUndischarged)
+		}
+	}
+	for _, status := range []string{"", "completed", "errored", "failed"} {
+		_, report, err := Select(withStatus(status), "0", false)
+		if err != nil {
+			t.Fatalf("selecting a call whose only result is %q: %v", status, err)
+		}
+		if report.CallsUndischarged.Count != 0 {
+			t.Errorf("the %q event: calls_undischarged = %+v, want none: the read holds an outcome",
+				status, report.CallsUndischarged)
 		}
 	}
 }

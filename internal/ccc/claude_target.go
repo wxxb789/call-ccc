@@ -190,7 +190,7 @@ func ConvertToClaudeTranscript(conv Conversation, opts ClaudeTargetOptions) (Cla
 		callOwners:     map[string]struct{}{},
 		opts:           opts,
 		sourceFidelity: conv.Fidelity,
-		tree:           newSourceTree(conv.Source.Provider),
+		tree:           newSourceTree(conv),
 	}
 	builder.encoder = json.NewEncoder(&builder.buffer)
 	builder.encoder.SetEscapeHTML(false)
@@ -198,7 +198,7 @@ func ConvertToClaudeTranscript(conv Conversation, opts ClaudeTargetOptions) (Cla
 	if builder.uuidErr != nil {
 		return ClaudeTranscript{}, builder.uuidErr
 	}
-	if err := selectedLeafRefusal(conv, builder.tree.lastOrigin.sourceID); err != nil {
+	if err := selectedLeafRefusal(conv, &builder.tree); err != nil {
 		return ClaudeTranscript{}, err
 	}
 	carried := builder.carried

@@ -465,14 +465,14 @@ func convertToPiFamilySession(conv Conversation, opts PiTargetOptions, family pi
 		callNames:       map[string]string{},
 		ledger:          ledger{pendingCalls: map[string]struct{}{}},
 		sourceFidelity:  conv.Fidelity,
-		tree:            newSourceTree(conv.Source.Provider),
+		tree:            newSourceTree(conv),
 	}
 	builder.writePreamble()
 	builder.writeConversation(conv)
 	if builder.idErr != nil {
 		return PiSession{}, builder.idErr
 	}
-	if err := selectedLeafRefusal(conv, builder.tree.lastOrigin.sourceID); err != nil {
+	if err := selectedLeafRefusal(conv, &builder.tree); err != nil {
 		return PiSession{}, err
 	}
 	return PiSession{

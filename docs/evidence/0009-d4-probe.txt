@@ -1,0 +1,289 @@
+package ccc
+
+// zz_d4_probe_test.go is the throw-away before/after probe goal 0009's D4 evidence rests on: the
+// unflagged conversion path, measured byte-for-byte (over a normalized copy) and report-for-report on
+// two trees. It is copied into a throw-away worktree of the pre-0009 revision and run there, then run
+// here, and the two outputs are diffed; it is not part of the tree a later revision carries.
+//
+// Run one tree with:
+//
+//	CCC_D4_PROBE_OUT=/tmp/ccc-d4-X/probe.txt go test -tags fts5 -count=1 -run TestZZD4Probe \
+//	    ./internal/ccc/ -v
+//
+// It walks every committed fixture document (the file-backed providers' sessions, plus the OpenCode
+// document materialized as a store), converts each through every route's writer with fixed options, and
+// runs the whole pipeline (Continue, a dry run at --verify none) per route x document. Nothing it does
+// carries a selection flag: the probe measures the *default* path, and every printed line is normalized
+// (minted ids, timestamps, temp and checkout paths) so two runs of one tree are byte-identical and the
+// two trees' outputs are comparable.
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"testing"
+	"time"
+
+	"go.kenn.io/agentsview/internal/config"
+)
+
+// d4ProbeNow is the conversion instant every run is stamped with, so the writers' clocks are a function
+// of the document alone.
+var d4ProbeNow = time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+
+// d4ProbeDocument is one committed fixture session as the probe reads it.
+type d4ProbeDocument struct {
+	name     string
+	ref      Ref
+	openCode bool
+}
+
+// d4ProbeRepoRoot answers the working tree's own root, so paths inside it can be folded away.
+func d4ProbeRepoRoot(t *testing.T) string {
+	t.Helper()
+	root, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		t.Fatalf("resolving the repository root: %v", err)
+	}
+	return strings.TrimSpace(string(root))
+}
+
+// d4ProbeCodexSessionID reads the session id out of a Codex rollout file name: the trailing UUID after
+// the `rollout-<instant>-` prefix.
+var d4ProbeCodexSessionID = regexp.MustCompile(
+	`([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$`)
+
+// d4ProbeDocuments answers every committed fixture document, one entry per session, sorted by name.
+func d4ProbeDocuments(t *testing.T) []d4ProbeDocument {
+	t.Helper()
+	root := fixtureRoot(t)
+	var docs []d4ProbeDocument
+	for _, provider := range []string{"claude", "codex", "pi", "omp"} {
+		dir := filepath.Join(root, provider)
+		err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+			if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".jsonl") {
+				return err
+			}
+			id := strings.TrimSuffix(entry.Name(), ".jsonl")
+			if provider == "codex" {
+				match := d4ProbeCodexSessionID.FindStringSubmatch(entry.Name())
+				if match == nil {
+					t.Errorf("the Codex fixture %s does not end in a session id", path)
+					return nil
+				}
+				id = match[1]
+			}
+			docs = append(docs, d4ProbeDocument{
+				name: provider + ":" + id,
+				ref:  Ref{Provider: provider, ID: id},
+			})
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walking %s: %v", dir, err)
+		}
+	}
+	docs = append(docs, d4ProbeDocument{
+		name:     "opencode:" + openCodeSourceSessionID,
+		ref:      openCodeSourceFixtureRef,
+		openCode: true,
+	})
+	sort.Slice(docs, func(i, j int) bool { return docs[i].name < docs[j].name })
+	return docs
+}
+
+// d4ProbeRead answers one document's read, its configuration and its reader, so the pipeline arm reads
+// the same session the writer arm was handed.
+func d4ProbeRead(t *testing.T, doc d4ProbeDocument) (Conversation, config.Config, *SourceReader) {
+	t.Helper()
+	if doc.openCode {
+		root := openCodeSourceStore(t, openCodeSourceFixtureDocument(t))
+		cfg := openCodeSourceConfig(t, root)
+		return readOpenCodeSourceFixture(t, root), cfg, NewSourceReader(cfg)
+	}
+	cfg := fixtureConfig(t)
+	reader := NewSourceReader(cfg)
+	conversation, err := reader.Read(context.Background(), doc.ref)
+	if err != nil {
+		t.Fatalf("reading %s: %v", doc.name, err)
+	}
+	return conversation, cfg, reader
+}
+
+// d4ProbeNormalizer folds everything a conversion mints or discovers out of one printed line, so the
+// same document and route print the same line on two runs and two trees.
+type d4ProbeNormalizer struct {
+	rules []struct {
+		re   *regexp.Regexp
+		with string
+	}
+}
+
+func newD4ProbeNormalizer(repoRoot string) *d4ProbeNormalizer {
+	normalizer := &d4ProbeNormalizer{}
+	add := func(pattern, with string) {
+		normalizer.rules = append(normalizer.rules, struct {
+			re   *regexp.Regexp
+			with string
+		}{regexp.MustCompile(pattern), with})
+	}
+	add(regexp.QuoteMeta(repoRoot), "<repo>")
+	add(`/tmp/[^\s"'\\]*`, "<tmp>")
+	add(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`, "<uuid>")
+	add(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z`, "<ts>")
+	add(`"timestamp":\d+`, `"timestamp":<ms>`)
+	add(`"created":\d+`, `"created":<ms>`)
+	add(`"updated":\d+`, `"updated":<ms>`)
+	add(`"id":"[0-9a-f]{8}"`, `"id":"<entry>"`)
+	add(`"parentId":"[0-9a-f]{8}"`, `"parentId":"<entry>"`)
+	add(`"firstKeptEntryId":"[0-9a-f]{8}"`, `"firstKeptEntryId":"<entry>"`)
+	add(`(?:msg|ses)_[A-Za-z0-9_]+`, "<opencode-id>")
+	return normalizer
+}
+
+func (n *d4ProbeNormalizer) fold(text string) string {
+	for _, rule := range n.rules {
+		text = rule.re.ReplaceAllString(text, rule.with)
+	}
+	return text
+}
+
+// d4ProbeLine builds one output line: the document and route names are printed as they are (so a diff
+// can select one document), and only the measured text is folded.
+func d4ProbeLine(normalizer *d4ProbeNormalizer, kind, doc, route, text string) string {
+	line := kind + " " + doc + " " + route
+	if text != "" {
+		line += " " + normalizer.fold(text)
+	}
+	return line
+}
+
+// d4ProbeWriter runs one route's writer over one document and answers its lines: the normalized digest
+// of the written bytes, the carried counts, and every non-zero loss row.
+func d4ProbeWriter(
+	t *testing.T, doc d4ProbeDocument, conversation Conversation, routeName string,
+	route targetRoute, normalizer *d4ProbeNormalizer,
+) []string {
+	t.Helper()
+	converted, err := route.Convert(conversation, targetConvertInput{
+		CLIVersion: "d4-probe-0.0",
+		Provider:   "d4-probe-provider",
+		Model:      "d4-probe-model",
+		Now:        d4ProbeNow,
+	})
+	if err != nil {
+		return []string{d4ProbeLine(normalizer, "PROBE-WRITE", doc.name, routeName,
+			"error="+err.Error())}
+	}
+	folded := normalizer.fold(string(converted.Data))
+	digest := sha256.Sum256([]byte(folded))
+	lines := []string{d4ProbeLine(normalizer, "PROBE-WRITE", doc.name, routeName, fmt.Sprintf(
+		"bytes=%d digest=%s carried=%+v", len(converted.Data), hex.EncodeToString(digest[:]), converted.Carried))}
+	for _, loss := range converted.Losses {
+		if loss.Count == 0 {
+			continue
+		}
+		lines = append(lines, d4ProbeLine(normalizer, "PROBE-LOSS", doc.name, routeName,
+			fmt.Sprintf("%s %s %d", loss.Category, loss.Disposition, loss.Count)))
+	}
+	return lines
+}
+
+// d4ProbePipeline runs the whole conversion pipeline (Continue: read, writer, dry-run structure check,
+// no verification level) over one document and one route, and answers its lines.
+func d4ProbePipeline(
+	t *testing.T, doc d4ProbeDocument, cfg config.Config, reader *SourceReader,
+	routeName string, normalizer *d4ProbeNormalizer,
+) []string {
+	t.Helper()
+	home := filepath.Join(t.TempDir(), "d4-probe-home")
+	result, err := Continue(context.Background(), ContinueOptions{
+		Ref:         doc.ref,
+		Target:      routeName,
+		Config:      cfg,
+		Reader:      reader,
+		ArchivePath: cfg.DBPath,
+		TargetHome:  home,
+		DryRun:      true,
+		Verify:      VerifyNone,
+		Now:         d4ProbeNow,
+		Stderr:      io.Discard,
+	})
+	lines := []string{d4ProbeLine(normalizer, "PROBE-RUN", doc.name, routeName, fmt.Sprintf(
+		"conversion=%s format=%s read_from=%s dry_run=%v carried=%+v",
+		result.Conversion.State, result.Conversion.Format, result.Conversion.ReadFrom,
+		result.Conversion.DryRun, result.Conversion.Carried))}
+	if err != nil {
+		lines = append(lines, d4ProbeLine(normalizer, "PROBE-RUN", doc.name, routeName, "error="+err.Error()))
+	}
+	if result.Conversion.State == "" {
+		return lines
+	}
+	for _, loss := range result.Conversion.Losses {
+		if loss.Count == 0 {
+			continue
+		}
+		lines = append(lines, d4ProbeLine(normalizer, "PROBE-RUN", doc.name, routeName,
+			fmt.Sprintf("loss %s %s %d", loss.Category, loss.Disposition, loss.Count)))
+	}
+	lines = append(lines, d4ProbeLine(normalizer, "PROBE-RUN", doc.name, routeName, fmt.Sprintf(
+		"installation state=%s mechanism=%s source_check=%s created=%v",
+		result.Installation.State, result.Installation.Mechanism,
+		result.Installation.SourceCheckState, result.Installation.Created)))
+	lines = append(lines, d4ProbeLine(normalizer, "PROBE-RUN", doc.name, routeName, fmt.Sprintf(
+		"target provider=%s format=%s session=%s cwd=%s binary_found=%v binary_version=%s cli=%s model_provider=%s",
+		result.TargetSession.Provider, result.TargetSession.Format, result.TargetSession.SessionID,
+		result.TargetSession.Cwd, result.TargetSession.BinaryFound, result.TargetSession.BinaryVersion,
+		result.TargetSession.CLIVersion, result.TargetSession.ModelProvider)))
+	lines = append(lines, d4ProbeLine(normalizer, "PROBE-RUN", doc.name, routeName, fmt.Sprintf(
+		"verification structure=%s load=%s resume=%s structure_detail=%s",
+		result.Verification.Structure.State, result.Verification.Load.State,
+		result.Verification.Resume.State, result.Verification.Structure.Detail)))
+	if result.Source != nil {
+		lines = append(lines, d4ProbeLine(normalizer, "PROBE-RUN", doc.name, routeName,
+			fmt.Sprintf("source counts=%+v", result.Source.Counts)))
+	}
+	for _, warning := range result.Warnings {
+		lines = append(lines, d4ProbeLine(normalizer, "PROBE-RUN", doc.name, routeName, "warning "+warning))
+	}
+	return lines
+}
+
+// TestZZD4Probe writes the probe's own lines to CCC_D4_PROBE_OUT; without the variable it skips.
+func TestZZD4Probe(t *testing.T) {
+	out := os.Getenv("CCC_D4_PROBE_OUT")
+	if out == "" {
+		t.Skip("CCC_D4_PROBE_OUT is not set: the D4 before/after probe runs only when asked")
+	}
+	normalizer := newD4ProbeNormalizer(d4ProbeRepoRoot(t))
+	docs := d4ProbeDocuments(t)
+	routes := Targets()
+	sort.Strings(routes)
+
+	var lines []string
+	for _, doc := range docs {
+		conversation, cfg, reader := d4ProbeRead(t, doc)
+		for _, routeName := range routes {
+			route, err := targetRouteFor(routeName)
+			if err != nil {
+				t.Fatalf("route %s: %v", routeName, err)
+			}
+			writerLines := d4ProbeWriter(t, doc, conversation, routeName, route, normalizer)
+			runLines := d4ProbePipeline(t, doc, cfg, reader, routeName, normalizer)
+			lines = append(lines, writerLines...)
+			lines = append(lines, runLines...)
+		}
+	}
+	if err := os.WriteFile(out, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatalf("writing %s: %v", out, err)
+	}
+	t.Logf("wrote %d line(s) to %s", len(lines), out)
+}

@@ -784,7 +784,7 @@ func TestPiSessionChainsPastAnOmittedRecordToItsResolvedPlace(t *testing.T) {
 // disabling either survived the suite green before this pass: a rule only its own comment states is what
 // the repository treats as unpinned.
 func TestSourceTreeEndRecordKeepsThePlaceAndDropsTheWalk(t *testing.T) {
-	tree := newSourceTree("pi")
+	tree := newSourceTree(Conversation{Source: SourceIdentity{Provider: "pi"}})
 	tree.startRecord("s0", "")
 	tree.wrote("entry-0")
 	tree.endRecord()

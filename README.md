@@ -27,7 +27,7 @@ bin/ccc continue omp:01a1c338-9e4f-7c21-8f3d-2b6a05e1d7a4 --to claude     # Oh M
 bin/ccc continue claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to opencode # Claude Code → OpenCode
 bin/ccc continue opencode:ses_5f2a1c47d9e34b6a8f0c1d2e3b4a5c6d --to codex # OpenCode → Codex
 bin/ccc continue claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to codex \
-  --select 0-2,7-9                            # carry only these records of the read
+  --select 0-3,7                              # carry only these records of the read
 # resume the Claude session this installed, from the directory its loader discovers it in:
 cd <session working directory> && CLAUDE_CONFIG_DIR=<installed home> claude --resume <new session id>
 # and the Pi one, from the directory that harness resolves a session id through:
@@ -120,15 +120,22 @@ working directory need a path that cannot be re-resolved from there.
 `--select SPEC` carries only the records of the read the specification names, as ordinal values and
 regions separated by commas (`5`, `3-7`, `12-` — the last from that value through every higher one the
 read holds): the ordinals are the values the *read* supplied, printed by the run's own `selection:` line,
-never a position and never the target's post-write numbering. A recorded tool call and its recorded result
-are one structure — a selection that would split a pair carries the counterpart instead and names it a
-necessity with the ordinal that pulled it in — and `--strict-selection` refuses such a selection by name
-before anything is installed instead. A call the source itself never answered stays as it is and is
-counted (`calls_undischarged`). Every run that carried a selection reports the transformation in both the
-human block and `--json`: the space the spec was written against, the included and excluded records, the
-necessities added and the undischarged calls, each with counts and the ordinals it names — so a caller can
-see exactly which recorded context crossed and which stayed behind. An ill-formed specification, one whose
-region reaches outside the ordinals the read supplied and one that would carry no record at all are refused
+never a position and never the target's post-write numbering. A recorded tool call and the recorded result
+that answers it — the nearest call the same id records before it — are one structure: a selection that
+would split a pair carries the counterpart instead and names it a necessity with the ordinal that pulled
+it in, while `--strict-selection` refuses such a selection by name before anything is installed. A call
+whose read holds no recorded outcome — no result at all, or only progress events that say it is still
+running — stays as it is and is counted (`calls_undischarged`), and whether the target's own format can
+hold it is that writer's answer, named in the conversion's losses. On a target whose session is a tree, a
+selection that leaves out a record's own parent hangs it off its nearest retained ancestor instead, so the
+resumed context is the read's own line and a branch the selection carried stays recorded history off that
+line (a window with no retained ancestor at all is refused by name rather than written under a branch).
+Every run that carried a selection reports the transformation in both the human block and `--json`: the
+space the spec was written against, the included and excluded records, the necessities added and the
+undischarged calls, each with counts and the ordinals it names — so a caller can see exactly which recorded
+context crossed and which stayed behind. An ill-formed specification, one whose region reaches outside the
+ordinals the read supplied, one that would carry no record at all and a value supplied empty (an unset
+variable expanded into `--select "$SPEC"`) are refused
 with the core's own sentence and exit code 2, before anything is written (a region that spans a gap carries
 the records it holds); a run without the flag is unchanged.
 

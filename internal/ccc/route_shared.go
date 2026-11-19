@@ -178,6 +178,25 @@ func projectedParentProvider(provider string) bool {
 	return projectedParentProviders[strings.ToLower(strings.TrimSpace(provider))]
 }
 
+// resultStatesAnOutcome answers whether one recorded result occurrence states an outcome, as opposed to
+// the progress a read streams while a call is still executing. The words are the inherited readers' own:
+// internal/parser/termination.go treats any status other than `running` as the call being resolved (a
+// Codex subagent's pending notification stream), the RooCode/Kilo chunk readers record streamed chunks as
+// `running` and flip the last one to the aggregate's own final status, and Copilot's and OpenCode's own
+// call events spell the same state `started`/`pending`/`streaming` (internal/parser/copilot.go,
+// internal/parser/opencode_v2.go). Anything else -- `completed`, `errored`, a provider's own word, or no
+// status at all -- is a recorded outcome. The selection consults it to decide whether a call was left
+// undischarged, and the OpenCode writer to decide whether one event is the call's outcome; either way a
+// target's own status rule (OpenCode's toolPart) then decides what state, if any, it writes.
+func resultStatesAnOutcome(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "running", "pending", "streaming", "started", "in_progress":
+		return false
+	default:
+		return true
+	}
+}
+
 // toolResultCarrierRecord answers the source record a record hanging off this message's outcome would
 // read as its parent, where the read may answer a projection, so that a later record naming that source
 // record is the place the outcome's entry stands for.
@@ -270,16 +289,60 @@ type sourceTree struct {
 	// unresolved counts the source relations this conversion could not place: the entries written for
 	// their records follow the entry before them, which is a relation this build invented.
 	unresolved int
+	// inactiveByID is the read's own line answer for the records this conversion writes
+	// (sourceLineFlags), keyed by the record's own identity: fallbackPlace consults it so an entry written
+	// for a record the read's line leaves off it can never become the place a record *on* that line hangs
+	// off. On a full read the answer is derived over the read; on a selection it is the read's own answer
+	// carried through the reduction (Conversation.sourceLineInactive), because the line belongs to the
+	// read and a window must not redefine it.
+	inactiveByID map[string]bool
+	// keptAncestor maps a carried record's identity to the nearest ancestor the *read* holds that the
+	// selection carries too (Conversation.sourceKeptAncestor): the place parentPlace hangs a record whose
+	// own parent the window left out. It is empty for a read that was not reduced, and reduced says
+	// whether the document is one a selection produced -- which is also what gates the revived-branch
+	// check below, so an unflagged conversion keeps the writers' long-standing answer for a relation the
+	// read cannot place.
+	keptAncestor map[string]string
+	reduced      bool
+	// offLineEntry maps each entry written for a record the read's line leaves off it to that record's own
+	// identity, and revivedChild/revivedParent name the first relation the fallback resolved from a record
+	// on the line onto such an entry: the child whose entry would hang there and the off-line record whose
+	// entry it is. Empty revivedChild means no such relation was resolved; a non-empty one is what the
+	// leaf guard refuses (selectedLeafRefusal), because following the entry written before the child would
+	// put an abandoned record on the walk a resumed session makes.
+	offLineEntry  map[string]string
+	revivedChild  string
+	revivedParent string
 }
 
-func newSourceTree(provider string) sourceTree {
-	return sourceTree{
+func newSourceTree(conversation Conversation) sourceTree {
+	inactive := sourceLineFlags(conversation)
+	tree := sourceTree{
 		sourceRecordParents:  map[string]string{},
 		writtenEntryID:       map[string]string{},
 		omittedAncestorEntry: map[string]string{},
 		toolResultEntry:      map[string]string{},
-		projectedParents:     projectedParentProvider(provider),
+		inactiveByID:         map[string]bool{},
+		keptAncestor:         map[string]string{},
+		offLineEntry:         map[string]string{},
+		projectedParents:     projectedParentProvider(conversation.Source.Provider),
+		reduced:              conversation.sourceKeptAncestor != nil,
 	}
+	for index, message := range conversation.Messages {
+		id := strings.TrimSpace(message.SourceUUID)
+		if id == "" {
+			continue
+		}
+		if index < len(inactive) && inactive[index] {
+			tree.inactiveByID[id] = true
+		}
+		if index < len(conversation.sourceKeptAncestor) {
+			if ancestor := strings.TrimSpace(conversation.sourceKeptAncestor[index]); ancestor != "" {
+				tree.keptAncestor[id] = ancestor
+			}
+		}
+	}
+	return tree
 }
 
 // startRecord names the source record the entries written next stand for and resolves the entry its
@@ -295,10 +358,11 @@ func (t *sourceTree) startRecord(id, parent string) {
 	if id != "" {
 		t.sourceRecordParents[id] = parent
 	}
-	if id != "" && parent == "" && t.lastEntryID != nil {
+	parentID, counted := t.parentPlace(id, parent)
+	if counted {
 		t.unresolved++
 	}
-	t.pending = sourceRecordOrigin{sourceID: id, sourceParent: parent, parentID: t.parentFor(parent)}
+	t.pending = sourceRecordOrigin{sourceID: id, sourceParent: parent, parentID: parentID}
 }
 
 // endRecord ends the record's walk, so a record that produced no entry cannot leak its relation onto the
@@ -371,6 +435,9 @@ func (t *sourceTree) wrote(id string) {
 	t.lastEntryID = &id
 	if t.pending.sourceID != "" {
 		t.writtenEntryID[t.pending.sourceID] = id
+		if t.inactiveByID[t.pending.sourceID] {
+			t.offLineEntry[id] = t.pending.sourceID
+		}
 	}
 	if t.projectedParents && t.pending.toolResultCarrier != "" {
 		t.toolResultEntry[t.pending.toolResultCarrier] = id
@@ -380,60 +447,101 @@ func (t *sourceTree) wrote(id string) {
 	t.pending.toolResultCarrier = ""
 }
 
-// parentFor answers the entry a source record's first written entry is chained to: the entry this
-// conversion wrote for the record the source named as its parent.
+// parentPlace answers the entry the record's first entry is chained to, and whether that place is a
+// relation this conversion invented -- which startRecord counts (unresolved). The source's own relation
+// decides, not the order the file happens to hold its records in: a target format that is a tree is
+// written as the source's own tree, so an entry follows the record it hangs off and a branch the
+// conversation left stays off the path the target's own loader walks from the file's last entry. The
+// places, in order:
 //
-// The source's own relation decides, not the order the file happens to hold its records in. A target
-// format that is a tree is written as the source's own tree, so an entry follows the record it hangs
-// off and a branch the conversation left stays off the path the target's own loader walks from the
-// file's last entry. Three answers are possible for a record that *does* name a parent:
-//
-//   - the named record was written: its final entry is the parent;
-//   - the named record was left out of the target (an omitted record, or one with no entry of its own):
-//     the place resolved for it when it was walked (omittedAncestorEntry -- for a record standing under a
-//     written tool result that is the result's own entry, which the raw walk alone cannot reach), else
-//     the nearest ancestor that *was* written, walked through the document's own relations;
-//   - the named record is the place a written tool result stands for (toolResultEntry): the tool
-//     result's own entry, because the source's own file runs call → result → what follows while the
-//     read answers the next record as hanging off the call.
-//
-// The third answer is the projection undone. Only a read that may project can reach it: the tool-result
-// place is registered only for such a read (wrote, projectedParents), so an exact read's answers name
-// the records they mean (a Claude transcript's parentUuid) and are resolved above and below by the
-// read's own answer alone. Chaining a record through a result that merely stands beside the record it
-// named would chain it to a sibling the source placed elsewhere -- reviving that sibling as an ancestor.
-//
-// It is also always counted (unresolved), whether or not the result stands immediately before the
-// record: the read answers a record the source placed under the call and one it placed under the call's
-// result with the same parent, so file adjacency cannot settle which of the two it names, and the entry
-// is chained through the result -- the reading the source's file order supports -- with the count naming
-// the relation as one the read did not establish. A call's outcome the read folded onto the call's own
-// message is what the carrier of a written result is answered from, so a sibling of the call names the
-// call's message's *parent*, not the message, and is chained to that parent's own entry instead of
-// through the call's result: only a record naming the call's own message can be a record the file might
-// have placed under the outcome.
-//
-// A record that names no parent at all is read as the read's own order: this conversion cannot tell a
-// record the source placed at the head of a line from one whose identity or parent the provider did not
-// write, and chaining it to the entry before it keeps a record the read *did* carry visible, where a
-// written null could cut the conversation into pieces the target's loader never walks. A parent the
-// document cannot resolve -- a record outside the read -- follows the entry before it and is counted
-// (unresolved): that is a relation this conversion invented, and the report says so rather than
-// presenting the entry as one the source recorded hanging where it does.
-func (t *sourceTree) parentFor(parent string) *string {
+//   - the record the source named, resolved through the records the document holds (writtenAncestor): the
+//     entry this conversion wrote for it, or -- for a record the target left out -- the place resolved for
+//     it when it was walked (omittedAncestorEntry: for a record standing under a written tool result that
+//     is the result's own entry, which the raw walk alone cannot reach), else the nearest written
+//     ancestor walked through the document's own relations. Not counted.
+//   - the place a written tool result stands for (toolResultEntry), where the read may project: the
+//     source's own file runs call → result → what follows while the read answers the next record as
+//     hanging off the call. Always counted: the read answers a record the source placed under the call
+//     and one it placed under the call's result with the same parent, so which of the two it names is not
+//     answerable from the read; the entry is chained through the result -- the reading the source's own
+//     file order supports -- with the count naming the relation as one the read did not establish. Only a
+//     read that may project can reach this place (wrote, projectedParents), so an exact read's answers
+//     name the records they mean. A call's outcome the read folded onto the call's own message is what the
+//     carrier of a written result is answered from, so a sibling of the call names the call's message's
+//     *parent*, not the message, and is chained to that parent's own entry instead of through the call's
+//     result: only a record naming the call's own message can be a record the file might have placed
+//     under the outcome.
+//   - the nearest retained ancestor a selection answered for the record (sourceKeptAncestor): the
+//     record's own relation steps through records the window left out to an ancestor the window carries,
+//     and the entry hangs off that ancestor's place. Not counted: the ancestors and the exclusion are the
+//     read's own answers, disclosed by the selection report, and this is the place a reduced tree hangs a
+//     record whose own parent the selection left out -- without it the entry would follow the entry before
+//     it and could put a branch the conversation left on the walk.
+//   - the entry written before it (priorEntry), counted when a relation was recorded but could not be
+//     placed -- a record outside the read, a relation no walk can complete -- or when the record named no
+//     parent and is not the conversation's first. A record that names no parent at all is read as the
+//     read's own order: this conversion cannot tell a record the source placed at the head of a line from
+//     one whose identity or parent the provider did not write, and chaining it to the entry before it
+//     keeps a record the read *did* carry visible, where a written null could cut the conversation into
+//     pieces the target's loader never walks. A reduced document whose selection left a record's whole
+//     ancestry out takes this place too, and where that entry stands for an off-line record the relation
+//     is noted as the revived branch the guard refuses (fallbackPlace).
+func (t *sourceTree) parentPlace(id, parent string) (*string, bool) {
 	parent = strings.TrimSpace(parent)
 	if parent == "" {
-		return t.priorEntry()
+		if id == "" || t.lastEntryID == nil {
+			return t.priorEntry(), false
+		}
+		return t.fallbackPlace(id), true
 	}
-	if id, ok := t.toolResultEntry[parent]; ok {
-		t.unresolved++
-		return &id
+	if entry, ok := t.toolResultEntry[parent]; ok {
+		return &entry, true
 	}
-	if id, ok := t.writtenAncestor(parent); ok {
-		return &id
+	if entry, ok := t.writtenAncestor(parent); ok {
+		return &entry, false
 	}
-	t.unresolved++
-	return t.priorEntry()
+	if entry, ok := t.keptAncestorEntry(id); ok {
+		return &entry, false
+	}
+	return t.fallbackPlace(id), true
+}
+
+// keptAncestorEntry answers the written place of the nearest retained ancestor a selection answered for
+// the record (Conversation.sourceKeptAncestor): the ancestor's own entry, or the place resolved for an
+// ancestor the target omitted (a record that produced no entry of its own). It answers nothing for a
+// read that was not reduced (the map is empty then), for a record the read answered no ancestor for, and
+// for an ancestor the read's own line leaves off it -- hanging the record there would put an off-line
+// record on the walk a resumed session makes, and the fallback's own check then answers whether the entry
+// before it is usable at all.
+func (t *sourceTree) keptAncestorEntry(id string) (string, bool) {
+	ancestor := t.keptAncestor[id]
+	if ancestor == "" || t.inactiveByID[ancestor] {
+		return "", false
+	}
+	if entry, ok := t.writtenEntryID[ancestor]; ok {
+		return entry, true
+	}
+	if entry, ok := t.omittedAncestorEntry[ancestor]; ok {
+		return entry, true
+	}
+	return "", false
+}
+
+// fallbackPlace takes the entry written before the record and, on a reduced document, notes the first
+// relation the fallback resolved from a record the read's line holds onto an entry written for one the
+// line leaves off it (a record whose whole retained ancestry the selection left out): following it would
+// put the abandoned record on the walk a resumed target session makes, which selectedLeafRefusal refuses.
+// A read that was not reduced is never checked here: the writers' long-standing answer for a relation the
+// read cannot place is the entry before it, counted and disclosed, and this conversion does not change
+// that answer.
+func (t *sourceTree) fallbackPlace(id string) *string {
+	entry := t.priorEntry()
+	if t.reduced && entry != nil && id != "" && !t.inactiveByID[id] && t.revivedChild == "" {
+		if offLine, ok := t.offLineEntry[*entry]; ok {
+			t.revivedChild, t.revivedParent = id, offLine
+		}
+	}
+	return entry
 }
 
 // writtenAncestor answers the place the nearest record a walk from sourceID stands for, and whether it
@@ -639,22 +747,44 @@ func sourceLineFlags(conversation Conversation) []bool {
 	return inactive
 }
 
-// selectedLeafRefusal answers whether the entry a tree-reproducing conversion wrote last is one the
-// source's own loader reaches. The check is the read's own line (sourceLineFlags: the walk the writers
-// use, with the read's answer kept through a selection): the record the last entry stands for is on it,
-// or the conversion wrote an off-line branch's record as the file's last entry and the target would
-// resume from there -- a window a selection reduced must not move that answer, or a selection could
-// revive the branch by making its own last record the line's end. An empty identity (a record the read
-// answered none for) or a record the read does not hold is not this case: nothing was answered about its
-// place, and the writers already follow the read's own order there.
-func selectedLeafRefusal(conversation Conversation, lastWrittenSourceID string) error {
+// selectedLeafRefusal answers whether the walk a tree-reproducing conversion wrote is the read's own
+// line. Two things are refused, because a resumed target session would otherwise continue a branch the
+// source's conversation left: the record the entry written last stands for is one the read's own line
+// leaves off it -- a window a selection reduced must not move that answer, or a selection could revive
+// the branch by making its own last record the line's end -- and a record the line holds was chained to
+// an entry written for one the line leaves off it, which is the place the fallback takes when the
+// document no longer holds the record's own relation (a selection that left the record's ancestry out, or
+// a parent the read does not hold). An empty identity (a record the read answered none for) or a record
+// the read does not hold is not the first case: nothing was answered about its place, and the writers
+// already follow the read's own order there.
+func selectedLeafRefusal(conversation Conversation, tree *sourceTree) error {
+	if tree == nil {
+		return nil
+	}
+	if err := lastEntryLineRefusal(conversation, tree.lastOrigin.sourceID); err != nil {
+		return err
+	}
+	if tree.revivedChild == "" {
+		return nil
+	}
+	return fmt.Errorf("%w: %s, a record on the line the read's last record answers, would be chained to "+
+		"the entry of %s, which that line leaves off it: the relation is not in the document this "+
+		"conversion writes (the source named a record the read does not hold, or a selection left the "+
+		"record's ancestry out), so following the entry written before it would put an abandoned record on "+
+		"the walk a resumed session makes", ErrUnrepresentableLeaf,
+		recordWithOrdinal(conversation, tree.revivedChild), recordWithOrdinal(conversation, tree.revivedParent))
+}
+
+// lastEntryLineRefusal answers the guard's own long-standing half: whether the record the entry written
+// last stands for is one the read's line holds. The check is the read's own line (sourceLineFlags: the
+// walk the writers use, with the read's answer kept through a selection). The refusal is about the line,
+// not about the count: the walk's own unresolved answer names the relations the conversion placed, and
+// this check only asks whether the entry written last is on the line that walk reached.
+func lastEntryLineRefusal(conversation Conversation, lastWrittenSourceID string) error {
 	lastWrittenSourceID = strings.TrimSpace(lastWrittenSourceID)
 	if lastWrittenSourceID == "" || len(conversation.Messages) == 0 {
 		return nil
 	}
-	// The refusal is about the line, not about the count: the walk's own unresolved answer names the
-	// relations the conversion placed, and the leaf check only asks whether the entry written last is on
-	// the line that walk reached.
 	inactive := sourceLineFlags(conversation)
 	for index, message := range conversation.Messages {
 		if strings.TrimSpace(message.SourceUUID) != lastWrittenSourceID {
@@ -668,6 +798,18 @@ func selectedLeafRefusal(conversation Conversation, lastWrittenSourceID string) 
 		return nil
 	}
 	return nil
+}
+
+// recordWithOrdinal names one record of the document for a refusal: its own identity and its ordinal
+// value where the read holds it, so a caller can find the record the refusal is about.
+func recordWithOrdinal(conversation Conversation, sourceID string) string {
+	sourceID = strings.TrimSpace(sourceID)
+	for _, message := range conversation.Messages {
+		if strings.TrimSpace(message.SourceUUID) == sourceID {
+			return fmt.Sprintf("%s (ordinal %d)", sourceID, message.Ordinal)
+		}
+	}
+	return sourceID
 }
 
 // preBoundaryHistoryDetail words the caveat both tree-reproducing writers report for the turns carried

@@ -134,10 +134,10 @@ continuation options:
                      tool call or a result on is carried with the recorded counterpart of that call or
                      result (a selection never separates one from the other), and each record carried
                      this way is named in the report as a necessity. An ill-formed specification, one
-                     whose region reaches outside the ordinals the read supplied and one that would carry
-                     no record at all are refused, with nothing written (a region spanning a gap carries
-                     the records it holds); an empty value is read as the flag's absence, and the run
-                     without the flag is unchanged.
+                     whose region reaches outside the ordinals the read supplied, one that would carry
+                     no record at all, and a value supplied empty (an unset variable expanded into
+                     --select with an empty value) are refused with nothing written; a region spanning a
+                     gap carries the records it holds, and the run without the flag is unchanged.
   --strict-selection refuse, by name and before anything is installed, a selection that would carry a
                      recorded tool call without its recorded result (or the reverse) instead of carrying
                      the counterpart as a necessity. It needs --select.
@@ -501,7 +501,17 @@ func runContinue(args []string, stdout, stderr io.Writer) int {
 	// The core owns the wording of a refused selection too, for the same reason: the specification's
 	// grammar is the core's, and the refusals that need the read (an ordinal the read's own space does
 	// not hold, a spec that selects nothing) come back from the conversion below with the same sentence.
-	if err := ccc.CheckSelectionOptions(*selectSpec, *strictSelection); err != nil {
+	// Whether the flag was supplied is tracked beside its value: `--select "$SPEC"` with an unset SPEC is
+	// a request whose value names nothing, and reading it as the flag's absence would publish the whole
+	// history -- the one thing the caller's command was written to prevent (flag.Visit answers the
+	// difference, which the flag's own value cannot).
+	selectionSupplied := false
+	flags.Visit(func(flag *flag.Flag) {
+		if flag.Name == "select" {
+			selectionSupplied = true
+		}
+	})
+	if err := ccc.CheckSelectionOptions(*selectSpec, *strictSelection, selectionSupplied); err != nil {
 		fmt.Fprintf(stderr, "ccc: %v\n", err)
 		return exitUsage
 	}
@@ -518,19 +528,20 @@ func runContinue(args []string, stdout, stderr io.Writer) int {
 	}
 
 	result, err := continueRun(context.Background(), ccc.ContinueOptions{
-		Ref:             ref,
-		Target:          *target,
-		Config:          cfg,
-		Reader:          ccc.NewSourceReader(cfg),
-		ArchivePath:     cfg.DBPath,
-		TargetHome:      *targetHome,
-		TargetBinary:    *targetBinary,
-		DryRun:          *dryRun,
-		Selection:       *selectSpec,
-		StrictSelection: *strictSelection,
-		Verify:          *verify,
-		ResumePrompt:    *resumePrompt,
-		Stderr:          stderr,
+		Ref:               ref,
+		Target:            *target,
+		Config:            cfg,
+		Reader:            ccc.NewSourceReader(cfg),
+		ArchivePath:       cfg.DBPath,
+		TargetHome:        *targetHome,
+		TargetBinary:      *targetBinary,
+		DryRun:            *dryRun,
+		Selection:         *selectSpec,
+		SelectionSupplied: selectionSupplied,
+		StrictSelection:   *strictSelection,
+		Verify:            *verify,
+		ResumePrompt:      *resumePrompt,
+		Stderr:            stderr,
 	})
 	if err != nil {
 		// A run that failed after the conversion is not a run without an answer: the report it came back
@@ -747,7 +758,7 @@ func writeSelection(out io.Writer, selection *ccc.SelectionReport) {
 		selection.Excluded.Count, regionsOrNone(selection.Excluded.Regions))
 	fmt.Fprintf(out, "  necessities:  %d record(s) added: %s\n",
 		selection.NecessitiesAdded.Count, spellNecessities(selection.NecessitiesAdded))
-	fmt.Fprintf(out, "  undischarged: %d carried call(s) with no recorded result at ordinals %s\n",
+	fmt.Fprintf(out, "  undischarged: %d carried call(s) with no recorded outcome at ordinals %s\n",
 		selection.CallsUndischarged.Count, regionsOrNone(selection.CallsUndischarged.Regions))
 	if selection.Strict {
 		fmt.Fprintf(out, "  strict:       yes (a selection that would separate a recorded call from its "+

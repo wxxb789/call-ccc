@@ -82,13 +82,19 @@ type SelectionNecessities struct {
 
 // CheckSelectionOptions answers whether a selection request is one this build can honour, in the words
 // the CLI refuses a command line with as well: a specification has to be the grammar parseSelectionSpec
-// reads, and asking for the strict arm without naming a selection is a request about nothing. The
-// refusals that need the read -- an ordinal the read's own space does not hold, a spec that selects
-// nothing -- are Select's, because only a read can answer them; Continue calls both, so a caller
-// embedding the core and one driving the CLI are told the same thing about the same request.
-func CheckSelectionOptions(selection string, strict bool) error {
+// reads, a value the caller *supplied* has to name something -- an empty `--select "$SPEC"` whose shell
+// variable was unset is a refused request, not the flag's absence, because a run that installed the whole
+// history would be the one thing the caller's command was written to prevent -- and asking for the strict
+// arm without naming a selection is a request about nothing. The refusals that need the read -- an
+// ordinal the read's own space does not hold, a spec that selects nothing -- are Select's, because only a
+// read can answer them; Continue calls both, so a caller embedding the core and one driving the CLI are
+// told the same thing about the same request.
+func CheckSelectionOptions(selection string, strict, supplied bool) error {
 	spec := strings.TrimSpace(selection)
 	if spec == "" {
+		if supplied {
+			return emptySelectionRefusal()
+		}
 		if strict {
 			return fmt.Errorf(
 				"%w: --strict-selection refuses a selection that would separate a recorded call from its "+
@@ -98,6 +104,16 @@ func CheckSelectionOptions(selection string, strict bool) error {
 	}
 	_, err := parseSelectionSpec(spec)
 	return err
+}
+
+// emptySelectionRefusal words the refusal for an empty specification: Select answers it for a spec it was
+// handed, and CheckSelectionOptions answers it for a value a caller supplied but left blank. One sentence
+// covers both surfaces, so a caller whose shell expanded an unset variable reads the same words as one
+// who passed the empty string to the core.
+func emptySelectionRefusal() error {
+	return fmt.Errorf(
+		"%w: the specification is empty: name the ordinal values to carry, as regions like 0-5,9,12-",
+		ErrBadSelection)
 }
 
 // Select applies one selection specification to a read conversation and answers the conversation to carry,
@@ -114,19 +130,20 @@ func CheckSelectionOptions(selection string, strict bool) error {
 // that line is refused by a tree target's leaf guard and omitted and counted by a line target's walk.
 //
 // One structure is carried whole or not at all: a recorded call and the recorded result that answers it
-// (the two records whose ToolUseID is the same non-empty value) are paired by that recorded link, and a
-// selection that would carry one without the other carries the counterpart instead, named in
-// NecessitiesAdded with the ordinal that pulled it in. A record the source recorded with no id is not
-// such a structure -- the document holds no link for it -- and the selection neither invents one nor
-// carries a counterpart the read never recorded; the target's writer then reads the selected line with
-// its own rule for an id-less result, which it discloses as the pairing it inferred. Strict refuses the
-// separated structure by name instead of carrying the counterpart.
+// are paired from the read's own order -- a result answers the nearest recorded call the same non-empty
+// id records before it (selectionPairs), the rule the inherited readers' own termination check takes --
+// and a selection that would carry one without the other carries the counterpart instead, named in
+// NecessitiesAdded with the ordinal that pulled it in. A reused id does not make an earlier pair's
+// records the counterpart of a later call: the later call has no recorded result and is counted
+// undischarged, not expanded by id alone. A record the source recorded with no id is not such a
+// structure -- the document holds no link for it -- and the selection neither invents one nor carries a
+// counterpart the read never recorded; the target's writer then reads the selected line with its own rule
+// for an id-less result, which it discloses as the pairing it inferred. Strict refuses the separated
+// structure by name instead of carrying the counterpart.
 func Select(conversation Conversation, spec string, strict bool) (Conversation, SelectionReport, error) {
 	trimmed := strings.TrimSpace(spec)
 	if trimmed == "" {
-		return Conversation{}, SelectionReport{}, fmt.Errorf(
-			"%w: the specification is empty: name the ordinal values to carry, as regions like 0-5,9,12-",
-			ErrBadSelection)
+		return Conversation{}, SelectionReport{}, emptySelectionRefusal()
 	}
 	regions, err := parseSelectionSpec(trimmed)
 	if err != nil {
@@ -166,11 +183,16 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 	// exists so a target session a resumed turn would continue from cannot be a branch the source's
 	// conversation left. The subset's own walk would make its last record the line's end, so the answer
 	// travels with the reduced conversation (sourceLineInactive) and the writers consult it instead of
-	// re-deriving one from the window.
+	// re-deriving one from the window. Beside it, the nearest ancestor the read holds that the window
+	// also carries is answered per kept record (sourceKeptAncestor): a record whose own parent the
+	// selection left out is chained to that ancestor rather than to the entry written before it, which
+	// is what keeps a reduced tree the read's own line instead of reviving a branch the window carried.
 	readLineInactive, _ := inactiveSourceRecords(conversation.Messages, conversation.Source.Provider)
+	keptAncestors := selectionKeptAncestors(conversation, carried)
 
 	messages := make([]Message, 0, selectedCount+len(necessities))
 	lineInactive := make([]bool, 0, selectedCount+len(necessities))
+	keptAncestor := make([]string, 0, selectedCount+len(necessities))
 	includedOrdinals := []int{}
 	excludedOrdinals := []int{}
 	for index, message := range conversation.Messages {
@@ -179,9 +201,11 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 			includedOrdinals = append(includedOrdinals, message.Ordinal)
 			messages = append(messages, message)
 			lineInactive = append(lineInactive, readLineInactive[index])
+			keptAncestor = append(keptAncestor, keptAncestors[index])
 		case carried[index]:
 			messages = append(messages, message)
 			lineInactive = append(lineInactive, readLineInactive[index])
+			keptAncestor = append(keptAncestor, keptAncestors[index])
 		default:
 			excludedOrdinals = append(excludedOrdinals, message.Ordinal)
 		}
@@ -217,6 +241,7 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 		Messages:           messages,
 		Fidelity:           conversation.Fidelity,
 		sourceLineInactive: lineInactive,
+		sourceKeptAncestor: keptAncestor,
 	}
 	return selectedConversation, report, nil
 }
@@ -236,8 +261,10 @@ func selectionWarnings(report *SelectionReport) []string {
 		report.Excluded.Count, report.NecessitiesAdded.Count)}
 	if report.CallsUndischarged.Count > 0 {
 		warnings = append(warnings, fmt.Sprintf(
-			"%d carried call(s) at ordinals %s have no recorded result anywhere in the read (the source "+
-				"itself left them undischarged); the target records them as the calls they are",
+			"%d carried call(s) at ordinals %s have no recorded result that states an outcome anywhere in "+
+				"the read (the source itself left them undischarged); whether a target can hold a call with "+
+				"no recorded outcome is that target's own writer's answer, and the conversion's losses "+
+				"name what the writer left out",
 			report.CallsUndischarged.Count, joinOrNone(report.CallsUndischarged.Regions)))
 	}
 	if report.Strict {
@@ -440,88 +467,161 @@ func spaceOrdinals(conversation Conversation) []int {
 	return values
 }
 
-// selectionLink answers one recorded link's two halves as a message index holds them: whether the message
-// holds a call with the id and whether it holds a result with it.
-func selectionLink(message Message, id string) (call, result bool) {
-	for _, recorded := range message.ToolCalls {
-		if strings.TrimSpace(recorded.ToolUseID) == id {
-			call = true
-		}
-	}
-	for _, recorded := range message.ToolResults {
-		if strings.TrimSpace(recorded.ToolUseID) == id {
-			result = true
-		}
-	}
-	return call, result
+// selectionOccurrence is one recorded call or result occurrence the read holds with a non-empty id, in
+// the read's own order: the message it sits on, the id it was recorded with, the status a result was
+// recorded with, and which half it is.
+type selectionOccurrence struct {
+	message int
+	id      string
+	status  string
+	call    bool
 }
 
-// selectionLinks answers, for one message, every recorded link id it holds, in the message's own order
-// and with each id once.
-func selectionLinks(message Message) []string {
-	var ids []string
-	seen := map[string]struct{}{}
-	note := func(id string) {
-		id = strings.TrimSpace(id)
-		if id == "" {
-			return
+// selectionOccurrences answers every recorded call and result occurrence with a non-empty id, in the
+// read's own order: the messages in their own order, and within one message its calls in their own order
+// before its results (a record that carries both reads as the call first, the order every writer's own
+// ledger takes). A call or result the source recorded with no id is not an occurrence: the document holds
+// no link for it, and the writers' own inference for an id-less result reads the selected line (disclosed
+// as generated_call_ids).
+func selectionOccurrences(conversation Conversation) []selectionOccurrence {
+	var occurrences []selectionOccurrence
+	for index, message := range conversation.Messages {
+		for _, call := range message.ToolCalls {
+			if id := strings.TrimSpace(call.ToolUseID); id != "" {
+				occurrences = append(occurrences, selectionOccurrence{message: index, id: id, call: true})
+			}
 		}
-		if _, ok := seen[id]; ok {
-			return
+		for _, result := range message.ToolResults {
+			if id := strings.TrimSpace(result.ToolUseID); id != "" {
+				occurrences = append(occurrences, selectionOccurrence{
+					message: index, id: id, status: result.Status,
+				})
+			}
 		}
-		seen[id] = struct{}{}
-		ids = append(ids, id)
 	}
-	for _, call := range message.ToolCalls {
-		note(call.ToolUseID)
+	return occurrences
+}
+
+// selectionKeptAncestors answers, for every record of the read, the identity of the nearest ancestor the
+// read holds that the selection carries, or "" where there is none: the walk starts at the record's own
+// recorded parent and steps through the read's relations (SourceUUID -> SourceParentUUID) until it
+// reaches a carried record, the read runs out of relation, or the step budget the document's own size
+// sets ends a cycle the source recorded. A record the read answered no identity for, or a record whose
+// recorded parent leads nowhere the read holds, answers "": the walk has no relation to step through, and
+// the writer keeps its own order there.
+//
+// It is a pure function of the recorded document, like the selection itself: the relations are the
+// read's own answers, and the map is keyed by the identities the read supplied.
+func selectionKeptAncestors(conversation Conversation, carried []bool) []string {
+	byIdentity := make(map[string]int, len(conversation.Messages))
+	for index, message := range conversation.Messages {
+		if id := strings.TrimSpace(message.SourceUUID); id != "" {
+			if _, seen := byIdentity[id]; !seen {
+				byIdentity[id] = index
+			}
+		}
 	}
-	for _, result := range message.ToolResults {
-		note(result.ToolUseID)
+	ancestors := make([]string, len(conversation.Messages))
+	for index, message := range conversation.Messages {
+		if !carried[index] {
+			continue
+		}
+		parent := strings.TrimSpace(message.SourceParentUUID)
+		for steps := 0; parent != "" && steps <= len(conversation.Messages); steps++ {
+			at, ok := byIdentity[parent]
+			if !ok || at == index {
+				break
+			}
+			if carried[at] {
+				ancestors[index] = strings.TrimSpace(conversation.Messages[at].SourceUUID)
+				break
+			}
+			parent = strings.TrimSpace(conversation.Messages[at].SourceParentUUID)
+		}
 	}
-	return ids
+	return ancestors
+}
+
+// selectionPair is one recorded call and the recorded result that answers it: the messages the two
+// occurrences sit on and the id they share. It is what the seam's structure rule carries whole.
+type selectionPair struct {
+	id     string
+	call   int
+	result int
+}
+
+// selectionPairs answers the recorded call/result pairs the document establishes, from the read's own
+// order rather than from the id alone: every recorded result pairs with the nearest call occurrence the
+// same id records *before* it, and a result the read holds with no call before it -- the call is outside
+// the read, or a reused id stands only after it -- pairs with nothing. That is the reading the inherited
+// readers' own termination check takes (internal/parser/termination.go's hasOrphanedToolCall counts only
+// results recorded after the call they answer), so a reused id does not make an earlier pair's records
+// the counterpart of a later call: the later call has no recorded result and is counted undischarged
+// (undischargedCalls) instead of pulling unrelated history in.
+func selectionPairs(conversation Conversation) []selectionPair {
+	var pairs []selectionPair
+	mostRecentCall := map[string]int{}
+	for _, occurrence := range selectionOccurrences(conversation) {
+		if occurrence.call {
+			mostRecentCall[occurrence.id] = occurrence.message
+			continue
+		}
+		if call, ok := mostRecentCall[occurrence.id]; ok {
+			pairs = append(pairs, selectionPair{id: occurrence.id, call: call, result: occurrence.message})
+		}
+	}
+	return pairs
 }
 
 // selectionClosure answers which messages the selection carries: the selected ones, plus the counterparts
-// a recorded link requires. It walks the carried set to a fixed point, because a counterpart can itself
-// hold a link whose other half lies outside the selection (a record carrying one call's result and the
+// a recorded pair requires. It walks the carried set to a fixed point, because a counterpart can itself
+// hold a pair whose other half lies outside the selection (a record carrying one call's result and the
 // next call), and each addition is reported with the ordinal that pulled it in. The walk is deterministic:
-// messages are visited in read order, a message's links in its own order, and a link's members in read
-// order, so the same document and spec always answer the same report.
+// messages are visited in read order and a message's pairs in the read's own order, so the same document
+// and spec always answer the same report.
 //
-// With strict, the first separating link refuses by name instead, before anything is carried and long
+// With strict, the first separating pair refuses by name instead, before anything is carried and long
 // before anything is installed.
 func selectionClosure(
 	conversation Conversation, selected []bool, strict bool,
 ) ([]bool, []SelectionNecessity, error) {
-	links := map[string][]int{}
-	for index, message := range conversation.Messages {
-		for _, id := range selectionLinks(message) {
-			links[id] = append(links[id], index)
+	pairs := selectionPairs(conversation)
+	carried := append([]bool(nil), selected...)
+	if strict {
+		for _, pair := range pairs {
+			if carried[pair.call] == carried[pair.result] {
+				continue
+			}
+			return nil, nil, strictSelectionRefusal(conversation, pair, carried[pair.call])
 		}
 	}
-	carried := append([]bool(nil), selected...)
+	// counterparts names, per message, the other side of every pair that touches it: the walk carries a
+	// pair whole from either direction, and a pair whose halves sit on one record is already whole.
+	counterparts := make([][]int, len(conversation.Messages))
+	for _, pair := range pairs {
+		if pair.call == pair.result {
+			continue
+		}
+		counterparts[pair.call] = append(counterparts[pair.call], pair.result)
+		counterparts[pair.result] = append(counterparts[pair.result], pair.call)
+	}
 	var necessities []SelectionNecessity
 	for {
 		changed := false
-		for index, message := range conversation.Messages {
+		for index := range conversation.Messages {
 			if !carried[index] {
 				continue
 			}
-			for _, id := range selectionLinks(message) {
-				for _, member := range links[id] {
-					if carried[member] {
-						continue
-					}
-					if strict {
-						return nil, nil, strictSelectionRefusal(conversation, index, member, id)
-					}
-					carried[member] = true
-					necessities = append(necessities, SelectionNecessity{
-						Ordinal:  conversation.Messages[member].Ordinal,
-						PulledBy: conversation.Messages[index].Ordinal,
-					})
-					changed = true
+			for _, member := range counterparts[index] {
+				if carried[member] {
+					continue
 				}
+				carried[member] = true
+				necessities = append(necessities, SelectionNecessity{
+					Ordinal:  conversation.Messages[member].Ordinal,
+					PulledBy: conversation.Messages[index].Ordinal,
+				})
+				changed = true
 			}
 		}
 		if !changed {
@@ -531,39 +631,54 @@ func selectionClosure(
 	return carried, necessities, nil
 }
 
-// strictSelectionRefusal words the refusal for one separating link, naming the call and the result it
-// cannot keep apart and the two ordinals they were recorded at.
-func strictSelectionRefusal(conversation Conversation, carried, member int, id string) error {
-	carriedCall, carriedResult := selectionLink(conversation.Messages[carried], id)
-	if carriedCall && !carriedResult {
+// strictSelectionRefusal words the refusal for one separated pair, naming the call and the result it
+// cannot keep apart, the two ordinals they were recorded at, and which side the selection named.
+func strictSelectionRefusal(conversation Conversation, pair selectionPair, callSelected bool) error {
+	call := conversation.Messages[pair.call]
+	result := conversation.Messages[pair.result]
+	if callSelected {
 		return fmt.Errorf(
 			"%w: the call %s recorded at ordinal %d is selected and its recorded result at ordinal %d is "+
 				"not, so the conversion would carry a call whose recorded output stays behind; name a region "+
 				"that holds both records, or drop --strict-selection to carry the counterpart as a "+
-				"necessity", ErrStrictSelection, id, conversation.Messages[carried].Ordinal,
-			conversation.Messages[member].Ordinal)
+				"necessity", ErrStrictSelection, pair.id, call.Ordinal, result.Ordinal)
 	}
 	return fmt.Errorf(
 		"%w: the result of the call %s recorded at ordinal %d is selected and the call itself at ordinal "+
 			"%d is not, so the conversion would carry a tool result whose recorded call stays behind; name "+
 			"a region that holds both records, or drop --strict-selection to carry the counterpart as a "+
-			"necessity", ErrStrictSelection, id, conversation.Messages[carried].Ordinal,
-		conversation.Messages[member].Ordinal)
+			"necessity", ErrStrictSelection, pair.id, result.Ordinal, call.Ordinal)
 }
 
 // undischargedCalls answers the calls the source itself left undischarged among the carried records: a
-// call whose recorded id no result anywhere in the read answers. It is the source's own state and not the
+// call no later recorded result that states an outcome answers. It is the source's own state and not the
 // selection's -- the counterpart rule cannot carry a result the read never held -- so it is reported
 // rather than changed. A call the source recorded with no id is not counted: the read holds no link for
 // it either way, and calling it undischarged would assert a pairing the source never recorded.
+//
+// Progress is not an answer: a result whose recorded status says the call is still running (a Codex
+// subagent's `running` notification, a streamed chunk) is the read's record of a call that has not
+// finished, and counting it as an outcome would state that the source answered a call it left pending --
+// the inherited termination rule reads the same event the same way. Each outcome answers the most recent
+// call occurrence still awaiting one, the reading the readers' own rule takes for a reused id: an earlier
+// result does not resolve a later call.
 func undischargedCalls(conversation Conversation, carried []bool) (int, []int) {
-	answered := map[string]struct{}{}
-	for _, message := range conversation.Messages {
-		for _, result := range message.ToolResults {
-			if id := strings.TrimSpace(result.ToolUseID); id != "" {
-				answered[id] = struct{}{}
-			}
+	pending := map[string][]int{}
+	answered := map[int]int{}
+	for _, occurrence := range selectionOccurrences(conversation) {
+		if occurrence.call {
+			pending[occurrence.id] = append(pending[occurrence.id], occurrence.message)
+			continue
 		}
+		if !resultStatesAnOutcome(occurrence.status) {
+			continue
+		}
+		awaiting := pending[occurrence.id]
+		if len(awaiting) == 0 {
+			continue
+		}
+		answered[awaiting[len(awaiting)-1]]++
+		pending[occurrence.id] = awaiting[:len(awaiting)-1]
 	}
 	count := 0
 	var ordinals []int
@@ -571,15 +686,14 @@ func undischargedCalls(conversation Conversation, carried []bool) (int, []int) {
 		if !carried[index] {
 			continue
 		}
+		calls := 0
 		for _, call := range message.ToolCalls {
-			id := strings.TrimSpace(call.ToolUseID)
-			if id == "" {
-				continue
+			if strings.TrimSpace(call.ToolUseID) != "" {
+				calls++
 			}
-			if _, ok := answered[id]; ok {
-				continue
-			}
-			count++
+		}
+		if undischarged := calls - answered[index]; undischarged > 0 {
+			count += undischarged
 			ordinals = append(ordinals, message.Ordinal)
 		}
 	}

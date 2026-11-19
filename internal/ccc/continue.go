@@ -233,11 +233,17 @@ type ContinueOptions struct {
 	// DryRun converts and reports without installing anything.
 	DryRun bool
 	// Selection names which of the read's own records to carry, as a specification of ordinal values and
-	// regions ("0-5,9,12-"); empty means the whole read, exactly as a conversion behaved before the
-	// option existed. The ordinals are the values the read supplied (Message.Ordinal), never a position,
-	// and a record the spec did not name is carried when a recorded call or result it is paired with is
-	// (Select).
+	// regions ("0-5,9,12-"); empty with SelectionSupplied false means the whole read, exactly as a
+	// conversion behaved before the option existed. The ordinals are the values the read supplied
+	// (Message.Ordinal), never a position, and a record the spec did not name is carried when a recorded
+	// call or result it is paired with is (Select).
 	Selection string
+	// SelectionSupplied says the caller supplied the selection option at all, even when its value came
+	// out empty. An unset shell variable expanded into `--select "$SPEC"` is a request whose value names
+	// nothing, and it is refused (ErrBadSelection, the usage exit code) before anything is read or
+	// installed instead of being read as the flag's absence: a run that installed the whole history is
+	// the one thing the caller's command was written to prevent.
+	SelectionSupplied bool
 	// StrictSelection refuses a selection that would carry a recorded call without its recorded result
 	// (or the reverse), by name and before anything is installed, instead of carrying the counterpart.
 	StrictSelection bool
@@ -391,7 +397,7 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 	if err := CheckVerifyOptions(opts.Verify, opts.ResumePrompt); err != nil {
 		return ContinueResult{}, err
 	}
-	if err := CheckSelectionOptions(opts.Selection, opts.StrictSelection); err != nil {
+	if err := CheckSelectionOptions(opts.Selection, opts.StrictSelection, opts.SelectionSupplied); err != nil {
 		return ContinueResult{}, err
 	}
 	level := strings.ToLower(strings.TrimSpace(opts.Verify))

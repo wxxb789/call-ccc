@@ -16,6 +16,14 @@
 #           classes with the transformation named in both surfaces.
 #   S5      the read-line sentence the fix stage added to that paragraph: the line the target's loader
 #           walks is the read's own, and a selection neither moves a record onto it nor off it.
+#   S6      the ancestry half of the same sentence: a record whose own parent the window left out hangs
+#           off its nearest retained ancestor, and a window with no retained ancestor is refused by name.
+#   S7      the paragraph's "a call the source left without a recorded outcome was not answered"
+#           sentence: progress events do not discharge a call.
+#   S2-reuse, D5-blank
+#           the two refinements the second fix stage added: a reused tool id does not expand a selection
+#           by id alone (the order the pair is read in decides which result answers which call), and a
+#           value supplied blank is refused rather than read as the flag's absence.
 #
 # scripts/obligation-citations.py is the arbiter: every row's cited test must exist in the named package
 # and run and pass, and the `citations` step is required — a tree that lost this file, or a citation that
@@ -50,3 +58,7 @@ S2	TestSelectionCarriesTheCounterpartOfASeparatedCallAndResult	./internal/ccc	AG
 S3	TestContinueRefusesABadSelectionBeforeInstalling	./cmd/ccc	AGENTS.md §A conversion carries only what the caller selected … (a bad selection is refused, never repaired, before any install, with the usage exit code)
 S4	TestSelectionMatchesTheOrdinalValuesTheReadSupplied	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (the report's classes and the space a specification is written against, from the read's own values)
 S5	TestSelectionEndingOffTheReadsLine	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (the line is the read's own and a selection does not redefine it: a window ending on an off-line record is refused by a tree target by name, and a line target omits those records and counts them)
+S6	TestSelectionKeepsASparseWindowOnTheReadsLine	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (the ancestry half of the line rule: a record whose own parent the window left out hangs off its nearest retained ancestor and the carried branch stays off the walk; a window with no retained ancestor is refused by name)
+S7	TestSelectionCountsACallWithOnlyProgressEventsUndischarged	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (a call the source left without a recorded outcome was not answered: progress statuses do not discharge a call, an outcome status does)
+S2-reuse	TestSelectionPairsAReusedToolIDByRecordedOrder	./internal/ccc	AGENTS.md §A conversion carries only what the caller selected … (a result pairs with the nearest prior call the same id records: a reused id's later call carries nothing but itself and is counted undischarged; strict refuses either half of the older pair)
+D5-blank	TestContinueRefusesABadSelectionBeforeInstalling	./cmd/ccc	AGENTS.md §A conversion carries only what the caller selected … (a value the caller supplied empty is refused with the core's own sentence and the usage exit code, with an installation requested and nothing written)

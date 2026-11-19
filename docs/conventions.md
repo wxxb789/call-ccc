@@ -156,16 +156,28 @@ obligation ships no citations file, rather than an empty one.
   while a reader that preserves a source field (Shelley's `sequence_id`) produces the source's own
   numbers, so `0-` on a 1..5 space is refused naming the space rather than read as "from the beginning".
   The seam is the core's own (`internal/ccc/selection.go`, a pure function of the document): a recorded
-  call and its recorded result are one structure, paired by the `ToolUseID` the two records share, carried
-  whole or not at all — a selection that would split a pair carries the counterpart and names it a
+  call and the recorded result that answers it are one structure, paired from the read's own order — a
+  result pairs with the nearest call the same `ToolUseID` records before it, so a reused id does not make
+  an earlier pair the counterpart of a later call — carried
+  whole or not at all: a selection that would split a pair carries the counterpart and names it a
   necessity with the ordinal that pulled it in (both directions, to a fixed point) unless
-  `--strict-selection` refuses it by name before anything is installed. A call or result the source
+  `--strict-selection` refuses it by name before anything is installed. A call whose read holds no
+  recorded outcome (no result at all, or only progress events such as a Codex subagent's `running`
+  notification) is counted `calls_undischarged`, and what a target's own format does with such a call is
+  that writer's answer, named in the conversion's losses. A call or result the source
   recorded with **no** id carries no recorded link, so the seam neither invents one nor carries candidates
   for it; the target's writer applies its own rule to the selected line and discloses the pairing it
-  inferred (`generated_call_ids`). A bad selection is refused, never repaired, with the core's own sentence
+  inferred (`generated_call_ids`). On a target whose session is a tree, a carried record whose recorded
+  parent the selection left out is hung off its nearest retained ancestor (the read's own relation walked
+  through the excluded records), so the loader's walk stays the read's own line; a window in which that
+  ancestry is gone entirely — the fallback would hang the record under an off-line one — is refused by
+  name (`ErrUnrepresentableLeaf`) rather than written. A bad selection is refused, never repaired, with
+  the core's own sentence
   and the usage exit code (2), before any install — ill-formed grammar, a region reaching outside the
   ordinals the read supplied (below its lowest or above its highest; a region spanning a gap carries the
-  records it holds), a spec that would carry no record, and the strict refusal — and the report names the
+  records it holds), a spec that would carry no record, a value the caller supplied *empty* (an unset
+  variable expanded into `--select "$SPEC"` is a refusal, not the flag's absence: it must not publish the
+  whole history), and the strict refusal — and the report names the
   transformation on every run that had one, in the human block and in `--json`, as
   `selection.ordinal_space` (min/max/records/contiguous) and the four classes `included`, `excluded`,
   `necessities_added` and `calls_undischarged`. `included + necessities_added + excluded` is the read's own
