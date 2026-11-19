@@ -789,8 +789,10 @@ func messageFromParsed(parsed parser.ParsedMessage, rendersThinkingTrace bool) M
 		IsSidechain:       parsed.IsSidechain,
 		IsCompactBoundary: parsed.IsCompactBoundary,
 		// The reader that produced Content renders this record's own trace into it (`[Thinking]…[/Thinking]`,
-		// a block no dialogue projection covers), which is what lets a target writer remove the rendering
-		// from the dialogue instead of carrying the trace as words the source never recorded.
+		// a block no dialogue projection covers), and the flag is the read's own answer that Content is not
+		// this record's text: where the read answered no projection, such a record's dialogue is not
+		// established (dialogueOf). No writer publishes Content as words the source never recorded, and
+		// none removes the rendering from it by inference either.
 		ContentRendersThinking: rendersThinkingTrace,
 		// The provider's own record identity and the record it hangs off, as the inherited reader
 		// answered them: a target format that is itself a tree (a Pi session) writes the source's own

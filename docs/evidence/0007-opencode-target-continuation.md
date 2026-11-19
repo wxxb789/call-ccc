@@ -2236,7 +2236,7 @@ and in the report (the category):
 | projected | the read answered `DialogueText` — an explicitly empty projection included, which is the source's own "no dialogue" | the projection, byte for byte | no category; `Content` is not read |
 | from Content | no projection; the reader is not one `thinkingRenderingReaders` names and the record carries no calls, so `Content` is the record's own bytes | the text travels | `unprojected_dialogue`, carried-with-caveat (count of records) |
 | rendering-only | no projection; `Content` is byte for byte the reader's rendering of the record's whole trace | no dialogue; the trace is not double-carried | no new category (the trace is counted where the target has no shape for it) |
-| unestablished | no projection and `Content` is not the record's own bytes (the reader renders the trace and the record carries one, or the record carries calls whose renderings a reader may have inlined) | **no text at all**; tool evidence still written; reasoning still travels; the source keeps the bytes | `unresolved_dialogue`, omitted (count of records) |
+| unestablished | no projection and `Content` is not the record's own bytes (the reader renders the trace and the record carries one, or the record carries calls whose renderings a reader may have inlined) | **no text at all**; tool evidence still written; the record's reasoning travels where the target has a shape for it (Pi's `thinking` block, the harness's reasoning part) and is counted as omitted where it has none (Codex and Claude record reasoning as their provider's own artifact); the source keeps the bytes | `unresolved_dialogue`, omitted (count of records) |
 
 Partial conversion is the disposition chosen over refusal, and the reason is in the code
 (`dialogueOf`): the loss is per record, disclosed, and reversible in the only place that matters — the
@@ -2383,6 +2383,167 @@ for the readers this round had to classify is upstream: a reader that projected 
 its records convert exactly, and until one does, a record of theirs that renders a trace and answers no
 projection converts with its text omitted and the omission counted on every run — the state Q-0007-10
 records, with what reverses it and what settles it.
+
+### The simplify round's accepted findings (`6aecee0` + working tree), applied
+
+The simplify stage's report (round 17) was accepted in full by the operator — its two deletions (1, 2),
+its two refactors (3, 4), its two coverage findings (5, 6) and its three possible defects (PD-1, PD-2,
+PD-3) — and every item of its "what is sound — do not touch" list was left standing. This section records
+what was applied and what was measured on this tree; the report's own measurements were taken in
+throw-away copies and are re-derived below where a claim here rests on them.
+
+**PD-1 — whitespace-only `Content` back to the category it reached at `fa8da89`.** `dialogueOf`'s
+empty-`Content` arm asked `strings.TrimSpace(message.Content) == ""`, folding a record whose `Content` is
+whitespace alone into "no text": the writers' whitespace case could no longer see it, so on Codex such an
+assistant record was dropped from the report with **no category naming it at all**, and the other three
+routes reported it as empty. The arm now asks `message.Content == ""` (exact), and the paragraph above it
+states the exactness and why. Measured per route, on a one-record hand-built document with no projection
+(each route's own `ConvertTo…` entry point over a throw-away `zz_probe_test.go`: `go test -count=1 -tags
+fts5 -run TestZZProbe -v ./internal/ccc/`, printing every non-zero report row), on three revisions:
+
+| record | `fa8da89` (measured) | `6aecee0` (measured) | this round (measured) |
+| --- | --- | --- | --- |
+| assistant, `Content: "   "` | codex/claude/opencode `whitespace_only_dialogue=1`, pi `empty_assistant_messages=1` | codex **no category at all**, claude/pi/opencode `empty_assistant_messages=1` | codex/claude/opencode `whitespace_only_dialogue=1`, pi `empty_assistant_messages=1` |
+| user, `Content: "   "` | codex/claude/opencode `whitespace_only_dialogue=1`, pi `empty_user_messages=1` | all four `empty_user_messages=1` | codex/claude/opencode `whitespace_only_dialogue=1`, pi `empty_user_messages=1` |
+
+Every route is back on its own `fa8da89` answer — `whitespace_only_dialogue` on the three routes whose
+reader reads a blank-after-trimming message as no message, and Pi's own empty-record category for the
+role, because its reader drops the record entirely — and the restoration is disclosure-only: no route's
+written items moved (measured below). The pin is `TestWhitespaceOnlyContentKeepsItsOwnCategory` (both
+roles × four routes): the state (`dialogueFromContent` carrying the whitespace bytes), the route's own
+category with count 1 and `omitted`, zero under `unprojected_dialogue` and `unresolved_dialogue`, and no
+item written for the record. The pin is not vacuous: reverting that one line in a throw-away copy (back to
+`strings.TrimSpace(message.Content) == ""`) made `go test -count=1 -tags fts5 -run
+TestWhitespaceOnlyContentKeepsItsOwnCategory ./internal/ccc/` exit 1 with both arms failing, and no copy of
+this tree ran with that line reverted.
+
+**PD-2 — OpenCode asks and counts the dialogue state after its role gate.** It was the only one of the
+four writers to ask `dialogueOf` and count its categories *before* the role gate and then discard the text
+in its default branch, so a `tool`-role record's `Content` was counted as carried-with-caveat
+(`unprojected_dialogue`) although neither the document nor the report held it. The ask and the counting
+now sit below the gate, and a non-dialogue role returns under its own category as on the other three
+routes. Measured on the report's own document (a projected user record, a `tool`-role record whose
+`Content` is "the tool's own words", a plain assistant record): before, codex/claude/pi answered
+`tool_role_messages=1, unprojected_dialogue=1` and OpenCode `tool_role_messages=1,
+unprojected_dialogue=2`; after, all four answer `tool_role_messages=1, unprojected_dialogue=1`. This is
+the one behavioural change this round makes — a count on one route, for documents holding a non-dialogue
+role's text, which no run in this record converts — and it is disclosed in
+[`OPEN-QUESTIONS.md`](../decisions/OPEN-QUESTIONS.md) as **Q-0007-11** (PD-1 is a measured restoration and
+PD-3 is report text, so neither took an entry). No number this record states goes stale with it: the
+fixture runs quoted above hold no such record and their counts are unmoved (the gate's `test` step re-ran
+every suite), and the report's category count is unchanged — both dialogue rows are still emitted on every
+route, from the one constructor.
+
+**PD-3 — the target's own answer, per route.** The `unresolved_dialogue` clause now comes per route.
+Codex and Claude said the record's own reasoning "still travels as reasoning_text", while their own
+`reasoning_text` rows are `omitted` (each target records reasoning as its provider's own artifact), so
+their clause stated the opposite of the row beside it; Pi's and OpenCode's clauses were already accurate
+and are unchanged. The four clauses as this tree states them, verbatim: codex "the text is not written,
+this count is not a claim that the record wrote none, and a trace the record carries is omitted with it --
+counted under reasoning_text above, because this target has no plaintext-trace shape: it records reasoning
+as its provider's own encrypted artifact"; claude the same with "signed artifact"; pi (the family's)
+"…the record's own reasoning still travels as the `thinking` block it was recorded in"; opencode "no text
+part is written for it, … the record's own reasoning still travels as the assistant message's reasoning
+part". The fact the corrected clauses state is pinned where prose cannot be:
+`TestEveryRouteCountsWhatTheReadCouldNotEstablish` asserts, per route, that the document holds the trace
+exactly when the format has a shape for it (Pi's `"type":"thinking"` block, OpenCode's `"type":"reasoning"`
+part; not at all on Codex and Claude) and that `reasoning_text` carries the matching disposition
+(carried-with-caveat where the trace travels, omitted where it does not).
+
+**Finding 3 — one place maps state → category, and one row constructor.** `dialogueLossOf`
+(`internal/ccc/dialogue_provenance.go`) names the category from the state `dialogueOf` answered, and
+`dialogueLossRows` builds the two rows with the route's own clause; the four writers read the category from
+the one function (call sites are `dialogueLossOf(dialogue) == dialogueLossUnresolved` / `…Unprojected`)
+and splice the rows from the one constructor. The proof that the pins now cover all four routes: with
+**the one shared branch** disabled in a throw-away copy (the `case dialogueUnestablished:` arm of
+`dialogueLossOf` answering `dialogueLossNone` instead of `dialogueLossUnresolved`),
+`go test -count=1 -tags fts5 ./internal/ccc/ ./cmd/ccc/` exited 1 with 15 `--- FAIL` lines —
+`TestEveryRouteCountsWhatTheReadCouldNotEstablish` (all four route arms), 
+`TestCodexRolloutCountsWhatItCouldNotEstablish`, `TestZCodeRecordsAreNotGuessedThroughTheUnmodifiedReader`
+(four arms) and `TestOpenCodeDoesNotGuessAZCodeRecordsDialogue` (three arms) — while `cmd/ccc` stayed
+`ok`. The opposite measurement, re-derived here on the pre-hoist tree (`6aecee0` in a copy, the
+dialogue-state branch disabled separately in `claude_target.go` and `pi_target.go` — the two copies the
+report measured as unpinned): `go test -count=1 -tags fts5 ./internal/ccc/ ./cmd/ccc/` exited 0 with both
+packages `ok`, so the four route arms are exactly what those two routes gained. The mutation never touched
+this tree: `internal/ccc/dialogue_provenance.go`'s sha256 is
+`95765a4a44199cf3f2ac4f4c4547fda4640fdd0e911ff65dba4de285ad751fc5` before and after.
+
+**Findings 5 and 6 — the new pins.** `TestEveryRouteCountsWhatTheReadCouldNotEstablish` drives one
+hand-built document through all four conversions from one table (`dialogueRoutes`, the new test helper):
+a projected user record, an unprojected record whose reader renders the trace into `Content` and which
+carries a call with its result, a plain unprojected record, and a rendering-only record. Per route it
+asserts: no text is written for the unestablished record — neither the record's own words nor the reader's
+rendering reaches the document, and no item holds the words as written text; the trace travels exactly
+where the target has a shape for it, and in that shape; the call and its recorded output are written on
+every route, with an item naming the result; and the counts are the route's own (`unresolved_dialogue ×1`
+omitted, `unprojected_dialogue ×1` carried-with-caveat). This is the pin PD-1 and PD-2 needed: the same
+document shows OpenCode's stray count before PD-2 (measured above) and fails on a wrongly generalised
+clause through the trace/`reasoning_text` agreement it asserts. `TestWhitespaceOnlyContentKeepsItsOwnCategory`
+is PD-1's pin, listed above.
+
+**Findings 1, 2 and 4 — the evidence-neutral items.** As the report describes them: the dead `tool_result`
+arm of the fixture walk in `dialogue_provenance_test.go` is gone (a result block inlines no rendering into
+`Content` — `ExtractTextContent` appends nothing for it — so the walk visits `tool_use` blocks only, and
+says so where it reads); `reader.go`'s `ContentRendersThinking` producing comment no longer describes the
+deleted removal mechanism (it now states that the flag is the read's answer that `Content` is not the
+record's text, which is what makes such a record's dialogue unestablished in `dialogueOf` — producer and
+consumer now agree); and the second fixture-locating convention is gone: `claudeFixturePath` (a
+`filepath.WalkDir` taking the last match silently) is replaced by the package's own,
+`fixturePath(t, filepath.Join("claude", "-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"))`,
+which the other 33 call sites across seven test files already use.
+
+**What did not move.** The same probe over a copy of `6aecee0` and over this tree prints the same 16 item
+lines (4 routes × the four probe documents) byte for byte, so every route writes the same records for
+these documents before and after: the round moved the report's counting, PD-1's restored categories and
+PD-3's clauses, not what a target holds. The production balance, measured as `git diff --numstat` over
+the six non-test Go files this round touches: 201 added and 142 removed lines as written (+59), of which
+the added lines are 84 comment lines and 8 blank lines — 109 added code lines against 139 removed, so the
+statements are net-deleting by 30 lines and what grew is the documentation around the one helper and the
+four per-route clause constants (a clause per route is what PD-3 asks for; the constants are values, not
+another abstraction). The narrowed Go suites' own test functions ran 400 before this
+round and 402 after (counted as `^func Test` over the test files git lists under `cmd/ccc` and
+`internal/ccc`): two new top-level cases, both in `internal/ccc/dialogue_provenance_test.go`, and no case
+deleted, merged, renamed or weakened. The gate's `gofmt` count moved 3621 → 3622 with the round's new
+test file (`fa8da89` and `51275f5` hold 3621 `*.go` files; `6aecee0` holds 3622).
+`docs/evidence/0007-citations.tsv` is unchanged — no cited test was renamed and R1–R9's tests all still
+exist and pass (the `citations` step below reads all 27 rows). `AGENTS.md` is unchanged, and no binding
+rule moves: PD-1 restores the pre-round behaviour, PD-2 applies the increment's own rule (every route acts
+on the state the read answered) to the last route that did not follow it, and PD-3 corrects two report
+clauses where the paragraph already states the rule conditionally ("its recorded reasoning still travels
+where the target has a shape for it"). The plan's root-fix paragraph is unchanged too: its clause is that
+same conditional one ("keeps its reasoning where the target has that shape"), which is true on every route.
+
+`python3 scripts/gate.py`, exit code 0, on this round's final tree:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3622 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 384 tests in 8.804s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5709 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 27 row(s) verified
+  PASS     secrets  no leaks found in 163 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The block is from a run on this round's code and tests before this section's prose settled (it was filled
+from that run's captured stdout); later runs of the same gate over the same code and tests reprinted every
+step line and every count, differing only in the `selftest` line's duration, and every run exited 0.
+
+The required lines, verbatim with their own return codes, from a run over this tree's code and tests
+(runs differ only in the `selftest` line's duration): `selftest` printed
+`  PASS     selftest Ran 384 tests in 8.806s (rc=0)` and `citations` printed
+`  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 27 row(s) verified`
+(0002 unchanged at 36 rows; 0007 unchanged at 27 — no row's test was renamed, and the round's two new
+cases are not cited, which is what the acceptance asked). A later run over the same code and tests
+reprinted every step line and every count, differing only in that duration, and exited 0.
+
+No native check was re-run this round: no route's written bytes change for any document (the items
+measurement above), PD-2 moves only a count and PD-3 only two clauses, so the load-level evidence the
+root-fix section recorded still describes what these routes write.
 
 ## 5. What travels, source side and target side
 

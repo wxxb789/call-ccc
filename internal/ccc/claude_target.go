@@ -443,7 +443,7 @@ func (b *claudeTranscriptBuilder) writeMessage(message Message) {
 		if len(message.ToolCalls) == 0 && len(message.ToolResults) == 0 {
 			return
 		}
-	} else if dialogue.State == dialogueUnestablished {
+	} else if dialogueLossOf(dialogue) == dialogueLossUnresolved {
 		// The read established no dialogue for this record and its Content is not the record's own
 		// bytes (dialogueOf): the reader rendered the record's persisted reasoning trace into a Content
 		// that also holds the record's text, or the record carries calls whose renderings a reader may
@@ -452,7 +452,7 @@ func (b *claudeTranscriptBuilder) writeMessage(message Message) {
 		// the guess it refuses -- and the record is counted. Its tool evidence still travels below.
 		b.lossUnresolvedDialogue++
 	} else {
-		if dialogue.State == dialogueFromContent && strings.TrimSpace(dialogue.Text) != "" {
+		if dialogueLossOf(dialogue) == dialogueLossUnprojected {
 			// Content, not a projection, is what travels: the report says so per record
 			// (unprojected_dialogue) rather than presenting the read's Content as the source's answer.
 			b.lossUnprojectedDialogue++
@@ -827,6 +827,17 @@ func compactJSON(raw string) string {
 	return buffer.String()
 }
 
+// claudeUnestablishedOutcome is this route's own answer for a record whose dialogue was not established
+// (dialogueUnestablished), passed to dialogueLossRows: what the writer does not write and where the
+// record's reasoning goes. This target records reasoning as its provider's own signed artifact, so a
+// plaintext trace has no shape here -- it is counted as omitted above (reasoning_text). The clause first
+// said the trace "still travels as reasoning_text", which is no route's answer and contradicts this
+// route's own reasoning_text row (round 17's PD-3).
+const claudeUnestablishedOutcome = "the text is not written, this count is not a claim that the record " +
+	"wrote none, and a trace the record carries is omitted with it -- counted under reasoning_text " +
+	"above, because this target has no plaintext-trace shape: it records reasoning as its provider's " +
+	"own signed artifact"
+
 // losses reports every category the writer knows about, in a fixed order, so a caller can read the
 // report without knowing which categories this run happened to produce.
 func (b *claudeTranscriptBuilder) losses() []Loss {
@@ -866,7 +877,7 @@ func (b *claudeTranscriptBuilder) losses() []Loss {
 			"touched -- and what has no field in the target is the per-file attribution of a second " +
 			"projection, which is what this count names"
 	}
-	return []Loss{
+	losses := []Loss{
 		{
 			Category:    "reasoning_text",
 			Disposition: DispositionOmitted,
@@ -928,32 +939,12 @@ func (b *claudeTranscriptBuilder) losses() []Loss {
 				"content is not dialogue it rendered either (a tool result the provider recorded with " +
 				"a user role): the target has no message that would not state the user said those words",
 		},
-		{
-			Category:    "unresolved_dialogue",
-			Disposition: DispositionOmitted,
-			Count:       b.lossUnresolvedDialogue,
-			Detail: "the source reader answered no dialogue projection for these records, and their " +
-				"Content is not the record's own text: the reader renders the record's persisted " +
-				"reasoning trace into Content and the record carries one, or the record carries calls " +
-				"whose renderings a reader may have inlined into it. Two different native part orders " +
-				"can produce the same Content and the same trace, so which bytes the model wrote " +
-				"cannot be recovered from the record; the text is not written, this count is not a " +
-				"claim that the record wrote none, and the record's own reasoning still travels as " +
-				"reasoning_text where it was counted there. The source session keeps the bytes",
-		},
-		{
-			Category:    "unprojected_dialogue",
-			Disposition: DispositionCarriedWithCaveat,
-			Count:       b.lossUnprojectedDialogue,
-			Detail: "the source reader answered no dialogue projection for these records, so the text " +
-				"written for them is the reader's own Content for the record, byte for byte, rather " +
-				"than an answer the source gave about what the model said. What establishes that " +
-				"Content is the record's own text is the reader itself -- this build's list of the " +
-				"readers whose Content carries a rendering of the record's reasoning trace, held " +
-				"against the carried reader tree -- and never an inference from the record's bytes; " +
-				"a label this build does not know is treated the same way, and its records are " +
-				"counted here too",
-		},
+	}
+	// The two rows the dialogue states are reported under come from the one constructor
+	// (dialogueLossRows), with this route's own answer for an unestablished record.
+	losses = append(losses, dialogueLossRows(b.lossUnresolvedDialogue, b.lossUnprojectedDialogue,
+		claudeUnestablishedOutcome)...)
+	return append(losses, []Loss{
 		{
 			Category:    "whitespace_only_dialogue",
 			Disposition: DispositionOmitted,
@@ -1100,7 +1091,7 @@ func (b *claudeTranscriptBuilder) losses() []Loss {
 			Count:       flagCount(b.sourceFidelity.NeedsRetry),
 			Detail:      needsRetryDetail,
 		},
-	}
+	}...)
 }
 
 // claudeFormatLimits is what this pair of formats cannot express at all, as opposed to what one run

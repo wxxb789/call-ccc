@@ -218,7 +218,12 @@ type recordDialogue struct {
 //
 // A record whose Content is empty is dialogueFromContent with no text: no bytes stand in Content, so
 // nothing about them can be got wrong, and no reader this build carries drops a record's own text from
-// Content.
+// Content. "Empty" is exact, not blank after trimming: a Content of whitespace alone is bytes the
+// record carries, so it takes the paths below as the record's own text -- reaching the writers' own
+// whitespace rule (whitespace_only_dialogue, or the route's own category for that shape) -- instead of
+// being folded in here, where it would reach them as no text at all and be reported as a record that
+// carried nothing (round 17's PD-1: on Codex such an assistant record was dropped with no category
+// naming it, and the other three routes reported it as empty).
 func dialogueOf(message Message) recordDialogue {
 	if strings.TrimSpace(message.Dialogue) != "" || message.DialogueProjected {
 		// The projection is the answer. A non-empty Dialogue is one whether or not the read flagged it
@@ -226,7 +231,7 @@ func dialogueOf(message Message) recordDialogue {
 		// Dialogue an answer -- the source's own "no dialogue" -- instead of an unanswered question.
 		return recordDialogue{Text: message.Dialogue, State: dialogueProjected}
 	}
-	if strings.TrimSpace(message.Content) == "" {
+	if message.Content == "" {
 		return recordDialogue{State: dialogueFromContent}
 	}
 	if message.ContentRendersThinking && strings.TrimSpace(message.Thinking) != "" {
@@ -253,4 +258,90 @@ func dialogueOf(message Message) recordDialogue {
 // is a shape this rule establishes nothing about.
 func dialogueIsRenderingOnly(message Message) bool {
 	return message.Content == thinkingRenderOpen+"\n"+message.Thinking+"\n"+thinkingRenderClose
+}
+
+// dialogueLoss names the report category a record's dialogue is counted under. A record's dialogue
+// either left nothing out -- it was projected, it had no dialogue, or its Content is its own text that
+// the conversion wrote -- or it is counted under exactly one of the two categories below, and every
+// route asks which through dialogueLossOf, so the four writers cannot count one state under different
+// categories.
+type dialogueLoss uint8
+
+const (
+	// dialogueLossNone: nothing about this record's dialogue was left out, so the report names no
+	// dialogue category for it.
+	dialogueLossNone dialogueLoss = iota
+	// dialogueLossUnprojected: the read answered no projection and Content is the record's own bytes,
+	// so the text written is the reader's own Content rather than an answer the source gave
+	// (unprojected_dialogue, carried with a caveat).
+	dialogueLossUnprojected
+	// dialogueLossUnresolved: the read answered no projection and Content is not the record's own bytes
+	// (the reader renders the trace into it and the record carries one, or the record carries calls
+	// whose renderings a reader may have inlined), so no text is written for the record and the
+	// omission is counted (unresolved_dialogue, omitted). The count is not a claim that the record wrote
+	// none.
+	dialogueLossUnresolved
+)
+
+// dialogueLossOf names the report category a record's dialogue is counted under, from the state
+// dialogueOf answered. This is the one place that maps a state to a category: all four target writers
+// read the answer from here (round 17's finding 3 -- the decision and the rows it feeds used to be
+// copied four times, and the copies had already diverged), so a state can be counted under one
+// category and no other.
+func dialogueLossOf(dialogue recordDialogue) dialogueLoss {
+	switch dialogue.State {
+	case dialogueUnestablished:
+		return dialogueLossUnresolved
+	case dialogueFromContent:
+		// Text that is only whitespace is not counted here: it is the record's own bytes and it travels
+		// to the writer, which counts it under its own whitespace category (the text itself is never
+		// written, because the target's own reader reads a blank-after-trimming message as no message).
+		if strings.TrimSpace(dialogue.Text) != "" {
+			return dialogueLossUnprojected
+		}
+	}
+	return dialogueLossNone
+}
+
+// dialogueLossRows builds the two rows the dialogue states are reported under, so that what each state
+// is called and what the row says about it are written once rather than copied per route (round 17's
+// finding 3): a record whose text was not established (unresolved_dialogue, omitted) and a record whose
+// text is the reader's own Content rather than a projection (unprojected_dialogue, carried with a
+// caveat).
+//
+// unestablishedOutcome is the route's own answer for an unestablished record -- what its writer does not
+// write, and where the record's reasoning goes -- because that differs by target, and it is passed per
+// route rather than generalised: Pi and OpenCode write the trace in their own block or part, while
+// Codex and Claude have no plaintext-trace shape and count the trace as omitted too (round 17's PD-3:
+// the clause read "the record's own reasoning still travels as reasoning_text" on those two routes,
+// whose own reasoning rows say the trace is omitted because the target records reasoning as its
+// provider's own encrypted or signed artifact).
+func dialogueLossRows(unresolved, unprojected int, unestablishedOutcome string) []Loss {
+	return []Loss{
+		{
+			Category:    "unresolved_dialogue",
+			Disposition: DispositionOmitted,
+			Count:       unresolved,
+			Detail: "the source reader answered no dialogue projection for these records, and their " +
+				"Content is not the record's own text: the reader renders the record's persisted " +
+				"reasoning trace into Content and the record carries one, or the record carries calls " +
+				"whose renderings a reader may have inlined into it. Two different native part orders " +
+				"can produce the same Content and the same trace, so which bytes the model wrote " +
+				"cannot be recovered from the record; " + unestablishedOutcome +
+				". The source session keeps the bytes",
+		},
+		{
+			Category:    "unprojected_dialogue",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       unprojected,
+			Detail: "the source reader answered no dialogue projection for these records, so the text " +
+				"written for them is the reader's own Content for the record, byte for byte, rather " +
+				"than an answer the source gave about what the model said. What establishes that " +
+				"Content is the record's own text is the reader itself -- this build's list of the " +
+				"readers whose Content carries a rendering of the record's reasoning trace, held " +
+				"against the carried reader tree -- and never an inference from the record's bytes; " +
+				"a label this build does not know is treated the same way, and its records are " +
+				"counted here too",
+		},
+	}
 }

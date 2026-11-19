@@ -2572,3 +2572,32 @@ supersede it with a newer one and say which it supersedes.
   their text and converting the rest.
 - **Settled by:** an upstream projection for the readers that render a trace and project none (then their
   records convert exactly and both categories fall to zero), or an operator who prefers the strict arm.
+
+## Q-0007-11 — OpenCode counts a record's dialogue state after its role gate (a count moves on one route)
+
+- **Status:** resolved (the simplify round's accepted PD-2, applied by the unattended increment)
+- **Question:** the dialogue categories (`unprojected_dialogue`, `unresolved_dialogue`) describe what
+  happened to a record's *dialogue*. OpenCode asked `dialogueOf` and counted those categories for every
+  record, before its role gate, and then discarded the text of a record whose role is neither the user's
+  nor the assistant's under that role's own category — so a `tool`-role record's `Content` was reported as
+  carried-with-caveat text ("the text written for them is the reader's own Content for the record, byte for
+  byte") although no document and no report item held it, and one source record was counted differently by
+  this route than by Codex, Claude and Pi. Count before the gate (one route's current answer, with the
+  category's own sentence then false for it) or after it (the other three routes' answer, and a count that
+  moves on one route)?
+- **Default taken:** **after the gate.** `openCodeConverter.writeMessage` returns a record of any other
+  role under that role's own category (still writing its tool evidence) before `dialogueOf` is asked, so a
+  dialogue category is only ever counted for a record the writer went on to consider as dialogue. Measured
+  on one hand-built document (a projected user record, a `tool`-role record whose `Content` is text, a
+  plain assistant record): before, codex/claude/pi reported `unprojected_dialogue=1` and OpenCode `2`;
+  after, all four report `tool_role_messages=1` and `unprojected_dialogue=1`. This is the round's one
+  behavioural change — a count, for documents holding a non-dialogue role's text, that no run recorded in
+  the increment's evidence ever stated — and the evidence record names it as such
+  (`docs/evidence/0007-opencode-target-continuation.md`, the simplify round's section, PD-2). The round's
+  other two defects are not behaviour changes: PD-1 is a measured restoration of the categories `fa8da89`
+  reported (per route, both roles), and PD-3 is two report clauses corrected.
+- **Reversal:** count the dialogue categories before the role gate again — nothing in a converted document
+  depends on the count, so reversing it is one statement's position in `writeMessage`.
+- **Settled by:** nothing owner-only; an operator who wants a non-dialogue role's `Content` counted under
+  the dialogue categories (with those categories' sentences restated so they are true there, and the other
+  three routes taught the same) may ask for that split instead.

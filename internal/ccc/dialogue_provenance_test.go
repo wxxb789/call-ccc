@@ -262,6 +262,208 @@ func TestCodexRolloutCountsWhatItCouldNotEstablish(t *testing.T) {
 	}
 }
 
+// dialogueRoute is one route's own conversion of a hand-built document, as the dialogue cases below
+// read it: the items and the bytes it wrote, its report, and the shape its format has for a persisted
+// reasoning trace -- empty where the target records reasoning as its provider's own artifact, so a
+// plaintext trace has nowhere to travel.
+type dialogueRoute struct {
+	name       string
+	traceShape string
+	items      []TargetItem
+	data       []byte
+	losses     []Loss
+}
+
+// dialogueRoutes runs one hand-built document through all four target writers, so a case can state what
+// the dialogue rule requires of every route and see each route's own answer. Every writer reads its
+// message text through dialogueOf and counts it through dialogueLossOf, so the same document answers the
+// same state on all four routes; what differs per route -- its shape for a reasoning trace, its
+// categories' own wording -- is the route's own and is what the cases assert.
+func dialogueRoutes(t *testing.T, conversation Conversation) []dialogueRoute {
+	t.Helper()
+	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if err != nil {
+		t.Fatalf("converting to Codex: %v", err)
+	}
+	transcript, err := ConvertToClaudeTranscript(conversation, ClaudeTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting to Claude: %v", err)
+	}
+	session, err := ConvertToPiSession(conversation, PiTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting to Pi: %v", err)
+	}
+	openCode, err := ConvertToOpenCodeSession(conversation, OpenCodeTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting to OpenCode: %v", err)
+	}
+	return []dialogueRoute{
+		{name: "codex", items: rollout.Items, data: rollout.Data, losses: rollout.Losses},
+		{name: "claude", items: transcript.Items, data: transcript.Data, losses: transcript.Losses},
+		{name: "pi", traceShape: `"type":"thinking"`, items: session.Items, data: session.Data,
+			losses: session.Losses},
+		{name: "opencode", traceShape: `"type":"reasoning"`, items: openCode.Items, data: openCode.Data,
+			losses: openCode.Losses},
+	}
+}
+
+// TestEveryRouteCountsWhatTheReadCouldNotEstablish drives the case above's document once per route: the
+// read could not establish the record's text, so no route writes it and every route counts it
+// (unresolved_dialogue). What each route does with the rest is the route's own and is pinned here: the
+// record's tool evidence travels on every route, the trace travels exactly where the format has a shape
+// for it (Pi's `thinking` block, the harness's reasoning part) and is counted as omitted where it has
+// none (Codex and Claude record reasoning as their provider's own artifact), and each route states the
+// same counts under its own categories. The unresolved_dialogue row's clause is prose, but the fact it
+// states is checked here: a route whose reasoning row says the trace is omitted must not hold it.
+func TestEveryRouteCountsWhatTheReadCouldNotEstablish(t *testing.T) {
+	const (
+		trace  = "private trace"
+		answer = "The answer."
+		plain  = "A plain answer."
+	)
+	rendering := thinkingRenderOpen + "\n" + trace + "\n" + thinkingRenderClose
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask",
+			DialogueProjected: true},
+		// Unprojected, the reader renders the trace into Content, and the record carries a call with its
+		// result: nothing about the record's text is established, on any route.
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Thinking: trace,
+			ContentRendersThinking: true, Content: rendering + "\n" + answer,
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_1", Name: "Read",
+				InputJSON: `{"file_path":"/work/project/policy.go"}`}},
+			ToolResults: []ToolResult{{ToolUseID: "toolu_1", ContentRaw: `"recorded output"`,
+				ContentSize: 16}}},
+		// Unprojected, the reader renders nothing: Content is the record's own bytes and travels.
+		Message{Ordinal: 2, Role: string(parser.RoleAssistant), Content: plain},
+		// Unprojected, and Content is exactly the reader's rendering of the record's whole trace: no
+		// dialogue, and the rendering is not double-carried.
+		Message{Ordinal: 3, Role: string(parser.RoleAssistant), Thinking: "only a trace",
+			ContentRendersThinking: true,
+			Content:                thinkingRenderOpen + "\nonly a trace\n" + thinkingRenderClose},
+	)
+	for _, route := range dialogueRoutes(t, conversation) {
+		t.Run(route.name, func(t *testing.T) {
+			// No text is written for the unestablished record: neither the record's own words nor the
+			// reader's rendering of the trace reaches the document, and no item holds the words as
+			// written text.
+			for _, forbidden := range []string{rendering + "\n" + answer, answer} {
+				if strings.Contains(string(route.data), forbidden) {
+					t.Errorf("the document holds %q, which the read could not establish as the record's "+
+						"text: %s", forbidden, route.data)
+				}
+			}
+			for _, item := range route.items {
+				if strings.Contains(item.Text, answer) {
+					t.Errorf("an item holds %q as written text: %+v", answer, item)
+				}
+			}
+			// The trace travels where the target has a shape for it, and only there.
+			hasTrace := strings.Contains(string(route.data), trace)
+			if wantTrace := route.traceShape != ""; hasTrace != wantTrace {
+				t.Errorf("the document holds the record's trace = %v, want %v (this route's shape for "+
+					"a trace: %q)", hasTrace, wantTrace, route.traceShape)
+			}
+			if route.traceShape != "" && !strings.Contains(string(route.data), route.traceShape) {
+				t.Errorf("the document holds the trace but not in this route's own shape %q: %s",
+					route.traceShape, route.data)
+			}
+			// The tool evidence travels on every route: the call, its recorded output, and an item
+			// naming the result.
+			for _, want := range []string{"toolu_1", "recorded output"} {
+				if !strings.Contains(string(route.data), want) {
+					t.Errorf("the document does not hold the record's tool evidence %q: %s", want,
+						route.data)
+				}
+			}
+			wroteResult := false
+			for _, item := range route.items {
+				wroteResult = wroteResult || item.Kind == ItemToolResult
+			}
+			if !wroteResult {
+				t.Errorf("no item names the record's tool result: %+v", route.items)
+			}
+			// Each route's counts are the route's own: the one unestablished record and the one record
+			// whose text is the reader's Content, under the shared categories.
+			for category, want := range map[string]struct {
+				count       int
+				disposition string
+			}{
+				"unresolved_dialogue":  {1, DispositionOmitted},
+				"unprojected_dialogue": {1, DispositionCarriedWithCaveat},
+			} {
+				loss := lossCount(t, route.losses, category)
+				if loss.Count != want.count || loss.Disposition != want.disposition {
+					t.Errorf("%s = %+v, want count %d and disposition %q", category, loss, want.count,
+						want.disposition)
+				}
+			}
+			// The reasoning row states this route's own answer, and it agrees with what the document
+			// holds: carried with a caveat where the format has the trace's shape, omitted where it has
+			// none.
+			reasoning := lossCount(t, route.losses, "reasoning_text")
+			wantDisposition := DispositionOmitted
+			if route.traceShape != "" {
+				wantDisposition = DispositionCarriedWithCaveat
+			}
+			if reasoning.Disposition != wantDisposition {
+				t.Errorf("reasoning_text = %+v, want disposition %q beside this route's trace shape %q",
+					reasoning, wantDisposition, route.traceShape)
+			}
+		})
+	}
+}
+
+// TestWhitespaceOnlyContentKeepsItsOwnCategory pins a shape the dialogue rule must not fold into "no
+// text": Content that is whitespace alone, with no projection, is the record's own bytes -- the
+// dialogueFromContent state carrying those bytes -- so each route reports it under the category it
+// reached before the rule replaced the readings (round 17's PD-1: folding it in dropped such an
+// assistant record from Codex's report with no category at all, and the other three routes called it
+// empty). Codex, Claude and OpenCode name it as the source's whitespace dialogue; Pi, whose reader drops
+// a record left with neither text nor tool evidence, counts it under its own empty-record category for
+// the role. No route writes the whitespace either way -- what is pinned is the disclosure.
+func TestWhitespaceOnlyContentKeepsItsOwnCategory(t *testing.T) {
+	const blank = "   "
+	for _, testCase := range []struct {
+		name       string
+		role       parser.RoleType
+		piCategory string
+	}{
+		{"assistant", parser.RoleAssistant, "empty_assistant_messages"},
+		{"user", parser.RoleUser, "empty_user_messages"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			message := Message{Ordinal: 0, Role: string(testCase.role), Content: blank}
+			if got := dialogueOf(message); got.State != dialogueFromContent || got.Text != blank {
+				t.Fatalf("dialogueOf over a whitespace-only record = (%q, %v), want the record's own "+
+					"bytes %q (%v)", got.Text, got.State, blank, dialogueFromContent)
+			}
+			for _, route := range dialogueRoutes(t, testConversation(message)) {
+				category := "whitespace_only_dialogue"
+				if route.name == "pi" {
+					category = testCase.piCategory
+				}
+				loss := lossCount(t, route.losses, category)
+				if loss.Count != 1 || loss.Disposition != DispositionOmitted {
+					t.Errorf("%s = %+v, want the one record counted as omitted", category, loss)
+				}
+				// No dialogue category claims the text travelled or was left unestablished, and nothing
+				// is written for the record: the target's own reader reads a message whose text is blank
+				// after trimming as no message at all.
+				for _, other := range []string{"unprojected_dialogue", "unresolved_dialogue"} {
+					if loss := lossCount(t, route.losses, other); loss.Count != 0 {
+						t.Errorf("%s = %+v, want none: the record's Content is its own bytes, and no "+
+							"route writes them", other, loss)
+					}
+				}
+				if len(route.items) != 0 {
+					t.Errorf("the conversion wrote %+v for a record whose whole text is whitespace",
+						route.items)
+				}
+			}
+		})
+	}
+}
+
 // TestCodexRolloutCarriesTheClaudeFixturesOwnDialogue traces the target's text to the source's own typed
 // parts for a whole committed session. The expectation is built here from the fixture file's own
 // records: every user or assistant record's `text` blocks, joined as the inherited reader joins them
@@ -272,7 +474,7 @@ func TestCodexRolloutCountsWhatItCouldNotEstablish(t *testing.T) {
 // authority, and the case shows both that the projections the read answered equal them and that the
 // rollout's written dialogue equals them.
 func TestCodexRolloutCarriesTheClaudeFixturesOwnDialogue(t *testing.T) {
-	path := claudeFixturePath(t)
+	path := fixturePath(t, filepath.Join("claude", "-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"))
 	expected, renderings := claudeFixtureDialogue(t, path)
 	if len(expected) == 0 || len(renderings) == 0 {
 		t.Fatalf("the fixture walk answered %d dialogue text(s) and %d rendering(s), so nothing here "+
@@ -322,27 +524,6 @@ func TestCodexRolloutCarriesTheClaudeFixturesOwnDialogue(t *testing.T) {
 		t.Errorf("unresolved_dialogue = %+v, want none: every dialogue record of this fixture answered a "+
 			"projection", loss)
 	}
-}
-
-// claudeFixturePath answers the committed Claude fixture's own file, found under the root the reader is
-// configured with.
-func claudeFixturePath(t *testing.T) string {
-	t.Helper()
-	var found string
-	root := filepath.Join(fixtureRoot(t), "claude")
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil || entry.IsDir() {
-			return err
-		}
-		if filepath.Base(path) == claudeFixtureRef.ID+".jsonl" {
-			found = path
-		}
-		return nil
-	})
-	if err != nil || found == "" {
-		t.Fatalf("finding the Claude fixture under %s: %v (found %q)", root, err, found)
-	}
-	return found
 }
 
 // claudeFixtureDialogue answers the fixture's own records' dialogue and the renderings that must not
@@ -407,11 +588,13 @@ func claudeFixtureDialogue(t *testing.T, path string) (dialogue, renderings []st
 				switch parsed.Type {
 				case "text":
 					texts = append(texts, parsed.Text)
-				case "tool_use", "tool_result":
+				case "tool_use":
 					// The call travels as the call it is; the text the reader inlines for it in
 					// Content is the reader's own rendering, and it is what must not travel as
 					// dialogue. The rendering is spelled with the inherited reader's own function
-					// (parser.ToolUseRendering) over this block's own name and input.
+					// (parser.ToolUseRendering) over this block's own name and input. A tool_result
+					// block puts no rendering in Content (ExtractTextContent collects it without
+					// appending anything), so only a call's block is walked here.
 					if rendered := parser.ToolUseRendering(parsed.Name, string(parsed.Input)); rendered != "" {
 						renderings = append(renderings, rendered)
 					}
