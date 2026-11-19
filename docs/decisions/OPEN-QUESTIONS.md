@@ -2535,3 +2535,40 @@ supersede it with a newer one and say which it supersedes.
   present state.
 - **Settled by:** nothing owner-only; the owner may ask for the python-case row form when a goal's
   acceptance surface carries enough harness rules to justify it.
+
+## Q-0007-10 — A record's dialogue the read cannot establish is not guessed at (Q-0007-08's mechanism superseded)
+
+- **Status:** resolved (the owner's decision of 2026-11-19, letter A: the root fix for this face lands
+  inside 0007, on the third consult's answer — root cause, what fixing the root means, and how to tell the
+  root is fixed)
+- **Question:** the carried readers write a record's persisted reasoning trace into `Content` verbatim
+  between their own markers, so two different native part orders — a text part followed by a thinking
+  part, and a text part that quotes the block the thinking part renders — produce the same `Content`, the
+  same trace and the same reader label, and no inverse can say which occurrence was the model's words
+  (`internal/parser/zcode.go` escapes nothing, so even the first closer need not be the reader's own; the
+  consult's arm 2 is the collision with no trimming in the shape at all). Three review rounds (13, 14, 15)
+  each found a deletion defect inside the readings machinery that inferred a removal from those bytes, and
+  two cross-family consults each improved the inverse rather than removing the dependency on it. What
+  happens to a record whose reader renders the trace into `Content` and whose read answered no dialogue
+  projection — keep the removal, carry `Content` whole, drop `Content` whole and count it, or refuse the
+  conversion?
+- **Default taken:** **no removal by inference survives.** `dialogueOf`
+  (`internal/ccc/dialogue_provenance.go`) answers the source's own projection (byte for byte, an
+  explicitly empty one included) or one of three states — the record's own bytes where the reader is not
+  one `thinkingRenderingReaders` names and the record carries no calls (carried, counted as
+  `unprojected_dialogue`); no dialogue where `Content` is byte for byte the reader's rendering of the
+  record's whole trace; nothing established where the reader renders the trace and the record carries one,
+  or the record carries calls (no text written, counted as `unresolved_dialogue`, tool evidence still
+  written, the source session keeping the bytes). The readings machinery, its candidate scan, its
+  first-closer pairing and `thinkingRenderingOnly` are deleted rather than repaired, and the list is
+  completed against the carried readers (the eight non-projecting renderers that were missing, and the
+  projecting renderers, whose entry covers a record without a projection such as a legacy archive row).
+  Partial conversion, not refusal, is the disposition: the loss is per record and disclosed, and refusing
+  a conversation over one record's text would deny every record the source did answer for. Every run's
+  report names both categories with their counts and dispositions.
+- **Reversal:** restore a removal for a reader whose own construction proves the text — the durable route
+  is upstream (a reader that projects its dialogue, docs/upstream.md's procedure), not a local recogniser
+  — or take the stricter arm: refuse the records whose dialogue cannot be established instead of omitting
+  their text and converting the rest.
+- **Settled by:** an upstream projection for the readers that render a trace and project none (then their
+  records convert exactly and both categories fall to zero), or an operator who prefers the strict arm.

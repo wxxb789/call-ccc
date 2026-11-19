@@ -517,17 +517,21 @@ func zCodeAssistantParts(t *testing.T, session OpenCodeSession) []openCodePart {
 	return nil
 }
 
-// TestOpenCodeCarriesAZCodeMixedRenderingOnce pins the writer's dialogue rule for the inherited
-// mixed-rendering shape, through the inherited reader that produces it: a ZCode assistant record carrying
-// both a persisted thinking part and text has that trace rendered into Content as a `[Thinking]…[/Thinking]`
-// block *beside* the record's text, and projects no dialogue at all (internal/parser's ZCode reader, whose
-// own transcript test asserts this shape). The writer's Content fallback used to write the trace twice --
-// once as the message's `reasoning` part, the shape this target persists a trace in, and once inside a
-// `text` part holding the rendering, which presents persisted reasoning as words the agent said -- with
-// the round-trip comparison agreeing, because both sides derived from the same duplicated parts. What
-// this case reads is the serialized document's own parts, the trace's own loss category, and the store
-// read-back.
-func TestOpenCodeCarriesAZCodeMixedRenderingOnce(t *testing.T) {
+// TestOpenCodeDoesNotGuessAZCodeRecordsDialogue pins the route's half of the dialogue boundary through
+// the inherited reader that produces the shape: a ZCode assistant record carrying a persisted thinking
+// part (and, in two arms, a text part of its own) answers no dialogue projection, the reader renders the
+// trace into Content beside the record's text, and no reading of those bytes can say which occurrence
+// was the model's words -- the reader writes the trace's own text verbatim, so two different native part
+// orders produce the same Content and the same trace. The route therefore publishes none of it: the
+// installed message holds the trace once, as the reasoning part this format keeps a trace in, with no
+// text part at all, and the conversion counts the record as unresolved rather than guessing. What used
+// to happen here is what the round removed: the Content fallback wrote the reader's rendering as the
+// record's own words (and, for a mixed record, duplicated the trace into a text part).
+//
+// The shape is asserted on the read, from the parts this case wrote into the store -- not from the
+// shared rule's answer and not from the writer's output -- and the document's own parts are asserted
+// from its serialized JSON.
+func TestOpenCodeDoesNotGuessAZCodeRecordsDialogue(t *testing.T) {
 	const (
 		trace  = "I should inspect the auth flow."
 		answer = "I'll inspect the auth flow."
@@ -537,104 +541,94 @@ func TestOpenCodeCarriesAZCodeMixedRenderingOnce(t *testing.T) {
 		return `{"type":"text","text":` + jsonString(t, value) + `}`
 	}
 	rendered := openCodeReasoningOpen + trace + openCodeReasoningClose
-
-	conversation := zCodeMixedConversation(t, thinkingPart, textPart(answer))
-
-	// The shape is asserted on the read, not assumed: the record carries the trace, the source projected
-	// no dialogue for it, and its Content is the reader's own rendering followed by the record's text.
-	sawMixed := false
-	for _, message := range conversation.Messages {
-		if message.Thinking != trace {
-			continue
-		}
-		sawMixed = true
-		if message.DialogueProjected || message.Dialogue != "" {
-			t.Fatalf("the ZCode record's dialogue = %q (projected %v), want none: the shape this rule is "+
-				"about is a record the source answered no projection for", message.Dialogue,
-				message.DialogueProjected)
-		}
-		if want := rendered + "\n" + answer; message.Content != want {
-			t.Fatalf("the ZCode record's content = %q, want the reader's own rendering followed by the "+
-				"record's text (%q)", message.Content, want)
-		}
-	}
-	if !sawMixed {
-		t.Fatalf("the read holds no record carrying %q, so nothing here pins what a writer does with the "+
-			"shape this case is about", trace)
-	}
-
-	session, err := ConvertToOpenCodeSession(conversation, openCodeTargetTestOptions())
-	if err != nil {
-		t.Fatalf("converting: %v", err)
-	}
-	parts := zCodeAssistantParts(t, session)
-	if len(parts) != 2 || parts[0].Type != openCodePartReasoning || parts[0].Text != trace ||
-		parts[1].Type != openCodePartText || parts[1].Text != answer {
-		t.Fatalf("the record's message holds %+v, want the trace once as the reasoning part and the "+
-			"record's own text beside it", parts)
-	}
-	if strings.Contains(string(session.Data), openCodeReasoningOpen) {
-		t.Errorf("the document holds the reader's own `[Thinking]` rendering of the trace, which is not "+
-			"dialogue the source recorded: %s", session.Data)
-	}
-	openCodeRequireLoss(t, session, "reasoning_text", 1)
-	if loss := lossCount(t, session.Losses, "reasoning_text"); loss.Disposition != DispositionCarriedWithCaveat {
-		t.Errorf("reasoning_text = %+v, want the trace the reasoning part carries counted as carried", loss)
-	}
-	home := filepath.Join(t.TempDir(), openCodeDataDirName)
-	writeOpenCodeTestStore(t, openCodeDataDir(home), session)
-	verification, err := VerifyOpenCodeSessionStructure(context.Background(), openCodeDataDir(home),
-		session, fixtureConfig(t))
-	if err != nil {
-		t.Fatalf("reading the installed session back: %v", err)
-	}
-	if verification.State != VerificationStateVerified || verification.Detail != "" {
-		t.Errorf("structure = %+v, want the message read back as what was written (detail %q)",
-			verification, verification.Detail)
-	}
-
-	// The rendering is removed where it stands, not only where it leads: ZCode keeps the record's own part
-	// order, so a text part recorded before the thinking part renders the trace *after* the text, and the
-	// record's text is still the dialogue.
-	trailing := zCodeMixedConversation(t, textPart(answer), thinkingPart)
-	session, err = ConvertToOpenCodeSession(trailing, openCodeTargetTestOptions())
-	if err != nil {
-		t.Fatalf("converting a record whose trace part follows its text: %v", err)
-	}
-	sawTrailing := false
-	for _, message := range trailing.Messages {
-		if message.Thinking != trace {
-			continue
-		}
-		sawTrailing = true
-		if want := answer + "\n" + rendered; message.Content != want {
-			t.Fatalf("the ZCode record's content = %q, want the record's text followed by the rendering "+
-				"(%q)", message.Content, want)
-		}
-	}
-	if !sawTrailing {
-		t.Fatalf("the read holds no record carrying %q in its trailing-part shape", trace)
-	}
-	parts = zCodeAssistantParts(t, session)
-	if len(parts) != 2 || parts[0].Type != openCodePartReasoning || parts[0].Text != trace ||
-		parts[1].Type != openCodePartText || parts[1].Text != answer {
-		t.Errorf("a record whose trace part follows its text holds %+v, want the trace once as the "+
-			"reasoning part and the record's own text beside it", parts)
-	}
-
-	// A `[Thinking]…[/Thinking]` block the record's own trace does not hold is text the record carries (a
-	// model writing the markers itself), and a target must not drop text nothing shows to be reasoning.
 	literal := "[Thinking]\nwords the record's trace does not hold\n[/Thinking]"
-	lookalike := zCodeMixedConversation(t, thinkingPart, textPart(literal))
-	session, err = ConvertToOpenCodeSession(lookalike, openCodeTargetTestOptions())
-	if err != nil {
-		t.Fatalf("converting a record carrying the markers as its own text: %v", err)
+	cases := []struct {
+		name string
+		// parts are the record's own provider-shaped parts, in the store's order.
+		parts []string
+		// content is the reader's own answer for those parts: the parts' bytes joined as the reader
+		// joins them (one feed).
+		content string
+		// unestablished is the record's own text, which must not reach the document.
+		unestablished string
+	}{
+		{"the trace part stands before the record's text",
+			[]string{thinkingPart, textPart(answer)}, rendered + "\n" + answer, answer},
+		{"the trace part stands after the record's text",
+			[]string{textPart(answer), thinkingPart}, answer + "\n" + rendered, answer},
+		{"a text part carries the markers as its own text",
+			[]string{thinkingPart, textPart(literal)}, rendered + "\n" + literal, literal},
 	}
-	parts = zCodeAssistantParts(t, session)
-	if len(parts) != 2 || parts[0].Type != openCodePartReasoning || parts[0].Text != trace ||
-		parts[1].Type != openCodePartText || parts[1].Text != literal {
-		t.Errorf("the record's message holds %+v, want the trace once and its own marker-bearing text "+
-			"kept as it stands", parts)
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			conversation := zCodeMixedConversation(t, testCase.parts...)
+			sawRecord := false
+			for _, message := range conversation.Messages {
+				if message.Thinking != trace {
+					continue
+				}
+				sawRecord = true
+				if message.DialogueProjected || message.Dialogue != "" {
+					t.Fatalf("the ZCode record's dialogue = %q (projected %v), want none: the shape this "+
+						"rule is about is a record the source answered no projection for", message.Dialogue,
+						message.DialogueProjected)
+				}
+				if !message.ContentRendersThinking {
+					t.Error("the read did not establish the reader's rendering provenance for the record, " +
+						"so nothing here drives the rule this case is about")
+				}
+				if message.Content != testCase.content {
+					t.Fatalf("the ZCode record's content = %q, want the reader's own parts' bytes %q",
+						message.Content, testCase.content)
+				}
+				if got := dialogueOf(message); got.State != dialogueUnestablished || got.Text != "" {
+					t.Errorf("dialogueOf over the ZCode record = (%q, %v), want no text and the "+
+						"unestablished state", got.Text, got.State)
+				}
+			}
+			if !sawRecord {
+				t.Fatalf("the read holds no record carrying %q, so nothing here pins what a writer does "+
+					"with the shape this case is about", trace)
+			}
+
+			session, err := ConvertToOpenCodeSession(conversation, openCodeTargetTestOptions())
+			if err != nil {
+				t.Fatalf("converting: %v", err)
+			}
+			parts := zCodeAssistantParts(t, session)
+			if len(parts) != 1 || parts[0].Type != openCodePartReasoning || parts[0].Text != trace {
+				t.Fatalf("the record's message holds %+v, want the trace once as the one reasoning part "+
+					"and no text part: which bytes of the record's Content were the model's words is not "+
+					"established", parts)
+			}
+			if strings.Contains(string(session.Data), testCase.unestablished) {
+				t.Errorf("the document holds the record's Content, which the read could not establish as "+
+					"its text: %s", session.Data)
+			}
+			openCodeRequireLoss(t, session, "unresolved_dialogue", 1)
+			if loss := lossCount(t, session.Losses, "unresolved_dialogue"); loss.Disposition != DispositionOmitted {
+				t.Errorf("unresolved_dialogue = %+v, want the record counted as omitted", loss)
+			}
+			openCodeRequireLoss(t, session, "unprojected_dialogue", 1)
+			openCodeRequireLoss(t, session, "reasoning_text", 1)
+			if loss := lossCount(t, session.Losses, "reasoning_text"); loss.Disposition != DispositionCarriedWithCaveat {
+				t.Errorf("reasoning_text = %+v, want the trace the reasoning part carries counted as carried", loss)
+			}
+
+			// The installed store verifies against what was written: the message holds one reasoning part,
+			// and the route's read-back rule spells its dialogue the way a read of the store shows it.
+			home := filepath.Join(t.TempDir(), openCodeDataDirName)
+			writeOpenCodeTestStore(t, openCodeDataDir(home), session)
+			verification, err := VerifyOpenCodeSessionStructure(context.Background(), openCodeDataDir(home),
+				session, fixtureConfig(t))
+			if err != nil {
+				t.Fatalf("reading the installed session back: %v", err)
+			}
+			if verification.State != VerificationStateVerified || verification.Detail != "" {
+				t.Errorf("structure = %+v, want the reasoning-only message read back as what was written "+
+					"(detail %q)", verification, verification.Detail)
+			}
+		})
 	}
 }
 
@@ -1518,8 +1512,74 @@ func TestOpenCodePreservesTheRecordedWorkingDirectory(t *testing.T) {
 // up to that completion. Both instants used to be taken through the shared clock one after the other, so
 // the first completion to arrive rewrote every later call's `created` to itself and the durations the
 // source recorded disappeared from the store. The message's own instant is now the floor under each pair
-// (so an unordered source still cannot write a part whose end precedes its start), and a completion only
-// raises the clock's floor for the records that follow it.
+// (so an unordered source still cannot write a part whose end precedes its start), and a completion raises
+// only the instant the session's own `updated` is read for -- never the floor the document's messages are
+// ordered by, which is what keeps a later call's recorded start where the source recorded it
+// (TestOpenCodeOverlappingCallsOnSeparateMessagesKeepTheirOwnInstants pins that shape).
+// TestOpenCodeOverlappingCallsOnSeparateMessagesKeepTheirOwnInstants pins the same rule for the shape
+// the carried Codex reader produces: a message per function_call, with each later output attached to its
+// own call, so one call's completion arrives between two other calls' start records. The document's
+// message floor is the messages' own order -- and only messages raise it -- so the second call's message
+// and its part keep the instants its own record carried instead of being pushed up to the first call's
+// completion (round 15's finding: call A at t=0, call B at t=1, A's result at t=10 and B's at t=20 left
+// B's start at t=10 and its recorded span 19 seconds shorter, with no loss category naming the
+// substitution).
+func TestOpenCodeOverlappingCallsOnSeparateMessagesKeepTheirOwnInstants(t *testing.T) {
+	at := time.UnixMilli(1_700_000_000_000).UTC()
+	conversation := openCodeTestConversation(
+		Message{Role: "user", Dialogue: "run two checks", DialogueProjected: true, Content: "run two checks",
+			Timestamp: at},
+		Message{Role: "assistant", DialogueProjected: true, Timestamp: at,
+			ToolCalls: []ToolCall{openCodeTestCall("call-a", "Bash", `{"command":"a"}`)}},
+		Message{Role: "assistant", DialogueProjected: true, Timestamp: at.Add(time.Second),
+			ToolCalls: []ToolCall{openCodeTestCall("call-b", "Bash", `{"command":"b"}`)}},
+		Message{Role: "user", Timestamp: at.Add(10 * time.Second), ToolResults: []ToolResult{
+			openCodeTestResult("call-a", "completed", `"a"`),
+		}},
+		Message{Role: "user", Timestamp: at.Add(20 * time.Second), ToolResults: []ToolResult{
+			openCodeTestResult("call-b", "completed", `"b"`),
+		}},
+		Message{Role: "assistant", Dialogue: "both checked", DialogueProjected: true,
+			Content: "both checked", Timestamp: at.Add(21 * time.Second)},
+	)
+	session, err := ConvertToOpenCodeSession(conversation, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	var document openCodeDocument
+	if err := json.Unmarshal(session.Data, &document); err != nil {
+		t.Fatalf("the document does not parse: %v", err)
+	}
+	want := map[string]openCodeTimeSpan{
+		"call-a": {Created: at.UnixMilli(), Completed: at.Add(10 * time.Second).UnixMilli()},
+		"call-b": {Created: at.Add(time.Second).UnixMilli(), Completed: at.Add(20 * time.Second).UnixMilli()},
+	}
+	seen := map[string]bool{}
+	for _, message := range document.Messages {
+		for _, part := range message.Content {
+			if part.Type != openCodePartTool {
+				continue
+			}
+			seen[part.ID] = true
+			if part.Time == nil || *part.Time != want[part.ID] {
+				t.Errorf("%s time = %+v, want the records' own pair %+v: an earlier call's completion "+
+					"must not move a later call's recorded start", part.ID, part.Time, want[part.ID])
+			}
+		}
+	}
+	for id := range want {
+		if !seen[id] {
+			t.Errorf("the document holds no part for %s", id)
+		}
+	}
+	// The document's own end is the latest instant it holds, which is the last message's own instant here;
+	// the session states it rather than the earlier completion that used to stand in for it.
+	if document.Info.Time.Updated != at.Add(21*time.Second).UnixMilli() {
+		t.Errorf("info.time.updated = %d, want the last message's own instant %d",
+			document.Info.Time.Updated, at.Add(21*time.Second).UnixMilli())
+	}
+}
+
 func TestOpenCodeParallelToolSpansKeepTheirOwnInstants(t *testing.T) {
 	at := time.UnixMilli(1_700_000_000_000).UTC()
 	conversation := openCodeTestConversation(

@@ -294,6 +294,8 @@ type claudeTranscriptBuilder struct {
 	lossEmptyAssistantMessages int
 	lossWhitespaceDialogue     int
 	lossNonDialogueText        int
+	lossUnresolvedDialogue     int
+	lossUnprojectedDialogue    int
 	lossUnpairedResults        int
 	lossUnresolved             int
 	lossStatuses               int
@@ -403,11 +405,14 @@ func (b *claudeTranscriptBuilder) writeMessage(message Message) {
 		b.writeToolEvidence(message)
 		return
 	}
+	dialogue := dialogueOf(message)
 	if len(message.ToolResults) == 0 && len(message.ToolCalls) == 0 && strings.TrimSpace(message.Thinking) != "" &&
-		strings.TrimSpace(dialogueText(message)) == "" {
+		strings.TrimSpace(dialogue.Text) == "" && dialogue.State != dialogueUnestablished {
 		// Nothing but a persisted reasoning trace: the target's thinking blocks are its own
 		// provider-signed artifacts and a plaintext one written in their place would present source
-		// reasoning as a target-native trace (goal 0013 owns this).
+		// reasoning as a target-native trace (goal 0013 owns this). The state is asked beside the text
+		// for the same reason it is on the Codex route: a record whose dialogue the read could not
+		// establish is counted as that, not as a record that held nothing but a trace.
 		b.lossReasoning++
 		return
 	}
@@ -438,8 +443,21 @@ func (b *claudeTranscriptBuilder) writeMessage(message Message) {
 		if len(message.ToolCalls) == 0 && len(message.ToolResults) == 0 {
 			return
 		}
+	} else if dialogue.State == dialogueUnestablished {
+		// The read established no dialogue for this record and its Content is not the record's own
+		// bytes (dialogueOf): the reader rendered the record's persisted reasoning trace into a Content
+		// that also holds the record's text, or the record carries calls whose renderings a reader may
+		// have inlined. The text is not written -- publishing the reader's rendering as the model's
+		// words is the error this rule exists to prevent, and deleting the rendering by inference is
+		// the guess it refuses -- and the record is counted. Its tool evidence still travels below.
+		b.lossUnresolvedDialogue++
 	} else {
-		switch text := dialogueText(message); {
+		if dialogue.State == dialogueFromContent && strings.TrimSpace(dialogue.Text) != "" {
+			// Content, not a projection, is what travels: the report says so per record
+			// (unprojected_dialogue) rather than presenting the read's Content as the source's answer.
+			b.lossUnprojectedDialogue++
+		}
+		switch text := dialogue.Text; {
 		case text != "" && strings.TrimSpace(text) == "":
 			// The source recorded dialogue text that holds only whitespace. The inherited reader's block
 			// parser carries a text block whose text is only whitespace as no text, and drops a record
@@ -907,8 +925,34 @@ func (b *claudeTranscriptBuilder) losses() []Loss {
 			Disposition: DispositionOmitted,
 			Count:       b.lossNonDialogueText,
 			Detail: "the source itself classified these records as carrying no dialogue, and their " +
-				"content is not dialogue it rendered either (a tool result the provider recorded with a " +
-				"user role): the target has no message that would not state the user said those words",
+				"content is not dialogue it rendered either (a tool result the provider recorded with " +
+				"a user role): the target has no message that would not state the user said those words",
+		},
+		{
+			Category:    "unresolved_dialogue",
+			Disposition: DispositionOmitted,
+			Count:       b.lossUnresolvedDialogue,
+			Detail: "the source reader answered no dialogue projection for these records, and their " +
+				"Content is not the record's own text: the reader renders the record's persisted " +
+				"reasoning trace into Content and the record carries one, or the record carries calls " +
+				"whose renderings a reader may have inlined into it. Two different native part orders " +
+				"can produce the same Content and the same trace, so which bytes the model wrote " +
+				"cannot be recovered from the record; the text is not written, this count is not a " +
+				"claim that the record wrote none, and the record's own reasoning still travels as " +
+				"reasoning_text where it was counted there. The source session keeps the bytes",
+		},
+		{
+			Category:    "unprojected_dialogue",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.lossUnprojectedDialogue,
+			Detail: "the source reader answered no dialogue projection for these records, so the text " +
+				"written for them is the reader's own Content for the record, byte for byte, rather " +
+				"than an answer the source gave about what the model said. What establishes that " +
+				"Content is the record's own text is the reader itself -- this build's list of the " +
+				"readers whose Content carries a rendering of the record's reasoning trace, held " +
+				"against the carried reader tree -- and never an inference from the record's bytes; " +
+				"a label this build does not know is treated the same way, and its records are " +
+				"counted here too",
 		},
 		{
 			Category:    "whitespace_only_dialogue",

@@ -497,6 +497,6 @@ func openCodeRoundTripReader() roundTripReader {
 				return "", false
 			}
 		},
-		dialogueOf: func(message Message) string { return message.Content },
+		readText: func(message Message) string { return message.Content },
 	}
 }

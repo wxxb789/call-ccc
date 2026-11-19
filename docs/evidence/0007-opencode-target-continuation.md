@@ -2208,6 +2208,182 @@ the last of them: the finding was closed by the code and the record alone. No go
 still the increment under review, implemented on its branch with its row, and the earlier goals are archived
 and their rows say so.
 
+### The root-fix round's dialogue authority (`fa8da89` + working tree), re-measured
+
+The owner's decision of 2026-11-19 (letter A) put the root fix for this face inside 0007, after three review
+rounds (13, 14, 15) each found a deletion defect in the same shared accessor and two cross-family consults
+each improved the inverse instead of removing the dependency on it. **The accessor was being asked to
+recover byte ownership after the source reader had discarded it.** `internal/parser/zcode.go` knows which
+parts are text and which are thinking, flattens them into `Content` (`strings.Join(texts, "\n")`, each
+thinking part rendered as `[Thinking]\n<text>\n[/Thinking]`, zcode.go:545-578) and records the trace
+separately, projecting no dialogue at all — so the native part orders `thinking("a"), text("mid")` and
+`text("[Thinking]\na\n[/Thinking]\nmid"), thinking("a")` produce the *same* `Content`, the same trace and
+the same reader label, and no inverse, however exact, can say which occurrence was the model's words. The
+projection the carried readers already make (`parser.ParsedMessage.DialogueText`, carried as
+`Message.Dialogue`/`DialogueProjected`) is the authority, and the readings machinery was a defensible
+*bound on what may be removed* used as a *promise of exact recovery*. The third consult's arm 2 — a trace
+part whose own text is the rendering's whole words, so the removal has no trimming to catch and the
+literal block quoting the trace is the only complete reading — is the case that shows the class was never
+the trimming's.
+
+**The states and the disclosure.** `dialogueOf` (`internal/ccc/dialogue_provenance.go`) answers one of four
+states for a record, every route acts on the state rather than on a text alone, and each state is named on
+the document (the read's own per-record fields), in the target (the per-message shape the state produced)
+and in the report (the category):
+
+| state | what it is | outcome | report |
+| --- | --- | --- | --- |
+| projected | the read answered `DialogueText` — an explicitly empty projection included, which is the source's own "no dialogue" | the projection, byte for byte | no category; `Content` is not read |
+| from Content | no projection; the reader is not one `thinkingRenderingReaders` names and the record carries no calls, so `Content` is the record's own bytes | the text travels | `unprojected_dialogue`, carried-with-caveat (count of records) |
+| rendering-only | no projection; `Content` is byte for byte the reader's rendering of the record's whole trace | no dialogue; the trace is not double-carried | no new category (the trace is counted where the target has no shape for it) |
+| unestablished | no projection and `Content` is not the record's own bytes (the reader renders the trace and the record carries one, or the record carries calls whose renderings a reader may have inlined) | **no text at all**; tool evidence still written; reasoning still travels; the source keeps the bytes | `unresolved_dialogue`, omitted (count of records) |
+
+Partial conversion is the disposition chosen over refusal, and the reason is in the code
+(`dialogueOf`): the loss is per record, disclosed, and reversible in the only place that matters — the
+source session is untouched, so a later route with better provenance can read those bytes; refusing a whole
+conversation over one record's text would deny every record the source did answer for. The report says
+which state each record landed in (the categories' counts and dispositions), the document carries the
+read's own answers, and the target holds the shape: a ZCode mixed record installs as a message with a
+reasoning part and **no text part**, never as a text part holding the reader's rendering.
+
+**One line each for the cases the previous rounds pinned, and why the new design cannot reproduce them.**
+r13 (an unmatched opener in the record's own text hid the genuine rendering, and the reading deleted the
+record's own pair): no reading exists any more — a record of a rendering reader that carries a trace has
+nothing established, whatever its bytes spell. r14 (a trace whose own text holds a closer, with a literal
+block beside it, let a pair of blocks cover the trace while skipping its bytes): the same — the shape is
+never read, so no gap can be validated wrongly. r15's P1 (trimming a candidate's words lost the genuine
+rendering's separator and made a literal whole-trace block the only accepted reading): the same, and the
+class is closed at the same time — the consult's arm 2 showed the collision needs no trimming at all. The
+consult's arm 2 itself (a thinking part whose text is empty beside a text part quoting the whole trace):
+`dialogueOf` answers `dialogueUnestablished`, the writer writes no text, and the case is one of the
+`TestZCodeRecordsAreNotGuessedThroughTheUnmodifiedReader` arms (through the unmodified reader) and one of
+the table's arms. The deleted cases' *shapes* are all kept as arms of the new tests, asserting the new
+outcome, and the rounds' evidence sections above are untouched history.
+
+**r15's second finding, re-derived and fixed.** The finding held on the clean tree
+(`internal/ccc/opencode_target.go`'s `openCodeClock.span` raised the single clock floor to a result's
+completion, and the next message's `created := c.clock.next(...)` was then clamped to it): a conversation
+whose calls sit on separate records — the shape the carried Codex reader produces, one message per
+`function_call` — with call A at t=0, call B at t=1 and A's result at t=10 came out with B's message and
+its tool part at t=10 instead of t=1, shortening a recorded 19-second span to 10 with no loss category
+naming the substitution (re-derived with a throw-away test before the fix, and pinned after it by
+`TestOpenCodeOverlappingCallsOnSeparateMessagesKeepTheirOwnInstants`). The clock now holds two instants
+apart: `lastMessage`, the floor a message's own `created` is taken against (raised by messages alone), and
+`lastInstant`, the highest instant the document holds (raised by a message's `created` or a part's
+`completed`, read only for the session's `time.updated`). The existing
+`TestOpenCodeParallelToolSpansKeepTheirOwnInstants` (both calls on one message) never caught this and
+still passes; the regression test the finding asked for is the new one.
+
+**The rules, each with an executed mutation.** Six mutations were made, run and restored byte-identically
+(each file's sha256 verified before and after):
+
+| the rule | the mutation | the pin that reddened |
+| --- | --- | --- |
+| a rendering reader's unprojected record with a trace has nothing established | `dialogueOf`: the `ContentRendersThinking && Thinking != ""` arm disabled | `TestDialogueOfNamesWhatEstablishesARecordsText` (its unestablished arms), `TestZCodeRecordsAreNotGuessedThroughTheUnmodifiedReader`, `TestOpenCodeDoesNotGuessAZCodeRecordsDialogue`, `TestCodexRolloutCountsWhatItCouldNotEstablish` |
+| a record carrying calls has no dialogue from its `Content` | `dialogueOf`: the `ToolCalls` arm disabled | `TestDialogueOfNamesWhatEstablishesARecordsText/a_record_carrying_calls_has_nothing_established_from_its_Content` |
+| the whole-trace rendering is byte-exact, not a trimmed shape | `dialogueIsRenderingOnly`: `strings.TrimSpace(message.Content) == …` | `TestDialogueOfNamesWhatEstablishesARecordsText/the_same_block_with_one_byte_beside_it_is_not_that_shape` |
+| the readers list names the rendering readers the carried tree has | `thinkingRenderingReaders`: `parser.AgentZCode` dropped | `TestZCodeRecordsAreNotGuessedThroughTheUnmodifiedReader`, `TestOpenCodeDoesNotGuessAZCodeRecordsDialogue` (all arms) |
+| a record whose text is the reader's `Content` is counted as carried without a projection | `codex_target.go`: the `unprojected_dialogue` count disabled | `TestCodexRolloutCountsWhatItCouldNotEstablish`, `TestZCodeRecordsAreNotGuessedThroughTheUnmodifiedReader` (its control arm) |
+| a tool part's completion never raises the message-ordering floor | `openCodeClock.span`: `lastMessage` raised to `completed` (the pre-fix shape) | `TestOpenCodeOverlappingCallsOnSeparateMessagesKeepTheirOwnInstants` |
+
+**The readers list is completed against the carried tree.** Eight more readers that render a trace into
+`Content` and project none were found by walking the carried readers for the block's own construction sites
+and are now named: ChatGPT (`chatgpt.go:401-413`), Claude.ai (`claude_ai.go:151-156`), Copilot
+(`copilot.go:200-208`), Gemini (`gemini.go:400-415`), Hermes (`hermes.go:319-321,517-519,1349-1351`),
+OpenCode (`opencode.go:1726-1731`, `opencode_v2.go:280-286`), Reasonix (`reasonix.go:89-93`) and Zencoder
+(`zencoder.go:371-377`) — each had been publishing its rendering inside the dialogue, because the list
+named only the thirteen readers of the target-side routes. The list now also names the readers that render
+a trace *and* project one (Amp, Claude Code, Codex, Cursor, Devin, Grok, iFlow, OpenClaude, OpenClaw,
+OpenHands, Pi/OMP, QClaw): their projection answers first wherever the read made one, and the entry is what
+keeps a record *without* a projection — a legacy archive row, a reader path that keeps `Content` as the
+source wrote it — from publishing the rendering. The list's doc names every construction site and the
+maintenance rule; a label this build knows no reader for is treated as recording `Content` as written and
+counted in `unprojected_dialogue`, the answer that keeps the source's own words (a rendering left standing
+is a duplication the report names; text dropped as though it were one cannot be put back).
+
+`python3 scripts/gate.py`, exit code 0, on this round's final tree:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3621 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 384 tests in 8.842s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5709 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 27 row(s) verified
+  PASS     secrets  no leaks found in 163 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The block is from a run on this round's code and tests before this section's prose settled (it was filled
+from that run's captured stdout); later runs of the same gate on this record's tree reprinted every step
+line and every count, differing only in the `selftest` line's duration, and every run exited 0.
+
+The required lines, verbatim with their own return codes: `selftest` printed
+`  PASS     selftest Ran 384 tests in 8.902s (rc=0)` (the same 384 tests as before the round: this round
+adds no `scripts/tests/` case) and `citations` printed
+`  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 27 row(s) verified`
+(0002 unchanged at 36 rows; 0007's manifest grew from 18 rows to 27 — R1-R9 carry this boundary's
+evidence: the projection as the authority, the display rendering's irrelevance, the target text traced to
+the source fixture's own typed parts, the refusal to guess a rendering record, the partial outcome and its
+disclosure on each writer, the disclosure categories, the whole-trace shape, the literal-block rule and the
+tool-part instant rule).
+
+The native checks this host can run, offline (no prompt flags, so no turn), re-run because every route
+reads its dialogue through the rule this round replaces: `python3 scripts/pi-native-check.py` →
+`RESULT: PASS — 21 check(s), none failed` (exit 0); `python3 scripts/omp-native-check.py` →
+`RESULT: PASS — 23 check(s), none failed` (exit 0); `python3 scripts/codex-native-check.py` →
+`26 check(s) passed, 0 failed, 2 skipped` (exit 0; both skips are the real-turn stages); and
+`python3 scripts/opencode-native-check.py` → `RESULT: PASS — 32 check(s), none failed` (exit 0) — this host
+now has `opencode` on `PATH` (`/home/azureuser/.npm-global/bin/opencode`, `opencode v2.2.5`), so the route's
+native half ran here in full rather than reporting the boundary earlier rounds recorded.
+`python3 scripts/claude-native-check.py` exited 2 with `claude is not on PATH: this harness verifies native
+behaviour, which needs the target harness installed`, which is that check's own harness-absent answer; this
+round records no Claude native run.
+
+The narrowed Go suites' own test functions ran 399 before this round and 400 after (counted as `^func Test`
+over the test files git lists under `cmd/ccc` and `internal/ccc`, plus this round's new file): seven cases
+were superseded — `TestDialogueFromContentKeepsOnlyTheRecordsOwnText` (whose ~40 arms pinned the readings,
+the candidate scan and the removal), `TestDialogueKeepsALiteralMarkerBlockWhoseWordsTheTraceHolds`,
+`TestDialogueKeepsANewlineDelimitedLiteralPairWhoseWordsTheTraceHolds`,
+`TestDialogueKeepsAnUnmatchedOpenerBeforeTheRendering` (r13),
+`TestDialogueKeepsACloserInsideThePersistedTrace` (r14),
+`TestRenderingReaderRemovesTheRenderedTraceThroughAnInheritedReader` and
+`TestOpenCodeCarriesAZCodeMixedRenderingOnce` — and their shapes all live on as arms of the new cases,
+asserting the outcome the new rule produces instead of the removal they used to pin; eight cases are new
+(six in `internal/ccc/dialogue_provenance_test.go`, two in `internal/ccc/opencode_target_test.go`). No
+existing case in this record is deleted, merged or weakened: the r13, r14 and r15 sections above stand as
+written, and this section names what happened to each of their counterexamples.
+
+What else the round moved: `AGENTS.md` (the dialogue bullet is now the two rules the round asked for — the
+semantic rule, with the collision stated and the readings machinery's removal declared, and the
+disclosed-outcome rule with its three states and the list's maintenance rule — plus one clause in the
+OpenCode paragraph fixing the message-ordering floor), `internal/ccc/dialogue_provenance.go` (the accessor,
+the states, the completed list), `internal/ccc/codex_target.go`, `internal/ccc/claude_target.go`,
+`internal/ccc/pi_target.go` and `internal/ccc/opencode_target.go` (each writer's message rule, two new loss
+categories and the clock fix), `internal/ccc/codex_install.go` and `internal/ccc/opencode_install.go` (the
+round-trip read side reads the new accessor; the per-route override field is renamed `readText`),
+`internal/ccc/conversation.go` (the message fields' contract), the tests, `docs/plans/0007-…` (§6.1's
+root-fix paragraph and §7's `AGENTS.md` bullet) and this record plus `docs/evidence/0007-citations.tsv`.
+The Python half, the gate, the carried tree (no `internal/parser` file changed), `README.md`,
+`docs/harness.md` and `docs/upstream.md` are untouched, and `docs/decisions/OPEN-QUESTIONS.md` gains one
+entry rather than being left alone: **Q-0007-10** records this round's default and says which mechanism it
+supersedes (Q-0007-08's, whose entry stands unedited), what reverses it (an upstream projection, or the
+stricter arm that refuses those records instead of omitting their text) and what settles it. The
+disposition itself — partial conversion, not refusal — is this round's own mandate applied, chosen in the
+code and stated here; no other owner-only default was taken. No goal file is moved: 0007 is still the
+increment under review, implemented on its branch.
+
+Limits of this round's evidence: no real turn was run (`--resume-prompt` was not passed to any check), so
+the native runs prove the loaders opened and read what the routes wrote and not that a model continued the
+conversation, and the Claude route has no native run here at all (its harness is absent). The durable fix
+for the readers this round had to classify is upstream: a reader that projected its own dialogue would let
+its records convert exactly, and until one does, a record of theirs that renders a trace and answers no
+projection converts with its text omitted and the omission counted on every run — the state Q-0007-10
+records, with what reverses it and what settles it.
+
 ## 5. What travels, source side and target side
 
 | Source evidence | Target side, and the run that recorded it |

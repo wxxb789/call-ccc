@@ -61,40 +61,51 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   converts again, and shows Codex's own loader opening the second session with its own view holding the
   appended turn while the first session's bytes did not move (`--repeat-resume-prompt` adds one real
   turn in the second session; each prompt flag runs one turn).
-- **A record's dialogue is the source's own, and a rendered reasoning trace is never it.** Every target
-  writer reads its message text through one shared rule (`dialogueText` → `dialogueFromContent`): the
-  source's own projection where it made one — an explicitly empty projection included — and, where it
-  projected none and the record carries no calls, the record's `Content` minus the reader's own rendering
-  of that record's persisted reasoning trace (`[Thinking]…[/Thinking]`, the block shape
-  `internal/parser.IsThinkingOnlyContent` recognises). A rendering is removed only where the reader that
-  wrote `Content` is one that renders the trace into it (`Message.ContentRendersThinking`, established by
-  `internal/ccc/dialogue_provenance.go`'s `thinkingRenderingReaders` from the session's own agent label:
-  each listed reader's construction site in the carried reader is named there, a reader that also projects
-  a dialogue is answered by its projection instead, and a reader that records `Content` as the source
-  wrote it — Vibe's independent `content` and `reasoning_content` — carries a marker block only as the
-  model's own words, which nothing may drop), and where the record's own bytes and its own trace leave the
-  block no choice: the readers write each part of the trace as one block in the record's own part order,
-  so a removal is established by a *reading* of the record — an assignment of some of `Content`'s marker
-  blocks to the trace's parts, in order, whose words open the trace, close it, and account for everything
-  between them, the bytes between two taken blocks being the separator the reader wrote between those parts
-  — one feed, or a blank line's two — and never the trace's own text, so a pair of blocks cannot cover the
-  trace by skipping the trace's own bytes (round 14) — and a block is taken only where every reading the
-  bytes admit takes it. The blocks the readings weigh are enumerated at every opener — each paired with the
-  first closer that follows it, an opener standing inside a pair read before it included — because a text
-  part's own trailing opener otherwise pairs with the rendering's closer and hides the rendering whose words
-  the trace holds, so the reading takes the record's own pair and deletes words it wrote (round 13). The
-  feeds around a marker pair are not a part boundary: a part of the record's own text may carry feeds of its
-  own around a pair whose words the trace holds, as a substring of it as readily as the whole (round 12),
-  so where the readings disagree about a block the block keeps its place as the model's own words. What
-  stands: the words are the record's own wherever the reader put them — a reader that keeps the record's
-  part order (ZCode's) renders the trace after the text it followed as readily as before it — so a trace
-  the read answered nothing for, a block no trace of that record accounts for, a marker pair inside a part
-  the record wrote, and a block the record's own bytes leave ambiguous keep their `Content` byte for byte,
-  while a record whose `Content` is nothing but a rendering of its own trace has no dialogue at all (the
-  readers' own rule for that shape, which asks the block's words to *be* the trace, whole). The trace
-  travels to the target beside that dialogue as the record's reasoning, or is counted where the target has
-  no shape for it; a writer that fell back to the raw `Content` would carry the trace twice — once as
-  reasoning and once as words the source never recorded the agent as saying.
+- **A record's dialogue is the source's own answer, and a rendered reasoning trace is never it.** Every
+  target writer reads its message text through one shared rule (`internal/ccc/dialogue_provenance.go`'s
+  `dialogueOf`). The source's own answer is the projection (`parser.ParsedMessage.DialogueText`, carried
+  as `Message.DialogueProjected`), and where the read made one it is the whole answer — an explicitly
+  empty projection included, which is the source's own statement that the record has no dialogue, and an
+  exact conversion of a record with none. `Content` is never read beside a projection. Two semantic
+  requirements stand on their own: a record whose `Content` is byte for byte the reader's own rendering of
+  its whole trace (`[Thinking]\n<trace>\n[/Thinking]`) has no dialogue at all — the rendering is the trace
+  the read carries as the record's reasoning — and a literal `[Thinking]…[/Thinking]` block standing in a
+  record of a reader that records `Content` as the source wrote it (Vibe's independent `content` and
+  `reasoning_content`) is the model's own words, which nothing may drop. What is *not* true, and what the
+  rules below replace, is that a record's flattened bytes can be un-mixed: the readers write the trace's
+  own text verbatim between their markers, so two different native part orders — the trace's text before
+  the record's, and a text part that quotes the block a thinking part renders — produce the same `Content`,
+  the same trace and the same reader label, and no inverse can say which occurrence was the model's.
+  `internal/parser/zcode.go` renders a thinking part's text verbatim, so a closer written inside that text
+  is not escaped and the first closer after an opener need not be the reader's own. The readings machinery
+  that inferred a removal from those bytes (rounds 11–15 each found a shape it deleted, or a rendering it
+  published, wrongly) is therefore **removed, not patched**: nothing is removed from a record's `Content`
+  by inference any more, and a writer that fell back to the raw `Content` of a rendering record would
+  carry a rendering as words the source never recorded the agent as saying.
+- **Where the read answered no projection, the outcome is disclosed, never guessed.** `dialogueOf`
+  answers one of three states for a record, and every route acts on the state, never on a text alone.
+  (1) The reader is not one `thinkingRenderingReaders` names and the record carries no calls: `Content` is
+  the record's own bytes, it travels as the record's text, and the conversion counts it
+  (`unprojected_dialogue`, carried-with-caveat) — so a reader of the report can see which text rests on
+  the read's `Content` rather than on an answer the source gave. The list names both the readers that
+  render a trace and project none and those that render one *and* project (a projection answers first
+  wherever the read made one; the entry is what covers a record *without* one — a legacy archive row, a
+  record a reader path keeps as the source wrote it); every entry names its construction site in the
+  carried reader, and an upstream update that brings in a reader rendering a trace into `Content` has to
+  add it (docs/upstream.md's procedure), or that reader's records travel with the rendering carried as
+  dialogue. A label this build knows no reader for is treated the same way and counted in the same
+  category. (2) `Content` is not the record's own bytes (the reader renders the trace into it and the
+  record carries one, or the record carries calls whose renderings a reader may have inlined): **nothing
+  is written and nothing is deleted**. The record's text is not published, its tool evidence still is, its
+  recorded reasoning still travels where the target has a shape for it, and the conversion counts the
+  record (`unresolved_dialogue`, omitted; the count is not a claim that the record wrote none). The source
+  session keeps the bytes, and a later route with better provenance can read them. (3) `Content` is
+  exactly the reader's rendering of the record's whole trace: the record has no dialogue, and the trace is
+  not double-carried. Partial conversion — not refusal — is the chosen disposition, and each state is
+  named on all three surfaces: the document carries the read's own per-record answers, the target holds
+  the per-message shape the state produced (a message or part with its text, or none), and the report
+  counts the category. A report that says `converted` without them would claim dialogue that cannot be
+  traced to a source-owned answer, and "the file parsed" is not evidence that its dialogue is exact.
 - **OpenCode is a target whose store only the harness writes.** A session is a row in
   `<XDG data home>/opencode/opencode.db`, not a file, so `--to opencode` installs **through the harness's
   own importer** (`opencode session import … --directory <the session's recorded directory> --standalone`)
@@ -112,7 +123,10 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   (`ToolResult.Timestamp`: a result event's own envelope instant, which may be later than the record that
   carried its call) and only where the read holds none is the containing record's instant written — the
   report counts that substitution (`result_completion_fallbacks`) rather than presenting it as recorded,
-  because the call's own instant stated twice turns a recorded span into one the source never recorded.
+  because the call's own instant stated twice turns a recorded span into one the source never recorded. The
+  floor a message's own `created` is taken against is the messages' own records and nothing else: a part's
+  completion raises only the instant the session's `time.updated` is read for, so an earlier call's result
+  does not move a later, overlapping call's recorded start up to itself (round 15's finding).
   The load level asks the harness's own
   `session export`, never `run`: `run` *creates* a session for an id the store does not hold. The
   directory a session is resolved from is the one its own document records, and the model

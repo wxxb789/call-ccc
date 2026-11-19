@@ -536,35 +536,37 @@ type piSessionBuilder struct {
 	// loader makes. Its unresolved count is what the report's unresolved_source_parents names.
 	tree sourceTree
 
-	writtenMessages        int
-	lossReasoning          int
-	lossSidechain          int
-	lossSystemRecords      int
-	lossToolRoles          int
-	lossUnclassified       int
-	lossEmptyUser          int
-	lossEmptyAssistant     int
-	lossNonDialogue        int
-	lossWhitespace         int
-	lossUnpaired           int
-	lossEmptyResults       int
-	lossWhitespaceRes      int
-	lossResultBlocks       int
-	lossUnresolved         int
-	lossStatuses           int
-	lossEmptyInputs        int
-	lossGeneratedIDs       int
-	lossCoalesced          int
-	lossSubagentLinks      int
-	lossModels             int
-	lossModelFallbacks     int
-	lossTitleSlot          int
-	lossSessionBinding     int
-	lossCarriedCallEntries int
-	lossUnrecordedUsage    int
-	lossPreBoundary        int
-	lossEmptySummary       int
-	sawBoundary            bool
+	writtenMessages         int
+	lossReasoning           int
+	lossSidechain           int
+	lossSystemRecords       int
+	lossToolRoles           int
+	lossUnclassified        int
+	lossEmptyUser           int
+	lossEmptyAssistant      int
+	lossNonDialogue         int
+	lossWhitespace          int
+	lossUnresolvedDialogue  int
+	lossUnprojectedDialogue int
+	lossUnpaired            int
+	lossEmptyResults        int
+	lossWhitespaceRes       int
+	lossResultBlocks        int
+	lossUnresolved          int
+	lossStatuses            int
+	lossEmptyInputs         int
+	lossGeneratedIDs        int
+	lossCoalesced           int
+	lossSubagentLinks       int
+	lossModels              int
+	lossModelFallbacks      int
+	lossTitleSlot           int
+	lossSessionBinding      int
+	lossCarriedCallEntries  int
+	lossUnrecordedUsage     int
+	lossPreBoundary         int
+	lossEmptySummary        int
+	sawBoundary             bool
 	// headerTimestamp is the session's own start instant, fixed when the builder is made: the header's
 	// timestamp is the session's identity rather than a position in the entry stream, so it must not be
 	// advanced by the entries written after it.
@@ -723,7 +725,21 @@ func (b *piSessionBuilder) writeMessage(message Message) {
 		b.writeCarriedCalls(message)
 		return
 	}
-	text := dialogueText(message)
+	dialogue := dialogueOf(message)
+	text := dialogue.Text
+	if dialogue.State == dialogueUnestablished {
+		// The read established no dialogue for this record and its Content is not the record's own bytes
+		// (dialogueOf): the reader rendered the record's persisted reasoning trace into a Content that
+		// also holds the record's text, or the record carries calls whose renderings a reader may have
+		// inlined. No text is published for it -- the rendering is not words the model wrote, and the
+		// removal of one by inference is the guess this rule refuses -- and the record is counted. Its
+		// trace still travels below, as Pi's `thinking` block, and its tool evidence with it.
+		b.lossUnresolvedDialogue++
+	} else if dialogue.State == dialogueFromContent && strings.TrimSpace(text) != "" {
+		// Content, not a projection, is what travels: the report says so per record
+		// (unprojected_dialogue) rather than presenting the read's Content as the source's answer.
+		b.lossUnprojectedDialogue++
+	}
 	calls := b.distinctCalls(message)
 	hasThinking := strings.TrimSpace(message.Thinking) != ""
 	if hasThinking {
@@ -1245,6 +1261,32 @@ func (b *piSessionBuilder) losses() []Loss {
 			Count:       b.lossNonDialogue,
 			Detail: "the source itself classified these records as carrying no dialogue, and their " +
 				"content is a rendering this writer must not put in the user's mouth",
+		},
+		{
+			Category:    "unresolved_dialogue",
+			Disposition: DispositionOmitted,
+			Count:       b.lossUnresolvedDialogue,
+			Detail: "the source reader answered no dialogue projection for these records, and their " +
+				"Content is not the record's own text: the reader renders the record's persisted " +
+				"reasoning trace into Content and the record carries one, or the record carries calls " +
+				"whose renderings a reader may have inlined into it. Two different native part orders " +
+				"can produce the same Content and the same trace, so which bytes the model wrote " +
+				"cannot be recovered from the record; the text is not written, this count is not a " +
+				"claim that the record wrote none, and the record's own reasoning still travels as " +
+				"the `thinking` block it was recorded in. The source session keeps the bytes",
+		},
+		{
+			Category:    "unprojected_dialogue",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.lossUnprojectedDialogue,
+			Detail: "the source reader answered no dialogue projection for these records, so the text " +
+				"written for them is the reader's own Content for the record, byte for byte, rather " +
+				"than an answer the source gave about what the model said. What establishes that " +
+				"Content is the record's own text is the reader itself -- this build's list of the " +
+				"readers whose Content carries a rendering of the record's reasoning trace, held " +
+				"against the carried reader tree -- and never an inference from the record's bytes; " +
+				"a label this build does not know is treated the same way, and its records are " +
+				"counted here too",
 		},
 		{
 			Category:    "whitespace_only_dialogue",

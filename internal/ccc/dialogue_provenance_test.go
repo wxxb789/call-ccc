@@ -1,0 +1,647 @@
+package ccc
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"go.kenn.io/agentsview/internal/parser"
+)
+
+// The dialogue boundary: pinned at the seam every target reads its message text through (dialogueOf),
+// through the readers that produce each shape, and at the writers that act on it.
+//
+// The closure criterion these cases discharge: for every route that claims exact dialogue, the text the
+// target receives can be traced to a source-owned answer that is independent of the display rendering --
+// the reader's own dialogue projection, or Content where the reader records Content as the source wrote
+// it -- and a reader's display markers or joins may change without changing what any target receives as
+// dialogue. Two consequences are pinned here:
+//
+//   - a record the read projected keeps the projection byte for byte (an explicitly empty projection
+//     stays empty), whatever the reader's Content spells beside it; and
+//   - a record whose flattened Content mixes the reader's rendering of the record's own reasoning trace
+//     with the record's own text is not guessed at: no target publishes any of it as the model's words,
+//     and the conversion counts the record (unresolved_dialogue) instead of claiming a conversion it
+//     cannot support.
+//
+// Where a case's expected text is an answer the source owns, it is spelled from the native fixture's own
+// typed parts -- read by the test itself -- and never from the shared rule's answer or from the writer's
+// output. A native round trip proves the target stored what it was given; it does not prove the
+// converter gave it the right words, so no case here uses the writer's own items as its expectation.
+func TestDialogueOfNamesWhatEstablishesARecordsText(t *testing.T) {
+	const (
+		trace   = "Inspect the parser before answering."
+		spoken  = "The retry cap is four attempts."
+		foreign = "words the read answered no trace for"
+	)
+	rendering := func(text string) string {
+		return thinkingRenderOpen + "\n" + text + "\n" + thinkingRenderClose
+	}
+	cases := []struct {
+		name    string
+		message Message
+		want    string
+		state   dialogueState
+	}{
+		// The projection is the authority, and it is asked before Content at all.
+		{"the projection is the text whatever the rendering spells beside it",
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				Dialogue: spoken, DialogueProjected: true,
+				Content: rendering(trace) + "\n" + spoken},
+			spoken, dialogueProjected},
+		{"an explicitly empty projection leaves the record with no dialogue",
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				DialogueProjected: true, Content: rendering(trace)},
+			"", dialogueProjected},
+		{"a document that records its text on Dialogue without the flag keeps it",
+			Message{Role: "user", Content: "Ask", Dialogue: "Ask"},
+			"Ask", dialogueProjected},
+		// No projection: Content is the record's own bytes only where nothing shows a rendering in it.
+		{"a reader that renders nothing records Content as the source wrote it",
+			Message{Role: "assistant", Thinking: trace, Content: rendering(trace)},
+			rendering(trace), dialogueFromContent},
+		{"a reader that renders the trace, on a record that carries none",
+			Message{Role: "assistant", ContentRendersThinking: true, Content: spoken},
+			spoken, dialogueFromContent},
+		{"nothing stands in Content, so there are no bytes whose ownership could be wrong",
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true},
+			"", dialogueFromContent},
+		// Content that is exactly the reader's own rendering of the record's whole trace.
+		{"Content is byte for byte the reader's rendering of the record's whole trace",
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				Content: rendering(trace)},
+			"", dialogueRenderingOnly},
+		{"the same block with one byte beside it is not that shape",
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				Content: rendering(trace) + "\n"},
+			"", dialogueUnestablished},
+		{"a block whose words are a substring of the trace is not that shape either",
+			Message{Role: "assistant", Thinking: "private reasoning", ContentRendersThinking: true,
+				Content: rendering("private")},
+			"", dialogueUnestablished},
+		{"a block the record's trace does not hold is not that shape either",
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				Content: rendering(foreign)},
+			"", dialogueUnestablished},
+		// Nothing established: the reader renders the trace into Content and the record carries one, or
+		// the record carries calls. Several arms below are shapes review rounds and a consult produced as
+		// counterexamples to the removal machinery this rule replaces; none of them is guessed at now,
+		// whatever the bytes spell, because the reader's rendering is written from the trace's own text
+		// and two different native part orders produce the same Content and the same trace.
+		{"the rendering stands before the record's text (the readers' own order)",
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				Content: rendering(trace) + "\n" + spoken},
+			"", dialogueUnestablished},
+		{"the rendering stands after the text it followed (ZCode's part order)",
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				Content: spoken + "\n" + rendering(trace)},
+			"", dialogueUnestablished},
+		{"one trace rendered as two blocks around the record's text",
+			Message{Role: "assistant", Thinking: "part one\n\npart two", ContentRendersThinking: true,
+				Content: rendering("part one") + "\n" + spoken + "\n" + rendering("part two")},
+			"", dialogueUnestablished},
+		{"a text part that quotes the whole trace beside its rendering (round 12's shape)",
+			Message{Role: "assistant", Thinking: "private reasoning", ContentRendersThinking: true,
+				Content: "Before\n" + rendering("private reasoning") + "\nAfter\n" +
+					rendering("private reasoning")},
+			"", dialogueUnestablished},
+		{"a text part that ends with an opener the rendering's closer closes (round 13's finding)",
+			Message{Role: "assistant", Thinking: "private", ContentRendersThinking: true,
+				Content: "Before\n" + rendering("private") + "\nAfter\n" + thinkingRenderOpen + "\n" +
+					rendering("private")},
+			"", dialogueUnestablished},
+		{"a trace whose own text holds a closer, beside a literal block (round 14's finding)",
+			Message{Role: "assistant", Thinking: "alpha\n[/Thinking]\nbeta", ContentRendersThinking: true,
+				Content: rendering("alpha\n[/Thinking]\nbeta") + "\n" + "Before\n" + rendering("beta") +
+					"\nAfter"},
+			"", dialogueUnestablished},
+		{"a thinking part whose own edge whitespace the reading used to trim (round 15's finding)",
+			Message{Role: "assistant", Thinking: "alpha \n\nbeta", ContentRendersThinking: true,
+				Content: rendering("alpha ") + "\n" + rendering("beta") + "\n" +
+					"Before\n" + rendering("alpha \n\nbeta") + "\nAfter"},
+			"", dialogueUnestablished},
+		{"a text part quoting the whole trace, beside a trace part of its own (the consult's arm 2)",
+			Message{Role: "assistant", Thinking: "a\n\n\n", ContentRendersThinking: true,
+				Content: rendering("a\n\n\n") + "\n" + rendering("a") + "\n" + spoken},
+			"", dialogueUnestablished},
+		{"a record carrying calls has nothing established from its Content",
+			Message{Role: "assistant", Content: "calling",
+				ToolCalls: []ToolCall{{ToolUseID: "toolu_1", Name: "Read"}}},
+			"", dialogueUnestablished},
+		{"a call-carrying record whose reader also renders its trace has nothing established either",
+			Message{Role: "assistant", Thinking: trace, ContentRendersThinking: true,
+				Content:   rendering(trace) + "\n" + spoken,
+				ToolCalls: []ToolCall{{ToolUseID: "toolu_1", Name: "Read"}}},
+			"", dialogueUnestablished},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := dialogueOf(testCase.message)
+			if got.Text != testCase.want || got.State != testCase.state {
+				t.Errorf("dialogueOf(Content %q, Thinking %q, projected %v, renders %v, %d call(s)) = "+
+					"(%q, %v), want (%q, %v)", testCase.message.Content, testCase.message.Thinking,
+					testCase.message.DialogueProjected, testCase.message.ContentRendersThinking,
+					len(testCase.message.ToolCalls), got.Text, got.State, testCase.want, testCase.state)
+			}
+		})
+	}
+}
+
+// TestDialogueOfIgnoresTheDisplayRenderingOfAProjectedRecord is the closure criterion's own arm: two
+// records whose source answered the same projection and whose reader's display rendering differs -- the
+// rendering before the text and after it, joined differently, with a literal marker block beside it --
+// reach every target as the same dialogue, byte for byte. A reader changing how it spells Content
+// therefore cannot change what a target receives, as long as its projection does not change.
+func TestDialogueOfIgnoresTheDisplayRenderingOfAProjectedRecord(t *testing.T) {
+	const (
+		trace  = "Inspect the parser before answering."
+		spoken = "The retry cap is four attempts."
+	)
+	rendering := func(text string) string {
+		return thinkingRenderOpen + "\n" + text + "\n" + thinkingRenderClose
+	}
+	spellings := map[string]string{
+		"the rendering stands before the text": rendering(trace) + "\n" + spoken,
+		"the rendering stands after the text":  spoken + "\n" + rendering(trace),
+		"two blocks around the text":           rendering("part one") + "\n" + spoken + "\n" + rendering("part two"),
+		"a literal marker block beside it":     spoken + "\n" + rendering("words the trace does not hold"),
+		"the rendering alone":                  rendering(trace),
+	}
+	for name, content := range spellings {
+		t.Run(name, func(t *testing.T) {
+			message := Message{Role: "assistant", Content: content, Thinking: trace,
+				ContentRendersThinking: true, Dialogue: spoken, DialogueProjected: true}
+			if got := dialogueOf(message); got.Text != spoken || got.State != dialogueProjected {
+				t.Errorf("dialogueOf over Content %q = (%q, %v), want the projection %q byte for byte "+
+					"(%v)", content, got.Text, got.State, spoken, dialogueProjected)
+			}
+			// The same document through a writer: the text the target receives is the projection, and
+			// none of the reader's rendering reaches it.
+			rollout, err := ConvertToCodexRollout(testConversation(message), testOptions())
+			if err != nil {
+				t.Fatalf("converting: %v", err)
+			}
+			var texts []string
+			for _, item := range rollout.Items {
+				if item.Kind == ItemAssistant {
+					texts = append(texts, item.Text)
+				}
+			}
+			if len(texts) != 1 || texts[0] != spoken {
+				t.Errorf("the rollout's assistant text = %q, want the projection %q", texts, spoken)
+			}
+			if strings.Contains(string(rollout.Data), trace) {
+				t.Errorf("the rollout holds the record's persisted trace, which is not dialogue and not a "+
+					"shape this target carries: %s", rollout.Data)
+			}
+		})
+	}
+}
+
+// TestCodexRolloutCountsWhatItCouldNotEstablish pins the report's half of the rule on a hand-built
+// document: a record whose dialogue the read could not establish contributes no text and is counted
+// (unresolved_dialogue, omitted); a record whose text is the reader's Content rather than a projection
+// travels and is counted as that (unprojected_dialogue, carried-with-caveat); and a record whose Content
+// is exactly its reader's rendering of its own trace contributes no text and is not counted as a lost
+// dialogue, because the rendering is the trace the read carries as the record's reasoning.
+func TestCodexRolloutCountsWhatItCouldNotEstablish(t *testing.T) {
+	rendering := thinkingRenderOpen + "\nprivate trace\n" + thinkingRenderClose
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask",
+			DialogueProjected: true},
+		// Unprojected, the reader renders the trace into Content, and the record carries one: nothing is
+		// established, so nothing is written.
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Thinking: "private trace",
+			ContentRendersThinking: true, Content: rendering + "\nThe answer."},
+		// Unprojected, the reader renders nothing: Content is the record's own bytes and travels, with
+		// the report naming that it is not a source-owned projection.
+		Message{Ordinal: 2, Role: string(parser.RoleAssistant), Content: "A plain answer."},
+		// Unprojected, and Content is exactly the reader's rendering of the record's whole trace.
+		Message{Ordinal: 3, Role: string(parser.RoleAssistant), Thinking: "only a trace",
+			ContentRendersThinking: true,
+			Content:                thinkingRenderOpen + "\nonly a trace\n" + thinkingRenderClose},
+	)
+	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	var texts []string
+	for _, item := range rollout.Items {
+		if item.Kind == ItemAssistant {
+			texts = append(texts, item.Text)
+		}
+	}
+	if len(texts) != 1 || texts[0] != "A plain answer." {
+		t.Errorf("the rollout's assistant text = %q, want only the record whose Content is its own bytes",
+			texts)
+	}
+	if strings.Contains(string(rollout.Data), rendering) || strings.Contains(string(rollout.Data), "The answer.") {
+		t.Errorf("the rollout holds a record's Content the read could not establish as its text: %s",
+			rollout.Data)
+	}
+	if strings.Contains(string(rollout.Data), "only a trace") {
+		t.Error("the rollout holds the reader's rendering of the reasoning-only record's trace as " +
+			"dialogue, which states words the model never wrote")
+	}
+	for category, want := range map[string]struct {
+		count       int
+		disposition string
+	}{
+		"unresolved_dialogue":  {1, DispositionOmitted},
+		"unprojected_dialogue": {1, DispositionCarriedWithCaveat},
+		"reasoning_text":       {2, DispositionOmitted},
+	} {
+		loss := lossCount(t, rollout.Losses, category)
+		if loss.Count != want.count || loss.Disposition != want.disposition {
+			t.Errorf("%s = %+v, want count %d and disposition %q", category, loss, want.count,
+				want.disposition)
+		}
+	}
+}
+
+// TestCodexRolloutCarriesTheClaudeFixturesOwnDialogue traces the target's text to the source's own typed
+// parts for a whole committed session. The expectation is built here from the fixture file's own
+// records: every user or assistant record's `text` blocks, joined as the inherited reader joins them
+// (one feed), with a record that holds a `tool_use` or `tool_result` block contributing no dialogue (its
+// rendering `[Read: …]` is a display artifact of the call, which travels as the call it is) and the one
+// compaction summary traveling as the target's own boundary record rather than as dialogue. Nothing here
+// reads the answer out of the shared rule or out of the conversion: the fixture's bytes are the
+// authority, and the case shows both that the projections the read answered equal them and that the
+// rollout's written dialogue equals them.
+func TestCodexRolloutCarriesTheClaudeFixturesOwnDialogue(t *testing.T) {
+	path := claudeFixturePath(t)
+	expected, renderings := claudeFixtureDialogue(t, path)
+	if len(expected) == 0 || len(renderings) == 0 {
+		t.Fatalf("the fixture walk answered %d dialogue text(s) and %d rendering(s), so nothing here "+
+			"would be pinned", len(expected), len(renderings))
+	}
+	conversation := readFixtureConversation(t, claudeFixtureRef)
+
+	// The reader's own answer, record by record: a projection that equals the fixture's own typed parts.
+	var projected []string
+	for _, message := range conversation.Messages {
+		if message.IsCompactBoundary || len(message.ToolCalls) > 0 {
+			continue
+		}
+		if !message.DialogueProjected {
+			continue
+		}
+		if strings.TrimSpace(message.Dialogue) == "" {
+			continue
+		}
+		projected = append(projected, message.Dialogue)
+	}
+	if strings.Join(projected, "\x00") != strings.Join(expected, "\x00") {
+		t.Errorf("the read's projections = %q, want the fixture's own text blocks %q", projected, expected)
+	}
+
+	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if err != nil {
+		t.Fatalf("converting: %v", err)
+	}
+	var texts []string
+	for _, item := range rollout.Items {
+		switch item.Kind {
+		case ItemUser, ItemAssistant:
+			texts = append(texts, item.Text)
+		}
+	}
+	if strings.Join(texts, "\x00") != strings.Join(expected, "\x00") {
+		t.Errorf("the rollout's dialogue = %q, want the fixture's own text blocks %q", texts, expected)
+	}
+	for _, rendering := range renderings {
+		if strings.Contains(string(rollout.Data), rendering) {
+			t.Errorf("the rollout holds the reader's own rendering %q of a tool call, which is not "+
+				"dialogue the source recorded", rendering)
+		}
+	}
+	if loss := lossCount(t, rollout.Losses, "unresolved_dialogue"); loss.Count != 0 {
+		t.Errorf("unresolved_dialogue = %+v, want none: every dialogue record of this fixture answered a "+
+			"projection", loss)
+	}
+}
+
+// claudeFixturePath answers the committed Claude fixture's own file, found under the root the reader is
+// configured with.
+func claudeFixturePath(t *testing.T) string {
+	t.Helper()
+	var found string
+	root := filepath.Join(fixtureRoot(t), "claude")
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		if filepath.Base(path) == claudeFixtureRef.ID+".jsonl" {
+			found = path
+		}
+		return nil
+	})
+	if err != nil || found == "" {
+		t.Fatalf("finding the Claude fixture under %s: %v (found %q)", root, err, found)
+	}
+	return found
+}
+
+// claudeFixtureDialogue answers the fixture's own records' dialogue and the renderings that must not
+// reach a target, both read from the file's bytes: the last line is the committed fixture's torn trailing
+// record, which the reader reports as a malformed line and which this walk stops at rather than guesses
+// about.
+func claudeFixtureDialogue(t *testing.T, path string) (dialogue, renderings []string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the fixture: %v", err)
+	}
+	type block struct {
+		Type  string          `json:"type"`
+		Text  string          `json:"text"`
+		Name  string          `json:"name"`
+		Input json.RawMessage `json:"input"`
+	}
+	type record struct {
+		Type             string          `json:"type"`
+		IsCompactSummary bool            `json:"isCompactSummary"`
+		Message          json.RawMessage `json:"message"`
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry record
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			// The fixture's committed torn last line: everything before it was read above.
+			break
+		}
+		if entry.Type != "user" && entry.Type != "assistant" {
+			continue
+		}
+		var message struct {
+			Role    string `json:"role"`
+			Content any    `json:"content"`
+		}
+		if err := json.Unmarshal(entry.Message, &message); err != nil {
+			t.Fatalf("decoding the fixture record: %v", err)
+		}
+		if entry.IsCompactSummary {
+			// A compaction boundary: the target's own record for it, not a message's dialogue.
+			continue
+		}
+		switch content := message.Content.(type) {
+		case string:
+			dialogue = append(dialogue, content)
+		case []any:
+			var texts []string
+			for _, raw := range content {
+				encoded, err := json.Marshal(raw)
+				if err != nil {
+					t.Fatalf("re-encoding a fixture block: %v", err)
+				}
+				var parsed block
+				if err := json.Unmarshal(encoded, &parsed); err != nil {
+					t.Fatalf("decoding a fixture block: %v", err)
+				}
+				switch parsed.Type {
+				case "text":
+					texts = append(texts, parsed.Text)
+				case "tool_use", "tool_result":
+					// The call travels as the call it is; the text the reader inlines for it in
+					// Content is the reader's own rendering, and it is what must not travel as
+					// dialogue. The rendering is spelled with the inherited reader's own function
+					// (parser.ToolUseRendering) over this block's own name and input.
+					if rendered := parser.ToolUseRendering(parsed.Name, string(parsed.Input)); rendered != "" {
+						renderings = append(renderings, rendered)
+					}
+				}
+			}
+			if len(texts) > 0 {
+				dialogue = append(dialogue, strings.Join(texts, "\n"))
+			}
+		}
+	}
+	return dialogue, renderings
+}
+
+// TestZCodeRecordsAreNotGuessedThroughTheUnmodifiedReader pins the refusal at the route that produces
+// the shape, through internal/parser's ZCode reader itself: an assistant record carrying a persisted
+// thinking part and a text part answers no dialogue projection, and its Content is the reader's own
+// rendering of the trace beside the record's text -- one flattened string that two different native part
+// orders produce. Each arm below is a shape a review round (13, 14, 15) or a cross-family consult
+// produced as a counterexample to the removal machinery the shared rule used to run; what the arms now
+// assert is that the shape is not read at all: no text reaches the target, the record is counted as
+// unresolved, and the bytes stay where the source recorded them.
+func TestZCodeRecordsAreNotGuessedThroughTheUnmodifiedReader(t *testing.T) {
+	const (
+		trace  = "private reasoning"
+		answer = "The retry cap is four attempts."
+	)
+	thinkingPart := `{"type":"thinking","thinking":` + jsonString(t, trace) + `}`
+	textPart := func(value string) string {
+		return `{"type":"text","text":` + jsonString(t, value) + `}`
+	}
+	rendered := thinkingRenderOpen + "\n" + trace + "\n" + thinkingRenderClose
+	// The shapes, each as the parts a ZCode store records: a plain mixed record in both part orders, a
+	// text part that quotes the whole trace, one whose own text holds the closer marker, one that ends
+	// with an opener the rendering closes, and a trace whose own text is the rendering's whole words with
+	// a text part quoting it.
+	cases := []struct {
+		name      string
+		parts     []string
+		text      string
+		wantBytes string
+	}{
+		{"the trace part stands before the record's text", []string{thinkingPart, textPart(answer)},
+			answer, rendered + "\n" + answer},
+		{"the trace part stands after the record's text", []string{textPart(answer), thinkingPart},
+			answer, answer + "\n" + rendered},
+		{"a text part quotes the whole rendering", []string{thinkingPart, textPart(rendered)},
+			rendered, rendered + "\n" + rendered},
+		{"a text part ends with an opener the rendering closes",
+			[]string{thinkingPart, textPart("Before\n" + thinkingRenderOpen)},
+			"Before\n" + thinkingRenderOpen, rendered + "\n" + "Before\n" + thinkingRenderOpen},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			conversation := zCodeMixedConversation(t, testCase.parts...)
+			sawRecord := false
+			for _, message := range conversation.Messages {
+				if message.Thinking != trace {
+					continue
+				}
+				sawRecord = true
+				if message.DialogueProjected || message.Dialogue != "" {
+					t.Fatalf("the ZCode record's dialogue = %q (projected %v), want none: this shape is a "+
+						"record the source answered no projection for", message.Dialogue,
+						message.DialogueProjected)
+				}
+				if !message.ContentRendersThinking {
+					t.Fatal("the read did not establish the reader's rendering provenance for the record, " +
+						"so nothing here drives the rule this case is about")
+				}
+				// The reader's own shape, spelled from the parts this case wrote: the parts' bytes, joined
+				// as the reader joins them (one feed).
+				if message.Content != testCase.wantBytes {
+					t.Fatalf("the ZCode record's content = %q, want the reader's own parts' bytes %q",
+						message.Content, testCase.wantBytes)
+				}
+				if got := dialogueOf(message); got.State != dialogueUnestablished || got.Text != "" {
+					t.Errorf("dialogueOf over the ZCode record = (%q, %v), want no text and the "+
+						"unestablished state: the record's own text and the reader's rendering of the "+
+						"trace are one string", got.Text, got.State)
+				}
+			}
+			if !sawRecord {
+				t.Fatalf("the read holds no record carrying %q, so nothing here pins the shape this case "+
+					"is about", trace)
+			}
+			rollout, err := ConvertToCodexRollout(conversation, testOptions())
+			if err != nil {
+				t.Fatalf("converting: %v", err)
+			}
+			var texts []string
+			for _, item := range rollout.Items {
+				if item.Kind == ItemAssistant {
+					texts = append(texts, item.Text)
+				}
+			}
+			if len(texts) != 0 {
+				t.Errorf("the rollout's assistant text = %q, want none: the record's dialogue was not "+
+					"established, and publishing the reader's rendering as the model's words is what this "+
+					"rule refuses", texts)
+			}
+			if testCase.text != "" && strings.Contains(string(rollout.Data), testCase.text) {
+				t.Errorf("the rollout holds the record's Content, which the read could not establish as "+
+					"its text: %s", rollout.Data)
+			}
+			if loss := lossCount(t, rollout.Losses, "unresolved_dialogue"); loss.Count != 1 ||
+				loss.Disposition != DispositionOmitted {
+				t.Errorf("unresolved_dialogue = %+v, want the one record counted as omitted", loss)
+			}
+		})
+	}
+
+	// The control: the same reader on a record that carries no trace. Its Content is the record's own
+	// text, because this reader renders nothing else into Content, so the text travels and the report
+	// names that it is the reader's Content rather than a projection.
+	plain := zCodeMixedConversation(t, textPart(answer))
+	rollout, err := ConvertToCodexRollout(plain, testOptions())
+	if err != nil {
+		t.Fatalf("converting a record without a trace: %v", err)
+	}
+	var texts []string
+	for _, item := range rollout.Items {
+		if item.Kind == ItemAssistant {
+			texts = append(texts, item.Text)
+		}
+	}
+	if len(texts) != 1 || texts[0] != answer {
+		t.Errorf("the rollout's assistant text = %q, want the record's own text %q", texts, answer)
+	}
+	if loss := lossCount(t, rollout.Losses, "unprojected_dialogue"); loss.Count != 2 ||
+		loss.Disposition != DispositionCarriedWithCaveat {
+		t.Errorf("unprojected_dialogue = %+v, want both records whose text is the reader's Content (the "+
+			"session's prompt and the record's own text) counted as carried with a caveat", loss)
+	}
+	if loss := lossCount(t, rollout.Losses, "unresolved_dialogue"); loss.Count != 0 {
+		t.Errorf("unresolved_dialogue = %+v, want none: the record carries no trace for the reader to "+
+			"have rendered", loss)
+	}
+}
+
+// TestRenderingReadersReasoningOnlyRecordKeepsItsTraceOnce pins the whole-content shape through the
+// inherited reader that produces it: internal/parser's Cline reader answers a reasoning-only record as an
+// assistant message whose Content is exactly `[Thinking]\n<trace>\n[/Thinking]` -- the reader's own
+// rendering of the record's whole trace -- with no dialogue projection. The record has no dialogue, so
+// the target carries the trace once, as the record's reasoning, and never as the rendering; a record of
+// the same reader that also carries text is not established (its Content mixes the two with nothing to
+// separate them), and the archive read of the same session answers the same states from the stored
+// labels.
+func TestRenderingReadersReasoningOnlyRecordKeepsItsTraceOnce(t *testing.T) {
+	root := t.TempDir()
+	sessionID := "cli-0001"
+	sessionDir := filepath.Join(root, "data", "sessions", sessionID)
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatalf("creating the session directory: %v", err)
+	}
+	metadata := `{"session_id":"` + sessionID + `","version":1,"model":"cline-model"}`
+	messages := `{"version":1,"messages":[` +
+		`{"id":"m1","role":"user","content":[{"type":"text","text":"Ask about the docs."}],` +
+		`"ts":1780000000000},` +
+		`{"id":"m2","role":"assistant","content":[{"type":"thinking","thinking":"reasoning only"}],` +
+		`"ts":1780000001000,"modelInfo":{"id":"cline-model","provider":"openai"}},` +
+		`{"id":"m3","role":"assistant","content":[{"type":"thinking","thinking":"private trace"},` +
+		`{"type":"text","text":"The answer."}],"ts":1780000002000}]}`
+	for name, contents := range map[string]string{
+		sessionID + ".json":          metadata,
+		sessionID + ".messages.json": messages,
+	} {
+		if err := os.WriteFile(filepath.Join(sessionDir, name), []byte(contents), 0o600); err != nil {
+			t.Fatalf("writing %s: %v", name, err)
+		}
+	}
+	cfg := fixtureConfig(t)
+	cfg.AgentDirs[parser.AgentCline] = []string{root}
+	sessionPath := filepath.Join(sessionDir, sessionID+".json")
+	conversation, err := NewSourceReader(cfg).Read(context.Background(),
+		Ref{Provider: "cline", ID: sessionPath})
+	if err != nil {
+		t.Fatalf("reading the Cline session: %v", err)
+	}
+	if len(conversation.Messages) != 3 {
+		t.Fatalf("the read answered %d message(s), want the transcript's three", len(conversation.Messages))
+	}
+	only := conversation.Messages[1]
+	if only.Thinking != "reasoning only" || only.DialogueProjected {
+		t.Fatalf("the reasoning-only record = (trace %q, projected %v), want the recorded trace and no "+
+			"projection", only.Thinking, only.DialogueProjected)
+	}
+	if want := thinkingRenderOpen + "\nreasoning only\n" + thinkingRenderClose; only.Content != want {
+		t.Fatalf("the reasoning-only record's content = %q, want the reader's own rendering %q",
+			only.Content, want)
+	}
+	if got := dialogueOf(only); got.State != dialogueRenderingOnly || got.Text != "" {
+		t.Errorf("dialogueOf over the reasoning-only record = (%q, %v), want no dialogue (%v)",
+			got.Text, got.State, dialogueRenderingOnly)
+	}
+	mixed := conversation.Messages[2]
+	if got := dialogueOf(mixed); got.State != dialogueUnestablished || got.Text != "" {
+		t.Errorf("dialogueOf over the reader's mixed record = (%q, %v), want nothing established (%v)",
+			got.Text, got.State, dialogueUnestablished)
+	}
+
+	// The archive read answers the same states from the stored row's agent label: the store holds what
+	// the reader produced, so its label is the reader's name.
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(cfg, archivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	ctx := context.Background()
+	if err := ingestor.IngestPaths(ctx, sessionPath); err != nil {
+		t.Fatalf("ingesting the Cline session: %v", err)
+	}
+	archive, err := OpenArchive(ctx, archivePath)
+	if err != nil {
+		t.Fatalf("opening the archive: %v", err)
+	}
+	defer archive.Close()
+	fromArchive, err := archive.Read(ctx, Ref{Provider: "cline", ID: "cline:" + sessionID})
+	if err != nil {
+		t.Fatalf("reading the Cline session from the archive: %v", err)
+	}
+	if len(fromArchive.Messages) != 3 {
+		t.Fatalf("the archive read answered %d message(s), want the transcript's three",
+			len(fromArchive.Messages))
+	}
+	if got := dialogueOf(fromArchive.Messages[1]); got.State != dialogueRenderingOnly {
+		t.Errorf("dialogueOf over the archived reasoning-only record = (%q, %v), want no dialogue (%v)",
+			got.Text, got.State, dialogueRenderingOnly)
+	}
+	if got := dialogueOf(fromArchive.Messages[2]); got.State != dialogueUnestablished {
+		t.Errorf("dialogueOf over the archived mixed record = (%q, %v), want nothing established (%v)",
+			got.Text, got.State, dialogueUnestablished)
+	}
+}

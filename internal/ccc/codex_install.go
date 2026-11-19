@@ -280,19 +280,19 @@ func intendedRoundTripEvidence(items []TargetItem) roundTripEvidence {
 type roundTripReader struct {
 	classifiesAway func(Message) bool
 	kindOf         func(Message) (TargetItemKind, bool)
-	// dialogueOf is the route's own rule for the dialogue a read-back message shows, for a reader whose
+	// readText is the route's own rule for the dialogue a read-back message shows, for a reader whose
 	// own projection renders a message differently from the way the shared rule reads one (OpenCode's
 	// reader joins a message's dialogue and its persisted reasoning into one text). Nil -- every route
 	// whose reader answers dialogue or plain text -- leaves the shared rule in place.
-	dialogueOf func(Message) string
+	readText func(Message) string
 }
 
 // readDialogue is one read-back message's dialogue as this route's reader shows it.
 func (reader roundTripReader) readDialogue(message Message) string {
-	if reader.dialogueOf != nil {
-		return reader.dialogueOf(message)
+	if reader.readText != nil {
+		return reader.readText(message)
 	}
-	return dialogueText(message)
+	return dialogueOf(message).Text
 }
 
 // readRoundTripEvidence collects what a read-back of the installed file shows, minus the records the

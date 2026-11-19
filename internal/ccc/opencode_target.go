@@ -385,6 +385,8 @@ type openCodeConverter struct {
 	lossEmptyAssistant            int
 	lossNonDialogue               int
 	lossWhitespace                int
+	lossUnresolvedDialogue        int
+	lossUnprojectedDialogue       int
 	lossReasoning                 int
 	lossUnpairedCalls             int
 	lossUnpairedResults           int
@@ -410,20 +412,37 @@ type openCodeConverter struct {
 	sawBoundary                   bool
 }
 
-// openCodeClock hands out message timestamps that never go backwards: the harness orders a session's
-// records by the sequence its import assigns, but a record's own `created` member is its evidence, and a
-// source whose messages are unordered would otherwise write a document whose times contradict its order.
+// openCodeClock hands out message timestamps that never go backwards, and remembers the highest instant
+// the document holds. The two are kept apart: one floor orders the document's *messages* against each
+// other, the other is the document's own update time.
 type openCodeClock struct {
-	last int64
+	// lastMessage is the highest `created` handed to a message. The harness orders a session's records by
+	// the sequence its import assigns, but a record's own `created` member is its evidence, and a source
+	// whose messages are unordered would otherwise write a document whose times contradict its order. Only
+	// a message raises it: a tool part's completion is an instant *inside* the document rather than the
+	// start of a record, and letting one raise this floor moved a later call's recorded start up to an
+	// earlier call's completion (round 15's finding: call A at t=0, call B at t=1, A's result at t=10 --
+	// every record of the shape the carried Codex reader produces a message per call for, and B's start
+	// became t=10, shortening its recorded span from 19 seconds to 10).
+	lastMessage int64
+	// lastInstant is the highest instant the document holds: a message's own `created`, or a part's
+	// `completed`, which may lie after a later call's own start because calls overlap in the history the
+	// source recorded. What it is read for is the session's own `time.updated` (session), which states
+	// when the conversation the document holds ends rather than where a later record may begin.
+	lastInstant int64
 }
 
-// next answers one instant in Unix milliseconds, never below the previous answer.
+// next answers one message instant in Unix milliseconds, never below the previous answer, and records it
+// as the document's highest instant too.
 func (c *openCodeClock) next(at time.Time) int64 {
 	millis := at.UTC().UnixMilli()
-	if at.IsZero() || millis < c.last {
-		millis = c.last
+	if at.IsZero() || millis < c.lastMessage {
+		millis = c.lastMessage
 	}
-	c.last = millis
+	c.lastMessage = millis
+	if millis > c.lastInstant {
+		c.lastInstant = millis
+	}
 	return millis
 }
 
@@ -436,16 +455,17 @@ func (c *openCodeClock) next(at time.Time) int64 {
 // start up to that completion, silently rewriting a duration the source recorded. The pair is adjusted in
 // the one way the document's own order allows -- a source whose records are out of order cannot write a
 // part whose end precedes its start, so `completed` rises to the message's own instant -- and nothing
-// else about it is rewritten. The clock's floor rises to the span's own end, so a later record's own
-// instant never precedes what the document already holds.
+// else about it is rewritten. The span raises the document's highest instant, and never the floor the
+// document's messages are ordered by: a completion that follows a later call's own start leaves that
+// call's start where the source recorded it.
 func (c *openCodeClock) span(floor int64, resultAt time.Time) (int64, int64) {
 	created := floor
 	completed := resultAt.UTC().UnixMilli()
 	if resultAt.IsZero() || completed < created {
 		completed = created
 	}
-	if completed > c.last {
-		c.last = completed
+	if completed > c.lastInstant {
+		c.lastInstant = completed
 	}
 	return created, completed
 }
@@ -470,7 +490,8 @@ func newOpenCodeConverter(
 		ledger:    ledger{pendingCalls: map[string]struct{}{}},
 		plan:      make([]openCodePlan, len(conv.Messages)),
 	}
-	converter.clock.last = start.UnixMilli()
+	converter.clock.lastMessage = start.UnixMilli()
+	converter.clock.lastInstant = start.UnixMilli()
 	converter.document = openCodeDocument{
 		Info: openCodeSessionInfo{
 			ID: sessionID,
@@ -734,7 +755,21 @@ func (c *openCodeConverter) writeMessage(message Message, calls []*openCodeCall)
 		return c.writeSynthesizedToolEvidence(calls, message.Timestamp)
 	}
 	role := parser.RoleType(message.Role)
-	text := dialogueText(message)
+	dialogue := dialogueOf(message)
+	text := dialogue.Text
+	if dialogue.State == dialogueUnestablished {
+		// The read established no dialogue for this record and its Content is not the record's own bytes
+		// (dialogueOf): the reader rendered the record's persisted reasoning trace into a Content that
+		// also holds the record's text, or the record carries calls whose renderings a reader may have
+		// inlined. No text part is written for it -- publishing the reader's rendering as the model's
+		// words is the error this rule exists to prevent, and removing one by inference is the guess it
+		// refuses -- and the record is counted. Its reasoning part and its tool evidence still travel.
+		c.lossUnresolvedDialogue++
+	} else if dialogue.State == dialogueFromContent && strings.TrimSpace(text) != "" {
+		// Content, not a projection, is what travels: the report says so per record
+		// (unprojected_dialogue) rather than presenting the read's Content as the source's answer.
+		c.lossUnprojectedDialogue++
+	}
 	reasoning := strings.TrimSpace(message.Thinking) != ""
 	if reasoning {
 		c.lossReasoning++
@@ -814,7 +849,7 @@ func (c *openCodeConverter) writeAssistantMessage(
 	// of the record a result was recorded on would become the message's own time. A record that turns out
 	// to carry nothing releases the reservation below, so a message the document does not hold cannot
 	// raise a later record's floor.
-	reserved := c.clock.last
+	reservedMessage, reservedInstant := c.clock.lastMessage, c.clock.lastInstant
 	created := c.clock.next(message.Timestamp)
 	parts := make([]openCodePart, 0, len(calls)+2)
 	whitespaceDialogue := false
@@ -838,7 +873,10 @@ func (c *openCodeConverter) writeAssistantMessage(
 		}
 	}
 	if len(parts) == 0 {
-		c.clock.last = reserved
+		// The message is not written, so neither its own instant nor the completions its parts were given
+		// stands in the document: both reservations are released, and a later record's own instant is not
+		// raised by a message the document does not hold.
+		c.clock.lastMessage, c.clock.lastInstant = reservedMessage, reservedInstant
 		if synthesized || whitespaceDialogue {
 			// The calls it was made for all turned out to have no shape here, or the record's only
 			// dialogue was whitespace: the count that names it is already spent, and an empty record is
@@ -1095,9 +1133,11 @@ func openCodePartsDialogue(parts []openCodePart) string {
 // session assembles the finished conversion: the document's bytes, the items the round-trip check
 // compares a read-back against, and the report.
 func (c *openCodeConverter) session() (OpenCodeSession, error) {
-	last := c.clock.last
-	if last > c.document.Info.Time.Updated {
-		c.document.Info.Time.Updated = last
+	// The session's own `updated` is the highest instant the document holds -- a message's own instant or
+	// a part's completion -- so a document whose last message ends before a result it carries does not
+	// state an end that precedes its own evidence.
+	if c.clock.lastInstant > c.document.Info.Time.Updated {
+		c.document.Info.Time.Updated = c.clock.lastInstant
 	}
 	data, err := json.Marshal(c.document)
 	if err != nil {
@@ -1331,6 +1371,32 @@ func (c *openCodeConverter) losses() []Loss {
 				"content is not dialogue it rendered either (a tool result the provider recorded with a " +
 				"user role): the target has no message that would not state the user said those words, " +
 				"so the text is not written",
+		},
+		{
+			Category:    "unresolved_dialogue",
+			Disposition: DispositionOmitted,
+			Count:       c.lossUnresolvedDialogue,
+			Detail: "the source reader answered no dialogue projection for these records, and their " +
+				"Content is not the record's own text: the reader renders the record's persisted " +
+				"reasoning trace into Content and the record carries one, or the record carries calls " +
+				"whose renderings a reader may have inlined into it. Two different native part orders " +
+				"can produce the same Content and the same trace, so which bytes the model wrote " +
+				"cannot be recovered from the record; no text part is written for it, this count is " +
+				"not a claim that the record wrote none, and the record's own reasoning still travels " +
+				"as the assistant message's reasoning part. The source session keeps the bytes",
+		},
+		{
+			Category:    "unprojected_dialogue",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       c.lossUnprojectedDialogue,
+			Detail: "the source reader answered no dialogue projection for these records, so the text " +
+				"written for them is the reader's own Content for the record, byte for byte, rather " +
+				"than an answer the source gave about what the model said. What establishes that " +
+				"Content is the record's own text is the reader itself -- this build's list of the " +
+				"readers whose Content carries a rendering of the record's reasoning trace, held " +
+				"against the carried reader tree -- and never an inference from the record's bytes; " +
+				"a label this build does not know is treated the same way, and its records are " +
+				"counted here too",
 		},
 		{
 			Category:    "whitespace_only_dialogue",

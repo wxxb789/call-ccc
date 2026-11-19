@@ -6,7 +6,11 @@
 #           (docs/goals/0007-opencode-target-continuation.md);
 #   B1–B3   the goal's three `Bounds` clauses, in order;
 #   O1–O12  the rules of AGENTS.md §"OpenCode is a target whose store only the harness writes", in the
-#           paragraph's own order.
+#           paragraph's own order;
+#   R1–R9   the rules of AGENTS.md's dialogue boundary — the semantic rule ("A record's dialogue is the
+#           source's own answer, and a rendered reasoning trace is never it") and the disclosed-outcome
+#           rule that follows it ("Where the read answered no projection, the outcome is disclosed, never
+#           guessed") — plus the OpenCode paragraph's tool-part instant rule, in the order the rows read.
 #
 # scripts/obligation-citations.py is the arbiter: every row's cited test must exist in the named package
 # and run and pass, and the `citations` step is required — a tree that lost this file, or a citation that
@@ -46,3 +50,12 @@ O8	TestOpenCodeFactsAskTheHarnesssOwnAgentList	./internal/ccc	AGENTS.md §OpenCo
 O9	TestContinueIntoOpenCodeConvertsInstallsAndReadsBack	./internal/ccc	AGENTS.md §OpenCode — --standalone placement
 O10	TestOpenCodeResumePinsTheDatabaseItPrints	./internal/ccc	AGENTS.md §OpenCode — data root and OPENCODE_DB
 O11	TestInstallOpenCodeSessionReconcilesAFailedImport	./internal/ccc	AGENTS.md §OpenCode — a failed import reconciled
+R1	TestDialogueOfNamesWhatEstablishesARecordsText	./internal/ccc	AGENTS.md §dialogue — the projection is the authority, asked before Content, an explicitly empty one included
+R2	TestDialogueOfIgnoresTheDisplayRenderingOfAProjectedRecord	./internal/ccc	AGENTS.md §dialogue — the closure criterion: a reader's display rendering cannot change what a target receives
+R3	TestCodexRolloutCarriesTheClaudeFixturesOwnDialogue	./internal/ccc	AGENTS.md §dialogue — the target's text traced to the source's own typed parts, the reader's rendering excluded
+R4	TestZCodeRecordsAreNotGuessedThroughTheUnmodifiedReader	./internal/ccc	AGENTS.md §dialogue — nothing is removed from Content by inference; a rendering record is not guessed at
+R5	TestOpenCodeDoesNotGuessAZCodeRecordsDialogue	./internal/ccc	AGENTS.md §dialogue — the partial outcome and its disclosure on the OpenCode route
+R6	TestCodexRolloutCountsWhatItCouldNotEstablish	./internal/ccc	AGENTS.md §dialogue — the disclosure categories and the state each record landed in
+R7	TestRenderingReadersReasoningOnlyRecordKeepsItsTraceOnce	./internal/ccc	AGENTS.md §dialogue — Content that is exactly the reader's rendering of the whole trace is no dialogue
+R8	TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader	./internal/ccc	AGENTS.md §dialogue — a literal marker block of a reader that records Content as written is the model's own words
+R9	TestOpenCodeOverlappingCallsOnSeparateMessagesKeepTheirOwnInstants	./internal/ccc	AGENTS.md §OpenCode — the message floor is the messages' own records, not a part's completion
