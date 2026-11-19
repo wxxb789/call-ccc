@@ -25,24 +25,29 @@ import (
 //     after this list states: the entry cannot act for it, and its text travels counted): Cline
 //     (cline.go:601-620), Codebuff (codebuff_decode.go:696,712),
 //     Crush (crush.go:558), DeepSeek TUI (deepseek_tui.go:204), Evener (evener.go:418), Forge
-//     (forge.go:250-256), Goose (goose.go:488), legacy Kilo (kilo_legacy.go:914), Kimi
-//     (kimi.go:374,590), Muse (muse.go:492), RooCode (roocode.go:488), Tau (tau.go:405), ZCode
+//     (forge.go:250-256), Goose (goose.go:488), legacy Kilo (kilo_legacy.go:914), Kimi and Kimi Work
+//     (kimi.go:374,590; the Kimi Work provider parses through the same reader), Muse (muse.go:492),
+//     RooCode (roocode.go:488), Tau (tau.go:405), ZCode
 //     (zcode.go:560), ChatGPT (chatgpt.go:401-413, reached from buildChatGPTMessages),
 //     Claude.ai (claude_ai.go:151-156), Copilot (copilot.go:200-208), Gemini (gemini.go:400-415),
-//     Hermes (hermes.go:319-321,517-519,1349-1351), OpenCode (opencode.go:1726-1731,
-//     opencode_v2.go:280-286), Reasonix (reasonix.go:89-93) and Zencoder (zencoder.go:371-377).
+//     Hermes and Augure Desktop (hermes.go:319-321,517-519,1349-1351; the Augure Desktop provider
+//     parses through the same reader), OpenCode, Kilo and MiMo Code (opencode.go:1726-1731,
+//     opencode_v2.go:280-286; the Kilo and MiMo Code providers parse through the same reader),
+//     Reasonix (reasonix.go:89-93) and Zencoder (zencoder.go:371-377).
 //   - readers that render a trace *and* project a dialogue. Their projection answers first for every
 //     record a source read produces (dialogueOf asks Message.DialogueProjected before Content is
 //     consulted), so the entry is inert there; it is what keeps a record *without* a projection that
 //     carries a trace -- a legacy archive row, a row the archive wrote before it stored the projection,
 //     or a path of the same reader that records Content as the source wrote it -- from publishing the
 //     reader's rendering as the model's words: Amp (amp.go:100-120), Claude Code
-//     (claude.go:1481-1564,2844-2925), Codex
-//     (codex.go:658-668), Cursor (cursor.go:592-594), Devin (devin.go:583-587,977-1005), Grok
+//     (claude.go:1481-1564,2844-2925), Codex, TraeX, Augure Code and Interpreter
+//     (codex.go:658-668; the three variant providers parse through the same reader), Cursor
+//     (cursor.go:592-594), Devin (devin.go:583-587,977-1005), Grok
 //     (grok.go:1160-1164), iFlow (iflow.go:369-399), OpenClaude (openclaude.go:519-530,557-559),
 //     OpenClaw (openclaw.go:131-144,158-164), OpenHands (openhands.go:440-450, its block's
-//     construction site), Pi and OMP
-//     (pi.go:509-549) and QClaw (qclaw.go:98-117,131-138). Amp, Claude Code, Cursor, iFlow and OpenClaw
+//     construction site), the Pi family -- Pi, OMP, OMO, Step Code, Direct API and Prime Agent
+//     (pi.go:509-549; every one of the six labels is served by this one reader) -- and QClaw
+//     (qclaw.go:98-117,131-138). Amp, Claude Code, Cursor, iFlow and OpenClaw
 //     build Content through content.go's ExtractTextContent, which writes the same block
 //     (content.go:50-56).
 //
@@ -77,42 +82,53 @@ import (
 // records travel with the rendering carried as dialogue.
 var thinkingRenderingReaders = map[parser.AgentType]struct{}{
 	// Readers that render a trace and project no dialogue of their own.
-	parser.AgentChatGPT:     {},
-	parser.AgentClaudeAI:    {},
-	parser.AgentCline:       {},
-	parser.AgentCodebuff:    {},
-	parser.AgentCopilot:     {},
-	parser.AgentCrush:       {},
-	parser.AgentDeepSeekTUI: {},
-	parser.AgentEvener:      {},
-	parser.AgentForge:       {},
-	parser.AgentGemini:      {},
-	parser.AgentGoose:       {},
-	parser.AgentHermes:      {},
-	parser.AgentKiloLegacy:  {},
-	parser.AgentKimi:        {},
-	parser.AgentMuse:        {},
-	parser.AgentOpenCode:    {},
-	parser.AgentReasonix:    {},
-	parser.AgentRooCode:     {},
-	parser.AgentTau:         {},
-	parser.AgentZCode:       {},
-	parser.AgentZencoder:    {},
+	parser.AgentAugureDesktop: {},
+	parser.AgentChatGPT:       {},
+	parser.AgentClaudeAI:      {},
+	parser.AgentCline:         {},
+	parser.AgentCodebuff:      {},
+	parser.AgentCopilot:       {},
+	parser.AgentCrush:         {},
+	parser.AgentDeepSeekTUI:   {},
+	parser.AgentEvener:        {},
+	parser.AgentForge:         {},
+	parser.AgentGemini:        {},
+	parser.AgentGoose:         {},
+	parser.AgentHermes:        {},
+	parser.AgentKilo:          {},
+	parser.AgentKiloLegacy:    {},
+	parser.AgentKimi:          {},
+	parser.AgentKimiWork:      {},
+	parser.AgentMiMoCode:      {},
+	parser.AgentMuse:          {},
+	parser.AgentOpenCode:      {},
+	parser.AgentReasonix:      {},
+	parser.AgentRooCode:       {},
+	parser.AgentTau:           {},
+	parser.AgentZCode:         {},
+	parser.AgentZencoder:      {},
 	// Readers that render a trace and project a dialogue: the entry is what covers a record of theirs
 	// the read answered no projection for.
-	parser.AgentAmp:        {},
-	parser.AgentClaude:     {},
-	parser.AgentCodex:      {},
-	parser.AgentCursor:     {},
-	parser.AgentDevin:      {},
-	parser.AgentGrok:       {},
-	parser.AgentIflow:      {},
-	parser.AgentOpenClaude: {},
-	parser.AgentOpenClaw:   {},
-	parser.AgentOpenHands:  {},
-	parser.AgentPi:         {},
-	parser.AgentOMP:        {},
-	parser.AgentQClaw:      {},
+	parser.AgentAmp:         {},
+	parser.AgentAugureCode:  {},
+	parser.AgentClaude:      {},
+	parser.AgentCodex:       {},
+	parser.AgentCursor:      {},
+	parser.AgentDevin:       {},
+	parser.AgentDirectAPI:   {},
+	parser.AgentGrok:        {},
+	parser.AgentIflow:       {},
+	parser.AgentInterpreter: {},
+	parser.AgentOMO:         {},
+	parser.AgentOMP:         {},
+	parser.AgentOpenClaude:  {},
+	parser.AgentOpenClaw:    {},
+	parser.AgentOpenHands:   {},
+	parser.AgentPi:          {},
+	parser.AgentPrimeAgent:  {},
+	parser.AgentQClaw:       {},
+	parser.AgentStepCode:    {},
+	parser.AgentTraeX:       {},
 }
 
 // readerRendersThinkingTrace answers whether the reader that produced a session's records is one that

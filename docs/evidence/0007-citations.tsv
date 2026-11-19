@@ -11,7 +11,10 @@
 #           source's own answer or the record's own bytes, never a reading of them") and the disclosed-outcome
 #           rule that follows it ("Where the read answered no projection, the outcome is disclosed, never
 #           guessed") — plus the OpenCode paragraph's tool-part instant and record-instant rules, in the
-#           order the rows read.
+#           order the rows read; R13–R19 are the PR #9 machine review round 3's own rules — the label table
+#           as a closed list (finding 1) and the disclosure of a carried call's child-session link, of a
+#           result's own recorded instant and of a result's recorded channel label, each closed by the
+#           round's class sweep (finding 2).
 #
 # scripts/obligation-citations.py is the arbiter: every row's cited test must exist in the named package
 # and run and pass, and the `citations` step is required — a tree that lost this file, or a citation that
@@ -63,3 +66,10 @@ R9	TestOpenCodeOverlappingCallsOnSeparateMessagesKeepTheirOwnInstants	./internal
 R10	TestOpenCodeParallelToolSpansKeepTheirOwnInstants	./internal/ccc	AGENTS.md §OpenCode — a completion raised to the part's own start counted apart from the fallback (result_completion_adjustments)
 R11	TestOpenCodeSubstitutedMessageInstantsAreCounted	./internal/ccc	AGENTS.md §OpenCode — a message's own recorded instant written at the previous written one, counted, its parts taking it (substituted_record_instants)
 R12	TestCodexRolloutStampsRecordsInOneOrderedRun	./internal/ccc	AGENTS.md §OpenCode — the Codex/Claude/Pi/OMP shared clock's substituted written timestamps counted (substituted_record_instants)
+R13	TestRenderingReaderLabelsCoverEveryLabelTheirReadersServe	./internal/ccc	AGENTS.md §dialogue — the table names every label a rendering reader serves, a shared reader's extra labels included (PR #9 review round 3, finding 1)
+R14	TestOpenCodeWriterCountsADiscardedSubagentSessionLink	./internal/ccc	AGENTS.md §OpenCode — a written call whose recorded child-session link the harness's tool part cannot hold is counted (subagent_session_links; review round 3, finding 2)
+R15	TestCodexRolloutCountsTheSubagentSessionLinkItsLogDoesNotHold	./internal/ccc	AGENTS.md §OpenCode — the same row on the Codex rollout, whose spawn-completion record the inherited reader derives the link from and whose writer writes none
+R16	TestClaudeWriterCountsTheResultRecordInstantsItsBlocksCannotState	./internal/ccc	AGENTS.md §OpenCode — the result's own recorded instant counted where the transcript's block cannot state it (result_completion_fallbacks, result_record_instants)
+R17	TestCodexRolloutCountsTheResultRecordInstantsItDoesNotWrite	./internal/ccc	AGENTS.md §OpenCode — the same two rows on the Codex rollout
+R18	TestPiSessionCountsTheResultRecordInstantsItDoesNotWrite	./internal/ccc	AGENTS.md §OpenCode — the same two rows on the Pi/OMP session
+R19	TestOpenCodeWriterCountsADiscardedSubagentSessionLink	./internal/ccc	AGENTS.md §OpenCode — a result's recorded channel label counted where the tool state cannot hold it (tool_result_sources); the transcript, rollout and session arms are the three writers' pins (R16–R18)

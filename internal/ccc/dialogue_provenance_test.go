@@ -2,6 +2,7 @@ package ccc
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -857,5 +858,164 @@ func TestRenderingReadersReasoningOnlyRecordKeepsItsTraceOnce(t *testing.T) {
 	if got := dialogueOf(fromArchive.Messages[2]); got.State != dialogueUnestablished {
 		t.Errorf("dialogueOf over the archived mixed record = (%q, %v), want nothing established (%v)",
 			got.Text, got.State, dialogueUnestablished)
+	}
+}
+
+// TestRenderingReaderLabelsCoverEveryLabelTheirReadersServe pins the closed list the dialogue rule's
+// reader table is: every label whose carried reader builds the record's persisted trace into Content is
+// named in thinkingRenderingReaders, so a record of that reader the read answered no projection for (a
+// legacy archive row, a path of the reader that records Content as the source wrote it) cannot publish
+// the reader's rendering as the model's words. The groups below are the labels the shared readers serve;
+// a label appended to a shared reader without its table entry fails here (round 3 of PR #9's machine
+// review found the Pi family's three extra labels that way, and the sweep the round ran added the rest).
+//
+// The case then drives one of the named labels -- OMO, whose reader's projection a row the archive wrote
+// before it stored the projection does not carry -- through the archive read and a conversion: the stored
+// label is the reader's name, the read answers ContentRendersThinking for it, the record's text is not
+// established (its Content is the reader's rendering of the trace beside the record's own text), and the
+// conversion counts the record (unresolved_dialogue) instead of publishing the rendering as dialogue.
+func TestRenderingReaderLabelsCoverEveryLabelTheirReadersServe(t *testing.T) {
+	groups := map[string][]parser.AgentType{
+		// One carried reader per group, named by the site that writes the block.
+		"the Pi reader (pi.go:509-549)": {
+			parser.AgentPi, parser.AgentOMP, parser.AgentOMO, parser.AgentStepCode,
+			parser.AgentDirectAPI, parser.AgentPrimeAgent,
+		},
+		"the Kimi reader (kimi.go:374,590, shared with Kimi Work)": {
+			parser.AgentKimi, parser.AgentKimiWork,
+		},
+		"the Codex reader (codex.go:658-668, shared with its variants)": {
+			parser.AgentCodex, parser.AgentAugureCode, parser.AgentInterpreter, parser.AgentTraeX,
+		},
+		"the Hermes reader (hermes.go:319-321,517-519,1349-1351, shared with Augure Desktop)": {
+			parser.AgentHermes, parser.AgentAugureDesktop,
+		},
+		"the OpenCode reader (opencode.go:1726-1731, opencode_v2.go:280-286, shared with Kilo and MiMo Code)": {
+			parser.AgentOpenCode, parser.AgentKilo, parser.AgentMiMoCode,
+		},
+	}
+	for reader, labels := range groups {
+		for _, label := range labels {
+			if !readerRendersThinkingTrace(label) {
+				t.Errorf("%s serves the label %q and no table entry answers for it: a record of that "+
+					"reader the read answered no projection for would travel with the rendering "+
+					"carried as dialogue", reader, label)
+			}
+		}
+	}
+	// The default keeps the source's own words: a reader that records Content as the source wrote it,
+	// and a label this build does not know, take no entry.
+	for _, label := range []parser.AgentType{parser.AgentVibe, "a-label-this-build-does-not-know"} {
+		if readerRendersThinkingTrace(label) {
+			t.Errorf("the label %q answers that its reader renders the trace into Content", label)
+		}
+	}
+
+	// The archive arm. A session of the OMO label whose assistant record carries a persisted trace and a
+	// text part; the archive row is cleared of its stored projection below, which is the shape a row
+	// written before the archive stored the projection has.
+	const (
+		trace   = "Inspect the parser before answering."
+		spoken  = "The retry cap is four attempts."
+		sessID  = "019c9c96-6ee7-77c0-ba4c-380f844289d5"
+		session = `{"type":"session","version":3,"id":"` + sessID + `","timestamp":"2026-05-04T09:15:00.000Z","cwd":"/work/project"}` + "\n" +
+			`{"type":"message","id":"m1","timestamp":"2026-05-04T09:15:01.000Z","message":{"role":"user","content":"Ask about the retry cap."}}` + "\n" +
+			`{"type":"message","id":"m2","timestamp":"2026-05-04T09:15:02.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"` + trace + `"},{"type":"text","text":"` + spoken + `"}],"model":"pi-model"}}` + "\n"
+	)
+	root := t.TempDir()
+	sessionPath := filepath.Join(root, "omo-session.jsonl")
+	if err := os.WriteFile(sessionPath, []byte(session), 0o600); err != nil {
+		t.Fatalf("writing the session: %v", err)
+	}
+	cfg := fixtureConfig(t)
+	cfg.AgentDirs[parser.AgentOMO] = []string{root}
+	source, err := NewSourceReader(cfg).Read(context.Background(), Ref{Provider: "omo", ID: sessionPath})
+	if err != nil {
+		t.Fatalf("reading the OMO session: %v", err)
+	}
+	if len(source.Messages) != 2 {
+		t.Fatalf("the source read answered %d message(s), want the session's two", len(source.Messages))
+	}
+	if !source.Messages[1].DialogueProjected {
+		t.Fatal("the source read answered no projection for the assistant record, so this case is not " +
+			"about the legacy-row shape it pins")
+	}
+
+	archivePath := filepath.Join(t.TempDir(), "ccc", "sessions.db")
+	ingestor, err := NewIngestor(cfg, archivePath)
+	if err != nil {
+		t.Fatalf("building the ingestor: %v", err)
+	}
+	ctx := context.Background()
+	if err := ingestor.IngestPaths(ctx, sessionPath); err != nil {
+		t.Fatalf("ingesting the OMO session: %v", err)
+	}
+	// Clear the stored projection: the row this case reads is the shape a row the archive wrote before
+	// it stored the projection has, and clearing is what makes the read answer no projection for it.
+	database, err := sql.Open("sqlite3", archivePath)
+	if err != nil {
+		t.Fatalf("opening the archive store: %v", err)
+	}
+	if _, err := database.ExecContext(ctx, "UPDATE messages SET dialogue_text = NULL"); err != nil {
+		t.Fatalf("clearing the stored projection: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("closing the archive store: %v", err)
+	}
+
+	archive, err := OpenArchive(ctx, archivePath)
+	if err != nil {
+		t.Fatalf("opening the archive: %v", err)
+	}
+	defer archive.Close()
+	fromArchive, err := archive.Read(ctx, Ref{Provider: "omo", ID: "omo:" + sessID})
+	if err != nil {
+		t.Fatalf("reading the OMO session from the archive: %v", err)
+	}
+	if len(fromArchive.Messages) != 2 {
+		t.Fatalf("the archive read answered %d message(s), want the session's two",
+			len(fromArchive.Messages))
+	}
+	record := fromArchive.Messages[1]
+	rendering := thinkingRenderOpen + "\n" + trace + "\n" + thinkingRenderClose
+	if record.Thinking != trace || record.DialogueProjected {
+		t.Fatalf("the archived record = (trace %q, projected %v), want the stored trace and no "+
+			"projection", record.Thinking, record.DialogueProjected)
+	}
+	if record.Content != rendering+"\n"+spoken {
+		t.Fatalf("the archived record's content = %q, want the reader's own rendering beside the "+
+			"record's text %q", record.Content, rendering+"\n"+spoken)
+	}
+	if !record.ContentRendersThinking {
+		t.Fatal("the archive read did not name the record's rendering reader from the stored label: " +
+			"the omo label is the Pi reader's, and the table is what the read answers this flag from")
+	}
+	if got := dialogueOf(record); got.State != dialogueUnestablished || got.Text != "" {
+		t.Errorf("dialogueOf over the archived OMO record = (%q, %v), want nothing established (%v)",
+			got.Text, got.State, dialogueUnestablished)
+	}
+	// The conversion's own answer: the record's text is not published, and the record is counted rather
+	// than presented as a conversion it cannot support.
+	rollout, err := ConvertToCodexRollout(fromArchive, testOptions())
+	if err != nil {
+		t.Fatalf("converting the archive read: %v", err)
+	}
+	var texts []string
+	for _, item := range rollout.Items {
+		if item.Kind == ItemAssistant {
+			texts = append(texts, item.Text)
+		}
+	}
+	if len(texts) != 0 {
+		t.Errorf("the rollout's assistant text = %q, want none: the record's dialogue was not "+
+			"established", texts)
+	}
+	if strings.Contains(string(rollout.Data), rendering) {
+		t.Errorf("the rollout holds the reader's rendering although the report does not establish the "+
+			"record's text:\n%s", rollout.Data)
+	}
+	if loss := lossCount(t, rollout.Losses, "unresolved_dialogue"); loss.Count != 1 ||
+		loss.Disposition != DispositionOmitted {
+		t.Errorf("unresolved_dialogue = %+v, want the one record counted as omitted", loss)
 	}
 }

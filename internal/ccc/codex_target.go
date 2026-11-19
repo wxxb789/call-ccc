@@ -354,6 +354,10 @@ type codexRolloutBuilder struct {
 	lossPreBoundary         int
 	lossEmptyInputs         int
 	lossGeneratedIDs        int
+	lossSubagentLinks       int
+	lossResultFallbacks     int
+	lossResultInstants      int
+	lossResultSources       int
 	lossEmptyResults        int
 	lossWhitespaceResults   int
 	lossResultBlocks        int
@@ -720,6 +724,17 @@ func (b *codexRolloutBuilder) toolCall(index int, call ToolCall, at time.Time) {
 		name = "unknown_tool"
 	}
 	b.noteToolName(name)
+	if strings.TrimSpace(call.SubagentSessionID) != "" {
+		// The source recorded which session this call spawned: the inherited Codex parser sets the child
+		// session id on a spawn_agent call, and the archive read carries the same column. The rollout
+		// holds that attribution in its own event records -- the `collab_agent_spawn_end` and
+		// `sub_agent_activity` event_msg payloads carrying the call's id and the child's thread id,
+		// which the inherited reader turns into this link (internal/parser/codex.go:700-707,834-865) --
+		// and this conversion's writer emits no such record, so the link has no place in the file. The
+		// call itself is written below; counted rather than dropped in silence, and the child is neither
+		// read nor converted.
+		b.lossSubagentLinks++
+	}
 	b.write(codexEnvelope{
 		Timestamp: b.clock.next(at),
 		Type:      codexRecordResponseItem,
@@ -804,6 +819,22 @@ func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time) {
 	}
 	if strings.TrimSpace(result.Status) != "" {
 		b.lossOutcomes++
+	}
+	// The output record is stamped with the instant of the message the result travelled on, not with
+	// the instant the read answered for the result's own record: the two reads are counted apart -- the
+	// read answered an instant and the containing record's is written instead, or the read answered none
+	// and the containing record's instant stands in.
+	if result.Timestamp.IsZero() {
+		b.lossResultFallbacks++
+	} else if !result.Timestamp.Equal(at) {
+		b.lossResultInstants++
+	}
+	if strings.TrimSpace(result.Source) != "" {
+		// The read named which native record carried the result's text (a result block in a message, a
+		// `function_call_output`, a wait call's output event, a subagent notification). The target's
+		// output carries the text and no such label -- its own read answers its own for its own shapes --
+		// so the source's label is omitted and counted rather than dropped in silence.
+		b.lossResultSources++
 	}
 	b.write(codexEnvelope{
 		Timestamp: b.clock.next(at),
@@ -999,6 +1030,56 @@ func (b *codexRolloutBuilder) losses() []Loss {
 			Count:       b.lossGeneratedIDs,
 			Detail: "the source recorded no tool-use id for these calls or results; the target pairs a " +
 				"call and its output by id, so one was generated from the message's own position",
+		},
+		{
+			Category:    "subagent_session_links",
+			Disposition: DispositionOmitted,
+			Count:       b.lossSubagentLinks,
+			Detail: "the source recorded which session these carried calls spawned (the inherited " +
+				"Codex parser sets a spawn_agent call's child session id, and the archive read carries " +
+				"the same column). The target's log holds that attribution in a spawn-completion event " +
+				"of its own (`collab_agent_spawn_end`, whose payload carries the call's id and the " +
+				"child's thread id, which the inherited reader turns into this link), and this " +
+				"conversion writes no such record: the call itself is written with its id, name and " +
+				"arguments, and what is omitted is the attribution of the session it spawned. The " +
+				"child session is neither read nor converted -- a conversion's unit is the selected " +
+				"session -- and the count is of the calls this conversion wrote",
+		},
+		{
+			Category:    "tool_result_sources",
+			Disposition: DispositionOmitted,
+			Count:       b.lossResultSources,
+			Detail: "the read names which native record carried each result's text (a result block " +
+				"inside a message, a `function_call_output`, a wait call's own output event, a " +
+				"subagent notification: internal/parser's readers answer this per shape). The " +
+				"target's function_call_output carries the text and no such label -- its own read " +
+				"answers the analogous question for its own shapes -- so the source's label is " +
+				"omitted, counted per result this conversion wrote that recorded one",
+		},
+		{
+			Category:    "result_completion_fallbacks",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.lossResultFallbacks,
+			Detail: "a function_call_output carries the result's text, and its envelope is stamped " +
+				"with the instant of the record the result travelled on. Where the read holds no " +
+				"instant of the result's own record -- a provider-recorded event with no timestamp, " +
+				"or the archive's derived summary, which is stored on the call's own row and has no " +
+				"record of its own -- that containing record's instant is written, an instant the " +
+				"read answered for that record rather than one this build invented; only results " +
+				"this conversion wrote are counted here",
+		},
+		{
+			Category:    "result_record_instants",
+			Disposition: DispositionOmitted,
+			Count:       b.lossResultInstants,
+			Detail: "the source recorded the instant the result itself was recorded on (a result " +
+				"event's own envelope instant, which may be later than the record that carried its " +
+				"call, and which the archive read answers from the stored event's own column). A " +
+				"function_call_output states its call, its text and the envelope's own timestamp, " +
+				"and this conversion stamps that envelope with the containing record's instant, not " +
+				"with the result's own: the result's own recorded instant is not what the file " +
+				"holds. Counted per result this conversion wrote and only where the read answered " +
+				"one",
 		},
 		{
 			Category:    "substituted_record_instants",

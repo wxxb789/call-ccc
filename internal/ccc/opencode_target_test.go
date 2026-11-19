@@ -1071,6 +1071,75 @@ func TestOpenCodeCaveatCountsFollowThePartThatWasWritten(t *testing.T) {
 	}
 }
 
+// TestOpenCodeWriterCountsADiscardedSubagentSessionLink pins the disclosure for the one piece of a
+// `spawn_agent` call the harness's tool part cannot hold: which session the call spawned. The inherited
+// Codex parser records that child session's id on the call (ToolCall.SubagentSessionID) and the reader
+// preserves it, but the part carries an id, a name, an input and a state only, so the call travels while
+// the link does not -- and the structure check cannot see the difference, because the item list it
+// compares holds no such field either (TargetItem: kind, text, call id, tool name, input). The omission
+// is counted rather than left silent, the child session is neither read nor converted, and the count is
+// of the calls this conversion wrote: a call whose part a guard above left out is not counted as a
+// carried link.
+func TestOpenCodeWriterCountsADiscardedSubagentSessionLink(t *testing.T) {
+	const childSession = "codex:019c9c96-6ee7-77c0-ba4c-380f844289d5"
+	at := time.UnixMilli(1_700_000_000_000).UTC()
+	conversation := openCodeTestConversation(
+		Message{Role: "assistant", Content: "spawn_agent", Timestamp: at,
+			ToolCalls: []ToolCall{
+				{ToolUseID: "call_spawn", Name: "spawn_agent", InputJSON: `{"agent_type":"awaiter"}`,
+					SubagentSessionID: childSession},
+				openCodeTestCall("call_wait", "wait", `{"ids":["019c9c96"]}`),
+				// The same link on a call whose part a guard leaves out -- its status word has no
+				// truthful target state -- so it is written nowhere and must not be counted as a
+				// carried link.
+				{ToolUseID: "call_cancelled", Name: "wait", InputJSON: `{"ids":["019c9c96"]}`,
+					SubagentSessionID: childSession},
+			}},
+		Message{Role: "user", Timestamp: at.Add(time.Second), ToolResults: []ToolResult{
+			// The read named the record that carried this result's text (a subagent notification), which
+			// the harness's tool state has no member for.
+			{ToolUseID: "call_spawn", Status: "completed", ContentRaw: `"spawned"`,
+				ContentSize: 9, Source: "subagent_notification"},
+			openCodeTestResult("call_wait", "completed", `"done"`),
+			openCodeTestResult("call_cancelled", "cancelled", `"Stop requested"`),
+		}},
+	)
+	session, err := ConvertToOpenCodeSession(conversation, openCodeTargetTestOptions())
+	if err != nil {
+		t.Fatalf("converting the document: %v", err)
+	}
+	openCodeRequireLoss(t, session, "subagent_session_links", 1)
+	loss := lossCount(t, session.Losses, "subagent_session_links")
+	if loss.Disposition != DispositionOmitted {
+		t.Errorf("subagent_session_links = %+v, want the written call's link counted as omitted", loss)
+	}
+	if !strings.Contains(loss.Detail, "child session") {
+		t.Errorf("the category's reason does not name the relationship it counts: %q", loss.Detail)
+	}
+	// The route's own behaviour, pinned: the call itself is written, the child's id is nowhere in the
+	// document, and the guard-left-out call wrote no part to count a link for.
+	parts := openCodeToolParts(t, session)
+	if _, ok := parts["call_spawn"]; !ok {
+		t.Error("the spawn_agent call wrote no part, want the call written while only its link is omitted")
+	}
+	if strings.Contains(string(session.Data), "019c9c96-6ee7-77c0-ba4c-380f844289d5") {
+		t.Errorf("the child session's id is in the document although the report says the link is "+
+			"omitted:\n%s", session.Data)
+	}
+	if _, ok := parts["call_cancelled"]; ok {
+		t.Error("the third call wrote a part although its status word has no truthful target state")
+	}
+	openCodeRequireLoss(t, session, "tool_result_statuses", 1)
+	openCodeRequireLoss(t, session, "tool_result_sources", 1)
+	if loss := lossCount(t, session.Losses, "tool_result_sources"); loss.Disposition != DispositionOmitted {
+		t.Errorf("tool_result_sources = %+v, want the one written result's channel label counted as "+
+			"omitted", loss)
+	}
+	if session.Carried.ToolCalls != 2 || session.Carried.ToolResults != 2 {
+		t.Errorf("carried = %+v, want the two calls whose parts were written", session.Carried)
+	}
+}
+
 // openCodeToolParts indexes one converted document's tool parts by the id they carry, so a case can ask
 // what the pairing wrote without re-walking the document's messages itself.
 func openCodeToolParts(t *testing.T, session OpenCodeSession) map[string]openCodePart {

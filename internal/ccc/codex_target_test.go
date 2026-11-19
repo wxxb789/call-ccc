@@ -425,6 +425,9 @@ func TestCodexRolloutReportsEveryCategoryItKnows(t *testing.T) {
 		"tool_result_outcomes":          {1, DispositionCarriedWithCaveat},
 		"empty_tool_inputs":             {1, DispositionCarriedWithCaveat},
 		"generated_call_ids":            {0, DispositionCarriedWithCaveat},
+		"tool_result_sources":           {0, DispositionOmitted},
+		"result_completion_fallbacks":   {2, DispositionCarriedWithCaveat},
+		"result_record_instants":        {0, DispositionOmitted},
 		"substituted_record_instants":   {0, DispositionCarriedWithCaveat},
 		"tool_name_vocabulary":          {2, DispositionCarriedWithCaveat},
 		"provider_binding":              {0, DispositionCarriedWithCaveat},
@@ -1550,6 +1553,129 @@ func TestCodexRolloutStampsRecordsInOneOrderedRun(t *testing.T) {
 	}
 	if loss := lossCount(t, rollout.Losses, "substituted_record_instants"); loss.Count != 0 {
 		t.Errorf("substituted_record_instants = %+v, want zero for an ordered source", loss)
+	}
+}
+
+// TestCodexRolloutCountsTheSubagentSessionLinkItsLogDoesNotHold pins the disclosure for the one piece of
+// a `spawn_agent` call this rollout does not state: which session the call spawned. The inherited Codex
+// parser records that child session's id on the call (ToolCall.SubagentSessionID) and the reader
+// preserves it, and the rollout has a record shape that holds the attribution -- the
+// `collab_agent_spawn_end` event payload whose call_id and new_thread_id the inherited reader turns
+// into this link (internal/parser/codex.go:700-707,834-865) -- but this conversion writes no such event:
+// the function_call carries the call's id, name and arguments and nothing names the child. The omission
+// is counted rather than left silent, the child session is neither read nor converted, and the count is
+// of the calls this conversion wrote.
+func TestCodexRolloutCountsTheSubagentSessionLinkItsLogDoesNotHold(t *testing.T) {
+	const childSession = "codex:019c9c96-6ee7-77c0-ba4c-380f844289d5"
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "run a child agent",
+			Dialogue: "run a child agent", DialogueProjected: true},
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "spawning a child",
+			Dialogue: "spawning a child", DialogueProjected: true,
+			ToolCalls: []ToolCall{
+				{ToolUseID: "call_spawn", Name: "spawn_agent",
+					InputJSON: `{"agent_type":"awaiter"}`, SubagentSessionID: childSession},
+				{ToolUseID: "call_wait", Name: "wait", InputJSON: `{"ids":["019c9c96"]}`},
+			}},
+	)
+	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if err != nil {
+		t.Fatalf("converting the document: %v", err)
+	}
+	loss := lossCount(t, rollout.Losses, "subagent_session_links")
+	if loss.Count != 1 || loss.Disposition != DispositionOmitted {
+		t.Errorf("subagent_session_links = %+v, want the one written call's link counted as omitted", loss)
+	}
+	if !strings.Contains(loss.Detail, "child session") {
+		t.Errorf("the category's reason does not name the relationship it counts: %q", loss.Detail)
+	}
+	// The route's own behaviour, pinned: the call itself is written with its id and name, and the child's
+	// id is nowhere in the log -- neither in the call record nor in the output that carries the
+	// notification summary in a real rollout's place.
+	installed := string(rollout.Data)
+	for _, want := range []string{`"call_id":"call_spawn"`, `"name":"spawn_agent"`, `"call_id":"call_wait"`} {
+		if !strings.Contains(installed, want) {
+			t.Errorf("the written rollout does not hold %s:\n%s", want, installed)
+		}
+	}
+	if strings.Contains(installed, "019c9c96-6ee7-77c0-ba4c-380f844289d5") {
+		t.Errorf("the child session's id is in the file although the report says the link is omitted:\n%s",
+			installed)
+	}
+	if rollout.Carried.ToolCalls != 2 {
+		t.Errorf("carried %d call(s), want the two written calls", rollout.Carried.ToolCalls)
+	}
+}
+
+// TestCodexRolloutCountsTheResultRecordInstantsItDoesNotWrite pins the disclosure for the instant a
+// carried result was recorded on. ToolResult.Timestamp answers the instant of the result's own record --
+// a result event's envelope instant, which may be later than the record that carried its call -- and a
+// function_call_output's envelope states the record's own instant, but this conversion stamps it with
+// the containing message's instant: the read's own answer for the result is not what the file holds, and
+// the two reads are counted apart -- the read answered an instant and the containing record's is written
+// instead (result_record_instants, omitted), or the read answered none and the containing record's
+// instant stands in (result_completion_fallbacks, carried-with-caveat). A result whose own recorded
+// instant is the containing message's is counted in neither: the file states the read's answer.
+func TestCodexRolloutCountsTheResultRecordInstantsItDoesNotWrite(t *testing.T) {
+	at := time.Date(2026, 5, 5, 9, 15, 5, 0, time.UTC)
+	late := at.Add(time.Second)
+	same := time.Date(2026, 5, 5, 9, 15, 7, 0, time.UTC)
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "run it", Dialogue: "run it",
+			DialogueProjected: true},
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "calling",
+			Dialogue: "calling", DialogueProjected: true, Timestamp: at,
+			ToolCalls: []ToolCall{
+				{ToolUseID: "call_late", Name: "shell", InputJSON: `{"command":"ls"}`},
+				{ToolUseID: "call_none", Name: "shell", InputJSON: `{"command":"pwd"}`},
+				{ToolUseID: "call_same", Name: "shell", InputJSON: `{"command":"date"}`},
+			}},
+		Message{Ordinal: 2, Role: string(parser.RoleUser), Timestamp: same, ToolResults: []ToolResult{
+			{ToolUseID: "call_late", ContentRaw: "late output", ContentDecoded: true, Timestamp: late,
+				Source: "wait_output"},
+			{ToolUseID: "call_none", ContentRaw: "no instant", ContentDecoded: true},
+			{ToolUseID: "call_same", ContentRaw: "own record", ContentDecoded: true,
+				// The read answered an instant equal to the containing record's here (a block-shaped
+				// result), so what the file states is the read's own answer.
+				Timestamp: same},
+		}},
+	)
+	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if err != nil {
+		t.Fatalf("converting the document: %v", err)
+	}
+	omitted := lossCount(t, rollout.Losses, "result_record_instants")
+	if omitted.Count != 1 || omitted.Disposition != DispositionOmitted {
+		t.Errorf("result_record_instants = %+v, want the one written result whose own instant the file "+
+			"does not state", omitted)
+	}
+	if !strings.Contains(omitted.Detail, "result's own recorded instant") {
+		t.Errorf("the category's reason does not name the value it counts: %q", omitted.Detail)
+	}
+	fallbacks := lossCount(t, rollout.Losses, "result_completion_fallbacks")
+	if fallbacks.Count != 1 || fallbacks.Disposition != DispositionCarriedWithCaveat {
+		t.Errorf("result_completion_fallbacks = %+v, want the one written result the read answered no "+
+			"instant for", fallbacks)
+	}
+	sources := lossCount(t, rollout.Losses, "tool_result_sources")
+	if sources.Count != 1 || sources.Disposition != DispositionOmitted {
+		t.Errorf("tool_result_sources = %+v, want the one written result whose recorded channel label "+
+			"the output has no member for", sources)
+	}
+	// The route's own behaviour, pinned: the late result's text travels, and the instant the read
+	// answered for its own record is nowhere in the file -- the output record states the containing
+	// record's instant instead.
+	installed := string(rollout.Data)
+	if !strings.Contains(installed, "late output") {
+		t.Errorf("the written rollout does not hold the late result's text:\n%s", installed)
+	}
+	if want := late.Format(time.RFC3339Nano); strings.Contains(installed, want) {
+		t.Errorf("the file states the result's own recorded instant %s although the report says it is "+
+			"not written:\n%s", want, installed)
+	}
+	if loss := lossCount(t, rollout.Losses, "substituted_record_instants"); loss.Count != 0 {
+		t.Errorf("substituted_record_instants = %+v, want none: this document's records are ordered",
+			loss)
 	}
 }
 

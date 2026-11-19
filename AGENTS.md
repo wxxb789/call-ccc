@@ -96,7 +96,11 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   wrote it); every entry names its
   construction site in the carried reader, and an upstream update that brings in a reader rendering a
   trace into `Content` has to add it (docs/upstream.md's procedure), or that reader's records travel with
-  the rendering carried as dialogue. The entry acts only where the read recorded the record's trace: a
+  the rendering carried as dialogue. The list names **labels, not readers**: a reader that serves several
+  labels (the Pi reader serves six, the Codex reader four, the Kimi, Hermes and OpenCode readers two or
+  three each) takes one entry per label, because the table is asked by the session's own stored label —
+  a label left out leaves that label's records, a legacy archive row among them, travelling with the
+  rendering carried as dialogue. The entry acts only where the read recorded the record's trace: a
   reader that renders a trace into `Content` without recording the trace's own text (`Message.Thinking`
   empty for every record it produces) takes this state too, so the text — the rendering among it —
   travels and is counted here, and the listing cannot act for that record. A label this build knows no
@@ -135,9 +139,16 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   precedes the part's own `created` (an out-of-order source, whose result record stands before the record
   that carried the call), `completed` rises to the call's recorded start and the part is counted
   (`result_completion_adjustments`): a row of its own, because an absent instant and an out-of-order one
-  are different reads and a fallback that was raised too takes both. The floor a message's own `created`
-  is taken against is the messages' own records and nothing else: a part's completion raises only the
-  instant the session's `time.updated` is read for, so an earlier call's result does not move a later,
+  are different reads and a fallback that was raised too takes both. Where a route's record for a result
+  states the containing record's instant instead of the read's answer for the result's own record, the
+  same two reads are counted beside the rows it already has — `result_completion_fallbacks` (the read
+  answered none) and `result_record_instants` (the read answered one and the file states another: the
+  Codex, Claude and Pi/OMP writers) — and every route counts a written result's recorded channel label
+  (`tool_result_sources`) and a carried call's recorded child-session link (`subagent_session_links`)
+  where its own shape has no member for them, so no recorded value is dropped unnamed. The floor a
+  message's own `created` is taken against is the messages' own records and nothing else: a part's
+  completion raises only the instant the session's `time.updated` is read for, so an earlier call's
+  result does not move a later,
   overlapping call's recorded start up to itself (round 15's finding). A message whose own recorded
   instant precedes the instant already written is written at that instant instead — the document's message
   order is the read's own — and each such written instant is counted (`substituted_record_instants`),

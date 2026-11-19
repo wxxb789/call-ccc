@@ -398,6 +398,8 @@ type openCodeConverter struct {
 	lossResultBlocks                int
 	lossUnresolved                  int
 	lossStatuses                    int
+	lossSubagentLinks               int
+	lossResultSources               int
 	lossEmptyInputs                 int
 	lossGeneratedIDs                int
 	lossResultCompletionFallbacks   int
@@ -1080,8 +1082,24 @@ func (c *openCodeConverter) toolPart(call *openCodeCall, floor int64) (openCodeP
 	if call.Result.PersistedOutputUnresolved {
 		c.lossUnresolved++
 	}
+	if strings.TrimSpace(call.Result.Source) != "" {
+		// The read named which native record carried the result's text (a result block in a message, a
+		// `function_call_output`, a wait call's output event, a subagent notification). The harness's
+		// tool state carries the text and no such label -- its own read answers its own for its own
+		// shapes -- so the source's label is omitted and counted rather than dropped in silence.
+		c.lossResultSources++
+	}
 	if call.generatedID || call.inferredResultID {
 		c.lossGeneratedIDs++
+	}
+	if strings.TrimSpace(call.Source.SubagentSessionID) != "" {
+		// The source recorded which session this call spawned: the inherited Codex parser sets the child
+		// session id on a spawn_agent call, and the archive read carries the same column. The harness's
+		// tool part carries an id, a name, an input and a state and has no field for a child session, so
+		// the link has no shape to travel in -- and a conversion's unit is the selected session, not the
+		// sessions it spawned, so the child is neither read nor converted. Counted rather than dropped in
+		// silence: the call's part is written below.
+		c.lossSubagentLinks++
 	}
 	if call.resultCompletionFallback {
 		c.lossResultCompletionFallbacks++
@@ -1547,6 +1565,17 @@ func (c *openCodeConverter) losses() []Loss {
 				"is not counted",
 		},
 		{
+			Category:    "tool_result_sources",
+			Disposition: DispositionOmitted,
+			Count:       c.lossResultSources,
+			Detail: "the read names which native record carried each result's text (a result block " +
+				"inside a message, a `function_call_output`, a wait call's own output event, a " +
+				"subagent notification: internal/parser's readers answer this per shape). The " +
+				"harness's tool state carries the text and no such label -- its own read answers " +
+				"the analogous question for its own shapes -- so the source's label is omitted, " +
+				"counted per result whose part this conversion wrote and that recorded one",
+		},
+		{
 			Category:    "unresolved_tool_outputs",
 			Disposition: DispositionCarriedWithCaveat,
 			Count:       c.lossUnresolved,
@@ -1591,6 +1620,19 @@ func (c *openCodeConverter) losses() []Loss {
 				"projection sharing the call's id and its input); OpenCode's tool part carries one id " +
 				"and one input, so the call is written once and what has no field is the per-file " +
 				"attribution of a second projection",
+		},
+		{
+			Category:    "subagent_session_links",
+			Disposition: DispositionOmitted,
+			Count:       c.lossSubagentLinks,
+			Detail: "the source recorded which session these carried calls spawned (the inherited " +
+				"Codex parser sets a spawn_agent call's child session id, and the archive read carries " +
+				"the same column). The harness's tool part carries an id, a name, an input and a state, " +
+				"so there is no field for a child session: the call itself is written, and what is " +
+				"omitted is the attribution of the session it spawned. The child session is neither " +
+				"read nor converted -- a conversion's unit is the selected session -- and the count is " +
+				"of the calls this conversion wrote: a call no part was written for is not counted as " +
+				"a carried link",
 		},
 		{
 			Category:    "result_completion_fallbacks",

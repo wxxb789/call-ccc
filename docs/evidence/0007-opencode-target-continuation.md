@@ -2948,12 +2948,259 @@ row's test was renamed). Every step passed and the run exited 0. A later run on 
 section was written, reprinted every step line and every count byte for byte, differing only in the
 `selftest` line's duration (`Ran 384 tests in 8.665s (rc=0)`), and exited 0.
 
+### The PR #9 machine review's round-3 findings and the class sweep (`3771fdd` + working tree), applied
+
+The cross-family machine review of PR #9's round 3 (`review-lane.py`, gpt-6.1-sol; report at
+`~/claw/tasks/2026-11-19/call-ccc-0007-rootfix/artifacts/pr9/review-3/report.md`) returned two P2 findings,
+both established by static inspection only — no edits, builds, tests or gate runs — and this round was
+changed from fixing two instances to closing the class: the same class ("the report does not name what the
+route dropped") had been found in three rounds, so the round fixes both findings **and** takes the carried
+document's own fields (`Conversation`, `Message`, `ToolCall`, `ToolResult` in `internal/ccc/conversation.go`)
+as a closed list, answers every field for every route, and closes each cell that was neither written,
+counted, consumed, derived nor out of scope.
+
+**Finding 1 — a shared reader's labels were missing from the projecting entries.**
+`internal/ccc/dialogue_provenance.go`'s `thinkingRenderingReaders` names the readers whose Content carries
+the reader's rendering of the record's persisted trace. `internal/parser/pi.go` renders the trace
+(`:511`) *and* projects (`:549`), and that one reader serves `parser.AgentPi`, `parser.AgentOMP`,
+`parser.AgentOMO`, `parser.AgentStepCode`, `parser.AgentDirectAPI` and `parser.AgentPrimeAgent`
+(`pi.go:108-109,129,385-389`; `internal/parser/provider.go:1318-1319,1334` routes every one of the six
+labels to `newPiProviderFactory`, whose `Parse` is `parsePiLikeSession`). Only `AgentPi` and `AgentOMP`
+were listed, so a record of one of the four other labels that carries no projection — a legacy archive row —
+landed in the record's-own-bytes state and the reader's rendered block travelled as dialogue. The round
+checked every label this build knows the same way, by walking each carried reader's render sites to the
+labels whose read path reaches them (`[Thinking]` construction sites plus the shared `content.go` helper),
+and found the same shape on four more readers: Kimi Work shares `kimi.go:374,590` with Kimi; Augure Code,
+Interpreter and TraeX share `codex.go:658-668` with Codex; Augure Desktop shares `hermes.go:319-321,517-519,1349-1351`
+with Hermes; Kilo and MiMo Code share `opencode.go:1726-1731`/`opencode_v2.go:280-286` with OpenCode.
+Eleven labels were added (`AgentOMO`, `AgentStepCode`, `AgentDirectAPI`, `AgentPrimeAgent`,
+`AgentKimiWork`, `AgentAugureCode`, `AgentInterpreter`, `AgentTraeX`, `AgentAugureDesktop`, `AgentKilo`,
+`AgentMiMoCode` — the render-only group for Kimi Work, Augure Desktop, Kilo and MiMo Code; the projecting
+group for the four pi-family labels and the three codex-family labels), the map's doc comment now names each
+shared reader's whole label set, and the label table is the closed list the next audit checks:
+
+| label | carried reader (construction site) | renders into Content | projects a dialogue | table entry |
+| --- | --- | --- | --- | --- |
+| `AgentPi`, `AgentOMP`, `AgentOMO`, `AgentStepCode`, `AgentDirectAPI`, `AgentPrimeAgent` | `pi.go:511` (one reader, six labels) | yes | yes (`pi.go:549`) | Pi, OMP listed; **OMO, StepCode, Direct API, Prime Agent added this round** |
+| `AgentKimi`, `AgentKimiWork` | `kimi.go:375,591` (Kimi Work parses through `parseKimiSessionWithFallbackModel`, `kimi_work_provider.go:62`) | yes | no | Kimi listed; **Kimi Work added** |
+| `AgentCodex`, `AgentAugureCode`, `AgentInterpreter`, `AgentTraeX` | `codex.go:660` (`codex_provider.go:125` routes all four to one parse path) | yes | yes (`codex.go:607,641,665`) | Codex listed; **Augure Code, Interpreter, TraeX added** |
+| `AgentHermes`, `AgentAugureDesktop` | `hermes.go:320,518,1350` (`hermes_provider.go:36,277-340`) | yes | no | Hermes listed; **Augure Desktop added** |
+| `AgentOpenCode`, `AgentKilo`, `AgentMiMoCode` | `opencode.go:1729`, `opencode_v2.go:285` (`opencode_provider.go` spec table) | yes | no | OpenCode listed; **Kilo, MiMo Code added** |
+| the other 28 listed labels | each reader's own site, as the map's comment names them | yes | as listed | unchanged |
+| `AgentVibe` | `vibe.go:353-371` copies `content` and `reasoning_content` independently | no | no | deliberately absent |
+| every other label the 80-label registry serves | no `[Thinking]` construction site in its read path (checked by grep over the carried readers: `cursor_ide.go`, `opencode_review.go`/`opencodereview.go`, `deepseek_harness*.go`, `codex_cloud*.go`, `gemini_apps*`, `vscode_copilot*`, `windsurf`, `kiro*`, `trae.go`, `junie`, `icodemate`, `gptme`, `kiro`, `posit*`, `qwen*`, `qoder`, `shelley`, `omnigent`, `warp`, `piebald`, `cowork`, `codebuddy`, `workbuddy`, `zed`, `aider`, `fx`, `antigravity*` and the import-only ChatGPT/Claude.ai/Gemini Apps readers, whose traces travel through their own export readers) | no | no | n/a |
+
+The pin is `TestRenderingReaderLabelsCoverEveryLabelTheirReadersServe`: it fails naming the missing label
+when any shared-reader label is dropped from the table, and it drives the `omo` label through the archive
+read of a real session whose stored projection was cleared (the legacy-row shape) — the label is the
+reader's name in the store, the read answers `ContentRendersThinking`, `dialogueOf` answers
+`dialogueUnestablished`, and the conversion counts the record (`unresolved_dialogue`) instead of
+publishing the rendering.
+
+**Finding 2 — a carried call's child-session link was dropped without a row (OpenCode, and Codex too).**
+The inherited Codex parser sets `ToolCall.SubagentSessionID` (a `spawn_agent` call's child session) and the
+reads preserve it (`internal/ccc/reader.go:816`, `archive.go:610`). Claude counts the link where its
+`tool_use` block cannot hold it (`claude_target.go:681-689` + row `:1049`) and Pi/OMP count it in the
+`toolCall` block (`pi_target.go:1099-1105` + row `:1419`); OpenCode's `toolPart` wrote the call and dropped
+the link silently, and `TargetItem` (`codex_target.go:75-86`) has no field for it, so the structural check
+could not see the difference either. OpenCode gained the row (`opencode_target.go:1102` increments
+`lossSubagentLinks`, the row at `:1625` names the part's `id`/`name`/`input`/`state` shape and says the child
+session is neither read nor converted). Codex was checked the same way and is the same gap: its reader
+derives the link from the rollout's own spawn-completion records — `event_msg` payloads of type
+`collab_agent_spawn_end` / `sub_agent_activity` carrying the call's id and the child's thread id
+(`internal/parser/codex.go:700-707,834-865`) — and the writer emits no such record, so the attribution is
+dropped silently there too; it now has the row (`codex_target.go:736` increment, row `:1035`) whose detail
+states the shape the log holds and that this conversion writes none. Writing the record would change the
+written bytes, which this disclosure-only round forbids, so the Codex gap is counted and reported here
+rather than filled; the same holds for every row this round added. The pins are
+`TestOpenCodeWriterCountsADiscardedSubagentSessionLink` (the call's part is written, the child's id is
+nowhere in the document, the count is 1, and a guard-left-out call's link is not counted) and
+`TestCodexRolloutCountsTheSubagentSessionLinkItsLogDoesNotHold` (the `function_call` holds the call, the
+child's id is nowhere in the log, count 1).
+
+**The class sweep.** Every field of the closed list, for each of the four route families. Legend for the
+table: **W** written (site), **C:cat** counted in `losses()` (category, row site), **U** consumed (site),
+**D** re-derived by the target's own read from written bytes (the reader's own derivation site; the value is
+a function of what was written, so nothing was lost), **L:cat** the pair cannot express it at all (format
+limit, site), **O** explicitly out of the target's scope (reason, site), **R** carried in the report
+(`result.source` at `continue.go:422` → `inspect.go:775`; `conversion.source_fidelity` at
+`continue.go:503`), **—** not applicable. File prefixes: `cx` = `codex_target.go`, `cl` = `claude_target.go`,
+`pi` = `pi_target.go` (OMP differs only in `omp_target.go` wiring), `oc` = `opencode_target.go`,
+`rs` = `route_shared.go`, `dp` = `dialogue_provenance.go`, `ct` = `continue.go`, `db` = `internal/db/…`,
+`p/` = `internal/parser/…`. Every cell is an answer; the rows this round added are marked **new**.
+
+| field | Codex rollout (cx) | Claude transcript (cl) | Pi/OMP session (pi) | OpenCode (oc) |
+| --- | --- | --- | --- | --- |
+| `Conversation.Source` | U (cx:254,:264,:268,:269,:417) | U (cl:152,:177,:193,:201) | U (pi:435,:459,:468,:475) | U (oc:292,:567) |
+| `Conversation.Messages` | U (the ordered walk over cx:417's decision) | U (cl:344) | U (pi:645) | U (oc:744) |
+| `Conversation.Fidelity` | U (cx:271) (+R ct:503) | U (cl:192) (+R ct:503) | U (pi:467) (+R ct:503) | U +R ct:503; the rows read it at oc:1781,:1787,:1793 |
+| `SourceIdentity.Provider` | U (cx:417 via rs:512); L `provider_and_model` ct:1460 | U (cl:193,:201); L `model_provider_binding` cl:1174 | U (pi:468,:475); L `model_provider_binding` pi:1586 | U (oc:567); L `provider_and_model` oc:1331 |
+| `SourceIdentity.Agent` | O/R: the log's own `originator`/`source` are harness literals (cx:382,:384); the source's identity is reported | O/R (fresh identity, cl:164-171) | O/R (fresh identity, pi:438-446) | O/R (fresh identity, oc:297-303) |
+| `SourceIdentity.SessionID` | R + fresh by design (cx:224-247) | R + fresh (cl:164-171) | R + fresh (pi:438-446) | R + fresh (oc:297-303) |
+| `SourceIdentity.RawSessionID` | R | R | R | R |
+| `SourceIdentity.SourcePath` | R (the pipeline's boundary names it, ct:1317) | R | R | R |
+| `SourceIdentity.DisplayPath` | R | R | R | R |
+| `SourceIdentity.Project` | R | R (the target's project is re-derived from Cwd, cl:206) | R (the filing directory is spelled from Cwd, pi:482,:510) | R |
+| `SourceIdentity.Cwd` | W (session_meta cx:381, turn_context cx:642) + U (cx:264) | W (cl:509,:549,:630,:698) + U (cl:152) | W (header pi:628, session pi:482) + U (pi:459) | W (info.location.directory oc:526, session oc:1238) + U (oc:292) |
+| `SourceIdentity.GitBranch` | W (session_meta.git, cx:391) + U (cx:268) | L `session_metadata_record` cl:1162-1167 | L `session_metadata_record` pi:1576-1583 | R (no member) |
+| `SourceIdentity.GitRemote` | W (cx:391) + U (cx:269) | L cl:1162-1167 | L pi:1576-1583 | R |
+| `SourceIdentity.Machine` | R | R (the limit's class clause, cl:1162-1167) | R/L pi:1576-1583 | R |
+| `SourceIdentity.SessionKind` | R | L cl:1162-1167 (the clause names a "source kind") | L pi:1576-1583 | R |
+| `SourceIdentity.Entrypoint` | R | L cl:1162-1167 (the clause names an originator) | L pi:1576-1583 | R |
+| `SourceIdentity.ParentSessionID` | R: the target holds no session the lineage could name | R | R | R |
+| `SourceIdentity.RelationshipType` | R | R | R | R |
+| `SourceIdentity.SourceVersion` | R (the log's `cli_version` is the target's, cx:383) | L/R | L/R | R |
+| `SourceIdentity.Fingerprint` | R | R | R | R |
+| `SourceIdentity.FileSize` | R (the pipeline's boundary, ct:1031) | R | R | R |
+| `SourceIdentity.FileModified` | W/U (the session_meta timestamp and the file name/dir, cx:254,:380) | R | R | R |
+| `Message.Ordinal` | D: the written order is the document's (the call-id key is the walk index, cx:711, never the ordinal) | D: the record order (cl:344) | D: the entry order (pi:645) | D: the array order (oc:744) |
+| `Message.Role` | W/U/C (`tool_role_messages` cx:922, `unclassified_role_messages` cx:931, `system_records` cx:913) | W/U/C (cl:924,:932,:916) | W/U/C (pi:1274,:1294,:1266) | W/U/C (the `type` member; oc:1437,:1456,:1428) |
+| `Message.Content` | W/U/C (the dialogue rows + `empty_user_messages`, `non_dialogue_content`, `whitespace_only_dialogue`) | W/U/C | W/U/C | W/U/C |
+| `Message.Dialogue` | U (dp:264-269); W where established | U dp; W (cl:471,:473) | U dp; W (pi:829,:861) | U dp; W (oc:871,:948) |
+| `Message.DialogueProjected` | U (dp:265) | U | U | U |
+| `Message.ContentRendersThinking` | U (dp:274) + C (the dialogue rows) | U + C | U + C | U + C |
+| `Message.Thinking` | C `reasoning_text` cx:898 (the log holds no plaintext-trace shape) | C cl:901 (same) | C `reasoning_text` pi:1236 + `non_assistant_reasoning` pi:1247; W (the `thinking` block, pi:843) | C `reasoning_text` oc:1398 + `non_assistant_reasoning` oc:1409; W (the `reasoning` part, oc:905) |
+| `Message.Timestamp` | W/U + C `substituted_record_instants` cx:1085 (rs:75) | W/U + C cl:1097 | W/U + C pi:1462 | W/U + C `substituted_record_instants` oc:1668 / `assistant_completion_instant` oc:1744 |
+| `Message.Model` | L `provider_and_model` ct:1460 (and C `provider_binding` cx:1097) | C `message_model_attribution` cl:1109 (the record has no model member) | W (pi:901-907) + C pi:1474 | W (the `model` member, oc:1183) + C oc:1689 |
+| `Message.ToolCalls` | W/U/C | W/U/C | W/U/C | W/U/C |
+| `Message.ToolResults` | W/U/C | W/U/C | W/U/C | W/U/C |
+| `Message.IsSystem` | U + C `system_records` cx:913 | U + C cl:916 | U + C pi:1266 | U + C oc:1428 |
+| `Message.IsSidechain` | U + C `sidechain_messages` cx:905 | U + C cl:908 | U + C pi:1257 | U + C oc:1419 |
+| `Message.IsCompactBoundary` | W + U + C `pre_compaction_history` cx:1134 | W + C cl:1121 | W + C pi:1486 | W + C oc:1773 |
+| `Message.SourceUUID` | U (rs:495,:522,:548) + C `inactive_branch_records` cx:1106 | U + W (the relation is written as `parentUuid`) + C | U (rs:296-302,:417-437) | U (rs:495,:522,:548,:624) + C oc:1755 |
+| `Message.SourceParentUUID` | U (rs:545,:548) + C `unresolved_source_parents` cx:1118 | U + W (as `parentUuid`) + C cl:1115 | U + C pi:1480 | U + C oc:1767 |
+| `ToolCall.ToolUseID` | W (cx:743) + U + C `generated_call_ids` cx:1028 | W + U + C cl:1036 | W + U + C pi:1403 | W + U + C oc:1607 |
+| `ToolCall.Name` | W (cx:743) + U + C `tool_name_vocabulary` cx:1091 | W + U + C cl:1103 | W + U + C pi:1468 | W + U + C oc:1683 |
+| `ToolCall.Category` | D: `NormalizeToolCategory(name)` p/codex.go:897 | D: p/content.go:90 (the block parse) | D: p/pi.go:526 | D: p/opencode.go:1855 |
+| `ToolCall.InputJSON` | W (cx:744) + C `empty_tool_inputs` cx:1021 | W (compacted) + C cl:1028 | W (pi:1092-1107) + C pi:1395 | W (`state.input`) + C oc:1599 |
+| `ToolCall.FilePath` | D: a projection of the written input by this build's own rule (p/content.go:434-443); the per-file projections of one patch call carry it per projection | D: same rule, and the per-file attribution of a repeated projection is the subject of `coalesced_tool_call_projections` cl:1043 | D: same rule (pi:1410) | D: same rule (oc:1615) |
+| `ToolCall.SkillName` | D: `inferCodexSkillNameWithBase` p/codex.go:900, from the written name+input+cwd | D: p/content.go:91-100, from the written input | D: `inferPiSkillName` p/pi.go:528; the cwd is written (pi:628) | D: `inferOpenCodeSkillName` p/opencode.go:1857 |
+| `ToolCall.SubagentSessionID` | **C `subagent_session_links` (new)** cx:736/:1035 | C cl:691/:1049 | C pi:1105/:1419 | **C `subagent_session_links` (new)** oc:1102/:1625 |
+| `ToolCall.ResultContent` | W (the archive's derived summary, only where the call has no recorded result, cx:599-621) + U | W + U (the derived-summary block, cl:606-617) | W + U (the derived-summary block, pi:1048) | W + U (the derived-summary block, oc:684) |
+| `ToolCall.ResultContentSize` | U (the summary's existence gate, cx:599) | U | U | U |
+| `ToolResult.ToolUseID` | W + U + C (`generated_call_ids` cx:1028 / `unpaired_tool_results` cx:971) | W + U + C | W + U + C | W + U + C |
+| `ToolResult.Status` | W where truthful (`error`) + C `tool_result_outcomes` cx:1013 | W (`is_error`) + C `tool_result_statuses` cl:1022 | W (`isError`) + C pi:1387 | W (`error` state) + C oc:1587 |
+| `ToolResult.Source` | **C `tool_result_sources` (new)** cx:837/:1049 | **C `tool_result_sources` (new)** cl:774/:1062 | **C `tool_result_sources` (new)** pi:1166/:1427 | **C `tool_result_sources` (new)** oc:1090/:1568 |
+| `ToolResult.Timestamp` | **C `result_completion_fallbacks` + `result_record_instants` (new)** cx:828,:830/:1060,:1072 (the envelope is stamped with the containing record's instant, cx:839-840) | **C (new)** cl:765,:767/:1073,:1085 (the block has no instant member; the record states the containing message's) | **C (new)** pi:1157,:1159/:1438,:1450 (the entry's own `timestamp` is stamped with the containing record's) | W: the part states `ToolResult.Timestamp` (oc:1146 via `openCodeClock.span`); C `result_completion_fallbacks` oc:1638 (oc:1105) + `result_completion_adjustments` oc:1654 (oc:1139) |
+| `ToolResult.ContentRaw` | W + U (`resultText` cx:1260) + C (empty/whitespace/blocks/unresolved) | W + U + C | W + U + C | W + U + C |
+| `ToolResult.ContentSize` | D: the readers set `ContentLength` to the length of the content they read (p/content.go:134, p/codex.go:469,609,643, p/pi.go:728, p/opencode.go:1746); the archive stores the post-redaction length | D | D | D |
+| `ToolResult.ContentDecoded` | U: chooses raw-vs-decoded (cx:1260) | U | U | U |
+| `ToolResult.PersistedOutputUnresolved` | C `unresolved_tool_outputs` cx:1005 | C cl:1014 | C pi:1364 | C oc:1579 |
+| `Fidelity.MalformedLines` | C `malformed_source_lines` cx:1140 | C cl:1137 | C pi:1501 | C oc:1779 |
+| `Fidelity.Truncated` | U (named inside the malformed-lines detail, cx:1195-1202) + R | U + R | U + R | U + R |
+| `Fidelity.SourceVersion` | R | L/R | L/R | R |
+| `Fidelity.TranscriptFidelity` | C `summary_transcript` cx:1146 | C cl:1143 | C pi:1507 | C oc:1785 |
+| `Fidelity.NeedsRetry` | C `source_needs_retry` cx:1152 | C cl:1149 | C pi:1513 | C oc:1791 |
+| `Fidelity.RetryReason` | U (in the row's detail) | U | U | U |
+| `Fidelity.UnresolvedToolOutputs` | C per result (`unresolved_tool_outputs` cx:1005); the aggregate is the per-result flag's own sum | same + R | same + R | same + R |
+| `Fidelity.ReadFrom` | R (ct:266,:499) | R | R | R |
+| `Fidelity.ContentShown` | R (ct:503) | R | R | R |
+
+Every other cell is written, counted, consumed, derived, covered by a limit or reported — no cell was left
+unanswered, and the cells that were neither written nor counted are the rows this round added:
+
+| route | new category | row site | increment site | what it counts |
+| --- | --- | --- | --- | --- |
+| Codex | `subagent_session_links` | cx:1035 | cx:736 | a written call whose recorded child-session id the log holds no record for |
+| Codex | `tool_result_sources` | cx:1049 | cx:837 | a written result whose recorded channel label has no member |
+| Codex | `result_completion_fallbacks` | cx:1060 | cx:828 | a written result the read answered no instant for (the containing record's instant stands in) |
+| Codex | `result_record_instants` | cx:1072 | cx:830 | a written result whose own recorded instant is not what the envelope states |
+| Claude | `tool_result_sources` | cl:1062 | cl:774 | as above |
+| Claude | `result_completion_fallbacks` | cl:1073 | cl:765 | as above |
+| Claude | `result_record_instants` | cl:1085 | cl:767 | as above |
+| Pi/OMP | `tool_result_sources` | pi:1427 | pi:1166 | as above |
+| Pi/OMP | `result_completion_fallbacks` | pi:1438 | pi:1157 | as above |
+| Pi/OMP | `result_record_instants` | pi:1450 | pi:1159 | as above |
+| OpenCode | `subagent_session_links` | oc:1625 | oc:1102 | a written call whose recorded child-session id the part's shape has no member for |
+| OpenCode | `tool_result_sources` | oc:1568 | oc:1090 | as above |
+
+The committed fixtures make both new content rows observable: converting the committed Codex fixture (whose
+shell call is recorded at `09:15:05` and whose output at `09:15:06`) through Codex/Claude/Pi/OMP now reports
+`result_record_instants = 1` where the output's own instant used to be restamped silently, and every route
+now reports `tool_result_sources = 1` for the fixture result whose stored channel label has no target
+member. The OpenCode route already wrote the result's own instant (`result_completion_fallbacks` /
+`result_completion_adjustments` cover its two reads) and its lines are unchanged.
+
+**What did not move.** The disclosure-only rule held: the fix is counters, rows, one map and one test. The
+before/after probe of the round before, re-run on the same four documents (the reviewer's out-of-order
+shape, an ordered control, and both committed fixtures) through all five routes, with the minted identities
+normalized (session ids, record uuids, Claude message ids and Pi entry ids) and each tree run twice to show
+the normalization is stable:
+
+```console
+$ diff <(grep '^PROBE-BYTES\|^PROBE-ITEM' before.txt) <(grep '^PROBE-BYTES\|^PROBE-ITEM' after.txt)   # silent
+$ diff <(grep '^PROBE-LOSS' before.txt) <(grep '^PROBE-LOSS' after.txt)
+< PROBE-LOSS codex/fixture-claude: [malformed_source_lines=1 pre_compaction_history=3 tool_name_vocabulary=1 unresolved_source_parents=1]
+…
+> PROBE-LOSS codex/fixture-claude: [malformed_source_lines=1 pre_compaction_history=3 tool_name_vocabulary=1 tool_result_sources=1 unresolved_source_parents=1]
+> PROBE-LOSS codex/fixture-codex: [pre_compaction_history=2 result_record_instants=1 tool_name_vocabulary=1 tool_result_sources=1]
+…
+```
+
+The first diff is silent: the same 20 byte digests and the same item lines for every route × document pair.
+The second shows only the new disclosures (`tool_result_sources=1` on all five routes for both fixtures;
+`result_record_instants=1` on Codex/Claude/Pi/OMP for the Codex fixture) — no other row's count moved, and
+the out-of-order and ordered shapes gained no row (their results carry no recorded channel label and their
+instants are the documents' own). The probe ran in a throw-away worktree pair (`/tmp/cccfix-r3-before`,
+HEAD's tree plus the probe; the working tree, plus the probe), each twice; the probe file was removed
+afterwards.
+
+**The pins, and that they are not vacuous.** Twelve rows, six pins, one per route plus the label table:
+
+| what the case pins | the mutation | the failure it produced |
+| --- | --- | --- |
+| every label a shared rendering reader serves is in the table, and an archive row of the `omo` label answers the rendering | `dialogue_provenance.go`: `parser.AgentOMO` dropped from the map | `dialogue_provenance_test.go:900: the Pi reader (pi.go:509-549) serves the label "omo" and no table entry answers for it` and `:990: the archive read did not name the record's rendering reader from the stored label` |
+| OpenCode counts a written call's dropped child-session link and its result's channel label | `opencode_target.go`: `c.lossSubagentLinks++` and `c.lossResultSources++` disabled | `opencode_target_test.go:1111: subagent_session_links = 0, want 1`; `:1133: tool_result_sources = 0, want 1` |
+| Codex counts the link its log holds no record for | `codex_target.go`: `b.lossSubagentLinks++` disabled | `codex_target_test.go:1587: subagent_session_links = {…Count:0…}, want the one written call's link counted as omitted` |
+| Codex counts the two result-instant reads and the channel label | `codex_target.go`: the three `++` sites disabled | `codex_target_test.go:1649: result_record_instants … Count:0`; `:1657: result_completion_fallbacks … Count:0`; `:1662: tool_result_sources … Count:0` |
+| Claude counts them | `claude_target.go`: the three `++` sites disabled | `claude_target_test.go:840 / :848 / :853` the same three counts 0 |
+| Pi/OMP counts them | `pi_target.go`: the three `++` sites disabled | `pi_target_test.go:1181 / :1189 / :1194` the same three counts 0 |
+
+The mutations were made in a throw-away copy of this round's code (`/tmp/cccfix-r3-mut2`, deleted
+afterwards; its only differences are those twelve statements) and each pin failed under
+`go test -count=1 -tags fts5 -run '<the case>' ./internal/ccc/`. A later increment that *writes* the Codex
+spawn-completion record or a result's own instant must move the corresponding count's detail and its
+native measurement with it — the rows say what the file holds, and this round did not change what it holds.
+
+**Counts refreshed.** The OpenCode report now names 45 rows (measured on a throw-away counter case:
+`openCode loss rows = 45`; Codex 31, Claude 33, Pi 36 — the same case), the narrowed suites' test functions
+count 409 (`^func Test` over the test files `git ls-files` names under `cmd/ccc` and `internal/ccc`; 403 at
+`3771fdd` — six cases added, none deleted, merged, weakened or renamed), and `docs/evidence/0007-citations.tsv`
+holds 37 rows (30 + R13–R19; the gate's `citations` line below). §5's category total and the plan's §2.3
+category rows gained the new categories; the previous rounds' sections are not rewritten.
+
+`python3 scripts/gate.py`, exit code 0, on this round's final tree:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3622 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 384 tests in 8.681s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5709 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified
+  PASS     secrets  no leaks found in 163 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The required lines, verbatim with their own return codes:
+`selftest` printed `  PASS     selftest Ran 384 tests in 8.681s (rc=0)` and `citations` printed
+`  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified`
+(0002 unchanged at 36 rows; 0007 at 37 — R13–R19 are this round's, verified with the rest, and no row's test
+was renamed). Every step passed and the run exited 0; the `parity` line is the gate's own rendering (its
+first segment is the gate's own truncation). `AGENTS.md` is a declared deviation, so this round's edit to it
+is expected by that step, as the runs before it were. A later run on the final tree, after this section
+was written, reprinted every step line and every count byte for byte, differing only in the `selftest`
+line's duration (`Ran 384 tests in 8.653s (rc=0)`), and exited 0.
+
 ## 5. What travels, source side and target side
 
 | Source evidence | Target side, and the run that recorded it |
 | --- | --- |
 | a Claude Code conversation with a tool call, its result and a compaction boundary (the fixture's own bytes record no persisted reasoning trace, so no run in §1–§2 imports one: §6 names that boundary) | converted into a 7-message OpenCode document (`converted: opencode-import-document, 2312 bytes: 7 message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies), 2 turn(s)`, §1) and materialised by the harness's own importer as a store session (§2: `the store's own document holds 10 message(s); the conversion carried 7`, the extra three being the turn's own records) |
-| the source read's own omissions and rewrites | named, counted and per-category: `empty_user_messages ×1`, `tool_name_vocabulary ×1`, `message_model_attribution ×4`, `usage_zeroed ×1`, `target_model_id_attribution ×2`, `compaction_reason ×1`, `assistant_completion_instant ×4`, `unresolved_source_parents ×1`, `pre_compaction_history ×4`, `malformed_source_lines ×1` (§1), out of the 43 categories the report names on every run (§2's recorded run named 35: the first review round added `coalesced_tool_call_projections`, which the committed multi-file patch fixture exercises, the second added `nonterminal_tool_events`, the twelfth added `result_completion_fallbacks`, the root-fix round added the two dialogue rows, the round-17 fix added `non_assistant_reasoning`, the PR #9 machine review's second finding added `result_completion_adjustments`, and its round-2 review added `substituted_record_instants`, §4) |
+| the source read's own omissions and rewrites | named, counted and per-category: `empty_user_messages ×1`, `tool_name_vocabulary ×1`, `message_model_attribution ×4`, `usage_zeroed ×1`, `target_model_id_attribution ×2`, `compaction_reason ×1`, `assistant_completion_instant ×4`, `unresolved_source_parents ×1`, `pre_compaction_history ×4`, `malformed_source_lines ×1` (§1), out of the 45 categories the report names on every run (§2's recorded run named 35: the first review round added `coalesced_tool_call_projections`, which the committed multi-file patch fixture exercises, the second added `nonterminal_tool_events`, the twelfth added `result_completion_fallbacks`, the root-fix round added the two dialogue rows, the round-17 fix added `non_assistant_reasoning`, the PR #9 machine review's second finding added `result_completion_adjustments`, and its round-2 review added `substituted_record_instants`, and its round-3 review and the class sweep added `subagent_session_links`, `tool_result_sources`, `result_completion_fallbacks` and `result_record_instants`, §4) |
 | the assistant message's own completion instant the importer requires | written for every assistant message from the record's own instant, `×4` in §1 — the member whose absence the harness accepts and then drops the message over (§0), disclosed as `assistant_completion_instant`; the read-back is the check that caught it |
 | the tool call with its recorded arguments and result text | `toolu_01Example0000000000000000 Read [completed] input {"file_path": "/home/user/code/example-api/internal/retry/policy.go"} result 'package retry\n\nconst MaxAttempts = 4'` in the harness's own document (§4's fourth round) — the same call id and name the source recorded, with its recorded arguments and the result's own text, compared part by part with the **source fixture's own bytes**, so a store holding different arguments or different output fails the check instead of passing on its identity |
 | a tool part's pair of instants | the part's `created` is the call's record's instant and its `completed` the **result's own record's** instant — the committed Codex fixture records its shell call at `09:15:05` and its output at `09:15:06`, so the part states that one-second span (§4's twelfth round) — carried per result through `ToolResult.Timestamp`; a read holding no instant of the result's own record (a provider event without a timestamp, the archive's derived summary on the call's row) falls back to the containing record's instant and is counted (`result_completion_fallbacks`) rather than presented as recorded; where the instant the read holds for the result precedes the part's own `created` (an out-of-order source, whose result record stands before the record that carried the call), `completed` is raised to the call's own recorded start and the part is counted (`result_completion_adjustments`), so a raised instant is never presented as the result's recorded completion either; and where the *message's own* recorded instant precedes the instant already written, the message is written at that instant and counted (`substituted_record_instants`, the round-2 review's finding, §4), the part's `created` being that substituted instant — so a recorded call→result span shortened by the substitution is disclosed rather than left to read as the call's recorded start, on this route and on the Codex, Claude, Pi and OMP writers that share the clock |
@@ -2991,7 +3238,7 @@ block (`scripts/tests/test_evidence_claims.py`, which this record is registered 
 - **The user count of a read-back includes the compaction row.** The inherited reader reads a compaction row as
   a system record under the user role, so a read-back of a 7-message document reports
   `user_messages: 3`; the boundary count names the same row, and the comparison itself is itemwise.
-- **The 43 loss categories are the writer's own vocabulary, not a claim about the harness's behaviour.** A
+- **The 45 loss categories are the writer's own vocabulary, not a claim about the harness's behaviour.** A
   category whose count is zero is still named (that is what makes a missing category a defect), and each
   non-zero one is disclosed with its own sentence. (They were 35 when this record's runs in §1–§3 were
   made; the first review round added `coalesced_tool_call_projections`, the second added

@@ -552,6 +552,9 @@ type piSessionBuilder struct {
 	lossUnpaired              int
 	lossEmptyResults          int
 	lossWhitespaceRes         int
+	lossResultFallbacks       int
+	lossResultInstants        int
+	lossResultSources         int
 	lossResultBlocks          int
 	lossUnresolved            int
 	lossStatuses              int
@@ -1146,6 +1149,22 @@ func (b *piSessionBuilder) writeToolResult(result ToolResult, at time.Time, carr
 	if result.PersistedOutputUnresolved {
 		b.lossUnresolved++
 	}
+	// The result's entry (and the message inside it) is stamped with the instant of the record the
+	// result travelled on, not with the instant the read answered for the result's own record: the two
+	// reads are counted apart -- the read answered an instant and the containing record's is written
+	// instead, or the read answered none and the containing record's instant stands in.
+	if result.Timestamp.IsZero() {
+		b.lossResultFallbacks++
+	} else if !result.Timestamp.Equal(at) {
+		b.lossResultInstants++
+	}
+	if strings.TrimSpace(result.Source) != "" {
+		// The read named which native record carried the result's text (a result block in a message, a
+		// `function_call_output`, a wait call's output event, a subagent notification). The target's entry
+		// carries the text and no such label -- its own read answers its own for its own shapes -- so the
+		// source's label is omitted and counted rather than dropped in silence.
+		b.lossResultSources++
+	}
 	message := &piMessage{
 		Role:       piRoleToolResult,
 		Content:    []piContentBlock{{Type: piBlockText, Text: text}},
@@ -1403,6 +1422,41 @@ func (b *piSessionBuilder) losses() []Loss {
 			Detail: "the source recorded which session these calls spawned; Pi's toolCall block has no " +
 				"field for a child session, and the child session is neither read nor converted -- a " +
 				"conversion's unit is the selected session",
+		},
+		{
+			Category:    "tool_result_sources",
+			Disposition: DispositionOmitted,
+			Count:       b.lossResultSources,
+			Detail: "the read names which native record carried each result's text (a result block " +
+				"inside a message, a `function_call_output`, a wait call's own output event, a " +
+				"subagent notification: internal/parser's readers answer this per shape). The " +
+				"target's toolResult entry carries the text and no such label -- its own read " +
+				"answers the analogous question for its own shapes -- so the source's label is " +
+				"omitted, counted per result this conversion wrote that recorded one",
+		},
+		{
+			Category:    "result_completion_fallbacks",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.lossResultFallbacks,
+			Detail: "a toolResult message entry carries the result's text, and its own timestamp is " +
+				"stamped with the instant of the record the result travelled on. Where the read " +
+				"holds no instant of the result's own record -- a provider-recorded event with no " +
+				"timestamp, or the archive's derived summary, which is stored on the call's own row " +
+				"and has no record of its own -- that containing record's instant is written, an " +
+				"instant the read answered for that record rather than one this build invented; " +
+				"only results this conversion wrote are counted here",
+		},
+		{
+			Category:    "result_record_instants",
+			Disposition: DispositionOmitted,
+			Count:       b.lossResultInstants,
+			Detail: "the source recorded the instant the result itself was recorded on (a result " +
+				"event's own envelope instant, which may be later than the record that carried its " +
+				"call, and which the archive read answers from the stored event's own column). A " +
+				"toolResult entry carries its own timestamp and this conversion stamps it with the " +
+				"containing record's instant, not with the result's own: the result's own recorded " +
+				"instant is not what the file holds. Counted per result this conversion wrote and " +
+				"only where the read answered one",
 		},
 		{
 			Category:    "substituted_record_instants",

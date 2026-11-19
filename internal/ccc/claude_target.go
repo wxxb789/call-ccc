@@ -304,6 +304,9 @@ type claudeTranscriptBuilder struct {
 	lossGeneratedIDs           int
 	lossCoalescedProjections   int
 	lossSubagentLinks          int
+	lossResultFallbacks        int
+	lossResultInstants         int
+	lossResultSources          int
 	lossEmptyResults           int
 	lossWhitespaceResults      int
 	lossResultBlocks           int
@@ -754,6 +757,22 @@ func (b *claudeTranscriptBuilder) toolResult(result ToolResult, at time.Time) (c
 	if result.PersistedOutputUnresolved {
 		b.lossUnresolved++
 	}
+	// The record this block is written into (the record of the message the result travelled on) states
+	// that message's instant: a result's own recorded instant is not what the file holds, and the two
+	// reads of it are counted apart -- the read answered an instant and the containing record's is
+	// written instead, or the read answered none and the containing record's instant stands in.
+	if result.Timestamp.IsZero() {
+		b.lossResultFallbacks++
+	} else if !result.Timestamp.Equal(at) {
+		b.lossResultInstants++
+	}
+	if strings.TrimSpace(result.Source) != "" {
+		// The read named which native record carried the result's text (a result block in a message, a
+		// `function_call_output`, a wait call's output event, a subagent notification). The target's
+		// block carries the text and no such label -- its own read answers its own for its own shapes --
+		// so the source's label is omitted and counted rather than dropped in silence.
+		b.lossResultSources++
+	}
 	block := claudeContentBlock{Type: claudeBlockToolResult, ToolUseID: callID, Content: text}
 	if strings.TrimSpace(result.Status) != "" {
 		switch status := strings.ToLower(strings.TrimSpace(result.Status)); status {
@@ -1038,6 +1057,41 @@ func (b *claudeTranscriptBuilder) losses() []Loss {
 				"converted -- a conversion's unit is the selected session -- and the count is of the " +
 				"calls this conversion wrote, so a projection coalesced into another call is not " +
 				"counted twice",
+		},
+		{
+			Category:    "tool_result_sources",
+			Disposition: DispositionOmitted,
+			Count:       b.lossResultSources,
+			Detail: "the read names which native record carried each result's text (a result block " +
+				"inside a message, a `function_call_output`, a wait call's own output event, a " +
+				"subagent notification: internal/parser's readers answer this per shape). The " +
+				"target's tool_result block carries the text and no such label -- its own read " +
+				"answers the analogous question for its own shapes -- so the source's label is " +
+				"omitted, counted per result this conversion wrote that recorded one",
+		},
+		{
+			Category:    "result_completion_fallbacks",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.lossResultFallbacks,
+			Detail: "a tool_result block carries the result's text, and the record carrying it states " +
+				"the instant of the message the result travelled on. Where the read holds no instant " +
+				"of the result's own record -- a provider-recorded event with no timestamp, or the " +
+				"archive's derived summary, which is stored on the call's own row and has no record " +
+				"of its own -- that containing record's instant is written, an instant the read " +
+				"answered for that record rather than one this build invented; only results this " +
+				"conversion wrote are counted here",
+		},
+		{
+			Category:    "result_record_instants",
+			Disposition: DispositionOmitted,
+			Count:       b.lossResultInstants,
+			Detail: "the source recorded the instant the result itself was recorded on (a result " +
+				"event's own envelope instant, which may be later than the record that carried its " +
+				"call, and which the archive read answers from the stored event's own column). A " +
+				"Claude Code tool_result block carries an id, its content and an error flag and no " +
+				"instant of its own, so the record carrying it states the containing message's " +
+				"instant instead: the result's own recorded instant is not what the file holds. " +
+				"Counted per result this conversion wrote and only where the read answered one",
 		},
 		{
 			Category:    "substituted_record_instants",
