@@ -536,37 +536,38 @@ type piSessionBuilder struct {
 	// loader makes. Its unresolved count is what the report's unresolved_source_parents names.
 	tree sourceTree
 
-	writtenMessages         int
-	lossReasoning           int
-	lossSidechain           int
-	lossSystemRecords       int
-	lossToolRoles           int
-	lossUnclassified        int
-	lossEmptyUser           int
-	lossEmptyAssistant      int
-	lossNonDialogue         int
-	lossWhitespace          int
-	lossUnresolvedDialogue  int
-	lossUnprojectedDialogue int
-	lossUnpaired            int
-	lossEmptyResults        int
-	lossWhitespaceRes       int
-	lossResultBlocks        int
-	lossUnresolved          int
-	lossStatuses            int
-	lossEmptyInputs         int
-	lossGeneratedIDs        int
-	lossCoalesced           int
-	lossSubagentLinks       int
-	lossModels              int
-	lossModelFallbacks      int
-	lossTitleSlot           int
-	lossSessionBinding      int
-	lossCarriedCallEntries  int
-	lossUnrecordedUsage     int
-	lossPreBoundary         int
-	lossEmptySummary        int
-	sawBoundary             bool
+	writtenMessages           int
+	lossReasoning             int
+	lossNonAssistantReasoning int
+	lossSidechain             int
+	lossSystemRecords         int
+	lossToolRoles             int
+	lossUnclassified          int
+	lossEmptyUser             int
+	lossEmptyAssistant        int
+	lossNonDialogue           int
+	lossWhitespace            int
+	lossUnresolvedDialogue    int
+	lossUnprojectedDialogue   int
+	lossUnpaired              int
+	lossEmptyResults          int
+	lossWhitespaceRes         int
+	lossResultBlocks          int
+	lossUnresolved            int
+	lossStatuses              int
+	lossEmptyInputs           int
+	lossGeneratedIDs          int
+	lossCoalesced             int
+	lossSubagentLinks         int
+	lossModels                int
+	lossModelFallbacks        int
+	lossTitleSlot             int
+	lossSessionBinding        int
+	lossCarriedCallEntries    int
+	lossUnrecordedUsage       int
+	lossPreBoundary           int
+	lossEmptySummary          int
+	sawBoundary               bool
 	// headerTimestamp is the session's own start instant, fixed when the builder is made: the header's
 	// timestamp is the session's identity rather than a position in the entry stream, so it must not be
 	// advanced by the entries written after it.
@@ -722,6 +723,12 @@ func (b *piSessionBuilder) writeMessage(message Message) {
 		default:
 			b.lossUnclassified++
 		}
+		if strings.TrimSpace(message.Thinking) != "" {
+			// A trace is written as the `thinking` block of an assistant message (writeAssistantMessage)
+			// and of no other role; on this record it has no shape in this format and is omitted,
+			// counted rather than claimed as carried.
+			b.lossNonAssistantReasoning++
+		}
 		b.writeCarriedCalls(message)
 		return
 	}
@@ -745,8 +752,14 @@ func (b *piSessionBuilder) writeMessage(message Message) {
 	if hasThinking {
 		// Pi's `thinking` block is the format's own shape for a persisted reasoning trace and carries no
 		// signature this build would have to forge, so the source's trace travels as the source
-		// recorded it. The Claude route must omit it; this one must not pretend it did.
-		b.lossReasoning++
+		// recorded it -- on an assistant message, the only role writeAssistantMessage writes the block
+		// on. The Claude route must omit it; this one must not pretend it did, and a user record's
+		// trace, which has no shape here, is counted as the omission it is.
+		if role == parser.RoleAssistant {
+			b.lossReasoning++
+		} else {
+			b.lossNonAssistantReasoning++
+		}
 	}
 	switch {
 	case strings.TrimSpace(text) == "" && !hasThinking && len(message.ToolResults) == 0 && len(message.ToolCalls) == 0:
@@ -1172,12 +1185,16 @@ func piMessageMillis(at time.Time) int64 {
 
 // piFamilyUnestablishedOutcome is the Pi family's own answer for a record whose dialogue was not
 // established (dialogueUnestablished), passed to dialogueLossRows: what the writer does not write and
-// where the record's reasoning goes. This family's format persists a trace as a `thinking` content block,
-// so the trace still travels -- as the block it was recorded in -- while the record's text does not
-// (this is the clause the two wrong copies generalised from; round 17's PD-3).
+// where the record's reasoning goes. This family's format persists a trace as a `thinking` content block
+// of the assistant message that produced it, so a trace travels where the record's role is the
+// assistant's -- as the block it was recorded in -- and has no shape on a record of another role, where
+// it is counted as omitted (non_assistant_reasoning). The record's text does not travel either way (this
+// is the clause the two wrong copies generalised from; round 17's PD-3).
 const piFamilyUnestablishedOutcome = "the text is not written, this count is not a claim that the " +
 	"record wrote none, and the record's own reasoning still travels as the `thinking` block it was " +
-	"recorded in"
+	"recorded in where the record's role is the assistant's -- the role this format writes the block " +
+	"on alone -- while a trace on a record of another role has no shape here and is counted as omitted " +
+	"(non_assistant_reasoning)"
 
 // losses reports every category the writer knows about, in a fixed order, so a caller can read the
 // report without knowing which categories this run happened to produce.
@@ -1203,7 +1220,19 @@ func (b *piSessionBuilder) losses() []Loss {
 			Detail: "Pi persists a reasoning trace as a `thinking` content block of the assistant " +
 				"message that produced it, and that block is the shape the source's own trace is " +
 				"written into: the trace travels as the source recorded it, with no signature forged " +
-				"for it. A resumed turn reads it as history rather than replaying it",
+				"for it. A trace recorded on a record of another role has no such block; that " +
+				"omission is counted separately (non_assistant_reasoning). A resumed turn reads the " +
+				"trace it reads as history rather than replaying it",
+		},
+		{
+			Category:    "non_assistant_reasoning",
+			Disposition: DispositionOmitted,
+			Count:       b.lossNonAssistantReasoning,
+			Detail: "Pi writes a reasoning trace as a `thinking` block of the assistant message that " +
+				"produced it and of no other role, so a trace recorded on a record whose role is not " +
+				"the assistant's -- a user prompt carrying one, or a record of a role this format " +
+				"has no message for -- has no shape here and is omitted. The record's own text is " +
+				"governed by its own category; this count names the trace alone",
 		},
 		{
 			Category:    "sidechain_messages",
