@@ -143,7 +143,16 @@ walk is omitted and counted (`unpaired_tool_results`) rather than published as a
 the resumed context cannot see — a result with no recorded id is inferred only onto a call that stands on
 the walk its own record hangs off and that no written result *stating an outcome* on that walk has
 answered (two outstanding occurrences sharing an id are two calls, so a result that could belong to either
-is omitted and counted, and a progress event is not an answer on the reduced writers' own side either).
+is omitted and counted, a progress event is not an answer on the reduced writers' own side either, and an
+outcome the document cannot carry — a text the output field's own shape rejects — does not answer its
+call; a summary the read stored on a call is written for that call's own occurrence and never inferred).
+A call occurrence whose recorded id an earlier written occurrence already holds is written under an id
+generated from its own place (counted `colliding_call_ids`), and each result is written under the owning
+occurrence's emitted id — so an id two calls share cannot rebind an output, and the round-trip check
+asserts that ownership: a result item names the call item it was written for and the read-back's own
+attachment is compared with it, rather than trusting the id and the text. The flat route's
+`unresolved_source_parents` count is the read's own relation answers too, so a parent the caller merely
+excluded is not reported as a relation the read could not place.
 The dispositions
 that exist for the reduction act only there: a run
 without the flag, and a selection applied to a document a selection already produced (refused by name),

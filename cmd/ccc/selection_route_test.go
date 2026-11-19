@@ -432,24 +432,25 @@ func TestContinueWithoutASelectionReportsNoSelection(t *testing.T) {
 		t.Errorf("the whole-read selection converted %+v, want the unflagged run's %+v",
 			selected.Conversion.Carried, document.Conversion.Carried)
 	}
-	// The reduction's own writer vocabulary: the Codex writer reports the coalesced-projection category
-	// only on a document a selection produced (the default path's report is byte-identical to the same run
-	// before selections existed -- goal 0009's D4 -- so a zero row cannot be added to every codex report).
-	// The whole-read selection's report therefore holds exactly that one extra row, and every other row is
-	// the unflagged run's own; the test names the difference instead of requiring none, so a second
-	// reduction-only row would fail here as well.
-	if len(selected.Conversion.Losses) != len(document.Conversion.Losses)+1 {
+	// The reduction's own writer vocabulary: the Codex writer reports the coalesced-projection and
+	// colliding-id categories only on a document a selection produced (the default path's report is
+	// byte-identical to the same run before selections existed -- goal 0009's D4 -- so a zero row cannot
+	// be added to every codex report). The whole-read selection's report therefore holds exactly those two
+	// extra rows, and every other row is the unflagged run's own; the test names the difference instead of
+	// requiring none, so a third reduction-only row would fail here as well.
+	reductionRows := []string{"coalesced_tool_call_projections", "colliding_call_ids"}
+	if len(selected.Conversion.Losses) != len(document.Conversion.Losses)+len(reductionRows) {
 		t.Errorf("the whole-read selection reports %d loss row(s), want the unflagged run's %d plus the "+
-			"reduction's own coalesced_tool_call_projections row", len(selected.Conversion.Losses),
-			len(document.Conversion.Losses))
+			"reduction's own %s rows", len(selected.Conversion.Losses), len(document.Conversion.Losses),
+			strings.Join(reductionRows, " and "))
 	}
 	for _, loss := range selected.Conversion.Losses {
-		if loss.Category == "coalesced_tool_call_projections" {
+		if slices.Contains(reductionRows, loss.Category) {
 			continue
 		}
 		if !slices.Contains(document.Conversion.Losses, loss) {
 			t.Errorf("the whole-read selection's loss row %+v is not one of the unflagged run's own: the "+
-				"reduction adds the coalesced row and nothing else", loss)
+				"reduction adds the %s rows and nothing else", loss, strings.Join(reductionRows, " and "))
 		}
 	}
 	if selected.Verification.Structure.State != document.Verification.Structure.State {

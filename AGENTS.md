@@ -48,7 +48,11 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   `scripts/opencode-native-check.py`
   re-derive it and report each check's
   own verdict (the gate keeps deciding the offline half — round-trip through the inherited reader,
-  install rules, reported losses, CLI shape). A check whose target harness is absent exits 2 naming the
+  install rules, reported losses, CLI shape; that round-trip asserts a written result's owning call
+  wherever the document states one — a result item names the call item it was written for and the
+  read-back's own attachment under the result's id is compared with it, so a file holding an output under
+  the wrong occurrence of a shared id is reported rather than accepted, while a document that states no
+  owner keeps the id-and-text comparison the default path has always had). A check whose target harness is absent exits 2 naming the
   harness it needs — the Pi, OMP and OpenCode checks end their run with `RESULT: INCOMPLETE` and the
   reason, the Codex and Claude checks print the reason on stderr — so a partial run is never quoted as a
   pass. The Pi and OMP
@@ -302,11 +306,19 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   recorded link: the seam neither invents one nor carries candidates for it, and the writer's own rule for
   an id-less result (the sole outstanding call **occurrence** in the line it wrote — in a reduced document,
   the sole call occurrence that stands on the written walk of the result's record and that no written
-  result *stating an outcome* standing on that walk has answered (two outstanding occurrences sharing an id
+  result *stating an outcome* standing on that walk has answered, and only an outcome the document
+  *states* answers it — a result whose text the output field cannot carry is omitted and counted, and its
+  call stays outstanding, so a later id-less result is omitted rather than inferred onto a second call;
+  two outstanding occurrences sharing an id
   are two calls, so the result is omitted and counted rather than bound to either), so an outcome the
   window carries on another branch discharges its call there and
   leaves it outstanding here — disclosed as
-  `generated_call_ids`) reads the selected line; an id-less *call* is counted undischarged where the carried document holds no
+  `generated_call_ids`) reads the selected line; a summary the read stored on a call is written for that
+  call's own occurrence and never inferred, and a written call occurrence whose recorded id an
+  earlier written occurrence already holds is written under an id generated from its own place
+  (`colliding_call_ids`, a category the default path's report does not carry), with every result written
+  under the owning occurrence's emitted id, so no id two occurrences share can rebind an output; an
+  id-less *call* is counted undischarged where the carried document holds no
   id-less result that states an outcome at or after it — no outcome in the line can answer it — and where
   such a result is
   carried the call is left to that same disclosed inference instead of being read as answered or as
@@ -328,7 +340,9 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   own parent the window left out is hung off its nearest retained ancestor (the read's own relation walked
   through the excluded records, with the tool-result step the writers take where the read may project one
   — and where the answer crossed that step the relation is counted (`unresolved_source_parents`), as the
-  writers count the projection they resolve themselves — and the answer travels by the record's own
+  writers count the projection they resolve themselves, and a reduced document's count is the read's own
+  relation answers, so a parent the caller merely excluded is not one the read could not place — and the
+  answer travels by the record's own
   position, so a record the read answered no identity for keeps
   it; an off-line record may keep an off-line ancestor, since keeping a branch off the active walk is
   recorded history the writer reproduces, but an on-line record is never chained through one), and a

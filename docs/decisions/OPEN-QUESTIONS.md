@@ -3157,3 +3157,46 @@ supersede it with a newer one and say which it supersedes.
   per-occurrence answers while the default path keeps its own" and "both paths ask one question", and
   between "two outstanding occurrences sharing an id are ambiguous" and "an id names one outstanding
   call whichever records carry it".
+
+## Q-0009-11 — A reduced document substitutes a colliding recorded id, asserts result ownership, and counts only writeable outcomes
+
+- **Status:** open (defaults taken: on a document a selection produced, a call occurrence whose recorded
+  id an earlier written occurrence already holds is written under an id generated from its own place; the
+  round-trip check asserts a result's owning call exactly where the document states one; the reduced
+  ledger answers only for outcomes the document states; a summary is written for the call that stored it;
+  and OpenCode's id-less inference never replaces a recorded outcome).
+- **Question:** may a conversion change a call's recorded id where two occurrences share it, and may the
+  structural check, the reduced ledger and the flat targets' unresolved count read the *document's own*
+  answers rather than the ones the pre-0009 writer and walk took?
+- **Default taken:** each substitution is the smallest one that completes a rule the surface already
+  claimed, and each is reduction-scoped because D4 keeps the unflagged report byte-identical. The ninth
+  review round's findings measured the four shapes: two occurrences sharing one recorded id were written
+  under it, so the output inferred for the earlier occurrence read back under the later one and the
+  round-trip check (ids and texts) could not see it; a result the output field cannot carry (whitespace)
+  still left the reduced ledger, so a later id-less result was inferred onto a second unanswered call; a
+  summary stored on an id-less call was inferred off the outstanding set although its owner was known
+  (with two eligible calls the output was dropped); and the flat targets re-walked the window, so a parent
+  the caller excluded was reported as `unresolved_source_parents`. The later occurrence is now written
+  under an id generated from its own place (`colliding_call_ids`, a reduction-scoped row as
+  `coalesced_tool_call_projections` is), every result under the owning occurrence's emitted id; a result
+  item names the call item it was written for (`TargetItem.OwnerCall`) and the comparison asserts the
+  read-back's own attachment where the document states an owner (a document that states none keeps the
+  id-and-text comparison, which is what kept §4's probe silent); the reduced ledger's update moved past
+  the text guards, so only a written outcome answers a call; a summary's owner is the occurrence that
+  stored it; and the unresolved count reads the selection's ancestry answers, a whole-read selection
+  reporting exactly the unflagged conversion's number. OpenCode's plan reads `openCodeOutcomeWritable` for
+  ambiguity and will not write an inferred result *for* a call that already holds a recorded (unwritable)
+  outcome -- that inference is omitted and counted (`unpaired_tool_results`) rather than replacing
+  evidence, this route's own answer to a part that states one outcome.
+- **Reversal:** the pre-fix behaviour returns by removing the four writers' colliding-id cases, the
+  `OwnerCall` statements (and the comparison's annotation, `roundTripOwnerResultKey`), moving the reduced
+  ledger update back before the text guards, restoring the summary case's fall-through to the inference,
+  and recomputing `sourceLineAnswers`' count over the window -- each reopens the failure its mutation
+  records (`docs/evidence/0009-selective-context.md`, ninth round, `M1`-`M9`). The stronger alternative --
+  applying the substitution (and the owner assertion) to the default path too -- moves the default path's
+  bytes and report (D4) and is the operator's decision, not this build's.
+- **Settled by:** an operator decision between "a reduced document substitutes colliding ids, asserts
+  ownership and reads its own written outcomes, while the default path keeps the recorded ids and the
+  id-and-text comparison" and "both paths substitute and assert alike", and between "an inferred result is
+  omitted rather than written for a call whose recorded outcome the document cannot hold" and "the
+  inference may replace that recorded outcome".

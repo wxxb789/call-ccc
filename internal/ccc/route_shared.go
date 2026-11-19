@@ -876,23 +876,56 @@ var ErrUnrepresentableLeaf = errors.New(
 // this target's log is one line of records, so a record the read's own walk does not reach is omitted and
 // counted whether or not the read held an identity for it: writing the identity-less record into it would
 // make the abandoned branch model-visible history, and the membership is the only answer such a record's
-// place has. The unresolved count is the carried line's own: a walk over the records this conversion
-// writes, so it names the places of the entries actually written rather than of a read the caller did not
-// carry.
+// place has.
+//
+// The unresolved count is the carried line's own, but it is computed from the *read's* own relation
+// answers rather than by re-walking the window: a record whose recorded parent the selection excluded is
+// a relation the read established, and a walk over the window alone would count the caller's exclusion
+// as a relation this conversion invented. The walk is the one the tree writers take
+// (selectionKeptAncestors), carried per record of the reduced document (Conversation.sourceKeptAncestor):
+// a written record counts once where that answer crossed the ambiguous tool-result projection -- the same
+// place the tree writers count -- or where it reached no carried ancestor at all although the record
+// named a parent, because the entry then follows the record written before it, a relation this conversion
+// resolved. A record that named no parent is where the read's own line begins, and it invents nothing.
 func sourceLineAnswers(conversation Conversation) ([]bool, int) {
 	if conversation.sourceLineHolds == nil {
 		inactive, _, unresolved := inactiveSourceRecords(conversation.Messages, conversation.Source.Provider)
 		return inactive, unresolved
 	}
 	inactive := make([]bool, len(conversation.sourceLineHolds))
-	kept := make([]Message, 0, len(conversation.Messages))
-	for index, message := range conversation.Messages {
-		inactive[index] = !conversation.sourceLineHolds[index]
-		if !inactive[index] {
-			kept = append(kept, message)
+	unresolved := 0
+	written := false
+	for index, holds := range conversation.sourceLineHolds {
+		inactive[index] = !holds
+		if inactive[index] {
+			// An omitted record's place is counted by the omission (`inactive_branch_records`), not here:
+			// this count names the places of the entries the conversion actually writes.
+			continue
 		}
+		answer := keptAncestorAnswer{index: -1}
+		if index < len(conversation.sourceKeptAncestor) {
+			answer = conversation.sourceKeptAncestor[index]
+		}
+		message := conversation.Messages[index]
+		switch {
+		case answer.index >= 0:
+			// The tree writers refuse to chain an on-line record through an off-line ancestor
+			// (keptAncestorEntry): the entry then follows the one written before it, so the place is
+			// counted exactly as a missing ancestor is.
+			if answer.projected || (inactive[answer.index] && !inactive[index]) {
+				unresolved++
+			}
+		case answer.projected || strings.TrimSpace(message.SourceParentUUID) != "" ||
+			(written && strings.TrimSpace(message.SourceUUID) != ""):
+			// No carried ancestor: the entry follows the record written before it -- a relation this
+			// conversion resolved. A record that named no parent is the read's own order, which invents
+			// nothing, except where it carries an identity and is not the line's first written record:
+			// then it is counted here exactly as the tree writers count it (parentPlace) and as the read's
+			// own walk counts an identity-ful record that is not the conversation's first.
+			unresolved++
+		}
+		written = true
 	}
-	_, _, unresolved := inactiveSourceRecords(kept, conversation.Source.Provider)
 	return inactive, unresolved
 }
 

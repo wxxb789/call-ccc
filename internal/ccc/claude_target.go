@@ -189,7 +189,7 @@ func ConvertToClaudeTranscript(conv Conversation, opts ClaudeTargetOptions) (Cla
 		clock:            newEntryClock(startedAt, time.RFC3339Nano),
 		pairings:         pairedCallOccurrences(conv),
 		callOwners:       map[string]struct{}{},
-		callPlaces:       map[callOccurrence]string{},
+		callPlaces:       map[callOccurrence]claudeWrittenCall{},
 		answeredCalls:    map[callOccurrence][]int{},
 		selectionReduced: conv.selectionReduced(),
 		opts:             opts,
@@ -285,10 +285,13 @@ type claudeTranscriptBuilder struct {
 	// accepted a result when some written call shared the id, and that default path is byte-identical to
 	// the same run before selections existed (goal 0009's D4).
 	callOwners map[string]struct{}
-	// callPlaces names the occurrence each written call id stands at, which is what an id-less result of a
-	// reduced document reads: the inference may name only a call that stands on the written walk of the
-	// result's record (soleResultCall).
-	callPlaces map[callOccurrence]string
+	// callPlaces names, per written call occurrence, the id its tool_use block stands under and the index
+	// in the transcript's item list of the call item it wrote (claudeWrittenCall). A result of a reduced
+	// document is written under the owning occurrence's emitted id -- not the recorded id where the
+	// document states another (colliding_call_ids, or a call that recorded none) -- and it names that
+	// occurrence's call item as the one it answers (TargetItem.OwnerCall); an id-less result's inference
+	// also reads the occurrences here (soleResultCall).
+	callPlaces map[callOccurrence]claudeWrittenCall
 	// answeredCalls names, per call occurrence, the records whose written results *stating an outcome*
 	// answered it (each record's own position in the document): the completion a reduced document's
 	// id-less inference reads. The question is per occurrence and per path -- whether an answer stands on
@@ -335,6 +338,7 @@ type claudeTranscriptBuilder struct {
 	lossEmptyInputs            int
 	lossGeneratedIDs           int
 	lossCoalescedProjections   int
+	lossCollidingIDs           int
 	lossSubagentLinks          int
 	lossResultFallbacks        int
 	lossResultInstants         int
@@ -695,16 +699,35 @@ func (b *claudeTranscriptBuilder) distinctCalls(message Message) []projectedCall
 }
 
 // toolCall writes one call as an assistant record holding a single tool_use block.
+//
+// The id its block is written under is the recorded one, except where a document a selection produced
+// already wrote an earlier occurrence under it: the target pairs a call with its output by id (its reader
+// keeps one tool_use block per id), so the occurrence is written under an id generated from its own place
+// and the substitution is counted (colliding_call_ids) rather than left to read as the recorded id. A
+// run without a selection keeps the ids the source recorded, exactly as before (goal 0009's D4).
 func (b *claudeTranscriptBuilder) toolCall(index int, call ToolCall, at time.Time) {
 	callID := strings.TrimSpace(call.ToolUseID)
-	if callID == "" {
+	switch {
+	case callID == "":
 		// The call's place in the document keys its generated id -- the message's position in the walk
 		// and the call's index in that message -- and not the message's own ordinal: an embedding caller
 		// may leave ordinals unassigned, and two messages' id-less calls must not collapse into one id.
 		// A shared id would make the pairing below read one call, so an id-less result could pair with
-		// "the" outstanding call while two are.
-		callID = fmt.Sprintf("%s%d_%d", claudeGeneratedCallPrefix, b.messageIndex, index)
+		// "the" outstanding call while two are. The id is walked past every id this walk already wrote,
+		// so it can never alias a recorded spelling either.
+		callID = b.freshCallID(fmt.Sprintf("%s%d_%d", claudeGeneratedCallPrefix, b.messageIndex, index))
 		b.lossGeneratedIDs++
+	case b.selectionReduced && b.callIDTaken(callID):
+		// A document a selection produced writes each call occurrence the read holds, and the source
+		// recorded this id on an earlier occurrence too. The target pairs a call with its output by id --
+		// its reader keeps one tool_use block per id -- so an occurrence written under the shared id
+		// could not be told from the earlier one: an output inferred for the earlier occurrence would
+		// read back as this one's outcome. The occurrence is written under an id generated from its own
+		// place (the same shape an id-less call takes), and the substitution is counted
+		// (colliding_call_ids) rather than left to read as the recorded id. A run without a selection
+		// keeps the ids the source recorded, exactly as before (goal 0009's D4).
+		callID = b.freshCallID(fmt.Sprintf("%s%d_%d", claudeGeneratedCallPrefix, b.messageIndex, index))
+		b.lossCollidingIDs++
 	}
 	// The block's input member is an object, and the encoder writes it compacted: the item list keeps the
 	// bytes the file really holds (what the round-trip check compares against a read-back of it), so the
@@ -755,28 +778,53 @@ func (b *claudeTranscriptBuilder) toolCall(index int, call ToolCall, at time.Tim
 		b.pendingCalls = map[string]struct{}{}
 	}
 	b.pendingCalls[callID] = struct{}{}
-	// The two answers a recorded result reads back: the id is written anywhere in this file (the default
-	// path's acceptance), and the occurrence the id stands at (the walk a reduced document's inference
-	// has to read).
+	// The occurrence, not the id: a later result is paired by the read's own answer about *which* call
+	// occurrence it names, and this is the one whose entry stands here. The id set beside it is the
+	// acceptance a document that is not a selection's asks (resultCallWritten); the item index is the
+	// owner a result written for this occurrence states (TargetItem.OwnerCall).
+	occurrence := callOccurrence{message: b.messageIndex, call: index}
+	b.callPlaces[occurrence] = claudeWrittenCall{id: callID, item: len(b.items)}
 	b.callOwners[callID] = struct{}{}
-	b.callPlaces[callOccurrence{message: b.messageIndex, call: index}] = callID
 	b.carried.ToolCalls++
 	b.items = append(b.items, TargetItem{Kind: ItemToolCall, CallID: callID, ToolName: name, InputJSON: input})
 }
 
-// resultCallWritten answers whether a recorded result that names a call may be written under that call's
-// id. A document a selection produced asks the seam's own pairing: the call occurrence the read answers
-// for the result has to stand on the result's own written ancestry (sourceTree.recordOnWrittenPath), or
-// the file would hold a tool_result whose invocation is off the walk a resumed session makes -- the
-// reduction's window is what can leave the paired call off that walk, and accepting the id because some
-// other written call shares it would present this result as that call's outcome. A conversation the read
-// returned asks the question this writer has always asked -- whether any written call stands under the
-// id -- so a run without a selection is byte-identical to the same run before selections existed (goal
-// 0009's D4).
-func (b *claudeTranscriptBuilder) resultCallWritten(paired *callOccurrence, callID string) bool {
-	if b.selectionReduced {
-		return paired != nil && b.tree.recordOnWrittenPath(paired.message)
+// claudeWrittenCall is one call occurrence this walk wrote: the id its tool_use block stands under --
+// which is not the recorded id where an earlier occurrence already held that one (colliding_call_ids) --
+// and the index in the transcript's item list of the call item itself, which is what a result written for
+// the occurrence states as its owner (TargetItem.OwnerCall), so the round-trip check can assert the
+// attachment the target's own reader makes.
+type claudeWrittenCall struct {
+	id   string
+	item int
+}
+
+// callIDTaken answers whether some call this walk already wrote stands under one id: the target pairs a
+// call with its output by id, so a second occurrence under the same id cannot be told from the first.
+func (b *claudeTranscriptBuilder) callIDTaken(callID string) bool {
+	_, taken := b.callOwners[callID]
+	return taken
+}
+
+// freshCallID answers an id the document does not already state: base where no written call holds it, and
+// otherwise base with a suffix counted until one is free, so a generated id can never alias a recorded
+// spelling or another generated one.
+func (b *claudeTranscriptBuilder) freshCallID(base string) string {
+	id := base
+	for suffix := 2; b.callIDTaken(id); suffix++ {
+		id = fmt.Sprintf("%s_%d", base, suffix)
 	}
+	return id
+}
+
+// resultCallWritten answers whether a recorded result that names a call may be written under that call's
+// id: whether some written call stands under the id. This is the default path's own acceptance. A
+// document a selection produced never asks it: the switch in toolResult reads the paired occurrence's
+// entry instead (or omits the result where the read's pairing names none), because the id alone cannot
+// say which occurrence an output answers where two written calls share it. A conversation the read
+// returned keeps the question this writer has always asked, so a run without a selection is
+// byte-identical to the same run before selections existed (goal 0009's D4).
+func (b *claudeTranscriptBuilder) resultCallWritten(callID string) bool {
 	_, ok := b.callOwners[callID]
 	return ok
 }
@@ -801,7 +849,7 @@ func (b *claudeTranscriptBuilder) soleResultCall() (callOccurrence, string, bool
 	found := ""
 	foundAt := callOccurrence{}
 	foundAny := false
-	for occurrence, id := range b.callPlaces {
+	for occurrence, written := range b.callPlaces {
 		if b.answeredOnWrittenPath(occurrence) {
 			// A written result on the place now being walked has answered this call occurrence: the call
 			// is not outstanding here, whatever a result on another branch did to the call's id.
@@ -815,7 +863,7 @@ func (b *claudeTranscriptBuilder) soleResultCall() (callOccurrence, string, bool
 			// not merge them -- the read recorded two calls.
 			return callOccurrence{}, "", false
 		}
-		found, foundAt, foundAny = id, occurrence, true
+		found, foundAt, foundAny = written.id, occurrence, true
 	}
 	return foundAt, found, foundAny
 }
@@ -840,42 +888,73 @@ func (b *claudeTranscriptBuilder) answeredOnWrittenPath(occurrence callOccurrenc
 // toolResult writes one result as a tool_result block, and answers whether it was written. paired is the
 // call occurrence the seam's own pairing names for the result (pairedCallOccurrences), or the call a
 // derived summary came from; nil where the read holds no call occurrence for it.
+//
+// The id the block is written under is the owning occurrence's *emitted* id, never the recorded id read
+// back off the result: a document a selection produced may have written that occurrence under an id
+// generated from its own place (colliding_call_ids, or a call that recorded none), and a result written
+// under the recorded spelling would read back as the outcome of whichever occurrence does hold it. An
+// id-less result whose owner is not known from a pairing -- an independent result record the read left no
+// link for -- is inferred from the outstanding set, and only there is an inference disclosed
+// (generated_call_ids).
 func (b *claudeTranscriptBuilder) toolResult(paired *callOccurrence, result ToolResult, at time.Time) (claudeContentBlock, bool) {
 	callID := strings.TrimSpace(result.ToolUseID)
+	// resultIDInferred says the id below is one this conversion answered for the result: the source
+	// recorded none of its own, so the id is the owning occurrence's generated one or the sole outstanding
+	// call's. The counter it feeds is incremented past the omission guards, with the written block,
+	// because an inferred id on a result this conversion does not write is not evidence the file holds.
 	resultIDInferred := false
 	answered := callOccurrence{}
-	if callID == "" {
+	switch {
+	case b.selectionReduced && paired != nil:
+		// The pairing names the occurrence this result answers -- the read's own answer for a recorded
+		// result, or the call a derived summary came from -- and the id the file holds for it is the one
+		// that occurrence was written under, which is not the recorded id where the document states
+		// another (a colliding id, an id-less call's generated one).
+		//
+		// The occurrence has to be one this walk wrote *and* one that stands on the written walk: this
+		// writer keeps the records the read's line leaves off it as recorded history, so a paired call
+		// can be in the file and still off the walk the target's loader makes from the result. Accepting
+		// the pairing there would write a tool_result whose invocation the resumed session cannot see,
+		// which is what the reduction's window can produce (the paired call stands on another branch).
+		written, ok := b.callPlaces[*paired]
+		if !ok || !b.tree.recordOnWrittenPath(paired.message) {
+			b.lossUnpairedResults++
+			return claudeContentBlock{}, false
+		}
+		if callID == "" {
+			// A derived summary the read stored on the call itself (ToolCall.ResultContent): its owner
+			// is the occurrence it came from, so the result may not be inferred off the outstanding set
+			// -- an inference picks no call where two are eligible, and would drop an output whose owner
+			// was already known.
+			resultIDInferred = true
+		}
+		callID = written.id
+		answered = *paired
+	case callID == "":
 		occurrence, pending, ok := b.soleResultCall()
 		if !ok {
 			b.lossUnpairedResults++
 			return claudeContentBlock{}, false
 		}
 		callID = pending
-		resultIDInferred = true
 		answered = occurrence
-	} else if !b.resultCallWritten(paired, callID) {
-		// The acceptance is resultCallWritten's own answer: the written ancestry the read's pairing names
-		// for a reduced document, and the id-existence check the default path has always asked.
+		resultIDInferred = true
+	case b.selectionReduced:
+		// A result that names an id, on a reduced document, whose read pairing names no written
+		// occurrence: omitted and counted exactly as the paired-absent case above.
 		b.lossUnpairedResults++
 		return claudeContentBlock{}, false
-	} else if paired != nil {
-		// A reduced document's result was accepted only through the read's pairing (resultCallWritten
-		// requires it), so the pairing names the occurrence this result answers.
-		answered = *paired
-	}
-	if b.selectionReduced {
-		// The accepted result answers its call on the place it stands at, whether or not the text below
-		// gives it a block: the recorded outcome is what leaves the outstanding set, exactly as the
-		// default path's ledger has always read it (the delete happens past the acceptance, before the
-		// text is known to be writable). A result whose recorded status says the call is still running is
-		// progress rather than an answer (resultStatesAnOutcome): it travels as the evidence it is, and it
-		// leaves no mark on the outstanding set -- or a later id-less result would be inferred onto a call
-		// that was still unanswered where the result stands.
-		if resultStatesAnOutcome(result.Status) {
-			b.answeredCalls[answered] = append(b.answeredCalls[answered], b.messageIndex)
-			delete(b.pendingCalls, callID)
+	default:
+		// The default path keeps the acceptance it has always asked: some written call stands under the
+		// id (goal 0009's D4).
+		if !b.resultCallWritten(callID) {
+			b.lossUnpairedResults++
+			return claudeContentBlock{}, false
 		}
-	} else {
+	}
+	if !b.selectionReduced {
+		// The default path keeps the ledger's own answer: the result clears its id from the file-wide
+		// set, whether or not the text below gives it a block (goal 0009's D4).
 		delete(b.pendingCalls, callID)
 	}
 	text, blocks := resultText(result)
@@ -889,6 +968,18 @@ func (b *claudeTranscriptBuilder) toolResult(paired *callOccurrence, result Tool
 			b.lossWhitespaceResults++
 		}
 		return claudeContentBlock{}, false
+	}
+	if b.selectionReduced {
+		// The accepted result answers its call on the place it stands at, and only where it is
+		// *written*: a result whose text the guard above omitted -- empty or whitespace -- has no answer
+		// on the written path, so a later id-less result still sees the call outstanding and is omitted
+		// rather than inferred onto another call. A result whose recorded status says the call is still
+		// running is progress rather than an answer (resultStatesAnOutcome): it travels as the evidence
+		// it is, and it leaves no mark on the outstanding set either.
+		if resultStatesAnOutcome(result.Status) {
+			b.answeredCalls[answered] = append(b.answeredCalls[answered], b.messageIndex)
+			delete(b.pendingCalls, callID)
+		}
 	}
 	if resultIDInferred {
 		b.lossGeneratedIDs++
@@ -926,7 +1017,18 @@ func (b *claudeTranscriptBuilder) toolResult(paired *callOccurrence, result Tool
 		}
 	}
 	b.carried.ToolResults++
-	b.items = append(b.items, TargetItem{Kind: ItemToolResult, CallID: callID, Text: text})
+	item := TargetItem{Kind: ItemToolResult, CallID: callID, Text: text}
+	if b.selectionReduced {
+		// A document a selection produced knows the owning occurrence (the pairing, or the disclosed
+		// inference that picked one), so the result item states the place of that occurrence's call item
+		// and the round-trip check asserts the attachment the reader makes instead of trusting that an id
+		// two occurrences could share identifies the right one.
+		if written, ok := b.callPlaces[answered]; ok {
+			owner := written.item
+			item.OwnerCall = &owner
+		}
+	}
+	b.items = append(b.items, item)
 	return block, true
 }
 
@@ -1102,7 +1204,7 @@ func (b *claudeTranscriptBuilder) losses() []Loss {
 	// (dialogueLossRows), with this route's own answer for an unestablished record.
 	losses = append(losses, dialogueLossRows(b.lossUnresolvedDialogue, b.lossUnprojectedDialogue,
 		claudeUnestablishedOutcome)...)
-	return append(losses, []Loss{
+	losses = append(losses, []Loss{
 		{
 			Category:    "whitespace_only_dialogue",
 			Disposition: DispositionOmitted,
@@ -1291,6 +1393,24 @@ func (b *claudeTranscriptBuilder) losses() []Loss {
 			Detail:      needsRetryDetail,
 		},
 	}...)
+	// The colliding-id category exists only where the collision can be substituted, exactly as the Codex
+	// writer scopes it: only a document a selection produced writes every call occurrence the read holds
+	// beside the ids the source recorded, and an unflagged run keeps those ids (goal 0009's D4), so its
+	// report keeps its own category list unchanged -- a zero row cannot be added to every report. The
+	// count is zero on a reduced document with no collision, so the completeness rule holds within the
+	// selection surface as the other writers' does.
+	if b.selectionReduced {
+		losses = append(losses, Loss{
+			Category:    "colliding_call_ids",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.lossCollidingIDs,
+			Detail: "these call occurrences recorded an id an earlier written occurrence already " +
+				"holds; the target pairs a call with its output by id (its reader keeps one tool_use " +
+				"block per id), so the occurrence was written under an id generated from its own place " +
+				"and the file does not state the id the source recorded for it",
+		})
+	}
+	return losses
 }
 
 // claudeFormatLimits is what this pair of formats cannot express at all, as opposed to what one run

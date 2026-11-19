@@ -332,6 +332,11 @@ type openCodeCall struct {
 	// inferredResultID says the result was paired through a generated call id (a result that recorded
 	// none), which is what the generated_call_ids caveat counts beside the calls themselves.
 	inferredResultID bool
+	// collidingID says the call's recorded id was one an earlier occurrence in this document already
+	// holds, so the part is written under an id generated from the call's own place: the harness's tool
+	// part is keyed by that id, and two parts under one id could not be told from each other. Counted
+	// under colliding_call_ids, and only for a part that is written.
+	collidingID bool
 	// resultCompletionFallback says the read held no instant of the carried result's own record (a
 	// result event the provider recorded without one, an archive summary stored on the call's row), so
 	// the part's `completed` member is the containing record's instant: the result_completion_fallbacks
@@ -418,6 +423,7 @@ type openCodeConverter struct {
 	lossResultSources               int
 	lossEmptyInputs                 int
 	lossGeneratedIDs                int
+	lossCollidingIDs                int
 	lossResultCompletionFallbacks   int
 	lossResultCompletionAdjustments int
 	lossSubstitutedRecordInstants   int
@@ -628,11 +634,25 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 			call := planned.call
 			id := strings.TrimSpace(call.ToolUseID)
 			madeID := false
+			colliding := false
 			if id == "" {
 				id = c.freshCallID(index, len(c.plan[index].calls))
 				madeID = true
+			} else if c.conv.selectionReduced() {
+				if _, taken := c.calls[id]; taken {
+					// A document a selection produced writes each call occurrence the read holds, and the
+					// source recorded this id on an earlier occurrence too. The harness's tool part is
+					// keyed by the id (its state, and the id its own reader answers), so two parts under
+					// one id could not be told from each other: the occurrence is written under an id
+					// generated from its own place, counted (colliding_call_ids). A run without a
+					// selection keeps the ids the source recorded (goal 0009's D4).
+					id = c.freshCallID(index, len(c.plan[index].calls))
+					madeID = true
+					colliding = true
+				}
 			}
-			entry := &openCodeCall{ID: id, Source: call, At: message.Timestamp, generatedID: madeID}
+			entry := &openCodeCall{ID: id, Source: call, At: message.Timestamp,
+				generatedID: madeID && !colliding, collidingID: colliding}
 			c.plan[index].calls = append(c.plan[index].calls, entry)
 			c.calls[id] = entry
 			c.plannedCalls[callOccurrence{message: index, call: planned.index}] = entry
@@ -661,10 +681,12 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 			var entry *openCodeCall
 			if id == "" {
 				if c.conv.selectionReduced() {
-					// A reduced document counts eligible calls in occurrences: the plan carries the
-					// records the read's line holds, and two occurrences sharing an id are two calls the
-					// read recorded -- the id-keyed pending set would read them as one.
-					sole, ok := c.soleOutstandingPlannedCall()
+					// A reduced document counts eligible calls in occurrences and reads completion from
+					// what the document states: two occurrences sharing an id are two calls the read
+					// recorded, and a call whose planned result this target cannot write is unanswered
+					// too, so it makes the result ambiguous rather than leaving the other occurrence
+					// looking sole (soleInferablePlannedCall).
+					sole, ok := c.soleInferablePlannedCall()
 					if !ok {
 						c.lossUnpairedResults++
 						continue
@@ -753,14 +775,13 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 	}
 }
 
-// soleOutstandingPlannedCall answers the one call occurrence this plan carries that no carried outcome
-// has answered yet, and whether there is exactly one. A reduced document's id-less result or event asks
+// soleOutstandingPlannedCall answers the one call occurrence this plan carries that no carried result
+// has answered yet, and whether there is exactly one. A reduced document's id-less *progress* event asks
 // this question rather than the ledger's id-keyed one: the plan carries the records the read's line
 // holds, and two call occurrences the source recorded under one id are two calls, so a set keyed by id
-// would read them as one and let the inference attach an output to whichever occurrence the id-keyed map
-// holds last. The eligible set is counted in occurrences, so two eligible calls make the result
-// ambiguous and nothing is inferred -- the result is omitted and counted (unpaired_tool_results) rather
-// than written under a call the read never paired it with.
+// would read them as one and let the event attach to whichever occurrence the id-keyed map holds last.
+// The eligible set is counted in occurrences, so two eligible calls make the event ambiguous and nothing
+// is marked -- the event still travels as the recorded evidence it is.
 func (c *openCodeConverter) soleOutstandingPlannedCall() (*openCodeCall, bool) {
 	found := (*openCodeCall)(nil)
 	for _, entry := range c.plannedCalls {
@@ -773,6 +794,54 @@ func (c *openCodeConverter) soleOutstandingPlannedCall() (*openCodeCall, bool) {
 		found = entry
 	}
 	return found, found != nil
+}
+
+// soleInferablePlannedCall answers the one call occurrence this plan carries that a result the read
+// recorded no id for may be written for, and whether there is exactly one *unanswered* occurrence at
+// all. Unanswered means no outcome the document states: an entry whose planned result would not be
+// written -- text the output field cannot carry, a status the tool states cannot spell
+// (openCodeOutcomeWritable) -- has no answer on the written path, exactly as the family's writers read
+// it, so it makes the result ambiguous and nothing is inferred (the result is omitted and counted,
+// unpaired_tool_results). The call the result may be written *for* has to hold no planned result at all:
+// the part states one outcome, and the read's own evidence of a different outcome is not this conversion's
+// to replace.
+func (c *openCodeConverter) soleInferablePlannedCall() (*openCodeCall, bool) {
+	unanswered := 0
+	found := (*openCodeCall)(nil)
+	for _, entry := range c.plannedCalls {
+		if openCodeOutcomeWritable(entry) {
+			continue
+		}
+		unanswered++
+		if entry.Result == nil {
+			found = entry
+		}
+	}
+	if unanswered != 1 || found == nil {
+		return nil, false
+	}
+	return found, true
+}
+
+// openCodeOutcomeWritable answers whether the part this call would write states an outcome the harness's
+// tool states can hold: a result the read holds, with text the output field can carry and a status the
+// vocabulary can spell -- the guards toolPart applies where it writes the part or counts its omission
+// (an empty or whitespace-only text, a status with a third meaning). It is a pure question about the
+// plan, asked by the id-less inference too: a call whose planned result would not be written has no
+// answer in the document.
+func openCodeOutcomeWritable(call *openCodeCall) bool {
+	if call.Result == nil {
+		return false
+	}
+	if text, _ := resultText(*call.Result); strings.TrimSpace(text) == "" {
+		return false
+	}
+	switch status := strings.ToLower(strings.TrimSpace(call.Result.Status)); status {
+	case "", openCodeToolCompleted, "errored", "error", "failed", "failure":
+		return true
+	default:
+		return false
+	}
 }
 
 // pairedCallEntry answers the planned call one recorded result event names, through the seam's own
@@ -1176,6 +1245,13 @@ func (c *openCodeConverter) toolPart(call *openCodeCall, floor int64) (openCodeP
 	if call.generatedID || call.inferredResultID {
 		c.lossGeneratedIDs++
 	}
+	if call.collidingID {
+		// The part is written under an id generated from the call's own place because an earlier
+		// occurrence in this document already holds the recorded one: the substitution is counted here,
+		// with the part, rather than in the fixed row list (a run without a selection keeps the recorded
+		// ids, so its report keeps its own category list -- goal 0009's D4).
+		c.lossCollidingIDs++
+	}
 	if strings.TrimSpace(call.Source.SubagentSessionID) != "" {
 		// The source recorded which session this call spawned: the inherited Codex parser sets the child
 		// session id on a spawn_agent call, and the archive read carries the same column. The harness's
@@ -1200,9 +1276,20 @@ func (c *openCodeConverter) toolPart(call *openCodeCall, floor int64) (openCodeP
 	// (counted above), and the round-trip walk compares what the store holds against what was written.
 	// The source's own input is still the thing the run accounts for, which is what the empty_tool_inputs
 	// caveat states.
+	// The part holds the call and its state.
+	callItem := len(c.items)
+	resultItem := TargetItem{Kind: ItemToolResult, CallID: call.ID, Text: text}
+	if c.conv.selectionReduced() {
+		// A document a selection produced knows the owning occurrence (the plan's pairing or its
+		// disclosed inference picked this call), so the result item states the call item's place and the
+		// round-trip check asserts the attachment the harness's own reader makes. A run without a
+		// selection states none: its format pairs by the id alone, and its report stays what it was
+		// (goal 0009's D4).
+		resultItem.OwnerCall = &callItem
+	}
 	c.items = append(c.items,
 		TargetItem{Kind: ItemToolCall, CallID: call.ID, ToolName: call.Source.Name, InputJSON: string(input)},
-		TargetItem{Kind: ItemToolResult, CallID: call.ID, Text: text},
+		resultItem,
 	)
 	// The part's own time is required by the importer: the call's recorded instant for `created`, and
 	// the instant of the record the carried result was recorded on for `completed` (the plan keeps the
@@ -1572,7 +1659,7 @@ func (c *openCodeConverter) losses() []Loss {
 	// (dialogueLossRows), with this route's own answer for an unestablished record.
 	losses = append(losses, dialogueLossRows(c.lossUnresolvedDialogue, c.lossUnprojectedDialogue,
 		openCodeUnestablishedOutcome)...)
-	return append(losses, []Loss{
+	losses = append(losses, []Loss{
 		{
 			Category:    "whitespace_only_dialogue",
 			Disposition: DispositionOmitted,
@@ -1878,6 +1965,22 @@ func (c *openCodeConverter) losses() []Loss {
 			Detail:      needsRetryDetail,
 		},
 	}...)
+	// The colliding-id category exists only where an id can collide: only a document a selection produced
+	// writes every call occurrence the read holds beside the ids the source recorded, and an unflagged run
+	// keeps those ids and its report keeps its own category list (goal 0009's D4). The count is zero on a
+	// reduced document with no collision, so the completeness rule holds within the selection surface.
+	if c.conv.selectionReduced() {
+		losses = append(losses, Loss{
+			Category:    "colliding_call_ids",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       c.lossCollidingIDs,
+			Detail: "these call occurrences recorded an id an earlier written occurrence already holds; " +
+				"the harness's tool part is keyed by its id, so two parts under one id could not be " +
+				"told from each other. The occurrence was written under an id generated from its own " +
+				"place, and the file does not state the id the source recorded for it",
+		})
+	}
+	return losses
 }
 
 // openCodeBindingDetail words what the report says about the session's own model binding: which model

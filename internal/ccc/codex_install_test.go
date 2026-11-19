@@ -85,6 +85,89 @@ func TestCodexRoundTripReportNamesDifferencesWithoutTheirText(t *testing.T) {
 	}
 }
 
+// TestCodexRoundTripAssertsTheOwningCallOfEachResult pins the owner half of the round-trip comparison: an
+// id two written call occurrences share cannot say which invocation an output answers, so a result item
+// states the place of the call item it was written for (TargetItem.OwnerCall) and the comparison asserts
+// the attachment the inherited reader makes -- the call occurrence its own order resolves the output onto
+// (the last call stated under the id). The document below is that shape: calls A and B share an id, the
+// recorded output answers B, and the inferred output answers A; the read-back is the file's own reading,
+// where the Codex sink folds both outputs onto B, the last call registered for the id. The comparison
+// reports the reassignment and names the invocation the output was written for -- without carrying the
+// evidence itself -- while a read-back that attaches each output to the occurrence it was written for
+// holds no difference at all: the comparison is about the attachment, not about the id.
+func TestCodexRoundTripAssertsTheOwningCallOfEachResult(t *testing.T) {
+	const (
+		reusedID    = "toolu_reused"
+		firstInput  = `{"command":"a"}`
+		secondInput = `{"command":"b"}`
+		lateOutput  = "the inferred output"
+		earlyOutput = "the recorded output"
+	)
+	// The call items stand at indexes 1 and 3 of the list, so each result item's stated owner is the
+	// occurrence the writer wrote it for: the recorded output for B, the inferred one for A.
+	callA, callB := 1, 3
+	rollout := CodexRollout{Items: []TargetItem{
+		{Kind: ItemAssistant, Text: "the two calls"},
+		{Kind: ItemToolCall, CallID: reusedID, ToolName: "Bash", InputJSON: firstInput},
+		{Kind: ItemAssistant, Text: "the calls' outcomes"},
+		{Kind: ItemToolCall, CallID: reusedID, ToolName: "Bash", InputJSON: secondInput},
+		{Kind: ItemToolResult, CallID: reusedID, Text: earlyOutput, OwnerCall: &callB},
+		{Kind: ItemToolResult, CallID: reusedID, Text: lateOutput, OwnerCall: &callA},
+	}}
+	folded := Conversation{Messages: []Message{
+		{Role: string(parser.RoleAssistant), Content: "the two calls"},
+		{Role: string(parser.RoleAssistant),
+			ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Bash", InputJSON: firstInput}}},
+		{Role: string(parser.RoleAssistant), Content: "the calls' outcomes"},
+		{Role: string(parser.RoleAssistant),
+			ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Bash", InputJSON: secondInput}},
+			ToolResults: []ToolResult{
+				{ToolUseID: reusedID, ContentRaw: earlyOutput, ContentDecoded: true},
+				{ToolUseID: reusedID, ContentRaw: lateOutput, ContentDecoded: true},
+			}},
+	}}
+	roundTrip := compareCodexRoundTrip(rollout, folded, nil)
+	if len(roundTrip.differences) == 0 {
+		t.Fatal("the comparison accepted a result the read-back attached to the other occurrence of the " +
+			"shared id")
+	}
+	report := strings.Join(roundTrip.differences, "; ")
+	if !strings.Contains(report, "written for the invocation of call "+reusedID+" to Bash") {
+		t.Errorf("the difference does not name the invocation the result was written for: %q", report)
+	}
+	for _, content := range []string{lateOutput, earlyOutput, firstInput, secondInput} {
+		if strings.Contains(report, content) {
+			t.Errorf("the difference carries the evidence it could not match: %q", report)
+		}
+	}
+
+	// The control: a read-back whose order attaches each output to the occurrence it was written for
+	// holds no *tool-result* difference at all. The arm is about the result evidence: this hand-built
+	// read-back carries no installed file bytes, and the dialogue walk resolves a written message
+	// against the file's own records, so its differences are filtered rather than required absent.
+	attached := Conversation{Messages: []Message{
+		{Role: string(parser.RoleAssistant), Content: "the two calls"},
+		{Role: string(parser.RoleAssistant),
+			ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Bash", InputJSON: firstInput}},
+			ToolResults: []ToolResult{
+				{ToolUseID: reusedID, ContentRaw: lateOutput, ContentDecoded: true},
+			}},
+		{Role: string(parser.RoleAssistant), Content: "the calls' outcomes"},
+		{Role: string(parser.RoleAssistant),
+			ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Bash", InputJSON: secondInput}},
+			ToolResults: []ToolResult{
+				{ToolUseID: reusedID, ContentRaw: earlyOutput, ContentDecoded: true},
+			}},
+	}}
+	for _, difference := range compareCodexRoundTrip(rollout, attached, nil).differences {
+		if strings.Contains(difference, categoryToolResult) ||
+			strings.Contains(difference, categoryToolCall) {
+			t.Errorf("difference = %q, want none about the calls or their results: each output is read "+
+				"back on the occurrence it was written for", difference)
+		}
+	}
+}
+
 // TestCodexRoundTripCountsWhatTheReaderProjectsAway pins the two shapes of a written dialogue message
 // the read-back does not show with its own text, and what separates them from a loss: the installed
 // file's own dialogue record.

@@ -176,7 +176,14 @@ obligation ships no citations file, rather than an empty one.
   paired it with, not the last write for a reused id; and the Codex writer writes the one invocation the
   count reads, folding a message's projected rows sharing an id into one `function_call` and reporting
   `coalesced_tool_call_projections` — a category a reduced document's report carries and the default
-  path's does not. A call whose read holds no
+  path's does not. A written call occurrence whose recorded id an earlier written occurrence already
+  holds is written under an id generated from its own place (`colliding_call_ids`, scoped the same way —
+  a run without a selection keeps the recorded ids), and every result is written under the owning
+  occurrence's emitted id, so an id two occurrences share cannot rebind an output; the round-trip check
+  asserts that ownership wherever a document states it — a result item names the call item it was written
+  for and the read-back's own attachment under the result's id is compared with it — while a document
+  that states no owner keeps the id-and-text comparison the default path has always had. A call whose read
+  holds no
   recorded outcome (no result at all, only progress events such as a Codex subagent's `running`
   notification, or an id-less progress event) is counted `calls_undischarged`, read from the pairing walk
   itself and counted in the unit
@@ -185,7 +192,10 @@ obligation ships no citations file, rather than an empty one.
   pairing left unanswered — while an archive read's own summary of an outcome on the call itself
   (`ToolCall.ResultContent`) is outcome evidence where the read holds no recorded result event of the
   call, so that shape is not counted. The reduced writers read the same rule on their side: a progress
-  event is not an answer in the outstanding set an id-less result is inferred against, while a run without
+  event is not an answer in the outstanding set an id-less result is inferred against, only an outcome
+  the document *states* answers a call there — a result whose text the output field cannot carry is
+  omitted and counted and leaves its call outstanding — and a summary the read stored on a call is
+  written for that call's own occurrence rather than inferred, while a run without
   a selection keeps the ledger's own answer (the status clears the call's id there). What a target's own format does with such a call is
   that writer's answer, named in the conversion's losses. A call or result the source
   recorded with **no** id carries no recorded link, so the seam neither invents one nor carries candidates
@@ -203,7 +213,9 @@ obligation ships no citations file, rather than an empty one.
   parent the selection left out is hung off its nearest retained ancestor (the read's own relation walked
   through the excluded records, with the tool-result step the writers take where the read may project one,
   and where the answer crossed that step the relation is counted (`unresolved_source_parents`) as the
-  writers count the projection they resolve themselves, and the answer travels by the record's own
+  writers count the projection they resolve themselves — a reduced document's count is the read's own
+  relation answers, so a parent the caller merely excluded is not one the read could not place — and the
+  answer travels by the record's own
   position, so a record the read answered no identity for keeps
   it), so the loader's walk stays the read's own line; an off-line record may keep an off-line ancestor —
   keeping a branch off the active walk is recorded history the writer reproduces — while an on-line record

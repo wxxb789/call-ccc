@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"go.kenn.io/agentsview/internal/parser"
 )
 
 // The selection fixture's own recorded ids and strings, spelled here rather than read out of the read:
@@ -1219,6 +1222,514 @@ func TestSelectionKeepsASparseWindowOnTheReadsLine(t *testing.T) {
 	}
 }
 
+// TestSelectionCountsOnlyThePlacesTheReadCouldNotAnswer pins the eighth round's fourth finding: the flat
+// targets' unresolved_source_parents count is computed from the *read's* own relation answers, so a parent
+// the caller excluded is not reported as a relation the read could not place. On the Pi history fixture,
+// --select 0,5 leaves out ordinal 1, the leaf's own recorded parent, while the read's chain 5 -> 1 -> 0
+// reaches the carried root: the window reports 0, exactly the whole read's own answer. The count still
+// names the places the read did not answer -- the same fixture's leaf alone retains no ancestor at all, so
+// the conversion's own place is counted once per flat route; and on the call fixture's window 1,4 the
+// count is the excluded root and the read's tool-result projection, the same two places the tree route
+// reports for it, so the flat routes and the tree routes cannot disagree about the read.
+func TestSelectionCountsOnlyThePlacesTheReadCouldNotAnswer(t *testing.T) {
+	history, err := NewSourceReader(fixtureConfig(t)).Read(context.Background(), piHistoryFixtureRef)
+	if err != nil {
+		t.Fatalf("reading the history fixture: %v", err)
+	}
+	// The read's own answer for the whole document: nothing unresolved.
+	route, err := targetRouteFor(TargetCodex)
+	if err != nil {
+		t.Fatalf("route %s: %v", TargetCodex, err)
+	}
+	whole, err := route.Convert(history, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("converting the whole read: %v", err)
+	}
+	if loss := lossCount(t, whole.Losses, "unresolved_source_parents"); loss.Count != 0 {
+		t.Errorf("the whole read counts unresolved_source_parents = %+v, want 0: every record's place is "+
+			"the read's own answer", loss)
+	}
+
+	flatRoutes := []string{TargetCodex, TargetOpenCode}
+	counts := []struct {
+		spec string
+		want int
+		why  string
+	}{
+		{"0,5", 0, "the leaf's parent (ordinal 1) is excluded but the read's chain reaches the carried " +
+			"root, so the place is the read's own answer"},
+		{"5", 1, "the leaf alone retains no ancestor at all: its entry follows nothing the read answered"},
+	}
+	for _, arm := range counts {
+		selected, _, err := Select(history, arm.spec, false)
+		if err != nil {
+			t.Fatalf("selecting %s: %v", arm.spec, err)
+		}
+		for _, target := range flatRoutes {
+			route, err := targetRouteFor(target)
+			if err != nil {
+				t.Fatalf("route %s: %v", target, err)
+			}
+			converted, err := route.Convert(selected, selectionProbeOptions())
+			if err != nil {
+				t.Fatalf("%s: converting %s: %v", target, arm.spec, err)
+			}
+			if loss := lossCount(t, converted.Losses, "unresolved_source_parents"); loss.Count != arm.want {
+				t.Errorf("%s: window %s counts unresolved_source_parents = %+v, want %d: %s",
+					target, arm.spec, loss, arm.want, arm.why)
+			}
+		}
+	}
+
+	// The call fixture's 1,4 window, where the count is not zero: the two places are the read's own --
+	// the excluded root (no retained ancestor) and the chain that crossed the read's tool-result
+	// projection -- and the flat routes report the same number the tree route's own case asserts.
+	calls, err := NewSourceReader(fixtureConfig(t)).Read(context.Background(), piFixtureRef)
+	if err != nil {
+		t.Fatalf("reading the call fixture: %v", err)
+	}
+	selected, _, err := Select(calls, "1,4", false)
+	if err != nil {
+		t.Fatalf("selecting 1,4: %v", err)
+	}
+	for _, target := range flatRoutes {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(selected, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the call window: %v", target, err)
+		}
+		if loss := lossCount(t, converted.Losses, "unresolved_source_parents"); loss.Count != 2 {
+			t.Errorf("%s: the 1,4 call window counts unresolved_source_parents = %+v, want the two "+
+				"places the tree route reports for it: the excluded root and the projection", target, loss)
+		}
+	}
+
+	// A whole-read selection does not move the count: every written record's place is the read's own
+	// answer, so the reduction of every record reports what the unflagged conversion reports -- the call
+	// fixture's one projection place, the history fixture's none.
+	for _, arm := range []struct {
+		conversation Conversation
+		want         int
+	}{{calls, 1}, {history, 0}} {
+		selected, _, err := Select(arm.conversation, "0-", false)
+		if err != nil {
+			t.Fatalf("selecting every record: %v", err)
+		}
+		for _, target := range flatRoutes {
+			route, err := targetRouteFor(target)
+			if err != nil {
+				t.Fatalf("route %s: %v", target, err)
+			}
+			unflagged, err := route.Convert(arm.conversation, selectionProbeOptions())
+			if err != nil {
+				t.Fatalf("%s: converting the read: %v", target, err)
+			}
+			if got := lossCount(t, unflagged.Losses, "unresolved_source_parents").Count; got != arm.want {
+				t.Fatalf("%s: the unflagged conversion counts unresolved_source_parents = %d, want %d",
+					target, got, arm.want)
+			}
+			converted, err := route.Convert(selected, selectionProbeOptions())
+			if err != nil {
+				t.Fatalf("%s: converting the whole-read selection: %v", target, err)
+			}
+			if got := lossCount(t, converted.Losses, "unresolved_source_parents").Count; got != arm.want {
+				t.Errorf("%s: the whole-read selection counts unresolved_source_parents = %d, want the "+
+					"unflagged conversion's own %d: a selection of every record does not move the count",
+					target, got, arm.want)
+			}
+		}
+	}
+}
+
+// selectionCallAndResultLines answers the evidence lines one written document holds for tool calls and
+// their results, in the document's own order: "call <id> <name> <input>" and "result <id> <text>", the
+// spellings selectionEvidence answers every route with. A case that needs one call's own line asks here.
+func selectionCallAndResultLines(t *testing.T, target string, data []byte) []string {
+	t.Helper()
+	var lines []string
+	for _, line := range selectionEvidence(t, target, data) {
+		if strings.HasPrefix(line, "call ") || strings.HasPrefix(line, "result ") {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// TestSelectionAnswersOnlyForTheOutcomesItWrites pins the eighth round's second finding: a recorded
+// result the conversion omits does not answer its call on the written path. Two calls on the selected
+// path, a linked terminal result for the first whose text is whitespace only (the target's output field
+// cannot carry it), and then an id-less result: both calls are unanswered in the document, so the id-less
+// result may not be inferred onto the second one -- it is omitted and counted, and no id is minted for
+// it. The control arm makes the first call's outcome writable: then it answers the call, the second
+// call is the sole outstanding occurrence, and the id-less result is written under it as before.
+func TestSelectionAnswersOnlyForTheOutcomesItWrites(t *testing.T) {
+	const (
+		blankOutput = "   "
+		firstOutput = "the first call's own output"
+		lateOutput  = "the late output"
+	)
+	withBlankFirst := func(firstRaw string) Conversation {
+		return testConversation(
+			Message{Ordinal: 0, Role: "assistant", Content: "call a", Dialogue: "call a",
+				ToolCalls: []ToolCall{{ToolUseID: "toolu_a", Name: "Bash", InputJSON: `{"command":"a"}`}}},
+			Message{Ordinal: 1, Role: "user", Content: "answer a", Dialogue: "answer a",
+				ToolResults: []ToolResult{{ToolUseID: "toolu_a", ContentRaw: firstRaw}}},
+			Message{Ordinal: 2, Role: "assistant", Content: "call b", Dialogue: "call b",
+				ToolCalls: []ToolCall{{ToolUseID: "toolu_b", Name: "Bash", InputJSON: `{"command":"b"}`}}},
+			Message{Ordinal: 3, Role: "user", Content: "the late result", Dialogue: "the late result",
+				ToolResults: []ToolResult{{ContentRaw: lateOutput}}},
+		)
+	}
+	selected, _, err := Select(withBlankFirst(blankOutput), "0-", false)
+	if err != nil {
+		t.Fatalf("selecting the omitted-outcome window: %v", err)
+	}
+	for _, target := range Targets() {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(selected, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the window: %v", target, err)
+		}
+		for _, line := range selectionCallAndResultLines(t, target, converted.Data) {
+			if strings.Contains(line, lateOutput) {
+				t.Errorf("%s: the written document holds the id-less result although no written result "+
+					"answered either call: %q", target, line)
+			}
+		}
+		if got := lossCount(t, converted.Losses, "unpaired_tool_results").Count; got != 1 {
+			t.Errorf("%s: unpaired_tool_results = %d, want the one id-less result neither call's "+
+				"written path answers", target, got)
+		}
+		if got := lossCount(t, converted.Losses, "generated_call_ids").Count; got != 0 {
+			t.Errorf("%s: generated_call_ids = %d, want 0: the inference picked no call, so no id was "+
+				"minted for the result", target, got)
+		}
+		if got := lossCount(t, converted.Losses, "whitespace_only_tool_results").Count; got != 1 {
+			t.Errorf("%s: whitespace_only_tool_results = %d, want the omitted result's own count",
+				target, got)
+		}
+	}
+
+	control, _, err := Select(withBlankFirst(firstOutput), "0-", false)
+	if err != nil {
+		t.Fatalf("selecting the writable-outcome window: %v", err)
+	}
+	for _, target := range Targets() {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(control, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the control window: %v", target, err)
+		}
+		written := false
+		for _, line := range selectionCallAndResultLines(t, target, converted.Data) {
+			if strings.Contains(line, lateOutput) {
+				written = true
+			}
+		}
+		if !written {
+			t.Errorf("%s: the control's id-less result was not written although its sole outstanding "+
+				"call is the second one", target)
+		}
+		if got := lossCount(t, converted.Losses, "unpaired_tool_results").Count; got != 0 {
+			t.Errorf("%s: the control counts unpaired_tool_results = %d, want 0", target, got)
+		}
+		if got := lossCount(t, converted.Losses, "generated_call_ids").Count; got != 1 {
+			t.Errorf("%s: the control counts generated_call_ids = %d, want the one inferred result",
+				target, got)
+		}
+	}
+}
+
+// TestSelectionAnswersASummaryFromItsOwningOccurrence pins the eighth round's third finding: a summary
+// the read stored on an id-less call (ToolCall.ResultContent) is that call's own outcome, so the writer
+// writes it under the id that occurrence stands under and never infers a different owner from the
+// outstanding set. The shape is the one pár the inference dropped: two outstanding calls on one record,
+// the id-less one first and holding its only outcome as the summary. Every route writes the summary, so
+// the call's own outcome evidence is in the document; the flags below assert which count carries it.
+func TestSelectionAnswersASummaryFromItsOwningOccurrence(t *testing.T) {
+	const (
+		idlessSummary = "the id-less call's own outcome"
+		firstSummary  = "the first call's own outcome"
+	)
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "assistant", Content: "the two calls", Dialogue: "the two calls",
+			ToolCalls: []ToolCall{
+				// The id-less call first: the shape whose summary the blank-id branch used to infer off
+				// the outstanding set although its owner was the record that stored it.
+				{Name: "Bash", InputJSON: `{"command":"idless"}`,
+					ResultContent: idlessSummary, ResultContentSize: len(idlessSummary)},
+				{ToolUseID: "toolu_first", Name: "Bash", InputJSON: `{"command":"first"}`,
+					ResultContent: firstSummary, ResultContentSize: len(firstSummary)},
+			}},
+	)
+	selected, _, err := Select(conversation, "0-", false)
+	if err != nil {
+		t.Fatalf("selecting the summary window: %v", err)
+	}
+	for _, target := range Targets() {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(selected, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the summary window: %v", target, err)
+		}
+		ids := map[string]string{}
+		for _, line := range selectionCallAndResultLines(t, target, converted.Data) {
+			if strings.HasPrefix(line, "call ") {
+				fields := strings.SplitN(line, " ", 4)
+				if len(fields) != 4 {
+					t.Fatalf("%s: a call line is not 'call <id> <name> <input>': %q", target, line)
+				}
+				ids[fields[3]] = fields[1]
+			}
+		}
+		idlessCallID, ok := ids[`{"command":"idless"}`]
+		if !ok {
+			t.Fatalf("%s: the written document holds no call for the id-less occurrence", target)
+		}
+		firstCallID, ok := ids[`{"command":"first"}`]
+		if !ok {
+			t.Fatalf("%s: the written document holds no call for the id-carrying occurrence", target)
+		}
+		for _, pair := range []struct{ id, summary, who string }{
+			{idlessCallID, idlessSummary, "the id-less call's summary must be written under the id " +
+				"that occurrence stands under, not inferred onto the other call"},
+			{firstCallID, firstSummary, "the id-carrying call's summary travels under its recorded id"},
+		} {
+			found := false
+			for _, line := range selectionCallAndResultLines(t, target, converted.Data) {
+				if line == "result "+pair.id+" "+pair.summary {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("%s: the document holds no result %s %q: %s", target, pair.id, pair.summary,
+					pair.who)
+			}
+		}
+		if got := lossCount(t, converted.Losses, "unpaired_tool_results").Count; got != 0 {
+			t.Errorf("%s: unpaired_tool_results = %d, want 0: both summaries' owners were known",
+				target, got)
+		}
+		// Codex, Claude and Pi/OMP count the id-less call and its summary as two records written under
+		// generated ids; OpenCode's tool part holds the call and its state together, so its own
+		// vocabulary counts the part's one id.
+		wantGenerated := 2
+		if target == TargetOpenCode {
+			wantGenerated = 1
+		}
+		if got := lossCount(t, converted.Losses, "generated_call_ids").Count; got != wantGenerated {
+			t.Errorf("%s: generated_call_ids = %d, want %d", target, got, wantGenerated)
+		}
+	}
+}
+
+// TestSelectionWritesCollidingCallOccurrencesUnderDistinctTargetIDs pins the eighth round's first
+// finding: a document a selection produced writes every call occurrence the read holds, and when the
+// source recorded one id on two of them the later occurrence is written under an id generated from its
+// own place -- otherwise the target's own reader (which pairs an output with the id) would attach the
+// inferred output of the earlier occurrence to the later one. The window below is the finding's shape:
+// calls A and B share an id, the recorded result answers B (the nearest call the id records before it),
+// and an id-less result follows, which the read leaves no link for and the writers infer onto A. Every
+// route must write the two occurrences under distinct ids, pair each result with the occurrence it
+// answers, and count the substitution (colliding_call_ids); a run without a selection keeps the recorded
+// ids on both occurrences and does not carry the category at all.
+func TestSelectionWritesCollidingCallOccurrencesUnderDistinctTargetIDs(t *testing.T) {
+	const (
+		reusedID     = "toolu_reused"
+		firstOutput  = "the first result"
+		lateOutput   = "the late result"
+		firstCommand = `{"command":"a"}`
+		secondCmd    = `{"command":"b"}`
+	)
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "assistant", Content: "call a", Dialogue: "call a",
+			ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Bash", InputJSON: firstCommand}}},
+		Message{Ordinal: 1, Role: "assistant", Content: "call b", Dialogue: "call b",
+			ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Bash", InputJSON: secondCmd}}},
+		Message{Ordinal: 2, Role: "user", Content: "the first result", Dialogue: "the first result",
+			ToolResults: []ToolResult{{ToolUseID: reusedID, ContentRaw: firstOutput}}},
+		Message{Ordinal: 3, Role: "user", Content: "the late result", Dialogue: "the late result",
+			ToolResults: []ToolResult{{ContentRaw: lateOutput}}},
+	)
+	selected, report, err := Select(conversation, "0-", false)
+	if err != nil {
+		t.Fatalf("selecting the reused-id window: %v", err)
+	}
+	if report.CallsUndischarged.Count != 1 ||
+		strings.Join(report.CallsUndischarged.Regions, ",") != "0" {
+		t.Fatalf("calls_undischarged = %+v, want the earlier call at ordinal 0: the seam pairs the "+
+			"recorded result with the nearest call the id records before it (ordinal 1), so the late "+
+			"result is the earlier occurrence's inference", report.CallsUndischarged)
+	}
+	for _, target := range Targets() {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		converted, err := route.Convert(selected, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the reused-id window: %v", target, err)
+		}
+		ids := map[string]string{}
+		for _, line := range selectionCallAndResultLines(t, target, converted.Data) {
+			if strings.HasPrefix(line, "call ") {
+				fields := strings.SplitN(line, " ", 4)
+				if len(fields) != 4 {
+					t.Fatalf("%s: a call line is not 'call <id> <name> <input>': %q", target, line)
+				}
+				ids[fields[3]] = fields[1]
+			}
+		}
+		firstID, secondID := ids[firstCommand], ids[secondCmd]
+		if firstID == "" || secondID == "" {
+			t.Fatalf("%s: the document does not hold both call occurrences (ids %v)", target, ids)
+		}
+		if firstID == secondID {
+			t.Errorf("%s: both call occurrences are written under %q: the target pairs a call with its "+
+				"output by id, so the earlier occurrence's inferred output would read back under the "+
+				"later one", target, firstID)
+		}
+		if firstID != reusedID {
+			t.Errorf("%s: the first occurrence is written under %q, want the id the source recorded on "+
+				"it (%q): the id is substituted on the later occurrence alone", target, firstID, reusedID)
+		}
+		for _, pair := range []struct{ id, text, who string }{
+			{firstID, lateOutput, "the id-less result is the earlier occurrence's own inference"},
+			{secondID, firstOutput, "the recorded result answers the later occurrence"},
+		} {
+			found := false
+			for _, line := range selectionCallAndResultLines(t, target, converted.Data) {
+				if line == "result "+pair.id+" "+pair.text {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("%s: no result %s %q in the document (%s)", target, pair.id, pair.text, pair.who)
+			}
+		}
+		if got := lossCount(t, converted.Losses, "colliding_call_ids").Count; got != 1 {
+			t.Errorf("%s: colliding_call_ids = %d, want the one occurrence written under a generated id",
+				target, got)
+		}
+		if got := lossCount(t, converted.Losses, "generated_call_ids").Count; got != 1 {
+			t.Errorf("%s: generated_call_ids = %d, want the one id-less result's inference", target, got)
+		}
+		if got := lossCount(t, converted.Losses, "unpaired_tool_results").Count; got != 0 {
+			t.Errorf("%s: unpaired_tool_results = %d, want 0: both results' owners are in the document",
+				target, got)
+		}
+	}
+
+	// The Codex arm asserts the owning call on the target's *own read-back*: the inherited reader folds
+	// an output onto the message of the last call registered for the id, so the file-level attachment --
+	// not only the serialized ids -- has to name the right occurrence.
+	codexRoute, err := targetRouteFor(TargetCodex)
+	if err != nil {
+		t.Fatalf("route %s: %v", TargetCodex, err)
+	}
+	converted, err := codexRoute.Convert(selected, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("%s: converting the reused-id window: %v", TargetCodex, err)
+	}
+	messages := codexReadBackMessages(t, converted.Raw.(CodexRollout))
+	attached := map[string][]string{}
+	for _, message := range messages {
+		var calls []string
+		for _, call := range message.ToolCalls {
+			calls = append(calls, call.ToolUseID)
+		}
+		for _, result := range message.ToolResults {
+			for _, id := range calls {
+				if result.ToolUseID == id {
+					attached[id] = append(attached[id], result.ContentRaw)
+				}
+			}
+		}
+	}
+	var lateOwner, firstOwner string
+	for id, outputs := range attached {
+		for _, output := range outputs {
+			switch output {
+			case lateOutput:
+				lateOwner = id
+			case firstOutput:
+				firstOwner = id
+			}
+		}
+	}
+	if lateOwner == firstOwner || lateOwner == "" || firstOwner == "" {
+		t.Fatalf("the read-back attaches the outputs to calls %q/%q, want one each: the inferred output "+
+			"belongs to the earlier occurrence and the recorded one to the later (attachments %v)",
+			lateOwner, firstOwner, attached)
+	}
+
+	// The unflagged run keeps the ids the source recorded on both occurrences and its report keeps its
+	// own category list: the substitution exists only where a selection writes every occurrence the read
+	// holds (goal 0009's D4).
+	for _, target := range Targets() {
+		route, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		unflagged, err := route.Convert(conversation, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the read without a selection: %v", target, err)
+		}
+		for _, line := range selectionCallAndResultLines(t, target, unflagged.Data) {
+			if strings.HasPrefix(line, "call ") && !strings.Contains(line, " "+reusedID+" ") {
+				t.Errorf("%s: the unflagged conversion writes a call under %q, want the recorded id on "+
+					"every occurrence", target, line)
+			}
+		}
+		for _, loss := range unflagged.Losses {
+			if loss.Category == "colliding_call_ids" {
+				t.Errorf("%s: the unflagged conversion carries the reduction's own colliding_call_ids row",
+					target)
+			}
+		}
+	}
+}
+
+// codexReadBackMessages installs one Codex rollout into a throw-away home and answers the messages the
+// inherited reader reads from the installed file: the target's own read-back, which is what the round
+// trip and the owning-call assertions have to be about.
+func codexReadBackMessages(t *testing.T, rollout CodexRollout) []Message {
+	t.Helper()
+	home := t.TempDir()
+	if _, _, err := InstallCodexRollout(rollout, home); err != nil {
+		t.Fatalf("installing the rollout: %v", err)
+	}
+	sessions := filepath.Join(home, codexSessionsSubdir)
+	cfg := fixtureConfig(t)
+	dirs := make(map[parser.AgentType][]string, len(cfg.AgentDirs))
+	for name, roots := range cfg.AgentDirs {
+		dirs[name] = roots
+	}
+	dirs[parser.AgentCodex] = []string{sessions}
+	cfg.AgentDirs = dirs
+	cfg.DisabledAgents = nil
+	readBack, err := NewSourceReader(cfg).Read(context.Background(), Ref{
+		Provider: string(parser.AgentCodex),
+		ID:       filepath.Join(sessions, filepath.FromSlash(rollout.Directory), rollout.FileName),
+	})
+	if err != nil {
+		t.Fatalf("reading the installed rollout back: %v", err)
+	}
+	return readBack.Messages
+}
+
 // TestSelectionKeepsACarriedResultOnTheWalkThroughItsCall pins the projection half of the ancestry rule
 // on the committed Pi fixture: the reader answers the record after a tool result as hanging off the
 // message that made the call (record 3 names the call in the read although the file names the result),
@@ -2206,23 +2717,13 @@ func claudeWalkRecords(t *testing.T, records []map[string]any) []map[string]any 
 }
 
 // claudeRecordHoldsInput answers whether one written record holds a tool_use block with the id and the
-// recorded command, and claudeRecordHoldsResult whether it holds a tool_result block with the text: the
-// two halves a case walks a written tree for.
+// recorded command: one half of what a case walks a written tree for.
 func claudeRecordHoldsInput(record map[string]any, callID, command string) bool {
 	for _, block := range recordBlocks(record) {
 		if block["type"] != "tool_use" || block["id"] != callID {
 			continue
 		}
 		if input, ok := block["input"].(map[string]any); ok && input["command"] == command {
-			return true
-		}
-	}
-	return false
-}
-
-func claudeRecordHoldsResult(record map[string]any, text string) bool {
-	for _, block := range recordBlocks(record) {
-		if block["type"] == "tool_result" && block["content"] == text {
 			return true
 		}
 	}
@@ -2418,19 +2919,47 @@ func TestSelectionPairsAResultByItsRecordedAncestry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("converting the window to claude: %v", err)
 	}
-	callOnWalk, resultOnWalk := false, false
+	callIDs := map[string]string{}
+	resultOnWalk := ""
 	for _, record := range claudeWalkRecords(t, decodeTranscript(t, transcript)) {
-		if claudeRecordHoldsInput(record, reusedID, "two") {
-			callOnWalk = true
-		}
-		if claudeRecordHoldsResult(record, resultBText) {
-			resultOnWalk = true
+		for _, block := range recordBlocks(record) {
+			switch block["type"] {
+			case "tool_use":
+				input, ok := block["input"].(map[string]any)
+				if !ok {
+					continue
+				}
+				if command, ok := input["command"].(string); ok {
+					id, _ := block["id"].(string)
+					callIDs[command] = id
+				}
+			case "tool_result":
+				if block["content"] == resultBText {
+					resultOnWalk, _ = block["tool_use_id"].(string)
+				}
+			}
 		}
 	}
-	if !callOnWalk || !resultOnWalk {
-		t.Errorf("the walk from the transcript's last record holds the call = %v and the result = %v, "+
-			"want both: a resumed session reads the output only under the invocation it answers",
-			callOnWalk, resultOnWalk)
+	if callIDs["one"] == "" || callIDs["two"] == "" || resultOnWalk == "" {
+		t.Fatalf("the walk from the transcript's last record holds the calls %v and the result %q: "+
+			"want both calls of the reused id and the output the result carries", callIDs, resultOnWalk)
+	}
+	if callIDs["one"] != reusedID {
+		t.Errorf("the first occurrence stands under %q, want the id the source recorded on it (%q)",
+			callIDs["one"], reusedID)
+	}
+	if callIDs["two"] == callIDs["one"] {
+		t.Errorf("both occurrences of the reused id stand under %q: the target pairs a tool result "+
+			"with its tool_use by id, so the output would read back under the wrong invocation",
+			callIDs["two"])
+	}
+	if count := lossCount(t, transcript.Losses, "colliding_call_ids").Count; count != 1 {
+		t.Errorf("colliding_call_ids = %d, want the one occurrence written under an id generated from "+
+			"its own place", count)
+	}
+	if resultOnWalk != callIDs["two"] {
+		t.Errorf("the walk holds the result under %q, want the id of the call it answers (%q): a resumed "+
+			"session reads the output only under the invocation it answers", resultOnWalk, callIDs["two"])
 	}
 	piRoute, err := targetRouteFor(TargetPi)
 	if err != nil {
@@ -2455,7 +2984,7 @@ func TestSelectionPairsAResultByItsRecordedAncestry(t *testing.T) {
 	if !onPath[resultID] {
 		t.Errorf("the walk from the Pi file's last entry does not hold the last result's entry")
 	}
-	callOnWalk = false
+	callOnWalk := false
 	for _, line := range lines[1:] {
 		if onPath[line.ID] && strings.Contains(string(line.Message), `{"command":"two"}`) {
 			callOnWalk = true
@@ -2464,6 +2993,23 @@ func TestSelectionPairsAResultByItsRecordedAncestry(t *testing.T) {
 	if !callOnWalk {
 		t.Errorf("the walk from the Pi file's last entry holds no record of the call the result answers:\n%s",
 			session.Data)
+	}
+	// The result's own entry names the call it answers, and that call is the occurrence the read paired
+	// it with -- written, when a second occurrence of the id stands in the window, under an id generated
+	// from its own place (colliding_call_ids): the file pairs the two by id.
+	callID, resultCallID := "", ""
+	for _, line := range selectionCallAndResultLines(t, TargetPi, session.Data) {
+		switch {
+		case strings.HasPrefix(line, "call ") && strings.Contains(line, `{"command":"two"}`):
+			callID = strings.Fields(line)[1]
+		case strings.HasPrefix(line, "result ") && strings.HasSuffix(line, " "+resultBText):
+			resultCallID = strings.Fields(line)[1]
+		}
+	}
+	if callID == "" || resultCallID != callID {
+		t.Errorf("the Pi session writes the result under %q and the call it answers under %q, want one "+
+			"id: a resumed session reads the output only under the invocation it answers",
+			resultCallID, callID)
 	}
 }
 

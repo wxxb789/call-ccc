@@ -545,3 +545,74 @@ measurement that decided it, followed by the review round's own:
       `TestSelectionClosesTheCounterpartGraphToAFixedPoint`, whose chain requires `2 → 1 → 0`.
       `docs/evidence/0009-citations.tsv` gains the five rows (`S5-identityless`, `S6-identityless`,
       `S2-idless-occurrences`, `S7-writers`, `D3-fixedpoint`) and the round's header block.
+
+15. **The ninth review round's four findings.** The review of `9242e49..1f6e7be` found two P1s and two
+    P2s -- a reused recorded id serialized twice so an inferred output read back under the other
+    occurrence, an omitted outcome still narrowing the reduced id-less inference, a summary on an id-less
+    call inferred off the outstanding set although its owner was known, and the flat targets counting a
+    merely excluded parent as an unresolved relation -- and asks for a machine-checked pin per rule the
+    touched surface claims. It leaves five departures:
+
+    * **a written call occurrence's emitted id is unique in the document** (review 1/4, a P1): a reduced
+      document writes every call occurrence the read holds, and the source may record one id on two of
+      them; each target pairs a call with its output by id (Codex's sink keeps the last call registered
+      for an id, Claude's reader one tool_use block per id, Pi's reader the block that registered it,
+      OpenCode keys the part by it), so an occurrence written under the shared id could not be told from
+      the earlier one and the output inferred for the earlier occurrence read back under the later. On a
+      reduced document the later occurrence is now written under an id generated from its own place --
+      the walk `freshCallID` keeps it clear of every id the document already states, recorded spellings
+      included -- and the substitution is counted (`colliding_call_ids`), a reduction-scoped row exactly
+      as `coalesced_tool_call_projections` is (the unflagged report keeps its own category list, D4).
+      The writers also write each result under the *owning occurrence's* emitted id, never the recorded
+      id read back off the result. `TestSelectionWritesCollidingCallOccurrencesUnderDistinctTargetIDs`
+      pins all five routes (distinct ids, each result under the occurrence it answers, the counts, and
+      the unflagged contrast), with a Codex read-back arm asserting the inherited reader's own
+      attachment; four executed mutations (one per writer's minting line) fail it.
+    * **a result omitted from the document does not answer its call** (review 2/4, a P1): the reduced
+      writers recorded a call's completion before the result's text guards, so a result whose text the
+      output field cannot carry (empty or whitespace) left the outstanding set and a later id-less result
+      was inferred onto a second call although neither had an outcome in the document. The reduced
+      ledger's update moved past every omission guard; the flagged path keeps the ledger's long-standing
+      answer (D4). A summary the read stored on a call (`ToolCall.ResultContent`) is likewise written for
+      the occurrence that stored it, never inferred off the outstanding set (review 3/4, a P2): the
+      writers' result helper reads the owning occurrence's emitted id for it (with two eligible calls the
+      inference used to drop an output whose owner was already known).
+      `TestSelectionAnswersOnlyForTheOutcomesItWrites` pins the omission, the counts and a writable
+      control arm on all five routes; `TestSelectionAnswersASummaryFromItsOwningOccurrence` pins the
+      summary's own owner (all five routes). Two executed mutations (the ledger restored before the
+      guards; the summary case falling back to the inference) fail them.
+    * **the round-trip check asserts the owning call of every result** (review 1/4, the second half): the
+      comparison identified a result by its call id and text, so a file whose output attached to the
+      wrong occurrence of a shared id verified as the intended one. A result item now states the place of
+      the call item it was written for (`TargetItem.OwnerCall`, which the reduced writers know from the
+      read's pairing or their disclosed inference), the read side derives the owning occurrence the way
+      the targets' readers resolve one (the last call the read-back states under the result's id), and
+      the comparison annotates every result key with the owning call's evidence (its id, tool and
+      arguments) -- a relation the reporter names without carrying any text.
+      `TestCodexRoundTripAssertsTheOwningCallOfEachResult` pins the reassignment report and a control
+      read-back that attaches each output to the occurrence it was written for; one executed mutation
+      (the annotation dropped) fails it. The comparison stays reduction-aware where it must: a writer
+      that states no owner has its result read against the reader's own last-under-the-id rule, which is
+      what the default path's acceptance has always meant.
+    * **the flat targets count the read's own relation answers, not the window's walk** (review 4/4, a
+      P2): `sourceLineAnswers` recomputed `unresolved_source_parents` by re-walking the reduced records,
+      so a parent the caller merely excluded (`--select 0,5` over the Pi history fixture's chain
+      5 → 1 → 0) was reported as a relation the read could not place. The count now reads the selection's
+      own ancestry answers (`Conversation.sourceKeptAncestor`, the walk the tree writers take): a
+      written record counts once where that answer crossed the tool-result projection, where it reached
+      no retained ancestor although it named a parent, or where it named none while not being the line's
+      first written record -- and a whole-read selection reports exactly the unflagged conversion's own
+      number. `TestSelectionCountsOnlyThePlacesTheReadCouldNotAnswer` pins the sparse windows, the leaf
+      that retains no ancestor, the 1,4 window's two places (the tree route's own number) and the
+      whole-read equality; one executed mutation (the count recomputed over the window) fails it.
+    * **OpenCode's id-less inference will not replace a recorded outcome** (review 2/4's shape, this
+      route's own answer): the plan's inference read `entry.Result != nil` as answered, so a call whose
+      planned result the document cannot state (whitespace text, a status the tool states cannot spell)
+      left the eligible set and the id-less result was inferred onto another call. The plan now asks
+      `openCodeOutcomeWritable` for the ambiguity (an unwritable planned result leaves its call
+      unanswered, so two unanswered occurrences make the result ambiguous) and for the placement: the
+      call an inferred result is written *for* must hold no planned result at all, because a part states
+      one outcome and the read's own evidence of a different one is not this conversion's to replace. An
+      inference the route's part has no room for is omitted and counted (`unpaired_tool_results`). This
+      case pins both arms (`TestSelectionAnswersOnlyForTheOutcomesItWrites`); one executed mutation (the
+      eligibility restored) fails it for OpenCode.

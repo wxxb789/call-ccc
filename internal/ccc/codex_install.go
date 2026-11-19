@@ -231,7 +231,7 @@ func compareRoundTrip(
 	items []TargetItem, readBack Conversation, reader roundTripReader, installedDialogue dialogueRecords,
 ) roundTripComparison {
 	intended := intendedRoundTripEvidence(items)
-	read := readRoundTripEvidence(readBack, reader)
+	read := readRoundTripEvidence(readBack, reader, roundTripResultOwnersStated(items))
 	dialogue := compareDialogue(intended.dialogue, read.dialogue, installedDialogue)
 	var roundTrip roundTripComparison
 	roundTrip.differences = append(roundTrip.differences, dialogue.differences...)
@@ -256,18 +256,116 @@ type roundTripEvidence struct {
 }
 
 // intendedRoundTripEvidence collects the evidence a target document says it wrote.
+//
+// A tool result is identified by the invocation it was written for as well as by its own call id and
+// text where the writer states that invocation (TargetItem.OwnerCall, which the reduced writers know
+// from the read's pairing or their disclosed inference): an id two written calls share cannot say which
+// occurrence an output answers, and the target's reader attaches the output to whichever occurrence its
+// own order reaches (the last call stated under the id). A document that states no owner -- a run without
+// a selection, whose format pairs by the id alone -- keeps the id-and-text key it has always had, so its
+// comparison and whole report are what they were (goal 0009's D4).
 func intendedRoundTripEvidence(items []TargetItem) roundTripEvidence {
 	var evidence roundTripEvidence
-	for _, item := range items {
+	callKeys := map[int]string{}
+	for itemIndex, item := range items {
 		switch item.Kind {
 		case ItemUser, ItemAssistant:
 			evidence.dialogue = append(evidence.dialogue, dialogueKey(string(item.Kind), item.Text))
 		case ItemToolCall:
-			evidence.calls = append(evidence.calls, roundTripCallKey(item.CallID, item.ToolName, item.InputJSON))
+			key := roundTripCallKey(item.CallID, item.ToolName, item.InputJSON)
+			callKeys[itemIndex] = key
+			evidence.calls = append(evidence.calls, key)
 		case ItemToolResult:
-			evidence.results = append(evidence.results, roundTripResultKey(item.CallID, item.Text))
+			ownerKey, known := "", false
+			if item.OwnerCall != nil {
+				ownerKey, known = callKeys[*item.OwnerCall], true
+			}
+			evidence.results = append(evidence.results,
+				roundTripOwnerResultKey(ownerKey, known, item.CallID, item.Text))
 		case ItemCompactionBoundary:
 			evidence.boundaries = append(evidence.boundaries, roundTripBoundaryKey(item.Text))
+		}
+	}
+	return evidence
+}
+
+// roundTripResultOwnersStated answers whether a target document states the owning call of its results
+// (TargetItem.OwnerCall). A document a selection produced does -- the read's pairing or the writer's
+// disclosed inference names the occurrence -- and a run without a selection does not; the comparison
+// asserts the attachment on the documents that claim one and keeps the id-and-text comparison the
+// default path has always had, whose whole report is byte-identical to the same run before selections
+// existed (goal 0009's D4).
+func roundTripResultOwnersStated(items []TargetItem) bool {
+	for _, item := range items {
+		if item.Kind == ItemToolResult && item.OwnerCall != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// roundTripOwnerResultKey identifies one written result by the invocation it was written for and by the
+// result's own key: the owning call's evidence key (its id, tool and arguments, so an occurrence sharing
+// an id with another is still told apart) where the document states one, and the plain result key where
+// it does not. The read side answers with the same shape, read under the same gate.
+func roundTripOwnerResultKey(ownerKey string, known bool, callID, text string) string {
+	result := roundTripResultKey(callID, text)
+	if !known || ownerKey == "" {
+		return result
+	}
+	return "paired\x00" + ownerKey + "\x00" + result
+}
+
+// readResultOwnerKeys answers, per result occurrence of a read-back, the call occurrence the target's own
+// reader attaches it to, keyed by the result's place in the read-back: the last call the read-back states
+// under the result's id at or before the result's own place. That is the reading these formats' readers
+// take -- an output names its invocation by id, and a call stated later under the same id is what such a
+// reader resolves it to (the inherited Codex reader keeps the last call registered for an id) -- so a
+// result a conversion wrote under an id two occurrences share answers a different invocation than the
+// writer intended, and comparing the owner is what shows it.
+func readResultOwnerKeys(readBack Conversation) map[resultOccurrence]string {
+	owners := map[resultOccurrence]string{}
+	lastUnderID := map[string]string{}
+	for index, message := range readBack.Messages {
+		for _, call := range message.ToolCalls {
+			lastUnderID[call.ToolUseID] = roundTripCallKey(call.ToolUseID, call.Name, call.InputJSON)
+		}
+		for resultIndex, result := range message.ToolResults {
+			key, ok := lastUnderID[result.ToolUseID]
+			if !ok {
+				continue
+			}
+			owners[resultOccurrence{message: index, result: resultIndex}] = key
+		}
+	}
+	return owners
+}
+
+// readRoundTripEvidence collects what a read-back of the installed file shows, minus the records the
+// target's own reader classifies away. ownersStated says the target document states the owning call of
+// its results (roundTripResultOwnersStated): the read-back's own attachment is then compared with it,
+// and where the document states none the results keep the id-and-text keys the comparison has always
+// used.
+func readRoundTripEvidence(readBack Conversation, reader roundTripReader, ownersStated bool) roundTripEvidence {
+	var evidence roundTripEvidence
+	evidence.dialogue = readBackDialogueKeys(readBack, reader)
+	owners := map[resultOccurrence]string{}
+	if ownersStated {
+		owners = readResultOwnerKeys(readBack)
+	}
+	for index, message := range readBack.Messages {
+		if message.IsCompactBoundary {
+			evidence.boundaries = append(evidence.boundaries, roundTripBoundaryKey(message.Content))
+			continue
+		}
+		for _, call := range message.ToolCalls {
+			evidence.calls = append(evidence.calls, roundTripCallKey(call.ToolUseID, call.Name, call.InputJSON))
+		}
+		for resultIndex, result := range message.ToolResults {
+			text, _ := resultText(result)
+			owner, known := owners[resultOccurrence{message: index, result: resultIndex}]
+			evidence.results = append(evidence.results,
+				roundTripOwnerResultKey(owner, known, result.ToolUseID, text))
 		}
 	}
 	return evidence
@@ -293,27 +391,6 @@ func (reader roundTripReader) readDialogue(message Message) string {
 		return reader.readText(message)
 	}
 	return dialogueOf(message).Text
-}
-
-// readRoundTripEvidence collects what a read-back of the installed file shows, minus the records the
-// target's own reader classifies away.
-func readRoundTripEvidence(readBack Conversation, reader roundTripReader) roundTripEvidence {
-	var evidence roundTripEvidence
-	evidence.dialogue = readBackDialogueKeys(readBack, reader)
-	for _, message := range readBack.Messages {
-		if message.IsCompactBoundary {
-			evidence.boundaries = append(evidence.boundaries, roundTripBoundaryKey(message.Content))
-			continue
-		}
-		for _, call := range message.ToolCalls {
-			evidence.calls = append(evidence.calls, roundTripCallKey(call.ToolUseID, call.Name, call.InputJSON))
-		}
-		for _, result := range message.ToolResults {
-			text, _ := resultText(result)
-			evidence.results = append(evidence.results, roundTripResultKey(result.ToolUseID, text))
-		}
-	}
-	return evidence
 }
 
 // readBackDialogueKeys answers one read-back's dialogue keys, in the read-back's own order, under one
@@ -830,6 +907,14 @@ func describeItem(category, item string) string {
 		tool, arguments, _ := strings.Cut(rest, "\x00")
 		return fmt.Sprintf("call %s to %s (%s)", identity, tool, describeText(arguments))
 	case categoryToolResult:
+		if parts := strings.SplitN(item, "\x00", 6); len(parts) == 6 && parts[0] == "paired" {
+			// An owner-annotated result: "paired", the owning call's id, tool and arguments, the
+			// result's own call id and its text. A tool name, argument object or output containing a NUL
+			// byte can shift the fields, exactly as it can in the call key above; nothing here ever
+			// carries the text, which is reported by size and digest only.
+			return fmt.Sprintf("call %s's result (%s) written for the invocation of call %s to %s",
+				parts[4], describeText(parts[5]), parts[1], parts[2])
+		}
 		return fmt.Sprintf("call %s's result (%s)", identity, describeText(rest))
 	default:
 		return fmt.Sprintf("summary (%s)", describeText(item))

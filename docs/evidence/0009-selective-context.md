@@ -1655,6 +1655,146 @@ GATE: PASS
 exit=0
 ```
 
+### The ninth review round's findings (`1f6e7be`), fixed and re-measured
+
+The review of `9242e49..1f6e7be` found four items (two P1, two P2): a reduced document wrote two call
+occurrences of one recorded id under that id, so an output inferred for the earlier occurrence read back
+under the later one -- and the round-trip check, comparing ids and texts, could not see it (finding 1); a
+result the conversion omits (its text is whitespace only) still left the reduced ledger, so a later id-less
+result was inferred onto a second call although neither had an outcome in the document (finding 2); a
+summary the read stored on an id-less call was inferred off the outstanding set, so with two outstanding
+calls an output whose owner was already known was dropped (finding 3); and the flat targets recomputed
+`unresolved_source_parents` over the window alone, reporting a parent the caller had merely excluded as one
+the read could not place (finding 4). This round fixes all four and follows the review's systematic
+close-out: every rule the touched surface claims was proved by **one executed mutation** -- the rule's
+line reverted, the case that claims to pin it run, the failure recorded, the line restored -- and every
+rule the class reaches was pinned, so the four writers' minting lines each have their own mutation. Nine
+lines in all, across `M1`-`M9`; `grep -rn 'false &&\|&& false\|true ||' internal/ccc/*.go` is empty after
+the restores:
+
+```console
+$ # M1: Codex's colliding-id case disabled (case false && …; finding 1, S2-colliding-ids)
+$ go test -tags fts5 -count=1 -run TestSelectionWritesCollidingCallOccurrencesUnderDistinctTargetIDs ./internal/ccc/
+--- FAIL: TestSelectionWritesCollidingCallOccurrencesUnderDistinctTargetIDs (0.10s)
+    selection_test.go:1600: codex: both call occurrences are written under "toolu_reused": the target
+    pairs a call with its output by id, so the earlier occurrence's inferred output would read back under
+    the later one
+    selection_test.go:1623: codex: colliding_call_ids = 0, want the one occurrence written under a
+    generated id
+    selection_test.go:1673: the read-back attaches the outputs to calls "toolu_reused"/"toolu_reused",
+    want one each: the inferred output belongs to the earlier occurrence and the recorded one to the
+    later (attachments map[toolu_reused:[the first result the late result]])
+exit=1
+$ # M2: the same line in the Claude writer (S2-colliding-ids)
+$ go test -tags fts5 -count=1 -run TestSelectionWritesCollidingCallOccurrencesUnderDistinctTargetIDs ./internal/ccc/
+--- FAIL: TestSelectionWritesCollidingCallOccurrencesUnderDistinctTargetIDs (0.20s)
+    selection_test.go:1600: claude: both call occurrences are written under "toolu_reused": …
+    selection_test.go:1623: claude: colliding_call_ids = 0, want the one occurrence written under a
+    generated id
+exit=1
+$ # M3: the same line in the Pi family writer (serves Pi and OMP; S2-colliding-ids)
+$ go test -tags fts5 -count=1 -run TestSelectionWritesCollidingCallOccurrencesUnderDistinctTargetIDs ./internal/ccc/
+--- FAIL: TestSelectionWritesCollidingCallOccurrencesUnderDistinctTargetIDs (0.14s)
+    selection_test.go:1600: pi: both call occurrences are written under "toolu_reused": …
+    selection_test.go:1623: pi: colliding_call_ids = 0, …
+    selection_test.go:1600: omp: both call occurrences are written under "toolu_reused": …
+    selection_test.go:1623: omp: colliding_call_ids = 0, …
+exit=1
+$ # M4: OpenCode's minting condition disabled (else if false && …; S2-colliding-ids)
+$ go test -tags fts5 -count=1 -run TestSelectionWritesCollidingCallOccurrencesUnderDistinctTargetIDs ./internal/ccc/
+--- FAIL: TestSelectionWritesCollidingCallOccurrencesUnderDistinctTargetIDs (0.12s)
+    selection_test.go:1600: opencode: both call occurrences are written under "toolu_reused": …
+    selection_test.go:1623: opencode: colliding_call_ids = 0, …
+exit=1
+$ # M5: the round-trip comparison's owner annotation dropped (if true || !known …; S2-owning-call)
+$ go test -tags fts5 -count=1 -run TestCodexRoundTripAssertsTheOwningCallOfEachResult ./internal/ccc/
+--- FAIL: TestCodexRoundTripAssertsTheOwningCallOfEachResult (0.00s)
+exit=1
+$ # M6: Codex's reduced ledger update restored before the text guards (S7-written-outcomes)
+$ go test -tags fts5 -count=1 -run TestSelectionAnswersOnlyForTheOutcomesItWrites ./internal/ccc/
+--- FAIL: TestSelectionAnswersOnlyForTheOutcomesItWrites (0.00s)
+exit=1
+$ # M7: the summary case falling back to the inference (case … && callID != ""; S2-summary-owner)
+$ go test -tags fts5 -count=1 -run TestSelectionAnswersASummaryFromItsOwningOccurrence ./internal/ccc/
+--- FAIL: TestSelectionAnswersASummaryFromItsOwningOccurrence (0.00s)
+    selection_test.go:1517: codex: the document holds no result call_ccc_0_0 "the id-less call's own
+    outcome": the id-less call's summary must be written under the id that occurrence stands under, not
+    inferred onto the other call
+    selection_test.go:1522: codex: unpaired_tool_results = 1, want 0: both summaries' owners were known
+    selection_test.go:1533: codex: generated_call_ids = 1, want 2
+exit=1
+$ # M8: OpenCode's id-less inference reading the planned slot again (soleInferablePlannedCall →
+$ #     soleOutstandingPlannedCall; S7-written-outcomes)
+$ go test -tags fts5 -count=1 -run TestSelectionAnswersOnlyForTheOutcomesItWrites ./internal/ccc/
+--- FAIL: TestSelectionAnswersOnlyForTheOutcomesItWrites (0.00s)
+    selection_test.go:1401: opencode: the written document holds the id-less result although no written
+    result answered either call: "result toolu_b the late output"
+    selection_test.go:1406: opencode: unpaired_tool_results = 0, want the one id-less result neither
+    call's written path answers
+    selection_test.go:1410: opencode: generated_call_ids = 1, want 0: the inference picked no call, so no
+    id was minted for the result
+exit=1
+$ # M9: sourceLineAnswers' reduced branch re-walking the window (finding 4, S6-read-answers)
+$ go test -tags fts5 -count=1 -run TestSelectionCountsOnlyThePlacesTheReadCouldNotAnswer ./internal/ccc/
+--- FAIL: TestSelectionCountsOnlyThePlacesTheReadCouldNotAnswer (0.00s)
+    selection_test.go:1275: codex: window 0,5 counts unresolved_source_parents = {… Count:1 …}, want 0:
+    the leaf's parent (ordinal 1) is excluded but the read's chain reaches the carried root, so the place
+    is the read's own answer
+    selection_test.go:1275: opencode: window 0,5 counts unresolved_source_parents = {… Count:1 …}, want 0
+exit=1
+```
+
+The round also re-ran §4's probe revision unchanged over the two trees (`git worktree add --detach
+/tmp/ccc-d4-before 9242e49b…`, the retained probe copied in): 1109 / 1234 lines, each tree's two runs
+identical, the shared-document diff silent and the 125-line increment fixture absent from the base run --
+§4's numbers reproduced with the round's changes. The probe caught one thing the first revision of the
+owner annotation would have moved: the comparison first annotated *every* result (deriving an owner where
+the writer states none), and the off-path Claude pipeline arm's already-`not-verified` detail gained a
+result-attachment clause (`report digest` moved, folded 18857 → 19603). The annotation is therefore gated
+on the document *stating* an owner (`TargetItem.OwnerCall`, which only a reduced document's writers set):
+a document that states none keeps the id-and-text comparison, the shared diff is silent again, and the
+assertion is active exactly where the finding put it. The gate is recorded here rather than in §4 because
+it is this round's finding that needed it.
+
+The round's verification: the two packages' Go cases run green (below), the D4 probe re-ran over the two
+trees (§4's numbers reproduced, above), and the gate below is this round's own run -- `GATE: PASS`, exit 0,
+with `0009-citations.tsv` grown 42 → **47** rows. 452 → **457** top-level `Test…` functions in the
+`./cmd/ccc/... ./internal/ccc/...` test files: the round adds five cases
+(`TestSelectionCountsOnlyThePlacesTheReadCouldNotAnswer`,
+`TestSelectionAnswersOnlyForTheOutcomesItWrites`, `TestSelectionAnswersASummaryFromItsOwningOccurrence`,
+`TestSelectionWritesCollidingCallOccurrencesUnderDistinctTargetIDs`,
+`TestCodexRoundTripAssertsTheOwningCallOfEachResult`) and extends
+`TestSelectionPairsAResultByItsRecordedAncestry` (its Claude arm now asserts the emitted ids and the
+attachment instead of the recorded id on the later occurrence, the round's own contract change) and
+`TestContinueWithoutASelectionReportsNoSelection` (the whole-read selection's report now holds the two
+reduction-scoped rows); none deleted. The five new rows
+(`S2-colliding-ids`, `S2-owning-call`, `S7-written-outcomes`, `S2-summary-owner`, `S6-read-answers`) each
+cite a test that exists in `./internal/ccc` and passes. The round's first gate run failed `gofmt` alone
+(`internal/ccc/opencode_target.go`, `internal/ccc/selection_test.go` — field alignment and a comment block
+the round's edits had left unaligned); `gofmt -w` on the two files was the only change, and the run below
+is the final tree's own -- taken after this record's edits, with the two packages also run on their own
+first:
+
+```console
+$ go test -tags fts5 -count=1 ./internal/ccc/ ./cmd/ccc/
+ok  	go.kenn.io/agentsview/internal/ccc	17.953s
+ok  	go.kenn.io/agentsview/cmd/ccc	5.484s
+$ python3 scripts/gate.py; echo "exit=$?"
+  PASS     gofmt    3627 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 442 tests in 8.663s (rc=0)
+  PASS     parity   … (5553 carried file(s) identical to the pinned revision; 27 declared deviations + 1
+                    generated input present as declared; 32 project-owned prefix(es); 5727 file(s) seen by git)
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009-citations.tsv: 47 row(s) verified
+  PASS     secrets  no leaks found in 196 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+exit=0
+```
+
+(`parity`'s detail line is elided here as §6 elides it; the numbers in the elision are the ones it holds.)
+
 ## 7. Docs, rules and bookkeeping
 
 * `AGENTS.md` — a new binding bullet ("A conversion carries only what the caller selected …") outside the
@@ -1685,7 +1825,11 @@ exit=0
   an id are two calls, so an ambiguous result is omitted rather than bound to either) and the progress
   clause to the reduced writers' own outstanding set, and the line sentence to the per-position membership
   (a line target omits what the read's walk does not reach, identity-less records included, and the
-  off-line registration the revival check reads is by that position too).
+  off-line registration the revival check reads is by that position too). The ninth fix round added the
+  written-outcome condition and the summary's owner to the id-less inference's sentence, the colliding-id
+  substitution beside it, the read-answered count to the line sentence's ancestry clause, and the
+  round-trip check's owner assertion to the offline-half sentence (a written result's owning call is
+  compared wherever the document states one).
 * `docs/conventions.md` — the layout block names `selection.go`; a new rule under "Rules of the work"
   states the specification's grammar, the seam, the refusals and the report's classes, with the second
   round's refinements (order pairing, progress, ancestry, supplied blank) folded into the same rule, the
@@ -1701,10 +1845,13 @@ exit=0
   per-occurrence completion and the leaf guard's position-keyed answer) folded in beside them, and the
   eighth round's (the reduced line answer as the read's per-position membership for identity-less records,
   the occurrence-counted id-less inference, and the progress rule on the reduced writers' side) folded in
-  as well.
+  as well, and the ninth round's (the colliding-id substitution and the round-trip owner assertion, the
+  written-outcome ledger, the summary's owner, and the read-answered unresolved count) folded in beside
+  them.
 * `docs/plans/0009-selective-context.md` — §11 records the increment's numbered departures with the
-  measurement behind each (the third round's four in §11.12) and the fourth through eighth rounds' seven,
-  five, six, three and four at its close (the seventh's as item 13, the eighth's as item 14).
+  measurement behind each (the third round's four in §11.12) and the fourth through ninth rounds' seven,
+  five, six, three, four and five at its close (the seventh's as item 13, the eighth's as item 14, the
+  ninth's as item 15).
 * `docs/goals/README.md` — 0009's row reads *Implemented on `feat/0009-selective-context`; awaiting
   operator acceptance*, and the goal file's own `Status:` line reads the same (the form 0007 and 0008
   carried while their increments awaited acceptance); nothing else was ready to archive (0008 was archived
@@ -1732,7 +1879,12 @@ exit=0
   position — identity-less records included — and its id-less inference counts call occurrences and
   outcome-stating answers, while the default path keeps the flags and the ledger's id-keyed set — the
   reversals return the reduced writers to those and reopen the round's mutations, or ask the same question
-  on the flagless path and break D4).
+  on the flagless path and break D4); and Q-0009-11 (this round: a reduced document substitutes a colliding
+  recorded id, asserts result ownership where a document states one, answers only for writeable outcomes,
+  writes a summary for the call that stored it, and reads the flat targets' unresolved count from the
+  read's own relation answers — the reversals are the pre-fix lines the round's nine mutations record, or
+  the same substitution and assertion on the flagless path, which moves its bytes and report and breaks
+  D4).
 * `README.md` — an example line (`--select 0-3,7`, in range for its fixture), a paragraph on the flag and
   its report, and `Select` in the engine list. Unchanged by the third and fourth rounds: the paragraph's
   claims (the order pairing, the progress rule, the blank refusal, the ancestry rule) are still what the
@@ -1745,7 +1897,10 @@ exit=0
   sentence (the eligible occurrence must also have an unanswered walk, two occurrences sharing an id are
   ambiguous, and progress is not an answer on the reduced writers' side) and the line sentence (a line
   target omits what the read's walk does not reach, identity-less records included, and an on-line record
-  is never chained under an identity-less off-line one).
+  is never chained under an identity-less off-line one). The ninth round extended the id-less sentence
+  (an outcome the document cannot carry does not answer its call; a summary is written for the call that
+  stored it) and added the colliding-id substitution, the owning-call assertion and the read-answered
+  unresolved count.
 * `docs/harness.md` — unchanged: this increment adds no gate step and no knob, and the citations step it
   already requires is the one that reads the new manifest.
 * The throw-away probe file (§4) and the pre-change worktree were removed before the gate run; the probe's
@@ -1756,7 +1911,9 @@ exit=0
   quotes (recorded identities left as recorded — `d4ProbeRecordedIDs` — with the
   `recorded-call-id-change`/`recorded-uuid-change` control lines pinning it), and the sixth with the one
   this record quotes (the off-path transcript materialized at run time, `d4ProbeOffPathTranscript`, so the
-  review's input is compared on both trees); the seventh and eighth rounds re-ran that same revision
-  unchanged over both trees (1109/1234 lines, the shared diff silent — §4's numbers reproduced). The
+  review's input is compared on both trees); the seventh, eighth and ninth rounds re-ran that same revision
+  unchanged over both trees (1109/1234 lines, the shared diff silent — §4's numbers reproduced), the ninth
+  round after the owner assertion was gated on a document stating an owner (the ungated revision had moved
+  the off-path Claude arm's already-`not-verified` detail). The
   fixture generator (`internal/ccc/fixturegen`) and the committed fixture tree move together, pinned by
   the existing `TestFixturesMatchTheirGenerator`.

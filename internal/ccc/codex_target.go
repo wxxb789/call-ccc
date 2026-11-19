@@ -80,6 +80,15 @@ type TargetItem struct {
 	CallID    string `json:"call_id,omitempty"`
 	ToolName  string `json:"tool_name,omitempty"`
 	InputJSON string `json:"input_json,omitempty"`
+	// OwnerCall is the index in this item list of the call item a tool result was written for, where
+	// the writer knows the owning occurrence -- the reduced writers do, because the read's own pairing
+	// or their disclosed inference names it -- and nil where the format pairs a result with its call by
+	// the id alone. The round-trip check uses it to assert the attachment the target's own reader makes
+	// (the owning call's evidence, not only the id and the text): a result written under an id another
+	// written occurrence also holds would otherwise read back as that occurrence's outcome with nothing
+	// detecting the reassignment, and where the writer states no owner the check derives the owner the
+	// way the reader resolves one.
+	OwnerCall *int `json:"-"`
 }
 
 // CodexRollout is one converted target session, in memory and ready to install. Data is the exact
@@ -330,14 +339,15 @@ type codexRolloutBuilder struct {
 	messageIndex int
 	// pairings answers, per recorded result occurrence of the document this conversion walks, the call
 	// occurrence the seam's own order pairs it with (pairedCallOccurrences), and writtenCalls names the
-	// call occurrences whose entries this walk wrote, with the id each stands under. A document a
+	// call occurrences whose entries this walk wrote, with the id each stands under and the place its
+	// call item holds in the rollout's own item list (the owner a result item states). A document a
 	// selection produced checks the paired occurrence against that set: this target's log is one line of
 	// records with no parent relation, so a call the walk leaves off the line is not in the file at all,
 	// and a result whose paired occurrence is not written is omitted and counted (unpaired_tool_results)
 	// rather than written under an older call that happens to share its id, which would present this
 	// result as that call's outcome.
 	pairings     map[resultOccurrence]callOccurrence
-	writtenCalls map[callOccurrence]string
+	writtenCalls map[callOccurrence]codexWrittenCall
 	// answeredCalls names the written call occurrences a written result that *states an outcome*
 	// answered: the completion a reduced document's id-less inference reads, per occurrence. A record
 	// whose status says the call is still running is not an answer and is not recorded here
@@ -380,6 +390,7 @@ type codexRolloutBuilder struct {
 	lossPreBoundary         int
 	lossEmptyInputs         int
 	lossGeneratedIDs        int
+	lossCollidingIDs        int
 	lossCoalesced           int
 	lossSubagentLinks       int
 	lossResultFallbacks     int
@@ -449,7 +460,7 @@ func (b *codexRolloutBuilder) writeConversation(conv Conversation) {
 	// occurrence a recorded result answers is a property of the read's own order, and the walk has to
 	// ask that answer rather than accept any written call that shares the id.
 	b.pairings = pairedCallOccurrences(conv)
-	b.writtenCalls = map[callOccurrence]string{}
+	b.writtenCalls = map[callOccurrence]codexWrittenCall{}
 	b.answeredCalls = map[callOccurrence]bool{}
 	for index, message := range conv.Messages {
 		b.messageIndex = index
@@ -606,8 +617,8 @@ func (b *codexRolloutBuilder) writeToolEvidence(message Message) {
 		// The pairing the seam reads, keyed by the result's own place: a result with a recorded id
 		// answers the call occurrence the read's own ancestry establishes where it does, else the one the
 		// id records nearest before it, and none where the read holds no such occurrence. nil is passed
-		// for the latter, which resultCallWritten counts as an unpaired result on a reduced document
-		// unless the recorded id is empty and the sole outstanding call answers it below.
+		// for the latter, which toolResult omits and counts on a reduced document unless the recorded id
+		// is empty and the sole outstanding call answers it below.
 		var paired *callOccurrence
 		if place, ok := b.pairings[resultOccurrence{message: b.messageIndex, result: index}]; ok {
 			paired = &place
@@ -780,14 +791,27 @@ func (b *codexRolloutBuilder) toolCall(index int, call ToolCall, at time.Time) {
 		b.startTurn(at)
 	}
 	callID := strings.TrimSpace(call.ToolUseID)
-	if callID == "" {
+	switch {
+	case callID == "":
 		// The call's place in the document keys its generated id -- the message's position in the walk
 		// and the call's index in that message -- and not the message's own ordinal: an embedding caller
 		// may leave ordinals unassigned, and two messages' id-less calls must not collapse into one id.
 		// A shared id would make the pairing rule below read one call, so an id-less result could pair
 		// with "the" outstanding call while two are.
-		callID = fmt.Sprintf("%s%d_%d", codexGeneratedCallPrefix, b.messageIndex, index)
+		callID = b.freshCallID(fmt.Sprintf("%s%d_%d", codexGeneratedCallPrefix, b.messageIndex, index))
 		b.lossGeneratedIDs++
+	case b.selectionReduced && b.callIDTaken(callID):
+		// A document a selection produced writes each call occurrence the read holds, and the source
+		// recorded this id on an earlier occurrence too. The target pairs a call with its output by id --
+		// the inherited Codex reader attaches a function_call_output to the last call registered for the
+		// id -- so an occurrence written under the shared id could not be told from the earlier one: an
+		// output inferred for the earlier occurrence would read back as this one's outcome. The
+		// occurrence is written under an id generated from its own place (the same shape an id-less call
+		// takes), and the substitution is counted (colliding_call_ids) rather than left to read as the
+		// recorded id. A run without a selection keeps the ids the source recorded, exactly as before
+		// (goal 0009's D4).
+		callID = b.freshCallID(fmt.Sprintf("%s%d_%d", codexGeneratedCallPrefix, b.messageIndex, index))
+		b.lossCollidingIDs++
 	}
 	input := strings.TrimSpace(call.InputJSON)
 	if input == "" {
@@ -825,8 +849,10 @@ func (b *codexRolloutBuilder) toolCall(index int, call ToolCall, at time.Time) {
 	})
 	// The occurrence, not the id: a later result is paired by the read's own answer about *which* call
 	// occurrence it names, and this is the one whose entry stands here. The id set beside it is the
-	// acceptance a document that is not a selection's asks (resultCallWritten).
-	b.writtenCalls[callOccurrence{message: b.messageIndex, call: index}] = callID
+	// acceptance a document that is not a selection's asks (resultCallWritten); the item index is the
+	// owner a result written for this occurrence states (TargetItem.OwnerCall).
+	occurrence := callOccurrence{message: b.messageIndex, call: index}
+	b.writtenCalls[occurrence] = codexWrittenCall{id: callID, item: len(b.items)}
 	b.callOwners[callID] = struct{}{}
 	if b.pendingCalls == nil {
 		b.pendingCalls = map[string]struct{}{}
@@ -836,10 +862,46 @@ func (b *codexRolloutBuilder) toolCall(index int, call ToolCall, at time.Time) {
 	b.items = append(b.items, TargetItem{Kind: ItemToolCall, CallID: callID, ToolName: name, InputJSON: input})
 }
 
+// codexWrittenCall is one call occurrence this walk wrote: the id its call item stands under -- which is
+// not the recorded id where an earlier occurrence already held that one (colliding_call_ids) -- and the
+// index in the rollout's item list of the call item itself, which is what a result written for the
+// occurrence states as its owner (TargetItem.OwnerCall), so the round-trip check can assert the
+// attachment the target's own reader makes.
+type codexWrittenCall struct {
+	id   string
+	item int
+}
+
+// callIDTaken answers whether some call this walk already wrote stands under one id: the target pairs a
+// call with its output by id, so a second occurrence under the same id cannot be told from the first.
+func (b *codexRolloutBuilder) callIDTaken(callID string) bool {
+	_, taken := b.callOwners[callID]
+	return taken
+}
+
+// freshCallID answers an id the document does not already state: base where no written call holds it,
+// and otherwise base with a suffix counted until one is free, so a generated id can never alias a
+// recorded spelling or another generated one.
+func (b *codexRolloutBuilder) freshCallID(base string) string {
+	id := base
+	for suffix := 2; b.callIDTaken(id); suffix++ {
+		id = fmt.Sprintf("%s_%d", base, suffix)
+	}
+	return id
+}
+
 // toolResult writes one tool result. paired is the call occurrence the seam's own order pairs the result
 // with: the pairing the read recorded, keyed by the result's place in the document
 // (pairedCallOccurrences), or the call a derived summary came from. It is nil where the read holds no
 // call occurrence the result's id records before it.
+//
+// The id the output record is written under is the owning occurrence's *emitted* id, never the recorded
+// id read back off the result: a document a selection produced may have written that occurrence under an
+// id generated from its own place (colliding_call_ids, or a call that recorded none), and a result
+// written under the recorded spelling would read back as the outcome of whichever occurrence does hold
+// it. An id-less result whose owner is not known from a pairing -- an independent result record the read
+// left no link for -- is inferred from the outstanding set, and only there is an inference disclosed
+// (generated_call_ids).
 func (b *codexRolloutBuilder) toolResult(paired *callOccurrence, result ToolResult, at time.Time) {
 	callID := strings.TrimSpace(result.ToolUseID)
 	// resultIDInferred says the pairing below is the only id this result has: the source recorded none of
@@ -848,7 +910,32 @@ func (b *codexRolloutBuilder) toolResult(paired *callOccurrence, result ToolResu
 	// file holds.
 	resultIDInferred := false
 	answered := callOccurrence{}
-	if callID == "" {
+	switch {
+	case b.selectionReduced && paired != nil:
+		// The pairing names the occurrence this result answers -- the read's own answer for a recorded
+		// result, or the call a derived summary came from -- and the id the file holds for it is the one
+		// that occurrence was written under, which is not the recorded id where the document states
+		// another (a colliding id, an id-less call's generated one).
+		written, ok := b.writtenCalls[*paired]
+		if !ok {
+			// The paired occurrence has no entry in this file: the read's line leaves it off, the
+			// selection left it out, or the record carrying it brings no tool evidence here -- this
+			// target's log is one line, so such a call is not in the file at all, and accepting the id
+			// because some other written call shares it would present this result as that call's
+			// outcome.
+			b.lossUnpairedResults++
+			return
+		}
+		if callID == "" {
+			// A derived summary the read stored on the call itself (ToolCall.ResultContent): its owner
+			// is the occurrence it came from, so the result may not be inferred off the outstanding set
+			// -- an inference picks no call where two are eligible, and would drop an output whose owner
+			// was already known.
+			resultIDInferred = true
+		}
+		callID = written.id
+		answered = *paired
+	case callID == "":
 		id, occurrence, ok := b.soleResultCall()
 		if !ok {
 			// No call is outstanding, or several are and the result could belong to any of them: the
@@ -859,28 +946,20 @@ func (b *codexRolloutBuilder) toolResult(paired *callOccurrence, result ToolResu
 		callID = id
 		answered = occurrence
 		resultIDInferred = true
-	} else if !b.resultCallWritten(paired, callID) {
-		// The acceptance is resultCallWritten's own answer: the paired occurrence's written entry for a
-		// reduced document, and the id-existence check the default path has always asked.
+	case b.selectionReduced:
+		// A result that names an id, on a reduced document, whose read pairing names no written
+		// occurrence: omitted and counted exactly as the paired-absent case above.
 		b.lossUnpairedResults++
 		return
-	} else if b.selectionReduced && paired != nil {
-		// A reduced document's result was accepted only through the read's pairing (resultCallWritten
-		// requires it), so the pairing names the occurrence this result names.
-		answered = *paired
-	}
-	if b.selectionReduced {
-		// The recorded result that states an outcome answers its call here, whatever its output turns out
-		// to be below: a call whose result arrived leaves the outstanding set, so a later id-less result
-		// cannot be attributed to it. A result whose recorded status says the call is still running is
-		// progress rather than an answer (resultStatesAnOutcome): it travels as the evidence it is, and it
-		// leaves no mark on the outstanding set -- or a later id-less result would be inferred onto a call
-		// that was still unanswered where the result stands.
-		if resultStatesAnOutcome(result.Status) {
-			b.answeredCalls[answered] = true
-			delete(b.pendingCalls, callID)
+	default:
+		// The default path keeps the acceptance it has always asked: some written call stands under the
+		// id (goal 0009's D4).
+		if !b.resultCallWritten(callID) {
+			b.lossUnpairedResults++
+			return
 		}
-	} else {
+	}
+	if !b.selectionReduced {
 		// The default path keeps the ledger's own answer: the result clears its id from the file-wide
 		// set, whatever its status (goal 0009's D4 -- a run without a selection keeps the answer its
 		// writer had).
@@ -906,13 +985,27 @@ func (b *codexRolloutBuilder) toolResult(paired *callOccurrence, result ToolResu
 		}
 		return
 	}
+	if b.selectionReduced {
+		// The recorded result that states an outcome answers its call here, and only where it is
+		// *written*: a call whose result this conversion omitted -- text that is empty or whitespace, a
+		// guard above -- has no answer on the written path, so a later id-less result still sees it
+		// outstanding and is omitted rather than inferred onto another call. A result whose recorded
+		// status says the call is still running is progress rather than an answer
+		// (resultStatesAnOutcome): it travels as the evidence it is, and it leaves no mark on the
+		// outstanding set either.
+		if resultStatesAnOutcome(result.Status) {
+			b.answeredCalls[answered] = true
+			delete(b.pendingCalls, callID)
+		}
+	}
 	// The carried-with-caveat categories are counted here, past every omission guard: a result this
 	// conversion does not write carries no output, and counting it as carried (with the caveat that its
 	// text travelled without its recorded outcome, as an unresolved placeholder, or under a pairing the
 	// source never recorded) would claim evidence the file does not hold.
 	if resultIDInferred {
-		// The result recorded no id of its own, so the id it is written under is the pairing with the one
-		// call that was outstanding: only a written result carries that caveat.
+		// The result recorded no id of its own, so the id it is written under is one the conversion
+		// answered for it -- the pairing with the sole outstanding call, or the owning occurrence's own
+		// generated id: only a written result carries that caveat.
 		b.lossGeneratedIDs++
 	}
 	if result.PersistedOutputUnresolved {
@@ -950,7 +1043,18 @@ func (b *codexRolloutBuilder) toolResult(paired *callOccurrence, result ToolResu
 		},
 	})
 	b.carried.ToolResults++
-	b.items = append(b.items, TargetItem{Kind: ItemToolResult, CallID: callID, Text: text})
+	item := TargetItem{Kind: ItemToolResult, CallID: callID, Text: text}
+	if b.selectionReduced {
+		// A document a selection produced knows the owning occurrence (the pairing, or the disclosed
+		// inference that picked one), so the result item states the place of that occurrence's call item
+		// and the round-trip check asserts the attachment the reader makes instead of trusting that an
+		// id two occurrences could share identifies the right one.
+		if written, ok := b.writtenCalls[answered]; ok {
+			owner := written.item
+			item.OwnerCall = &owner
+		}
+	}
+	b.items = append(b.items, item)
 }
 
 // soleResultCall answers the call an id-less result may be paired with, and whether there is exactly one
@@ -972,35 +1076,24 @@ func (b *codexRolloutBuilder) soleResultCall() (string, callOccurrence, bool) {
 	found := ""
 	foundAt := callOccurrence{}
 	foundAny := false
-	for occurrence, id := range b.writtenCalls {
+	for occurrence, written := range b.writtenCalls {
 		if b.answeredCalls[occurrence] {
 			continue
 		}
 		if foundAny {
 			return "", callOccurrence{}, false
 		}
-		found, foundAt, foundAny = id, occurrence, true
+		found, foundAt, foundAny = written.id, occurrence, true
 	}
 	return found, foundAt, foundAny
 }
 
 // resultCallWritten answers whether a recorded result that names a call may be written under that call's
-// id. A document a selection produced asks the seam's own order: the call occurrence the read answers for
-// the result has to have its entry in this file (writtenCalls). It does not when the read's line leaves
-// the call off it, when the selection left it out, or when the record carrying it brings no tool
-// evidence here -- this target's log is one line, so such a call is not in the file at all, and
-// accepting the id because some other written call shares it would present this result as that call's
-// outcome, an invocation the source never recorded. A conversation the read returned asks the question
-// this writer has always asked -- whether any written call stands under the id -- so a run without a
-// selection is byte-identical to the same run before selections existed (goal 0009's D4).
-func (b *codexRolloutBuilder) resultCallWritten(paired *callOccurrence, callID string) bool {
-	if b.selectionReduced {
-		if paired == nil {
-			return false
-		}
-		_, ok := b.writtenCalls[*paired]
-		return ok
-	}
+// id on a conversation the read returned: whether some written call stands under the id. A document a
+// selection produced asks the seam's own order instead -- the paired occurrence's entry, checked where
+// the result's pairing is read (toolResult) -- so a run without a selection keeps the acceptance its
+// writer always had and is byte-identical to the same run before selections existed (goal 0009's D4).
+func (b *codexRolloutBuilder) resultCallWritten(callID string) bool {
 	_, ok := b.callOwners[callID]
 	return ok
 }
@@ -1329,6 +1422,21 @@ func (b *codexRolloutBuilder) losses() []Loss {
 				"one function_call per invocation -- the unit the selection's own accounting reads " +
 				"(distinctCalls), so one recorded output discharges it -- and what has no field is " +
 				"the per-file attribution of the projections not written",
+		})
+		// The colliding-id category is reduction-scoped for the same reason: only a document a
+		// selection produced writes every call occurrence the read holds beside the ids the source
+		// recorded, and an unflagged run keeps those ids (D4), so its report keeps its own category
+		// list unchanged. The count is zero on a reduced document with no collision, so the
+		// completeness rule holds within the selection surface.
+		losses = append(losses, Loss{
+			Category:    "colliding_call_ids",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.lossCollidingIDs,
+			Detail: "these call occurrences recorded an id an earlier written occurrence already " +
+				"holds; the target pairs a call and its output by id (the inherited Codex reader " +
+				"attaches a function_call_output to the last call registered for the id), so the " +
+				"occurrence was written under an id generated from its own place and the file does " +
+				"not state the id the source recorded for it",
 		})
 	}
 	return losses

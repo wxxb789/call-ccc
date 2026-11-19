@@ -530,10 +530,11 @@ type piSessionBuilder struct {
 	items      []TargetItem
 	idErr      error
 	callNames  map[string]string
-	// writtenCalls names each call occurrence this walk wrote, with the id and name it was written under.
-	// A reduced document's result record states the name of the occurrence the read paired the result
-	// with: callNames is keyed by id and the last write wins, so a reused id's later occurrence -- the
-	// inactive sibling a window may carry as history -- would otherwise supply its name.
+	// writtenCalls names each call occurrence this walk wrote, with the id, name and item index it was
+	// written under. A reduced document's result record states the name and the owning call item of the
+	// occurrence the read paired the result with: callNames is keyed by id and the last write wins, so a
+	// reused id's later occurrence -- the inactive sibling a window may carry as history -- would
+	// otherwise supply its name, and an id two occurrences share cannot say which one an output answers.
 	writtenCalls map[callOccurrence]piWrittenCall
 	// answeredCalls names, per call occurrence, the records whose written results *stating an outcome*
 	// answered it (each record's own position in the document): the completion a reduced document's
@@ -590,6 +591,7 @@ type piSessionBuilder struct {
 	lossEmptyInputs           int
 	lossGeneratedIDs          int
 	lossCoalesced             int
+	lossCollidingIDs          int
 	lossSubagentLinks         int
 	lossModels                int
 	lossModelFallbacks        int
@@ -1120,13 +1122,28 @@ func (b *piSessionBuilder) distinctCalls(message Message) []piProjectedCall {
 // decided, so a following result can pair with it.
 func (b *piSessionBuilder) callBlock(index int, call ToolCall) piContentBlock {
 	callID := strings.TrimSpace(call.ToolUseID)
-	if callID == "" {
+	switch {
+	case callID == "":
 		// The call's place in the document keys its generated id -- the message's position in the walk
 		// and the call's index in that message -- and not the message's own ordinal: an embedding
 		// caller may leave ordinals unassigned, and two messages' id-less calls must not collapse into
-		// one id, which would make the pairing below read one call where two exist.
-		callID = fmt.Sprintf("%s%d_%d", piGeneratedCallBase, b.writtenMessages, index)
+		// one id, which would make the pairing below read one call where two exist. The id is walked
+		// past every id this file already states (freshCallID): a generated id must not alias a recorded
+		// spelling or another generated one, or the target's reader could not tell the calls apart.
+		callID = b.freshCallID(fmt.Sprintf("%s%d_%d", piGeneratedCallBase, b.writtenMessages, index))
 		b.lossGeneratedIDs++
+	case b.selectionReduced && b.callIDTaken(callID):
+		// A document a selection produced writes each call occurrence the read holds, and the source
+		// recorded this id on an earlier occurrence too. The target pairs a call with its output by id --
+		// Pi's reader attaches a toolResult to the call whose block registered the id -- so an
+		// occurrence written under the shared id could not be told from the earlier one: an output
+		// inferred for the earlier occurrence would read back as this one's outcome. The occurrence is
+		// written under an id generated from its own place (the same shape an id-less call takes), and
+		// the substitution is counted (colliding_call_ids) rather than left to read as the recorded id.
+		// A run without a selection keeps the ids the source recorded, exactly as before (goal 0009's
+		// D4).
+		callID = b.freshCallID(fmt.Sprintf("%s%d_%d", piGeneratedCallBase, b.writtenMessages, index))
+		b.lossCollidingIDs++
 	}
 	name := strings.TrimSpace(call.Name)
 	if name == "" {
@@ -1146,35 +1163,56 @@ func (b *piSessionBuilder) callBlock(index int, call ToolCall) piContentBlock {
 		b.lossSubagentLinks++
 	}
 	b.callNames[callID] = name
-	b.writtenCalls[callOccurrence{message: b.tree.record, call: index}] = piWrittenCall{id: callID, name: name}
+	// The item index is read before the call item is appended, so it is the position that item will
+	// take: a result written for this occurrence states it as its owner (TargetItem.OwnerCall).
+	b.writtenCalls[callOccurrence{message: b.tree.record, call: index}] = piWrittenCall{id: callID, name: name, item: len(b.items)}
 	b.pendingCalls[callID] = struct{}{}
 	b.carried.ToolCalls++
 	b.items = append(b.items, TargetItem{Kind: ItemToolCall, CallID: callID, ToolName: name, InputJSON: arguments})
 	return piContentBlock{Type: piBlockToolCall, ID: callID, Name: name, Arguments: json.RawMessage(arguments)}
 }
 
-// piWrittenCall is one call occurrence this writer has written: the id it stands under and the name it
-// was written with, keyed by the call's own occurrence in the document. A result under a reused id needs
-// the name of the occurrence it answers, which the file-wide name map cannot give (it holds the last
-// write for the id).
+// callIDTaken answers whether some call this walk already wrote stands under one id: the target pairs a
+// call with its output by id, so a second occurrence under the same id cannot be told from the first.
+func (b *piSessionBuilder) callIDTaken(callID string) bool {
+	_, taken := b.callNames[callID]
+	return taken
+}
+
+// freshCallID answers an id the document does not already state: base where no written call holds it,
+// and otherwise base with a suffix counted until one is free, so a generated id can never alias a
+// recorded spelling or another generated one.
+func (b *piSessionBuilder) freshCallID(base string) string {
+	id := base
+	for suffix := 2; b.callIDTaken(id); suffix++ {
+		id = fmt.Sprintf("%s_%d", base, suffix)
+	}
+	return id
+}
+
+// piWrittenCall is one call occurrence this writer has written, keyed by the call's own occurrence in
+// the document: the id it stands under -- which is not the recorded id where an earlier occurrence
+// already held that one (colliding_call_ids) -- the name it was written with, and the index in this
+// session's item list of the call item itself, which is what a result written for the occurrence states
+// as its owner (TargetItem.OwnerCall), so the round-trip check can assert the attachment the target's
+// own reader makes. A result under a reused id needs the name of the occurrence it answers, which the
+// file-wide name map cannot give (it holds the last write for the id).
 type piWrittenCall struct {
 	id   string
 	name string
+	// item is the position in b.items of the call item this occurrence was written as, the owner a
+	// result item states so the round-trip check asserts the reader attaches the output to the right
+	// occurrence rather than to whichever call holds an id two occurrences could share.
+	item int
 }
 
 // resultCallWritten answers whether a recorded result that names a call may be written under that call's
-// id. A document a selection produced asks the seam's own pairing: the call occurrence the read answers
-// for the result has to stand on the result's own written ancestry (sourceTree.recordOnWrittenPath), or
-// the file would hold a toolResult whose invocation is off the walk a resumed session makes -- the
-// reduction's window is what can leave the paired call off that walk, and accepting the id because some
-// other written call shares it would present this result as that call's outcome. A conversation the read
-// returned asks the question this writer has always asked -- whether any written call stands under the
-// id -- so a run without a selection is byte-identical to the same run before selections existed (goal
-// 0009's D4).
-func (b *piSessionBuilder) resultCallWritten(paired *callOccurrence, callID string) bool {
-	if b.selectionReduced {
-		return paired != nil && b.tree.recordOnWrittenPath(paired.message)
-	}
+// id on a conversation the read returned: whether some written call stands under the id. A document a
+// selection produced asks the seam's own order instead -- the paired occurrence's entry, checked where
+// the result's pairing is read (writeToolResult) -- so this check now serves the default path alone, and a
+// run without a selection keeps the acceptance its writer always had and is byte-identical to the same
+// run before selections existed (goal 0009's D4).
+func (b *piSessionBuilder) resultCallWritten(callID string) bool {
 	_, ok := b.callNames[callID]
 	return ok
 }
@@ -1238,16 +1276,12 @@ func (b *piSessionBuilder) answeredOnWrittenPath(occurrence callOccurrence) bool
 	return false
 }
 
-// resultToolName answers the tool name a result record states for a result that names a call. A document
-// a selection produced takes it from the call occurrence the read paired the result with -- the
-// occurrence whose invocation the target's own walk reaches -- while the default path keeps the answer
-// its id map has always given (the last write for the id).
-func (b *piSessionBuilder) resultToolName(paired *callOccurrence, callID string) string {
-	if b.selectionReduced && paired != nil {
-		if written, ok := b.writtenCalls[*paired]; ok {
-			return written.name
-		}
-	}
+// resultToolName answers the tool name a result record states for a result that names a call: the name
+// the file's id map holds for it (the last write for the id). A document a selection produced takes the
+// name from the owning call occurrence instead -- the occurrence the read paired the result with, whose
+// written name writeToolResult reads off writtenCalls -- so this serves the default path alone and a run
+// without a selection keeps the answer its writer always had (goal 0009's D4).
+func (b *piSessionBuilder) resultToolName(callID string) string {
 	return b.callNames[callID]
 }
 
@@ -1257,46 +1291,81 @@ func (b *piSessionBuilder) resultToolName(paired *callOccurrence, callID string)
 // chained through this entry rather than off the walk the target's loader makes. paired is the call
 // occurrence the seam's own pairing names for the result (pairedCallOccurrences), or the call a derived
 // summary came from; nil where the read holds no call occurrence for it.
+//
+// On a document a selection produced the id and name the entry is written under are the owning
+// occurrence's *emitted* ones, never the recorded id read back off the result, and the result item states
+// that occurrence's call item (TargetItem.OwnerCall): an occurrence may have been written under an id
+// generated from its own place (colliding_call_ids, or a call that recorded none), and a result written
+// under the recorded spelling would read back as the outcome of whichever occurrence does hold it. A
+// result that names no id whose owner is not known from a pairing is inferred from the outstanding set,
+// and only there is an inference disclosed (generated_call_ids).
 func (b *piSessionBuilder) writeToolResult(paired *callOccurrence, result ToolResult, at time.Time, carrierRecord string) bool {
 	callID := strings.TrimSpace(result.ToolUseID)
+	// resultIDInferred says the pairing below is the only id this result has: the source recorded none of
+	// its own. The counter it feeds is incremented past the omission guards, together with the written
+	// result, because an inferred pairing on a result this conversion does not write is not evidence the
+	// file holds.
 	resultIDInferred := false
 	toolName := ""
 	answered := callOccurrence{}
-	if callID == "" {
+	switch {
+	case b.selectionReduced && paired != nil:
+		// The pairing names the occurrence this result answers -- the read's own answer for a recorded
+		// result, or the call a derived summary came from -- and the id and name the file holds for it
+		// are the ones that occurrence was written under, which are not the recorded ones where the
+		// document states another (a colliding id, an id-less call's generated one).
+		//
+		// The occurrence has to be one this walk wrote *and* one that stands on the written walk: this
+		// writer keeps the records the read's line leaves off it as recorded history, so a paired call can
+		// be in the file and still off the walk the target's loader makes from the result. Accepting the
+		// pairing there would write a toolResult whose invocation the resumed session cannot see, which is
+		// what the reduction's window can produce (the paired call stands on another branch).
+		written, ok := b.writtenCalls[*paired]
+		if !ok || !b.tree.recordOnWrittenPath(paired.message) {
+			// The paired occurrence has no entry in this file, or its entry is off the walk the resumed
+			// session reads: accepting the recorded id because some other written call shares it would
+			// present this result as that call's outcome.
+			b.lossUnpaired++
+			return false
+		}
+		if callID == "" {
+			// A derived summary the read stored on the call itself (ToolCall.ResultContent): its owner
+			// is the occurrence it came from, so the result may not be inferred off the outstanding set
+			// -- an inference picks no call where two are eligible, and would drop an output whose owner
+			// was already known.
+			resultIDInferred = true
+		}
+		callID, toolName = written.id, written.name
+		answered = *paired
+	case callID == "":
 		written, occurrence, ok := b.soleResultCall()
 		if !ok {
+			// No call is outstanding, or several are and the result could belong to any of them: the
+			// source recorded no id, so the pairing would be an invention.
 			b.lossUnpaired++
 			return false
 		}
 		callID, toolName = written.id, written.name
 		resultIDInferred = true
 		answered = occurrence
-	} else if !b.resultCallWritten(paired, callID) {
-		// The acceptance is resultCallWritten's own answer: the written ancestry the read's pairing names
-		// for a reduced document, and the id-existence check the default path has always asked.
+	case b.selectionReduced:
+		// A result that names an id, on a reduced document, whose read pairing names no written
+		// occurrence: omitted and counted exactly as the paired-absent case above.
 		b.lossUnpaired++
 		return false
-	} else {
-		toolName = b.resultToolName(paired, callID)
-		// A reduced document's result was accepted only through the read's pairing (resultCallWritten
-		// requires it), so the pairing names the occurrence this result answers.
-		if paired != nil {
-			answered = *paired
+	default:
+		// The default path keeps the acceptance it has always asked: some written call stands under the
+		// id (goal 0009's D4).
+		if !b.resultCallWritten(callID) {
+			b.lossUnpaired++
+			return false
 		}
+		toolName = b.resultToolName(callID)
 	}
-	if b.selectionReduced {
-		// The accepted result answers its call on the place it stands at, whether or not the text below
-		// gives it an entry: the recorded outcome is what leaves the outstanding set, exactly as the
-		// default path's ledger has always read it (the delete happens past the acceptance, before the
-		// text is known to be writable). A result whose recorded status says the call is still running is
-		// progress rather than an answer (resultStatesAnOutcome): it travels as the evidence it is, and it
-		// leaves no mark on the outstanding set -- or a later id-less result would be inferred onto a call
-		// that was still unanswered where the result stands.
-		if resultStatesAnOutcome(result.Status) {
-			b.answeredCalls[answered] = append(b.answeredCalls[answered], b.tree.record)
-			delete(b.pendingCalls, callID)
-		}
-	} else {
+	if !b.selectionReduced {
+		// The default path keeps the ledger's own answer: the result clears its id from the file-wide
+		// set, whatever its status (goal 0009's D4 -- a run without a selection keeps the answer its
+		// writer had).
 		delete(b.pendingCalls, callID)
 	}
 	text, blocks := resultText(result)
@@ -1308,6 +1377,19 @@ func (b *piSessionBuilder) writeToolResult(paired *callOccurrence, result ToolRe
 			b.lossWhitespaceRes++
 		}
 		return false
+	}
+	if b.selectionReduced {
+		// The recorded result that states an outcome answers its call here, and only where it is
+		// *written*: a call whose result this conversion omitted -- text that is empty or whitespace, a
+		// guard above -- has no answer on the written path, so a later id-less result still sees it
+		// outstanding and is omitted rather than inferred onto another call. A result whose recorded
+		// status says the call is still running is progress rather than an answer
+		// (resultStatesAnOutcome): it travels as the evidence it is, and it leaves no mark on the
+		// outstanding set either.
+		if resultStatesAnOutcome(result.Status) {
+			b.answeredCalls[answered] = append(b.answeredCalls[answered], b.tree.record)
+			delete(b.pendingCalls, callID)
+		}
 	}
 	if resultIDInferred {
 		b.lossGeneratedIDs++
@@ -1356,7 +1438,18 @@ func (b *piSessionBuilder) writeToolResult(paired *callOccurrence, result ToolRe
 		message:   message,
 	})
 	b.carried.ToolResults++
-	b.items = append(b.items, TargetItem{Kind: ItemToolResult, CallID: callID, Text: text})
+	item := TargetItem{Kind: ItemToolResult, CallID: callID, Text: text}
+	if b.selectionReduced {
+		// A document a selection produced knows the owning occurrence (the pairing, or the disclosed
+		// inference that picked one), so the result item states the place of that occurrence's call item
+		// and the round-trip check asserts the attachment the reader makes instead of trusting that an
+		// id two occurrences could share identifies the right one.
+		if written, ok := b.writtenCalls[answered]; ok {
+			owner := written.item
+			item.OwnerCall = &owner
+		}
+	}
+	b.items = append(b.items, item)
 	return true
 }
 
@@ -1487,7 +1580,7 @@ func (b *piSessionBuilder) losses() []Loss {
 		},
 	}, dialogueLossRows(b.lossUnresolvedDialogue, b.lossUnprojectedDialogue,
 		piFamilyUnestablishedOutcome)...)
-	return append(append(losses, []Loss{
+	losses = append(append(losses, []Loss{
 		{
 			Category:    "whitespace_only_dialogue",
 			Disposition: DispositionOmitted,
@@ -1682,6 +1775,26 @@ func (b *piSessionBuilder) losses() []Loss {
 			Detail:      needsRetryLossDetail(b.sourceFidelity),
 		},
 	}...), b.familyLosses()...)
+	// The colliding-id category exists only where the reduction can act. The writer's own completeness
+	// rule -- every category on every run -- would put a zero row in every report, and a run without a
+	// selection is byte-identical to the same run before selections existed (goal 0009's D4), whole report
+	// included: the row is therefore carried by a document a selection produced, whose reduction is the
+	// only thing that can write one occurrence beside another under the same recorded id, and an unflagged
+	// report keeps its own category list unchanged. The count is zero on a reduced document with no
+	// collision, so within the selection surface the completeness rule holds as the other rows' does.
+	if b.selectionReduced {
+		losses = append(losses, Loss{
+			Category:    "colliding_call_ids",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.lossCollidingIDs,
+			Detail: "these call occurrences recorded an id an earlier written occurrence already " +
+				"holds; this target pairs a call with its output by id (Pi's reader attaches a " +
+				"toolResult to the call whose block registered the id), so the occurrence was written " +
+				"under an id generated from its own place and the file does not state the id the " +
+				"source recorded for it",
+		})
+	}
+	return losses
 }
 
 // modelAttributionCount is what the message_model_attribution caveat counts: the assistant records whose
